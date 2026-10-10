@@ -279,13 +279,18 @@ def _scorer_reader_name(name: str) -> str:
 def scorer_measure(scorer: Scorer, *, margin: float | None = None) -> MetricDescriptor:
     """The measure one scorer function reports: a quality score, higher is better, over scored results.
 
+    A scorer whose return is annotated ``bool`` is a pass/fail and is declared on the range 0 to 1, margin or
+    not: its intervals stay inside what a pass rate can be, and with a margin its equivalence test is the
+    bounded one that holds its error rate at any n. Any other scorer declares no range, since nothing says what
+    its values can be: its intervals are the unclipped t intervals, and a margin on it is never tested for
+    equivalence (a host of your own declares the measure's ``value_range``).
+
     Args:
         scorer: The scorer. Its ``__name__`` names the measure and the first line of its docstring,
             when it has one, describes it.
         margin: The measure's declared margin (``materiality_threshold``): the most a difference in it may be and
             still be too small to act on, so a contrast on it can read ``equivalent``. ``None`` declares none,
-            and no contrast on it can. With a margin, a scorer whose return is annotated ``bool`` is declared on
-            the range 0 to 1, so its equivalence test is the bounded one that holds its error rate at any n.
+            and no contrast on it can.
 
     Returns:
         The descriptor :func:`callable_host` registers for it.
@@ -305,7 +310,7 @@ def scorer_measure(scorer: Scorer, *, margin: float | None = None) -> MetricDesc
         merit_axis="quality",
         population="scored",
         materiality_threshold=margin,
-        value_range=(0.0, 1.0) if margin is not None and _returns_bool(scorer) else None,
+        value_range=(0.0, 1.0) if _returns_bool(scorer) else None,
     )
 
 

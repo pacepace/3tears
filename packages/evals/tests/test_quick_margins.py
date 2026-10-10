@@ -72,12 +72,40 @@ class TestADeclaredMargin:
         declared = {name: host.profile.measures.get(name) for name in ("correct", "wordy")}
         assert (declared["correct"].materiality_threshold, declared["correct"].value_range) == (0.1, (0.0, 1.0))
         assert (declared["wordy"].materiality_threshold, declared["wordy"].value_range) == (2.0, None)
-        plain = callable_host([correct]).profile.measures.get("correct")
-        assert (plain.materiality_threshold, plain.value_range) == (None, None), "no margin is ever assumed"
+        plain = callable_host([correct, wordy]).profile.measures
+        assert (plain.get("correct").materiality_threshold, plain.get("correct").value_range) == (None, (0.0, 1.0)), (
+            "no margin is ever assumed, and a pass/fail is on 0-1 whatever its margin"
+        )
+        assert plain.get("wordy").value_range is None, "nothing says what a float scorer's values can be"
 
     async def test_a_second_control_reads_the_same_margin(self) -> None:
         comparison = await _compare(margins={"correct": 0.1})
         assert _row(comparison.against("cheaper"), "correct")["verdict"].startswith("equivalent to the control")
+
+
+class TestAPassFailInterval:
+    async def test_stays_inside_the_differences_a_pass_rate_allows(self) -> None:
+        """Half of six cases flip to right: the t interval on the delta runs to 1.075, past any pass-rate difference.
+
+        No margin is declared, so only the scorer's ``bool`` annotation says the values are 0 or 1 (the
+        cassettes example printed ``[-0.0748, 1.075]`` before it did).
+        """
+        six = CASES[:6]
+
+        async def never(case: Mapping[str, Any]) -> str:
+            return "wrong"
+
+        async def half(case: Mapping[str, Any]) -> str:
+            return "right" if case["n"] < 3 else "wrong"
+
+        comparison = await compare(
+            six, {"current": never, "fixed": half}, [correct], control="current", scope_id="pass-fail-bounds", k=2
+        )
+        row = _row(comparison, "correct")
+        assert row["delta"] == pytest.approx(0.5)
+        assert row["interval"] == "[-0.0748, 1] at 95%", (
+            "the t interval's lower end; its upper clipped where a pass-rate difference ends"
+        )
 
 
 class TestNoMargin:

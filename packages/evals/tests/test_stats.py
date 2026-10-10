@@ -18,6 +18,7 @@ from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     UNPAIRED_TEST_NAME,
     composite_significance,
+    difference_interval,
     level_difference,
     paired_change,
     separation_p,
@@ -777,3 +778,21 @@ class TestSeparationPAgreesWithLevelDifference:
     def test_one_value_a_side_has_no_p(self) -> None:
         assert separation_p([1.0], [2.0, 2.0], paired=False) is None
         assert separation_p([1.0], [2.0], paired=True) is None
+
+
+def test_a_difference_interval_stays_inside_the_differences_a_declared_range_allows() -> None:
+    """Three of six pass/fail cases flip: the t interval runs to 1.075, past the largest difference two rates can have.
+
+    Clipped to ± the range's width, it still covers whatever the unclipped one covered (the true difference is
+    inside the clip), and zero is excluded exactly when it was.
+    """
+    control, contrast = [0.0] * 6, [1.0, 1.0, 1.0, 0.0, 0.0, 0.0]
+    low, high = difference_interval(control, contrast, paired=True) or (0.0, 0.0)
+    assert high > 1.0, "the unclipped t interval runs past the range"
+    assert difference_interval(control, contrast, paired=True, value_range=(0.0, 1.0)) == (low, 1.0)
+    assert difference_interval([1.0] * 6, [0.0, 0.0, 0.0, 1.0, 1.0, 1.0], paired=True, value_range=(0.0, 1.0)) == (
+        -1.0,
+        -low,
+    )
+    on_a_wider_scale = difference_interval(control, contrast, paired=True, value_range=(1.0, 5.0))
+    assert on_a_wider_scale == (low, high), "a 1-5 difference can reach 4"

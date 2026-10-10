@@ -1013,13 +1013,24 @@ def composite_significance(
 
 
 def difference_interval(
-    sample_a: list[float], sample_b: list[float], *, paired: bool, confidence: float = INTERVAL_LEVEL
+    sample_a: list[float],
+    sample_b: list[float],
+    *,
+    paired: bool,
+    confidence: float = INTERVAL_LEVEL,
+    value_range: tuple[float, float] | None = None,
 ) -> tuple[float, float] | None:
     """The interval on ``mean(b) − mean(a)`` that :func:`composite_significance`'s test inverts.
 
     ``delta ± t · se`` on the test's own standard error and degrees of freedom — paired over the per-case
     differences, unpaired on Welch's SE and Hsu's df — so at ``confidence = 1 − α`` the interval excludes
-    zero exactly when the test's p is below α. Never clipped: a difference of two bounded means can run
+    zero exactly when the test's p is below α.
+
+    **With a declared range it is clipped to the differences the range allows**, ``± (high − low)``: two
+    means on 0-1 cannot differ by more than 1, and a t interval on a few coarse cases runs past that (a
+    pass/fail delta of +0.5 over six cases read ``[-0.07, 1.07]``). The true difference always lies inside
+    the clip, so the clipped interval covers it whenever the unclipped one does, and zero, inside it too,
+    is excluded exactly when it was. It is not clipped to ``[low, high]`` itself: a difference can run
     either way.
 
     Args:
@@ -1027,6 +1038,8 @@ def difference_interval(
         sample_b: The compared side's, aligned with ``sample_a`` when ``paired``.
         paired: Which test the interval belongs to.
         confidence: The coverage, ``INTERVAL_LEVEL`` unless a family's correction asks for more.
+        value_range: The measure's declared inclusive bounds, or None when it declares none, and then the
+            interval is not clipped: no bound is known to clip it to.
 
     Returns:
         ``(low, high)``, or ``None`` wherever the test runs no t — too few observations, or no spread,
@@ -1036,7 +1049,11 @@ def difference_interval(
     if isinstance(statistic, SignificanceResult):
         return None
     half = t_critical_two_sided(confidence, statistic.df) * statistic.se
-    return statistic.delta - half, statistic.delta + half
+    low, high = statistic.delta - half, statistic.delta + half
+    if value_range is not None:
+        span = value_range[1] - value_range[0]
+        low, high = max(low, -span), min(high, span)
+    return low, high
 
 
 def _constant_split_p(n_a: int, n_b: int) -> float:
@@ -1140,7 +1157,7 @@ def guardrail_decision(
     Returns:
         The decision, the interval it read (None when none exists) and the interval's basis.
     """
-    interval = difference_interval(list(control), list(contrast), paired=paired)
+    interval = difference_interval(list(control), list(contrast), paired=paired, value_range=value_range)
     basis: Literal["t", "bounded"] | None = "t" if interval is not None else None
     if interval is None and paired and value_range is not None and len(control) == len(contrast) >= 2:
         diffs = [float(b) - float(a) for a, b in zip(control, contrast)]
