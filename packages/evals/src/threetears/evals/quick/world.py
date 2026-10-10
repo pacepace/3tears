@@ -71,6 +71,10 @@ from threetears.evals.contracts.host import (
 )
 from threetears.evals.run import CellContext, GoalCheckUnevaluable, evaluate_goal_state, grade_goal_checks
 from threetears.evals.run.check_controls import idle_end_state
+from threetears.observe import get_logger
+
+
+log = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -230,7 +234,7 @@ class World:
 
     def did_nothing_passes(
         self, checks: Sequence[str], cases: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]]
-    ) -> dict[str, int] | None:
+    ) -> dict[str, int]:
         """For each goal check, in how many cases a candidate that did nothing would pass it.
 
         The authoring gate's do-nothing control (:func:`~threetears.evals.run.check_controls.idle_end_state`),
@@ -238,30 +242,39 @@ class World:
         no call made, nothing fired. A check this passes in every case does not beat doing nothing, whatever the
         candidate scores on it.
 
+        Each check is graded on its own, so one that cannot be evaluated against a starting state costs only its own
+        baseline. A check with no baseline is left out, never counted as passed or failed: its summary line then
+        states no do-nothing figure, and the warning logged here names the check and why.
+
         Args:
             checks: The goal checks.
             cases: Per case, its starting state and its variation parameters (``variation.*``).
 
         Returns:
-            Check -> cases passed; None when a check cannot be evaluated against a starting state, which the run
-            itself reports.
+            Check -> cases passed, for every check evaluable against every case's starting state.
         """
         passes = dict.fromkeys(checks, 0)
-        for seed, variation in cases:
-            idle = idle_end_state(self.seed_of(seed), world=self.registry)
-            try:
-                outcomes = grade_goal_checks(
-                    list(checks),
-                    ledger=idle.ledger,
-                    end_state=idle.end_state,
-                    fired=idle.fired,
-                    variation=variation,
-                    world=self.registry,
-                )
-            except GoalCheckUnevaluable:
-                return None
-            for outcome in outcomes:
-                passes[outcome.expression] += outcome.passed
+        idles = [(idle_end_state(self.seed_of(seed), world=self.registry), variation) for seed, variation in cases]
+        for check in list(passes):
+            for idle, variation in idles:
+                try:
+                    outcomes = grade_goal_checks(
+                        [check],
+                        ledger=idle.ledger,
+                        end_state=idle.end_state,
+                        fired=idle.fired,
+                        variation=variation,
+                        world=self.registry,
+                    )
+                except GoalCheckUnevaluable as unevaluable:
+                    log.warning(
+                        "eval.run_eval goal check %r has no do-nothing baseline: %s; its pass rate is shown without one",
+                        check,
+                        unevaluable,
+                    )
+                    del passes[check]
+                    break
+                passes[check] += sum(outcome.passed for outcome in outcomes)
         return passes
 
     def action_parameters(self, tool: str, action: str) -> Mapping[str, Any] | None:

@@ -99,6 +99,14 @@ async def test_the_end_state_is_read_back_after_the_last_turn_and_the_goal_check
     assert run.goal_check_proofs == {LIT_IFF_DARK: "unproven"}
 
 
+def test_a_check_unevaluable_against_a_starting_state_loses_only_its_own_baseline() -> None:
+    """A check that raises at a starting state gets no do-nothing figure — never one counted as passed or failed —
+    and the other checks keep theirs. The arithmetic stands in for any check that raises when graded there."""
+    unevaluable = '1 / length(calls("room.switch")) > 0'
+    baseline = room().did_nothing_passes([LIT_IFF_DARK, unevaluable], [(start(case), {}) for case in CASES])
+    assert baseline == {LIT_IFF_DARK: 0}
+
+
 async def test_a_check_doing_nothing_passes_in_every_case_never_reads_as_a_measurement() -> None:
     never_needless = 'all(it.to != variation.lamp for it in calls("room.switch"))'
     summary = await run_eval(
