@@ -8735,7 +8735,7 @@ def planning_readings(
     no axis (a measure with a better end on a merit axis, a capability judged dimension), each observation
     read by the one walk a family's per-case value is read by (:func:`_per_case_values`, over the one result),
     so a repeat's value here and a case's mean in a comparison are one computation. Guardrails are left out:
-    they are held, not tested for a difference.
+    they are held, not tested for a difference; so is latency read under concurrency, which no comparison reads.
 
     Args:
         runs: The earlier runs.
@@ -8746,6 +8746,11 @@ def planning_readings(
         One entry per reading with a value, sorted by reading kind and name.
     """
     results_by_run = _failures_as_misses({run.id: results_by_run.get(run.id, []) for run in runs})
+    # Latency read under concurrency is in no comparison (#701), so it plans none either.
+    results_by_run = {
+        run_id: withhold_contended_latency(run_results, profile.measures)
+        for run_id, run_results in results_by_run.items()
+    }
     results = [result for run in runs for result in results_by_run[run.id]]
     projection = project_score_records(runs, results, known_run_ids=None, archived_run_ids=None, profile=profile)
     judged_rows: dict[str, list[ScoreRecord]] = {}
