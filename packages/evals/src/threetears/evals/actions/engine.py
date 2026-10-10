@@ -14,15 +14,23 @@ from __future__ import annotations
 from functools import partial
 from typing import Annotated, Any, Literal
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from threetears.evals.actions import render
 from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller
-from threetears.evals.contracts import EvalRunStatus, ResultOutcome
+from threetears.evals.contracts import EvalRunStatus, ResultOutcome, ValidationFailedError
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts import OutOfRunPurpose
 from threetears.evals.ops import (
+    SweepArguments,
+    SweepSettings,
+    sweep_launch,
     AnalysisDeleted,
+    CaseSetLine,
+    CaseSetListing,
+    CaseSetMint,
+    case_set_mint,
+    case_sets_list,
     AnalysisGenerationEstimate,
     AnalysisLine,
     AnalysisListing,
@@ -276,6 +284,28 @@ class RunArchiveParams(EvalBaseModel):
 
     run_id: RunId
     archived: Archived = True
+
+
+class SweepLaunchParams(SweepSettings):
+    """``sweep_launch`` — a sweep's shared settings, declared once on :class:`~threetears.evals.ops.SweepSettings`, and its arms."""
+
+    arms: list[dict[str, Any]] = Field(
+        min_length=1,
+        description="The arms, launched in this order: each {model, label?, overlays?, apparatus_settings?, "
+        "judge_model?, simulator_model?} — its own model and what it sets differently from its siblings.",
+    )
+
+
+class CaseSetMintParams(CaseSetMint):
+    """``case_set_mint`` — the operation's own arguments, declared once on :class:`~threetears.evals.ops.CaseSetMint`."""
+
+
+class CaseSetsListParams(EvalBaseModel):
+    """``case_sets_list``."""
+
+    case_set_filter: Annotated[str | None, Field(min_length=1, description="List only this case set's versions.")] = (
+        None
+    )
 
 
 class AnalysesUndescribableParams(EvalBaseModel):
@@ -575,6 +605,30 @@ async def _run_archive(host: OpsHost, caller: Caller, params: RunArchiveParams) 
     eval_host = host.eval_host
     return await run_blocking(
         eval_host.blocking_executor, run_archive, eval_host, params.run_id, caller.scope_id, archived=params.archived
+    )
+
+
+async def _sweep_launch(host: OpsHost, caller: Caller, params: SweepLaunchParams) -> JobsStarted:
+    try:
+        arguments = SweepArguments.model_validate(params.model_dump())
+    except ValidationError as e:
+        raise ValidationFailedError(f"invalid sweep: {e.errors()[0]['msg']} ({e.errors()[0]['loc']})") from e
+    return await sweep_launch(host, arguments, caller.scope_id, created_by=caller.identity)
+
+
+async def _case_set_mint(host: OpsHost, caller: Caller, params: CaseSetMintParams) -> CaseSetLine:
+    eval_host = host.eval_host
+    arguments = CaseSetMint.model_validate(params.model_dump())
+    return await run_blocking(eval_host.blocking_executor, case_set_mint, eval_host, arguments, caller.scope_id)
+
+
+async def _case_sets_list(host: OpsHost, caller: Caller, params: CaseSetsListParams) -> CaseSetListing:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(case_sets_list, name=params.case_set_filter),
+        eval_host,
+        caller.scope_id,
     )
 
 
@@ -882,6 +936,62 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_runs_list,
             render=render.render_runs,
             example={"status": "completed"},
+        ),
+        Action(
+            name="sweep_launch",
+            summary="Launch arms that differ beyond the model, one after another, into one campaign, as one job.",
+            workflow=RUN,
+            permission="spend",
+            params=SweepLaunchParams,
+            result=JobsStarted,
+            handler=_sweep_launch,
+            render=render.render_jobs_started,
+            example={
+                "template_id": "tmpl-1",
+                "subject_id": "subject-1",
+                "campaign_name": "prompt bake-off",
+                "campaign_behavior": "accuracy",
+                "arms": [
+                    {"model": "model-a", "label": "terse", "overlays": {"style": "terse"}},
+                    {"model": "model-a", "label": "verbose", "overlays": {"style": "verbose"}},
+                ],
+            },
+            long_running=True,
+            detail=(
+                "Every arm is refused up front if its launch would be. Arms run one at a time unless "
+                "max_concurrent_arms is raised, each run joining the campaign as it is created. job_poll on the "
+                "sweep's job counts the arms launched and finished; one job_cancel stops the arm in flight and "
+                "launches none after. An arm refused at its launch, or whose run ends failed, ends the sweep "
+                "failed. The judge and simulator are the sweep's unless an arm names its own: where the sweep "
+                "names none, the first arm's resolved ones hold for the rest."
+            ),
+        ),
+        Action(
+            name="case_sets_list",
+            summary="List the scope's named case sets, every version — what a launch can target by name.",
+            workflow=DISCOVER,
+            permission="read",
+            params=CaseSetsListParams,
+            result=CaseSetListing,
+            handler=_case_sets_list,
+            render=render.render_case_sets,
+            example={},
+        ),
+        Action(
+            name="case_set_mint",
+            summary="Store the next version of a named case set: a template's cases, frozen in order.",
+            workflow=RUN,
+            permission="write",
+            params=CaseSetMintParams,
+            result=CaseSetLine,
+            handler=_case_set_mint,
+            render=render.render_case_set,
+            example={"case_set": "smoke", "template_id": "tmpl-1", "test_case_ids": ["case-1", "case-2"]},
+            detail=(
+                "Append-only: a new name starts at v1 and every change is the next version, so a launch naming "
+                "smoke v1 (run_launch's case_set_name and case_set_version) runs the same cases however the template "
+                "changes. A list the latest version already holds is refused."
+            ),
         ),
         Action(
             name="campaigns_list",

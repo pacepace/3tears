@@ -189,6 +189,22 @@ comparison over it reads a margin it never declared.
 (#677) — each case's mean, recorded only below 5 cases, where a chart draws the cases as points instead of an
 interval band. An analysis stored before them carries None and reads as not recorded: its small cells draw no band
 and no points, and the chart is refused with that reason rather than drawn from the interval.
+
+**Within v8, not a bump**: ``CaseSet`` joined as a new stored type and ``EvalRun.case_set`` as an OPTIONAL field
+(#676). A store written before them holds no sets, and a run stored before carries None: it was launched over its
+template's cases, which is what None says, and history epochs it by its frozen ids as before.
+
+**Within v8, not a bump**: ``ConversationSpec.world_rounds`` joined as an OPTIONAL field, and ``actors`` may be empty
+when world rounds supply every round (#578). A template stored before it carries none, and reads as it did: every
+round is the actors'.
+
+**Within v8, not a bump**: ``EvalSweep`` joined as a new stored type (#632) — the record of a multi-arm launch
+run arm after arm. A store written before it holds none, which reads as "no sweep was started".
+
+**Within v8, not a bump**: ``EvalRun.cell_timeout_s`` and ``cell_timeout_s_origin`` joined as OPTIONAL fields (#649)
+— the per-cell deadline the run's cells ran under and whether the launch, the kind or the engine's default set it.
+A run stored before them carries None for both and reads as "deadline not recorded", never as today's default:
+the kind's wiring may have set another.
 """
 
 
@@ -308,6 +324,27 @@ ROUND_DONE = "round_done"
 #: reason as :data:`ROUND_DONE`: an actor named for it would read as the candidate to every other actor.
 CANDIDATE_SPEAKER = "__candidate__"
 
+#: The speaker label a world round's event carries in a simulated transcript, so an actor speaking after it
+#: reads that the world moved. Reserved for the reason :data:`CANDIDATE_SPEAKER` is.
+WORLD_SPEAKER = "__world__"
+
+
+class WorldRound(EvalDocumentModel):
+    """A round whose stimulus is a world event rather than an actor's line.
+
+    Before the candidate's ``turn``-th answer, the engine fires ``dimension`` through the cell's world session —
+    a triggered dimension the case's seed armed — and the candidate answers with no simulated line in the
+    round. So "something happens and the candidate should notice", with nobody talking, needs no invented
+    speaker whose line would become part of what the candidate reacts to.
+    """
+
+    turn: int = Field(ge=1, le=100, description="The candidate answer (from 1) this round's event comes before.")
+    dimension: str = Field(
+        min_length=1,
+        description="The triggered world dimension the round fires, through the host's fire handle; the case's "
+        "seed must arm it.",
+    )
+
 
 class ConversationSpec(EvalDocumentModel):
     """The simulated side of a conversing candidate: who talks to it, in what order, for how long.
@@ -330,13 +367,20 @@ class ConversationSpec(EvalDocumentModel):
     """
 
     actors: list[ActorPolicy] = Field(
-        min_length=1,
+        default_factory=list,
         description=(
             "The simulated actors. Their order is the round-robin order, and the first actor's "
-            "initial_utterance_template, when set, opens the conversation under either scheduler. At least "
-            "one: a conversation with nobody on the other side is not a conversation, and a template with "
-            "nothing to simulate declares no block at all. Ids are unique, and neither 'round_done' nor "
-            "'__candidate__', which the scheduler and the transcript reserve."
+            "initial_utterance_template, when set, opens the conversation under either scheduler. Empty only "
+            "when world_rounds supply every round's stimulus: a round needs someone or something on the other "
+            "side. Ids are unique, and none of 'round_done', '__candidate__' and '__world__', which the "
+            "scheduler and the transcript reserve."
+        ),
+    )
+    world_rounds: list[WorldRound] = Field(
+        default_factory=list,
+        description=(
+            "Rounds whose stimulus is a triggered world event rather than an actor's line, by the candidate "
+            "answer they come before. Each turn once, within max_turns. Every other round is the actors'."
         ),
     )
     turn_scheduler: Literal["round_robin", "llm_decided"] = Field(
@@ -382,7 +426,7 @@ class ConversationSpec(EvalDocumentModel):
         """
         seen: set[str] = set()
         for actor in self.actors:
-            if actor.id in (ROUND_DONE, CANDIDATE_SPEAKER):
+            if actor.id in (ROUND_DONE, CANDIDATE_SPEAKER, WORLD_SPEAKER):
                 raise ValueError(f"actor id {actor.id!r} is reserved; choose another id")
             if actor.id in seen:
                 raise ValueError(f"actor id {actor.id!r} appears twice; a scheduler could not tell the two apart")
@@ -391,7 +435,26 @@ class ConversationSpec(EvalDocumentModel):
             raise ValueError(
                 f"sessions={self.sessions} exceeds max_turns={self.max_turns}; every session holds at least one turn"
             )
+        turns = [world.turn for world in self.world_rounds]
+        if repeated := sorted({turn for turn in turns if turns.count(turn) > 1}):
+            raise ValueError(f"world_rounds name turn(s) {repeated} twice; a round has one stimulus")
+        if beyond := sorted(turn for turn in turns if turn > self.max_turns):
+            raise ValueError(f"world_rounds name turn(s) {beyond} past max_turns={self.max_turns}; no such round runs")
+        if not self.actors and (unsupplied := sorted(set(range(1, self.max_turns + 1)) - set(turns))):
+            raise ValueError(
+                f"a conversation with no actors needs a world round for every turn; turn(s) {unsupplied} have no "
+                "stimulus — add an actor, or a world round for each"
+            )
+        if self.actors and self.actors[0].initial_utterance_template and 1 in turns:
+            raise ValueError(
+                f"actor {self.actors[0].id!r}'s initial_utterance_template opens round 1, which is a world round; "
+                "drop the opener or the world round on turn 1"
+            )
         return self
+
+    def world_round(self, turn: int) -> WorldRound | None:
+        """The world round that comes before the candidate's ``turn``-th answer, or ``None`` for an actors' round."""
+        return next((world for world in self.world_rounds if world.turn == turn), None)
 
 
 class WorldSeed(EvalDocumentModel):
@@ -1737,6 +1800,111 @@ class JudgeConfigTombstone(EvalDocumentModel):
 # =============================================================================
 
 
+def case_set_doc_id(name: str, version: int) -> str:
+    """The stored id of version ``version`` of the case set ``name`` — one document per ``(scope, name, version)``.
+
+    Args:
+        name: The set's name.
+        version: Its version.
+
+    Returns:
+        The id.
+    """
+    return f"case_set:{name}:v{version}"
+
+
+class CaseSetRef(EvalBaseModel):
+    """Which named, versioned case set a run was launched against: a label on its frozen case ids.
+
+    Not an identity of its own: the run's case-set identity stays the frozen ids (``case_basis``), so two runs
+    over the same ids are one suite version whatever they were launched by. This names it.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str = Field(min_length=1, description="The case set's name, unique within its scope.")
+    version: int = Field(ge=1, description="The set's version, minted from 1; a change mints the next.")
+
+    @property
+    def label(self) -> str:
+        """How every surface names it: ``name vN``."""
+        return f"{self.name} v{self.version}"
+
+
+class CaseSet(EvalDocumentModel):
+    """A named, versioned, frozen list of one template's test cases — what a launch can target by name.
+
+    **Append-only.** A version, once stored, is never rewritten: storing a ``(scope, name, version)`` that exists
+    is refused (:meth:`~threetears.evals.contracts.storage.EvalStorage.save_case_set`), and changing a set means
+    minting ``version + 1`` (:func:`~threetears.evals.run.case_sets.mint_case_set`). So ``smoke v3`` names the
+    same cases on launch day and a year later, while the template itself stays editable.
+
+    **A launch input, not a second identity.** A launch naming a set runs exactly its cases and stamps the run
+    with :class:`CaseSetRef`; the run's apparatus class still derives from its frozen ids, as for any run, so
+    the name labels that identity rather than competing with it — which keeps the campaign's "no battery
+    pointer" decision (:mod:`threetears.evals.contracts.campaign`). Not called a battery: that is the
+    universal-template set.
+    """
+
+    id: str = Field(default="", description="Derived from name and version (``case_set_doc_id``); set on mint.")
+    doc_type: Literal["case_set"] = "case_set"
+    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    scope_id: str = Field(min_length=1)
+
+    name: str = Field(min_length=1, description="The set's name, unique within its scope across its versions.")
+    version: int = Field(ge=1, description="Minted from 1; each change to the set is the next version.")
+    template_id: str = Field(min_length=1, description="The template whose cases these are; every version shares it.")
+    test_case_ids: list[str] = Field(
+        min_length=1, description="The frozen cases, in order — every one a case of the template in the scope."
+    )
+    tracked: bool = Field(
+        default=True,
+        description="Whether the set is followed over time (a standing suite) or was made for one launch. Metadata "
+        "only: both are stored, versioned and launched alike.",
+    )
+    created_at: str = Field(default_factory=utc_now_iso)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _stamp_derived_id(cls, data: Any) -> Any:
+        """Fill the id from name and version when the writer leaves it out."""
+        if (
+            isinstance(data, Mapping)
+            and not data.get("id")
+            and isinstance(name := data.get("name"), str)
+            and isinstance(version := data.get("version"), int)
+        ):
+            return {**data, "id": case_set_doc_id(name.strip(), version)}
+        return data
+
+    @model_validator(mode="after")
+    def _derived_id_and_distinct_cases(self) -> Self:
+        """Refuse an id other than the derived one, and a case listed twice.
+
+        Raises:
+            ValueError: The id is not the one derived from name and version, or a case id repeats.
+        """
+        derived = case_set_doc_id(self.name, self.version)
+        if self.id != derived:
+            raise ValueError(f"a case set's id is derived from its name and version ({derived!r}); got {self.id!r}")
+        if repeated := sorted({case_id for case_id in self.test_case_ids if self.test_case_ids.count(case_id) > 1}):
+            raise ValueError(f"a case set lists each case once; {', '.join(repeated)} repeat")
+        return self
+
+    @property
+    def ref(self) -> CaseSetRef:
+        """The label a run launched against this set records."""
+        return CaseSetRef(name=self.name, version=self.version)
+
+    @field_validator("doc_type")
+    @classmethod
+    def check_doc_type(cls, v: str) -> str:
+        """Reject documents loaded into the wrong model class."""
+        if v != "case_set":
+            raise ValueError(f"doc_type must be 'case_set', got '{v}'")
+        return v
+
+
 class EvalTestCase(EvalDocumentModel):
     """Concrete, immutable inputs generated from an ``EvalTemplate``.
 
@@ -2085,6 +2253,11 @@ CostCapOrigin = Literal["chosen", "inherited", "uncapped"]
 #: contradicts the host's declaration and is refused and counted. Distinct from ``uncapped``, which
 #: is a host with metered tools whose enforcement is off.
 MeteredCallOrigin = Literal["chosen", "inherited", "uncapped", "none_declared"]
+
+#: Where a run's per-cell deadline came from (:attr:`EvalRun.cell_timeout_s_origin`): ``launch`` — the launch
+#: named it (``cell_timeout_s``), within the host's ceiling; ``kind`` — the kind's launcher wired its own
+#: (``KindWiring.cell_timeout_s``); ``default`` — neither did, so the engine's ``DEFAULT_CELL_TIMEOUT_S`` held.
+CellTimeoutOrigin = Literal["launch", "kind", "default"]
 
 
 def scored_dim_ids(rubric_dim_names: list[str], judged_artifact: JudgedArtifact) -> list[str]:
@@ -2877,6 +3050,33 @@ class EvalRun(EvalDocumentModel):
             "counted: the run's loop never started, or it ran with no ledger at all."
         ),
     )
+    case_set: CaseSetRef | None = Field(
+        default=None,
+        description=(
+            "The named, versioned case set this run was launched against, or None for a run launched over its "
+            "template's cases directly (or stored before case sets existed). A label on test_case_ids, which the "
+            "run froze from it: the case-set identity is still those ids. History labels an epoch by it."
+        ),
+    )
+    cell_timeout_s: float | None = Field(
+        default=None,
+        gt=0.0,
+        description=(
+            "The deadline every cell of this run ran under, in seconds: the launch's ``cell_timeout_s``, or the "
+            "kind's own deadline when the launch named none. A cell that outlives it is excluded as "
+            "``cell_timeout``, so a run losing cells to it is read against this value. None = a run stored before "
+            "the deadline was recorded, or one assembled outside a launch: the deadline it ran under is unknown, "
+            "never read as today's default. Not hashed into any identity key, like turn_budget_s."
+        ),
+    )
+    cell_timeout_s_origin: CellTimeoutOrigin | None = Field(
+        default=None,
+        description=(
+            "Where cell_timeout_s came from: ``launch`` (the launch named it), ``kind`` (the kind's launcher "
+            "wired its own) or ``default`` (the engine's default). Kept beside it for the reason "
+            "max_cost_usd_origin is. None exactly when cell_timeout_s is."
+        ),
+    )
     turn_budget_s: float | None = Field(
         default=None,
         gt=0.0,
@@ -3070,6 +3270,21 @@ class EvalRun(EvalDocumentModel):
                 f"cassette_corpus_id is set exactly when cassette_mode is 'replay' (got mode {self.cassette_mode!r}, "
                 f"corpus {self.cassette_corpus_id!r}): a replay serves the corpus of the capture run it names, a "
                 "capture writes the corpus its own id names, and a run with cassettes off reads none"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _cell_timeout_names_its_origin(self) -> Self:
+        """Require the per-cell deadline and its origin together, or neither.
+
+        Raises:
+            ValueError: One is recorded without the other.
+        """
+        if (self.cell_timeout_s is None) != (self.cell_timeout_s_origin is None):
+            raise ValueError(
+                f"cell_timeout_s and cell_timeout_s_origin are recorded together or not at all (got "
+                f"{self.cell_timeout_s!r}, {self.cell_timeout_s_origin!r}): a deadline whose origin is unknown cannot "
+                "say whether a launch chose it"
             )
         return self
 
@@ -4792,6 +5007,12 @@ __all__ = [
     "stale_goal_check_proofs",
     "ApparatusSettingValue",
     "MeteredCallOrigin",
+    "CellTimeoutOrigin",
+    "WORLD_SPEAKER",
+    "WorldRound",
+    "CaseSet",
+    "CaseSetRef",
+    "case_set_doc_id",
     "CANDIDATE_SPEAKER",
     "DEFAULT_JUDGE_TEMPERATURE",
     "EVAL_SCHEMA_VERSION",

@@ -81,6 +81,14 @@ One concrete input, frozen once written (`EvalTestCase`). A case's content never
 stored, which is what lets two runs over the same cases be compared. *Example:* ticket 17, "I was charged
 twice this month", expected queue `billing`.
 
+#### Case set
+A named, versioned, frozen list of one template's cases (`CaseSet`, minted by `mint_case_set` or the
+`case_set_mint` action). It is append-only: changing it mints the next version, and rewriting a stored
+version is refused. A launch can name one (`case_set_name` and `case_set_version`), runs exactly its cases,
+and records it on the run, so history reads a change of suite as `smoke v1` to `smoke v2`. It labels the
+run's frozen case ids, never a second identity. Not a [battery](#battery). *Example:* `smoke v2`, the three
+tickets every release is checked on.
+
 #### Template
 The blueprint the cases belong to (`EvalTemplate`): what is being tested (its intent), how to score it
 (goal-state checks and rubric dimensions), the axes cases vary along, and anything only its kind reads (its

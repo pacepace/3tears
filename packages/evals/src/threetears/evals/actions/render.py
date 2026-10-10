@@ -25,6 +25,8 @@ from threetears.evals.contracts import GoalStateOutcome, ResultOutcome, counted_
 from threetears.evals.contracts.errors import EvalServiceError
 from threetears.evals.ops import (
     AnalysisDeleted,
+    CaseSetLine,
+    CaseSetListing,
     AnalysisGenerationEstimate,
     AnalysisLine,
     AnalysisListing,
@@ -442,6 +444,20 @@ def render_campaign(campaign: CampaignLine) -> str:
         f"- {campaign.id}: {campaign.name} — subject {campaign.subject_id}, {campaign.behavior}; "
         f"{campaign.run_count} run(s){archived}"
     )
+
+
+def render_case_set(case_set: CaseSetLine) -> str:
+    """One version of a case set on one line."""
+    tracked = "" if case_set.tracked else ", one-off"
+    return (
+        f"- {case_set.label}: template {case_set.template_id}, {len(case_set.test_case_ids)} case(s) "
+        f"({', '.join(case_set.test_case_ids)}){tracked}"
+    )
+
+
+def render_case_sets(listing: CaseSetListing) -> str:
+    """A scope's case sets, every version."""
+    return "\n".join([f"case sets ({len(listing.case_sets)})", *(render_case_set(c) for c in listing.case_sets)])
 
 
 def render_campaigns(listing: CampaignListing) -> str:

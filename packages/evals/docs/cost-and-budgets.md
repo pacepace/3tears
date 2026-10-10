@@ -53,6 +53,13 @@ the two apart (a clock stop's reason opens with `wall-clock budget`), and `error
 because that list counts faults. A run stopped by its clock under 0.66.0 or earlier stays stored `failed`
 (`Job timed out after Ns`).
 
+**The cell deadline.** Each cell runs under a deadline: the kind's own (its launcher's
+`KindWiring.cell_timeout_s`, else 600 s). A cell that outlives it is excluded as `cell_timeout`. A launch can
+name `cell_timeout_s` for a long-horizon run, up to the host's `LaunchSettings.max_cell_timeout_s`. A host that
+declares no ceiling lets a launch only lower the kind's deadline. The job's wall-clock budget is sized from
+the deadline in force. The run records it as `cell_timeout_s`, with `cell_timeout_s_origin` (`launch`, `kind`
+or `default`). A run stored before 0.66.0 records neither, and its deadline reads as unknown.
+
 **Wall time.** A run executes its cells (case × repeat) in a shuffled order, up to
 `LaunchSettings.max_concurrent_cells` (4 by default) at once, and a cell's judge calls run up to
 `judge_concurrency` at once. The arms of one launch run side by side in one concurrency slot. Estimate a

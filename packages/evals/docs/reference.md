@@ -52,6 +52,8 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
   <br>`candidate_failure_cause(result: EvalResult) -> CandidateFailureCause | None`
 - **`canonical_digest`** · function · Return the full sha256 hex digest of `payload`'s canonical JSON.
   <br>`canonical_digest(payload: Any) -> str`
+- **`case_set_doc_id`** · function · The stored id of version `version` of the case set `name` — one document per `(scope, name, version)`.
+  <br>`case_set_doc_id(name: str, version: int) -> str`
 - **`classifier_label_measure`** · function · The measure name one label's precision, recall or F1 is reported under.
   <br>`classifier_label_measure(statistic: ClassifierStatistic, label: str) -> str`
 - **`classifier_label_of`** · function · The `(statistic, label)` a name was minted for by `classifier_label_measure`, or None.
@@ -92,6 +94,8 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
   <br>`fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> None`
 - **`goal_check_of`** · function · The check a measure name was minted for by `goal_check_measure`, or None.
   <br>`goal_check_of(name: str) -> str | None`
+- **`is_pass`** · function · Whether `call` is the engine's deliberate-pass entry rather than a call the candidate made.
+  <br>`is_pass(call: RecordedCall) -> bool`
 - **`judges_sharing_a_candidate_model`** · function · The dims whose judge is one of the run's candidate models: a model grading its own output.
   <br>`judges_sharing_a_candidate_model(effective_judges: dict[str, str] | None, candidate_models: Sequence[str]) -> dict[str, str]`
 - **`keep_fields`** · function · Return `document` reduced to the top-level `fields` it has — the meaning of `keep`.
@@ -167,6 +171,9 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
 - **`CandidateOutput`** · model · What one candidate produced, as everything below the dispatch sees it.
 - **`CandidatePreparationFailed`** · exception · A candidate could not be built, and the cell is cleanly excluded rather than scored.
 - **`CandidateTelemetry`** · model · What one candidate's execution cost, and the windows nothing else timed.
+- **`CaseSet`** · model · A named, versioned, frozen list of one template's test cases — what a launch can target by name.
+- **`CaseSetRef`** · model · Which named, versioned case set a run was launched against: a label on its frozen case ids.
+- **`CaseSetStore`** · protocol · Named, versioned case sets, and the test cases they name — what minting and resolving a set reads.
 - **`CassetteCorrupt`** · exception · The corpus cannot be used as recorded.
 - **`CassetteExhausted`** · exception · A replay asked for something one more time than its capture did.
 - **`CassetteKey`** · dataclass · Everything that names one recorded answer — and the one place its document id is composed.
@@ -218,6 +225,7 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
 - **`EvalRunStamp`** · model · What a reader of a run's place in a campaign reads off it: which run, curated out or not, and when.
 - **`EvalServiceError`** · exception · Structured error from the eval service layer.
 - **`EvalStorage`** · class · Storage for v1-shape eval documents over one document store.
+- **`EvalSweep`** · model · A multi-arm launch run arm after arm: its arms, its campaign, and how it ended — the record its job reads.
 - **`EvalTemplate`** · model · Abstract scenario blueprint — subject-agnostic, domain-level.
 - **`EvalTestCase`** · model · Concrete, immutable inputs generated from an `EvalTemplate`.
 - **`EvalTrace`** · model · The candidate's output, what its judge read, and the OTel spans — stored beside a result, not inside it.
@@ -305,6 +313,7 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
 - **`StorageError`** · exception · Storage operation failed (status 503).
 - **`StoreConflict`** · exception · A conditional write lost its race: the stored document no longer carries `if_match`.
 - **`StratumFacts`** · model · Everything measured in one stratum of one cell — the cell's figures again, over one kind of case.
+- **`SweepArmRecord`** · model · One arm of a sweep as its record carries it: what it is called, its model, and its run once launched.
 - **`SweptAxis`** · model · One axis this campaign set out to vary, and the levels it meant to compare.
 - **`SyncActionSeam`** · protocol · A kind's synchronous tools whose calls block rather than await, as the cassette lane records and replays them.
 - **`SyncToolLike`** · protocol · The three members the cassette layer calls on a tool that answers as a plain blocking call.
@@ -323,6 +332,7 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
 - **`VariationLLM`** · protocol · The client the variation generator writes an `llm` axis's values with, naming the model it calls.
 - **`Viz`** · model · A visualization spec attached to a finding.
 - **`WorldEvent`** · model · One thing that moved a cell's world after it was seeded, in the order it happened.
+- **`WorldRound`** · model · A round whose stimulus is a world event rather than an actor's line.
 - **`WorldSeed`** · model · Initial state for the eval's stateful world.
 - **`WorldSession`** · class · One cell's handle on the host's world, and the record of what happened to it.
 - **`WorldSessionError`** · exception · A kind asked its cell's world session for something the host's world, or the moment, cannot give.
@@ -355,6 +365,8 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
   <br>`'apparatus'` | `'candidate'` | `'background_work'` | `'simulator'` | `'judge'`
 - **`CellTermination`** · literal · How a cell's execution ended — the branch the runner took, recorded because the record cannot recover it.
   <br>`'completed'` | `'factory_failed'` | `'cell_timeout'` | `'seed_failed'` | `'precondition_failed'` | `'apparatus_failed'` | `'cancelled'`
+- **`CellTimeoutOrigin`** · literal · Where a run's per-cell deadline came from (`EvalRun.cell_timeout_s_origin`): `launch` — the launch named it (`cell_timeout_s`), within the host's ceiling; `kind` — the kind's launcher wired its own (`KindWiring.cell_timeout_s`); `default` — neither did, so the engine's `DEFAULT_CELL_TIMEOUT_S` held.
+  <br>`'launch'` | `'kind'` | `'default'`
 - **`ClassifierStatistic`** · literal · The per-label statistics a classifier's confusion matrix yields, each minted per label.
   <br>`'precision'` | `'recall'` | `'f1'`
 - **`CompletenessSource`** · literal · Where a run's completeness counts were taken: the run loop's own tally, or the results in storage (`RunCompleteness.counted_from`).
@@ -433,6 +445,8 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
   <br>`'utterance'` | `'schedule'`
 - **`StopReason`** · literal · Why a completion stopped, in the engine's words.
   <br>`'end_turn'` | `'max_tokens'` | `'content_filter'` | `'error'`
+- **`SweepOutcome`** · literal · Where a sweep stands: `running` while its arms are being launched and run; `completed` — every arm ran; `failed` — an arm was refused at launch, or its run ended `failed`, so no further arm was launched; `cancelled` — a cancel stopped it, cancelling the arms in flight and launching none after.
+  <br>`'running'` | `'completed'` | `'failed'` | `'cancelled'`
 - **`SyncToolWrap`** · type alias · What the synchronous action seam is handed: `ToolWrap` over `SyncToolLike` tools.
   <br>`Callable[[Mapping[str, SyncToolLike]], dict[str, SyncToolLike]]`
 - **`TimeAxisBasis`** · literal · What a campaign's time positions are: the builds a host labels (`release`), or the UTC days its runs started on (`date`).
@@ -507,6 +521,10 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
   <br>`= 'not established'`
 - **`OUTCOME_DIM_ID`** · constant (str) · Reserved `rubric_dim_id` for the dual-score outcome axis.
   <br>`= '__outcome__'`
+- **`PASS_ACTION`** · constant (str) · The action half of the reserved deliberate-pass entry (`__engine__.pass`).
+  <br>`= 'pass'`
+- **`PASS_TOOL`** · constant (str) · The tool half of the reserved ledger entry a deliberate pass is recorded as (`__engine__.pass`); no host tool takes this name.
+  <br>`= '__engine__'`
 - **`PROSE_SCHEMA_KEY`** · constant (str) · The JSON Schema keyword marking a string property as model prose, for vocabularies declared as schema rather than as Pydantic models (a world dimension's value schema).
   <br>`= 'x-model-prose'`
 - **`REASONING_RATIO_KEY`** · constant (str) · Covariate key: the share of the candidate's generated tokens that were reasoning — candidate `reasoning_tokens` over candidate `completion_tokens`, summed across the candidate's usage rows.
@@ -532,6 +550,8 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
   <br>`= 'truncated_rounds'`
 - **`TURN_BUDGET_ENDED_KEY`** · constant (str) · Covariate key: how many of the candidate's turns the HOST's turn budget ended before they finished.
   <br>`= 'turns_ended_by_budget'`
+- **`WORLD_SPEAKER`** · constant (str) · The speaker label a world round's event carries in a simulated transcript, so an actor speaking after it reads that the world moved.
+  <br>`= '__world__'`
 
 <a id="api-contracts-host"></a>
 ### `threetears.evals.contracts.host`
@@ -724,7 +744,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`delete_run`** · function · Delete a run, the results it owns, and its campaign memberships.
   <br>`delete_run(storage: CurationStore, run: EvalRun, scope_id: str, *, confirm: str | None = None) -> dict[str, Any]`
 - **`drive_conversation`** · async function · Run `driver`'s conversation from its first turn until it stops on a structural signal.
-  <br>`drive_conversation(driver: TurnDriver, candidate_turn: Callable[[Sequence[SimulatorTurn]], Awaitable[CandidateTurn]], post_user_turn: Callable[[SimulatorTurn], Awaitable[None]], *, llm: SimulatorLLM, sink: CellSink) -> ConversationStopCause`
+  <br>`drive_conversation(driver: TurnDriver, candidate_turn: Callable[[Sequence[SimulatorTurn]], Awaitable[CandidateTurn]], post_user_turn: Callable[[SimulatorTurn], Awaitable[None]], *, llm: SimulatorLLM, sink: CellSink, world: WorldSession | None = None) -> ConversationStopCause`
 - **`estimate_judge_repeat`** · async function · Price repeating a run's judge scores against the cap it would be held to, and make no call.
   <br>`estimate_judge_repeat(host: EvalHost, run_id: str, scope_id: str, *, out_of_run_cap_usd: float | None, result_ids: Sequence[str] | None = None) -> JudgeRepeatEstimate`
 - **`estimate_second_judge`** · async function · Price asking a second judge about a run against the cap it would be held to, and make no call.
@@ -769,6 +789,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`load_seed_corpus(seed_dir: Path, scope_id: str) -> SeedCorpus`
 - **`metered_cell_tally`** · function · One cell's slice of the run's metered-call tally, or `None` when nothing counted.
   <br>`metered_cell_tally(ledger: MeteredCallLedger | None, baseline: MeteredCallTally | None = None) -> MeteredCallTally | None`
+- **`mint_case_set`** · function · Store the next version of the case set `name`: version 1 for a new name, else one past the latest.
+  <br>`mint_case_set(storage: CaseSetStore, *, scope_id: str, name: str, template_id: str, test_case_ids: Sequence[str], tracked: bool = True) -> CaseSet`
 - **`no_launcher_for`** · function · The refusal for a template whose kind this host cannot launch — one wording, wherever it fires.
   <br>`no_launcher_for(template_id: str, candidate_kind: str, launchable: Mapping[str, Any]) -> ValidationFailedError`
 - **`plan_judge`** · function · The judges one arm of `template` will be scored by, resolved as `build_judge_service` resolves them — building nothing.
@@ -778,7 +800,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`price_arms`** · async function · Plan and price every arm of one launch by the engine's one rule, refusing before any launcher runs.
   <br>`price_arms(host: LaunchHost, launchable: LaunchableKind, requests: Sequence[LaunchRequest]) -> list[LaunchRequest]`
 - **`quote_launch`** · async function · What `start_run` with the same arguments would make of its arms' prices — read-only.
-  <br>`quote_launch(host: LaunchHost, *, template_id: str, subject_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, judge_config_ids: dict[str, str] | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', cassette_corpus_id: str | None = None, overlays: Mapping[str, Any] | None = None, apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, max_metered_calls: int | None = None, scope_id: str, case_count: int | None = None) -> LaunchQuote`
+  <br>`quote_launch(host: LaunchHost, *, template_id: str, subject_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, judge_config_ids: dict[str, str] | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', cassette_corpus_id: str | None = None, overlays: Mapping[str, Any] | None = None, apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, max_metered_calls: int | None = None, scope_id: str, case_count: int | None = None, cell_timeout_s: float | None = None, case_set: CaseSetRef | None = None) -> LaunchQuote`
 - **`rate_result`** · function · Record one rater's score for one judged dimension of one result — a person's, or an agent's.
   <br>`rate_result(storage: RatingStore, *, result_id: str, scope_id: str, rubric_dim: str, rater: str, rater_kind: RaterKind, score: int, reason: str) -> CalibrationRating`
 - **`recheck_goal_states`** · function · Re-grade every result of one stored run from what its cells stored, and optionally store the new verdicts.
@@ -801,6 +823,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`require_candidate_model(request: LaunchRequest, default: str | None) -> str`
 - **`require_delete_confirmation`** · function · Refuse a destructive eval delete unless the caller echoed the target's id.
   <br>`require_delete_confirmation(kind: str, object_id: str, confirm: str | None, *, cascade: str | None = None, alternative: str = 'archive it instead to exclude it from cohorts without destroying it') -> None`
+- **`resolve_case_set`** · function · The set a launch names, and its cases in its order — or the refusal.
+  <br>`resolve_case_set(storage: CaseSetStore, ref: CaseSetRef, *, template: EvalTemplate, scope_id: str) -> tuple[CaseSet, list[EvalTestCase]]`
 - **`resolve_ceiling_origin`** · function · Return which tier of the cascade supplied the ceiling a run is bounded by.
   <br>`resolve_ceiling_origin(override: float | None, *, enforcement_enabled: bool) -> CostCapOrigin`
 - **`resolve_constructor`** · function · Import a contract's constructor.
@@ -828,7 +852,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`stamp_witnessed_judge`** · function · A witnessed run that names the template its cells are judged against, the judge apparatus that scores them, and the ceiling it is held to.
   <br>`stamp_witnessed_judge(host: EvalHost, run: EvalRun, template: EvalTemplate, *, judge_model: str, judged_artifact: JudgedArtifact, selection: dict[str, str] | None = None, configured_max_cost_usd: float, enforcement_enabled: bool, max_cost_usd: float | None = None) -> EvalRun`
 - **`start_run`** · async function · Refuse what no kind can run, admit the launch, and dispatch each arm to its kind's launcher.
-  <br>`start_run(host: LaunchHost, *, template_id: str, subject_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, judge_config_ids: dict[str, str] | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', cassette_corpus_id: str | None = None, overlays: Mapping[str, Any] | None = None, apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, max_metered_calls: int | None = None, scope_id: str, launch_group: LaunchGroup | None = None, admission: AdmissionTicket | None = None, margins: Mapping[str, float] | None = None, measure_latency: bool = False) -> list[EvalRun]`
+  <br>`start_run(host: LaunchHost, *, template_id: str, subject_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, judge_config_ids: dict[str, str] | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', cassette_corpus_id: str | None = None, overlays: Mapping[str, Any] | None = None, apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, max_metered_calls: int | None = None, scope_id: str, launch_group: LaunchGroup | None = None, admission: AdmissionTicket | None = None, cell_timeout_s: float | None = None, case_set: CaseSetRef | None = None, margins: Mapping[str, float] | None = None, measure_latency: bool = False) -> list[EvalRun]`
 - **`start_universal_battery`** · async function · Launch the operator-curated boundary battery against one subject.
   <br>`start_universal_battery(host: LaunchHost, subject_id: str, *, scope_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, preflight: BatteryPreflight, measure_latency: bool = False) -> list[str]`
 - **`sweep_abandoned_runs`** · function · Cancel runs this process cannot own, left non-terminal by a previous one.
@@ -1621,6 +1645,10 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: str, *, created_by: str) -> CampaignLine`
 - **`campaigns_list`** · function · The scope's campaigns.
   <br>`campaigns_list(host: EvalHost, scope_id: str, *, archived: bool | None = None) -> CampaignListing`
+- **`case_set_mint`** · function · Store the next version of a named case set: append-only, so a change is a new version, never an edit.
+  <br>`case_set_mint(host: EvalHost, arguments: CaseSetMint, scope_id: str) -> CaseSetLine`
+- **`case_sets_list`** · function · The scope's case sets — every version, or every version of one name.
+  <br>`case_sets_list(host: EvalHost, scope_id: str, *, name: str | None = None) -> CaseSetListing`
 - **`dollars_text`** · function · Spend as a person reads it: dollars and cents from ten cents up, three significant figures below.
   <br>`dollars_text(amount: float) -> str`
 - **`estimate_text`** · function · An estimate as text: the launch priced, each arm's price and outcome, and the total.
@@ -1695,6 +1723,10 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`scope_pivot(host: EvalHost, scope_id: str, *, row_factor: str, column_factor: str, metric: str | None = None, weighting: str | None = None, subject_id: str | None = None, status: str | None = 'completed', predicted_cost: CostEstimate | LaunchEstimate | Mapping[str, Any] | None = None, launched_run_ids: Sequence[str] = ()) -> PivotTable`
 - **`serialize_report`** · function · A report in one of its three forms.
   <br>`serialize_report(report: Report, format: ReportFormat) -> str`
+- **`sweep_job_id`** · function · The job id of a sweep.
+  <br>`sweep_job_id(sweep_id: str) -> str`
+- **`sweep_launch`** · async function · Create the sweep's campaign and start the job that launches its arms in order.
+  <br>`sweep_launch(host: OpsHost, arguments: SweepArguments, scope_id: str, *, created_by: str) -> JobsStarted`
 - **`templates_list`** · function · The scope's templates.
   <br>`templates_list(host: EvalHost, scope_id: str, *, archived: bool = False) -> TemplateListing`
 
@@ -1710,6 +1742,9 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`CampaignDefinition`** · model · What creating a campaign names: what it is called, its subject and behaviour, its runs, and what it set out to learn.
 - **`CampaignLine`** · model · One campaign, as a listing shows it.
 - **`CampaignListing`** · model · A scope's campaigns, newest first.
+- **`CaseSetLine`** · model · One version of a named case set.
+- **`CaseSetListing`** · model · A scope's case sets, every version, newest version first within a name.
+- **`CaseSetMint`** · model · What minting a case set's next version names: the set, its template and its cases in order.
 - **`DetectableEffect`** · model · The smallest difference one reading's comparison would find, or why none can be stated.
 - **`DetectableEffects`** · model · What a launch could detect: per reading, the smallest difference its paired comparison would find.
 - **`JobHandle`** · model · A started job: the id to poll, and what it is working on.
@@ -1734,6 +1769,9 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`RunListing`** · model · A scope's runs, newest first as the store lists them.
 - **`RunsCompared`** · model · One run's arm against another's, with what either run could not deliver said beside the numbers.
 - **`SecondJudgeRead`** · model · A second judge's pass over a run, and what its pairs say: agreement between the judges, and drift.
+- **`SweepArguments`** · model · What a sweep names: its shared settings and campaign (`SweepSettings`), and its arms in order.
+- **`SweepArm`** · model · One arm of a sweep: its model, and what it sets differently from its siblings.
+- **`SweepSettings`** · model · What every arm of a sweep shares, and the campaign its runs join — a sweep's arguments but its arms.
 - **`TemplateLine`** · model · One template, as a listing shows it.
 - **`TemplateListing`** · model · A scope's templates.
 - **`TraceJudge`** · model · The `judge` part of a stored trace: what the judge was sent, as the kind rendered it.
@@ -1744,8 +1782,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Types**
 
-- **`JobKind`** · literal · What a job's work is: a launched run, or an analysis generation.
-  <br>`'run'` | `'analysis'`
+- **`JobKind`** · literal · What a job's work is: a launched run, an analysis generation, or a sweep launching its arms in order.
+  <br>`'run'` | `'analysis'` | `'sweep'`
 - **`JobState`** · literal · Where a job stands.
   <br>`'running'` | `'completed'` | `'stopped'` | `'failed'` | `'cancelled'` | `'lost'`
 - **`ReportFormat`** · literal · The forms a report is read in: Markdown (the memo, and what an agent reads), its canonical JSON (what the published schema validates) and HTML that reads without any script.
@@ -1761,6 +1799,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`= 'analysis:'`
 - **`RUN_JOB_PREFIX`** · constant (str) · The prefix of a launched run's job id.
   <br>`= 'run:'`
+- **`SWEEP_JOB_PREFIX`** · constant (str) · The prefix of a sweep's job id.
+  <br>`= 'sweep:'`
 - **`TERMINAL_JOB_STATES`** · constant (frozenset) · The states a job does not leave.
 
 **Also exported here**
@@ -1896,6 +1936,7 @@ The host's launch settings, as one snapshot of values.
 | `max_metered_calls` | `int \| None` | required | The metered-call ceiling a run inherits when its launch names none, or `None` for a host that declares it has NO metered tools: its runs record a ceiling of `0` (origin `none_declared`), a metered call on one is refused and counted, and a launch naming a ceiling is refused, since it would bound nothing. |
 | `max_out_of_run_cost_usd` | `float` | required | The most a launch's out-of-run calls — its case generation, which runs before any run exists and so under no run's cap — may together be priced at before they are made (`OutOfRunBudget`). Enforced exactly when `enforcement_enabled` is. Per LAUNCH, as `max_cost_usd` is per run: a battery is one launch per template, so a battery of N generating templates may spend up to N times this out of run, as its runs may spend up to their count times their cap. An analysis generation is held to it too, per generation (`analysis_generate`): its calls run after the runs it reads, under no run's cap. |
 | `judge_alternate_model` | `str \| None` | `None` | The judge a launch's arms are scored by instead of the judge role's default when that default IS one of the launch's candidate models — a model grading its own output — provided it is itself none of them (`resolve_judge_pin`), spelled as the host's clients name the model they resolve. It never overrides a judge the launch named, nor a model a judge config pins per dim: those are choices. `None` substitutes nothing, and a run judged on a candidate's model says so on every surface that lists its judges (`judges_sharing_a_candidate_model`). |
+| `max_cell_timeout_s` | `float \| None` | `None` | The longest per-cell deadline a launch may name (`cell_timeout_s`), in seconds. `None` declares no ceiling of the host's own: a launch may then only LOWER its kind's deadline (the one the kind's launcher wires, or `DEFAULT_CELL_TIMEOUT_S`), so a host that declares nothing cannot be overridden upward. |
 | `setting_names` | `dict[str, str]` | `{}` | What the host calls each of the fields above, keyed by field name, so a refusal names the knob an operator turns. A field the host does not name here is called by its own name; the engine names no host setting of its own. |
 
 <a id="host-profile"></a>
@@ -2160,6 +2201,22 @@ call_count("inventory.place_order") >= 2
 last_call_was("inventory.place_order")
 ```
 
+Each ordering predicate is False when either action never happened, so "never acted" reads like "acted in
+the wrong order", and `not called_before(a, b)` holds for a candidate that did neither. A check about order
+pairs it with `call_count(a) >= 1`. `last_call_was` reads only the cell's final call, across the whole
+cell, so a candidate that acted and then called something else answers False for the action it did take.
+
+A deliberate pass (the engine's reserved ledger entry, recorded by `CallLedger.record_pass`) is not a call:
+none of the call builtins sees it, and `passed()` reads it, the same for every host:
+
+```python
+passed()
+not passed() and call_count("inventory.place_order") >= 1
+```
+
+`passed()` holds when the cell recorded a pass and no call: a candidate that acted and then passed did not
+pass. A cell that did nothing and recorded no pass did not pass either.
+
 Call parameters (`calls()` returns the matching calls' recorded parameters, in order):
 
 ```python
@@ -2286,6 +2343,7 @@ a run starts.
 | `intersects` | `a, b` | Whether two sets-of-elements share at least one element; `Missing` when either is Missing. |
 | `last_call_was` | `spec` | True when the most recent recorded call matches `tool.action`. |
 | `length` | `value` | Return `len(value)` or Missing if unsizable. |
+| `passed` | `` | True when the cell recorded a deliberate pass and made no call. |
 
 <a id="actions"></a>
 ## The action catalogue (MCP)
@@ -2303,14 +2361,17 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 |---|---|---|---|
 | `templates_list` | `read` | — | List the scope's active templates — what a launch can run. |
 | `runs_list` | `read` | `status?`, `include_archived?` | List the scope's runs, newest first. |
+| `case_sets_list` | `read` | `case_set_filter?` | List the scope's named case sets, every version — what a launch can target by name. |
 | `campaigns_list` | `read` | `include_archived?` | List the scope's campaigns — the sets of runs an analysis reads. |
 
 ### Run and watch
 
 | Action | Class | Parameters | Description |
 |---|---|---|---|
-| `run_launch` | `spend`, job | `template_id`, `subject_id`, `models?`, `k_runs?`, `n_variations?`, `variation_model?`, `overlays?`, `apparatus_settings?`, `max_cost_usd?`, `judge_model?`, `simulator_model?`, `measure_latency?` | Launch a template's runs, one per model, each as a job to poll. |
-| `launch_estimate` | `read` | `template_id`, `subject_id`, `models?`, `k_runs?`, `n_variations?`, `variation_model?`, `overlays?`, `apparatus_settings?`, `max_cost_usd?`, `judge_model?`, `simulator_model?`, `measure_latency?`, `n_test_cases?` | Estimate what a run_launch would cost, from what the scope's runs have spent. |
+| `sweep_launch` | `spend`, job | `template_id`, `subject_id`, `campaign_name`, `campaign_behavior`, `campaign_description?`, `k_runs?`, `max_concurrent_arms?`, `judge_model?`, `simulator_model?`, `max_cost_usd?`, `cell_timeout_s?`, `case_set_name?`, `case_set_version?`, `measure_latency?`, `arms` | Launch arms that differ beyond the model, one after another, into one campaign, as one job. |
+| `case_set_mint` | `write` | `case_set`, `template_id`, `test_case_ids`, `tracked?` | Store the next version of a named case set: a template's cases, frozen in order. |
+| `run_launch` | `spend`, job | `template_id`, `subject_id`, `models?`, `k_runs?`, `n_variations?`, `variation_model?`, `overlays?`, `apparatus_settings?`, `max_cost_usd?`, `judge_model?`, `simulator_model?`, `cell_timeout_s?`, `case_set_name?`, `case_set_version?`, `measure_latency?` | Launch a template's runs, one per model, each as a job to poll. |
+| `launch_estimate` | `read` | `template_id`, `subject_id`, `models?`, `k_runs?`, `n_variations?`, `variation_model?`, `overlays?`, `apparatus_settings?`, `max_cost_usd?`, `judge_model?`, `simulator_model?`, `cell_timeout_s?`, `case_set_name?`, `case_set_version?`, `measure_latency?`, `n_test_cases?` | Estimate what a run_launch would cost, from what the scope's runs have spent. |
 | `job_poll` | `read` | `job_id` | Read where a job stands — a launched run or an analysis generation. |
 | `job_cancel` | `write` | `job_id`, `reason?` | Ask a running job to stop; poll to see it land as cancelled. |
 | `run_get` | `read` | `run_id` | Summarise one run: how it ended, how its results came out, each measure's mean. |
@@ -2360,10 +2421,19 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `apparatus_settings` | `object` or `null` | Host-declared apparatus values to set the runs' rig up with, by apparatus dimension (e.g. who sits in an adjudicator's seat) — each a string, a bool or a number, and one the template's kind reads; refused otherwise. Recorded on every run and part of its measurement context, so one template can be compared at two. |
 | `archive_reason` | `string` or `null` | Why the record is archived (an analysis shown false or superseded, a reporter case that can no longer measure anything); cleared on restore. |
 | `archived` | `boolean` | The state to set: true retires the record, false restores it. |
+| `arms` | array of `object` | The arms, launched in this order: each {model, label?, overlays?, apparatus_settings?, judge_model?, simulator_model?} — its own model and what it sets differently from its siblings. |
 | `baseline_run_id` | `string` | The run read as the baseline (A), as runs_list names it. |
 | `behavior` | `string` | Which aspect of the subject is under test. |
+| `campaign_behavior` | `string` | What the sweep's campaign measures. |
+| `campaign_description` | `string` | The sweep's campaign's description. |
 | `campaign_id` | `string` | A campaign's id, as campaigns_list names it. |
+| `campaign_name` | `string` | The campaign every arm's run joins as it is created. |
 | `candidate_run_id` | `string` | The run read against the baseline (B), as runs_list names it. |
+| `case_set` | `string` | The case set's name; a new name starts at version 1. |
+| `case_set_filter` | `string` or `null` | List only this case set's versions. |
+| `case_set_name` | `string` or `null` | A named case set of the template to run, as case_sets_list names it; every arm runs exactly its cases and records it. Named with case_set_version, and refused beside n_variations. |
+| `case_set_version` | `integer` or `null` | The version of case_set_name to run; required with it. |
+| `cell_timeout_s` | `number` or `null` | The deadline each cell runs under, in seconds, in place of the kind's own; at or below the host's ceiling (a host declaring none allows only lowering the kind's deadline). Recorded on every run. |
 | `column_factor` | `string` | The coordinate the columns are; a pooled ranking across the rows is checked for reversal on it. |
 | `condition_filter` | `'ok'` \| `'candidate_fail'` \| `'infra_exclude'` or `null` | List only results in this condition: ok (delivered, scored), candidate_fail (scored as a hard fail) or infra_exclude (a harness fault, in no aggregate). |
 | `confirm` | `string` | Must echo the id of what is destroyed, exactly. |
@@ -2381,6 +2451,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `launch_group_filter` | `string` or `null` | Only the calls one launch's case generation made; its runs carry this id. |
 | `launched_run_ids` | array of `string` or `null` | The runs the estimated launch made (the run ids its jobs name), with predicted_cost: each predicted cell then says how many of its observations came from other runs. |
 | `limit` | `integer` | The most rows to return, up to 200. |
+| `max_concurrent_arms` | `integer` | How many of a sweep's arms run at once. 1 (the default) runs them one after another, so no arm shares another's provider load. To compare latency, also declare measure_latency. |
 | `max_cost_usd` | `number` or `null` | A per-run cost cap in dollars, at or below the host's ceiling; it can only lower that ceiling, and a value above it is refused. |
 | `measure_latency` | `boolean` | Declare latency under test: each run executes its cases one at a time, with no other run beside it. False runs several cases at once — far faster — and the latency then recorded is marked read under concurrency and never compared. |
 | `metric` | `string` or `null` | The measure to read; omitted reads the composite score. |
@@ -2420,6 +2491,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `supersedes` | array of `string` | The live case(s) of this campaign and memo the freeze replaces, by id — needed to revise a case's labels or re-freeze moved evidence; every live case of the pair when it holds several. |
 | `template_filter` | `string` or `null` | Only calls made for this template, by id. |
 | `template_id` | `string` | A template's id, as templates_list names it. |
+| `test_case_ids` | array of `string` | The cases, in order, each a stored case of the template; a list the latest version already holds is refused. |
+| `tracked` | `boolean` | Whether the set is a standing suite followed over time, or made for one launch. |
 | `variation_model` | `string` or `null` | The model that writes the template's llm variation axes' values; required when n_variations generates for such an axis, refused otherwise. |
 | `weighting` | `string` or `null` | How a cell averages its observations; omitted takes equal per scenario. |
 

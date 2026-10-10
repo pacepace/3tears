@@ -116,13 +116,3 @@ and per run, so concurrent runs, out-of-run calls and the host's live traffic ca
 quota together. Rejected when the ceiling shipped: a credit cap (provider-specific), folding credits into
 the dollar cap (fails open with no rate card), a separate eval provider key. A fix needs a per-provider
 quota the host declares, shared across runs.
-
-## Testing the engine
-
-### No memory-bound probe
-
-Tracked in [#603](https://github.com/pacepace/3tears/issues/603).
-
-A run's peak memory should be bounded by its matrix, not its total trace volume. Fixes in the runner and
-scoring hold this today; no test does. Fix: a probe that runs a large
-synthetic matrix and asserts peak memory. Reinstate the accumulation to prove it fails.
