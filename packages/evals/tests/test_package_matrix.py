@@ -12,7 +12,7 @@ analysis      yes        --     yes       --   --       --       --     --    py
 gen           yes        --     --        yes  --       --       --     --    pydantic, threetears.observe
 storage       yes        --     --        --   yes      --       --     --    (none)
 testing       yes        --     --        --   --       yes      --     --    (none)
-quick         yes        yes    yes       --   yes      --       yes    --    pydantic
+quick         yes        yes    yes       --   yes      --       yes    --    pydantic, threetears.observe
 vega          yes        --     yes       --   --       --       --     yes   threetears.observe; ``vl_convert`` only in vega.render
 ============  =========  =====  ========  ===  =======  =======  =====  ====  ============================================
 
@@ -122,7 +122,7 @@ ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
     "gen": frozenset({"pydantic", "threetears.observe"}),
     "storage": frozenset(),
     "testing": frozenset(),
-    "quick": frozenset({"pydantic"}),
+    "quick": frozenset({"pydantic", "threetears.observe"}),
     "vega": frozenset({"threetears.observe"}),
     "ops": frozenset({"pydantic", "threetears.observe"}),
     "actions": frozenset({"pydantic", "threetears.observe"}),
