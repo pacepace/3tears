@@ -1548,7 +1548,7 @@ class LeverCoverageInput(EvalDocumentModel):
     carrying them is what makes coverage the analysis's spine.
     """
 
-    name: str = Field(description="Lever name — a dotted factor key or 'model'.")
+    name: str = Field(description="Lever name, as the host registered it.")
     levels: list[str] = Field(
         default_factory=list,
         description="Distinct observed values ('—' = ran without the override; 'null' = the launch set it to null).",
@@ -6164,7 +6164,7 @@ def _lever_k_floor(
     nothing about.
 
     Args:
-        lever: A dotted factor name or a declared coordinate name.
+        lever: A lever name or a declared coordinate name.
         records: The projected score records (they carry the level and the run).
         k_by_arm: Repeats per case per arm group, keyed as :meth:`_CampaignArms.groups` keys them.
         group_of_run: Run id → the arm group it belongs to.

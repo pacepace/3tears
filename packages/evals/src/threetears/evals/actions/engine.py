@@ -128,7 +128,7 @@ RowFactor = Annotated[
     str,
     Field(
         min_length=1,
-        description="The coordinate the rows are: a declared one (model, template_id, ...) or a dotted lever.",
+        description="The coordinate the rows are: a declared one (model, template_id, ...) or a lever the host registers.",
     ),
 ]
 ColumnFactor = Annotated[
