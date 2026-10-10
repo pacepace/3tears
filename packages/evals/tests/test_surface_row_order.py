@@ -20,7 +20,8 @@ from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, TOYHO
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.toyhost_memo import cell_at
 from threetears.evals.analysis.arms import arm_names
-from threetears.evals.analysis.bundle.assemble import assemble_context_bundle, bundle_decision_surface
+from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
+from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT

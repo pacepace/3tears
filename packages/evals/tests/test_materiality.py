@@ -22,7 +22,7 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.analysis import MeasureMovement, assemble_context_bundle
-from threetears.evals.analysis.bundle.assemble import cell_measure_facts
+from threetears.evals.analysis.bundle.surface import cell_measure_facts
 from threetears.evals.analysis.viz import chart_intent
 from threetears.evals.kernel import MetricDescriptor, materiality
 from threetears.evals.schema.models import LatencyMetrics

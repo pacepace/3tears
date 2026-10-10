@@ -72,7 +72,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from threetears.evals.analysis import viz_refs
 from threetears.evals.analysis.arms import arm_names, contradicted_arms, writer_arms
-from threetears.evals.analysis.bundle.assemble import bundle_decision_surface
+from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.bundle.insights import insight_restatement_key
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,

@@ -27,7 +27,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis.bundle.assemble import assemble_context_bundle, cell_dimension_facts, cell_measure_facts
+from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
+from threetears.evals.analysis.bundle.surface import cell_dimension_facts, cell_measure_facts
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import SoundnessRefusal, UnresolvableReference
 from threetears.evals.analysis.generator import first_request, generate_analysis, prompt_content_version

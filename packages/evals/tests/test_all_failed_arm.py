@@ -61,7 +61,7 @@ from threetears.evals.analysis import (
     published_report_schema,
 )
 from threetears.evals.analysis.arms import short_digest
-from threetears.evals.analysis.bundle.assemble import bundle_decision_surface
+from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.bundle.schema import CellCoordinate
 from threetears.evals.analysis.surface_table import NO_SUCCESSFUL_RESULTS, surface_table_of
 from threetears.evals.kernel import CampaignDesign, CellFacts, EvalStorage, StratumFacts, delivered_a_turn
