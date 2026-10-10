@@ -473,6 +473,7 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
   <br>`= 8`
 - **`GOAL_STATE_FAMILY`** · constant (str) · A goal-state check's verdict: code compared against what the candidate did.
   <br>`= 'goal_state'`
+- **`HOST_PRODUCED_MEASURES`** · constant (frozenset) · The core measures the ENGINE declares and a host's candidate kind writes: a classifier kind lands `match` and `confusion_cell` on each result's `host_measures`, and the engine only reads them.
 - **`IDENTITY_VERSION`** · constant (int) · One counter covers both predicates, so a bump on either side re-derives the other's keys — conservative in the safe direction, since re-deriving unchanged inputs reproduces the same digest.
   <br>`= 24`
 - **`INCOMPLETE_STOP_REASONS`** · constant (frozenset) · The `CompletionResult.stop_reason` values meaning the completion was CUT SHORT rather than finished.
@@ -2449,7 +2450,7 @@ The engine's own measures (`METRIC_DESCRIPTORS`), grouped by family in the order
 | `async_delivery_mean_elapsed_ms` | lower | — | ms | Average async delivery duration. |
 | `async_delivery_median_elapsed_ms` | lower | — | ms | Typical async delivery duration. |
 | `async_delivery_p95_elapsed_ms` | lower | — | ms | Tail async delivery duration. |
-| `async_delivery_elapsed_n` | — | — | deliveries | How many deliveries had a measured duration — absent rather than zero when none did. |
+| `async_delivery_elapsed_n` | — | — | deliveries | How many non-substituted deliveries had a measured duration — the denominator behind the mean, median and p95. |
 | `paired` | — | — | — | Whether the significance test paired the two runs' composites by test case. |
 | `n_pairs` | — | — | cases | How many test cases were scored in BOTH runs — the paired test's sample size. |
 | `n_cases` | — | — | cases | How many test cases contributed a composite — the pairing atom behind significance. |
@@ -2512,6 +2513,5 @@ The engine's own measures (`METRIC_DESCRIPTORS`), grouped by family in the order
 | `precision` | higher | — | — | Per class: of the times this label was predicted, how often it was right. |
 | `recall` | higher | — | — | Per class: of the times this label was correct, how often it was predicted. |
 | `f1` | higher | — | — | Harmonic mean of precision and recall for a class. |
-| `support` | — | — | cases | How many cases carried this expected label — the denominator behind its precision and recall. |
 | `match` | higher | — | — | Whether one classification matched its expected label. |
 | `confusion_cell` | — | — | — | Which cell of the confusion matrix one classification landed in. |

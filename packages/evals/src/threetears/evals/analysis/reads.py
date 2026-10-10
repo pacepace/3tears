@@ -69,6 +69,7 @@ from threetears.evals.contracts.errors import NotFoundError, ValidationFailedErr
 from threetears.evals.contracts.host.profile import HostProfile
 from threetears.evals.contracts.scoring import (
     compute_composite_summary,
+    compute_async_delivery_summary,
     compute_cost_summary,
     compute_dimension_summary,
     compute_latency_summary,
@@ -789,9 +790,10 @@ def run_summary(
     """Compose a run's verdict numbers — pass^k, latency, cost — per model.
 
     Loads the run (404 if missing) plus its results, then composes the
-    three query-time aggregators
+    query-time aggregators
     (:func:`~threetears.evals.contracts.scoring.compute_pass_hat_k`,
     :func:`~threetears.evals.contracts.scoring.compute_latency_summary`,
+    :func:`~threetears.evals.contracts.scoring.compute_async_delivery_summary`,
     :func:`~threetears.evals.contracts.scoring.compute_cost_summary`) into one
     JSON-serializable structure. The aggregators key on the
     ``(model, eval_run_id)`` tuple, which is not JSON-safe — so the
@@ -818,7 +820,9 @@ def run_summary(
         "n_llm_ms", "n_tool_ms", "total_cost_usd",
         "mean_cost_usd", "n_cost_usd", "total_prod_cost_usd",
         "mean_prod_cost_usd",
-        "n_prod_cost_usd", "n_results", ...host columns}, ...],
+        "n_prod_cost_usd", "n_results", "async_deliveries", "async_deliveries_substituted",
+        "async_delivery_mean_elapsed_ms", "async_delivery_median_elapsed_ms",
+        "async_delivery_p95_elapsed_ms", "async_delivery_elapsed_n", ...host columns}, ...],
         "dimension_rows": [{"model", "run_id", "dim", "mean_score",
         "min_score", "max_score", "n"}, ...]}``.
         Each row's engine keys are the ones named above; the host's ``row_columns`` for the
@@ -848,7 +852,11 @@ def run_summary(
         that observed no production-role cost is omitted from it rather than
         counted as a zero, and so is one that took no turn: a result the harness
         faulted, or a call the model refused straight away. The program-cost pair
-        keeps both, because those dollars were spent. ``completeness`` and ``completeness_disclosure``
+        keeps both, because those dollars were spent. The six async-delivery keys are the engine's
+        rollup of each result's ``async_deliveries``
+        (:func:`~threetears.evals.contracts.scoring.compute_async_delivery_summary`): absent together on a
+        group none of whose results watched for background work, the durations absent when no real
+        delivery measured one, and the 95th percentile absent below 13 durations. ``completeness`` and ``completeness_disclosure``
         are both null when the run carries no completeness record (it has not
         reached a terminal state), and the disclosure alone is null when the
         run delivered its whole matrix — it is the sentence to render when a
@@ -865,6 +873,7 @@ def run_summary(
 
     pass_hat = compute_pass_hat_k(results, rubric_threshold=rubric_threshold)
     latency = compute_latency_summary(results)
+    deliveries = compute_async_delivery_summary(results)
     cost = compute_cost_summary(results)
     dimensions = compute_dimension_summary(results)
     host_columns = row_columns(results)
@@ -879,6 +888,7 @@ def run_summary(
         row.update(pass_hat.get(key, {}))
         if key in latency:
             row.update(latency[key])
+        row.update(deliveries.get(key, {}))
         # Cost lands after latency deliberately: both emit `n_results`, and
         # cost's is the one that means "results in this group". Latency's
         # per-component denominators travel as n_total_ms / n_llm_ms /

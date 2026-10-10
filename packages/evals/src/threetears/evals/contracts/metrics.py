@@ -112,6 +112,7 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "OUTCOME_DIM_ID",
     "TRANSCRIPT_DIM_ID",
     "METRIC_DESCRIPTORS",
+    "HOST_PRODUCED_MEASURES",
     "CODE_GRADED_FAMILIES",
     "CLASSIFIER_FAMILY",
     "CLASSIFIER_LABEL_MEASURE_PREFIX",
@@ -1329,6 +1330,9 @@ _SEED: tuple[MetricDescriptor, ...] = (
     # many there were, how many of those a harness stood in for, and how long they took. What a
     # delivery's OUTCOMES are called — concluded cleanly, salvaged, timed out — is the tool's own
     # taxonomy, so the host declares those in its own catalogue and this module never sees them.
+    # The engine produces all six itself (scoring.compute_async_delivery_summary, read into every
+    # run_summary row) from EvalResult.async_deliveries, over the results its latency summary keeps;
+    # a group none of whose results watched for background work carries none of them.
     _d(
         name="async_deliveries",
         data_type="numeric",
@@ -1372,7 +1376,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
         attribution_scope="subsystem",
         higher_is_better=False,
         unit="ms",
-        formula="mean of each delivery's elapsed_ms, over the deliveries that measured one",
+        formula="mean of each non-substituted delivery's elapsed_ms, over the deliveries that measured one",
         description="Average async delivery duration. A statistic over deliveries, NOT a phase timing.",
     ),
     _d(
@@ -1383,8 +1387,11 @@ _SEED: tuple[MetricDescriptor, ...] = (
         attribution_scope="subsystem",
         higher_is_better=False,
         unit="ms",
-        formula="nearest-rank median of each delivery's elapsed_ms",
-        description="Typical async delivery duration.",
+        formula=(
+            "median of each non-substituted delivery's elapsed_ms (Hyndman-Fan type 8 at 0.5: the middle value, "
+            "or the mean of the two middle values)"
+        ),
+        description="Typical async delivery duration. Absent when no delivery measured one.",
     ),
     _d(
         name="async_delivery_p95_elapsed_ms",
@@ -1394,8 +1401,14 @@ _SEED: tuple[MetricDescriptor, ...] = (
         attribution_scope="subsystem",
         higher_is_better=False,
         unit="ms",
-        formula="nearest-rank 95th percentile of each delivery's elapsed_ms",
-        description="Tail async delivery duration.",
+        formula=(
+            "median-unbiased 95th percentile (Hyndman-Fan type 8) of each non-substituted delivery's elapsed_ms, "
+            "from 13 durations"
+        ),
+        description=(
+            "Tail async delivery duration. Absent below 13 measured durations, where the only candidate is the "
+            "slowest delivery, which is not a 95th percentile."
+        ),
     ),
     _d(
         name="async_delivery_elapsed_n",
@@ -1404,7 +1417,10 @@ _SEED: tuple[MetricDescriptor, ...] = (
         transferability_class="mechanical",
         attribution_scope="subsystem",
         unit="deliveries",
-        description="How many deliveries had a measured duration — absent rather than zero when none did.",
+        description=(
+            "How many non-substituted deliveries had a measured duration — the denominator behind the mean, "
+            "median and p95. Absent rather than zero when none did."
+        ),
     ),
     # ---- Significance (stats.py) --------------------------------------------
     _d(
@@ -1648,15 +1664,6 @@ _SEED: tuple[MetricDescriptor, ...] = (
         description="Harmonic mean of precision and recall for a class.",
     ),
     _d(
-        name="support",
-        data_type="numeric",
-        family="classifier",
-        transferability_class="scenario_bound",
-        attribution_scope="end_to_end",
-        unit="cases",
-        description="How many cases carried this expected label — the denominator behind its precision and recall.",
-    ),
-    _d(
         name="match",  # MATCH_MEASURE
         data_type="boolean",
         family="classifier",
@@ -1788,6 +1795,13 @@ METRIC_DESCRIPTORS: dict[str, MetricDescriptor] = {d.name: d for d in _SEED}
 if len(METRIC_DESCRIPTORS) != len(_SEED):  # pragma: no cover - import-time invariant
     _dupes = sorted({d.name for d in _SEED if sum(1 for o in _SEED if o.name == d.name) > 1})
     raise RuntimeError(f"Duplicate measure name(s) in the metric seed: {_dupes}")
+
+#: The core measures the ENGINE declares and a host's candidate kind writes: a classifier kind lands
+#: ``match`` and ``confusion_cell`` on each result's ``host_measures``, and the engine only reads them.
+#: Every other name in :data:`METRIC_DESCRIPTORS` has an engine producer, which a test holds: a core
+#: measure that is neither produced by the engine nor named here is a descriptor that renders and is
+#: never filled, so it fails that test rather than sitting empty in every host's catalogue.
+HOST_PRODUCED_MEASURES: frozenset[str] = frozenset({"match", "confusion_cell"})
 
 
 #: The ENGINE's measure families a code path grades, with no judge between the candidate and the
