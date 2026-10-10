@@ -154,7 +154,9 @@ def analysis_gen_request_settings_for(
     The host's client builder applies it to every ``EVAL_ANALYSIS_GEN`` client: a generation from
     ``analysis_generate`` and a reporter run's candidate alike, so the two cannot be asked
     differently. The output cap is DERIVED as reasoning plus answer, so it always sits above the
-    ceiling it wraps.
+    ceiling it wraps. ``strict_output`` is always set: the authored schema goes out as a strict
+    ``response_format``, and a provider that ignores it returns free text the generator refuses
+    after paying for it, then pays for a repair.
 
     Args:
         answer_budget_tokens: Output room for the memo itself.
@@ -166,6 +168,7 @@ def analysis_gen_request_settings_for(
     return ClientRequestSettings(
         max_tokens=reasoning_budget_tokens + answer_budget_tokens,
         reasoning_max_tokens=reasoning_budget_tokens,
+        strict_output=True,
     )
 
 
