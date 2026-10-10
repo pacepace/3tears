@@ -107,6 +107,10 @@ class Comparison:
         host: The host the runs and the campaign are stored in, for reading them further.
         factors: The factors each arm key names a level of, in key order: ``("candidate",)`` when the arms
             are keyed by name on the arm lever, ``("model",)`` when they are keyed by name as models.
+        contrast_arms: The arm each row of the report's contrasts table tests, by its key in :attr:`arms`, row for
+            row; ``None`` for a row no arm's variant matches. Empty, or of another length than the table, and
+            :meth:`contrasts` names no arm on any row rather than guess one.
+        kind: The kind every arm ran — the callable kind, or the judged one — whose levers the campaign's axes name.
     """
 
     campaign_id: str
@@ -117,10 +121,8 @@ class Comparison:
     report: Report
     host: EvalHost
     factors: tuple[str, ...] = _MODEL_ONLY
-    #: The arm each row of the report's contrasts table tests, by its key in :attr:`arms`, row for row.
-    _contrast_arms: tuple[ArmKey | None, ...] = field(default=(), init=False, repr=False, compare=False)
-    #: The kind every arm ran: the callable kind, or the judged one — whose levers the campaign's axes name.
-    _kind: str = field(default=CALLABLE_KIND, init=False, repr=False, compare=False)
+    contrast_arms: tuple[ArmKey | None, ...] = field(default=(), repr=False, compare=False)
+    kind: str = field(default=CALLABLE_KIND, repr=False, compare=False)
 
     def results(self, arm: ArmKey) -> list[CaseResult]:
         """Every result of one arm: each case's answer on each repeat, its grades, and why it failed or was excluded.
@@ -179,7 +181,7 @@ class Comparison:
             if isinstance(block, TableBlock) and block.name == "comparisons"
             for row in block.rows
         ]
-        arms = self._contrast_arms if len(self._contrast_arms) == len(rows) else (None,) * len(rows)
+        arms = self.contrast_arms if len(self.contrast_arms) == len(rows) else (None,) * len(rows)
         return [
             {"arm": arm, **row}
             for row, arm in zip(rows, arms, strict=True)
@@ -214,7 +216,7 @@ class Comparison:
             self.host,
             self.arms,
             self.factors,
-            kind=self._kind,
+            kind=self.kind,
             control=control,
             scope_id=self.scope_id,
             name=name or f"{self.name}, against {_label(control, self.factors)}",
@@ -348,7 +350,7 @@ def _declare(
     arm_of_variant = {
         variant_key_of_run(list_results(host.storage, summary.run_id, scope_id)): arm for arm, summary in arms.items()
     }
-    comparison = Comparison(
+    return Comparison(
         campaign_id=campaign.id,
         scope_id=scope_id,
         name=name,
@@ -357,16 +359,13 @@ def _declare(
         report=report,
         host=host,
         factors=factors,
+        contrast_arms=tuple(
+            arm_of_variant.get(tested.contrast.variant_key)
+            for family in bundle.multiple_comparisons.families
+            for tested in family.comparisons
+        ),
+        kind=kind,
     )
-    # Set past the constructor: they are this module's bookkeeping, never something a caller builds a comparison with.
-    contrast_arms = tuple(
-        arm_of_variant.get(tested.contrast.variant_key)
-        for family in bundle.multiple_comparisons.families
-        for tested in family.comparisons
-    )
-    object.__setattr__(comparison, "_contrast_arms", contrast_arms)
-    object.__setattr__(comparison, "_kind", kind)
-    return comparison
 
 
 def _with_self_judging_disclosed(
