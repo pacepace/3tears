@@ -486,7 +486,8 @@ Run the file twice. The second run reads the first run's results from the file, 
   as `metric=`. Each run is tested against the run before it, over the cases both ran. `regressed` is the step
   to act on. `not_separated`, as here, means the two runs could not be told apart, never that nothing changed.
 - **`compare(..., store=store)`** keeps the arms and their campaign the same way, and `margins=`, `ranges=` and
-  `guardrails=` work exactly as in steps 5 and 7.
+  `guardrails=` work exactly as in steps 5 and 7. A later program reads the comparison on the margins, ranges and
+  guardrails it ran under, whatever its own host declares.
 - **A stored run is read by a release that stores the same format.** A release that changes the format refuses
   older runs rather than misreading them: delete the file and run again.
 

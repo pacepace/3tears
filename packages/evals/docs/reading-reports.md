@@ -143,7 +143,10 @@ same values drive the CI gate ([The command line](command-line.md#gate)).
 `equivalent` needs a margin and a paired test. A host declares a measure's margin
 (`MetricDescriptor.materiality_threshold`); accuracy, whose description the engine owns, takes one declared on
 the runs at launch (`compare(margins={"accuracy": ...})`, `start_run(margins=...)`), read only when every run of
-the campaign declares the same one, and its verdict says "declared on the runs". On a
+the campaign declares the same one, and its verdict says "declared on the runs". A host's own measures are read
+as their runs were launched to read them: each run records its host's direction, guardrail, margin and range for
+every measure (`EvalRun.declared_measures`), so a stored campaign read later through a host that declares them
+otherwise reaches the same verdicts, and the report names the difference in one line. On a
 measure that declares its range (`value_range`), as every pass rate and 1–5 score does, each one-sided test
 is a bounded test by betting, which holds 5% for any distribution of differences on that range at any number
 of cases. Coarse scores need that: a regression that fails one case in ten leaves twelve agreeing cases 28%

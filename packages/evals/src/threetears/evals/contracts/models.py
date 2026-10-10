@@ -169,6 +169,10 @@ as they were decided then, so no stored decision moves.
 **Within v8, not a bump**: ``EvalRun.declared_margins`` joined as an OPTIONAL field (#698) — the margins a launch
 declared on core rate measures (accuracy). A run stored before it carries none and reads as declaring none, so no
 comparison over it reads a margin it never declared.
+
+**Within v8, not a bump**: ``EvalRun.declared_measures`` joined as an OPTIONAL field — how the launching host
+declared each of its own measures to be read (direction, merit axis, guardrail, margin, range). A run stored before
+it carries none, and a campaign of such runs is read on the reading host's declarations, as every campaign was.
 """
 
 
@@ -2357,6 +2361,28 @@ class ClientRequestSettings(EvalDocumentModel):
 DEFAULT_LAUNCH_K_RUNS = 3
 
 
+#: The merit axes a declaration may name: :data:`~threetears.evals.contracts.metrics.MeritAxis`, restated here
+#: because that module imports this one; ``metrics`` checks the two agree at import.
+DeclaredMeritAxis = Literal["quality", "cost", "latency", "reliability"]
+
+
+class MeasureDeclaration(EvalBaseModel):
+    """How the launching host declared one of its own measures to be read, frozen onto the run it launched.
+
+    The reading-side half of a :class:`~threetears.evals.contracts.metrics.MetricDescriptor`: which way is better,
+    the merit axis it serves, whether it is a guardrail, its margin and its range. A host builds these in code, and
+    the quick path builds them from ``compare(margins=, ranges=, guardrails=)``, so a later reader's host may declare
+    them differently, or not at all. A comparison of stored runs is read on what the runs were launched under
+    (:attr:`EvalRun.declared_measures`), never on whoever reads it.
+    """
+
+    higher_is_better: bool | None = None
+    merit_axis: DeclaredMeritAxis | None = None
+    guardrail: bool = False
+    materiality_threshold: float | None = None
+    value_range: tuple[float, float] | None = None
+
+
 class EvalRun(EvalDocumentModel):
     """One execution of a template (or explicit test case set) against one candidate model.
 
@@ -2619,6 +2645,17 @@ class EvalRun(EvalDocumentModel):
             "before any result, so it is chosen before the data is seen. Not part of the measurement context: a "
             "margin changes how a difference is read, not what was measured. Empty when the launch declared none, "
             "and on every run stored before run-scoped margins existed, which then read as declaring none."
+        ),
+    )
+    declared_measures: dict[str, MeasureDeclaration] = Field(
+        default_factory=dict,
+        description=(
+            "How the launching host declared each of its own measures to be read — direction, merit axis, "
+            "guardrail, margin (``materiality_threshold``) and range — by measure, frozen at launch. A campaign's "
+            "analysis reads a measure on the declaration its member runs agree on, whatever the reading host now "
+            "declares, and names any difference; so a stored comparison's verdicts do not depend on who reads it. "
+            "Not part of the measurement context: a declaration changes how a difference is read, not what was "
+            "measured. Empty on a run stored before it, which is then read on the reading host's declarations."
         ),
     )
     resolved_world_seed: dict[str, Any] = Field(
@@ -4680,6 +4717,7 @@ __all__ = [
     "EvalCassette",
     "EvalResult",
     "EvalRun",
+    "MeasureDeclaration",
     "EvalRunStatus",
     "EvalTemplate",
     "EvalTestCase",

@@ -43,7 +43,7 @@ from collections import defaultdict
 from fractions import Fraction
 from datetime import UTC, datetime
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from itertools import chain
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, Protocol
@@ -172,6 +172,7 @@ from threetears.evals.contracts.metrics import (
     classifier_label_measure,
     classifier_label_of,
     confusion_of,
+    declaration_of,
     describe_measure,
     describe_phase_timing,
     describe_reported_measure,
@@ -197,6 +198,7 @@ from threetears.evals.contracts.models import (
     CalibrationRating,
     EvalResult,
     GoalCheckProof,
+    MeasureDeclaration,
     RubricAxis,
 )
 from threetears.evals.contracts.provider import sum_optional_tokens
@@ -2427,6 +2429,18 @@ class AnalysisContextBundle(EvalDocumentModel):
             "it (`equivalence_margin`, `margin_source` `run`). Read by the contrasts against the control only: a bar "
             "on the measure and the history's movements read its descriptor, which declares none. Empty when no run "
             "declared one."
+        ),
+    )
+    launch_declarations: list[str] = Field(
+        default_factory=list,
+        description=(
+            "One sentence per host measure that is read here otherwise than the reading host now declares it. Each "
+            "measure is read on how its member runs were launched to read it (`EvalRun.declared_measures`: "
+            "direction, merit axis, guardrail, margin, range), so a stored comparison's verdicts do not depend on who "
+            "reads them; a sentence names the declaration read and the reading host's. Where the runs were launched "
+            "under different declarations, no margin is read on the measure and the sentence says so. Empty when "
+            "every measure is read as the reading host declares it, and for runs stored before launches recorded "
+            "their declarations."
         ),
     )
     run_margins_withheld: str | None = Field(
@@ -6998,6 +7012,9 @@ def assemble_context_bundle(
 
     # Deterministic input order → deterministic lens output → stable fingerprint.
     runs = sorted(resolved, key=lambda r: (r.created_at, r.id))
+    # Before any lens reads a descriptor: each host measure is read as its runs were launched to read it, not as
+    # whoever reads the campaign now declares it, so every lens below reads one set of declarations.
+    profile, launch_declarations = _as_launched(runs, profile)
     run_ids = [run.id for run in runs]
     known_run_ids = set(run_ids)
 
@@ -7308,6 +7325,7 @@ def assemble_context_bundle(
     )
     bundle.measure_catalog = _measure_catalog(bundle, profile=profile)
     bundle.run_margins, bundle.run_margins_withheld = _run_margins(runs)
+    bundle.launch_declarations = launch_declarations
     # After the catalog, which says each measure's better direction and axis: a family is the readings a
     # question's axes name, and a reading with no better end has no verdict to correct.
     bundle.multiple_comparisons, bundle.guardrails = _multiple_comparisons(
@@ -7346,6 +7364,78 @@ def assemble_context_bundle(
     # lens reported, and a reader would take that as a claim the campaign made.
     bundle.confound_catalog = _confound_catalog(bundle, profile=profile)
     return bundle
+
+
+def _declared_words(declaration: MeasureDeclaration) -> str:
+    """A measure's declaration in words, for the sentence naming a difference in one."""
+    direction = {True: "higher is better", False: "lower is better", None: "no better end"}[
+        declaration.higher_is_better
+    ]
+    parts = [direction, "a guardrail" if declaration.guardrail else f"merit axis {declaration.merit_axis or 'none'}"]
+    margin = declaration.materiality_threshold
+    parts.append("no margin" if margin is None else f"margin {margin:g}")
+    bounds = declaration.value_range
+    parts.append("no range" if bounds is None else f"range {bounds[0]:g} to {bounds[1]:g}")
+    return ", ".join(parts)
+
+
+def _as_launched(runs: Sequence[EvalRun], profile: HostProfile) -> tuple[HostProfile, list[str]]:
+    """The reading host's profile with each of its measures read as the member runs were launched to read it.
+
+    A host's declarations — and on the quick path ``compare(margins=, ranges=, guardrails=)`` — can differ between
+    the process that launched a campaign and one that reads it later. Each run freezes how its launching host
+    declared every measure to be read (``EvalRun.declared_measures``), and a measure every run that recorded a
+    declaration declared alike is read on that declaration, whatever the reading host says; a difference from the
+    reader's is named. Runs launched under different declarations of one measure have no one declaration to read:
+    the measure keeps the reader's, with no margin read on it (no comparison on it can read ``equivalent``), and
+    that is named too. Runs that recorded none (stored before launches recorded them) are read on the reader's.
+
+    Args:
+        runs: The resolved member runs.
+        profile: The reading host's profile.
+
+    Returns:
+        ``(profile, sentences)``: the profile every lens reads, and one sentence per measure read otherwise than
+        the reader declares it.
+    """
+    from threetears.evals.contracts.host.measures import MeasureRegistry
+
+    recorded = [run for run in runs if run.declared_measures]
+    if not recorded:
+        return profile, []
+    sentences: list[str] = []
+    read: dict[str, MetricDescriptor] = {}
+    for name in sorted({name for run in recorded for name in run.declared_measures}):
+        reader = profile.measures.get(name)
+        declarations = [run.declared_measures.get(name) for run in recorded]
+        if reader is None:
+            sentences.append(
+                f"{name} was declared by the host that launched these runs, and the reading host declares no such "
+                "measure, so its readings are read as an undeclared measure's."
+            )
+            continue
+        agreed = declarations[0]
+        if agreed is None or any(declaration != agreed for declaration in declarations):
+            read[name] = MetricDescriptor.model_validate({**reader.model_dump(), "materiality_threshold": None})
+            sentences.append(
+                f"The member runs were launched under different declarations of {name}, so it is read as the reading "
+                "host declares it, with no margin: no comparison on it can read equivalent."
+            )
+            continue
+        if declaration_of(reader) == agreed:
+            continue
+        read[name] = MetricDescriptor.model_validate({**reader.model_dump(), **agreed.model_dump()})
+        sentences.append(
+            f"{name} is read as its runs were launched to read it ({_declared_words(agreed)}), not as the reading "
+            f"host now declares it ({_declared_words(declaration_of(reader))})."
+        )
+    if not read:
+        return profile, sentences
+    measures = MeasureRegistry(
+        [read.get(name) or descriptor for name in profile.measures.names if (descriptor := profile.measures.get(name))],
+        families=profile.measures.families,
+    )
+    return replace(profile, measures=measures), sentences
 
 
 def _run_margins(runs: Sequence[EvalRun]) -> tuple[dict[str, float], str | None]:

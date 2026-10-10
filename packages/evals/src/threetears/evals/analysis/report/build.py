@@ -1342,6 +1342,10 @@ def _comparison_blocks(
         )
     if bundle.run_margins_withheld is not None:
         blocks.append(DisclosureBlock(section="surface", source="comparisons", text=bundle.run_margins_withheld))
+    # A measure read on how its runs were launched to read it, where the reading host now declares it otherwise.
+    blocks += [
+        DisclosureBlock(section="surface", source="comparisons", text=text) for text in bundle.launch_declarations
+    ]
     return blocks
 
 

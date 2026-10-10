@@ -44,7 +44,7 @@ from threetears.evals.contracts.host.world import WorldPlacement
 from threetears.evals.contracts.arguments import normalize_blank
 from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
 from threetears.evals.contracts.host.sweepables import CORE_SWEEPABLES
-from threetears.evals.contracts.metrics import run_margin_refusal
+from threetears.evals.contracts.metrics import declaration_of, run_margin_refusal
 from threetears.evals.contracts.identity import derive_context_identity, variant_levers_of_run
 from threetears.evals.contracts.models import (
     DEFAULT_JUDGE_TEMPERATURE,
@@ -2943,6 +2943,13 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 kind_spec=freeze(request.kind_spec),
                 apparatus_settings=dict(request.apparatus_settings),
                 declared_margins=dict(request.margins),
+                # How the host declared each of its measures to be read, as this run launched under it: a later
+                # reader's host may declare them otherwise, and a stored comparison is read on these.
+                declared_measures={
+                    name: declaration_of(descriptor)
+                    for name in host.eval_host.profile.measures.names
+                    if (descriptor := host.eval_host.profile.measures.get(name)) is not None
+                },
                 # The world and the tool bound the template states, frozen as this run launched them:
                 # the template is editable, and the runner hands the candidate the template's seed.
                 resolved_world_seed=dict(template.world_seed.namespaces),
