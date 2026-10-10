@@ -320,6 +320,7 @@ class Comparison:
             repetitions=repetitions,
             created_by=created_by,
             guardrail_margins=design.guardrail_margins if design is not None else (),
+            measure_latency=design.measure_latency if design is not None else False,
         )
 
 
@@ -397,6 +398,7 @@ def _declare(
     repetitions: int | None,
     created_by: str,
     guardrail_margins: Sequence[GuardrailMargin] = (),
+    measure_latency: bool = False,
 ) -> Comparison:
     """File the arms' runs as one campaign, one axis per factor, designate ``control``, and read its report.
 
@@ -424,6 +426,8 @@ def _declare(
     design: dict[str, Any] = {"axes": axes, "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"}}
     if repetitions is not None:
         design["intended_repetitions"] = repetitions
+    if measure_latency:
+        design["measure_latency"] = True
     if guardrail_margins:
         design["guardrail_margins"] = [entry.model_dump() for entry in guardrail_margins]
     filed: dict[str, Any] = {
@@ -641,6 +645,7 @@ async def compare(
     margins: Mapping[str, float] | None = None,
     ranges: Mapping[str, tuple[float, float]] | None = None,
     guardrails: Mapping[str, Guardrail] | None = None,
+    measure_latency: bool = False,
 ) -> Comparison:
     """Run each candidate over every case ``k`` times as one arm, test every arm against ``control``, and report.
 
@@ -722,6 +727,9 @@ async def compare(
             boundary axis, and its margin is declared on the campaign. ``None`` declares none, and nothing is a
             guardrail but a dimension the judge's rubric already puts on the boundary axis. With a ``host`` of your
             own, declare a measure ``guardrail`` on it instead.
+        measure_latency: Declare latency under test, as :func:`~threetears.evals.quick.run_eval` takes it: every
+            arm runs its cases one at a time and the arms run one after another. ``False`` (the default) runs
+            each arm's cases several at once and the arms side by side.
 
     Returns:
         The comparison: every arm's summary, the campaign's id and its report.
@@ -816,6 +824,7 @@ async def compare(
         tools=tools,
         cassette_mode=cassette_mode,
         cassette_corpus_id=cassette_corpus_id,
+        measure_latency=measure_latency,
         world=world,
         seed=seed,
         goal_checks=goal_checks,
@@ -842,6 +851,7 @@ async def compare(
             GuardrailMargin(dimension=dimension, margin=guardrail.margin)
             for dimension, guardrail in judged_guardrails.items()
         ],
+        measure_latency=measure_latency,
     )
 
 

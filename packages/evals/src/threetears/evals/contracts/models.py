@@ -141,6 +141,15 @@ the one requested.
 its unconfigured dimensions were requested at the provider's default, which is not today's 0, so such a run's
 roles component is not composable, its scores' judge reads unknown, and nothing pools it with a run judged at 0.
 
+**Within v8, not a bump**: ``EvalRun.measure_latency`` and ``EvalRun.cell_concurrency`` joined as OPTIONAL fields
+(#701) — whether the launch declared latency under test, and how many of the run's cells executed at once. A run
+stored before them carries None in both: its cells executed one at a time (the runner of that build had no other
+way), so its ``cell_concurrency`` reads as 1, and whether it declared latency reads as not recorded — never as
+declared. Whether another RUN executed beside it is what its results' ``execution_mode`` says, as it always was.
+``CampaignDesign.measure_latency`` joined the same way, defaulting to False: a campaign (or an analysis's design
+snapshot) stored before it reads as not declaring latency under test, which is what it declared — a stored
+design asking about latency still loads, and is refused only when it is declared again.
+
 ``JudgeConfigTombstone`` joined the same way, for a judge config's slot; a config deleted before it is written
 back at the next seed. ``EvalRun`` gained ``goal_check_proof_rules`` (None on a run stored before it, read as rules
 1, so its ``proven`` checks read unproven) and ``refused_goal_checks`` (None, not recorded), and ``EvalResult``
@@ -2702,6 +2711,27 @@ class EvalRun(EvalDocumentModel):
             "'replay'. A capture run writes the corpus its own id names, so two runs capturing at once never "
             "write into each other's, and a replay binds to one whole recording rather than to whatever the "
             "latest capture of each case happened to leave."
+        ),
+    )
+    measure_latency: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the launch declared latency under test (`start_run(measure_latency=True)`). True: the run "
+            "executed its cells one at a time, with no other run executing beside it, so the latency it recorded "
+            "is read clean. False: it was not under test, and the run executed its cells concurrently "
+            "(`cell_concurrency`). None: launched before 3tears-evals recorded the declaration (or recorded by a "
+            "writer that is no launch) — such a run executed its cells one at a time, and whether it ran beside "
+            "another run is what its results' `execution_mode` says."
+        ),
+    )
+    cell_concurrency: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "How many of the run's cells executed at once: 1 is serial. Above 1, every result stamps "
+            "`execution_mode` `concurrent` and its latency is kept out of every comparison, bar and ranking. "
+            "None: a run stored before the width was recorded, whose cells executed one at a time — read as 1, "
+            "never as unknown, because the runner of that build could not run them otherwise."
         ),
     )
 
