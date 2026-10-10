@@ -319,8 +319,9 @@ corrected for every comparison in its family; a verdict reads only that p. See
 #### Verdict
 What a comparison's evidence supports, per arm and reading: **separated** (printed `improved` or `regressed`
 on the control), **not separated** (the cases could not tell the arms apart, which never means "no
-difference"), **equivalent** (shown inside a margin the measure declares), or **untested** (no test could
-decide). A guardrail is decided apart, as `held`, `breached` or `undecided`, and a bar as `cleared`, `missed` or
+difference"), **equivalent** (shown inside a margin the measure declares, and the only verdict that says "good
+enough"), or **untested** (no test could decide). A report from `compare` names, in a line above its contrasts
+table, each measure that declares no margin and so can never read equivalent. A guardrail is decided apart, as `held`, `breached` or `undecided`, and a bar as `cleared`, `missed` or
 `undecided`. See [reading a comparison](reading-reports.md#reading-a-comparison).
 
 #### Miss

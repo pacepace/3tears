@@ -23,7 +23,9 @@ pass/fail dimension of its own ([measuring soundly](measuring-soundly.md)).
 A dimension is one question, named `<context>.<name>`. Write it from failures you have seen in real outputs. The
 judge is asked one dimension per call, gives its reasoning before its score, and may answer "can't tell", which
 excludes that cell from the dimension. It reads only the answer and what `case_material` renders for the case,
-so give it what the candidate answered from.
+so give it what the candidate answered from. With no `case_material` it sees the case as JSON, and on a
+classifier run (`expected=`) every field holding the expected label is left out, so it never grades against the
+answer key by accident. To grade against a reference answer, render the reference through `case_material`.
 
 ```python
 from threetears.evals.contracts import RubricDim

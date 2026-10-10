@@ -125,6 +125,10 @@ the control on each reading, under one rig.
 | not separated | the cases could not tell the arms apart | add cases, or declare a margin; never read it as a tie |
 | untested | no test could decide: fewer than two cases on a side, or a gap with no spread (every shared case moved by exactly the same amount, or each side constant) over too few cases for the exact test to reach 0.05; the row says why | fix what it names (usually too few cases) |
 
+A report from `compare` prints one line above this table when a tested measure declares no margin: "No margin
+is declared on …, so no contrast on it can read equivalent", with how to declare one (`compare(margins=...)`;
+accuracy takes none, so grade with a scorer too).
+
 `equivalent` needs a declared margin (`MetricDescriptor.materiality_threshold`) and a paired test. On a
 measure that declares its range (`value_range`), as every pass rate and 1–5 score does, each one-sided test
 is a bounded test by betting, which holds 5% for any distribution of differences on that range at any number
