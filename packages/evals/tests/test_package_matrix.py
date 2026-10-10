@@ -31,8 +31,9 @@ name them:
 * ``transports`` -- one adapter per server -- may import contracts, ops, actions and itself; pydantic, and
   each adapter its own server alone (``transports.fastmcp``: ``fastmcp``, the package's ``fastmcp`` extra).
 
-``quick`` may import ``ops`` too, where the run summary it prints lives. Nothing in the engine imports
-any of the three, and none of the three imports ``vega``.
+Nothing in the engine imports any of the three, ``quick`` included: the run summary it prints, the
+report it serializes and the spend it totals live in ``analysis``, below both. None of the three
+imports ``vega``.
 
 ``storage`` holds adapters behind the one port and ``testing`` the conformance kits an adopter runs
 against its own adapter; each needs nothing but the port it implements or checks, so neither may
@@ -106,7 +107,7 @@ ALLOWED_PACKAGES: dict[str, frozenset[str]] = {
     "gen": frozenset({"contracts", "gen"}),
     "storage": frozenset({"contracts", "storage"}),
     "testing": frozenset({"contracts", "testing"}),
-    "quick": frozenset({"contracts", "run", "analysis", "storage", "quick", "ops"}),
+    "quick": frozenset({"contracts", "run", "analysis", "storage", "quick"}),
     "vega": frozenset({"contracts", "analysis", "vega"}),
     "ops": frozenset({"contracts", "run", "analysis", "ops"}),
     "actions": frozenset({"contracts", "run", "ops", "actions"}),

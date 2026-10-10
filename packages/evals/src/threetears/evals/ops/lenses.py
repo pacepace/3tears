@@ -18,16 +18,22 @@ caveats its model carries (what was left out, which runs came up short) rather t
 from __future__ import annotations
 
 import math
+
 from collections.abc import Mapping, Sequence
+
 from datetime import UTC, datetime
+
 from typing import Any, Literal
 
 from pydantic import Field, TypeAdapter, ValidationError
 
-from threetears.evals.analysis.arms import short_digest
+
 from threetears.evals.analysis.reads import RunLister, compare_two_runs, export_results, frontier, history, pivot
+
 from threetears.evals.analysis.numbers import format_number, format_signed
+
 from threetears.evals.analysis.bundle import PlanningReading, planning_readings
+
 from threetears.evals.analysis.stats import (
     DETECTABLE_POWER,
     SIGNIFICANCE_ALPHA,
@@ -36,6 +42,7 @@ from threetears.evals.analysis.stats import (
     paired_detectable_difference,
     variance_components,
 )
+
 from threetears.evals.analysis.reporting import (
     COST_ESTIMATE_MIN_BASIS,
     cassette_mode_disclosure,
@@ -45,6 +52,7 @@ from threetears.evals.analysis.reporting import (
     measurement_window,
     measurement_window_disclosure,
 )
+
 from threetears.evals.analysis.reporting import (
     CostEstimate,
     FrontierResult,
@@ -52,21 +60,33 @@ from threetears.evals.analysis.reporting import (
     PivotTable,
     PlannedCost,
     PredictedValue,
-    ProjectionExclusions,
     ScoreExport,
 )
+
 from threetears.evals.contracts.base import EvalBaseModel
+
 from threetears.evals.contracts.campaign import ReadingKind
+
 from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
+
 from threetears.evals.contracts.host import DEFAULT_PASS_THRESHOLD, EvalHost, pass_threshold_label
+
 from threetears.evals.contracts.metrics import measure_title
+
 from threetears.evals.contracts.models import EvalRun, EvalTemplate
-from threetears.evals.contracts.out_of_run_spend import OutOfRunPurpose, OutOfRunSpend
+
+
 from threetears.evals.contracts.scoring import CompositeBasis
+
 from threetears.evals.ops.host import OpsHost
+
 from threetears.evals.ops.runs import LaunchArguments
+
 from threetears.evals.run.launch import ArmOutcome, ArmPrice, ArmQuote, ArmVerdict, LaunchPricer, quote_launch
+
 from threetears.evals.run.reads import list_runs
+
+from threetears.evals.analysis.lens_text import exclusion_lines
 
 
 def _lister(host: EvalHost) -> RunLister:
@@ -552,6 +572,7 @@ class LaunchEstimate(EvalBaseModel):
 #: The two shapes a cost pivot's plan arrives in, validated as exactly one.
 _PREDICTED_COST: TypeAdapter[CostEstimate | LaunchEstimate] = TypeAdapter(CostEstimate | LaunchEstimate)
 
+
 #: The method a pivot's prediction names when the host's pricer named none.
 LAUNCH_PRICER_METHOD = "launch-pricer"
 
@@ -899,181 +920,6 @@ def _launched_as(run: EvalRun, quote: ArmQuote) -> bool:
     )
 
 
-class OutOfRunSpendTotals(EvalBaseModel):
-    """What a set of out-of-run calls spent, summed — with what could not be summed counted beside it.
-
-    **Missing is not zero.** A call that reported no cost, and every call that raised (which reports
-    nothing, and may have been billed), are counted in ``n_unpriced`` and left out of ``priced_usd``,
-    so ``priced_usd`` is a floor whenever ``n_unpriced`` is not 0.
-
-    Attributes:
-        n_calls: The calls.
-        n_raised: Those that raised rather than returning.
-        n_unpriced: Those whose cost is unknown — a completed call that reported none, or a raised call.
-        priced_usd: The reported cost of the priced calls, summed.
-        ceiling_usd: The ceilings the calls were admitted at, summed over those the client could price.
-        n_unbounded: Those admitted with no ceiling (the client could not price them and no cap was enforced).
-    """
-
-    n_calls: int
-    n_raised: int
-    n_unpriced: int
-    priced_usd: float
-    ceiling_usd: float
-    n_unbounded: int
-
-    @classmethod
-    def of(cls, rows: Sequence[OutOfRunSpend]) -> OutOfRunSpendTotals:
-        """Sum ``rows``.
-
-        Args:
-            rows: Ledger rows.
-
-        Returns:
-            Their totals.
-        """
-        return cls(
-            n_calls=len(rows),
-            n_raised=sum(1 for row in rows if row.outcome == "raised"),
-            n_unpriced=sum(1 for row in rows if row.cost_usd is None),
-            priced_usd=math.fsum(row.cost_usd for row in rows if row.cost_usd is not None),
-            ceiling_usd=math.fsum(row.priced_ceiling_usd for row in rows if row.priced_ceiling_usd is not None),
-            n_unbounded=sum(1 for row in rows if row.priced_ceiling_usd is None),
-        )
-
-
-class OutOfRunSpendReport(EvalBaseModel):
-    """The calls the engine made outside any run in a scope — case generations, rubric proposals and analysis
-    generations — and their totals.
-
-    Read off the out-of-run ledger (``EvalStorage.query_out_of_run_spend``), the one record of spend no run's
-    cost carries: a run's results sum what its cells spent, never what was spent writing its cases.
-
-    Attributes:
-        scope_id: The scope read.
-        purpose: The purpose the read was narrowed to, or ``None`` for every purpose.
-        launch_group_id: The launch the read was narrowed to, or ``None`` for every launch.
-        template_id: The template the read was narrowed to, or ``None`` for every template.
-        rows: Every matching call, oldest first.
-        totals: Every matching call, summed.
-        by_purpose: The totals per purpose that appears, in the order purposes first appear.
-        by_launch: The totals per launch group that appears (case generations; a proposal or an analysis belongs to none, and
-            is not listed here), in the order launches first appear.
-    """
-
-    scope_id: str
-    purpose: OutOfRunPurpose | None
-    launch_group_id: str | None
-    template_id: str | None
-    rows: list[OutOfRunSpend]
-    totals: OutOfRunSpendTotals
-    by_purpose: dict[str, OutOfRunSpendTotals]
-    by_launch: dict[str, OutOfRunSpendTotals]
-
-
-def scope_out_of_run_spend(
-    host: EvalHost,
-    scope_id: str,
-    *,
-    purpose: OutOfRunPurpose | None = None,
-    launch_group_id: str | None = None,
-    template_id: str | None = None,
-) -> OutOfRunSpendReport:
-    """What the engine spent outside any run in a scope, call by call and summed, optionally narrowed.
-
-    Args:
-        host: The host whose store holds the ledger.
-        scope_id: The scope to read.
-        purpose: Only calls made for this purpose (``variation``, ``proposer`` or ``analysis``).
-        launch_group_id: Only the calls one launch's case generation made; its runs carry the same group id.
-        template_id: Only calls made for this template.
-
-    Returns:
-        The report.
-    """
-    rows = host.storage.query_out_of_run_spend(
-        scope_id, purpose=purpose, launch_group_id=launch_group_id, template_id=template_id
-    )
-    by_purpose: dict[str, list[OutOfRunSpend]] = {}
-    by_launch: dict[str, list[OutOfRunSpend]] = {}
-    for row in rows:
-        by_purpose.setdefault(row.purpose, []).append(row)
-        if row.launch_group_id is not None:
-            by_launch.setdefault(row.launch_group_id, []).append(row)
-    return OutOfRunSpendReport(
-        scope_id=scope_id,
-        purpose=purpose,
-        launch_group_id=launch_group_id,
-        template_id=template_id,
-        rows=rows,
-        totals=OutOfRunSpendTotals.of(rows),
-        by_purpose={name: OutOfRunSpendTotals.of(group) for name, group in by_purpose.items()},
-        by_launch={name: OutOfRunSpendTotals.of(group) for name, group in by_launch.items()},
-    )
-
-
-def _totals_line(totals: OutOfRunSpendTotals) -> str:
-    """One line of totals, saying when the sum is a floor."""
-    floor = f", {totals.n_unpriced} unpriced (so at least)" if totals.n_unpriced else ""
-    raised = f", {totals.n_raised} raised" if totals.n_raised else ""
-    unbounded = f", {totals.n_unbounded} admitted unbounded" if totals.n_unbounded else ""
-    return (
-        f"{totals.n_calls} call(s): ${totals.priced_usd:.4f} reported{floor}{raised}; admitted at up to "
-        f"${totals.ceiling_usd:.4f}{unbounded}"
-    )
-
-
-def out_of_run_spend_text(report: OutOfRunSpendReport) -> str:
-    """The scope's out-of-run spend as an operator reads it: the totals, per purpose and launch, then each call.
-
-    Args:
-        report: What :func:`scope_out_of_run_spend` returned.
-
-    Returns:
-        The text.
-    """
-    narrowed = ", ".join(
-        f"{name} {value}"
-        for name, value in (
-            ("purpose", report.purpose),
-            ("launch", report.launch_group_id),
-            ("template", report.template_id),
-        )
-        if value is not None
-    )
-    lines = [f"out-of-run spend in scope {report.scope_id}" + (f" ({narrowed})" if narrowed else "")]
-    if not report.rows:
-        lines.append("no out-of-run call is ledgered here")
-        return "\n".join(lines)
-    lines.append(f"total: {_totals_line(report.totals)}")
-    lines += [f"purpose {name}: {_totals_line(totals)}" for name, totals in report.by_purpose.items()]
-    lines += [f"launch {name}: {_totals_line(totals)}" for name, totals in report.by_launch.items()]
-    for row in report.rows:
-        cost = f"${row.cost_usd:.4f}" if row.cost_usd is not None else "unpriced"
-        ceiling = f"${row.priced_ceiling_usd:.4f}" if row.priced_ceiling_usd is not None else "unbounded"
-        failed = f" {row.failure}" if row.failure else ""
-        lines.append(
-            f"  {row.created_at}  {row.purpose}  {row.model}  {row.outcome}{failed}  {cost} (ceiling {ceiling})"
-            f"  template {row.template_id}  launch {row.launch_group_id}"
-            + (f"  campaign {row.campaign_id}" if row.campaign_id is not None else "")
-        )
-    return "\n".join(lines)
-
-
-# --- the text an operator or an agent reads ---------------------------------------------------------
-
-
-def _exclusions(exclusions: ProjectionExclusions) -> list[str]:
-    """What never became a row, when anything did not — an all-excluded answer must not read as empty."""
-    if not exclusions.total:
-        return []
-    return [
-        f"excluded: {exclusions.total} observation(s) — {exclusions.results_outside_queried_runs} from runs the "
-        f"filters left out, {exclusions.results_from_archived_runs} from archived runs, "
-        f"{exclusions.results_without_run} whose run is missing"
-    ]
-
-
 def _completeness(disclosures: Mapping[str, str], n_degraded: int | None = None) -> list[str]:
     """The runs that measured less than they promised, one line each."""
     if not disclosures:
@@ -1165,85 +1011,8 @@ def pivot_text(table: PivotTable) -> str:
         lines.append(table.served_model_disclosure)
     if table.unplaced_predicted_models:
         lines.append(f"planned and in no cell here: {', '.join(table.unplaced_predicted_models)}")
-    lines += _exclusions(table.exclusions)
+    lines += exclusion_lines(table.exclusions)
     lines += _completeness(table.completeness_disclosures, table.n_degraded_observations)
-    return "\n".join(lines)
-
-
-def _contestant(model: str, variant_key: str) -> str:
-    """A frontier contestant as every surface names one: its model and its variant, the key shortened."""
-    return f"{model} · {short_digest(variant_key)}"
-
-
-def frontier_text(result: FrontierResult) -> str:
-    """A frontier as text: each subject's variants, best pass^k first, with each one's axes and the verdict."""
-    bar = "no bar, so no verdict" if result.bar is None else f"bar {format_number(result.bar)} on pass^k"
-    lines = [
-        f"frontier, {bar}: {len(result.subjects)} subject(s) over {result.n_results} result(s), "
-        f"{result.n_filtered_out} filtered out",
-    ]
-    lines += [text for text in (result.identity_span_disclosure, result.contended_latency_disclosure) if text]
-    for subject in result.subjects:
-        lines.append(f"## subject {subject.subject_label or subject.subject_id}, pass^k at k={subject.k}")
-        if subject.boundary_pillar:
-            lines.append(subject.boundary_pillar)
-        for point in subject.points:
-            quality = (
-                f"pass^{point.k} {format_number(point.pass_hat_k)}"
-                + (
-                    f" [{format_number(point.pass_hat_k_ci_low)}, {format_number(point.pass_hat_k_ci_high)}]"
-                    if point.pass_hat_k_ci_low is not None and point.pass_hat_k_ci_high is not None
-                    else ""
-                )
-                + f" over {point.n_pass_cases} case(s)"
-                if point.pass_hat_k is not None
-                else f"no pass^k ({point.pass_hat_k_unmeasured_reason or 'no case scored that deep'})"
-            )
-            cleared = f", bar {point.bar_decision}" if point.bar_decision is not None else ""
-            cost = (
-                f"${format_number(point.production_replicating_cost)} per result (n={point.n_cost}"
-                + (", partial" if point.cost_is_partial else "")
-                + ")"
-                if point.production_replicating_cost is not None
-                else "cost unobserved"
-            )
-            latency = (
-                f"{format_number(point.mean_total_ms)} ms (n={point.n_latency})"
-                if point.mean_total_ms is not None
-                else "latency unobserved"
-            )
-            standing = (
-                f"disqualified: breached {', '.join(point.disqualified_by)}"
-                if point.disqualified_by
-                else f"dominated by {', '.join(_contestant(rival.model, rival.variant_key) for rival in point.dominated_by)}"
-                if point.dominated
-                else f"domination {point.dominance}"
-                if point.dominance is not None
-                else ""
-            )
-            lines.append(
-                f"- {_contestant(point.model, point.variant_key)}: {quality}{cleared}; {cost}; {latency}"
-                + (f"; {standing}" if standing else "")
-            )
-        verdict = subject.verdict
-        if verdict is not None:
-            tied = (
-                f", tied with {', '.join(_contestant(tie.model, tie.variant_key) for tie in verdict.tied_with)}"
-                if verdict.tied_with
-                else ""
-            )
-            lines.append(
-                f"verdict: {_contestant(verdict.model, verdict.variant_key)} is the cheapest clearing the "
-                f"bar ({verdict.cost_decision}){tied}"
-            )
-        elif result.bar is not None:
-            lines.append(
-                f"verdict: none — {subject.n_cleared_bar} variant(s) cleared the bar with a cost observed, "
-                f"{subject.n_undecided_bar} undecided"
-            )
-    if not result.subjects:
-        lines.append("- no subjects")
-    lines += _exclusions(result.exclusions)
     return "\n".join(lines)
 
 
@@ -1317,7 +1086,7 @@ def history_text(result: HistoryResult) -> str:
             )
     if not result.series:
         lines.append("- no series")
-    lines += _exclusions(result.exclusions)
+    lines += exclusion_lines(result.exclusions)
     return "\n".join(lines)
 
 
@@ -1387,7 +1156,7 @@ def detectable_effect_lines(block: DetectableEffects) -> list[str]:
 def export_text(export: ScoreExport) -> str:
     """An export as text: a line of its row count and what it left out, then the body itself."""
     lines = [f"export ({export.format}, {export.n_records} row(s))"]
-    lines += _exclusions(export.exclusions)
+    lines += exclusion_lines(export.exclusions)
     lines += _completeness(export.completeness_disclosures)
     return "\n".join(lines) + "\n\n" + export.body
 
@@ -1467,29 +1236,24 @@ def runs_compared_text(compared: RunsCompared) -> str:
 
 
 __all__ = [
-    "DETECTABLE_EFFECT_ASSUMPTIONS",
-    "LAUNCH_PRICER_METHOD",
     "ArmEstimate",
+    "DETECTABLE_EFFECT_ASSUMPTIONS",
     "DetectableEffect",
     "DetectableEffects",
+    "LAUNCH_PRICER_METHOD",
     "LaunchEstimate",
-    "OutOfRunSpendReport",
-    "OutOfRunSpendTotals",
     "RunsCompared",
     "detectable_effect_lines",
     "detectable_effects",
     "estimate_text",
     "export_text",
-    "frontier_text",
     "history_text",
     "launch_estimate",
-    "out_of_run_spend_text",
     "pivot_text",
     "runs_compare",
     "runs_compared_text",
     "scope_export",
     "scope_frontier",
     "scope_history",
-    "scope_out_of_run_spend",
     "scope_pivot",
 ]

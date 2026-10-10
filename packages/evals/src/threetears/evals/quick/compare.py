@@ -74,7 +74,7 @@ from threetears.evals.contracts import (
 )
 from threetears.evals.contracts.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS, RUN_MARGIN_MEASURES, run_margin_refusal
-from threetears.evals.ops.summary import CaseResult, EvalSummary, self_judging_text
+from threetears.evals.analysis.summary import CaseResult, EvalSummary, self_judging_text
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Judge
 from threetears.evals.quick.levers import refuse_unusable_lever_names
@@ -162,7 +162,7 @@ class Comparison:
             arm: The arm, by its key in :attr:`arms` (``"baseline"``, or a tuple of levels with ``factors``).
 
         Returns:
-            The arm's results, as :meth:`~threetears.evals.ops.summary.EvalSummary.results` reads them.
+            The arm's results, as :meth:`~threetears.evals.analysis.summary.EvalSummary.results` reads them.
 
         Raises:
             ValueError: ``arm`` names no arm.
@@ -176,7 +176,7 @@ class Comparison:
             arm: The arm, by its key in :attr:`arms`.
 
         Returns:
-            The arm's misses, as :meth:`~threetears.evals.ops.summary.EvalSummary.misses` reads them.
+            The arm's misses, as :meth:`~threetears.evals.analysis.summary.EvalSummary.misses` reads them.
 
         Raises:
             ValueError: ``arm`` names no arm.

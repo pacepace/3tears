@@ -77,14 +77,14 @@ from threetears.evals.quick.judged import CaseMaterial, Judge
 from threetears.evals.quick.measures import Measure, measure
 from threetears.evals.quick.tools import CandidateTools, Tool, ToolUsingCandidate
 from threetears.evals.quick.world import CaseSeed, Dimension, ToolRefused, World, WorldCandidate, WorldTool, WorldTools
-from threetears.evals.ops.summary import (
+from threetears.evals.analysis.summary import (
     CaseOutcome,
     CaseResult,
     DimensionSummary,
     EvalSummary,
     GoalCheckSummary,
     JudgeGrade,
-    MeasureSummary,
+    RunMeasureSummary,
     summarize_run,
 )
 
@@ -129,7 +129,7 @@ __all__ = [
     "JudgeGrade",
     "LabelStatistics",
     "Measure",
-    "MeasureSummary",
+    "RunMeasureSummary",
     "Scorer",
     "Tool",
     "ToolUsingCandidate",

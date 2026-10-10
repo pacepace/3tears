@@ -1023,6 +1023,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`describe_insight_id_filters(subject_id: str | None, source_campaign_id: str | None) -> str`
 - **`difference_was_declared_at_launch`** · function · Whether every one of these runs got its value from its own launch declaration.
   <br>`difference_was_declared_at_launch(origins: Iterable[str | None]) -> bool`
+- **`dollars_text`** · function · Spend as a person reads it: dollars and cents from ten cents up, three significant figures below.
+  <br>`dollars_text(amount: float) -> str`
 - **`estimate_analysis_generation`** · async function · Price a generation's first call against the cap it would be held to, and make no call.
   <br>`estimate_analysis_generation(host: EvalHost, campaign_id: str, scope_id: str, *, model: str | None, resolve_prompt: Callable[[], Awaitable[str]], out_of_run_cap_usd: float | None) -> AnalysisGenerationEstimate`
 - **`export_results`** · function · Serialize the projection's flat rows for a scope as CSV or JSON.
@@ -1041,6 +1043,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`freeze_reporter_case(host: EvalHost, *, template_id: str, campaign_id: str, scope_id: str, analysis_id: str | None = None, labels: Sequence[Any] = (), supersedes: Sequence[str] = (), load_template: Callable[[str], EvalTemplate]) -> EvalTestCase`
 - **`frontier`** · function · Rank each subject's variants on quality x cost x latency, cheapest above bar.
   <br>`frontier(storage: LensStore, scope_id: str, *, list_runs: RunLister, bar: float | str | None = None, subject_id: str | None = None, status: str | None = 'completed', profile: HostProfile | None = None, control_variant_key: str | None = None) -> dict[str, Any]`
+- **`frontier_text`** · function · A frontier as text: each subject's variants, best pass^k first, with each one's axes and the verdict.
+  <br>`frontier_text(result: FrontierResult) -> str`
 - **`frozen_case_receipt`** · function · Project a stored reporter case onto the receipt a freeze answers with.
   <br>`frozen_case_receipt(test_case: EvalTestCase) -> FrozenReporterCase`
 - **`gate_verdicts`** · function · Gate a report's typed verdicts: fail on the outcomes named, and never pass one the evidence left undecided.
@@ -1093,6 +1097,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`multi_rig_variants(cells: Iterable[CellFacts]) -> frozenset[str]`
 - **`orphaned_runs`** · function · Report the scope's runs that no campaign holds, with their spend.
   <br>`orphaned_runs(storage: LensStore, scope_id: str, *, list_runs: RunLister) -> dict[str, Any]`
+- **`out_of_run_spend_text`** · function · The scope's out-of-run spend as an operator reads it: the totals, per purpose and launch, then each call.
+  <br>`out_of_run_spend_text(report: OutOfRunSpendReport) -> str`
 - **`parse_fail_on`** · function · A comma-separated `--fail-on` list as tokens, refusing one that is no token.
   <br>`parse_fail_on(text: str) -> tuple[GateToken, ...]`
 - **`pivot`** · function · Aggregate a scope's observations over any two coordinates.
@@ -1127,6 +1133,10 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`run_analysis_generation(host: EvalHost, prepared: PreparedGeneration, *, prompt_id: str, max_output_tokens: int) -> tuple[EvalAnalysis, list[EvalInsight]]`
 - **`run_summary`** · function · Compose a run's verdict numbers — pass^k, latency, cost — per model.
   <br>`run_summary(storage: LensStore, run_id: str, scope_id: str, *, load_run_listed: Callable[[str, str], EvalRun], row_columns: RowColumns, profile: HostProfile, rubric_threshold: int = 3) -> dict[str, Any]`
+- **`scope_out_of_run_spend`** · function · What the engine spent outside any run in a scope, call by call and summed, optionally narrowed.
+  <br>`scope_out_of_run_spend(host: EvalHost, scope_id: str, *, purpose: OutOfRunPurpose | None = None, launch_group_id: str | None = None, template_id: str | None = None) -> OutOfRunSpendReport`
+- **`serialize_report`** · function · A report in one of its three forms.
+  <br>`serialize_report(report: Report, format: ReportFormat) -> str`
 - **`set_campaign_control`** · function · Designate (or clear) the campaign's control, ADDRESSED from a member observation.
   <br>`set_campaign_control(storage: CampaignStore, campaign_id: str, scope_id: str, run_id: str | None, *, set_by: str, profile: HostProfile) -> EvalCampaign`
 - **`set_reporter_case_archived`** · function · Retire (archive) a reporter case, or restore one — the answer to a case that can no longer measure anything.
@@ -1135,6 +1145,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`short_digest(digest: str) -> str`
 - **`significance_disclosure`** · function · The sentence naming the test and threshold a comparison's verdicts rest on.
   <br>`significance_disclosure(*, paired: bool) -> str`
+- **`summarize_run`** · function · Summarise one stored run and its results.
+  <br>`summarize_run(host: EvalHost, run_id: str, scope_id: str, *, case_names: Mapping[str, str] | None = None) -> EvalSummary`
 - **`tier_for_judges`** · function · The tier a reading stands on when `judges` served its scores: the weakest of theirs.
   <br>`tier_for_judges(tiers: Iterable[JudgeEvidenceTier], judges: Iterable[JudgeKey]) -> JudgedEvidenceTier`
 - **`tier_sentence`** · function · One sentence a report states for a judge's tier on a dimension: the tier, and the two measurements behind it.
@@ -1167,6 +1179,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`CalibrationCell`** · model · One result of one case: a single (model, repeat) pass, read against the case's labels.
 - **`CampaignReadStore`** · protocol · The six reads assembling a campaign's context bundle needs.
 - **`CampaignStore`** · protocol · Everything the campaign family reads and writes — and nothing else.
+- **`CaseResult`** · model · One case's answer on one repeat, every grade it got, and why it failed or was excluded.
 - **`CaseSetIdentity`** · model · One distinct case set inside a group, and which runs executed it.
 - **`Cell`** · model · Every observation sharing one variant and one apparatus class.
 - **`CellCoordinate`** · model · A cell named by its two coordinates and nothing else — an entry in a list of cells a fact holds for.
@@ -1186,7 +1199,9 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`DesignArm`** · model · One arm of the campaign, the runs that measured it, and what it moved off the control.
 - **`DimensionAgreement`** · model · How one judge's scores on one dimension agreed with people's ratings of the same results.
 - **`DimensionReading`** · model · A dimension the judge scored that no label speaks to — reported, never compared.
+- **`DimensionSummary`** · model · One judged rubric dimension over a run's results.
 - **`DisclosureBlock`** · model · Something code must tell the reader that no author wrote — one idea.
+- **`EvalSummary`** · model · One run, summarised.
 - **`Fact`** · model · A labelled fact code states beside an author's words — a confidence, a disposition, a tier.
 - **`FactorPairCell`** · model · One combination of two factors' levels, and how many runs sat at it.
 - **`FactorPairPivot`** · model · Two co-varying factors crossed: every combination of their observed levels, the unrun ones as `not_run`.
@@ -1203,6 +1218,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`GenerationError`** · exception · The generator's output could not be turned into a valid analysis.
 - **`GenerationTally`** · model · What one generation has sent, spent and been refused so far — kept by the CALLER.
 - **`GoalCheckProofReading`** · model · Whether one goal check the campaign's runs graded was shown to beat doing nothing.
+- **`GoalCheckSummary`** · model · One goal-state check over a run's results.
 - **`HeldFixedReading`** · model · What the campaign declared held still, beside what its runs say about the apparatus.
 - **`HistoryResult`** · model · Per-measure longitudinal series across contestants, with its disclosures.
 - **`InsightStanding`** · class · Where each listed insight's minting analysis stands — the two states a reader must be told.
@@ -1215,6 +1231,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`JudgeDrift`** · model · Every dimension a second judge re-scored, and how far the scores moved — with what that can and cannot show.
 - **`JudgeDriftDimension`** · model · How far one dimension's scores moved from the run's judge to a second judge, over the same evidence.
 - **`JudgeDriftLink`** · model · A drift reading that spans a judge change: evidence of one side re-scored by the other side's judge.
+- **`JudgeGrade`** · model · One rubric dimension's score on one answer, with the judge's reason.
 - **`JudgeIdentityLevel`** · model · One judge the member runs were scored by, as each run recorded it at launch, and the runs and arms under it.
 - **`JudgeKey`** · class · Who judged a reading: the dimension, its scale, the model that served the score, the config that asked and the temperature the call was sent at.
 - **`JudgeSelfAgreement`** · model · Every repeated score read, paired with the first score where it can be, and agreement per dimension and judge.
@@ -1232,6 +1249,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`MultipleComparisons`** · model · The campaign's comparisons, one corrected family per live declared question — or one for the whole campaign.
 - **`NextExperiment`** · model · What recording one dimension would buy, in pooled observations.
 - **`OpenAxisFamily`** · model · An open family of axes: a container whose members are declarable, though not enumerable.
+- **`OutOfRunSpendReport`** · model · The calls the engine made outside any run in a scope — case generations, rubric proposals and analysis generations — and their totals.
+- **`OutOfRunSpendTotals`** · model · What a set of out-of-run calls spent, summed — with what could not be summed counted beside it.
 - **`PivotCell`** · model · One (row, column) cell: the number, and everything needed to trust it.
 - **`PivotTable`** · model · A two-factor pivot over one measure, with its disclosures attached.
 - **`PlannedCost`** · model · One planned model's predicted cost over its planned observations, as a cost pivot's plan reads it.
@@ -1252,6 +1271,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`ReporterKind`** · class · A (prompt preset, generator model) candidate: generates a memo over each case's bundle.
 - **`ReporterLabel`** · model · One reader's written verdict on a recorded memo, mapped to the dimension it bears on.
 - **`ReportSource`** · model · What the report is a report of, and how that analysis was generated — or that none was.
+- **`RunMeasureSummary`** · model · One measure over a run's results.
 - **`RunSummary`** · model · One run's compact digest — the levers it RAN at + its key telemetry.
 - **`ScopeDivergence`** · model · Two scopes disagreeing about what one lever change did — a finding, not a caveat.
 - **`ScoreExport`** · model · A projection's rows serialized for analysis elsewhere, with the account a CSV body cannot carry.
@@ -1288,6 +1308,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`'cleared'` | `'missed'` | `'undecided'` | `'no_interval'` | `'no_data'`
 - **`CallAdmission`** · type alias · Asked before each generator call is counted or sent, with `(system, user, response_format)`; raises to refuse that call.
   <br>`Callable[[str, str, 'dict[str, Any] | None'], None]`
+- **`CaseOutcome`** · literal · How one result came out, as `classify_result` classifies it: graded normally, failed by the candidate (it counts against the candidate), or excluded as a fault of the rig (it counts for nothing).
+  <br>`'scored'` | `'failed'` | `'excluded'`
 - **`ChangeLabel`** · literal · What a change between two paired samples reads as — see `ChangeVerdict`.
   <br>`'improved'` | `'regressed'` | `'equivalent'` | `'below_threshold'` | `'not_separated'` | `'untested'`
 - **`ComparisonVerdict`** · literal · What one comparison in a family came to, read off its ADJUSTED p's.
@@ -1320,6 +1342,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`'analysis'` | `'code_only'`
 - **`ReportBlock`** · type alias · A report block, discriminated by `kind`.
   <br>`Annotated[TextBlock | TableBlock | ChartBlock | DisclosureBlock, Field(discriminator='kind')]`
+- **`ReportFormat`** · literal · The forms a report is read in: Markdown (the memo, and what an agent reads), its canonical JSON (what the published schema validates) and HTML that reads without any script.
+  <br>`'markdown'` | `'json'` | `'html'`
 - **`ReportSection`** · literal · Where a block sits, in reading order.
   <br>`'summary'` | `'questions'` | `'decisions'` | `'guardrails'` | `'findings'` | `'arms'` | `'surface'` | `'next'` | `'methods'`
 - **`RowColumns`** · type alias · The host's own columns for each `(model, run_id)` group of a run's results, laid over a `run_summary` row after the engine's aggregates.
@@ -1536,24 +1560,16 @@ Batteries: run an eval in one call, and drive the engine from a command line.
   <br>`run_cli(argv: Sequence[str] | None = None, *, host_factory: HostFactory | None = None, prog: str = 'python -m threetears.evals', commands: Sequence[HostCommand] = ()) -> int`
 - **`run_eval`** · async function · Run `candidate` on every case `k` times, grade each answer with every scorer and the judge, and summarise.
   <br>`run_eval(cases: Sequence[Mapping[str, Any]], candidate: Candidate | ToolUsingCandidate | WorldCandidate, scorers: Sequence[Scorer] = (), *, scope_id: str | None = None, expected: ExpectedLabel | None = None, judge: Judge | None = None, intent: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), host: EvalHost | None = None, store: DocumentStore | None = None, k: int = 3, model: str | None = None, levers: Mapping[str, str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, max_cost_usd: float | None = None, measure_latency: bool = False) -> EvalSummary`
-- **`summarize_run`** · function · Summarise one stored run and its results.
-  <br>`summarize_run(host: EvalHost, run_id: str, scope_id: str, *, case_names: Mapping[str, str] | None = None) -> EvalSummary`
 
 **Classes**
 
 - **`Answer`** · dataclass · What a candidate returns to report its own spend beside its answer.
-- **`CaseResult`** · model · One case's answer on one repeat, every grade it got, and why it failed or was excluded.
 - **`Comparison`** · dataclass · What `compare` ran and what its campaign's report says.
 - **`Dimension`** · dataclass · One piece of the world's state.
-- **`DimensionSummary`** · model · One judged rubric dimension over a run's results.
-- **`EvalSummary`** · model · One run, summarised.
-- **`GoalCheckSummary`** · model · One goal-state check over a run's results.
 - **`Guardrail`** · dataclass · A reading every arm must not get worse on than the control by more than `margin`.
 - **`HostCommand`** · dataclass · A subcommand a host adds beside the engine's own, mounted by `run_cli` under the same program.
 - **`Judge`** · dataclass · A model that grades each answer on a rubric, one call per dimension.
-- **`JudgeGrade`** · model · One rubric dimension's score on one answer, with the judge's reason.
 - **`Measure`** · class · A function that computes a measure, carrying the measure's declaration.
-- **`MeasureSummary`** · model · One measure over a run's results.
 - **`ToolRefused`** · exception · A tool call the world did not make: no such tool, or parameters its schema refuses. Nothing changed.
 - **`World`** · class · A small world: named state each case seeds, and tools the candidate changes it with.
 - **`WorldTool`** · class · One action the candidate can take on the world: a function of the state and its parameters.
@@ -1622,7 +1638,7 @@ Batteries: run an eval in one call, and drive the engine from a command line.
 
 **Also exported here**
 
-`ConfusionCount` ([`threetears.evals.analysis`](#api-analysis)), `LabelStatistics` ([`threetears.evals.analysis`](#api-analysis))
+`CaseResult` ([`threetears.evals.analysis`](#api-analysis)), `ConfusionCount` ([`threetears.evals.analysis`](#api-analysis)), `DimensionSummary` ([`threetears.evals.analysis`](#api-analysis)), `EvalSummary` ([`threetears.evals.analysis`](#api-analysis)), `GoalCheckSummary` ([`threetears.evals.analysis`](#api-analysis)), `JudgeGrade` ([`threetears.evals.analysis`](#api-analysis)), `LabelStatistics` ([`threetears.evals.analysis`](#api-analysis)), `RunMeasureSummary` ([`threetears.evals.analysis`](#api-analysis)), `summarize_run` ([`threetears.evals.analysis`](#api-analysis))
 
 <a id="api-ops"></a>
 ### `threetears.evals.ops`
@@ -1659,14 +1675,10 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`case_set_mint(host: EvalHost, arguments: CaseSetMint, scope_id: str) -> CaseSetLine`
 - **`case_sets_list`** · function · The scope's case sets — every version, or every version of one name.
   <br>`case_sets_list(host: EvalHost, scope_id: str, *, name: str | None = None) -> CaseSetListing`
-- **`dollars_text`** · function · Spend as a person reads it: dollars and cents from ten cents up, three significant figures below.
-  <br>`dollars_text(amount: float) -> str`
 - **`estimate_text`** · function · An estimate as text: the launch priced, each arm's price and outcome, and the total.
   <br>`estimate_text(estimate: LaunchEstimate) -> str`
 - **`export_text`** · function · An export as text: a line of its row count and what it left out, then the body itself.
   <br>`export_text(export: ScoreExport) -> str`
-- **`frontier_text`** · function · A frontier as text: each subject's variants, best pass^k first, with each one's axes and the verdict.
-  <br>`frontier_text(result: FrontierResult) -> str`
 - **`generation_key`** · function · The exclusivity key one campaign's generations share: one runs at a time, and only its scope sees it.
   <br>`generation_key(campaign_id: str, scope_id: str) -> str`
 - **`history_launch_pricer`** · function · The engine's launch pricer: an arm bounded from the scope's usage history of runs launched as it will be.
@@ -1695,8 +1707,6 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`judge_second_estimate(host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, sample_fraction: float = 1.0, seed: int = 0, result_ids: list[str] | None = None) -> SecondJudgeEstimate`
 - **`launch_estimate`** · async function · What `run_launch` with `arguments` would cost, priced by the launch's own rule.
   <br>`launch_estimate(host: OpsHost, arguments: LaunchArguments, scope_id: str, *, n_test_cases: int | None = None) -> LaunchEstimate`
-- **`out_of_run_spend_text`** · function · The scope's out-of-run spend as an operator reads it: the totals, per purpose and launch, then each call.
-  <br>`out_of_run_spend_text(report: OutOfRunSpendReport) -> str`
 - **`parse_job_id`** · function · Read a job id back into what it names.
   <br>`parse_job_id(job_id: str) -> tuple[JobKind, str, str | None]`
 - **`pivot_text`** · function · A pivot as text: what was computed, each cell with its denominators, and every caveat the table carries.
@@ -1737,12 +1747,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`scope_frontier(host: EvalHost, scope_id: str, *, bar: float | str | None = None, subject_id: str | None = None, status: str | None = 'completed') -> FrontierResult`
 - **`scope_history`** · function · One measure over time for each contestant in the scope, with its regressions flagged.
   <br>`scope_history(host: EvalHost, scope_id: str, *, metric: str | None = None, min_absolute_change: float = 0.0, min_relative_change: float = 0.0, subject_id: str | None = None, status: str | None = 'completed') -> HistoryResult`
-- **`scope_out_of_run_spend`** · function · What the engine spent outside any run in a scope, call by call and summed, optionally narrowed.
-  <br>`scope_out_of_run_spend(host: EvalHost, scope_id: str, *, purpose: OutOfRunPurpose | None = None, launch_group_id: str | None = None, template_id: str | None = None) -> OutOfRunSpendReport`
 - **`scope_pivot`** · function · One measure over the scope's observations, aggregated over two coordinates.
   <br>`scope_pivot(host: EvalHost, scope_id: str, *, row_factor: str, column_factor: str, metric: str | None = None, weighting: str | None = None, subject_id: str | None = None, status: str | None = 'completed', predicted_cost: CostEstimate | LaunchEstimate | Mapping[str, Any] | None = None, launched_run_ids: Sequence[str] = ()) -> PivotTable`
-- **`serialize_report`** · function · A report in one of its three forms.
-  <br>`serialize_report(report: Report, format: ReportFormat) -> str`
 - **`sweep_job_id`** · function · The job id of a sweep.
   <br>`sweep_job_id(sweep_id: str) -> str`
 - **`sweep_launch`** · async function · Create the sweep's campaign and start the job that launches its arms in order.
@@ -1777,8 +1783,6 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`LaunchArguments`** · model · What a launch names: the template, the subject, one arm per model, and the run's own limits.
 - **`LaunchEstimate`** · model · What a launch would cost and whether it would launch, priced by the launch's own rule.
 - **`OpsHost`** · dataclass · The host the operations, and the actions over them, work in.
-- **`OutOfRunSpendReport`** · model · The calls the engine made outside any run in a scope — case generations, rubric proposals and analysis generations — and their totals.
-- **`OutOfRunSpendTotals`** · model · What a set of out-of-run calls spent, summed — with what could not be summed counted beside it.
 - **`ProposedBar`** · model · One bar a baseline proposes, for a person to adopt, tighten or leave.
 - **`RegressionAlert`** · model · One regression the watch found on the step into a completed run: who, which measure, which step, and why.
 - **`RegressionSink`** · protocol · The host's delivery of a regression: a page, a message, a ticket. The engine ships none.
@@ -1834,7 +1838,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Also exported here**
 
-`AnalysisGenerationEstimate` ([`threetears.evals.analysis`](#api-analysis)), `CaseResult` ([`threetears.evals.quick`](#api-quick)), `CostEstimate` ([`threetears.evals.analysis`](#api-analysis)), `DimensionSummary` ([`threetears.evals.quick`](#api-quick)), `EvalSummary` ([`threetears.evals.quick`](#api-quick)), `format_number` ([`threetears.evals.analysis`](#api-analysis)), `FrontierResult` ([`threetears.evals.analysis`](#api-analysis)), `FrozenReporterCase` ([`threetears.evals.analysis`](#api-analysis)), `HistoryResult` ([`threetears.evals.analysis`](#api-analysis)), `JudgeGrade` ([`threetears.evals.quick`](#api-quick)), `MeasureSummary` ([`threetears.evals.quick`](#api-quick)), `PivotTable` ([`threetears.evals.analysis`](#api-analysis)), `ScoreExport` ([`threetears.evals.analysis`](#api-analysis)), `summarize_run` ([`threetears.evals.quick`](#api-quick))
+`AnalysisGenerationEstimate` ([`threetears.evals.analysis`](#api-analysis)), `CaseResult` ([`threetears.evals.analysis`](#api-analysis)), `CostEstimate` ([`threetears.evals.analysis`](#api-analysis)), `DimensionSummary` ([`threetears.evals.analysis`](#api-analysis)), `dollars_text` ([`threetears.evals.analysis`](#api-analysis)), `EvalSummary` ([`threetears.evals.analysis`](#api-analysis)), `format_number` ([`threetears.evals.analysis`](#api-analysis)), `frontier_text` ([`threetears.evals.analysis`](#api-analysis)), `FrontierResult` ([`threetears.evals.analysis`](#api-analysis)), `FrozenReporterCase` ([`threetears.evals.analysis`](#api-analysis)), `HistoryResult` ([`threetears.evals.analysis`](#api-analysis)), `JudgeGrade` ([`threetears.evals.analysis`](#api-analysis)), `out_of_run_spend_text` ([`threetears.evals.analysis`](#api-analysis)), `OutOfRunSpendReport` ([`threetears.evals.analysis`](#api-analysis)), `OutOfRunSpendTotals` ([`threetears.evals.analysis`](#api-analysis)), `PivotTable` ([`threetears.evals.analysis`](#api-analysis)), `RunMeasureSummary` ([`threetears.evals.analysis`](#api-analysis)), `scope_out_of_run_spend` ([`threetears.evals.analysis`](#api-analysis)), `ScoreExport` ([`threetears.evals.analysis`](#api-analysis)), `serialize_report` ([`threetears.evals.analysis`](#api-analysis)), `summarize_run` ([`threetears.evals.analysis`](#api-analysis))
 
 <a id="api-actions"></a>
 ### `threetears.evals.actions`

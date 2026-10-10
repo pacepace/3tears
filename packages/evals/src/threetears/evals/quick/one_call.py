@@ -110,7 +110,7 @@ from threetears.evals.contracts.host import (
 )
 from threetears.evals.contracts import WorldPlacement
 from threetears.evals.contracts.host.sweepables import CORE_ROLES, CORE_SWEEPABLES
-from threetears.evals.ops.summary import CaseResult, EvalSummary, summarize_run
+from threetears.evals.analysis.summary import CaseResult, EvalSummary, summarize_run
 from threetears.evals.run import (
     CellContext,
     KindFactory,
@@ -1543,7 +1543,7 @@ async def run_eval(
 
     Returns:
         The finished run's summary, read back from the store. It carries every result
-        (:meth:`~threetears.evals.ops.summary.EvalSummary.results`, :meth:`~threetears.evals.ops.summary.EvalSummary.misses`),
+        (:meth:`~threetears.evals.analysis.summary.EvalSummary.results`, :meth:`~threetears.evals.analysis.summary.EvalSummary.misses`),
         so the answers can be read after this call returns whatever store the run used.
 
     Raises:

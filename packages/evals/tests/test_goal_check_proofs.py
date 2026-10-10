@@ -26,7 +26,7 @@ from threetears.evals.contracts.models import (
     stored_variation,
 )
 from threetears.evals.contracts.storage import EvalStorage
-from threetears.evals.ops.summary import GoalCheckSummary, summarize_run
+from threetears.evals.analysis.summary import GoalCheckSummary, summarize_run
 from threetears.evals.run import start_run
 from threetears.evals.run.check_controls import (
     check_discriminations,

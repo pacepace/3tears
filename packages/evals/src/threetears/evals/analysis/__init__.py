@@ -319,7 +319,43 @@ from threetears.evals.analysis.surface_table import (
 )
 
 
+from threetears.evals.analysis.lens_text import frontier_text
+from threetears.evals.analysis.out_of_run_spend import (
+    OutOfRunSpendReport,
+    OutOfRunSpendTotals,
+    out_of_run_spend_text,
+    scope_out_of_run_spend,
+)
+from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
+from threetears.evals.analysis.summary import (
+    CaseOutcome,
+    CaseResult,
+    DimensionSummary,
+    EvalSummary,
+    GoalCheckSummary,
+    JudgeGrade,
+    RunMeasureSummary,
+    dollars_text,
+    summarize_run,
+)
+
 __all__ = [
+    "frontier_text",
+    "OutOfRunSpendReport",
+    "OutOfRunSpendTotals",
+    "out_of_run_spend_text",
+    "scope_out_of_run_spend",
+    "ReportFormat",
+    "serialize_report",
+    "CaseOutcome",
+    "CaseResult",
+    "DimensionSummary",
+    "EvalSummary",
+    "GoalCheckSummary",
+    "JudgeGrade",
+    "RunMeasureSummary",
+    "dollars_text",
+    "summarize_run",
     "REPORT_VERSION",
     "SECTION_TITLES",
     "ChartBlock",

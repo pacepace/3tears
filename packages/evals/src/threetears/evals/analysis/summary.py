@@ -53,6 +53,7 @@ from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics,
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.surface_table import NO_SUCCESSFUL_RESULTS
 from threetears.evals.contracts import (
+    NotFoundError,
     CONFUSION_CELL_MEASURE,
     MATCH_MEASURE,
     CostCapOrigin,
@@ -75,7 +76,6 @@ from threetears.evals.contracts.models import (
 )
 from threetears.evals.contracts.metrics import describe_measure, summary_population
 from threetears.evals.contracts.usage_capture import blended_cost
-from threetears.evals.run import get_run, list_results
 
 
 def dollars_text(amount: float) -> str:
@@ -109,7 +109,7 @@ def dollars_text(amount: float) -> str:
 _GUARDRAIL_ALONE = "a guardrail: held, breached or undecided is decided only against a control, in a comparison"
 
 
-class MeasureSummary(BaseModel):
+class RunMeasureSummary(BaseModel):
     """One measure over a run's results.
 
     Attributes:
@@ -528,7 +528,7 @@ class EvalSummary(BaseModel):
     n_scored: int
     n_candidate_failed: int
     n_excluded: int
-    measures: list[MeasureSummary]
+    measures: list[RunMeasureSummary]
     confusion: list[ConfusionCount]
     labels: list[LabelStatistics]
     judged: list[DimensionSummary] = []
@@ -716,7 +716,7 @@ def _spend_cap_line(summary: EvalSummary) -> str | None:
     return line
 
 
-def _left_out(measure: MeasureSummary) -> str:
+def _left_out(measure: RunMeasureSummary) -> str:
     """What a cost or latency measure's mean left out, each kind named for what it is — or nothing."""
     parts = [
         *([f"{measure.n_no_turn} refused or errored with no turn taken"] if measure.n_no_turn else []),
@@ -797,8 +797,10 @@ def summarize_run(
     Raises:
         NotFoundError: No run with that id in the scope.
     """
-    run = get_run(host.storage, run_id, scope_id)
-    results = list_results(host.storage, run_id, scope_id)
+    run = host.storage.load_eval_run(run_id, scope_id)
+    if run is None:
+        raise NotFoundError("run", run_id)
+    results = host.storage.query_eval_results_by_run(run_id, scope_id)
     outcomes = [classify_result(result) for result in results]
     declared = host.profile.measures.names
     classified = [
@@ -817,7 +819,7 @@ def summarize_run(
         # A text observation is words, never a number; a boolean counts as 1 or 0, so its mean is its rate.
         values = [float(value) for value in carried if not isinstance(value, str)]
         measures.append(
-            MeasureSummary(
+            RunMeasureSummary(
                 name=name,
                 n=len(carried),
                 mean=sum(values) / len(values) if values else None,
@@ -967,7 +969,7 @@ __all__ = [
     "EvalSummary",
     "GoalCheckSummary",
     "JudgeGrade",
-    "MeasureSummary",
+    "RunMeasureSummary",
     "dollars_text",
     "self_judging_text",
     "summarize_run",

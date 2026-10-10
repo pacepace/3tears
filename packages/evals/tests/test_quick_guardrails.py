@@ -42,7 +42,7 @@ from threetears.evals.contracts import (
 )
 from threetears.evals.contracts.host import MeasureRegistry
 from threetears.evals.contracts.metrics import MetricDescriptor
-from threetears.evals.ops.summary import CaseResult
+from threetears.evals.analysis.summary import CaseResult
 from threetears.evals.quick import Comparison, Guardrail, Judge, callable_host, compare, run_eval
 from packages.evals.tests.factories import make_eval_result
 

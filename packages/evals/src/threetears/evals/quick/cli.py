@@ -29,8 +29,8 @@ then never name the host::
   so they are priced against the host's out-of-run cap before they are made. ``--apparatus-settings``
   sets host-declared apparatus values as a JSON object, as ``run_launch``'s ``apparatus_settings`` does.
 - ``ls`` prints the scope's templates, runs and campaigns.
-- ``report`` prints the campaign's report (:func:`~threetears.evals.ops.report_read`, the same read the
-  ``report_read`` action makes): its newest analysis that is not archived, else a code-only report of its
+- ``report`` prints the campaign's report (:func:`~threetears.evals.analysis.campaign_report`, the same
+  report the ``report_read`` action reads): its newest analysis that is not archived, else a code-only report of its
   evidence — which says, in its first lines, that no analysis was generated. ``--format`` is
   ``markdown`` (the default), ``html`` (needs no script) or ``json`` (what the published schema
   validates); ``--out PATH`` writes it to a file instead of stdout. No model is called.
@@ -48,10 +48,11 @@ then never name the host::
   readings. A campaign with no verdict at all is refused (exit 2): a gate that read nothing passed nothing.
 - ``spend`` prints what the engine spent outside any run in the scope — case generations, rubric
   proposals and analysis generations, call by call, with totals overall, per purpose and per launch
-  (:func:`~threetears.evals.ops.scope_out_of_run_spend`, the read the ``scope_out_of_run_spend`` action
+  (:func:`~threetears.evals.analysis.scope_out_of_run_spend`, the read the ``scope_out_of_run_spend`` action
   makes). ``--purpose``, ``--launch-group`` and ``--template`` narrow it.
 - ``frontier`` prints each subject's variants ranked on quality, cost and latency, and the cheapest that clears
-  ``--bar`` (:func:`~threetears.evals.ops.scope_frontier`, the read the ``scope_frontier`` action makes).
+  ``--bar`` (:func:`~threetears.evals.analysis.frontier` over the host's run listing, the read the
+  ``scope_frontier`` action makes).
   ``--subject`` narrows it to one subject, and ``--json`` prints the frontier as JSON.
 
 A product mounting the commands may add its own beside them — ``run_cli(..., commands=[HostCommand(...)])``
@@ -79,6 +80,7 @@ import importlib
 import json
 import sys
 import traceback
+from functools import partial
 from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -87,23 +89,23 @@ from typing import Any, get_args
 from threetears.evals.analysis import (
     DEFAULT_FAIL_ON,
     GATE_TOKENS,
+    FrontierResult,
+    ReportFormat,
+    campaign_report,
     campaign_verdicts,
+    frontier,
+    frontier_text,
     gate_verdicts,
     inspect_campaign_bundle,
     list_campaigns,
+    out_of_run_spend_text,
     parse_fail_on,
+    scope_out_of_run_spend,
+    serialize_report,
 )
 from threetears.evals.contracts import DEFAULT_LAUNCH_K_RUNS, EvalServiceError, OutOfRunPurpose
 from threetears.evals.contracts.host import EvalHost
-from threetears.evals.ops import (
-    ReportFormat,
-    frontier_text,
-    out_of_run_spend_text,
-    report_read,
-    scope_frontier,
-    scope_out_of_run_spend,
-)
-from threetears.evals.ops.summary import summarize_run
+from threetears.evals.analysis.summary import summarize_run
 from threetears.evals.run import LaunchHost, list_runs, list_templates, start_run
 
 #: What names the host the commands work in: called once, with no arguments, per invocation.
@@ -451,7 +453,16 @@ def run_cli(
                 )
             )
         elif args.command == "frontier":
-            ranked = scope_frontier(eval_host, args.scope, bar=args.bar, subject_id=args.subject)
+            ranked = FrontierResult.model_validate(
+                frontier(
+                    eval_host.storage,
+                    args.scope,
+                    list_runs=partial(list_runs, eval_host),
+                    bar=args.bar,
+                    subject_id=args.subject,
+                    profile=eval_host.profile,
+                )
+            )
             _say(ranked.model_dump_json(indent=2) if args.json else frontier_text(ranked))
         else:
             _say(inspect_campaign_bundle(eval_host, args.campaign, args.scope).model_dump_json(indent=2))
@@ -522,10 +533,10 @@ def _report(host: EvalHost, args: argparse.Namespace) -> None:
     Raises:
         _Refused: ``--out`` cannot be written.
     """
-    document = report_read(host, args.campaign, args.scope, format=args.format)
+    report = campaign_report(host, args.campaign, args.scope)
     # Markdown and HTML end in a newline already; canonical JSON is the model's own dump, which does not,
     # and a terminal or a file wants one.
-    body = document.body + ("\n" if document.format == "json" else "")
+    body = serialize_report(report, args.format) + ("\n" if args.format == "json" else "")
     if args.out is None:
         sys.stdout.write(body)
         return
@@ -533,9 +544,7 @@ def _report(host: EvalHost, args: argparse.Namespace) -> None:
         args.out.write_text(body, encoding="utf-8")
     except OSError as unwritable:
         raise _Refused(f"--out {args.out}: cannot write the report there: {unwritable}") from unwritable
-    _say(
-        f"wrote the {document.basis.replace('_', '-')} report of campaign {args.campaign} ({args.format}) to {args.out}"
-    )
+    _say(f"wrote the {report.basis.replace('_', '-')} report of campaign {args.campaign} ({args.format}) to {args.out}")
 
 
 def _list(host: EvalHost, scope_id: str) -> None:

@@ -20,7 +20,7 @@ from threetears.evals.contracts.models import DEFAULT_LAUNCH_K_RUNS, CaseSet, Ca
 from threetears.evals.contracts.offload import run_blocking
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, run_job_id
-from threetears.evals.ops.summary import EvalSummary, summarize_run
+from threetears.evals.analysis.summary import EvalSummary, summarize_run
 from threetears.evals.run.authoring import list_templates
 from threetears.evals.run.case_sets import mint_case_set
 from threetears.evals.run.curation import delete_run, set_run_archived

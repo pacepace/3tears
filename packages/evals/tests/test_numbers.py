@@ -121,9 +121,15 @@ _SPELLING_TREES = ("threetears/evals/analysis",)
 
 #: What sits inside :data:`_SPELLING_TREES` and is not read as a report, so is not walked:
 #: ``numbers.py`` is the rule itself, and ``viz/`` spells numbers only in payload validation messages.
+#: ``summary.py`` and ``out_of_run_spend.py`` are the command line's run summary and spend ledger, which
+#: moved here from ``ops`` (#702) so ``quick`` could print them without reaching ``ops``. They were never
+#: walked there and keep their own spellings (dollars at currency precision, three-figure means); holding
+#: them to the rule changes every figure the summary prints, which is its own change, not a move's.
 _NOT_READ_AS_REPORTS = (
     "threetears/evals/analysis/numbers.py",
     "threetears/evals/analysis/viz",
+    "threetears/evals/analysis/summary.py",
+    "threetears/evals/analysis/out_of_run_spend.py",
 )
 
 #: Presentation types that choose how many digits a reader sees. ``d`` and ``s`` do not.
