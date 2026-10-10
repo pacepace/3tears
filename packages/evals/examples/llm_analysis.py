@@ -1,38 +1,31 @@
-"""Can a model write a campaign's analysis from a frozen copy of the evidence, so it can be checked and redone?
+"""Can a model write a campaign's analysis from a frozen copy of the evidence?
 
 A model writes the analysis from one input, the campaign's **analysis bundle**: every number code computed,
-frozen into one JSON file with a sha256 fingerprint. The model never types a figure: it names a reading, code
-fills the number in, and a reading the bundle lacks is refused. Only the cited readings are checked, not the
-prose around them, so a conclusion can still overclaim: compare each analysis's with the code's verdict, printed
-first. New here: ``generate_analysis``, and a bundle saved, reloaded and written over again with another prompt.
-The bundle: ``docs/concepts.md#analysis-bundle``.
+frozen into one JSON file with a sha256 fingerprint. The model never types a figure. It names a reading, code
+fills the number in, and a reading the bundle lacks is refused and sent back for repair. New here:
+``generate_analysis``. Only the cited readings are checked, not the prose around them, so a conclusion can still
+overclaim: hold it against the code's verdict, printed first. The bundle: ``docs/concepts.md#analysis-bundle``.
+Saving it and running a second prompt over the same fingerprint: ``docs/reading-reports.md``.
 
 Run it with ``python packages/evals/examples/llm_analysis.py``; it writes ``./eval-analysis/bundle.json``.
-With ``ANTHROPIC_API_KEY`` set, Claude writes two analyses for about a cent; without it, a scripted stand-in
-writes them, and they say nothing about Claude.
+The campaign's two classifiers are keyword rules, so the campaign always runs offline. With ``ANTHROPIC_API_KEY``
+set, Claude writes the analysis, for about a cent. Without it, a scripted stand-in writes it, and its
+first draft cites a reading the bundle lacks, to show the refusal.
 """
 
 import asyncio
 import json
-import os
-from collections import namedtuple
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from threetears.evals.analysis import (
-    EVAL_ANALYSIS_GEN_DEFAULT,
-    AnalysisContextBundle,
-    generate_analysis,
-    inspect_campaign_bundle,
-)
+from _live import Completion, claude, online
+from threetears.evals.analysis import EVAL_ANALYSIS_GEN_DEFAULT, generate_analysis, inspect_campaign_bundle
 from threetears.evals.contracts import EvalAnalysis
 from threetears.evals.quick import compare
 
 MODEL = "claude-haiku-5-5"
-MAX_TOKENS = 12_000
-RATES = (0.10, 0.50)  # Haiku 5.5's (input, output) list price, USD per million tokens, for prompts up to 100K
 
 # -----------------------------------------------------------------------------
 # 1. The campaign: two keyword classifiers, plain rules that always run offline, over a dozen tickets.
@@ -69,61 +62,12 @@ def keyword_classifier(rules: dict[str, tuple[str, ...]]) -> Any:
 
 
 # -----------------------------------------------------------------------------
-# 2. The live writer: Claude, behind the one call the generator makes.
-#
-# ``generate(system=, user=, response_format=)`` returns a ``Completion``, the reply as ``llm_judge.py`` reads it.
-# -----------------------------------------------------------------------------
-
-Completion = namedtuple(
-    "Completion",
-    "content input_tokens output_tokens reasoning_tokens cost_usd price_source model served_model stop_reason "
-    "temperature",
-)
-
-
-def claude_writer() -> Any:
-    """The analysis writer, as Claude."""
-    import anthropic  # imported here so the offline path does not need the package
-
-    client = anthropic.AsyncAnthropic()  # reads ANTHROPIC_API_KEY
-
-    async def generate(*, system: str, user: str, response_format: dict | None = None) -> Completion:
-        schema = (response_format or {})["json_schema"]["schema"]
-        response = await client.messages.create(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-            # The generator sends the analysis's shape as a JSON schema; Claude takes it as a structured output.
-            output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
-        )
-        usage = response.usage
-        stopped = {"end_turn": "end_turn", "max_tokens": "max_tokens", "refusal": "content_filter"}
-        return Completion(
-            content="".join(block.text for block in response.content if block.type == "text"),
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            reasoning_tokens=None,
-            cost_usd=(usage.input_tokens * RATES[0] + usage.output_tokens * RATES[1]) / 1e6,
-            price_source="anthropic list price, from llm_analysis.py",
-            model=MODEL,
-            served_model=response.model,
-            temperature=None,  # none is sent: this request sets an effort, so the model's own sampling applies
-            stop_reason=stopped.get(response.stop_reason or "", "error"),
-        )
-
-    return SimpleNamespace(generate=generate)
-
-
-# -----------------------------------------------------------------------------
-# 3. The OFFLINE stand-in writer: a script, not a model.
-#
-# Its first draft cites a reading the bundle lacks, so the generator's check refuses it and asks once more.
+# 2. The OFFLINE stand-in writer: a script, not a model. Live, the writer is Claude (``_live.py``).
 # -----------------------------------------------------------------------------
 
 
 def offline_writer() -> Any:
-    """A scripted stand-in for the writer, so the example runs with no API key."""
+    """A scripted stand-in for the writer; its first draft cites "precision", which this campaign never measured."""
     drafts = 0
 
     async def generate(*, system: str, user: str, response_format: dict | None = None) -> Completion:
@@ -132,29 +76,28 @@ def offline_writer() -> Any:
         evidence, _ = json.JSONDecoder().raw_decode(user, user.index("{"))  # the bundle, as the writer sees it
         tested = evidence["multiple_comparisons"]["families"][0]["comparisons"][0]
         arm, control = tested["contrast"]["cell"], tested["control"]["cell"]
-        measure = "precision" if drafts == 1 else tested["name"]  # "precision" is not a measure of this campaign
+        measure = "precision" if drafts == 1 else tested["name"]
         cite = {cell: "{{" + f"{cell}|{measure}|measure|mean" + "}}" for cell in (arm, control)}  # code fills these
         finding = {
-            "title": f"The arms differ on {measure}",
+            "title": f"{measure.capitalize()} by arm",
             "body": f"The tested arm reads {cite[arm]}, the control {cite[control]}.",
             "evidence": [{"cell": cell, "measure_id": measure, "reading": "measure"} for cell in cite],
             "chart": {"type": "none", "cells": [], "measures": [], "axis": "", "note": "", "caption": ""},
         } | {"confidence": "low", "axes": [], "caveats": [], "invalidates": [], "durable": ""}
         memo = {"headline": "Offline stand-in: a script wrote this, not a model", "summary": "- Shape only."}
         memo |= {"findings": [finding], "decisions": [], "questions": [], "next": []}
-        return Completion(json.dumps(memo), None, None, None, 0.0, "offline stand-in", "offline", None, "end_turn", 0.0)
+        return Completion(json.dumps(memo), None, None, None, 0.0, "offline", "offline-writer", None, "end_turn", None)
 
     return SimpleNamespace(generate=generate)
 
 
 # -----------------------------------------------------------------------------
-# 4. Run the campaign, freeze its bundle to ``out_dir``, write the analysis, then write it again from the file.
+# 3. Run the campaign, freeze its bundle to ``out_dir``, and have the writer write the analysis from it.
 # -----------------------------------------------------------------------------
 
 
-async def main(out_dir: Path = Path("eval-analysis")) -> list[EvalAnalysis]:
-    online = bool(os.environ.get("ANTHROPIC_API_KEY"))
-    if online:
+async def main(out_dir: Path = Path("eval-analysis")) -> EvalAnalysis:
+    if online():
         print(f"Running against Claude ({MODEL}).\n")
     else:
         print("ANTHROPIC_API_KEY is not set: running OFFLINE, with a scripted stand-in for the analysis writer.\n")
@@ -163,51 +106,41 @@ async def main(out_dir: Path = Path("eval-analysis")) -> list[EvalAnalysis]:
     comparison = await compare(
         CASES, arms, expected=lambda case: case["queue"], control="baseline", scope_id="llm-analysis", k=2
     )
-    profile, assembled_at = comparison.host.profile, datetime.now(UTC).isoformat()
 
     # The verdict code reached; nothing an analysis writes changes it.
-    for row in comparison.contrasts("accuracy"):
-        arm, control = row["arm"], comparison.control  # each arm by the key you gave it
-        p = "" if row["p_adjusted"] is None else f" (p={row['p_adjusted']:.2g})"  # none when nothing varied
-        print(f"Code's verdict: {arm} vs {control} on {row['reading']}: {row['delta']:+.2g}{p}: {row['verdict']}\n")
+    (row,) = comparison.contrasts("accuracy")
+    print(
+        f"Code's verdict: {row['arm']} vs {comparison.control} on {row['reading']}: delta {row['delta']:+.2f}, ", end=""
+    )
+    print(f"interval {row['interval']}, Holm-adjusted p {row['p_adjusted']:.2g}: {row['verdict']}\n")
 
     # Freeze: assemble the bundle once and save it. The fingerprint is a sha256 of its canonical JSON.
     bundle = inspect_campaign_bundle(comparison.host, comparison.campaign_id, comparison.scope_id).bundle
     out_dir.mkdir(parents=True, exist_ok=True)
-    bundle_path = out_dir / "bundle.json"
-    bundle_path.write_text(bundle.to_json(indent=2))
-    print(f"Froze the evidence into {bundle_path}, fingerprint {bundle.fingerprint()}")
+    (out_dir / "bundle.json").write_text(bundle.to_json(indent=2))
+    print(f"Froze the evidence into {out_dir / 'bundle.json'}, fingerprint {bundle.fingerprint()}")
 
-    async def write(bundle: AnalysisContextBundle, prompt: str) -> EvalAnalysis:
-        analysis, _insights = await generate_analysis(
-            bundle,  # the whole context: nothing else is read while the analysis is written
-            prompt=prompt,
-            model=MODEL if online else "offline",
-            client=claude_writer() if online else offline_writer(),
-            prompt_id="eval_analysis_gen",
-            bundle_assembled_at=assembled_at,
-            profile=profile,
-        )
-        made = analysis.generation  # provenance: the bundle it read, the prompt's version, the cost, any repair
-        print(f"\n# {analysis.document.headline}")
-        for finding in analysis.document.findings:
-            print(f"- {finding.title.rstrip('.')}: {finding.body}")  # every figure in the body was filled in by code
-        for decision in analysis.document.decisions:  # checked: adopting an arm needs a reading that separated
-            print(f"  decision ({decision.disposition}): {decision.proposal}")
-        print(f"  bundle {made.bundle_fingerprint[:12]}, prompt {made.prompt_version[:12]}, ${made.token_cost:.4f}")
-        refused = (made.repaired_refusal or "nothing").split(". ")[0]
-        print(f"  repairs {made.repair_attempts}, after the check refused: {refused}")
-        return analysis
-
-    first = await write(bundle, EVAL_ANALYSIS_GEN_DEFAULT)
-
-    # The payoff: reload the file, check it is the same evidence, and run another prompt over it.
-    reloaded = AnalysisContextBundle.from_json(bundle_path.read_text())
-    same = reloaded.fingerprint() == bundle.fingerprint()
-    print(f"\nReloaded {bundle_path}: fingerprint {'matches' if same else 'DOES NOT match'}")
-    terser = EVAL_ANALYSIS_GEN_DEFAULT + "\n\nWrite for a support lead who has two minutes."
-    second = await write(reloaded, terser)  # only the prompt moved
-    return [first, second]
+    analysis, _insights = await generate_analysis(
+        bundle,  # the whole context: nothing else is read while the analysis is written
+        prompt=EVAL_ANALYSIS_GEN_DEFAULT,
+        model=MODEL if online() else "offline-writer",
+        client=claude(MODEL, max_tokens=12_000) if online() else offline_writer(),
+        prompt_id="eval_analysis_gen",
+        bundle_assembled_at=datetime.now(UTC).isoformat(),
+        profile=comparison.host.profile,
+    )
+    print(f"\n# {analysis.document.headline}")
+    for finding in analysis.document.findings:
+        print(f"- {finding.title.rstrip('.')}: {finding.body}")  # every figure in the body was filled in by code
+    for decision in analysis.document.decisions:  # checked: adopting an arm needs a reading that separated
+        print(f"  decision ({decision.disposition}): {decision.proposal}")
+    made = analysis.generation  # provenance: the bundle it read, the prompt's version, the cost, any repair
+    print(
+        f"\nRead bundle {made.bundle_fingerprint[:12]} under prompt {made.prompt_version[:12]}, for ${made.token_cost:.4f}"
+    )
+    refused = (made.repaired_refusal or "nothing").split(". ")[0]
+    print(f"Repairs: {made.repair_attempts}, after the check refused: {refused}")
+    return analysis
 
 
 if __name__ == "__main__":
