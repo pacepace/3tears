@@ -1058,6 +1058,18 @@ def _comparison_interval(interval: tuple[float, float] | None, level: float | No
     return f"[{format_number(interval[0])}, {format_number(interval[1])}] at {format_number(100 * level)}%"
 
 
+def _immaterial_words(bundle: AnalysisContextBundle, comparison: FamilyComparison, heading: str) -> str:
+    """The caveat an immaterial row carries, naming the margin it was read against and the reading it is on.
+
+    In the reader's terms — the margin they declared, on the reading the row names — rather than the descriptor
+    field it is stored in, which a first comparison's reader has never seen.
+    """
+    descriptor = bundle.measure_catalog.get(comparison.name) if comparison.reading == "measure" else None
+    margin = None if descriptor is None else descriptor.materiality_threshold
+    where = "the margin declared on it" if margin is None else f"the margin of ±{format_number(margin)} on {heading}"
+    return f" — immaterial: the observed delta is inside {where}, which does not show the true difference is that small"
+
+
 def _comparison_blocks(bundle: AnalysisContextBundle, surface: DecisionSurface) -> list[ReportBlock]:
     """Each contrast the bundle tested against the control, per live question, and how the family was corrected."""
     comparisons = bundle.multiple_comparisons
@@ -1098,8 +1110,9 @@ def _comparison_blocks(bundle: AnalysisContextBundle, surface: DecisionSurface) 
                         # The observed delta, not the true one: only `equivalent` shows the difference is small,
                         # and an `equivalent` row already says so through its margin, so the caveat would
                         # contradict the verdict it sits beside.
-                        " — immaterial: the observed delta is below the host's materiality threshold, which does not "
-                        "show the true difference is that small"
+                        _immaterial_words(
+                            bundle, comparison, surface.measure_heading(comparison.name, comparison.reading)
+                        )
                         if comparison.materiality == "immaterial" and comparison.verdict != "equivalent"
                         else ""
                     ),

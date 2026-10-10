@@ -528,7 +528,12 @@ def case_rate_interval(case_rates: Sequence[float], *, max_effective_n: float) -
 
 
 def mean_interval(
-    mean: float, sem: float, n_cases: int, *, value_range: tuple[float, float] | None = None
+    mean: float,
+    sem: float,
+    n_cases: int,
+    *,
+    value_range: tuple[float, float] | None = None,
+    floor: float | None = None,
 ) -> tuple[float, float] | None:
     """The interval on a mean at :data:`INTERVAL_LEVEL`, kept inside the scale the measure is declared on.
 
@@ -536,13 +541,18 @@ def mean_interval(
     symmetric t interval knows nothing of a bound, so a mean near the top of a bounded scale got an
     upper bound past it — a 0.8 accuracy over ten observations read ``[0.498, 1.102]``, a share above
     all of them. The scale is a fact about every value the mean could take, so no part of the
-    interval beyond it is a value the mean could have.
+    interval beyond it is a value the mean could have. A measure bounded below only — a time, a spend, a
+    count (``MetricDescriptor.nonnegative``) — is clipped at ``floor`` the same way: a cost interval read
+    ``[-0.0002991, 0.000801]`` dollars before it, a spend no arm can have. Only an interval on a mean is
+    clipped; one on a difference of two means never is, since a difference can fall either way.
 
     Args:
         mean: The point estimate.
         sem: Its standard error — :func:`clustered_standard_error` where observations can repeat a case.
         n_cases: Independent cases behind it; see :func:`ci_half_width`.
         value_range: The measure's declared inclusive bounds, or None when it declares none.
+        floor: The lowest value the measure can take where it declares no range
+            (``MetricDescriptor.interval_floor``), or None when nothing bounds it below.
 
     Returns:
         ``(low, high)``, or ``None`` below two cases, where no interval is estimable.
@@ -552,13 +562,19 @@ def mean_interval(
         return None
     low, high = mean - half, mean + half
     if value_range is not None:
-        floor, ceiling = value_range
-        low, high = max(floor, low), min(ceiling, high)
+        bottom, top = value_range
+        low, high = max(bottom, low), min(top, high)
+    elif floor is not None:
+        low = max(floor, low)
     return low, high
 
 
 def observed_mean_interval(
-    values: Sequence[float], *, cases: Sequence[Hashable], value_range: tuple[float, float] | None = None
+    values: Sequence[float],
+    *,
+    cases: Sequence[Hashable],
+    value_range: tuple[float, float] | None = None,
+    floor: float | None = None,
 ) -> tuple[float, float] | None:
     """The interval on the mean of a numeric measure's observations — the ONE rule every numeric summary takes.
 
@@ -568,7 +584,7 @@ def observed_mean_interval(
     and ``match`` over the same observations state one interval rather than two different ones — and
     a perfect score keeps a width instead of the t interval's zero-width point. Every other numeric
     measure takes :func:`mean_interval` on the :func:`clustered_standard_error` over its cases, clipped to
-    its declared scale.
+    its declared scale, or at its floor where it is bounded below only.
 
     Args:
         values: The observations.
@@ -576,6 +592,8 @@ def observed_mean_interval(
             observations are fifteen cases or five cases three times is the difference between two
             interval widths, and nothing in the values says which.
         value_range: The measure's declared inclusive bounds, or None when it declares none.
+        floor: The measure's lower bound where it declares no range (``MetricDescriptor.interval_floor``),
+            or None; see :func:`mean_interval`.
 
     Returns:
         ``(low, high)``, or ``None`` below two observations, where no interval is estimable — the
@@ -595,7 +613,7 @@ def observed_mean_interval(
     sem = clustered_standard_error(values, cases)
     if sem is None:
         return None
-    return mean_interval(sum(values) / n, sem, len(set(cases)), value_range=value_range)
+    return mean_interval(sum(values) / n, sem, len(set(cases)), value_range=value_range, floor=floor)
 
 
 #: How far below its own mean (above, where lower is better) an incumbent's bar is seeded, as a fraction of
@@ -1013,13 +1031,24 @@ def composite_significance(
 
 
 def difference_interval(
-    sample_a: list[float], sample_b: list[float], *, paired: bool, confidence: float = INTERVAL_LEVEL
+    sample_a: list[float],
+    sample_b: list[float],
+    *,
+    paired: bool,
+    confidence: float = INTERVAL_LEVEL,
+    value_range: tuple[float, float] | None = None,
 ) -> tuple[float, float] | None:
     """The interval on ``mean(b) − mean(a)`` that :func:`composite_significance`'s test inverts.
 
     ``delta ± t · se`` on the test's own standard error and degrees of freedom — paired over the per-case
     differences, unpaired on Welch's SE and Hsu's df — so at ``confidence = 1 − α`` the interval excludes
-    zero exactly when the test's p is below α. Never clipped: a difference of two bounded means can run
+    zero exactly when the test's p is below α.
+
+    **With a declared range it is clipped to the differences the range allows**, ``± (high − low)``: two
+    means on 0-1 cannot differ by more than 1, and a t interval on a few coarse cases runs past that (a
+    pass/fail delta of +0.5 over six cases read ``[-0.07, 1.07]``). The true difference always lies inside
+    the clip, so the clipped interval covers it whenever the unclipped one does, and zero, inside it too,
+    is excluded exactly when it was. It is not clipped to ``[low, high]`` itself: a difference can run
     either way.
 
     Args:
@@ -1027,6 +1056,8 @@ def difference_interval(
         sample_b: The compared side's, aligned with ``sample_a`` when ``paired``.
         paired: Which test the interval belongs to.
         confidence: The coverage, ``INTERVAL_LEVEL`` unless a family's correction asks for more.
+        value_range: The measure's declared inclusive bounds, or None when it declares none, and then the
+            interval is not clipped: no bound is known to clip it to.
 
     Returns:
         ``(low, high)``, or ``None`` wherever the test runs no t — too few observations, or no spread,
@@ -1036,7 +1067,11 @@ def difference_interval(
     if isinstance(statistic, SignificanceResult):
         return None
     half = t_critical_two_sided(confidence, statistic.df) * statistic.se
-    return statistic.delta - half, statistic.delta + half
+    low, high = statistic.delta - half, statistic.delta + half
+    if value_range is not None:
+        span = value_range[1] - value_range[0]
+        low, high = max(low, -span), min(high, span)
+    return low, high
 
 
 def _constant_split_p(n_a: int, n_b: int) -> float:
@@ -1140,7 +1175,7 @@ def guardrail_decision(
     Returns:
         The decision, the interval it read (None when none exists) and the interval's basis.
     """
-    interval = difference_interval(list(control), list(contrast), paired=paired)
+    interval = difference_interval(list(control), list(contrast), paired=paired, value_range=value_range)
     basis: Literal["t", "bounded"] | None = "t" if interval is not None else None
     if interval is None and paired and value_range is not None and len(control) == len(contrast) >= 2:
         diffs = [float(b) - float(a) for a, b in zip(control, contrast)]

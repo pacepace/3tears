@@ -26,6 +26,7 @@ from pydantic import Field, TypeAdapter, ValidationError
 
 from threetears.evals.analysis.reads import RunLister, compare_two_runs, export_results, history, pivot
 from threetears.evals.analysis.numbers import format_number, format_signed
+from threetears.evals.analysis.stats import equivalence_untested_reason
 from threetears.evals.analysis.reporting import (
     COST_ESTIMATE_MIN_BASIS,
     cassette_mode_disclosure,
@@ -903,6 +904,9 @@ def history_text(result: HistoryResult) -> str:
             "equivalence margin: none declared for this measure, so no step can read equivalent; "
             "not_separated says the data cannot tell a move from noise, never that nothing changed"
             if result.equivalence_margin is None
+            else f"equivalence margin: ±{format_number(result.equivalence_margin)} (the measure's declared "
+            f"materiality threshold), but no step can read equivalent: {untested}"
+            if (untested := equivalence_untested_reason(result.equivalence_margin, result.measure.value_range))
             else f"equivalence margin: ±{format_number(result.equivalence_margin)} (the measure's declared "
             "materiality threshold); a step reads equivalent only when shown inside it"
         ),

@@ -279,21 +279,31 @@ def _scorer_reader_name(name: str) -> str:
 
 
 def scorer_measure(
-    scorer: Scorer, *, margin: float | None = None, guardrail: Guardrail | None = None
+    scorer: Scorer,
+    *,
+    margin: float | None = None,
+    value_range: tuple[float, float] | None = None,
+    guardrail: Guardrail | None = None,
 ) -> MetricDescriptor:
     """The measure one scorer function reports: a quality score, higher is better, over scored results.
 
+    A scorer whose return is annotated ``bool`` is a pass/fail and is declared on the range 0 to 1, margin or
+    not: its intervals stay inside what a pass rate can be, and with a margin its equivalence test is the
+    bounded one that holds its error rate at any n. Any other scorer is on the range its caller declares
+    (``compare(ranges=...)``), or on none, since nothing else says what its values can be: its intervals are
+    then the unclipped t intervals, and it takes no margin (:func:`refuse_unusable_margins`).
+
     Declared a guardrail (``guardrail=``), it is instead a measure no arm may get worse on: on no merit axis, so it
-    joins no contrast and no composite, with the guardrail's direction, its margin as the measure's
-    ``materiality_threshold`` and, for a scorer that is not a pass/fail, its declared range.
+    joins no contrast and no composite, with the guardrail's direction and its margin as the measure's
+    ``materiality_threshold``.
 
     Args:
         scorer: The scorer. Its ``__name__`` names the measure and the first line of its docstring,
             when it has one, describes it.
         margin: The measure's declared margin (``materiality_threshold``): the most a difference in it may be and
             still be too small to act on, so a contrast on it can read ``equivalent``. ``None`` declares none,
-            and no contrast on it can. With a margin, a scorer whose return is annotated ``bool`` is declared on
-            the range 0 to 1, so its equivalence test is the bounded one that holds its error rate at any n.
+            and no contrast on it can.
+        value_range: The lowest and highest value a non-``bool`` scorer can return, or ``None``.
         guardrail: Declares the measure a guardrail, with its margin and direction; ``None`` for a quality score.
             A guardrail takes no ``margin`` beside it: its margin is the guardrail's own.
 
@@ -320,7 +330,7 @@ def scorer_measure(
             guardrail=True,
             population="scored",
             materiality_threshold=guardrail.margin,
-            value_range=(0.0, 1.0) if _returns_bool(scorer) else guardrail.value_range,
+            value_range=(0.0, 1.0) if _returns_bool(scorer) else value_range,
         )
     return MetricDescriptor(
         name=name,
@@ -335,8 +345,13 @@ def scorer_measure(
         merit_axis="quality",
         population="scored",
         materiality_threshold=margin,
-        value_range=(0.0, 1.0) if margin is not None and _returns_bool(scorer) else None,
+        value_range=(0.0, 1.0) if _returns_bool(scorer) else value_range,
     )
+
+
+def _as_range(bounds: tuple[float, float] | None) -> tuple[float, float] | None:
+    """A declared range as two floats, or None when none is declared."""
+    return None if bounds is None else (float(bounds[0]), float(bounds[1]))
 
 
 def _returns_bool(scorer: Scorer) -> bool:
@@ -348,18 +363,53 @@ def _returns_bool(scorer: Scorer) -> bool:
     return returned is bool or returned == "bool"
 
 
-def refuse_unusable_margins(scorers: Sequence[Scorer], margins: Mapping[str, float]) -> None:
-    """Refuse a margin no scorer's measure could carry, naming the measures that can carry one.
+def refuse_unusable_margins(
+    scorers: Sequence[Scorer],
+    margins: Mapping[str, float],
+    ranges: Mapping[str, tuple[float, float]] | None = None,
+) -> None:
+    """Refuse a margin or a range no scorer's measure could carry, naming what can carry one.
+
+    A margin is what lets a contrast read ``equivalent``, and the equivalence test needs the measure's range
+    (#695). A ``bool`` scorer is on 0 to 1; any other has the range ``ranges`` declares for it, or none, and a
+    margin on it with none is refused here rather than accepted and never tested.
 
     Args:
         scorers: The scorers whose measures the margins are declared on.
         margins: Each margin, by the name of the scorer it is declared on.
+        ranges: Each non-``bool`` scorer's range, by its name.
 
     Raises:
-        ValueError: A margin on a name no scorer has (the classifier's accuracy and every engine core measure
-            among them), or one that is not a positive finite number.
+        ValueError: A margin or range on a name no scorer has (the classifier's accuracy and every engine core
+            measure among them), a margin that is not a positive finite number, a range on a ``bool`` scorer or
+            one that is not two finite numbers, low below high, or a margin on a scorer with no range.
     """
+    ranges = dict(ranges or {})
     names = [_scorer_name(scorer) for scorer in scorers]
+    by_name = dict(zip(names, scorers, strict=True))
+    for name, bounds in ranges.items():
+        if name not in names:
+            raise ValueError(
+                f"ranges= names {name!r}, which no scorer reports; a range is declared on a scorer's measure, by "
+                f"its def's name: {', '.join(map(repr, names)) or 'none were given'}"
+            )
+        if _returns_bool(by_name[name]):
+            raise ValueError(
+                f"{name!r} returns a bool, a pass/fail, which is on 0 to 1 already: declare ranges= only for a "
+                "scorer returning a number"
+            )
+        if (
+            not isinstance(bounds, tuple | list)
+            or len(bounds) != 2
+            or any(
+                isinstance(end, bool) or not isinstance(end, int | float) or not math.isfinite(end) for end in bounds
+            )
+            or not bounds[0] < bounds[1]
+        ):
+            raise ValueError(
+                f"the range of {name!r} is the lowest and the highest score it can return, as two numbers, low "
+                f"first: ranges={{{name!r}: (1, 5)}} for a 1-to-5 score, not {bounds!r}"
+            )
     for name, margin in margins.items():
         if name in _CLASSIFIER_NAMES or name in METRIC_DESCRIPTORS:
             raise ValueError(
@@ -378,6 +428,13 @@ def refuse_unusable_margins(scorers: Sequence[Scorer], margins: Mapping[str, flo
                 f"the margin on {name!r} is a positive number in the measure's own units (0.05 is five points on a "
                 f"pass rate), not {margin!r}"
             )
+        if not _returns_bool(by_name[name]) and name not in ranges:
+            raise ValueError(
+                f"a margin on {name!r} needs its range too: {name!r} does not return a bool, so nothing says what "
+                "its scores can be, and with no range no test can show two arms inside a margin (one rare large "
+                f"score can hide a move). Declare the lowest and highest score it can return beside the margin: "
+                f"ranges={{{name!r}: (1, 5)}} for a 1-to-5 score. A pass/fail scorer annotated -> bool needs none"
+            )
 
 
 #: Why a scorer named in both ``margins=`` and ``guardrails=`` is refused, naming it.
@@ -392,6 +449,7 @@ def refuse_unusable_guardrails(
     guardrails: Mapping[str, Guardrail],
     *,
     margins: Mapping[str, float] | None = None,
+    ranges: Mapping[str, tuple[float, float]] | None = None,
     judge: Judge | None = None,
 ) -> None:
     """Refuse a guardrail no scorer's measure, or judged dimension, could carry, naming the ones that can.
@@ -400,13 +458,14 @@ def refuse_unusable_guardrails(
         scorers: The scorers whose measures a guardrail may be declared on.
         guardrails: Each guardrail, by the name of the scorer (or the judge's rubric dimension) it is declared on.
         margins: The margins declared beside them, by scorer.
+        ranges: The ranges declared for scorers returning a number, by scorer (``compare(ranges=...)``).
         judge: The judge whose rubric dimensions a guardrail may also be declared on, or ``None``.
 
     Raises:
         ValueError: A guardrail that is not a :class:`~threetears.evals.quick.Guardrail` (a bare margin among
             them); on an engine core measure (the classifier's accuracy among them), or a name no scorer or
-            dimension has; on a scorer also given a margin; a range on a pass/fail scorer; or, on a judged
-            dimension, a range, a lower-is-better direction, or a margin as wide as the dimension's scale.
+            dimension has; on a scorer also given a margin; a margin as wide as the scorer's range (0 to 1 for a
+            pass/fail) or the dimension's scale; or a lower-is-better direction on a judged dimension.
     """
     names = [_scorer_name(scorer) for scorer in scorers]
     by_name = dict(zip(names, scorers, strict=True))
@@ -426,9 +485,12 @@ def refuse_unusable_guardrails(
         if name in by_name:
             if margins and name in margins:
                 raise ValueError(_MARGIN_ON_A_GUARDRAIL.format(name=name))
-            if guardrail.value_range is not None and _returns_bool(by_name[name]):
+            bounds = (0.0, 1.0) if _returns_bool(by_name[name]) else (ranges or {}).get(name)
+            if bounds is not None and guardrail.margin >= bounds[1] - bounds[0]:
                 raise ValueError(
-                    f"{name!r} returns a bool, a pass/fail on 0 to 1 already; its guardrail takes no value_range"
+                    f"a margin of {guardrail.margin!r} on {name!r}, which scores {bounds[0]:g} to {bounds[1]:g}, is "
+                    "as wide as every value it can return, so every arm would hold whatever it did; declare a "
+                    "smaller one"
                 )
             continue
         dim = dims.get(judge.dim_name(name)) if judge is not None else None
@@ -438,8 +500,6 @@ def refuse_unusable_guardrails(
                 f"guardrails= names {name!r}, which no scorer reports and no rubric dimension of the judge scores; a "
                 f"guardrail is declared on a scorer's measure, by its def's name, or on a judged dimension: {said}"
             )
-        if guardrail.value_range is not None:
-            raise ValueError(f"{dim.name!r} is judged on its scale, so its guardrail takes no value_range")
         if not guardrail.higher_is_better:
             raise ValueError(
                 f"{dim.name!r} is judged with higher better, so its guardrail's direction is 'higher_is_better': "
@@ -518,6 +578,7 @@ def callable_host(
     world: World | None = None,
     arms: bool = False,
     margins: Mapping[str, float] | None = None,
+    ranges: Mapping[str, tuple[float, float]] | None = None,
     guardrails: Mapping[str, Guardrail] | None = None,
 ) -> EvalHost:
     """The least host there is: the shared core, one measure per scorer, no world, an in-memory store.
@@ -539,6 +600,9 @@ def callable_host(
             host. A run that states no arm (a ``run_eval`` in this host) is at its candidate model's label.
         margins: A margin declared on a scorer's measure, by the scorer's name (:func:`scorer_measure`), so a
             contrast on it can read ``equivalent``; ``None`` declares none. No margin is ever assumed.
+        ranges: The lowest and highest score a scorer returning a number can give, by the scorer's name
+            (``{"rating": (1, 5)}``): its intervals stay inside it, and a margin on it can be tested. A ``bool``
+            scorer is on 0 to 1 already. A score outside its range excludes its cell, naming the scorer.
         guardrails: The scorers declared guardrails, by name, each with its margin and direction
             (:class:`~threetears.evals.quick.Guardrail`): measures no arm may get worse on, decided apart from
             every contrast. A guardrail on a judged dimension is the campaign's to declare, so it is
@@ -549,15 +613,17 @@ def callable_host(
 
     Raises:
         ValueError: A scorer has no usable name, two share one, or one takes a classifier measure's name or
-            any other engine core measure's; a lever name is unusable or repeated; a margin names no scorer
-            or is not a positive number; or a guardrail names no scorer, is not a ``Guardrail``, or is
-            declared on a scorer given a margin too.
+            any other engine core measure's; a lever name is unusable or repeated; a margin names no scorer,
+            is not a positive number or is on a scorer with no range; a range is unusable
+            (:func:`refuse_unusable_margins`); or a guardrail names no scorer, is not a ``Guardrail``, is declared
+            on a scorer given a margin too, or is as wide as its scorer's range.
     """
     _refuse_unnamed_or_repeated(scorers)
     margins = dict(margins or {})
-    refuse_unusable_margins(scorers, margins)
+    ranges = dict(ranges or {})
+    refuse_unusable_margins(scorers, margins, ranges)
     guardrails = dict(guardrails or {})
-    refuse_unusable_guardrails(scorers, guardrails, margins=margins)
+    refuse_unusable_guardrails(scorers, guardrails, margins=margins, ranges=ranges)
     return EvalHost(
         profile=HostProfile(
             host_id=CALLABLE_HOST_ID,
@@ -566,7 +632,10 @@ def callable_host(
             else SHARED_CORE,
             measures=MeasureRegistry(
                 scorer_measure(
-                    scorer, margin=margins.get(_scorer_name(scorer)), guardrail=guardrails.get(_scorer_name(scorer))
+                    scorer,
+                    margin=margins.get(_scorer_name(scorer)),
+                    value_range=_as_range(ranges.get(_scorer_name(scorer))),
+                    guardrail=guardrails.get(_scorer_name(scorer)),
                 )
                 for scorer in scorers
             ),
@@ -602,7 +671,7 @@ class CallableKind:
     spend as the cell's ``candidate`` usage. A candidate that raises FAILS its cell (a
     candidate error lowers the score; a broken candidate must not vanish); a scorer that raises, or
     returns something that is not a number, EXCLUDES it, because the grader is the rig rather than
-    the thing under test. A classifying kind also lands ``match`` and ``confusion_cell`` against the
+    the thing under test; so does a score outside the range its measure declares. A classifying kind also lands ``match`` and ``confusion_cell`` against the
     expected label its case carries, the answer counted as :data:`UNUSABLE_ANSWER` when it is no label.
     A judged kind is a document kind: every answer carries the evidence its judge reads
     (:func:`~threetears.evals.quick.judged.judge_evidence`), and the engine's judge scores it after ``invoke``.
@@ -632,14 +701,12 @@ class CallableKind:
             judge: The judge whose evidence each answer carries, or ``None`` for an unjudged kind.
             tools: The tools the candidate is called with beside each case, or ``None`` for a candidate
                 called with the case alone.
-            ranges: The range each scorer's measure declares, by scorer name: a score outside it excludes its
-                cell as a fault of the scorer, since an interval read off the range would rest on a promise the
-                scorer broke. A scorer with no range is held to none.
+            ranges: Each scorer's declared range, by its name, which every score it returns must lie in.
         """
         self._candidate = candidate
+        self._ranges = dict(ranges or {})
         self._tools = dict(tools) if tools is not None else None
         self._scorers = tuple(scorers)
-        self._ranges = dict(ranges or {})
         self._classifies = classifies
         self._judge = judge
         self.judged_artifact = JudgedArtifact.UNJUDGED if judge is None else JudgedArtifact.DOCUMENT
@@ -742,12 +809,12 @@ class CallableKind:
                     judge_evidence=evidence,
                     telemetry=telemetry,
                 )
-            if (bounds := self._ranges.get(name)) is not None and not bounds[0] <= score <= bounds[1]:
+            if name in self._ranges and not self._ranges[name][0] <= score <= self._ranges[name][1]:
+                low, high = self._ranges[name]
                 return CandidateOutput(
                     output=trace,
                     infra_errors=[
-                        f"the scorer {name} returned {score!r}, outside the range {bounds[0]:g} to {bounds[1]:g} "
-                        "its measure declares"
+                        f"the scorer {name} returned {score!r}, outside the range {low:g} to {high:g} declared for it"
                     ],
                     judge_evidence=evidence,
                     telemetry=telemetry,
@@ -1493,6 +1560,7 @@ async def run_arms(
     host.storage.save_template(template)
     for test_case in test_cases:
         host.storage.save_test_case(test_case)
+    # Each scorer's declared range, which every score it returns is held to: the bounded tests read it as a fact.
     ranges = {
         name: descriptor.value_range
         for name in map(_scorer_name, scorers)

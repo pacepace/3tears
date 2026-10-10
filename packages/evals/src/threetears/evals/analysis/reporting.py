@@ -5786,13 +5786,18 @@ class RegressionFlag(EvalBaseModel):
     #: whose statistic is absent cannot be checked.
     p: float | None = None
     #: The TOST p an ``equivalent`` label was thresholded against — the larger of the
-    #: two one-sided p's — or ``None`` wherever no equivalence test ran: no margin
-    #: declared, too few pairs, or on a measure with no declared range a difference
-    #: with no spread (:func:`~threetears.evals.analysis.stats.paired_equivalence`).
+    #: two one-sided p's, each the bounded test's on the measure's declared range — or
+    #: ``None`` wherever no equivalence test ran: no margin declared, no range declared
+    #: (``equivalence_untested_reason`` says so), fewer than two pairs, or a difference
+    #: outside the declared range (:func:`~threetears.evals.analysis.stats.paired_equivalence`).
     equivalence_p: float | None = None
     #: The margin that test ran against, in the measure's units: the measure's declared
     #: materiality threshold, or ``None`` when it declares none.
     equivalence_margin: float | None = None
+    #: Why a measure with a margin was not tested for equivalence at all: it declares no
+    #: range (:data:`~threetears.evals.analysis.stats.EQUIVALENCE_NEEDS_RANGE`, which names the
+    #: remedy), so no step on it can read ``equivalent``. ``None`` otherwise.
+    equivalence_untested_reason: str | None = None
     n_pairs: int = 0
     crosses_epoch: bool = False
     crosses_cassette_mode: bool = False
@@ -5912,8 +5917,9 @@ class HistoryResult(EvalBaseModel):
     ``min_absolute_change`` / ``min_relative_change`` echo the caller's regression
     gate (the thresholds are the caller's, disclosed, never invented), and the
     per-flag ``test`` names the statistic. ``equivalence_margin`` is the host's
-    declared margin on the measure, the only thing that lets a step read
-    ``equivalent``; ``None`` when it declares none. ``attribution_disclosure`` is the same
+    declared margin on the measure, which with a declared range is what lets a step read
+    ``equivalent``; ``None`` when it declares none. A margin with no range is never tested,
+    and each flag carries the reason. ``attribution_disclosure`` is the same
     obligation one rung up: on a measure whose verdicts cannot name a cause, it says so
     once for the answer. ``exclusions`` and the ``n_*`` counts keep
     an all-excluded corpus from rendering as an empty one, exactly as
@@ -6286,6 +6292,7 @@ def compute_history(
                     p=verdict.p_value,
                     equivalence_p=verdict.equivalence_p,
                     equivalence_margin=verdict.equivalence_margin,
+                    equivalence_untested_reason=verdict.equivalence_untested_reason,
                     n_pairs=verdict.n_pairs,
                     crosses_epoch=boundary,
                     crosses_cassette_mode=crosses_cassette,

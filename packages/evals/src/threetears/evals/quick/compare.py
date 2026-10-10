@@ -67,6 +67,7 @@ from threetears.evals.contracts import (
     utc_now_iso,
 )
 from threetears.evals.contracts.host import CANDIDATE_MODEL_LEVER, EvalHost
+from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS
 from threetears.evals.ops.summary import CaseResult, EvalSummary, self_judging_text
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Judge
@@ -554,6 +555,8 @@ def _with_no_margin_disclosed(report: Report, bundle: AnalysisContextBundle) -> 
     )
     if not names:
         return report
+    # The scorers among them with no range: a margin on one is refused unless its range comes with it.
+    unranged = [name for name in names if name not in METRIC_DESCRIPTORS]
     headings = ", ".join(catalog[name].reader_name or name for name in names)
     disclosure = DisclosureBlock(
         section="surface",
@@ -564,6 +567,11 @@ def _with_no_margin_disclosed(report: Report, bundle: AnalysisContextBundle) -> 
             "Accuracy takes no margin: grade with a scorer too, and declare one on it with compare(margins=...)."
             if ACCURACY_MEASURE in names
             else "Declare a scorer's margin with compare(margins=...)."
+        )
+        + (
+            " A scorer that returns a number, not a bool, takes its range beside its margin, with ranges=."
+            if any(catalog[name].family == "mechanical" and catalog[name].value_range is None for name in unranged)
+            else ""
         ),
     )
     blocks = list(report.blocks)
@@ -628,6 +636,7 @@ async def compare(
     goal_checks: Sequence[str] = (),
     max_cost_usd: float | None = None,
     margins: Mapping[str, float] | None = None,
+    ranges: Mapping[str, tuple[float, float]] | None = None,
     guardrails: Mapping[str, Guardrail] | None = None,
 ) -> Comparison:
     """Run each candidate over every case ``k`` times as one arm, test every arm against ``control``, and report.
@@ -690,7 +699,13 @@ async def compare(
             way "the cheaper model is good enough" is shown. ``None`` declares none and no margin is ever assumed,
             so no contrast can read ``equivalent``, which the report says in one line. A classifier's accuracy is a
             core measure and takes none: grade it with a scorer too, and declare the margin on that. With a
-            ``host`` of your own, declare margins on its measures (``materiality_threshold``) instead.
+            ``host`` of your own, declare margins on its measures (``materiality_threshold``) instead. A margin
+            on a scorer that does not return a ``bool`` needs its range in ``ranges``: with no range no
+            equivalence test holds its error rate, so it is refused rather than never tested.
+        ranges: The lowest and highest score a scorer returning a number can give, by the scorer's name
+            (``{"rating": (1, 5)}``). Its intervals stay inside it, a margin on it can be tested, and a score
+            outside it excludes the cell, naming the scorer. A scorer annotated ``-> bool`` is a pass/fail on 0
+            to 1 already. With a ``host`` of your own, declare ``value_range`` on its measures instead.
         guardrails: The readings no arm may get worse on, by name — a scorer's, or a judge's rubric dimension's —
             each a :class:`~threetears.evals.quick.Guardrail` with its margin and direction
             (``{"no_leak": Guardrail(margin=0.02, direction="higher_is_better")}``). A guardrail joins no contrast
@@ -708,8 +723,9 @@ async def compare(
         ValueError: Fewer than two candidates, a blank arm name, an arm key that is not a level of each
             factor, factors without ``model`` or with an unusable or repeated name, a ``control`` that names
             no arm, a ``max_cost_usd`` that is not a positive number, a margin that names no scorer, is not a
-            positive number or comes with a ``host``, a guardrail that is not a ``Guardrail``, names neither a
-            scorer nor a rubric dimension, sits on a scorer given a margin too or comes with a ``host``, or anything
+            positive number, is on a scorer with no range or comes with a ``host``, a range that is unusable or
+            comes with a ``host``, a guardrail that is not a ``Guardrail``, names neither a scorer nor a rubric
+            dimension, sits on a scorer given a margin too or comes with a ``host``, or anything
             :func:`~threetears.evals.quick.run_eval` refuses.
         ValidationFailedError: The launch refused, or the host refuses the campaign's declaration.
     """
@@ -728,6 +744,11 @@ async def compare(
             "margins= declares margins on the host compare builds; a host of your own declares them on its measures "
             "(MetricDescriptor.materiality_threshold), so pass one or the other"
         )
+    if ranges and host is not None:
+        raise ValueError(
+            "ranges= declares ranges on the host compare builds; a host of your own declares them on its measures "
+            "(MetricDescriptor.value_range), so pass one or the other"
+        )
     guardrails = dict(guardrails or {})
     if guardrails and host is not None:
         raise ValueError(
@@ -735,7 +756,7 @@ async def compare(
             "guardrail on it (MetricDescriptor(guardrail=True), its materiality_threshold the margin), so pass one or "
             "the other"
         )
-    refuse_unusable_guardrails(scorers, guardrails, margins=margins, judge=judge)
+    refuse_unusable_guardrails(scorers, guardrails, margins=margins, ranges=ranges, judge=judge)
     scorer_names = {getattr(scorer, "__name__", None) for scorer in scorers}
     judged_guardrails = {
         judge.dim_name(name): guardrail
@@ -759,6 +780,7 @@ async def compare(
             world=world,
             arms=named == _NAMED_ARMS,
             margins=margins,
+            ranges=ranges,
             guardrails={name: guardrail for name, guardrail in guardrails.items() if name in scorer_names},
         )
     coordinates = {arm: _coordinates(arm, named) for arm in arms_given}

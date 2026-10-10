@@ -380,6 +380,17 @@ class MetricDescriptor(EvalBaseModel):
         default=None,
         description="Inclusive numeric bounds, when the measure has them. None for unbounded or non-numeric measures.",
     )
+    nonnegative: bool = Field(
+        default=False,
+        description=(
+            "True for a measure that can never be below zero and has no upper bound: a time, a spend, a count. "
+            "Every interval on its mean is then kept at or above zero, as `value_range` keeps one inside both "
+            "bounds, since the mean of values that are never negative is never negative. It bounds one end only, "
+            "so it does NOT license the bounded equivalence test, which needs both (`value_range`). An interval on "
+            "a DIFFERENCE in it is never floored: two such means can differ either way. False on a descriptor "
+            "stored before the field existed, whose intervals were stored unfloored."
+        ),
+    )
     categories: tuple[str, ...] | None = Field(
         default=None,
         description="The closed value set for a categorical measure. None when the value set is open or the measure is not categorical.",
@@ -474,6 +485,23 @@ class MetricDescriptor(EvalBaseModel):
         ),
     )
 
+    @property
+    def interval_floor(self) -> float | None:
+        """The lowest an interval on this measure's mean may reach: its range's floor, zero when nonnegative, else None."""
+        if self.value_range is not None:
+            return self.value_range[0]
+        return 0.0 if self.nonnegative else None
+
+    @model_validator(mode="after")
+    def _nonnegative_agrees_with_the_range(self) -> MetricDescriptor:
+        """Refuse a measure declared nonnegative on a range that reaches below zero: the two would disagree."""
+        if self.nonnegative and self.value_range is not None and self.value_range[0] < 0.0:
+            raise ValueError(
+                f"{self.name} is declared nonnegative on a value range from {self.value_range[0]}: a nonnegative "
+                "measure is never below zero, so drop one of the two"
+            )
+        return self
+
     @model_validator(mode="after")
     def _a_guardrail_is_satisficed_not_optimized(self) -> MetricDescriptor:
         """Refuse a guardrail with no better end, or one on a merit axis.
@@ -563,8 +591,37 @@ _NORMALISED = "; ".join(
 )
 
 
+#: The core's units that are never negative: a time, a spend, a count of something, a rate of tokens. A core
+#: measure in one of them with no ``value_range`` is declared ``nonnegative`` by :func:`_d`, so no interval on its
+#: mean reaches below zero. ``provider-defined`` is not here: nothing says what a provider's unit can be.
+_NONNEGATIVE_UNITS: frozenset[str] = frozenset(
+    {
+        "ms",
+        "usd",
+        "tokens",
+        "tokens/s",
+        "calls",
+        "cases",
+        "deliveries",
+        "items",
+        "iterations",
+        "requests",
+        "results",
+        "rounds",
+        "scores",
+        "turn index",
+        "turns",
+    }
+)
+
+
 def _d(**kwargs: Any) -> MetricDescriptor:
-    """Build a descriptor; a local alias so the seed table below stays readable."""
+    """Build a descriptor; a local alias so the seed table below stays readable.
+
+    A core measure in a :data:`_NONNEGATIVE_UNITS` unit with no range of its own is declared ``nonnegative``.
+    """
+    if kwargs.get("unit") in _NONNEGATIVE_UNITS and kwargs.get("value_range") is None:
+        kwargs.setdefault("nonnegative", True)
     return MetricDescriptor(**kwargs)
 
 
@@ -2686,6 +2743,7 @@ def describe_phase_timing(key: str) -> MetricDescriptor:
         attribution_scope="subsystem",
         higher_is_better=False,
         unit="ms",
+        nonnegative=True,
         formula="summed across repeat deliveries within the result",
         description=f"Wall-clock inside the {phase.replace('_', ' ')} phase.",
     )

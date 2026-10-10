@@ -41,24 +41,21 @@ class Guardrail:
         direction: Which way is better on the reading: ``"higher_is_better"`` (``no_leak`` passes) or
             ``"lower_is_better"`` (``leaked`` passes). Required, since "worse" needs one. A judged dimension
             is scored with higher better, so it takes ``"higher_is_better"``.
-        value_range: The least and most a scorer that is not a pass/fail can return, when it is bounded (a
-            score from 0 to 1, say). With a range, two arms that score every case alike — the state of a
-            guardrail at its ceiling — read the interval the range allows, rather than ``undecided`` for want
-            of one, and a value outside it excludes its case as a fault of the scorer. A pass/fail scorer (one
-            annotated ``-> bool``) is on 0 to 1 already, and a judged dimension is on its scale, so neither
-            takes one.
+
+    A scorer's range is declared beside it, as for any scorer (``compare(ranges=...)``): a pass/fail (``-> bool``)
+    is on 0 to 1 already, and a bounded score declared on its range is too. With a range, two arms that score
+    every case alike — a guardrail at its ceiling — read the interval the range allows rather than ``undecided``
+    for want of one.
     """
 
     margin: float
     direction: GuardrailDirection
-    value_range: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
         """Refuse a guardrail no arm could be decided against.
 
         Raises:
-            ValueError: A margin that is not a positive finite number, a direction that is neither, or a range
-                that is not two finite numbers, least first, wider than the margin.
+            ValueError: A margin that is not a positive finite number, or a direction that is neither.
         """
         if not _a_number(self.margin) or self.margin <= 0:
             raise ValueError(
@@ -71,18 +68,6 @@ class Guardrail:
                 f"a guardrail's direction is which way is better on it, {' or '.join(map(repr, _DIRECTIONS))}, "
                 f"not {self.direction!r}"
             )
-        if self.value_range is not None:
-            bounds = tuple(self.value_range) if isinstance(self.value_range, tuple | list) else ()
-            if len(bounds) != 2 or not all(_a_number(bound) for bound in bounds) or not bounds[0] < bounds[1]:
-                raise ValueError(
-                    f"a guardrail's value_range is the least and the most its scorer can return, two finite "
-                    f"numbers, least first (0.0, 1.0), not {self.value_range!r}"
-                )
-            if self.margin >= bounds[1] - bounds[0]:
-                raise ValueError(
-                    f"a margin of {self.margin!r} on a range of {bounds[0]!r} to {bounds[1]!r} is as wide as every "
-                    "value the scorer can return, so every arm would hold whatever it did; declare a smaller one"
-                )
 
     @property
     def higher_is_better(self) -> bool:

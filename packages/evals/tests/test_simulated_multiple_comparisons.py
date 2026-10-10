@@ -261,6 +261,55 @@ class TestEveryVerdictTheFamilyReaches:
         assert equivalences / (2 * self.BOUNDED_REPLICATES) > 0.5, "the fixture must reach the equivalent verdict"
 
 
+class TestIdenticalArmsOnPassFailAnswers:
+    """Two identical arms answering a label bank, graded pass/fail twice over: a scorer and accuracy.
+
+    The shape a quick comparison of two prompts that change nothing has: each case has the answer it usually
+    gets (right on about three cases in four), every answer departs from it one time in twelve, to another
+    label, each case is run twice (k=2), and the family holds the scorer's pass rate and the classifier's
+    accuracy, which read the same answers. The values are coarse (a case's mean is 0, 1/2 or 1) and mostly
+    tied, the regime a t-test is least sure of. No difference exists, so ANY ``improved`` or ``regressed``
+    is a false separation, and the family's chance of one must stay at most α at every bank size.
+
+    Through ``compare()`` itself, 1,500 seeded comparisons per bank size gave 0.004 (12 cases), 0.023 (24)
+    and 0.021 (48); this runs the same rule fast.
+    """
+
+    #: 3,000 replicates: SE at α is 0.0040, a 4-SE band of ±0.016.
+    REPLICATES = 3000
+    LABELS = 4
+    DEPARTS = 1 / 12
+
+    def _arm(self, rng: random.Random, usual_right: Sequence[bool], repeats: int) -> dict[str, float]:
+        """Each case's pass rate over its repeats; a departure from a right usual answer is wrong, and from a
+        wrong one is right one time in three (it lands on one of the other three labels)."""
+        rates = {}
+        for case, right in enumerate(usual_right):
+            passes = 0
+            for _ in range(repeats):
+                if rng.random() < self.DEPARTS:
+                    passes += (not right) and rng.randrange(self.LABELS - 1) == 0
+                else:
+                    passes += right
+            rates[f"case-{case}"] = passes / repeats
+        return rates
+
+    @pytest.mark.parametrize("n_cases", [12, 24, 48])
+    def test_the_family_separates_them_at_most_alpha_of_the_time(self, n_cases: int) -> None:
+        rng = random.Random(f"identical-pass-fail-{n_cases}")
+        errors = 0
+        for _ in range(self.REPLICATES):
+            usual_right = [rng.random() < 0.75 for _ in range(n_cases)]
+            control, contrast = self._arm(rng, usual_right, 2), self._arm(rng, usual_right, 2)
+            # The scorer and accuracy read the same answers, so the family holds one comparison twice.
+            family = [(control, contrast, True), (control, contrast, True)]
+            errors += any(v.verdict in ("improved", "regressed") for v in family_verdicts(family))
+        rate = errors / self.REPLICATES
+        assert rate <= at_most(SIGNIFICANCE_ALPHA, self.REPLICATES), (
+            f"{n_cases} cases x 2: family-wise false separation {rate:.4f} against α={SIGNIFICANCE_ALPHA}"
+        )
+
+
 # --- the bundle applies the rule ----------------------------------------------------------------------
 
 _CONTROL = "control-model"

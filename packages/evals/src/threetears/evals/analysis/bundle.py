@@ -4027,7 +4027,9 @@ def _measure_summary(
         numeric = sorted(observed)
         mean = sum(numeric) / len(numeric)
         sem = clustered_standard_error(observed, cases)
-        interval = observed_mean_interval(observed, cases=cases, value_range=descriptor.value_range)
+        interval = observed_mean_interval(
+            observed, cases=cases, value_range=descriptor.value_range, floor=descriptor.interval_floor
+        )
         shape = {
             "mean": mean,
             "p05": _percentile(numeric, 0.05),
@@ -7633,7 +7635,9 @@ def _bar_reading(
         clustered_standard_error(values, cases),
         len(values),
         len(set(cases)),
-        observed_mean_interval(values, cases=cases, value_range=bar.descriptor.value_range),
+        observed_mean_interval(
+            values, cases=cases, value_range=bar.descriptor.value_range, floor=bar.descriptor.interval_floor
+        ),
     )
 
 
@@ -8116,6 +8120,8 @@ class _Tested(NamedTuple):
     p_raw: float | None
     equivalence_p_raw: float | None
     samples: tuple[list[float], list[float]]
+    #: The reading's declared range, which bounds the interval on its delta (:func:`difference_interval`).
+    value_range: tuple[float, float] | None = None
 
 
 def _compare(
@@ -8147,9 +8153,9 @@ def _compare(
         threshold: The measure's declared materiality threshold, which labels the delta through the one
             predicate every surface uses (:func:`~threetears.evals.contracts.metrics.materiality`) and is the
             equivalence test's margin; None for a measure that declared none and for a judged dimension.
-        value_range: The measure's declared inclusive bounds, which the equivalence test reads so its error
-            rate holds on coarse values at every n (:func:`~threetears.evals.analysis.stats.paired_equivalence`);
-            None where it declares none.
+        value_range: The reading's declared inclusive bounds, which the equivalence test reads so its error
+            rate holds on coarse values at every n (:func:`~threetears.evals.analysis.stats.paired_equivalence`),
+            and which bound the interval on the delta; None where it declares none.
         no_turn: Which sides (``"control"``, ``"arm"``) have no turn to read a turn's time or spend over —
             every result there failed with no turn taken — so an untested comparison says that, the reason,
             rather than that too few cases carried the reading.
@@ -8243,7 +8249,7 @@ def _compare(
         untested_reason=untested_reason,
         materiality=None if delta is None else materiality(threshold, delta),
     )
-    return _Tested(comparison, p_raw, equivalence_p_raw, (a, b))
+    return _Tested(comparison, p_raw, equivalence_p_raw, (a, b), value_range)
 
 
 def _family_disclosure(
@@ -8312,7 +8318,11 @@ def _corrected_family(question_id: str | None, axes: list[MeritAxis], tested: li
                     "p_adjusted": p_adjusted,
                     "equivalence_p_adjusted": equivalence_p_adjusted,
                     "interval": difference_interval(
-                        control_sample, contrast_sample, paired=comparison.test == "paired", confidence=interval_level
+                        control_sample,
+                        contrast_sample,
+                        paired=comparison.test == "paired",
+                        confidence=interval_level,
+                        value_range=one.value_range,
                     ),
                     "verdict": verdict,
                 }
@@ -8410,6 +8420,8 @@ def _multiple_comparisons(
         + _served_model_confounds((result.id for key in pair for result in results_by_cell[key]), served)
         for pair in pairs
     }
+    # A judged dimension's scale bounds the interval on its delta; it declares no margin, so no equivalence reads it.
+    judged_ranges = {judged.name: judged.value_range for judged in judged_measures if judged.value_range is not None}
     families = []
     for question_id, axes in scopes:
         readings = _family_readings(axes, catalog, judged_measures)
@@ -8426,7 +8438,9 @@ def _multiple_comparisons(
                     (control_key, control_values),
                     (contrast_key, contrast_values),
                     threshold=catalog[reading[1]].materiality_threshold if reading[0] == "measure" else None,
-                    value_range=catalog[reading[1]].value_range if reading[0] == "measure" else None,
+                    value_range=(
+                        catalog[reading[1]].value_range if reading[0] == "measure" else judged_ranges.get(reading[1])
+                    ),
                     no_turn=tuple(
                         side
                         for side, key in (("control", control_key), ("arm", contrast_key))

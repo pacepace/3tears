@@ -185,20 +185,29 @@ class TestAScorerGuardrail:
         reasons = [reason for miss in comparison.misses("leaky") for reason in miss.missed_because]
         assert reasons == ["leaked gave 1"] * 12, "a leak is the miss on a lower-is-better guardrail, and none is not"
 
-    async def test_a_bounded_scorer_holds_on_its_range_and_a_value_outside_it_is_the_scorer_s_fault(self) -> None:
+    async def test_a_bounded_scorer_holds_on_its_declared_range_and_a_value_outside_it_is_the_scorer_s_fault(
+        self,
+    ) -> None:
         arms = {"current": _answers(misses=0, leaks=0), "same": _answers(misses=0, leaks=0)}
-        polite = {"politeness": Guardrail(margin=0.2, direction="higher_is_better", value_range=(0.0, 1.0))}
-        comparison = await _compare(arms=arms, scorers=[politeness], guardrails=polite)
+        polite = {"politeness": Guardrail(margin=0.2, direction="higher_is_better")}
+        ranged = {"politeness": (0.0, 1.0)}
+        comparison = await _compare(arms=arms, scorers=[politeness], guardrails=polite, ranges=ranged)
         assert comparison.host.profile.measures.get("politeness").value_range == (0.0, 1.0)  # type: ignore[union-attr]
         assert comparison.arms["same"].n_excluded == 0
         (held,) = comparison.guardrails()
         assert held["outcome"] == "held" and "(bounded: every case moved alike)" in held["interval"]
 
         rude = {"current": _answers(misses=0, leaks=0), "please": _answers(misses=0, leaks=0, tail=" please")}
-        comparison = await _compare(arms=rude, scorers=[politeness], guardrails=polite)
+        comparison = await _compare(arms=rude, scorers=[politeness], guardrails=polite, ranges=ranged)
         summary = comparison.arms["please"]
         assert summary.n_excluded == len(CASES) and summary.n_scored == 0
-        assert "outside the range 0 to 1 its measure declares" in summary.errors[0]
+        assert "outside the range 0 to 1" in summary.errors[0]
+
+    async def test_with_no_range_a_bounded_reading_has_no_interval_when_every_case_moved_alike(self) -> None:
+        arms = {"current": _answers(misses=0, leaks=0), "same": _answers(misses=0, leaks=0)}
+        polite = {"politeness": Guardrail(margin=0.2, direction="higher_is_better")}
+        (row,) = (await _compare(arms=arms, scorers=[politeness], guardrails=polite)).guardrails()
+        assert row["outcome"] == "undecided" and "declares no range to bound that by" in row["decision"]
 
 
 class TestABreachedArmIsNeverRecommended:
@@ -270,8 +279,6 @@ class TestARefusedGuardrail:
             ({"margin": float("nan"), "direction": "higher_is_better"}, "a positive number"),
             ({"margin": True, "direction": "higher_is_better"}, "a positive number"),
             ({"margin": 0.1, "direction": "up"}, "which way is better on it"),
-            ({"margin": 0.1, "direction": "higher_is_better", "value_range": (1.0, 0.0)}, "least first"),
-            ({"margin": 1.0, "direction": "higher_is_better", "value_range": (0.0, 1.0)}, "as wide as every value"),
         ],
     )
     def test_one_no_arm_could_be_decided_against(self, arguments: dict[str, Any], said: str) -> None:
@@ -305,10 +312,16 @@ class TestARefusedGuardrail:
         with pytest.raises(ValueError, match=r"MetricDescriptor\(guardrail=True\).*pass one or the other"):
             await _compare(host=callable_host([correct, no_leak]))
 
-    async def test_a_range_on_a_pass_fail(self) -> None:
-        bounded = Guardrail(margin=0.1, direction="higher_is_better", value_range=(0.0, 1.0))
-        with pytest.raises(ValueError, match="returns a bool, a pass/fail on 0 to 1 already"):
-            await _compare(guardrails={"no_leak": bounded})
+    @pytest.mark.parametrize(
+        ("scorers", "guardrail", "ranges"),
+        [([no_leak], "no_leak", None), ([politeness], "politeness", {"politeness": (0.0, 1.0)})],
+    )
+    async def test_as_wide_as_every_value_the_scorer_can_return(
+        self, scorers: list[Any], guardrail: str, ranges: dict[str, tuple[float, float]] | None
+    ) -> None:
+        wide = {guardrail: Guardrail(margin=1.0, direction="higher_is_better")}
+        with pytest.raises(ValueError, match="is as wide as every value it can return"):
+            await _compare(scorers=scorers, guardrails=wide, ranges=ranges)
 
 
 class TestTheSingleRunSummary:
@@ -405,7 +418,6 @@ class TestAJudgedGuardrail:
         ("guardrail", "said"),
         [
             (Guardrail(margin=0.1, direction="lower_is_better"), "judged with higher better"),
-            (Guardrail(margin=0.1, direction="higher_is_better", value_range=(0.0, 1.0)), "takes no value_range"),
             (Guardrail(margin=1.0, direction="higher_is_better"), "is as wide as its scale"),
         ],
     )

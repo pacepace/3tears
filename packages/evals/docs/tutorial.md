@@ -221,7 +221,7 @@ Each row of the contrasts table compares one arm with the control on one reading
 |---|---|---|
 | separated: printed **improved on the control** or **regressed from the control** | the adjusted p is below 0.05 | act on it, unless the row says *immaterial*: real, but smaller than a margin you declared |
 | **not separated from the control** | the cases could not tell the arms apart | add cases, above all hard ones. It never means "no difference" |
-| **equivalent to the control** | a test showed the difference is inside a margin you declared | treat the arms as interchangeable on this reading. It needs a margin (`materiality_threshold`) on the measure, which `run_eval` and `compare` do not declare, so on this path you will not see it |
+| **equivalent to the control** | a test showed the difference is inside a margin you declared | treat the arms as interchangeable on this reading. Only this verdict says "good enough", and it needs a margin: see below |
 | **untested** | no test could decide, for example with fewer than two cases on a side | fix what the row names, usually too few cases |
 
 Now try a smaller change. `route_v1_login` fixes only the locked-out ticket. Add it, and compare all three:
@@ -263,6 +263,42 @@ Two lessons here:
 - **`v2` lost its separation without changing.** Adding an arm put two tests in one family, so each interval
   widened (to 97.5%) and each p was corrected for two. Every arm you add costs every other arm some power.
   Compare only the arms that answer your question.
+
+To show a cheaper or simpler version is **good enough**, you need `equivalent`, and that needs a **margin**: the
+largest difference too small to matter. Declare it per scorer with `margins=`. Accuracy takes none, so grade
+with a scorer too. Add it, and replace `main()`:
+
+```python
+def correct(case: dict, answer: str) -> bool:
+    """Whether the ticket went to its queue."""
+    return answer == case["queue"]
+
+
+async def main() -> None:
+    result = await compare(
+        CASES,
+        {"v1": route_v1, "v1-login": route_v1_login},
+        [correct],
+        control="v1",
+        scope_id="tutorial",
+        k=2,
+        margins={"correct": 0.25},
+    )
+    for row in result.contrasts("correct"):
+        print(f"{row['arm']}: delta {row['delta']:+.2f}, interval {row['interval']}, {row['verdict']}")
+
+
+asyncio.run(main())
+```
+
+```
+v1-login: delta +0.10, interval [-0.1262, 0.3262] at 95%, not separated from the control — immaterial: the observed delta is inside the margin of ±0.25 on Correct score, which does not show the true difference is that small
+```
+
+Still not separated, and not equivalent either: ten cases cannot show a pass rate within 0.25, even when the
+arms agree on every case. That takes at least 12, and more when they disagree on some
+([how many](reading-reports.md#reading-a-comparison)). Without a margin, the report says so in a line above
+its contrasts table.
 
 [Reading reports](reading-reports.md#reading-a-comparison) explains each column, the tests behind them, and the
 rest of the report.
