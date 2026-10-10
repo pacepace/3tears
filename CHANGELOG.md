@@ -30,6 +30,11 @@ packages (bumped in lock-step).
   internet's engines are throttled or CAPTCHA'd (which, on a test client, they are): the multiplier
   in SearXNG's `calculate_score` is now checked on every run, and the formula invariant never runs
   over nothing.
+- **Changed, the SearXNG image is pinned** by tag and digest (`SEARXNG_IMAGE`,
+  `searxng/searxng:2026.8.28-a30b2d474@sha256:addd2cf3...`), not `:latest`, and the fixture fails at
+  start, naming the path and the image, when the image does not serve `/static` from
+  `SEARXNG_STATIC_DIR` (checked by a directory the image ships, since a mount would create the static
+  directory itself).
 
 ### Coordination: one lease primitive -- `nats_distributed_lock` runs on `KVLease`
 

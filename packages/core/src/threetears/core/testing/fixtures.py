@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterator
-from typing import Final
+from typing import Any, Final
 
 import os
 
@@ -40,6 +40,9 @@ __all__ = [
     "NATS_TEST_SYSTEM_PASSWORD",
     "NATS_TEST_SYSTEM_USER",
     "SEARXNG_FIXTURE_ENGINES",
+    "SEARXNG_IMAGE",
+    "SEARXNG_STATIC_DIR",
+    "require_searxng_static_dir",
     "db_container",
     "db_image",
     "nats_container",
@@ -442,6 +445,22 @@ def _outbound_proxy_by_ip() -> str | None:
     return url.replace(parts.hostname, address, 1)
 
 
+#: the SearXNG image the test container runs: an exact release, by tag AND digest. The fixture depends on
+#: its layout (the settings path, and the static directory the fixture engines' result lists are
+#: mounted into), which a moving ``:latest`` could change under every run at once. Move it deliberately:
+#: re-run ``test_searxng_live_scoring.py`` against the new one.
+SEARXNG_IMAGE: Final[str] = (
+    "searxng/searxng:2026.8.28-a30b2d474@sha256:addd2cf36efb4b9815a2820a522aef7cce4da0d1c0e4527f6675f5663332fc9b"
+)
+
+#: where the image serves ``/static`` from; the fixture engines' result lists are mounted into it.
+SEARXNG_STATIC_DIR: Final[str] = "/usr/local/searxng/searx/static"
+
+#: a directory the image itself ships inside :data:`SEARXNG_STATIC_DIR`. Checked rather than the static
+#: directory, because a file mounted into a directory the image lacks makes Docker create that
+#: directory -- so the static directory "exists" whether or not the image serves it.
+_SEARXNG_STATIC_SHIPPED: Final[str] = f"{SEARXNG_STATIC_DIR}/themes"
+
 #: the SearXNG test container's own engines: each name, and the result URLs it answers every query
 #: with, in rank order. ``fused`` comes back twice from the first engine and once from the second --
 #: positions ``[1, 2, 2]`` from two engines -- and ``single`` once, from one.
@@ -460,6 +479,25 @@ def _searxng_fixture_file(engine: str) -> str:
     :rtype: str
     """
     return f"{engine.replace(' ', '-')}.json"
+
+
+def require_searxng_static_dir(container: Any) -> None:
+    """fail the session, naming the path and the image, unless the image serves ``/static`` from where
+    the fixture engines' result lists are mounted.
+
+    :param container: the started SearXNG container (anything with testcontainers' ``exec``)
+    :ptype container: Any
+    :return: None
+    :rtype: None
+    """
+    shipped = container.exec(["test", "-d", _SEARXNG_STATIC_SHIPPED])
+    if shipped.exit_code != 0:
+        pytest.fail(
+            f"{SEARXNG_IMAGE} does not serve /static from {SEARXNG_STATIC_DIR} (it has no "
+            f"{_SEARXNG_STATIC_SHIPPED}), so the fixture engines' result lists mounted there are never "
+            f"served and the scoring tests have nothing deterministic to check. Find the image's static "
+            f"directory and update SEARXNG_STATIC_DIR, or pin an image that has it."
+        )
 
 
 @pytest.fixture(scope="session")
@@ -543,7 +581,7 @@ def searxng_container() -> Iterator[str]:
         path = Path(workdir) / "settings.yml"
         path.write_text(settings, encoding="utf-8")
         container = (
-            DockerContainer("searxng/searxng:latest")
+            DockerContainer(SEARXNG_IMAGE)
             .with_exposed_ports(8080)
             .with_volume_mapping(str(path), "/etc/searxng/settings.yml", "ro")
         )
@@ -554,7 +592,7 @@ def searxng_container() -> Iterator[str]:
                 encoding="utf-8",
             )
             container = container.with_volume_mapping(
-                str(served), f"/usr/local/searxng/searx/static/{_searxng_fixture_file(name)}", "ro"
+                str(served), f"{SEARXNG_STATIC_DIR}/{_searxng_fixture_file(name)}", "ro"
             )
         # Behind an egress proxy the container's engines have no route out, and
         # a nested daemon's bridge cannot resolve the proxy's name, so it is
@@ -569,6 +607,7 @@ def searxng_container() -> Iterator[str]:
             for name in ("NO_PROXY", "no_proxy"):
                 container = container.with_env(name, "127.0.0.1,localhost")
         with container:
+            require_searxng_static_dir(container)
             host = container.get_container_host_ip()
             port = container.get_exposed_port(8080)
             base_url = f"http://{host}:{port}"
