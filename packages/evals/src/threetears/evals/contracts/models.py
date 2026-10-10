@@ -166,6 +166,11 @@ each judged guardrail (a boundary rubric dimension) is held to. A campaign, or a
 stored before it carries none and reads as declaring none: its judged guardrails are held at zero change, exactly
 as they were decided then, so no stored decision moves.
 
+**Within v8, not a bump**: ``CampaignDesign.crossing`` and ``CampaignDesign.skipped_cells`` joined as OPTIONAL
+fields (#654) — which combinations of the declared levels a design meant to run. A campaign, or an analysis's
+design snapshot, stored before them carries None and an empty list, and reads as declaring nothing about
+combinations: no cell is read as skipped by design or as missing, exactly as before.
+
 **Within v8, not a bump**: ``EvalResult.judge_seconds`` joined as an OPTIONAL field (#646, #597) — a second judge's
 scores of the result's stored evidence (:class:`SecondJudging`), each beside the first score it pairs with. A result
 stored before it carries none and reads as "no second judge was asked", which is what it means: no agreement and no

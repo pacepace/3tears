@@ -11,8 +11,11 @@ that isolated the lever cleanly.
 here is operator input — *what we set out to learn*. The realized design is derived from
 observations and lives on the bundle — *what we actually measured*. **The delta between them is
 the coverage story**, and merging them destroys it: a declared value with no observations is
-`unswept` **and named**, where an inferred design can only report what happened to run. Today
-`unswept` means "we did not see it" rather than "we meant to and did not".
+`unswept` **and named**, where an inferred design can only report what happened to run. A level
+is per axis; a CELL is a combination of declared levels, and a design may say which combinations
+it meant to run (``crossing``, ``skipped_cells``), so a cell left out on purpose reads as skipped by
+design and one that was meant to run and did not reads as a gap. A design that says nothing about
+crossings has no cell coverage: an unrun combination there is neither.
 
 **Nothing here names a host concept.** An axis id is whatever the host ACCEPTS as an axis — a
 registered sweepable LEVER, or a member of an open family the host's own membership test
@@ -491,6 +494,24 @@ class CampaignDesign(EvalDocumentModel):
             "by it (`verdict_order`). Empty = no stated preference, and the analysis must not invent one."
         ),
     )
+    crossing: Literal["full", "star"] | None = Field(
+        default=None,
+        description=(
+            "Which combinations of the declared levels (cells) this design meant to run. full = every combination; "
+            "star = the centre (each axis's FIRST declared level) and every cell differing from it on one axis "
+            "only, the rest skipped by design. None = the design says nothing about combinations, and no cell is "
+            "read as skipped or missing, as before this field existed (unless skipped_cells names some, which then "
+            "reads as full less those)."
+        ),
+    )
+    skipped_cells: list[dict[str, str]] = Field(
+        default_factory=list,
+        description=(
+            "Cells left out on purpose, each naming every declared axis once with one of its declared levels, by "
+            "the level's content_hash or its display. A skipped cell that did not run is skipped by design, never "
+            "a gap. Empty = none beyond what crossing skips."
+        ),
+    )
     measure_latency: bool = Field(
         default=False,
         description=(
@@ -605,6 +626,74 @@ class CampaignDesign(EvalDocumentModel):
                 "axes, and an axis ranked twice puts its bars in two tiers; name each axis once"
             )
         return self
+
+    @model_validator(mode="after")
+    def _skipped_cells_name_declared_levels(self) -> CampaignDesign:
+        """Each skipped cell names every declared axis once, at a level that axis declares — or it is refused.
+
+        Returns:
+            The validated design.
+
+        Raises:
+            ValueError: A skipped cell names an axis the design does not declare, leaves one out, or names a
+                level its axis does not declare (or that matches more than one of them).
+        """
+        for cell in self.skipped_cells:
+            self.cell_identity(cell)
+        return self
+
+    def cell_identity(self, cell: Mapping[str, str]) -> tuple[str, ...]:
+        """A cell, authored as ``{axis_id: level content_hash or display}``, as its levels' content hashes in axis order.
+
+        Args:
+            cell: The cell.
+
+        Returns:
+            One content hash per declared axis, in the order the axes are declared.
+
+        Raises:
+            ValueError: The cell does not name exactly the declared axes, or names a level its axis does not
+                declare, or one that matches more than one declared level.
+        """
+        axes = [axis.axis_id for axis in self.axes]
+        if sorted(cell) != sorted(axes):
+            raise ValueError(
+                f"a skipped cell names axes {sorted(cell)}, and a cell is one level of EVERY declared axis: "
+                f"{sorted(axes)}"
+            )
+        identity = []
+        for axis in self.axes:
+            named = cell[axis.axis_id]
+            matches = [level for level in axis.values if named in (level.content_hash, level.display)]
+            if len(matches) != 1:
+                raise ValueError(
+                    f"a skipped cell names {named!r} on axis {axis.axis_id!r}, which "
+                    + ("is none of its declared levels" if not matches else "matches more than one declared level")
+                    + f"; name one of: {', '.join(level.display for level in axis.values)}"
+                )
+            identity.append(matches[0].content_hash)
+        return tuple(identity)
+
+    def declares_cells(self) -> bool:
+        """Whether this design says which combinations of its levels it meant to run."""
+        return self.crossing is not None or bool(self.skipped_cells)
+
+    def skipped_by_design(self, cell: tuple[str, ...]) -> bool:
+        """Whether the design left ``cell`` (one content hash per axis, in axis order) out on purpose.
+
+        Args:
+            cell: The combination.
+
+        Returns:
+            True when ``skipped_cells`` names it, or ``crossing`` is ``star`` and it differs from the centre (each
+            axis's first declared level) on more than one axis.
+        """
+        if cell in {self.cell_identity(skipped) for skipped in self.skipped_cells}:
+            return True
+        if self.crossing == "star":
+            centre = [axis.values[0].content_hash for axis in self.axes]
+            return sum(1 for level, middle in zip(cell, centre, strict=True) if level != middle) > 1
+        return False
 
     def question_words(self, question_id: str) -> str:
         """A declared question as a reader reads it: its text, or — for an id this design does not hold — the id.

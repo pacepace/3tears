@@ -26,6 +26,7 @@ from threetears.evals.ops import (
     AnalysisGenerationEstimate,
     AnalysisLine,
     AnalysisListing,
+    BarProposals,
     CampaignDefinition,
     CampaignLine,
     CampaignListing,
@@ -60,6 +61,7 @@ from threetears.evals.ops import (
     analysis_delete,
     analysis_estimate,
     analysis_generate,
+    bars_propose,
     campaign_archive,
     campaign_create,
     campaigns_list,
@@ -656,6 +658,11 @@ async def _report_read(host: OpsHost, caller: Caller, params: ReportReadParams) 
     )
 
 
+async def _bars_propose(host: OpsHost, caller: Caller, params: CampaignParams) -> BarProposals:
+    eval_host = host.eval_host
+    return await run_blocking(eval_host.blocking_executor, bars_propose, eval_host, params.campaign_id, caller.scope_id)
+
+
 async def _reporter_case_freeze(host: OpsHost, caller: Caller, params: ReporterCaseFreezeParams) -> FrozenReporterCase:
     eval_host = host.eval_host
     freeze = ReporterCaseFreeze.model_validate(params.model_dump())
@@ -925,7 +932,9 @@ def engine_actions() -> tuple[Action, ...]:
                 "refusal, word for word. n_test_cases prices a hypothetical grid instead of each plan's cases; the "
                 "generation calls a generating launch makes first are priced by the launch itself. Pass the structured "
                 "result to scope_pivot as predicted_cost after the runs land, to set each prediction beside the cost "
-                "observed. Spends nothing."
+                "observed. Beside the price, detectable_effect states per reading the smallest difference the paired "
+                "comparison would find at 80% power, from earlier runs of the template's variance, or why it cannot. "
+                "Spends nothing."
             ),
         ),
         Action(
@@ -1157,6 +1166,24 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_report_read,
             render=render.render_report,
             example={"campaign_id": campaign_id, "format": "markdown"},
+        ),
+        Action(
+            name="bars_propose",
+            summary="Propose bars from a single-cell baseline campaign's measured incumbent; registers nothing.",
+            workflow=ANALYSE,
+            permission="read",
+            params=CampaignParams,
+            result=BarProposals,
+            handler=_bars_propose,
+            render=render.render_bar_proposals,
+            example={"campaign_id": campaign_id},
+            detail=(
+                "Measures the baseline campaign's one cell and proposes a bar on each host-declared measure with a "
+                "better end, seeded from the incumbent's measured interval. A proposal nothing could fail is flagged "
+                "vacuous with why; every reading nothing could be proposed on is named with why. Nothing is "
+                "registered: a person adopts a bar by writing it into the host's registrations. A campaign of more "
+                "than one cell is refused, since which arm is the incumbent is a person's choice."
+            ),
         ),
         Action(
             name="reporter_case_freeze",
