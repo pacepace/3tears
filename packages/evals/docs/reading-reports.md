@@ -131,9 +131,14 @@ is a bounded test by betting, which holds 5% for any distribution of differences
 of cases. Coarse scores need that: a regression that fails one case in ten leaves twelve agreeing cases 28%
 of the time, and a t-test, or the exact sign-flip reading of a difference with no spread it replaced,
 called such samples equivalent up to three times in four. The price is that equivalence on a small margin
-takes many cases, whatever the test: identical arms show a pass rate within 0.25 from 12 shared cases, within
-0.1 from 33, and a 1–5 score within 0.5 from 26 (no valid test could do it in fewer than 11, 29 and 23).
-Below that the row reads `not_separated`, which claims nothing. A measure with a margin and no declared range
+takes many cases, whatever the test. Arms that give the same answer on every case and repeat show a pass rate
+within 0.25 from 12 shared cases and within 0.1 from 33, and a 1–5 score within 0.5 from 26, when it is the
+only reading the family tests (no valid test could do it in fewer than 11, 29 and 23). Each further reading
+in the family raises that: with a second (accuracy from `expected=`, or a cost from `Answer`), a pass rate
+takes 15 and 41. Arms that disagree on some cases need more: in a seeded simulation at k=2 where about one
+answer in twelve departed from its case's usual one, a pass rate read `equivalent` within 0.25 in 18 of 20
+runs at 24 cases, and within 0.1 in 16 of 20 runs at 100. Below that the row reads `not_separated`, which
+claims nothing. A measure with a margin and no declared range
 is not tested for equivalence at all, since no test of a mean holds 5% without one: its rows never read
 `equivalent`, and the report names the measure once with the remedy, declare `value_range`. The p is corrected in the same Holm family as the separations, with the multiplier capped at the number of
 compared rows (Shaffer's refinement: a difference cannot be both zero and at least the margin), so the

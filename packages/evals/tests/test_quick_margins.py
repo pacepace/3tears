@@ -83,6 +83,37 @@ class TestADeclaredMargin:
         assert _row(comparison.against("cheaper"), "correct")["verdict"].startswith("equivalent to the control")
 
 
+class TestHowManyCasesEquivalenceTakes:
+    """The case counts ``reading-reports.md`` states, through ``compare``: arms answering alike on every case."""
+
+    @staticmethod
+    async def _verdict(n: int, margin: float, *, expected: bool) -> str:
+        async def alike(case: Mapping[str, Any]) -> str:
+            return "right" if case["n"] % 3 else "wrong"
+
+        comparison = await compare(
+            CASES[:n],
+            {"current": alike, "cheaper": alike},
+            [correct],
+            expected=(lambda case: "right") if expected else None,
+            control="current",
+            scope_id=f"how-many-{n}-{margin}-{expected}",
+            k=2,
+            margins={"correct": margin},
+        )
+        return str(_row(comparison, "correct")["verdict"])
+
+    @pytest.mark.parametrize(
+        ("margin", "expected", "first"), [(0.25, False, 12), (0.1, False, 33), (0.25, True, 15), (0.1, True, 41)]
+    )
+    async def test_the_first_count_at_which_alike_arms_read_equivalent(
+        self, margin: float, expected: bool, first: int
+    ) -> None:
+        """One reading in the family, or two when ``expected=`` adds accuracy and Holm divides α between them."""
+        assert (await self._verdict(first - 1, margin, expected=expected)).startswith("not separated")
+        assert (await self._verdict(first, margin, expected=expected)).startswith("equivalent")
+
+
 class TestAPassFailInterval:
     async def test_stays_inside_the_differences_a_pass_rate_allows(self) -> None:
         """Half of six cases flip to right: the t interval on the delta runs to 1.075, past any pass-rate difference.
