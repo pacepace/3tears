@@ -55,7 +55,8 @@ from threetears.evals.run.judge import CANNOT_TELL, JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.launch import build_judge_service
 from threetears.evals.run.lifecycle import rejudge_result
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
-from threetears.evals.analysis.reporting import compute_estimate_cost, compute_program_budget
+from threetears.evals.analysis.reporting import compute_estimate_cost
+from threetears.evals.analysis.lenses.program_budget import compute_program_budget
 from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.usage_capture import RoleUsageLedger

@@ -9,10 +9,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from threetears.evals.analysis.reporting import (
-    ProgramBudget,
-    ScoreRecord,
-)
+from threetears.evals.analysis.reporting import ScoreRecord
+from threetears.evals.analysis.lenses.program_budget import ProgramBudget
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.models import EvalResult
 from threetears.evals.kernel.provider import sum_optional_tokens

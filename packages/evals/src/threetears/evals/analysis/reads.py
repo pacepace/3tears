@@ -54,12 +54,12 @@ from threetears.evals.analysis.reporting import (
     compute_frontier,
     compute_history,
     compute_pivot,
-    compute_program_budget,
     normalize_bar,
     pooled_composite_basis,
     pooled_served_models,
     project_score_records,
 )
+from threetears.evals.analysis.lenses.program_budget import compute_program_budget
 from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
 from threetears.evals.analysis.lenses.export import ExportError, ScoreExport, export_projection
 from threetears.evals.analysis.significance import cross_subject_disclosure

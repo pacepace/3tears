@@ -62,11 +62,11 @@ from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporting import (
     compute_comparison_sets,
     compute_frontier,
-    compute_program_budget,
     measurement_window,
     measurement_window_disclosure,
     project_score_records,
 )
+from threetears.evals.analysis.lenses.program_budget import compute_program_budget
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.kernel.campaign import EvalInsight, derive_window

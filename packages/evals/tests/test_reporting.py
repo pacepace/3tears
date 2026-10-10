@@ -58,13 +58,13 @@ from threetears.evals.analysis.reporting import (
     compute_frontier,
     compute_history,
     compute_pivot,
-    compute_program_budget,
     decompose_total_ms,
     difference_was_declared_at_launch,
     dim_judge_model,
     place_results,
     project_score_records,
 )
+from threetears.evals.analysis.lenses.program_budget import compute_program_budget
 from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
 from threetears.evals.analysis.lenses.export import ExportError, export_projection, export_records_csv, serialize_export
 from threetears.evals.analysis.completeness import DEGRADED_RUN_CLAUSE, completeness_disclosure
