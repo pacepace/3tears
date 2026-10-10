@@ -52,7 +52,7 @@ from threetears.evals.analysis.reporter_kind import (
     reporter_case_of,
     reporter_case_payload,
 )
-from threetears.evals.analysis.report import Report, build_code_only_report, build_report
+from threetears.evals.analysis.report import Report, Verdict, build_code_only_report, build_report
 from threetears.evals.analysis.viz.intent import chart_intent
 from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.analysis.viz.policy import IntentPolicyError
@@ -1072,6 +1072,32 @@ def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report:
     )
 
 
+def campaign_verdicts(host: EvalHost, campaign_id: str, scope_id: str) -> list[Verdict]:
+    """Every verdict code reaches on the campaign's evidence as it stands now, typed — what a CI gate reads.
+
+    The code-only report's :attr:`~threetears.evals.analysis.report.model.Report.verdicts` over the evidence
+    assembled now — each guardrail, each bar on each cell, each contrast against the control — whether or not an
+    analysis was generated: a gate rests on code's verdicts, never on an analyst's words, and an analysis's
+    frozen surface holds no contrast. Costs no model call.
+
+    Args:
+        host: The host whose store holds the campaign, and whose vocabulary its evidence is assembled in.
+        campaign_id: The campaign.
+        scope_id: The scope it lives in.
+
+    Returns:
+        The verdicts, in the report's order.
+
+    Raises:
+        NotFoundError: No campaign with that id in the scope.
+    """
+    campaign = _load_campaign(host.storage, campaign_id, scope_id)
+    bundle = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
+    return build_code_only_report(
+        bundle, measures=host.profile.measures, assembled_at=utc_now_iso(), campaign_name=campaign.name
+    ).verdicts
+
+
 def finding_chart_intent(storage: AnalysisStore, analysis_id: str, scope_id: str, finding_id: str) -> ChartIntent:
     """Decide one finding's chart, for a surface that draws a single chart at a time with its own renderer.
 
@@ -1664,6 +1690,7 @@ __all__ = [
     "get_analysis",
     "inspect_analysis_bundle",
     "campaign_report",
+    "campaign_verdicts",
     "inspect_campaign_bundle",
     "list_analyses",
     "list_analysis_attempts",

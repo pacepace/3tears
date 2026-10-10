@@ -26,11 +26,12 @@ from threetears.evals.analysis import (
     GATE_TOKENS,
     TableBlock,
     Verdict,
+    create_campaign,
     gate_verdicts,
     parse_fail_on,
     verdict_token,
 )
-from threetears.evals.quick import Comparison, Guardrail, compare
+from threetears.evals.quick import EXIT_GATE_FAILED, EXIT_OK, EXIT_REFUSED, Comparison, Guardrail, compare, run_cli
 
 CASES = [{"n": index} for index in range(48)]
 
@@ -205,3 +206,68 @@ class TestAQuickGuardrailIsATypedVerdictTheGateReads:
         assert comparison.gate(["breached"], readings=["no_leak"]).failures == (typed["candidate=leaky"],)
         lenient = comparison.gate(["regressed"], readings=["no_leak"])
         assert lenient.outcome == "undecided" and not lenient.passed, "an undecided guardrail is never a pass"
+
+
+class TestTheCommandLineGate:
+    """``python -m threetears.evals gate``: exit 4 on a regressed contrast and on a breached guardrail."""
+
+    @staticmethod
+    def _gate(comparison: Comparison, *extra: str) -> int:
+        return run_cli(
+            ["gate", comparison.campaign_id, "--scope", comparison.scope_id, *extra],
+            host_factory=lambda: comparison.host,
+        )
+
+    async def test_a_regressed_contrast_exits_4_and_names_it(self, capsys: pytest.CaptureFixture[str]) -> None:
+        comparison = await _compare({"current": 0, "worse": 30}, scope_id="cli-regressed")
+        assert self._gate(comparison) == EXIT_GATE_FAILED == 4
+        out = capsys.readouterr().out
+        assert out.startswith("gate FAILED: 1 of 1 verdict(s)")
+        assert "failed: Correct score, candidate=worse vs candidate=current: regressed from the control" in out
+
+    async def test_a_breached_guardrail_exits_4(self, capsys: pytest.CaptureFixture[str]) -> None:
+        comparison = await compare(
+            CASES[:40],
+            {"current": _leaks(0), "leaky": _leaks(12)},
+            [correct, no_leak],
+            control="current",
+            scope_id="cli-breached",
+            k=1,
+            guardrails={"no_leak": Guardrail(margin=0.1, direction="higher_is_better")},
+        )
+        assert self._gate(comparison, "--fail-on", "breached") == EXIT_GATE_FAILED
+        assert "failed: guardrail Correct" not in capsys.readouterr().out
+        assert self._gate(comparison, "--fail-on", "breached", "--reading", "correct") == EXIT_OK
+
+    async def test_a_better_arm_passes_and_an_undecided_one_exits_0_saying_it_is_no_pass(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        better = await _compare({"current": 30, "better": 0}, scope_id="cli-better")
+        assert self._gate(better) == EXIT_OK
+        assert capsys.readouterr().out.startswith("gate passed: all 1 verdict(s) decided")
+        alike = await _compare({"current": 0, "alike": 0}, scope_id="cli-alike")
+        assert self._gate(alike) == EXIT_OK
+        assert "which is not a pass" in capsys.readouterr().out
+        assert self._gate(alike, "--fail-on", "regressed,untested,not-separated") == EXIT_GATE_FAILED
+
+    async def test_an_unknown_outcome_and_a_campaign_with_no_verdict_are_refused(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        comparison = await _compare({"current": 0, "worse": 30}, scope_id="cli-refused")
+        with pytest.raises(SystemExit) as exited:
+            self._gate(comparison, "--fail-on", "regresed")
+        assert exited.value.code == EXIT_REFUSED
+        bare = create_campaign(
+            comparison.host.storage,
+            {
+                "name": "no control",
+                "subject_id": "no control",
+                "behavior": "score",
+                "run_ids": [summary.run_id for summary in comparison.arms.values()],
+            },
+            scope_id=comparison.scope_id,
+            created_by="test",
+            profile=comparison.host.profile,
+        )
+        code = run_cli(["gate", bare.id, "--scope", comparison.scope_id], host_factory=lambda: comparison.host)
+        assert code == EXIT_REFUSED and "has no verdict to gate on" in capsys.readouterr().err

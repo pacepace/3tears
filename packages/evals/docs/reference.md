@@ -957,6 +957,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`build_report(analysis: EvalAnalysis) -> Report`
 - **`campaign_report`** · function · The campaign's report — THE answer to "what is this campaign's report", for every caller.
   <br>`campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report`
+- **`campaign_verdicts`** · function · Every verdict code reaches on the campaign's evidence as it stands now, typed — what a CI gate reads.
+  <br>`campaign_verdicts(host: EvalHost, campaign_id: str, scope_id: str) -> list[Verdict]`
 - **`cell_label`** · function · Name one cell — an arm under one rig — from the index and the multi-rig population.
   <br>`cell_label(variant_key: str, apparatus_class_id: str, *, index: Mapping[str, VariantIndexEntry], multi_rig: frozenset[str]) -> str`
 - **`compare_two_runs`** · function · Diff two runs into the side-by-side compare view.
@@ -1513,6 +1515,8 @@ Batteries: run an eval in one call, and drive the engine from a command line.
 - **`ENGINE_COMMANDS`** · constant (tuple) · The commands the engine itself carries; a host command may take none of these names.
 - **`EXIT_FAILED`** · constant (int) · Exit code: the command failed on an error nothing anticipated — a host factory, a launcher or a handler raising, or the engine's own fault.
   <br>`= 3`
+- **`EXIT_GATE_FAILED`** · constant (int) · Exit code: `gate` read a verdict its `--fail-on` names.
+  <br>`= 4`
 - **`EXIT_OK`** · constant (int) · Exit code: every run completed, or the command read what it was asked for.
   <br>`= 0`
 - **`EXIT_REFUSED`** · constant (int) · Exit code: the command was refused before it could do anything.
@@ -2331,7 +2335,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 
 A product mounting the commands under its own CLI (`run_cli(host_factory=...)`) drops `--host`. Every command takes `--scope`.
 
-Exit codes, in full: 0 done; 1 a launched run did not complete; 2 refused; 3 failed with an unanticipated error.
+Exit codes, in full: 0 done; 1 a launched run did not complete; 2 refused; 3 failed with an unanticipated error; 4 the gate failed.
 
 Each command's options, as its `--help` prints them:
 
@@ -2447,6 +2451,31 @@ options:
                         only this purpose's calls
   --launch-group ID     only one launch's case generation
   --template ID         only calls made for this template
+```
+
+### `gate`
+
+```text
+usage: python -m threetears.evals gate [-h] --host MODULE:FACTORY --scope SCOPE
+                                       [--fail-on OUTCOMES] [--reading MEASURE]
+                                       campaign
+
+Exit 4 when the campaign's verdicts include an outcome --fail-on names — the CI gate. No model is
+called.
+
+positional arguments:
+  campaign              the campaign, by id
+
+options:
+  -h, --help            show this help message and exit
+  --host MODULE:FACTORY
+                        the host to work in
+  --scope SCOPE         the scope to read and write in
+  --fail-on OUTCOMES    comma-separated outcomes that fail the gate, of regressed, not-separated,
+                        untested, breached, undecided-guardrail, missed, undecided-bar (default
+                        regressed,breached,undecided-guardrail)
+  --reading MEASURE     gate only this reading, by key or as the report heads it; repeat for more
+                        (default: every reading)
 ```
 
 <a id="measures"></a>
