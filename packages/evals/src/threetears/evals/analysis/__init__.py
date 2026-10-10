@@ -101,6 +101,7 @@ from threetears.evals.analysis.generator import (
 )
 from threetears.evals.analysis.numbers import ABSENT, format_number, format_signed
 from threetears.evals.analysis.reads import (
+    READ_TIER_ROW_BUDGET,
     compare_two_runs,
     comparison_sets,
     export_results,
@@ -410,6 +411,7 @@ __all__ = [
     "METRIC_TRANSCRIPT",
     "PAIRED_TEST_NAME",
     "PROJECTED_METRICS",
+    "READ_TIER_ROW_BUDGET",
     "REPORTER_KIND",
     "SCOPED_METRICS_HELP",  # debt: retires when the English moves to one renderer
     "SERVED_MODEL_UNRECORDED",

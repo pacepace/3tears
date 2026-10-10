@@ -34,6 +34,8 @@ interprets. The host chooses what a scope is and passes it through.
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -107,6 +109,63 @@ RowColumns = Callable[["list[EvalResult]"], Mapping[tuple[str, str], Mapping[str
 #: not guaranteed to match. A recorded level ("this run left that knob alone"), never an
 #: absence: reading it as unrecorded would make a real difference undecidable.
 _NOT_CARRIED = "(not carried by this run)"
+
+#: How many projected score records one read-tier call may carry before its observer line is logged at
+#: WARNING instead of INFO (#652).
+#:
+#: The read tier projects and aggregates in Python on every request, and that is calibrated to a corpus of
+#: dozens-to-hundreds of cells — one operator, one scope (see :mod:`threetears.evals.analysis.reporting`).
+#: A cell pools a few dozen observations and each observation projects one record per measure, so that
+#: premise is a few thousand records to tens of thousands at its upper end. This budget sits just past it: a
+#: call above it is reading a corpus the premise does not describe, which is the point to push
+#: :func:`~threetears.evals.analysis.reporting.project_score_records` down into SQL. It is a signal that the
+#: deferral is being crossed, set to fire before a page is slow, not a latency limit; ``elapsed_ms`` rides on
+#: the same line for a host that would rather alert on time. A host alerts on the level alone.
+READ_TIER_ROW_BUDGET = 50_000
+
+
+def _observe_read(
+    lens: str,
+    scope_id: str,
+    started: float,
+    runs_in: int,
+    results_in: int,
+    records_out: int,
+    *,
+    cells_out: int | str | None = None,
+) -> None:
+    """Log one read-tier call's size and wall time, at WARNING once it is past :data:`READ_TIER_ROW_BUDGET`.
+
+    One structured line per call (#652), so a corpus outgrowing the in-Python projection is something a host
+    sees in its logs rather than first meets as a timed-out page. ``runs_in`` and ``results_in`` count what
+    the call read, ``records_out`` the score records it projected — the count the budget is held against —
+    and ``cells_out`` the pivot's cells (absent for an export, ``refused`` for a pivot that was refused after
+    its projection). A refused call is still logged: it paid for the read all the same.
+
+    Args:
+        lens: The operation, as the line names it (``pivot``, ``export_results``).
+        scope_id: The scope read.
+        started: ``time.perf_counter()`` at the call's start.
+        runs_in: The runs listed.
+        results_in: The results read.
+        records_out: The score records projected.
+        cells_out: The pivot's cell count, ``"refused"``, or ``None`` for a lens that has no cells.
+    """
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    over = records_out > READ_TIER_ROW_BUDGET
+    cells = "" if cells_out is None else f" cells_out={cells_out}"
+    log.log(
+        logging.WARNING if over else logging.INFO,
+        "eval.read_tier lens=%s scope_id=%s runs_in=%d results_in=%d records_out=%d%s elapsed_ms=%.1f%s",
+        lens,
+        scope_id,
+        runs_in,
+        results_in,
+        records_out,
+        cells,
+        elapsed_ms,
+        f" over READ_TIER_ROW_BUDGET={READ_TIER_ROW_BUDGET}" if over else "",
+    )
 
 
 class LensStore(Protocol):
@@ -415,6 +474,7 @@ def pivot(
             from different rubrics; or a ``predicted_cost`` that is not an estimate, or
             that was handed to a pivot of another metric or with no model axis.
     """
+    started = time.perf_counter()
     estimate: CostEstimate | list[PlannedCost] | None
     try:
         if predicted_cost is None:
@@ -449,6 +509,7 @@ def pivot(
     projection = project_score_records(
         runs, results, known_run_ids={run.id for run in all_runs}, archived_run_ids=archived_run_ids, profile=profile
     )
+    observed = (len(all_runs), len(results), len(projection.records))
     try:
         table = compute_pivot(
             projection.records,
@@ -470,7 +531,9 @@ def pivot(
         # question the caller can restate (a different axis, a subject filter),
         # so a 500 would misattribute it and an empty table would read as
         # "no data" — the one answer that is definitely wrong.
+        _observe_read("pivot", scope_id, started, *observed, cells_out="refused")
         raise ValidationFailedError(str(e)) from e
+    _observe_read("pivot", scope_id, started, *observed, cells_out=len(table.cells))
     return table
 
 
@@ -745,6 +808,7 @@ def export_results(
             or ``status`` is neither ``"all"`` nor a status a run can carry —
             each a question the caller can restate.
     """
+    started = time.perf_counter()
     fmt = normalize_blank(fmt, "csv")
     status = _status_filter(status)
     requested = {rid.strip() for rid in run_ids if rid and rid.strip()} if run_ids else None
@@ -789,10 +853,14 @@ def export_results(
         archived_run_ids=archived_run_ids if requested is None else None,
         profile=profile,
     )
+    observed = (len(all_runs), len(results), len(projection.records))
     try:
-        return export_projection(projection, fmt=fmt)
+        export = export_projection(projection, fmt=fmt)
     except ExportError as e:
+        _observe_read("export_results", scope_id, started, *observed)
         raise ValidationFailedError(str(e)) from e
+    _observe_read("export_results", scope_id, started, *observed)
+    return export
 
 
 def run_summary(
@@ -1386,6 +1454,7 @@ if TYPE_CHECKING:
 
 
 __all__ = [
+    "READ_TIER_ROW_BUDGET",
     "LensStore",
     "RowColumns",
     "RunLister",
