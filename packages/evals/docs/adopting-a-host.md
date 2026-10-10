@@ -93,7 +93,8 @@ the host's own storage. Hand its `eval_host` to the analysis side.
 
 **Tenancy is one opaque `scope_id`.** Every stored document carries a non-empty `scope_id`, and the
 engine never interprets it, defaults it or branches on it: it is your tenant, project or environment,
-whatever you partition by. All of it goes through one `DocumentStore` you implement, keyed by
+whatever you partition by. (The one default is the quick path's `"quick"`, used only in the in-memory store a
+`run_eval` or `compare` call builds and drops; pass a `host=` or `store=` and `scope_id=` is required.) All of it goes through one `DocumentStore` you implement, keyed by
 `(scope_id, doc_type, id)`. Every port call names its scope (an upsert takes it from the document it
 writes), and there is no scope-free read: a caller that
 needs several scopes is told which by you and asks each. A campaign and the runs it compares live in one

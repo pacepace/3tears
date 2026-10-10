@@ -708,6 +708,7 @@ def _split_margins(
     return run_margins, scorer_margins
 
 
+# scope-default: unscoped only on the call's own in-memory store; quick_scope refuses it with host= or store=
 async def compare(
     cases: Sequence[Mapping[str, Any]],
     candidates: Mapping[str, Candidate | ToolUsingCandidate | WorldCandidate]

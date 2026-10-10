@@ -216,7 +216,7 @@ world, your kinds and your style. The engine knows a host only through it.
 
 #### Scope
 One opaque string (`scope_id`) every stored document carries: your tenant, project or environment. The
-engine never interprets or defaults it, and every read names one. A campaign and its runs live in one
+engine never interprets or defaults it in your store, and every read names one. A campaign and its runs live in one
 scope. *Example:* `"dev"`.
 
 #### Run
