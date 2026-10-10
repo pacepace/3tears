@@ -1493,6 +1493,13 @@ def _evidence_disclosures(bundle: AnalysisContextBundle) -> list[ReportBlock]:
                     f"{pivot.row_factor} and {pivot.column_factor} co-vary; {len(holes)} of their {len(pivot.cells)} "
                     f"combinations never ran: {_listed(holes)}.",
                 )
+    # A design that says which combinations it meant to run names its gaps apart from what it skipped (#654).
+    if bundle.declared_crossing is not None:
+        say("comparisons", bundle.declared_crossing.sentence)
+        for state, lead in (("not_run", "Declared cells never run"), ("skipped_by_design", "Cells skipped by design")):
+            cells = [" × ".join(cell.levels.values()) for cell in bundle.declared_crossing.cells if cell.state == state]
+            if cells:
+                say("comparisons", f"{lead}: {'; '.join(cells)}.")
     # A declared level that never ran leaves `levels` silently; the row's declared_levels names it.
     for row in bundle.coverage:
         not_run = [level.display for level in row.declared_levels if level.state == "not_run"]

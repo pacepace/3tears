@@ -150,6 +150,11 @@ gained ``judge_cannot_tell_boundary`` (empty, its can't-tells read as capability
 each judged guardrail (a boundary rubric dimension) is held to. A campaign, or an analysis's design snapshot,
 stored before it carries none and reads as declaring none: its judged guardrails are held at zero change, exactly
 as they were decided then, so no stored decision moves.
+
+**Within v8, not a bump**: ``CampaignDesign.crossing`` and ``CampaignDesign.skipped_cells`` joined as OPTIONAL
+fields (#654) — which combinations of the declared levels a design meant to run. A campaign, or an analysis's
+design snapshot, stored before them carries None and an empty list, and reads as declaring nothing about
+combinations: no cell is read as skipped by design or as missing, exactly as before.
 """
 
 

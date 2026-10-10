@@ -1119,6 +1119,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`CostEstimate`** · model · A proposed run/campaign's predicted cost, per model and in total, banded where n allows.
 - **`CostEstimateCell`** · model · The predicted cost of running one proposed model, from its historical per-observation cost.
 - **`DeclarableAxes`** · model · What a campaign may declare it sweeps on this host — the vocabulary the authoring gate reads.
+- **`DeclaredCellCoverage`** · model · One combination of declared levels (a cell), and whether it ran, was skipped on purpose, or is missing.
+- **`DeclaredCrossing`** · model · Every cell of a design that says which combinations of its levels it meant to run.
 - **`DeclaredLevelCoverage`** · model · Whether one level the campaign DECLARED for an axis was run — the declaration's delta, by name.
 - **`DesignArm`** · model · One arm of the campaign, the runs that measured it, and what it moved off the control.
 - **`DimensionAgreement`** · model · How one judge's scores on one dimension agreed with people's ratings of the same results.
@@ -1990,6 +1992,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `apparatus_confounds` | `list[Confound]` | `[]` | Apparatus dimensions that varied across the WHOLE campaign, scanned independently of any lever. |
 | `aliased_factors` | `list[AliasedFactors]` | `[]` | Factors that moved in lockstep across the campaign: each group's factors split the runs identically, so no comparison separates them. |
 | `factor_pairs` | `FactorPairScan \| None` | `None` | Every pair of varying factors checked for co-varying, with a pivot (unrun combinations as not_run) for each co-varying pair outside a lockstep group, and how many pairs were examined. |
+| `declared_crossing` | `DeclaredCrossing \| None` | `None` | Where the declared design says which combinations of its levels it meant to run: every cell, marked ran, not_run (a gap), skipped_by_design (left out on purpose: never a gap) or undetermined. |
 | `arm_mechanisms` | `list[ArmMechanismReading]` | `[]` | Each arm's mean of every covariate read as an observed mechanism (today the candidate's reasoning share, `reasoning_ratio`), sorted by arm then covariate. |
 | `arm_served_models` | `list[ArmServedModel]` | `[]` | Which model the provider's responses named as having answered each arm's candidate calls, sorted by arm. |
 | `arm_production_footings` | `dict[str, PooledProductionFooting]` | `{}` | Arm (variant key) -> what each of its runs set away from the subject's production configuration, read off the host's sweepable declarations: `runs` maps run id -> that run's footing (`moved` with levels, `unchecked`, `held`; null for a run nobody could check). |

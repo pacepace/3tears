@@ -45,7 +45,7 @@ from datetime import UTC, datetime
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
-from itertools import chain
+from itertools import chain, product
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, Protocol
 
 from pydantic import BaseModel, Field, model_validator
@@ -355,6 +355,9 @@ _MAX_NEXT_EXPERIMENTS = 8
 _MAX_PRIOR_INSIGHTS = 12
 # Pivots over co-varying factor pairs, which grow with the square of the factors in the worst case.
 _MAX_FACTOR_PAIR_PIVOTS = 8
+# The cells of a declared crossing listed, which grow with the product of the declared levels.
+_MAX_DECLARED_CELLS = 64
+_CELL_STATES = ("ran", "not_run", "skipped_by_design", "undetermined")
 
 # Why another swept lever varying inside a cohort clouds the comparison. Generic on
 # purpose: which lever it is says nothing extra here, because a campaign sweeping it
@@ -1539,6 +1542,38 @@ class DeclaredLevelCoverage(EvalDocumentModel):
     )
 
 
+class DeclaredCellCoverage(EvalDocumentModel):
+    """One combination of declared levels (a cell), and whether it ran, was skipped on purpose, or is missing."""
+
+    levels: dict[str, str] = Field(
+        description="Each declared axis's level in this cell, as the declaration renders it."
+    )
+    state: Literal["ran", "not_run", "skipped_by_design", "undetermined"] = Field(
+        description=(
+            "ran = some run sat at every one of these levels. skipped_by_design = the design left it out on purpose "
+            "(its crossing, or skipped_cells) and it did not run: no gap. not_run = the design meant to run it and no "
+            "run did: a gap. undetermined = meant to run, no run is known to sit here, but some run's level on an "
+            "axis could not be established."
+        )
+    )
+
+
+class DeclaredCrossing(EvalDocumentModel):
+    """Every cell of a design that says which combinations of its levels it meant to run."""
+
+    crossing: Literal["full", "star"] | None = Field(
+        description="The design's declared crossing; None where only skipped_cells were named (full less those)."
+    )
+    n_cells: int = Field(ge=0, description="Every combination of the declared levels.")
+    n_ran: int = Field(ge=0)
+    n_not_run: int = Field(ge=0, description="Meant to run and never did: the gaps.")
+    n_skipped_by_design: int = Field(ge=0)
+    n_undetermined: int = Field(ge=0)
+    cells: list[DeclaredCellCoverage] = Field(description="The cells, in declaration order; capped, gaps kept first.")
+    cells_omitted: int = Field(default=0, ge=0)
+    sentence: str = Field(description="What the crossing comes to, gaps and skips counted apart.")
+
+
 class AliasedFactors(EvalDocumentModel):
     """Factors that moved in lockstep: every one splits the runs into the same groups, so no comparison separates them."""
 
@@ -2533,6 +2568,14 @@ class AnalysisContextBundle(EvalDocumentModel):
             "Every pair of varying factors checked for co-varying, with a pivot (unrun combinations as not_run) "
             "for each co-varying pair outside a lockstep group, and how many pairs were examined. None on a "
             "bundle assembled before the scan existed."
+        ),
+    )
+    declared_crossing: DeclaredCrossing | None = Field(
+        default=None,
+        description=(
+            "Where the declared design says which combinations of its levels it meant to run: every cell, marked "
+            "ran, not_run (a gap), skipped_by_design (left out on purpose: never a gap) or undetermined. None when "
+            "there is no design or it says nothing about combinations, so no unrun combination is read either way."
         ),
     )
     arm_mechanisms: list[ArmMechanismReading] = Field(
@@ -6332,6 +6375,123 @@ def _reportable_levers(
     return moved | declared | (engaged & resolved)
 
 
+def _run_axis_identities(
+    axis_id: str, run: EvalRun, results: list[EvalResult], *, profile: HostProfile
+) -> set[str] | None:
+    """The identities a run's level on one declared axis can be joined to a declared level by, or None if unknown.
+
+    Its variant coordinate where it has one (the engine's own and the host's), else the value the host's registry
+    resolves for it, as its canonical digest and, for a string that may itself be a digest, as itself.
+
+    Args:
+        axis_id: The declared axis.
+        run: The run.
+        results: The run's results.
+        profile: The host whose vocabulary this reads.
+
+    Returns:
+        The identities, or None when the run's level on the axis cannot be established.
+    """
+    coordinates = {
+        **profile.engine_levels(run),
+        **(profile.variant_levers(run) if profile.variant_levers is not None else {}),
+    }
+    if (coordinate := coordinates.get(axis_id)) is not None:
+        return {coordinate.content_hash}
+    value = profile.sweepables.resolve_levers(run, results).values.get(axis_id)
+    if value is None:
+        return None
+    return {canonical_digest(value), value} if isinstance(value, str) else {canonical_digest(value)}
+
+
+def _declared_crossing(
+    design: CampaignDesign | None,
+    runs: list[EvalRun],
+    results_by_run: dict[str, list[EvalResult]],
+    *,
+    profile: HostProfile,
+) -> DeclaredCrossing | None:
+    """Mark every cell of a design that says which combinations it meant to run: ran, missing, or skipped by design.
+
+    A cell is one declared level of every declared axis. A run sits at a cell when each axis's level joins to
+    that cell's level (:func:`_run_axis_identities`). An unrun cell the design left out on purpose
+    (:meth:`~threetears.evals.contracts.declaration.CampaignDesign.skipped_by_design`) is ``skipped_by_design``
+    and is never a gap; an unrun cell it meant to run is ``not_run``, unless some run's level on an axis cannot
+    be established, when it may be sitting there and the cell is ``undetermined``.
+
+    Args:
+        design: The campaign's declaration.
+        runs: The campaign's resolved runs.
+        results_by_run: Each run's results.
+        profile: The host whose vocabulary this reads.
+
+    Returns:
+        The crossing, or None when there is no design or it says nothing about combinations — today's reading,
+        where an unrun combination is neither skipped nor missing.
+    """
+    if design is None or not design.declares_cells():
+        return None
+    ran: set[tuple[str, ...]] = set()
+    unestablished = False
+    for run in runs:
+        levels: list[str | None] = []
+        for axis in design.axes:
+            identities = _run_axis_identities(axis.axis_id, run, results_by_run.get(run.id, []), profile=profile)
+            if identities is None:
+                unestablished = True
+                levels.append(None)
+                continue
+            matched = [level.content_hash for level in axis.values if level.content_hash in identities]
+            levels.append(matched[0] if matched else None)
+        if all(level is not None for level in levels):
+            ran.add(tuple(level for level in levels if level is not None))
+    cells = []
+    for combination in product(*(axis.values for axis in design.axes)):
+        identity = tuple(level.content_hash for level in combination)
+        state: Literal["ran", "not_run", "skipped_by_design", "undetermined"]
+        if identity in ran:
+            state = "ran"
+        elif design.skipped_by_design(identity):
+            state = "skipped_by_design"
+        else:
+            state = "undetermined" if unestablished else "not_run"
+        cells.append(
+            DeclaredCellCoverage(
+                levels={axis.axis_id: level.display for axis, level in zip(design.axes, combination, strict=True)},
+                state=state,
+            )
+        )
+    counts = {state: sum(1 for cell in cells if cell.state == state) for state in _CELL_STATES}
+    kept, omitted = _capped(
+        cells, _MAX_DECLARED_CELLS, weight=lambda cell: {"not_run": 2, "undetermined": 1}.get(cell.state, 0)
+    )
+    planned = len(cells) - counts["skipped_by_design"]
+    sentence = (
+        f"The design declares {len(cells)} cell(s) over its {len(design.axes)} axis(es) and meant to run {planned}: "
+        f"{counts['ran']} ran"
+        + (f", {counts['not_run']} never ran (a gap)" if counts["not_run"] else "")
+        + (f", {counts['undetermined']} cannot be established" if counts["undetermined"] else "")
+        + (
+            f"; {counts['skipped_by_design']} were skipped by design, which is no gap"
+            if counts["skipped_by_design"]
+            else ""
+        )
+        + (f"; {omitted} cell(s) are left out of the list, gaps last to go" if omitted else "")
+        + "."
+    )
+    return DeclaredCrossing(
+        crossing=design.crossing,
+        n_cells=len(cells),
+        n_ran=counts["ran"],
+        n_not_run=counts["not_run"],
+        n_skipped_by_design=counts["skipped_by_design"],
+        n_undetermined=counts["undetermined"],
+        cells=kept,
+        cells_omitted=omitted,
+        sentence=sentence,
+    )
+
+
 def _declared_level_coverage(
     axis: SweptAxis,
     runs: list[EvalRun],
@@ -6359,20 +6519,11 @@ def _declared_level_coverage(
     observed: set[str] = set()
     unestablished = False
     for run in runs:
-        coordinates = {
-            **profile.engine_levels(run),
-            **(profile.variant_levers(run) if profile.variant_levers is not None else {}),
-        }
-        if (coordinate := coordinates.get(axis.axis_id)) is not None:
-            observed.add(coordinate.content_hash)
-            continue
-        value = profile.sweepables.resolve_levers(run, results_by_run.get(run.id, [])).values.get(axis.axis_id)
-        if value is None:
+        identities = _run_axis_identities(axis.axis_id, run, results_by_run.get(run.id, []), profile=profile)
+        if identities is None:
             unestablished = True
-            continue
-        observed.add(canonical_digest(value))
-        if isinstance(value, str):
-            observed.add(value)
+        else:
+            observed |= identities
     return [
         DeclaredLevelCoverage(
             display=level.display,
@@ -7385,6 +7536,7 @@ def assemble_context_bundle(
         apparatus_confounds=_apparatus_confounds(run_ids, apparatus_levels, profile=profile),
         aliased_factors=aliasing[0],
         factor_pairs=aliasing[1],
+        declared_crossing=_declared_crossing(campaign.declared_design, runs, results_by_run, profile=profile),
         arm_mechanisms=_arm_mechanisms(arms, results_by_run, mechanisms),
         arm_served_models=_arm_served_models(arms, results_by_run, served),
         arm_production_footings=_arm_production_footings(arms, results_by_run, profile=profile),
@@ -9623,6 +9775,8 @@ __all__ = [
     "AliasedFactors",
     "AnalysisContextBundle",
     "BundleInspection",
+    "DeclaredCellCoverage",
+    "DeclaredCrossing",
     "DeclaredLevelCoverage",
     "FactorPairCell",
     "FactorPairPivot",
