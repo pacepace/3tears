@@ -70,7 +70,10 @@ from threetears.evals.ops.jobs import (
     job_poll,
     parse_job_id,
     run_job_id,
+    SWEEP_JOB_PREFIX,
+    sweep_job_id,
 )
+from threetears.evals.ops.sweeps import SweepArguments, SweepArm, SweepSettings, sweep_launch
 from threetears.evals.analysis import CostEstimate, HistoryResult, PivotTable, ScoreExport
 from threetears.evals.ops.lenses import (
     ArmEstimate,
@@ -148,6 +151,12 @@ from threetears.evals.ops.summary import (
 )
 
 __all__ = [
+    "SWEEP_JOB_PREFIX",
+    "SweepArguments",
+    "SweepArm",
+    "SweepSettings",
+    "sweep_job_id",
+    "sweep_launch",
     "CaseSetLine",
     "CaseSetListing",
     "CaseSetMint",

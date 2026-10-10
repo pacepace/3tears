@@ -155,6 +155,9 @@ as they were decided then, so no stored decision moves.
 (#676). A store written before them holds no sets, and a run stored before carries None: it was launched over its
 template's cases, which is what None says, and history epochs it by its frozen ids as before.
 
+**Within v8, not a bump**: ``EvalSweep`` joined as a new stored type (#632) — the record of a multi-arm launch
+run arm after arm. A store written before it holds none, which reads as "no sweep was started".
+
 **Within v8, not a bump**: ``EvalRun.cell_timeout_s`` and ``cell_timeout_s_origin`` joined as OPTIONAL fields (#649)
 — the per-cell deadline the run's cells ran under and whether the launch, the kind or the engine's default set it.
 A run stored before them carries None for both and reads as "deadline not recorded", never as today's default:

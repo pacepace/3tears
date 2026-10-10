@@ -1093,6 +1093,53 @@ class EvalAnalysisAttempt(EvalDocumentModel):
         return self
 
 
+#: Where a sweep stands: ``running`` while its arms are being launched and run; ``completed`` — every arm ran;
+#: ``failed`` — an arm was refused at launch, or its run ended ``failed``, so no further arm was launched;
+#: ``cancelled`` — a cancel stopped it, cancelling the arms in flight and launching none after.
+SweepOutcome = Literal["running", "completed", "failed", "cancelled"]
+
+
+class SweepArmRecord(EvalDocumentModel):
+    """One arm of a sweep as its record carries it: what it is called, its model, and its run once launched."""
+
+    label: str = Field(min_length=1, description="The arm's name, unique within the sweep.")
+    model: str = Field(min_length=1, description="The arm's candidate model.")
+    run_id: str | None = Field(default=None, description="The arm's run, once launched; None before, or never.")
+
+
+class EvalSweep(EvalDocumentModel):
+    """A multi-arm launch run arm after arm: its arms, its campaign, and how it ended — the record its job reads.
+
+    Written when the sweep starts, again as each arm's run is created (the run is a member of :attr:`campaign_id`
+    from then), and when it ends. One writer, the sweep's own task, so a write never races another. A sweep
+    whose record reads ``running`` while no task runs it was ended by a restart, which its job reports as lost;
+    its launched runs are campaign members either way.
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid7()))
+    doc_type: Literal["eval_sweep"] = "eval_sweep"
+    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    scope_id: str = Field(min_length=1)
+
+    campaign_id: str = Field(min_length=1, description="The campaign every arm's run joins as it is created.")
+    template_id: str = Field(min_length=1)
+    subject_id: str = Field(min_length=1)
+    arms: list[SweepArmRecord] = Field(min_length=1, description="Every arm, in launch order.")
+    max_concurrent_arms: int = Field(ge=1, description="How many arms run at once; 1 runs them one after another.")
+    outcome: SweepOutcome = "running"
+    detail: str | None = Field(default=None, description="Why it ended other than completed.")
+    created_at: str = Field(default_factory=utc_now_iso)
+    ended_at: str | None = None
+
+    @field_validator("doc_type")
+    @classmethod
+    def check_doc_type(cls, v: str) -> str:
+        """Reject documents loaded into the wrong model class."""
+        if v != "eval_sweep":
+            raise ValueError(f"doc_type must be 'eval_sweep', got '{v}'")
+        return v
+
+
 class EvalInsight(EvalDocumentModel):
     """A durable, subject-scoped insight extracted from an analysis.
 
@@ -1152,12 +1199,15 @@ __all__ = [
     "EvalAnalysisAttempt",
     "EvalCampaign",
     "EvalInsight",
+    "EvalSweep",
     "EvidenceRow",
     "EvidenceTier",
     "FindingResolution",
     "GenerationProvenance",
     "LeverCoverage",
     "RunIndexEntry",
+    "SweepArmRecord",
+    "SweepOutcome",
     "VariantIndexEntry",
     "Viz",
     "VizType",

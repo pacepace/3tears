@@ -26,6 +26,7 @@ from threetears.evals.contracts.models import (
     RubricDimTombstone,
     JudgeConfigTombstone,
 )
+from threetears.evals.contracts.campaign import EvalSweep, SweepArmRecord
 from threetears.evals.contracts.out_of_run import OutOfRunSpend
 from threetears.evals.contracts.storage import EvalStorage
 from threetears.evals.contracts.identity import IDENTITY_VERSION
@@ -352,6 +353,14 @@ def _out_of_run_spend() -> OutOfRunSpend:
 #: than slipping past both refusals.
 _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
     "CalibrationRating": make_calibration_rating,
+    "EvalSweep": lambda: EvalSweep(
+        scope_id="uni-1",
+        campaign_id="c-1",
+        template_id="t-1",
+        subject_id="s-1",
+        arms=[SweepArmRecord(label="a", model="m")],
+        max_concurrent_arms=1,
+    ),
     "CaseSet": lambda: CaseSet(scope_id="uni-1", name="smoke", version=1, template_id="t-1", test_case_ids=["c-1"]),
     "CatalogRubricDim": make_rubric_dim,
     "EvalAnalysis": make_analysis,

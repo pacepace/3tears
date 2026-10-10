@@ -18,10 +18,19 @@ the terms in [Concepts](concepts.md).
 The operations (`threetears.evals.ops`) run over an `OpsHost`: the `LaunchHost`, plus `AnalysisGeneration`
 (the prompt, output cap and budget a background generation runs under). Each returns a typed model.
 
-Long work is a **job**: `run_launch` and `analysis_generate` return `JobsStarted`, and `job_poll` /
-`job_cancel` take any job id either returned. A job id names the durable record its work writes, so it is
-still answerable after a restart. A job is answered only in the caller's scope: another scope's
-generation reads `lost` on poll and is refused on cancel.
+Long work is a **job**: `run_launch`, `sweep_launch` and `analysis_generate` return `JobsStarted`, and
+`job_poll` / `job_cancel` take any job id they returned. A job id names the durable record its work writes, so
+it is still answerable after a restart. A job is answered only in the caller's scope: another scope's
+generation or sweep reads `lost` on poll and is refused on cancel.
+
+**A sweep** (`sweep_launch`) is for arms that differ in more than the model: each arm names its own model,
+overlays and apparatus settings, and every arm shares the template, subject, `k` and the other settings.
+Every arm is refused up front if its launch would be. The arms run one at a time, so no arm's latency is
+measured under another's provider load; `max_concurrent_arms` raises that. Each run joins the named campaign
+as it is created. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
+the arm in flight and launches none after it. An arm refused at its launch, or whose run ends `failed`, ends
+the sweep `failed`. The judge and simulator are the sweep's. Where it names none, the first arm's resolved
+ones hold for the rest, so a role default that moves mid-sweep cannot split the arms.
 
 On a host that enforces its ceilings (`LaunchSettings.enforcement_enabled`), every spend operation is bounded
 in dollars before it spends: a launch by the per-run ceiling, an analysis generation and a judge repeat by the

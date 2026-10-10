@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 from pydantic import ValidationError
 
-from threetears.evals.contracts.campaign import EvalAnalysis, EvalAnalysisAttempt, EvalCampaign, EvalInsight
+from threetears.evals.contracts.campaign import EvalAnalysis, EvalAnalysisAttempt, EvalCampaign, EvalInsight, EvalSweep
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.errors import ConflictError, StorageError
 from threetears.evals.contracts.models import (
@@ -121,6 +121,7 @@ EVAL_DOC_TYPES = (
     "calibration_rating",
     "eval_out_of_run_spend",
     "case_set",
+    "eval_sweep",
 )
 
 
@@ -763,6 +764,18 @@ class EvalStorage:
         field_eq: dict[str, Any] = {} if name is None else {"name": name}
         sets = self._hydrate_all(CaseSet, self._store.by_doc_type("case_set", scope_id, **field_eq))
         return sorted(sets, key=lambda case_set: (case_set.name, -case_set.version))
+
+    # =========================================================================
+    # EvalSweep — a multi-arm launch's own record
+    # =========================================================================
+
+    def save_sweep(self, sweep: EvalSweep) -> None:
+        """Persist a sweep's record in the scope it names; its own task is its one writer."""
+        self._save(sweep.to_dict())
+
+    def load_sweep(self, sweep_id: str, scope_id: str) -> EvalSweep | None:
+        """Load a sweep's record by id within a scope."""
+        return self._load(EvalSweep, sweep_id, scope_id)
 
     # =========================================================================
     # EvalCampaign — the analysis hub

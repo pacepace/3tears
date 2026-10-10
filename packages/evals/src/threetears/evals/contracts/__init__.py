@@ -26,6 +26,9 @@ from threetears.evals.contracts.campaign import (
     EvalAnalysisAttempt,
     EvalCampaign,
     EvalInsight,
+    EvalSweep,
+    SweepArmRecord,
+    SweepOutcome,
     GenerationProvenance,
 )
 from threetears.evals.contracts.call_ledger import CallLedger, RecordedCall
@@ -513,6 +516,9 @@ __all__ = [
     "EvalCassette",
     "EvalDocumentModel",
     "EvalInsight",
+    "EvalSweep",
+    "SweepArmRecord",
+    "SweepOutcome",
     "EvalResult",
     "EvalRun",
     "EvalRunStamp",

@@ -221,6 +221,7 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
 - **`EvalRunStamp`** · model · What a reader of a run's place in a campaign reads off it: which run, curated out or not, and when.
 - **`EvalServiceError`** · exception · Structured error from the eval service layer.
 - **`EvalStorage`** · class · Storage for v1-shape eval documents over one document store.
+- **`EvalSweep`** · model · A multi-arm launch run arm after arm: its arms, its campaign, and how it ended — the record its job reads.
 - **`EvalTemplate`** · model · Abstract scenario blueprint — subject-agnostic, domain-level.
 - **`EvalTestCase`** · model · Concrete, immutable inputs generated from an `EvalTemplate`.
 - **`EvalTrace`** · model · The candidate's output, what its judge read, and the OTel spans — stored beside a result, not inside it.
@@ -305,6 +306,7 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
 - **`StorageError`** · exception · Storage operation failed (status 503).
 - **`StoreConflict`** · exception · A conditional write lost its race: the stored document no longer carries `if_match`.
 - **`StratumFacts`** · model · Everything measured in one stratum of one cell — the cell's figures again, over one kind of case.
+- **`SweepArmRecord`** · model · One arm of a sweep as its record carries it: what it is called, its model, and its run once launched.
 - **`SweptAxis`** · model · One axis this campaign set out to vary, and the levels it meant to compare.
 - **`SyncActionSeam`** · protocol · A kind's synchronous tools whose calls block rather than await, as the cassette lane records and replays them.
 - **`SyncToolLike`** · protocol · The three members the cassette layer calls on a tool that answers as a plain blocking call.
@@ -435,6 +437,8 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
   <br>`'utterance'` | `'schedule'`
 - **`StopReason`** · literal · Why a completion stopped, in the engine's words.
   <br>`'end_turn'` | `'max_tokens'` | `'content_filter'` | `'error'`
+- **`SweepOutcome`** · literal · Where a sweep stands: `running` while its arms are being launched and run; `completed` — every arm ran; `failed` — an arm was refused at launch, or its run ended `failed`, so no further arm was launched; `cancelled` — a cancel stopped it, cancelling the arms in flight and launching none after.
+  <br>`'running'` | `'completed'` | `'failed'` | `'cancelled'`
 - **`SyncToolWrap`** · type alias · What the synchronous action seam is handed: `ToolWrap` over `SyncToolLike` tools.
   <br>`Callable[[Mapping[str, SyncToolLike]], dict[str, SyncToolLike]]`
 - **`TimeAxisBasis`** · literal · What a campaign's time positions are: the builds a host labels (`release`), or the UTC days its runs started on (`date`).
@@ -1625,6 +1629,10 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`scope_pivot(host: EvalHost, scope_id: str, *, row_factor: str, column_factor: str, metric: str | None = None, weighting: str | None = None, subject_id: str | None = None, status: str | None = 'completed', predicted_cost: CostEstimate | LaunchEstimate | Mapping[str, Any] | None = None, launched_run_ids: Sequence[str] = ()) -> PivotTable`
 - **`serialize_report`** · function · A report in one of its three forms.
   <br>`serialize_report(report: Report, format: ReportFormat) -> str`
+- **`sweep_job_id`** · function · The job id of a sweep.
+  <br>`sweep_job_id(sweep_id: str) -> str`
+- **`sweep_launch`** · async function · Create the sweep's campaign and start the job that launches its arms in order.
+  <br>`sweep_launch(host: OpsHost, arguments: SweepArguments, scope_id: str, *, created_by: str) -> JobsStarted`
 - **`templates_list`** · function · The scope's templates.
   <br>`templates_list(host: EvalHost, scope_id: str, *, archived: bool = False) -> TemplateListing`
 
@@ -1662,6 +1670,9 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`RunLine`** · model · One run, as a listing shows it.
 - **`RunListing`** · model · A scope's runs, newest first as the store lists them.
 - **`RunsCompared`** · model · One run's arm against another's, with what either run could not deliver said beside the numbers.
+- **`SweepArguments`** · model · What a sweep names: its shared settings and campaign (`SweepSettings`), and its arms in order.
+- **`SweepArm`** · model · One arm of a sweep: its model, and what it sets differently from its siblings.
+- **`SweepSettings`** · model · What every arm of a sweep shares, and the campaign its runs join — a sweep's arguments but its arms.
 - **`TemplateLine`** · model · One template, as a listing shows it.
 - **`TemplateListing`** · model · A scope's templates.
 - **`TraceJudge`** · model · The `judge` part of a stored trace: what the judge was sent, as the kind rendered it.
@@ -1670,8 +1681,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Types**
 
-- **`JobKind`** · literal · What a job's work is: a launched run, or an analysis generation.
-  <br>`'run'` | `'analysis'`
+- **`JobKind`** · literal · What a job's work is: a launched run, an analysis generation, or a sweep launching its arms in order.
+  <br>`'run'` | `'analysis'` | `'sweep'`
 - **`JobState`** · literal · Where a job stands.
   <br>`'running'` | `'completed'` | `'stopped'` | `'failed'` | `'cancelled'` | `'lost'`
 - **`ReportFormat`** · literal · The forms a report is read in: Markdown (the memo, and what an agent reads), its canonical JSON (what the published schema validates) and HTML that reads without any script.
@@ -1687,6 +1698,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`= 'analysis:'`
 - **`RUN_JOB_PREFIX`** · constant (str) · The prefix of a launched run's job id.
   <br>`= 'run:'`
+- **`SWEEP_JOB_PREFIX`** · constant (str) · The prefix of a sweep's job id.
+  <br>`= 'sweep:'`
 - **`TERMINAL_JOB_STATES`** · constant (frozenset) · The states a job does not leave.
 
 **Also exported here**
@@ -2224,6 +2237,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 
 | Action | Class | Parameters | Description |
 |---|---|---|---|
+| `sweep_launch` | `spend`, job | `template_id`, `subject_id`, `campaign_name`, `campaign_behavior`, `campaign_description?`, `k_runs?`, `max_concurrent_arms?`, `judge_model?`, `simulator_model?`, `max_cost_usd?`, `cell_timeout_s?`, `case_set_name?`, `case_set_version?`, `arms` | Launch arms that differ beyond the model, one after another, into one campaign, as one job. |
 | `case_set_mint` | `write` | `case_set`, `template_id`, `test_case_ids`, `tracked?` | Store the next version of a named case set: a template's cases, frozen in order. |
 | `run_launch` | `spend`, job | `template_id`, `subject_id`, `models?`, `k_runs?`, `n_variations?`, `variation_model?`, `overlays?`, `apparatus_settings?`, `max_cost_usd?`, `judge_model?`, `simulator_model?`, `cell_timeout_s?`, `case_set_name?`, `case_set_version?` | Launch a template's runs, one per model, each as a job to poll. |
 | `launch_estimate` | `read` | `template_id`, `subject_id`, `models?`, `k_runs?`, `n_variations?`, `variation_model?`, `overlays?`, `apparatus_settings?`, `max_cost_usd?`, `judge_model?`, `simulator_model?`, `cell_timeout_s?`, `case_set_name?`, `case_set_version?`, `n_test_cases?` | Estimate what a run_launch would cost, from what the scope's runs have spent. |
@@ -2271,9 +2285,13 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `apparatus_settings` | `object` or `null` | Host-declared apparatus values to set the runs' rig up with, by apparatus dimension (e.g. who sits in an adjudicator's seat) — each a string, a bool or a number, and one the template's kind reads; refused otherwise. Recorded on every run and part of its measurement context, so one template can be compared at two. |
 | `archive_reason` | `string` or `null` | Why the record is archived (an analysis shown false or superseded, a reporter case that can no longer measure anything); cleared on restore. |
 | `archived` | `boolean` | The state to set: true retires the record, false restores it. |
+| `arms` | array of `object` | The arms, launched in this order: each {model, label?, overlays?, apparatus_settings?, judge_model?, simulator_model?} — its own model and what it sets differently from its siblings. |
 | `baseline_run_id` | `string` | The run read as the baseline (A), as runs_list names it. |
 | `behavior` | `string` | Which aspect of the subject is under test. |
+| `campaign_behavior` | `string` | What the sweep's campaign measures. |
+| `campaign_description` | `string` | The sweep's campaign's description. |
 | `campaign_id` | `string` | A campaign's id, as campaigns_list names it. |
+| `campaign_name` | `string` | The campaign every arm's run joins as it is created. |
 | `candidate_run_id` | `string` | The run read against the baseline (B), as runs_list names it. |
 | `case_set` | `string` | The case set's name; a new name starts at version 1. |
 | `case_set_filter` | `string` or `null` | List only this case set's versions. |
@@ -2297,6 +2315,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `launch_group_filter` | `string` or `null` | Only the calls one launch's case generation made; its runs carry this id. |
 | `launched_run_ids` | array of `string` or `null` | The runs the estimated launch made (the run ids its jobs name), with predicted_cost: each predicted cell then says how many of its observations came from other runs. |
 | `limit` | `integer` | The most rows to return, up to 200. |
+| `max_concurrent_arms` | `integer` | How many of a sweep's arms run at once. 1 (the default) runs them one after another, so no arm's latency is measured under another's provider load. |
 | `max_cost_usd` | `number` or `null` | A per-run cost cap in dollars, at or below the host's ceiling; it can only lower that ceiling, and a value above it is refused. |
 | `metric` | `string` or `null` | The measure to read; omitted reads the composite score. |
 | `min_absolute_change` | `number` | The smallest move a regression flag counts, in the measure's unit; 0 lets the test decide. |

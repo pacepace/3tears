@@ -6,9 +6,12 @@ So a job here is not a new record: it is a **name for the record that will say h
 and polling reads that record. Nothing about a job lives only in this process's memory, so a job id
 handed to an agent stays answerable after a restart — the answer is then that nothing is running it.
 
-**The job id names its record.** ``run:<run id>`` for a launched run (one per arm), and
+**The job id names its record.** ``run:<run id>`` for a launched run (one per arm),
 ``analysis:<campaign id>:<attempt id>`` for a generation — the attempt is filed under its campaign, so
-the id carries both. :func:`parse_job_id` is the one reader of that shape.
+the id carries both — and ``sweep:<sweep id>`` for a sweep, whose record
+(:class:`~threetears.evals.contracts.campaign.EvalSweep`) names its arms and their runs. :func:`parse_job_id`
+is the one reader of that shape. A sweep is live to a caller only under its own scope's task key
+(:func:`sweep_key`), as a generation is.
 
 **A job is answered only inside the caller's scope.** A run job's run is read scoped, and a generation is
 live to a caller only when its task holds the exclusivity key of the campaign AND scope the caller names
@@ -30,14 +33,15 @@ from pydantic import Field
 
 from threetears.evals.analysis.service import list_analysis_attempts
 from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.errors import ValidationFailedError
+from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
+from threetears.evals.contracts.campaign import EvalSweep
 from threetears.evals.contracts.models import EvalRun
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.run.lifecycle import get_run, repair_abandoned_run, require_cancellable
 from threetears.evals.contracts.offload import run_blocking
 
-#: What a job's work is: a launched run, or an analysis generation.
-JobKind = Literal["run", "analysis"]
+#: What a job's work is: a launched run, an analysis generation, or a sweep launching its arms in order.
+JobKind = Literal["run", "analysis", "sweep"]
 
 #: Where a job stands. ``running`` — still going (a run ``pending`` or ``running``, a generation live);
 #: ``completed`` — ended with what it was for; ``stopped`` — a run ended short by its budget or its
@@ -52,6 +56,9 @@ TERMINAL_JOB_STATES: frozenset[str] = frozenset({"completed", "stopped", "failed
 RUN_JOB_PREFIX = "run:"
 #: The prefix of an analysis generation's job id.
 ANALYSIS_JOB_PREFIX = "analysis:"
+
+#: The prefix of a sweep's job id.
+SWEEP_JOB_PREFIX = "sweep:"
 
 #: A run's stored status, as the job state it is.
 _RUN_STATES: dict[str, JobState] = {
@@ -77,8 +84,10 @@ class JobHandle(EvalBaseModel):
     """A started job: the id to poll, and what it is working on."""
 
     job_id: str = Field(description="The id to poll and cancel the job by.")
-    kind: JobKind = Field(description="What the job's work is: a launched run, or an analysis generation.")
-    target_id: str = Field(description="The run the job runs, or the campaign the generation analyses.")
+    kind: JobKind = Field(description="What the job's work is: a launched run, an analysis generation, or a sweep.")
+    target_id: str = Field(
+        description="The run the job runs, the campaign the generation analyses, or the campaign a sweep's runs join."
+    )
     label: str = Field(default="", description="A short line naming the work (the run's model, the campaign).")
 
 
@@ -96,10 +105,14 @@ class JobStatus(EvalBaseModel):
     state: JobState
     status: str = Field(description="The record's own word: the run's status, or the attempt's outcome.")
     done: bool = Field(description="Whether the job has left the running state for good.")
-    progress: dict[str, Any] = Field(default_factory=dict, description="The run's last progress write; empty else.")
+    progress: dict[str, Any] = Field(
+        default_factory=dict,
+        description="The run's last progress write, or a sweep's arms launched and finished; empty else.",
+    )
     run_id: str | None = None
     campaign_id: str | None = None
     analysis_id: str | None = Field(default=None, description="The analysis a completed generation stored.")
+    sweep_id: str | None = Field(default=None, description="The sweep a sweep job runs.")
     detail: str | None = Field(default=None, description="Why it ended other than completed, when the record says.")
 
 
@@ -123,6 +136,87 @@ def _live_generation(host: OpsHost, campaign_id: str, attempt_id: str, scope_id:
     return attempt_id in host.launch.job_manager.active_task_ids(generation_key(campaign_id, scope_id))
 
 
+def sweep_job_id(sweep_id: str) -> str:
+    """The job id of a sweep."""
+    return f"{SWEEP_JOB_PREFIX}{sweep_id}"
+
+
+def sweep_key(sweep_id: str, scope_id: str) -> str:
+    """The task key a sweep runs under: the scope is in it, so only its own scope sees it live."""
+    return f"eval-sweep:{scope_id}:{sweep_id}"
+
+
+def sweep_progress(sweep: EvalSweep, runs: dict[str, EvalRun]) -> dict[str, Any]:
+    """A sweep's progress: how many arms it has launched and finished, and each launched arm's run status.
+
+    Args:
+        sweep: Its record.
+        runs: Its launched arms' runs, by id.
+
+    Returns:
+        ``{"arms_total", "arms_launched", "arms_finished", "arms": {label: status}}``, a never-launched arm's
+        status ``not_launched``.
+    """
+    finished = {"completed", "budget_stopped", "exhausted", "failed", "cancelled"}
+    statuses = {
+        arm.label: runs[arm.run_id].status if arm.run_id is not None and arm.run_id in runs else "not_launched"
+        for arm in sweep.arms
+    }
+    return {
+        "arms_total": len(sweep.arms),
+        "arms_launched": sum(1 for arm in sweep.arms if arm.run_id is not None),
+        "arms_finished": sum(1 for status in statuses.values() if status in finished),
+        "arms": statuses,
+    }
+
+
+def _live_sweep(host: OpsHost, sweep_id: str, scope_id: str) -> bool:
+    """Whether this process runs ``sweep_id`` in ``scope_id`` — another scope's sweep reads as none."""
+    return sweep_id in host.launch.job_manager.active_task_ids(sweep_key(sweep_id, scope_id))
+
+
+async def _sweep_status(host: OpsHost, sweep_id: str, scope_id: str) -> JobStatus:
+    """A sweep's job status: its record, its arms' runs, and whether this process still runs it.
+
+    Args:
+        host: The host whose job manager runs the sweep.
+        sweep_id: The sweep.
+        scope_id: The caller's scope.
+
+    Returns:
+        The status, its progress counting the arms launched and finished.
+
+    Raises:
+        NotFoundError: No sweep with that id in the scope.
+    """
+    eval_host = host.eval_host
+    live = _live_sweep(host, sweep_id, scope_id)
+    sweep = await run_blocking(eval_host.blocking_executor, eval_host.storage.load_sweep, sweep_id, scope_id)
+    if sweep is None:
+        raise NotFoundError("sweep", sweep_id)
+    run_ids = [arm.run_id for arm in sweep.arms if arm.run_id is not None]
+    runs = await run_blocking(eval_host.blocking_executor, eval_host.storage.load_eval_runs, run_ids, scope_id)
+    state: JobState = "running" if sweep.outcome == "running" else sweep.outcome
+    detail = sweep.detail
+    if state == "running" and not live:
+        state = "lost"
+        detail = (
+            "the sweep reads running but nothing in this process is running it — the process that started it ended; "
+            "its launched arms are campaign members, and no further arm will be launched"
+        )
+    return JobStatus(
+        job_id=sweep_job_id(sweep_id),
+        kind="sweep",
+        state=state,
+        status=sweep.outcome,
+        done=state in TERMINAL_JOB_STATES,
+        progress=sweep_progress(sweep, {run.id: run for run in runs}),
+        campaign_id=sweep.campaign_id,
+        sweep_id=sweep.id,
+        detail=detail if state != "completed" else None,
+    )
+
+
 def run_job_id(run_id: str) -> str:
     """The job id of a launched run."""
     return f"{RUN_JOB_PREFIX}{run_id}"
@@ -140,13 +234,15 @@ def parse_job_id(job_id: str) -> tuple[JobKind, str, str | None]:
         job_id: An id :func:`run_job_id` or :func:`analysis_job_id` made.
 
     Returns:
-        ``("run", run_id, None)`` or ``("analysis", campaign_id, attempt_id)``.
+        ``("run", run_id, None)``, ``("analysis", campaign_id, attempt_id)`` or ``("sweep", sweep_id, None)``.
 
     Raises:
         ValidationFailedError: The id is neither shape — a typed or truncated id, which names no job.
     """
     if job_id.startswith(RUN_JOB_PREFIX) and job_id[len(RUN_JOB_PREFIX) :]:
         return "run", job_id[len(RUN_JOB_PREFIX) :], None
+    if job_id.startswith(SWEEP_JOB_PREFIX) and job_id[len(SWEEP_JOB_PREFIX) :]:
+        return "sweep", job_id[len(SWEEP_JOB_PREFIX) :], None
     if job_id.startswith(ANALYSIS_JOB_PREFIX):
         # The attempt id is a uuid and holds no colon, so the LAST colon splits it from a campaign id
         # that might hold one.
@@ -154,8 +250,8 @@ def parse_job_id(job_id: str) -> tuple[JobKind, str, str | None]:
         if colon and campaign_id and attempt_id:
             return "analysis", campaign_id, attempt_id
     raise ValidationFailedError(
-        f"job id {job_id!r} names no job: a job id is 'run:<run id>' or 'analysis:<campaign id>:<attempt id>', "
-        "exactly as the start returned it"
+        f"job id {job_id!r} names no job: a job id is 'run:<run id>', 'analysis:<campaign id>:<attempt id>' or "
+        "'sweep:<sweep id>', exactly as the start returned it"
     )
 
 
@@ -213,6 +309,8 @@ async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
         live = manager.is_active(target_id)
         run = await run_blocking(eval_host.blocking_executor, get_run, eval_host.storage, target_id, scope_id)
         return _run_status(run, live=live)
+    if kind == "sweep":
+        return await _sweep_status(host, target_id, scope_id)
     assert attempt_id is not None  # parse_job_id names an attempt for every analysis job
     if _live_generation(host, target_id, attempt_id, scope_id):
         return JobStatus(
@@ -283,6 +381,13 @@ async def job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str |
                 eval_host.blocking_executor, repair_abandoned_run, eval_host.storage, target_id, scope_id, reason=reason
             )
         return await job_poll(host, job_id, scope_id)
+    if kind == "sweep":
+        if not _live_sweep(host, target_id, scope_id) or not manager.cancel_task(target_id):
+            status = await job_poll(host, job_id, scope_id)
+            raise ValidationFailedError(
+                f"sweep job {job_id!r} is not running here (it reads {status.state}); there is nothing to cancel"
+            )
+        return await job_poll(host, job_id, scope_id)
     assert attempt_id is not None  # parse_job_id names an attempt for every analysis job
     if not _live_generation(host, target_id, attempt_id, scope_id) or not manager.cancel_task(attempt_id):
         status = await job_poll(host, job_id, scope_id)
@@ -295,6 +400,7 @@ async def job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str |
 __all__ = [
     "ANALYSIS_JOB_PREFIX",
     "RUN_JOB_PREFIX",
+    "SWEEP_JOB_PREFIX",
     "TERMINAL_JOB_STATES",
     "JobHandle",
     "JobKind",
@@ -307,4 +413,7 @@ __all__ = [
     "parse_job_id",
     "job_poll",
     "run_job_id",
+    "sweep_job_id",
+    "sweep_key",
+    "sweep_progress",
 ]
