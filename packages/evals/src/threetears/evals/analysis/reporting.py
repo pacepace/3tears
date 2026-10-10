@@ -33,7 +33,7 @@ import csv
 import io
 import json
 import math
-from collections.abc import Hashable, Iterable, Mapping, Sequence
+from collections.abc import Collection, Hashable, Iterable, Mapping, Sequence
 from datetime import datetime
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, get_args
@@ -657,6 +657,215 @@ def decompose_total_ms(latency: LatencyMetrics | None) -> LatencyPartition:
     )
 
 
+#: The token a served-model coordinate (:attr:`ScoreRecord.served_model`) carries for candidate calls whose
+#: response named no model, or that were stored before served models were recorded. Never the requested id.
+SERVED_MODEL_UNRECORDED = "unrecorded"
+
+#: How a served-model coordinate joins the models one result's candidate calls named. A result answered by two
+#: models is itself a mixture, and its coordinate says so rather than picking one.
+_SERVED_MODEL_JOIN = " + "
+
+#: How many models answered a pooled set of candidate calls, as the provider's responses named them.
+ServedModelState = Literal["one", "pooled", "unrecorded"]
+
+
+def served_model_state(served_models: Collection[str], n_unrecorded: int) -> ServedModelState:
+    """The one rule every served-model reading's state follows (#684).
+
+    Args:
+        served_models: The distinct models the responses named.
+        n_unrecorded: The results with at least one candidate call whose response named none.
+
+    Returns:
+        ``pooled`` where two or more models were named, ``one`` where exactly one was and every call named it,
+        ``unrecorded`` otherwise: whether one model answered cannot be established, and unknown is never one.
+    """
+    if len(served_models) > 1:
+        return "pooled"
+    return "one" if served_models and not n_unrecorded else "unrecorded"
+
+
+class ResultServedReading(NamedTuple):
+    """What one result's candidate calls say about the model that answered them.
+
+    Attributes:
+        requested: The candidate model the result's run asked for — the id an arm is keyed by.
+        served: Every model the provider's responses named for its candidate calls.
+        unrecorded: Some candidate row names no served model — a response that named none, or a row
+            stored before served models were recorded.
+    """
+
+    requested: str
+    served: frozenset[str]
+    unrecorded: bool
+
+
+def served_reading(result: EvalResult) -> ResultServedReading | None:
+    """Read which model answered one result's candidate calls, off its candidate usage rows.
+
+    ``RoleUsage.served_model`` only — what the provider's response named — and never ``RoleUsage.model``
+    or the run's ``candidate_model``, which are what the launch asked for and, for a floating alias, name
+    the pointer rather than the model behind it.
+
+    Args:
+        result: The result.
+
+    Returns:
+        The reading, or ``None`` when the candidate left no usage row: nothing was called, so nothing
+        answered, and no claim is made about it.
+    """
+    rows = [row for row in result.usage if row.role == "candidate"]
+    if not rows:
+        return None
+    return ResultServedReading(
+        requested=result.model,
+        served=frozenset(row.served_model for row in rows if row.served_model),
+        unrecorded=any(not row.served_model for row in rows),
+    )
+
+
+def served_model_coordinate(reading: ResultServedReading | None) -> str | None:
+    """One result's served models as the coordinate a pivot groups on and an export carries.
+
+    Args:
+        reading: The result's reading, from :func:`served_reading`.
+
+    Returns:
+        The named models, sorted and joined with `` + ``, with :data:`SERVED_MODEL_UNRECORDED` among them where
+        some call named none (alone where none did). ``None`` where the candidate made no call.
+    """
+    if reading is None:
+        return None
+    return _SERVED_MODEL_JOIN.join(sorted(reading.served) + ([SERVED_MODEL_UNRECORDED] if reading.unrecorded else []))
+
+
+class ServedModelReading(EvalBaseModel):
+    """Which models answered the candidate calls a contestant, cell or row pooled (#684).
+
+    A contestant is keyed by the model id its launch ASKED for, and a floating alias resolves on the provider's
+    side, so runs of one contestant can have been answered by different models and still pool as one. The mixture
+    is disclosed, not split: the key is fixed at launch, before any response names a model. The bundle's per-arm
+    reading (``AnalysisContextBundle.arm_served_models``) is this one, keyed by arm.
+    """
+
+    served_models: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Every distinct model the provider's responses named as having answered these candidate calls, sorted. "
+            "Never the requested id: a call whose response named no model adds nothing here and is counted in "
+            "n_unrecorded."
+        ),
+    )
+    n_results: int = Field(ge=1, description="The pooled results whose candidate calls left a usage row.")
+    n_unrecorded: int = Field(
+        ge=0,
+        description=(
+            "Of those, the results with at least one candidate call whose response named no model — or stored "
+            "before served models were recorded. Not recorded, never a match with the requested id."
+        ),
+    )
+    state: ServedModelState = Field(
+        description=(
+            "one = every candidate call named one and the same model. pooled = two or more models answered, so the "
+            "numbers are a mixture of them. unrecorded = at most one model was named and some call named none, so "
+            "whether one model answered cannot be established."
+        )
+    )
+
+    @model_validator(mode="after")
+    def _state_follows_the_counts(self) -> ServedModelReading:
+        """The state is the one the served models and the unrecorded count imply, never a second opinion.
+
+        Returns:
+            The validated reading.
+
+        Raises:
+            ValueError: ``state`` disagrees with ``served_models`` and ``n_unrecorded``.
+        """
+        expected = served_model_state(self.served_models, self.n_unrecorded)
+        if self.state != expected or self.n_unrecorded > self.n_results:
+            raise ValueError(
+                f"a pool with these served models and unrecorded calls is {expected!r}, not {self.state!r}"
+            )
+        return self
+
+    def disclosure(self) -> str | None:
+        """The reading in words, or ``None`` where one named model answered every call.
+
+        Returns:
+            A sentence for a pooled or unrecorded reading.
+        """
+        if self.state == "pooled":
+            return (
+                f"pools results answered by {len(self.served_models)} models ({', '.join(self.served_models)}) under "
+                "one requested model, so its numbers mix those models"
+            )
+        if self.state == "unrecorded":
+            named = f"; the rest named {self.served_models[0]}" if self.served_models else ""
+            return (
+                f"{self.n_unrecorded} of {self.n_results} result(s) made candidate calls whose response named no "
+                f"model{named}, so whether one model answered them cannot be established"
+            )
+        return None
+
+
+def pool_served_readings(readings: Iterable[ResultServedReading | None]) -> ServedModelReading | None:
+    """Pool per-result readings into one, the rule every surface that groups by contestant reads.
+
+    Args:
+        readings: The pooled results' readings; ``None`` (no candidate call) contributes nothing.
+
+    Returns:
+        The pooled reading, or ``None`` when no result's candidate left a usage row.
+    """
+    own = [reading for reading in readings if reading is not None]
+    if not own:
+        return None
+    models = sorted(set().union(*(reading.served for reading in own)))
+    n_unrecorded = sum(1 for reading in own if reading.unrecorded)
+    return ServedModelReading(
+        served_models=models,
+        n_results=len(own),
+        n_unrecorded=n_unrecorded,
+        state=served_model_state(models, n_unrecorded),
+    )
+
+
+def pooled_served_models(results: Sequence[EvalResult] | Sequence[ScoreRecord]) -> ServedModelReading | None:
+    """Say which models answered the candidate calls a pooled figure rests on (#684).
+
+    Shared, as :func:`pooled_cost_compositions` is, so the frontier, history, pivot and two-run comparison read
+    one predicate, and the bundle's ``arm_served_models`` the same one (:func:`pool_served_readings`).
+
+    Args:
+        results: The results the caller pooled, or the rows a pivot cell pooled — read through
+            :attr:`ScoreRecord.served_model`, once per result however many rows it put in the cell.
+
+    Returns:
+        The pooled reading, or ``None`` when no pooled result's candidate made a call.
+    """
+    readings: dict[str, ResultServedReading | None] = {}
+    for result in results:
+        if isinstance(result, ScoreRecord):
+            if result.result_id not in readings:
+                readings[result.result_id] = _reading_of_coordinate(result.served_model, result.model)
+        else:
+            readings[result.id] = served_reading(result)
+    return pool_served_readings(readings.values())
+
+
+def _reading_of_coordinate(coordinate: str | None, requested: str) -> ResultServedReading | None:
+    """Read a served-model coordinate back into the reading :func:`served_model_coordinate` wrote it from."""
+    if coordinate is None:
+        return None
+    tokens = coordinate.split(_SERVED_MODEL_JOIN)
+    return ResultServedReading(
+        requested=requested,
+        served=frozenset(token for token in tokens if token != SERVED_MODEL_UNRECORDED),
+        unrecorded=SERVED_MODEL_UNRECORDED in tokens,
+    )
+
+
 class ScoreRecord(EvalBaseModel):
     """One measurement at one fully-specified cell.
 
@@ -786,6 +995,15 @@ class ScoreRecord(EvalBaseModel):
     # substitutes in a run that recorded `off`, so the run's mode alone cannot say which results
     # spent less. Non-zero is what withholds the result's production-replicating cost.
     substituted_deliveries: int = 0
+
+    # The model the provider's responses NAMED as having answered this result's candidate calls (#684) —
+    # `served_model_coordinate`, read off `RoleUsage.served_model`, never off `model`, which is the id the
+    # launch asked for and, for a floating alias, the pointer rather than the model behind it. A declared
+    # coordinate so a pivot can split by it and the export carries it as a column. Several models a result's
+    # calls named are joined with ` + `; `unrecorded` stands for calls whose response named none (or rows stored
+    # before served models were recorded) and is never read as the requested id. `None` where the candidate
+    # made no call at all.
+    served_model: str | None = None
 
     created_at: str = ""
 
@@ -1408,6 +1626,7 @@ def project_score_records(
             "simulator_model": run.simulator_model,
             "cassette_mode": run.cassette_mode,
             "substituted_deliveries": count_substituted_deliveries(result),
+            "served_model": served_model_coordinate(served_reading(result)),
             "created_at": run.created_at,
             "factors": factors_by_run[run.id],
             "outcome": classify_result(result).value,
@@ -2954,6 +3173,13 @@ class PivotCell(EvalBaseModel):
     #: pooling them may be averaging two conditions as repeats of one. Disclosed rather than split,
     #: because the pivot's axes are open and no one axis may imply a partition.
     identity_versions: dict[str, list[int]] = {}
+    #: On a table grouped by contestant (``variant_key`` or ``model`` on an axis), which models the provider's
+    #: responses named as having answered the candidate calls of the cell's observations (#684): ``one``,
+    #: ``pooled`` — one requested model answered by several, so the cell's number mixes them — or
+    #: ``unrecorded``. Disclosed rather than split, since the contestant is keyed at launch; ``served_model`` is a
+    #: coordinate, so pivoting on it separates them. ``None`` on a table grouped on neither, and on a cell none of
+    #: whose observations' candidate made a call.
+    served_models: ServedModelReading | None = None
 
 
 class SimpsonsFlag(EvalBaseModel):
@@ -3030,6 +3256,10 @@ class PivotTable(EvalBaseModel):
     #: One sentence naming every cell that pools more than one identity version of the key it is grouped
     #: or filtered on (:attr:`PivotCell.identity_versions`), or ``None`` when none does (#672).
     identity_pooling_disclosure: str | None = None
+    #: One sentence naming every cell whose observations were answered by more than one served model, and
+    #: counting those that cannot say (:attr:`PivotCell.served_models`), or ``None`` when every cell names one
+    #: model or the table is not grouped by contestant (#684).
+    served_model_disclosure: str | None = None
     #: Plans the cost estimate made that no cell describes — a model no level of the model axis carries, or a
     #: template no cell at that model holds alone — each as ``model`` or ``model (template)``. Named rather than
     #: dropped, since a prediction with nowhere to sit is still a fact about the plan: an arm that was priced and
@@ -3350,6 +3580,40 @@ def _identity_pooling_disclosure(cells: Sequence[PivotCell]) -> str | None:
     )
 
 
+#: The axes that group a pivot by contestant, on which each cell names the models that answered it (#684).
+_CONTESTANT_FACTORS = frozenset({"variant_key", "model"})
+
+
+def _served_model_disclosure(cells: Sequence[PivotCell]) -> str | None:
+    """Name every cell answered by more than one served model, and count those that cannot say (#684).
+
+    Args:
+        cells: The table's cells.
+
+    Returns:
+        The sentence, or ``None`` when every cell that carries a reading names one model.
+    """
+    pooled = [cell for cell in cells if cell.served_models is not None and cell.served_models.state == "pooled"]
+    unrecorded = [cell for cell in cells if cell.served_models is not None and cell.served_models.state == "unrecorded"]
+    parts: list[str] = []
+    if pooled:
+        named = "; ".join(
+            f"({cell.row}, {cell.column}): {', '.join(cell.served_models.served_models)}"
+            for cell in pooled
+            if cell.served_models is not None
+        )
+        parts.append(
+            f"{len(pooled)} cell(s) pool observations one requested model was answered by several models — {named} — "
+            "so each such number mixes them; pivot on served_model to read each model alone"
+        )
+    if unrecorded:
+        parts.append(
+            f"{len(unrecorded)} cell(s) rest on candidate calls whose response named no model, so whether one model "
+            "answered them cannot be established"
+        )
+    return ". ".join(parts) + "." if parts else None
+
+
 def _substitution_disclosure(n_substituted: int, n_valued: int) -> str | None:
     """The sentence a cost cell carries when some of its observations had a delivery a harness supplied.
 
@@ -3592,6 +3856,8 @@ def compute_pivot(
     identity_keys = sorted(
         {name for name in (row_factor, column_factor, *(filters or {})) if name in _IDENTITY_KEY_VERSION_FIELDS}
     )
+    # A table grouped by contestant names, per cell, the models that answered it (#684).
+    by_contestant = bool({row_factor, column_factor} & _CONTESTANT_FACTORS)
 
     cells: list[PivotCell] = []
     measured: dict[tuple[str, str], PivotCell] = {}
@@ -3625,6 +3891,7 @@ def compute_pivot(
 
             n_valued = sum(len(v) for v in values_by_case.values())
             identity_versions = _pooled_identity_versions(at_cell, identity_keys)
+            served = pooled_served_models(at_cell) if by_contestant else None
             if not values_by_case:
                 cells.append(
                     PivotCell(
@@ -3636,6 +3903,7 @@ def compute_pivot(
                         n_unmeasured=len(at_cell),
                         outcomes=outcomes,
                         identity_versions=identity_versions,
+                        served_models=served,
                     )
                 )
                 continue
@@ -3648,6 +3916,7 @@ def compute_pivot(
                 "cost_compositions": pooled_cost_compositions(valued) if metric == METRIC_COST_USD else [],
                 "composite_basis": pooled_composite_basis(valued) if metric == METRIC_COMPOSITE else None,
                 "identity_versions": identity_versions,
+                "served_models": served,
                 "n_substituted": n_substituted,
                 "substitution_disclosure": (
                     _substitution_disclosure(n_substituted, len(valued)) if metric == METRIC_COST_USD else None
@@ -3744,6 +4013,7 @@ def compute_pivot(
             {record.run_id: record.cassette_mode for record in selected if record.cassette_mode is not None}
         ),
         identity_pooling_disclosure=_identity_pooling_disclosure(cells),
+        served_model_disclosure=_served_model_disclosure(cells),
         unplaced_predicted_models=sorted({plan.label for plan in predictions} - placed),
     )
 
@@ -4270,6 +4540,14 @@ class FrontierPoint(EvalBaseModel):
     #: and flip its rival from *on frontier* to *dominated*.
     completeness_disclosures: dict[str, str] = {}
 
+    #: Which models the provider's responses named as having answered this contestant's candidate calls (#684):
+    #: ``one``, ``pooled`` — the contestant asked for one model id (a floating alias, say) and several models
+    #: answered, so every axis here is a mixture of them — or ``unrecorded``, where some response named none and
+    #: whether one model answered cannot be established. A contestant is keyed at launch, before any response
+    #: names a model, so the mixture is disclosed rather than split. ``None`` when no result's candidate made a
+    #: call, and on a point stored before it was read.
+    served_models: ServedModelReading | None = None
+
     # Domination — a dominated point is grayed, never dropped: silently removing a
     # cheap-but-brittle variant looks identical to it never having run.
     #: True only when another point is SHOWN to beat this one (:attr:`dominance` ``dominated``).
@@ -4335,6 +4613,9 @@ class FrontierVerdict(EvalBaseModel):
     #: a pick whose key was minted by a superseded predicate says so where the
     #: recommendation is, not only on a table row the reader may never scroll back to.
     identity_version_disclosure: str | None = None
+    #: The picked point's :attr:`FrontierPoint.served_models`, carried for the reason the disclosures above are:
+    #: a recommendation of a contestant several models answered is a recommendation of their mixture.
+    served_models: ServedModelReading | None = None
     #: The version stamped beside ``variant_key``, carried for the reason
     #: :attr:`FrontierDominator.variant_identity_version` is: since the lenses partition on
     #: it, ``(model, variant_key)`` no longer identifies a row, and a verdict a reader
@@ -4763,6 +5044,7 @@ def _frontier_point(
         ),
         n_results=len(results),
         n_cases=len({r.test_case_id for r in results}),
+        served_models=pooled_served_models(results),
     )
     return point, cases
 
@@ -5250,6 +5532,7 @@ def compute_frontier(
                     # are: the verdict and the row it names cannot disagree about which
                     # predicate minted the key this recommendation is addressed by.
                     identity_version_disclosure=pick.identity_version_disclosure,
+                    served_models=pick.served_models,
                     variant_identity_version=pick.variant_identity_version,
                     cost_decision=cost_decision,
                     tied_with=tied_with,
@@ -5539,6 +5822,10 @@ class SeriesPoint(EvalBaseModel):
     #: not share. Derived from the run's completeness record rather than its status: a
     #: ``completed`` run with an infra-excluded cell is short too.
     completeness_disclosure: str | None = None
+    #: Which models the provider's responses named as having answered this run's candidate calls (#684). Per point
+    #: because a floating alias can resolve to a different model between two runs of one contestant, and the step
+    #: between them then reads as a change in the contestant. ``None`` when no result's candidate made a call.
+    served_models: ServedModelReading | None = None
 
 
 class MeasureSeries(EvalBaseModel):
@@ -5570,6 +5857,10 @@ class MeasureSeries(EvalBaseModel):
     identity_version_disclosure: str | None = None
     model: str
     points: list[SeriesPoint] = []
+    #: Which models answered the candidate calls across the whole series (#684): ``pooled`` where one requested
+    #: model was answered by several over its runs, so the series tracks a mixture rather than one model — each
+    #: point says which answered it. ``None`` when no result's candidate made a call.
+    served_models: ServedModelReading | None = None
 
 
 class HistoryResult(EvalBaseModel):
@@ -6003,6 +6294,7 @@ def compute_history(
                     # again, so the point's mark and the result's corpus-level set are one
                     # predicate and cannot disagree about which runs were short.
                     completeness_disclosure=degraded_by_run.get(run_id),
+                    served_models=pooled_served_models(rows_by_run[run_id]),
                 )
             )
             prev_epoch_key = epoch_key
@@ -6022,6 +6314,7 @@ def compute_history(
                 identity_version_disclosure=_identity_version_disclosure(identity_version),
                 model=first.model,
                 points=points,
+                served_models=pooled_served_models([row.result for row in rows]),
             )
         )
 

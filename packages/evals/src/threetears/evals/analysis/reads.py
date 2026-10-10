@@ -62,6 +62,7 @@ from threetears.evals.analysis.reporting import (
     export_projection,
     normalize_bar,
     pooled_composite_basis,
+    pooled_served_models,
     project_score_records,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, composite_significance, difference_interval
@@ -1112,7 +1113,8 @@ def compare_two_runs(
         two runs share a template — it is NOT the significance basis.
         ``composite_comparability`` is the withholding disclosure, or
         ``None`` when the composites are comparable.
-        The ``arm`` row carries ``model_{a,b}``, ``k``, ``pass_hat_k_{a,b,delta}``,
+        The ``arm`` row carries ``model_{a,b}``, ``served_models_{a,b}`` (which models the responses named as
+        having answered each run's candidate calls — one, pooled or unrecorded — never the requested id), ``k``, ``pass_hat_k_{a,b,delta}``,
         ``composite_{a,b,delta}``, ``composite_basis_{a,b}`` (what each composite was meaned over, ragged
         when its results carried different dimension sets), ``composite_bases_differ``,
         ``composite_interval`` (at ``interval_level``),
@@ -1209,6 +1211,11 @@ def compare_two_runs(
     )
     n_scored_a = sum(1 for (_m, r, _tc) in per_case_a if r == run_a_id)
     n_scored_b = sum(1 for (_m, r, _tc) in per_case_b if r == run_b_id)
+    # Which models answered each run's candidate calls, as the responses named them (#684): an arm is keyed by
+    # the model its launch asked for, so two runs of one floating alias can be answered by different models and
+    # still read as one model here. Never the requested id standing in for a response that named none.
+    served_a = pooled_served_models(results_a)
+    served_b = pooled_served_models(results_b)
     interval: tuple[float, float] | None = None
     if composites_comparable:
         hedges_g, significant, p_value = composite_significance(sample_a, sample_b, paired=paired)
@@ -1220,6 +1227,10 @@ def compare_two_runs(
     arm: dict[str, Any] = {
         "model_a": model_a,
         "model_b": model_b,
+        # Each run's served models (`ServedModelReading` as a dict: served_models, n_results, n_unrecorded and
+        # state one / pooled / unrecorded); None where the run's candidate made no call.
+        "served_models_a": served_a.model_dump() if served_a is not None else None,
+        "served_models_b": served_b.model_dump() if served_b is not None else None,
         # The depth both pass^k values below are read at.
         "k": common_k,
         "pass_hat_k_a": pass_hat_k_a,

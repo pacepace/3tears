@@ -102,7 +102,11 @@ from threetears.evals.analysis.reporting import (
     lever_level,
     measurement_window,
     measurement_window_disclosure,
+    pool_served_readings,
     project_score_records,
+    ResultServedReading,
+    served_model_state,
+    served_reading,
 )
 from threetears.evals.analysis.stats import (
     MIN_PAIRS_FOR_DETERMINISTIC_GAP,
@@ -872,13 +876,7 @@ class ArmServedModel(EvalDocumentModel):
         Raises:
             ValueError: ``state`` disagrees with ``served_models`` and ``n_unrecorded``.
         """
-        expected = (
-            "pooled"
-            if len(self.served_models) > 1
-            else "one"
-            if self.served_models and not self.n_unrecorded
-            else "unrecorded"
-        )
+        expected = served_model_state(self.served_models, self.n_unrecorded)
         if self.state != expected or self.n_unrecorded > self.n_results:
             raise ValueError(
                 f"an arm with these served models and unrecorded calls is {expected!r}, not {self.state!r}"
@@ -5230,25 +5228,9 @@ def _arm_mechanisms(
     return readings
 
 
-@dataclass(frozen=True)
-class _ServedReading:
-    """What one result's candidate calls say about which model answered them.
-
-    Attributes:
-        requested: The model id the result's run asked for (``EvalResult.model``).
-        served: The models the provider's responses named, over every candidate usage row.
-        unrecorded: Some candidate row names no served model — a response that named none, or a row
-            stored before served models were recorded.
-    """
-
-    requested: str
-    served: frozenset[str]
-    unrecorded: bool
-
-
 #: Result id -> what its candidate calls say about the model that answered them. A result whose candidate
 #: left no usage row is absent: nothing was called, so nothing answered, and no claim is made about it.
-_ServedModels = dict[str, _ServedReading]
+_ServedModels = dict[str, ResultServedReading]
 
 
 def _served_models(results: Iterable[EvalResult]) -> _ServedModels:
@@ -5264,16 +5246,7 @@ def _served_models(results: Iterable[EvalResult]) -> _ServedModels:
     Returns:
         Each result's reading, for the results whose candidate left a usage row.
     """
-    readings: _ServedModels = {}
-    for result in results:
-        rows = [row for row in result.usage if row.role == "candidate"]
-        if rows:
-            readings[result.id] = _ServedReading(
-                requested=result.model,
-                served=frozenset(row.served_model for row in rows if row.served_model),
-                unrecorded=any(not row.served_model for row in rows),
-            )
-    return readings
+    return {result.id: reading for result in results if (reading := served_reading(result)) is not None}
 
 
 def _served_model_confounds(result_ids: Iterable[str], served: _ServedModels) -> list[Confound]:
@@ -5325,20 +5298,11 @@ def _arm_served_models(
     """
     readings: list[ArmServedModel] = []
     for variant_key, members in sorted(arms.keyed.items()):
-        own = [served[result.id] for run in members for result in results_by_run.get(run.id, []) if result.id in served]
-        if not own:
-            continue
-        models = sorted(set().union(*(reading.served for reading in own)))
-        n_unrecorded = sum(1 for reading in own if reading.unrecorded)
-        readings.append(
-            ArmServedModel(
-                variant_key=variant_key,
-                served_models=models,
-                n_results=len(own),
-                n_unrecorded=n_unrecorded,
-                state="pooled" if len(models) > 1 else "one" if models and not n_unrecorded else "unrecorded",
-            )
+        pooled = pool_served_readings(
+            served.get(result.id) for run in members for result in results_by_run.get(run.id, [])
         )
+        if pooled is not None:
+            readings.append(ArmServedModel(variant_key=variant_key, **pooled.model_dump()))
     return readings
 
 

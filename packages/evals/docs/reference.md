@@ -1177,6 +1177,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`ScoreExport`** · model · A projection's rows serialized for analysis elsewhere, with the account a CSV body cannot carry.
 - **`SelfAgreementDimension`** · model · How one judge's repeated scores on one dimension agreed with its first scores of the same evidence.
 - **`SeriesPoint`** · model · One run's aggregate for the measure — the trend's unit, with its denominators.
+- **`ServedModelReading`** · model · Which models answered the candidate calls a contestant, cell or row pooled (#684).
 - **`ShortCell`** · model · A cell holding fewer repetitions than the declaration intended — a short run, stated per cell.
 - **`SimpsonsFlag`** · model · A pooled column ranking that the per-row rankings mostly contradict.
 - **`SoundnessRefusal`** · exception · A finished generator call whose OUTPUT was refused — the repairable half.
@@ -1232,6 +1233,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`Callable[['list[EvalResult]'], Mapping[tuple[str, str], Mapping[str, Any]]]`
 - **`RunLister`** · type alias · Lists a scope's runs: `list_runs(scope_id, *, status=None, include_archived=False)`.
   <br>`Callable[..., 'list[EvalRun]']`
+- **`ServedModelState`** · literal · How many models answered a pooled set of candidate calls, as the provider's responses named them.
+  <br>`'one'` | `'pooled'` | `'unrecorded'`
 - **`SurfaceState`** · literal · Where a table stands. Two states rather than an optional table, because "the surface froze no cell" is a fact with its own sentence, and is not an empty table.
   <br>`'no_cells'` | `'measured'`
 - **`SurfaceVerdict`** · literal · A bar's verdict on one cell, as a word — never a colour alone, and one per `decision`.
@@ -1286,6 +1289,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`= 'analysis_reporter'`
 - **`SCOPED_METRICS_HELP`** · constant (str) · How each scoped metric must be read, in one sentence per metric, for every surface's help text (REST and MCP alike) — rendered from the table rather than written beside it, so no surface can describe a subset.
 - **`SECTION_TITLES`** · constant (dict) · Each section's heading, in reading order — the order every serializer lays the sections out in.
+- **`SERVED_MODEL_UNRECORDED`** · constant (str) · The token a served-model coordinate (`ScoreRecord.served_model`) carries for candidate calls whose response named no model, or that were stored before served models were recorded.
+  <br>`= 'unrecorded'`
 - **`WEIGHTING_EQUAL_PER_SCENARIO`** · constant (str) · Weighting mode: every scenario (case) gets an equal vote in a cell's number, however many observations it has.
   <br>`= 'equal_per_scenario'`
 
