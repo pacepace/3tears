@@ -86,7 +86,7 @@ log = get_logger(__name__)
 RENEWAL_ANSWER_WAIT_SECONDS: Final[float] = 10.0
 
 #: why a held lease was lost (:attr:`HeldLease.lost_reason`): the one vocabulary
-#: :func:`~threetears.nats.nats_distributed_lock` reports too, so it is that enum, under the name
+#: :func:`~threetears.core.coordination.nats_distributed_lock` reports too, so it is that enum, under the name
 #: this module's callers read.
 LeaseLossReason = LockLossReason
 

@@ -17,15 +17,8 @@ from datetime import timedelta
 import pytest
 from nats.js.api import StorageType
 
-from threetears.nats import (
-    LockHeld,
-    LockLossReason,
-    LockLost,
-    NatsClient,
-    NatsKvBucket,
-    nats_distributed_lock,
-    set_default_namespace,
-)
+from threetears.core.coordination import LockHeld, LockLossReason, LockLost, nats_distributed_lock
+from threetears.nats import NatsClient, NatsKvBucket, set_default_namespace
 from threetears.nats.kv import build_kv_stream_config
 
 pytestmark = pytest.mark.integration

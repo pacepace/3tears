@@ -235,7 +235,7 @@ def _patch_lock(monkeypatch: pytest.MonkeyPatch) -> None:
     def _factory(_client: Any, _key: str, **_kwargs: Any) -> Any:
         return _CtxHealthy()
 
-    monkeypatch.setattr("threetears.nats.nats_distributed_lock", _factory)
+    monkeypatch.setattr("threetears.core.coordination.nats_distributed_lock", _factory)
 
 
 async def _noop(_trigger: JobTrigger, _fire_id: UUID) -> JobFireResult:

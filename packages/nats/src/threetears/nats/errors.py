@@ -423,11 +423,11 @@ class OpLogSequenceConflict(OpLogError):
 class LockLossReason(StrEnum):
     """why a holder stopped holding a KV-backed lock or lease before it let it go.
 
-    Not an error itself: the reason a :class:`~threetears.nats.LockLost` carries, and the one
-    :class:`~threetears.core.coordination.HeldLease` reports. It lives here, beside the KV errors,
-    because both of those read it -- :func:`~threetears.nats.nats_distributed_lock` runs on
-    :class:`~threetears.core.coordination.KVLease`, and this package cannot import core at module
-    top -- so there is one vocabulary for a lost hold, not one per primitive.
+    Not an error itself: the reason a :class:`~threetears.core.coordination.LockLost` carries, and the one
+    :class:`~threetears.core.coordination.HeldLease` reports: one vocabulary for a lost hold, not one
+    per primitive. It lives here, beside the KV errors, as a plain value this package's own callers
+    can name without core; core re-exports it (``threetears.core.coordination.LockLossReason``, and
+    as ``LeaseLossReason``).
 
     :cvar EXPIRED: the entry was gone at renewal -- it expired (the holder stalled past the
         TTL) and nobody has taken it yet

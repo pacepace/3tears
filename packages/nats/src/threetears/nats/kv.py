@@ -1855,8 +1855,8 @@ class NatsKvBucket:
         that froze a downstream fleet through ``jetstream_publish``, at a different call
         site. ``KeyValue.put`` is literally ``await self._js.publish(...)`` with no timeout.
 
-        This matters most for :func:`~threetears.nats.distributed_lock.nats_distributed_lock`,
-        which is KV-backed: a wedged heartbeat or release holds the lock for the length of
+        This matters most for :func:`~threetears.core.coordination.nats_distributed_lock`,
+        which is KV-backed: a wedged renewal or release holds the lock for the length of
         the wedge, so ONE stuck pod blocks every other pod's turn at it.
 
         :param op: builds the KV coroutine to run

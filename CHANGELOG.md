@@ -38,18 +38,28 @@ packages (bumped in lock-step).
   `SEARXNG_STATIC_DIR` (checked by a directory the image ships, since a mount would create the static
   directory itself).
 
-### Coordination: one lease primitive -- `nats_distributed_lock` runs on `KVLease`
+### Coordination: one lease primitive -- `nats_distributed_lock` runs on `KVLease`, and lives in core
 
 - **Changed, `nats_distributed_lock`** holds its key through `KVLease.hold` (one lease per hold) and
-  keeps its public API: `LockHeld`, `LockLost`, `LockLossReason`, `LockHold` (`key`, `lost`,
+  keeps its call shape: `LockHeld`, `LockLost`, `LockLossReason`, `LockHold` (`key`, `lost`,
   `lost_reason`, `raise_if_lost`), and every parameter with its default. Its own heartbeat task,
   renewal loop and hold state are deleted; acquisition, compare-and-swap renewal, retry inside the
   TTL, the maximum hold and the fenced release are the lease's. It still opens its bucket itself with
   `kv_bucket(name, ttl=ttl)` and refuses a `ttl` that differs from the bucket's.
 - **Changed, the lock's TTL is whole seconds** (the lease's): a fractional `ttl` raises `ValueError`.
   Every caller uses the 60-second default.
-- **Changed, the lock needs the `3tears` core distribution at call time** (it imports `KVLease`
-  inside the call, since core depends on `3tears-nats`). Every caller installs core already.
+- **Breaking, the lock's import path: `threetears.nats` -> `threetears.core.coordination`.**
+  `nats_distributed_lock`, `LockHeld`, `LockHold` and `LockLost` are now
+  `from threetears.core.coordination import ...` (module
+  `threetears.core.coordination.distributed_lock`); `threetears.nats.distributed_lock` and those four
+  names on `threetears.nats` are gone, with no forwarding alias. `LockLossReason` stays in
+  `threetears.nats.errors` and is importable from both packages. Why: the lock runs on `KVLease`,
+  which lives in core, and core depends on `3tears-nats` -- so kept in the NATS package it had to
+  reach up into core through an import deferred to the call. Beside the lease it is a plain import
+  and the NATS package no longer reaches up. Importing core (`threetears.core`,
+  `threetears.core.coordination`, the lock module) still loads neither `nats-py` nor `nkeys`: the
+  lock reaches a broker only through the `KvCapable` its caller hands it, and
+  `test_imports_without_nats_client.py` holds that in a fresh interpreter with both refused.
 - **Upgrade contract (rolling; any order, and rollback):** releases before 0.66.0 store a lock entry's
   value as the holder's raw `token_hex(16)`; from 0.66.0 it is the `KVLease` envelope. A new
   replica treats an old entry as another holder's -- `LockHeld` on acquire, `TAKEN` on renewal,
@@ -65,7 +75,7 @@ packages (bumped in lock-step).
   which renewal stops (reported at ERROR as `LeaseLossReason.MAX_HOLD`), a callback told the reason
   the moment the lease is lost, and why it was lost (`EXPIRED`, `TAKEN`, `RENEWAL_FAILED`,
   `MAX_HOLD`). `LeaseLost.reason` says what a refresh found. `LeaseLossReason` (exported from
-  `threetears.core.coordination`) is `threetears.nats.errors.LockLossReason`: one vocabulary for both.
+  `threetears.core.coordination`) is `LockLossReason`: one vocabulary for both.
 - **Fixed, a lease entry holding a JSON number** (an older lock's all-digit token) made `KVLease`
   raise `AttributeError` instead of treating it as another holder's.
 - **Fixed, a lease released while its renewal's answer never came** (the server applied it; the

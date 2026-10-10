@@ -17,7 +17,10 @@ public surface:
 - :class:`LeaseUnavailable` — raised by fail-fast acquire when key is held
 - :class:`LeaseTimeout` — raised when acquire deadline elapses
 - :class:`LeaseLost` — raised when ownership changes mid-operation
-- :class:`LeaseLossReason` — why a held lease was lost (the one vocabulary the NATS lock reports too)
+- :class:`LeaseLossReason` — why a held lease was lost (the one vocabulary the lock reports too)
+- :func:`nats_distributed_lock` — a cross-pod job lock as a context manager, held through
+  :meth:`KVLease.hold` (:class:`LockHeld`, :class:`LockHold`, :class:`LockLost`,
+  :class:`LockLossReason`)
 - :class:`ReplayGuard` -- single-use nonce guard (shared, fail-closed) for replay protection, for
   the seconds an artifact is acceptable; memory-backed, and a wipe fails closed
 - :class:`ReplayAnchor` / :class:`CollectionReplayAnchor` -- the durable record of when a
@@ -59,6 +62,13 @@ from threetears.core.coordination.idempotency import (
     IdempotencyKeyStore,
     IdempotencyRecord,
 )
+from threetears.core.coordination.distributed_lock import (
+    LockHeld,
+    LockHold,
+    LockLossReason,
+    LockLost,
+    nats_distributed_lock,
+)
 from threetears.core.coordination.lease import (
     HeldLease,
     KVLease,
@@ -93,6 +103,11 @@ __all__ = [
     "LeaseLost",
     "LeaseTimeout",
     "LeaseUnavailable",
+    "LockHeld",
+    "LockHold",
+    "LockLossReason",
+    "LockLost",
+    "nats_distributed_lock",
     "CollectionReplayAnchor",
     "RedemptionLedger",
     "ReplayAnchor",

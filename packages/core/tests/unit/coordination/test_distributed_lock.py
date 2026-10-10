@@ -1,4 +1,4 @@
-"""Unit tests for :func:`threetears.nats.nats_distributed_lock`.
+"""Unit tests for :func:`threetears.core.coordination.nats_distributed_lock`.
 
 Substitutes a fake KV bucket + a minimal NatsClient stand-in so the
 lock lifecycle (acquire, heartbeat, release, cancellation cleanup) can
@@ -18,7 +18,8 @@ from datetime import timedelta
 import pytest
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
 
-from threetears.nats import LockHeld, LockHold, LockLossReason, LockLost, NatsKvBucket, nats_distributed_lock
+from threetears.core.coordination import LockHeld, LockHold, LockLossReason, LockLost, nats_distributed_lock
+from threetears.nats import NatsKvBucket
 from threetears.nats.errors import KvError
 
 

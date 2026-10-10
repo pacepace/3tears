@@ -45,9 +45,10 @@ design notes
   grant names ``{ns}-scheduler-locks``. Every caller today is an infrastructure identity (hub sweeps
   and reconcilers, the scheduled-jobs tick, a derived collection's build lock). A pod needing
   cross-pod exclusion binds a hub-declared bucket through ``KVLease(create_if_missing=False)``.
-- **Needs the ``3tears`` core distribution at call time.** :class:`KVLease` lives in core, and core
-  depends on this package, so the import is deferred to the call. Every caller of the lock installs
-  core already; a process with ``3tears-nats`` alone can import this module but not hold the lock.
+- **It lives beside the lease, and needs no NATS client to import.** The lock is a shape over
+  :class:`KVLease`, so it is core's, not the NATS package's (where it lived before 0.66.0, reaching
+  up into core for the lease). Importing it loads neither ``nats-py`` nor ``nkeys``: it reaches the
+  broker only through the :class:`~threetears.nats.kv.KvCapable` its caller hands it.
 - **Bucket name namespacing.** The default bucket ``"scheduler-locks"`` rides through
   :meth:`NatsClient.kv_bucket` and picks up the client's ``nats_subject_namespace`` prefix (the
   resulting bucket is ``{namespace}-scheduler-locks``).
@@ -87,9 +88,10 @@ from typing import TYPE_CHECKING, Final
 
 from threetears.nats.errors import LockLossReason
 
-if TYPE_CHECKING:
-    from threetears.core.coordination.lease import HeldLease
+from threetears.core.coordination.lease import HeldLease, KVLease, LeaseUnavailable
 
+if TYPE_CHECKING:
+    # annotation only: the kv module reaches nats-py, which importing core must never need
     from threetears.nats.kv import KvCapable
 
 __all__ = ["LockHeld", "LockHold", "LockLossReason", "LockLost", "nats_distributed_lock"]
@@ -294,9 +296,6 @@ async def nats_distributed_lock(
     if max_hold < timedelta(0):
         msg = f"max_hold {max_hold} must not be negative"
         raise ValueError(msg)
-
-    # deferred: core depends on this package, so core cannot be imported at this module's top
-    from threetears.core.coordination.lease import KVLease, LeaseUnavailable
 
     # DECLARES its bucket (``create_if_missing`` left at its default), deliberately: see "Infrastructure
     # callers only" above. Opened here rather than by the lease so the declaration -- and with it the

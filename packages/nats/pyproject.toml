@@ -27,8 +27,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The NATS client itself. Six submodules import it (client, kv, forward, oplog,
-# cross_worker_cancel, distributed_lock) and are lazy-loaded from
+# The NATS client itself. Five submodules import it (client, kv, forward, oplog,
+# cross_worker_cancel) and are lazy-loaded from
 # `threetears.nats.__getattr__`, so error types, subject grammar, transport
 # Protocols, and the auth-callout/user-JWT codecs are usable without it.
 #
