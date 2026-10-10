@@ -58,6 +58,13 @@ Ten cases is enough to learn with, not to decide with. A set worth trusting is b
 `charged-crash`: boundaries between labels, lookalikes, and pairs that differ in one detail.
 [Designing a classifier eval set](designing-classifier-evals.md) says which cases to write and how many.
 
+The list sits in `triage.py` so the tutorial stays one file. In your own project, keep the cases in a file beside
+the code, one JSON object per line, and load them with
+`CASES = [json.loads(line) for line in open("tickets.jsonl") if line.strip()]`. A test set is data: it outlives
+any one version of the candidate, and it grows. When production routes a ticket wrong, add that ticket to the file
+([Maintaining the set](designing-classifier-evals.md#8-maintaining-the-set)).
+[`compare_two_prompts.py`](../examples/compare_two_prompts.py) loads its tickets this way.
+
 ## 2. Run it
 
 `run_eval` plays the candidate on every case `k` times. **k** is the number of repeats per case. A model can
@@ -205,6 +212,10 @@ runs land together as one **campaign**, the set of runs you want compared.
 `result.render()` prints the whole report as Markdown. `result.contrasts()` gives its "Contrasts against the
 control" table as rows you can read in code. `result.misses("v2")` works as in step 3: a better number is no
 reason to stop reading misses.
+
+The cases hold still while the versions change. Kept in a file, they judge `v3` next month exactly as they judged
+`v1` and `v2` today, so its numbers sit beside these. When the suite itself needs versions and a history, store it
+as a [case set](concepts.md#case-set) with `mint_case_set` or the `case_set_mint` action.
 
 ## 5. Read the verdict
 

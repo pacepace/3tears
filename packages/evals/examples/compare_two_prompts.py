@@ -6,6 +6,12 @@ one arm and reports every arm against the control: the difference (delta), its i
 and a verdict. Then read where the arms disagree, through ``comparison.results(arm)``. The verdicts and what
 each licenses: ``docs/reading-reports.md``.
 
+The tickets are a file beside this one, ``tickets.jsonl``, not a list in the script, so the next prompt version,
+and every one after it, runs against exactly the same cases. When production gets a ticket wrong, add it there
+(``docs/designing-classifier-evals.md``, section 8, "Maintaining the set"). When the suite needs versions and
+history, store it as a case set with ``mint_case_set`` or the ``case_set_mint`` action (``docs/concepts.md``,
+"Case set").
+
 Run it with ``python packages/evals/examples/compare_two_prompts.py``. With ``ANTHROPIC_API_KEY`` set it calls
 Claude 48 times (12 tickets x 2 repeats x 2 prompts) for well under a cent; without it, keyword stand-ins play
 the prompts and say nothing about Claude. The stand-ins are built to differ. Live, a current model may get every
@@ -14,7 +20,9 @@ prompts apart, and harder ones are needed. It never means the prompts are equall
 """
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable, Mapping
+from pathlib import Path
 from typing import Any
 
 from _live import claude, online
@@ -23,24 +31,17 @@ from threetears.evals.quick import Comparison, compare
 MODEL = "claude-haiku-5-5"
 
 # -----------------------------------------------------------------------------
-# 1. The cases: each ticket, and the queue a person filed it under.
+# 1. The cases: each ticket, and the queue a person filed it under, kept in a file beside this script.
+#
+# The test set is data, not code: the next prompt version runs against exactly these cases, and when production
+# gets a ticket wrong, it becomes a new line here (docs/designing-classifier-evals.md, section 8, "Maintaining the
+# set"). Each line's "kind" marks the hard ones, the lookalikes that mention a second queue's words; it is for you
+# and the disagreement printout, never the candidate, which sees only the ticket. When the suite needs versions
+# and history, store it as a case set (mint_case_set, or the case_set_mint action: docs/concepts.md, "Case set").
 # -----------------------------------------------------------------------------
 
-CASES = [
-    {"ticket": "I was charged twice for my March invoice.", "queue": "billing"},
-    {"ticket": "Can I get a refund for the annual plan I bought yesterday?", "queue": "billing"},
-    {"ticket": "The export button does nothing when I click it in Firefox.", "queue": "bug"},
-    {"ticket": "The app crashes every time I upload a photo larger than 10 MB.", "queue": "bug"},
-    {"ticket": "I can't log in; the reset-password email never arrives.", "queue": "account"},
-    {"ticket": "Please change the email address on my account to my work one.", "queue": "account"},
-    {"ticket": "It would be great if reports could be scheduled weekly.", "queue": "feature_request"},
-    {"ticket": "Do you plan to add a dark mode?", "queue": "feature_request"},
-    # The hard ones: each mentions a second queue's words.
-    {"ticket": "My card was charged but the upgrade page shows an error and nothing changed.", "queue": "billing"},
-    {"ticket": "Since the update, the login page loops back to itself after I sign in.", "queue": "bug"},
-    {"ticket": "I was charged for a seat after removing that user from my account.", "queue": "billing"},
-    {"ticket": "Could you add an option to pay by invoice?", "queue": "feature_request"},
-]
+TICKETS = Path(__file__).with_name("tickets.jsonl")
+CASES = [json.loads(line) for line in TICKETS.read_text().splitlines() if line.strip()]
 
 # -----------------------------------------------------------------------------
 # 2. The two prompts under comparison.
@@ -145,7 +146,7 @@ async def main() -> Comparison:
     for index, case in enumerate(CASES):
         said = {arm: [r.answer for r in comparison.results(arm) if r.case == str(index)] for arm in comparison.arms}
         if len({str(answers) for answers in said.values()}) > 1:
-            print(f"  {case['ticket']!r}, filed under {case['queue']}:")
+            print(f"  {case['ticket']!r}, filed under {case['queue']} ({case['kind']}):")
             print("    " + "; ".join(f"{arm} said {', '.join(answers)}" for arm, answers in said.items()))
     print("\nThe full report: print(comparison.render()), or reports.py to write it to files.")
     return comparison
