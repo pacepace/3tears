@@ -434,6 +434,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`OutOfRunBudget`** · dataclass · The cap one out-of-run unit of work is held to, and the ledger its calls are written to.
 - **`PassHatPoint`** · typed dict · One point of the pass^k curve: the estimate at one depth, and how many cases it rests on.
 - **`PlannedCall`** · dataclass · One call an out-of-run unit of work means to make: the prompt pair and the directive it sends.
+- **`PredictionPoweredReading`** · model · A judged dimension's mean in one cell re-estimated with people's labels (#598) — beside the judge's, never for it.
 - **`ProviderRefusedError`** · exception · A paid provider call made on the caller's behalf raised (status 502).
 - **`Question`** · model · Something this campaign is trying to find out.
 - **`QuestionAnswer`** · model · Where one declared question stands on this evidence.
@@ -1140,6 +1141,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`out_of_run_spend_text(report: OutOfRunSpendReport) -> str`
 - **`parse_fail_on`** · function · A comma-separated `--fail-on` list as tokens, refusing one that is no token.
   <br>`parse_fail_on(text: str) -> tuple[GateToken, ...]`
+- **`person_scores_by_result`** · function · Every person's score of a judged dimension of a result, keyed `(result_id, dimension)` — the human labels.
+  <br>`person_scores_by_result(ratings: Iterable[CalibrationRating], results: Iterable[EvalResult]) -> dict[tuple[str, str], list[int]]`
 - **`pivot`** · function · Aggregate a scope's observations over any two coordinates.
   <br>`pivot(storage: LensStore, scope_id: str, *, list_runs: RunLister, row_factor: str, column_factor: str, metric: str | None = None, weighting: str | None = None, subject_id: str | None = None, status: str | None = 'completed', predicted_cost: CostEstimate | Sequence[PlannedCost] | Mapping[str, Any] | None = None, profile: HostProfile) -> PivotTable`
 - **`prepare_analysis_generation`** · async function · Check and build everything a generation needs before it spends anything, its first call priced and admitted.
