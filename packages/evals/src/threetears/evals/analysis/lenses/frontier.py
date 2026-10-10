@@ -56,12 +56,7 @@ from threetears.evals.kernel.scoring import (
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.reporting import (
     _aggregate,
-    _contestant_key,
-    _identity_span_disclosure,
-    _identity_version_disclosure,
-    _identity_version_span,
     cassette_mode_disclosure,
-    ContestantKey,
     place_results,
     pooled_composite_basis,
     pooled_cost_compositions,
@@ -69,6 +64,13 @@ from threetears.evals.analysis.reporting import (
     ProjectionExclusions,
     ServedModelReading,
     WEIGHTING_EQUAL_PER_SCENARIO,
+)
+from threetears.evals.analysis.lenses.contestants import (
+    _contestant_key,
+    _identity_span_disclosure,
+    _identity_version_disclosure,
+    _identity_version_span,
+    ContestantKey,
 )
 
 if TYPE_CHECKING:

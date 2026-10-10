@@ -31,15 +31,10 @@ from threetears.observe import get_logger
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.reporting import (
     _AGGREGATE_OF_OBSERVATION,
-    _contestant_key,
     _describe_aggregate,
     _effective_formula,
-    _identity_span_disclosure,
-    _identity_version_disclosure,
-    _identity_version_span,
     _METRIC_GLOSS,
     _metric_vocabulary,
-    ContestantKey,
     METRIC_COMPOSITE,
     METRIC_COST_USD,
     METRIC_OUTCOME,
@@ -57,6 +52,13 @@ from threetears.evals.analysis.reporting import (
     SCOPED_METRICS,
     ServedModelReading,
     WEIGHTING_EQUAL_PER_SCENARIO,
+)
+from threetears.evals.analysis.lenses.contestants import (
+    _contestant_key,
+    _identity_span_disclosure,
+    _identity_version_disclosure,
+    _identity_version_span,
+    ContestantKey,
 )
 
 if TYPE_CHECKING:
