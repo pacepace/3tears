@@ -216,6 +216,7 @@ from threetears.evals.contracts.result_condition import (
 )
 from threetears.evals.contracts.scoring import (
     CellSummary,
+    CompositeBasis,
     PassHatPoint,
     percentile,
     summarize_completeness,
@@ -582,6 +583,7 @@ __all__ = [
     "OutOfRunSpend",
     "OutOfRunSpendStore",
     "PassHatPoint",
+    "CompositeBasis",
     "PlannedCall",
     "PricedCompletion",
     "RecordedCompletion",

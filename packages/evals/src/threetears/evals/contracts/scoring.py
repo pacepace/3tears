@@ -43,6 +43,7 @@ from collections.abc import Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, TypedDict
 
+from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.models import (
     CellTermination,
     EvalResult,
@@ -262,6 +263,74 @@ def result_composite(result: EvalResult) -> float | None:
     if not scores or trial_exclusion(result) is not None:
         return None
     return sum(s.normalized for s in scores) / len(scores)
+
+
+def composite_basis(result: EvalResult) -> list[str] | None:
+    """The dimensions one result's composite was meaned over, sorted — None exactly when it has no composite.
+
+    Read off the same scores :func:`result_composite` means (:func:`capability_scores`), so the basis names
+    what the arithmetic used rather than what the template declares. ``[]`` is a composite meaned over
+    nothing: a candidate failure's ``0.0`` is a score by policy, not an average of any dimension.
+
+    Args:
+        result: The eval result.
+
+    Returns:
+        The sorted dimension names, ``[]`` for a composite set by policy, or None when there is no composite.
+    """
+    if result_composite(result) is None:
+        return None
+    return sorted({score.dim for score in capability_scores(result)})
+
+
+class CompositeBasis(EvalBaseModel):
+    """What a pooled composite was meaned over: the union of its members' bases, and whether they agreed.
+
+    A composite is a mean across whatever capability dimensions each result carried, so two results scored on
+    different dimension sets each give a number on 0-1 whose mean is arithmetic over two different questions.
+    ``ragged`` marks that pool where the number is shown; ``bases`` names each distinct set so a reader can see
+    what was pooled. A member meaned over nothing — a candidate failure's ``0.0``, set by policy — names no set
+    and does not make a pool ragged: it is a floor on the same scale, not a mean over other dimensions.
+    """
+
+    #: Every dimension any pooled composite was meaned over, sorted.
+    dimensions: list[str]
+    #: The distinct non-empty dimension sets the pooled composites were meaned over, sorted.
+    bases: list[list[str]]
+    #: True when the pool's members were meaned over more than one dimension set.
+    ragged: bool
+
+    def disclosure(self) -> str | None:
+        """The sentence a ragged pool carries where its number is shown, or None when the bases agree."""
+        if not self.ragged:
+            return None
+        sets = " | ".join("{" + ", ".join(basis) + "}" for basis in self.bases)
+        return (
+            f"ragged composite: pooled over {len(self.bases)} different dimension sets ({sets}), so the mean "
+            "averages different questions and is not one measurement"
+        )
+
+
+def pool_composite_bases(bases: Iterable[Sequence[str] | None]) -> CompositeBasis | None:
+    """The basis of a composite pooled from members with these bases — the one reading every pooled surface uses.
+
+    Args:
+        bases: Each pooled member's basis (:func:`composite_basis`, or
+            :attr:`~threetears.evals.analysis.reporting.ScoreRecord.dimension_basis` on a composite row); None
+            for a member with no composite, which pooled nothing.
+
+    Returns:
+        The pooled basis, or None when no member carried a composite.
+    """
+    present = [tuple(basis) for basis in bases if basis is not None]
+    if not present:
+        return None
+    distinct = sorted({basis for basis in present if basis})
+    return CompositeBasis(
+        dimensions=sorted({dim for basis in distinct for dim in basis}),
+        bases=[list(basis) for basis in distinct],
+        ragged=len(distinct) > 1,
+    )
 
 
 def _result_passes(result: EvalResult, *, rubric_threshold: int) -> bool:
@@ -1092,10 +1161,13 @@ def _group_case_composites(
     composite is undefined there, not zero.
 
     Returns:
-        ``{(model, run_id): {"has_rubric": bool, "per_case": {tc_id: float}}}``.
+        ``{(model, run_id): {"has_rubric": bool, "per_case": {tc_id: float}, "basis": CompositeBasis | None}}``
+        — ``basis`` is what the group's composites were meaned over (:func:`pool_composite_bases`), None when
+        the group has no composite.
     """
     raw: dict[tuple[str, str], dict[str, list[float | None]]] = {}
     has_rubric: dict[tuple[str, str], bool] = {}
+    bases: dict[tuple[str, str], list[list[str] | None]] = {}
     for r in results:
         key = (r.model, r.eval_run_id)
         has_rubric.setdefault(key, False)  # register the group even if all-excluded
@@ -1103,6 +1175,7 @@ def _group_case_composites(
             continue  # a fault, or the judge could not tell on a dim the composite needs — unmeasured, not zero
         has_rubric[key] = has_rubric[key] or bool(capability_scores(r))
         raw.setdefault(key, {}).setdefault(r.test_case_id, []).append(result_composite(r))
+        bases.setdefault(key, []).append(composite_basis(r))
 
     out: dict[tuple[str, str], dict[str, Any]] = {}
     for key, rubric in has_rubric.items():
@@ -1112,7 +1185,11 @@ def _group_case_composites(
             for tc_id, comps in cases.items():
                 vals = [c if c is not None else 0.0 for c in comps]
                 per_case[tc_id] = sum(vals) / len(vals)
-        out[key] = {"has_rubric": rubric, "per_case": per_case}
+        out[key] = {
+            "has_rubric": rubric,
+            "per_case": per_case,
+            "basis": pool_composite_bases(bases.get(key, [])) if per_case else None,
+        }
     return out
 
 
@@ -1126,22 +1203,30 @@ def compute_composite_summary(
     case weighs equally, matching pass^k's per-case denominator). Query-time,
     never stored; reused by an analytics tier.
 
+    **The pool says what it was meaned over** (#638). Each result's composite is a mean over the dimensions
+    that result carries, so a group whose results carried different dimension sets pools means of different
+    questions. ``composite_basis`` carries the union of the bases and marks that pool ragged
+    (:class:`CompositeBasis`), so the number cannot be read without it.
+
     Returns:
-        ``{(model, run_id): {"mean_composite": float | None, "n_cases": int}}``.
+        ``{(model, run_id): {"mean_composite": float | None, "n_cases": int, "composite_basis": dict | None}}``.
         ``mean_composite`` is ``None`` for goal-only groups (no rubric dims);
         ``n_cases`` is the number of cases contributing to the composite (0 when
-        undefined).
+        undefined); ``composite_basis`` is the :class:`CompositeBasis` as a dict
+        (``dimensions``, ``bases``, ``ragged``), ``None`` exactly when ``mean_composite`` is.
     """
     out: dict[tuple[str, str], dict[str, Any]] = {}
     for key, info in _group_case_composites(results).items():
         per_case: dict[str, float] = info["per_case"]
+        basis: CompositeBasis | None = info["basis"]
         if info["has_rubric"] and per_case:
             out[key] = {
                 "mean_composite": sum(per_case.values()) / len(per_case),
                 "n_cases": len(per_case),
+                "composite_basis": basis.model_dump() if basis is not None else None,
             }
         else:
-            out[key] = {"mean_composite": None, "n_cases": 0}
+            out[key] = {"mean_composite": None, "n_cases": 0, "composite_basis": None}
     return out
 
 
@@ -1166,7 +1251,9 @@ def compute_per_case_composites(
 
 __all__ = [
     "CellSummary",
+    "CompositeBasis",
     "capability_scores",
+    "composite_basis",
     "compute_composite_summary",
     "compute_cost_summary",
     "compute_dimension_summary",
@@ -1180,6 +1267,7 @@ __all__ = [
     "pass_hat_k_cell",
     "PassHatPoint",
     "percentile",
+    "pool_composite_bases",
     "pool_pass_hat_k",
     "pool_pass_hat_k_attempts",
     "reconstruct_completeness",

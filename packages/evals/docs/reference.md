@@ -183,6 +183,7 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
 - **`CompletionClient`** · protocol · The completion port eval is constructed with.
 - **`CompletionGenerator`** · protocol · The one call a consumer of a completion client makes, without the client's lifecycle.
 - **`CompletionResult`** · protocol · What eval reads off one completion, whatever produced it.
+- **`CompositeBasis`** · model · What a pooled composite was meaned over: the union of its members' bases, and whether they agreed.
 - **`ConflictError`** · exception · State conflict (status 409).
 - **`ContextComponents`** · model · The separately-recorded pieces a run's `context_key` is composed from.
 - **`ControlDeclaration`** · model · What held still, stated — because an absent control is a fact, not a null.

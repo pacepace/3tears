@@ -78,13 +78,15 @@ from threetears.evals.contracts.result_condition import (
     trial_exclusion,
 )
 from threetears.evals.contracts.scoring import (
+    CompositeBasis,
     PassHatPoint,
+    composite_basis,
+    pool_composite_bases,
     case_pass_hat_k,
     pass_hat_k_at,
     pass_hat_k_cell,
     pool_pass_hat_k,
     pool_pass_hat_k_attempts,
-    capability_scores,
     result_composite,
 )
 from threetears.observe import get_logger
@@ -1440,9 +1442,7 @@ def project_score_records(
             ScoreRecord(
                 metric=METRIC_COMPOSITE,
                 value=composite,
-                dimension_basis=sorted({score.dim for score in capability_scores(result)})
-                if composite is not None
-                else None,
+                dimension_basis=composite_basis(result),
                 host_measures=result.host_measures,
                 **composite_coordinates,
             )
@@ -2914,6 +2914,11 @@ class PivotCell(EvalBaseModel):
     #: entries differ are not comparable on cost, which :attr:`PivotTable.cost_compositions_differ`
     #: flags at the table. Empty on any other metric.
     cost_compositions: list[list[str]] = []
+    #: On a composite pivot, what the cell's composites were meaned over (:func:`pooled_composite_basis`):
+    #: the union of the observations' bases, and ``ragged`` when they were meaned over different dimension
+    #: sets, so the cell's mean averages different questions (#638). ``None`` on any other metric and on a
+    #: cell with no valued observation.
+    composite_basis: CompositeBasis | None = None
     #: Of the ``n`` valued observations, how many carried a background delivery a harness supplied — seeded
     #: or replayed (:func:`~threetears.evals.contracts.usage_capture.count_substituted_deliveries`). Counted on
     #: every metric, because a substituted delivery is what the candidate read as well as what it did not pay
@@ -2995,6 +3000,11 @@ class PivotTable(EvalBaseModel):
     #: (#625) — within one cell or between cells. True means some cost here covered roles another did not,
     #: so a cheaper cell may only have priced fewer things; each cell's ``cost_compositions`` says which.
     cost_compositions_differ: bool = False
+    #: On a composite pivot, whether the table's valued composites were meaned over more than one dimension
+    #: set (#638) — within one cell or between cells. True means a difference between two cells may be a
+    #: difference in what was averaged rather than in what was measured; each cell's ``composite_basis`` says
+    #: which sets it pooled.
+    composite_bases_differ: bool = False
     #: The sentence a comparison carries when its runs recorded different cassette modes
     #: (:func:`cassette_mode_disclosure`, the words ``runs_compare`` and ``comparison_sets`` use), over the
     #: runs behind this table's observations, or ``None`` when they all recorded one (#658). It qualifies
@@ -3619,6 +3629,7 @@ def compute_pivot(
             qualifiers: dict[str, Any] = {
                 "cassette_modes": sorted({r.cassette_mode for r in valued if r.cassette_mode is not None}),
                 "cost_compositions": pooled_cost_compositions(valued) if metric == METRIC_COST_USD else [],
+                "composite_basis": pooled_composite_basis(valued) if metric == METRIC_COMPOSITE else None,
                 "identity_versions": identity_versions,
                 "n_substituted": n_substituted,
                 "substitution_disclosure": (
@@ -3709,6 +3720,9 @@ def compute_pivot(
         n_degraded_observations=sum(1 for record in selected if record.run_id in (completeness_disclosures or {})),
         cost_compositions_differ=metric == METRIC_COST_USD
         and len(pooled_cost_compositions([r for r in selected if r.value is not None])) > 1,
+        composite_bases_differ=metric == METRIC_COMPOSITE
+        and (table_basis := pooled_composite_basis([r for r in selected if r.value is not None])) is not None
+        and table_basis.ragged,
         cassette_mode_disclosure=cassette_mode_disclosure(
             {record.run_id: record.cassette_mode for record in selected if record.cassette_mode is not None}
         ),
@@ -4145,6 +4159,10 @@ class FrontierPoint(EvalBaseModel):
     mean_composite: float | None = None
     composite_sem: float | None = None
     n_composite_cases: int = 0
+    #: What ``mean_composite`` was meaned over (:func:`pooled_composite_basis`), ``ragged`` when this point's
+    #: results were scored on different dimension sets (#638). ``None`` when no composite was pooled, and on a
+    #: point stored before the basis was carried — which says nothing about whether that pool was ragged.
+    composite_basis: CompositeBasis | None = None
 
     # Cost — production-replicating only. ``None`` (never 0) when no
     # result at this point reported one; ``cost_is_partial`` when some did and some did
@@ -4700,6 +4718,7 @@ def _frontier_point(
         pass_hat_k_ci_high=None if pass_interval is None else pass_interval[1],
         mean_composite=mean_composite,
         composite_sem=composite_sem,
+        composite_basis=pooled_composite_basis(results) if mean_composite is not None else None,
         n_composite_cases=len(values_by_case),
         production_replicating_cost=prod_cost,
         n_cost=n_cost,
@@ -5464,6 +5483,11 @@ class SeriesPoint(EvalBaseModel):
     #: the point can tell the two apart. Empty on every non-cost measure, which have no
     #: composition.
     cost_compositions: list[list[str]] = []
+    #: On a COMPOSITE series only: what this point's composites were meaned over (#638), ``ragged`` when the
+    #: run's results carried different dimension sets. Per point for the reason ``cost_compositions`` is: a
+    #: step between two points meaned over different sets is a change in what was averaged, not a regression.
+    #: ``None`` on every other measure and on a point with no composite.
+    composite_basis: CompositeBasis | None = None
     #: This point's run's RECORDED cassette mode. Carried per point rather than once per
     #: series because it can move BETWEEN points — which is the whole defect: cassette
     #: mode is outside the variant key, so a capture run and a replay run of one
@@ -5930,6 +5954,11 @@ def compute_history(
                     cost_compositions=(
                         pooled_cost_compositions(rows_by_run[run_id]) if metric == METRIC_COST_USD else []
                     ),
+                    composite_basis=(
+                        pooled_composite_basis(rows_by_run[run_id])
+                        if metric == METRIC_COMPOSITE and value is not None
+                        else None
+                    ),
                     # On every measure, not only cost: a replayed run's LATENCY and QUALITY
                     # are as substituted as its dollars, and this is the series where a
                     # capture point and a replay point sit under one contestant heading.
@@ -6013,6 +6042,29 @@ def compute_history(
 # exclusion is short too, and no status filter can see it. That is
 # `RunCompleteness`'s question, not this constant's.
 _QUALITY_INCLUDED_STATUS = "completed"
+
+
+def pooled_composite_basis(results: Sequence[EvalResult] | Sequence[ScoreRecord]) -> CompositeBasis | None:
+    """Say what a pooled composite was meaned over, and whether the pool is ragged (#638).
+
+    Every surface that means composites across results pools numbers each meaned over whatever dimensions
+    its result carried, so two pools that read alike can average different questions. Shared, as
+    :func:`pooled_cost_compositions` is, so every surface reads one predicate
+    (:func:`~threetears.evals.contracts.scoring.pool_composite_bases`).
+
+    Args:
+        results: The results whose composites the caller pooled, or the composite rows a pivot cell pooled
+            (:attr:`ScoreRecord.dimension_basis`). A row that is not a composite row contributes nothing.
+
+    Returns:
+        The pooled basis, or None when nothing pooled carried a composite.
+    """
+    return pool_composite_bases(
+        (result.dimension_basis if result.metric == METRIC_COMPOSITE else None)
+        if isinstance(result, ScoreRecord)
+        else composite_basis(result)
+        for result in results
+    )
 
 
 def pooled_cost_compositions(results: Sequence[EvalResult] | Sequence[ScoreRecord]) -> list[list[str]]:
@@ -7192,6 +7244,7 @@ __all__ = [
     "metric_help",
     "normalize_bar",
     "place_results",
+    "pooled_composite_basis",
     "pooled_cost_compositions",
     "project_score_records",
     "resolve_measure_name",

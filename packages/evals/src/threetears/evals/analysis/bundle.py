@@ -98,6 +98,7 @@ from threetears.evals.analysis.reporting import (
     compute_frontier,
     compute_program_budget,
     decompose_total_ms,
+    pooled_composite_basis,
     lever_level,
     measurement_window,
     measurement_window_disclosure,
@@ -5823,20 +5824,28 @@ def _within_level_dispersion(
         lever: The lever to group by.
         effective_by_run: Each run's resolved levers, keyed by run id.
 
+    **A ragged pool says so in the text** (#638): where the composites behind the spread were meaned over
+    different dimension sets (:func:`~threetears.evals.analysis.reporting.pooled_composite_basis`), the spread
+    is partly the difference between those sets, and the text carries the sets beside the number.
+
     Returns:
         ``"±"`` and the mean within-level SEM in :func:`~threetears.evals.analysis.numbers.format_number`'s spelling,
-        or ``"unscored"``.
+        followed by the ragged-composite disclosure in parentheses where the pool is ragged, or ``"unscored"``.
     """
     by_level: dict[str, tuple[list[float], list[str]]] = {}
+    pooled: list[ScoreRecord] = []
     for record in composite_records:
         if record.value is not None and (level := _lever_value(record, lever, effective_by_run)) is not None:
             values, cases = by_level.setdefault(level, ([], []))
             values.append(record.value)
             cases.append(record.test_case_id)
+            pooled.append(record)
     sems = [sem for values, cases in by_level.values() if (sem := clustered_standard_error(values, cases)) is not None]
     if not sems:
         return "unscored"
-    return f"±{format_number(sum(sems) / len(sems))}"
+    basis = pooled_composite_basis(pooled)
+    ragged = f" ({basis.disclosure()})" if basis is not None and basis.ragged else ""
+    return f"±{format_number(sum(sems) / len(sems))}{ragged}"
 
 
 def _lever_k_floor(
