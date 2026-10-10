@@ -86,6 +86,7 @@ from threetears.evals.kernel.surface import (
     GuardrailReadings,
     JudgedReading,
     MeasureFacts,
+    PredictionPoweredReading,
     StratumFacts,
     TimeAxis,
 )
@@ -1075,11 +1076,29 @@ def _interval(low: float | None, high: float | None) -> str:
 
 
 def _judged_text(reading: JudgedReading) -> str:
-    """One judged dimension's mean, with its standard error and the scores it rests on."""
+    """One judged dimension's mean, with its standard error and the scores it rests on.
+
+    Where people rated some of those scores, the prediction-powered estimate follows the judge's figure, labelled
+    as people's and never in its place (#598).
+    """
     if reading.mean is None:
         return f"no score (n={reading.n})"
     spread = f" ± {format_number(reading.sem)}" if reading.sem is not None else ""
-    return f"{format_number(reading.mean)}{spread} {_n_text(reading.n, reading.n_independent)}"
+    text = f"{format_number(reading.mean)}{spread} {_n_text(reading.n, reading.n_independent)}"
+    if (powered := reading.prediction_powered) is not None:
+        text += f"; {_prediction_powered_text(powered)}"
+    return text
+
+
+def _prediction_powered_text(powered: PredictionPoweredReading) -> str:
+    """The prediction-powered estimate beside a judged mean: its value and interval, or why it is not available."""
+    rated = f"{powered.n_labelled} rated by people"
+    if powered.mean is None:
+        return f"with people's ratings: not available ({rated}, under {powered.min_labelled})"
+    return (
+        f"with people's ratings: {format_number(powered.mean)}{_interval(powered.ci_low, powered.ci_high)} "
+        f"(rectifier {format_number(powered.rectifier or 0.0)}; {rated})"
+    )
 
 
 def _n_text(n: int, n_cases: int) -> str:

@@ -69,14 +69,6 @@ is known is that the two are never pooled. When it has been run, record the figu
 *Evidence:* one probe in a private host application, 2026-09: scores stable across attempts at the provider default (a refusal scored
 5, a detailed answer 4); says nothing about borderline cases.
 
-### Human labels and judge scores are not combined
-
-Tracked in [#598](https://github.com/pacepace/3tears/issues/598).
-
-Calibration ratings (`CalibrationRating`) decide a judge's tier, but the estimate itself uses judge
-scores alone. Prediction-powered inference (Angelopoulos et al. 2023) combines a small human-labelled set
-with many judge scores into an estimate whose interval stays valid when the judge is biased. Not built.
-
 ### A tier's bounds are conservative on a 1-5 scale
 
 A tier is decided on score bounds for kappa

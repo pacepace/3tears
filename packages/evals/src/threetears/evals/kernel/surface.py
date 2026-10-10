@@ -45,6 +45,66 @@ from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier
 from threetears.evals.schema.models import DimName, RubricAxis
 
 
+class PredictionPoweredReading(EvalDocumentModel):
+    """A judged dimension's mean in one cell re-estimated with people's labels (#598) — beside the judge's, never for it.
+
+    Prediction-powered inference (Angelopoulos et al., 2023): the judge's mean over every scored observation plus
+    the rectifier, the mean of ``person - judge`` over the observations people rated. The judge's bias is measured
+    on the labelled results and subtracted, so the interval stays valid when the judge is biased — at the price of
+    the width the labelled results' spread costs. Computed by
+    :func:`threetears.evals.analysis.stats.prediction_powered_mean`; clustered by case like every other interval.
+    """
+
+    n_labelled: int = Field(
+        ge=1,
+        description=(
+            "Observations among the judged scores that a person also rated on this dimension; one where several "
+            "people rated it, their mean taken."
+        ),
+    )
+    n_labelled_cases: int = Field(ge=1, description="Distinct test cases behind the labelled observations.")
+    min_labelled: int = Field(
+        ge=1,
+        description=(
+            "The fewest labelled observations the estimate is stated from "
+            "(`threetears.evals.analysis.stats.PPI_MIN_LABELLED_RESULTS`), frozen beside it."
+        ),
+    )
+    mean: float | None = Field(
+        default=None,
+        description=(
+            "The judge's mean plus the rectifier, on the dimension's own scale — the estimate of the mean people "
+            "would have given. None = not available: fewer than `min_labelled` labelled observations."
+        ),
+    )
+    rectifier: float | None = Field(
+        default=None,
+        description=(
+            "The mean of person minus judge over the labelled observations: the judge's bias as people measured it. "
+            "None where `mean` is."
+        ),
+    )
+    sem: float | None = Field(
+        default=None,
+        description=(
+            "Standard error of `mean`, cluster-robust over the test cases, read on `n_labelled_cases - 1` degrees of "
+            "freedom. None where `mean` is, and below two labelled cases."
+        ),
+    )
+    ci_low: float | None = Field(default=None, description="The interval's lower end at 95%; None where `sem` is.")
+    ci_high: float | None = Field(default=None, description="The interval's upper end at 95%; None where `sem` is.")
+    unavailable_reason: str | None = Field(
+        default=None, description="Why `mean` is None, in a sentence to quote; None when it is stated."
+    )
+
+    @model_validator(mode="after")
+    def _stated_or_explained(self) -> PredictionPoweredReading:
+        """A missing estimate says why, and a stated one carries no reason."""
+        if (self.mean is None) == (self.unavailable_reason is None):
+            raise ValueError("exactly one of mean / unavailable_reason must be set")
+        return self
+
+
 class JudgedReading(EvalDocumentModel):
     """One judged dimension's scores in one cell.
 
@@ -82,6 +142,15 @@ class JudgedReading(EvalDocumentModel):
             "(`threetears.evals.kernel.evidence_tiers`): the weakest tier among the judges that served them. "
             "`undetermined` when the evidence decides no tier — never a default standing in for one."
         )
+    )
+    prediction_powered: PredictionPoweredReading | None = Field(
+        default=None,
+        description=(
+            "The same mean re-estimated with people's calibration ratings of some of these observations "
+            "(prediction-powered inference), beside the judge-only `mean` and never replacing it. None when no "
+            "person rated any of them on this dimension, and on a surface frozen before it, which reads as not "
+            "recorded."
+        ),
     )
 
 
@@ -812,6 +881,7 @@ __all__ = [
     "JudgedDimensionFacts",
     "JudgedReading",
     "MeasureFacts",
+    "PredictionPoweredReading",
     "StratumFacts",
     "TimeAxis",
     "TimeAxisBasis",

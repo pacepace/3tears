@@ -687,6 +687,113 @@ def observed_mean_interval(
     return mean_interval(sum(values) / n, sem, len(set(cases)), value_range=value_range, floor=floor)
 
 
+#: The fewest human-labelled results a prediction-powered estimate is stated from (#598); below it the estimate
+#: reads "not available" and only the judge-only figure stands.
+#:
+#: Ten, because the correction is estimated from the labelled results alone — its mean (the rectifier) and its
+#: spread, which is most of the interval's width. A standard deviation estimated from ``n`` values is itself off by
+#: about ``1 / sqrt(2 (n - 1))`` of its size: a quarter at ten, over a third at five. Below ten the interval's width
+#: is a guess about its own width, and one unusual rating moves the rectifier by a tenth or more of the gap it
+#: claims to close — a correction no more trustworthy than the bias it corrects. Half the calibration tier's floor
+#: (:data:`~threetears.evals.kernel.evidence_tiers.CALIBRATION_MIN_RESULTS`) on purpose: the tier asks whether the
+#: judge can be leaned on alone, while this estimate stays valid with a judge that cannot, so it needs only
+#: enough labels to measure the judge's bias, not to clear an agreement bar.
+PPI_MIN_LABELLED_RESULTS: Final = 10
+
+
+class PredictionPoweredMean(NamedTuple):
+    """A prediction-powered mean: the judge's mean over every observation, corrected by people's labels on some.
+
+    Attributes:
+        mean: ``judge_mean + rectifier`` — the estimate of the mean people would have given every observation.
+        judge_mean: The judge's mean over every observation, labelled or not.
+        rectifier: The mean of ``human - judge`` over the labelled observations: the judge's bias, measured.
+        sem: The estimate's cluster-robust standard error, or None below two labelled cases.
+        interval: The interval at :data:`INTERVAL_LEVEL` on ``labelled cases - 1`` degrees of freedom, clipped to
+            the declared range; None where ``sem`` is.
+    """
+
+    mean: float
+    judge_mean: float
+    rectifier: float
+    sem: float | None
+    interval: tuple[float, float] | None
+
+
+def prediction_powered_mean(
+    judge: Sequence[float],
+    cases: Sequence[Hashable],
+    human: Sequence[float | None],
+    *,
+    value_range: tuple[float, float] | None = None,
+) -> PredictionPoweredMean | None:
+    """The prediction-powered estimate of a mean (Angelopoulos et al., "Prediction-powered inference", 2023).
+
+    The judge scores every observation; people label some. The judge's mean over all of them is precise and possibly
+    biased; the labelled observations measure that bias as the rectifier, the mean of ``human - judge`` over them.
+    Their sum estimates the mean people would have given, and its interval stays valid however biased the judge is:
+    a constant bias moves the rectifier by exactly as much and leaves the variance alone. A judge that tracks people
+    closely makes ``human - judge`` nearly constant, so the interval approaches the judge-only one's width; a judge
+    that does not leaves it near the labelled-only one's.
+
+    **The variance is the analytic cluster-robust one, not a bootstrap**, because every other interval in the bundle
+    is (:func:`clustered_standard_error` read on t), so this one is read on the same footing beside them. The
+    estimate is linear in the observations: observation ``i`` contributes ``f_i / N`` plus, when labelled,
+    ``(y_i - f_i) / n``. Its residual is ``(f_i - f̄) / N + [i labelled] (r_i - r̄) / n``, and the variance is
+    ``G_L / (G_L - 1) Σ_g (Σ_{i in g} residual_i)²`` over cases ``g``. Without repeats and with the labelled set
+    disjoint from the rest, that is Angelopoulos' ``var(f) / N + var(y - f) / n``. Here the labelled results are
+    among the ``N`` (the judge mean is over every result), so the two terms covary; summing residuals within a case
+    before squaring carries that covariance, and the repeats of a case, rather than treating them as independent.
+    The small-sample factor and the degrees of freedom are the LABELLED cases' (``G_L``, never all ``G``): the
+    rectifier's spread is estimated from them alone, and it dominates the width whenever few results are labelled.
+    That is conservative on the judge's term, whose own factor would be ``G / (G - 1)``.
+
+    With every observation labelled the estimate is the people's mean and its standard error is
+    :func:`clustered_standard_error` of their scores read on the same cases.
+
+    Args:
+        judge: The judge's score per observation.
+        cases: Each observation's case, aligned with ``judge``.
+        human: People's score per observation (a mean over raters where several rated it), or None where nobody
+            did, aligned with ``judge`` and on its scale.
+        value_range: The scale's inclusive bounds, which the interval is clipped to; the estimate itself is not,
+            since clipping it would bias it.
+
+    Returns:
+        The estimate, or None when no observation is labelled — there is nothing to combine.
+
+    Raises:
+        ValueError: ``judge``, ``cases`` and ``human`` differ in length.
+    """
+    _require_aligned(judge, cases)
+    _require_aligned(human, cases)
+    gaps = {index: float(value) - judge[index] for index, value in enumerate(human) if value is not None}
+    if not gaps:
+        return None
+    total, n_labelled = len(judge), len(gaps)
+    judge_mean = math.fsum(judge) / total
+    rectifier = math.fsum(gaps.values()) / n_labelled
+    labelled_cases = len({cases[index] for index in gaps})
+    if labelled_cases < 2:
+        return PredictionPoweredMean(judge_mean + rectifier, judge_mean, rectifier, None, None)
+    residual_by_case: dict[Hashable, float] = {}
+    for index, (score, case) in enumerate(zip(judge, cases)):
+        residual = (score - judge_mean) / total
+        if index in gaps:
+            residual += (gaps[index] - rectifier) / n_labelled
+        residual_by_case[case] = residual_by_case.get(case, 0.0) + residual
+    sem = math.sqrt(labelled_cases / (labelled_cases - 1) * math.fsum(r * r for r in residual_by_case.values()))
+    mean = judge_mean + rectifier
+    half = ci_half_width(sem, labelled_cases)
+    assert half is not None  # two or more labelled cases
+    low, high = mean - half, mean + half
+    if value_range is not None:
+        bottom, top = value_range
+        # Clipped into the scale, and kept an interval when the estimate itself falls past an end.
+        low, high = min(max(bottom, low), top), max(min(top, high), bottom)
+    return PredictionPoweredMean(mean, judge_mean, rectifier, sem, (low, high))
+
+
 #: How far below its own mean (above, where lower is better) an incumbent's bar is seeded, as a fraction of
 #: the permissive half of its interval. ``√2 − 1``, derived rather than chosen: a candidate measured as the
 #: incumbent was (same cases, same spread) misses a bar at ``T`` when its interval's near end falls past it,
@@ -2457,6 +2564,7 @@ __all__ = [
     "MIN_PAIRS_FOR_DETERMINISTIC_GAP",
     "MULTIPLE_COMPARISON_CORRECTION",
     "PAIRED_TEST_NAME",
+    "PPI_MIN_LABELLED_RESULTS",
     "SIGNIFICANCE_ALPHA",
     "SMALL_N_BAND_FLOOR",
     "UNPAIRED_TEST_NAME",
@@ -2496,6 +2604,8 @@ __all__ = [
     "paired_detectable_difference",
     "paired_equivalence",
     "paired_t_power",
+    "PredictionPoweredMean",
+    "prediction_powered_mean",
     "proportion_interval",
     "separation_p",
     "separation_test",

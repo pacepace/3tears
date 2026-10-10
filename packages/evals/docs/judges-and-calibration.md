@@ -2,8 +2,8 @@
 
 **For** someone grading output that no code can check (is the answer grounded, is the tone right, did it refuse
 what it should) who wants to know whether to trust the grades. **Answers:** how to write a rubric dimension, run
-an LLM judge, collect person ratings, and read whether the judge agrees with people and with itself, and how many
-ratings that takes. Grade with code wherever code can decide; a judge is for judgment
+an LLM judge, collect person ratings, and read whether the judge agrees with people and with itself, how many
+ratings that takes, and how the ratings correct the judge's mean. Grade with code wherever code can decide; a judge is for judgment
 ([principles](principles.md)).
 
 The snippets run top to bottom as one script. `client` is any `CompletionClient` (an async
@@ -186,6 +186,46 @@ results) — needs 120 results.
 **"Needs N more"** is the rest of the floor when there are too few results. When the bounds straddle the bar, it
 says about how many more results would carry them clear if agreement held at its estimate. Tiers are flagged and
 never hide a reading; a finding stands on the weakest tier among its rows.
+
+## Step 7b: combine the ratings with the judge's scores
+
+Ratings do more than decide a tier. Where people rated some of a cell's judged scores, the cell's judged reading
+(`JudgedArm.prediction_powered` in the bundle, `JudgedReading.prediction_powered` on the frozen surface) carries a
+**prediction-powered estimate** (Angelopoulos et al., 2023) beside the judge's own mean:
+
+- the judge's mean over every counted score in the cell, plus
+- the **rectifier**: the mean of person minus judge over the scores people rated, the judge's bias as people
+  measured it.
+
+The sum estimates the mean people would have given every result, and its interval stays valid however biased the
+judge is. A judge that scores a point high makes its own interval confidently wrong; the rectifier moves the
+estimate back by that point. The price is width: the closer the judge tracks people, the closer the interval is
+to the judge-only one; the less it does, the closer it is to an interval on the ratings alone.
+
+It never replaces the judge's figure. The judge's mean is what the judge said; this is what people would have
+said, estimated. The code-only report's strata table prints it after the judge's figure, here for a judge biased 0.8 high over
+a true mean of 3 (one draw of the simulation below):
+
+```text
+3.63 ± 0.1271 (n=90 over 30 cases); with people's ratings: 2.846 [2.566, 3.127] (rectifier -0.7839; 24 rated by people)
+```
+
+- **Which ratings count.** Exactly those agreement pairs (step 6): a person's rating, of a result read, on a
+  dimension its judge scored on the same scale (`person_scores_by_result`). Several people on one result count
+  as their mean. On a candidate failure the judge's score counts the scale floor, so the person's does too.
+- **The interval** is clustered by case like every other: the analytic cluster-robust variance of the estimate
+  (`prediction_powered_mean`), which carries the covariance between the judge's mean and the rectifier (the
+  rated results are among those the judge's mean covers), read on t with the rated cases minus one degrees of
+  freedom.
+- **At least 10 rated results** (`PPI_MIN_LABELLED_RESULTS`). Below it the estimate reads `not available` and
+  says how many were rated: the correction is estimated from the rated results alone, and below ten its spread is
+  too uncertain to put an interval on.
+- A cell nobody rated carries no estimate (`None`). Ratings are per cell, so 10 rated results per arm you want
+  corrected, not 10 in all.
+
+In seeded simulation, a judge biased by 0.8 on a 30-case × 3-repeat arm with 24 rated results: the
+prediction-powered interval covered the true mean 95.2% of the time, the judge-only interval 0.15%
+(`test_simulated_prediction_powered.py`).
 
 ## Step 8: judge repeats, for self-agreement
 
