@@ -150,6 +150,11 @@ gained ``judge_cannot_tell_boundary`` (empty, its can't-tells read as capability
 each judged guardrail (a boundary rubric dimension) is held to. A campaign, or an analysis's design snapshot,
 stored before it carries none and reads as declaring none: its judged guardrails are held at zero change, exactly
 as they were decided then, so no stored decision moves.
+
+**Within v8, not a bump**: ``EvalRun.cell_timeout_s`` and ``cell_timeout_s_origin`` joined as OPTIONAL fields (#649)
+— the per-cell deadline the run's cells ran under and whether the launch, the kind or the engine's default set it.
+A run stored before them carries None for both and reads as "deadline not recorded", never as today's default:
+the kind's wiring may have set another.
 """
 
 
@@ -2047,6 +2052,11 @@ CostCapOrigin = Literal["chosen", "inherited", "uncapped"]
 #: is a host with metered tools whose enforcement is off.
 MeteredCallOrigin = Literal["chosen", "inherited", "uncapped", "none_declared"]
 
+#: Where a run's per-cell deadline came from (:attr:`EvalRun.cell_timeout_s_origin`): ``launch`` — the launch
+#: named it (``cell_timeout_s``), within the host's ceiling; ``kind`` — the kind's launcher wired its own
+#: (``KindWiring.cell_timeout_s``); ``default`` — neither did, so the engine's ``DEFAULT_CELL_TIMEOUT_S`` held.
+CellTimeoutOrigin = Literal["launch", "kind", "default"]
+
 
 def scored_dim_ids(rubric_dim_names: list[str], judged_artifact: JudgedArtifact) -> list[str]:
     """Every dim a judged cell of this kind is scored on, in the order the judge phase calls them.
@@ -2794,6 +2804,25 @@ class EvalRun(EvalDocumentModel):
             "counted: the run's loop never started, or it ran with no ledger at all."
         ),
     )
+    cell_timeout_s: float | None = Field(
+        default=None,
+        gt=0.0,
+        description=(
+            "The deadline every cell of this run ran under, in seconds: the launch's ``cell_timeout_s``, or the "
+            "kind's own deadline when the launch named none. A cell that outlives it is excluded as "
+            "``cell_timeout``, so a run losing cells to it is read against this value. None = a run stored before "
+            "the deadline was recorded, or one assembled outside a launch: the deadline it ran under is unknown, "
+            "never read as today's default. Not hashed into any identity key, like turn_budget_s."
+        ),
+    )
+    cell_timeout_s_origin: CellTimeoutOrigin | None = Field(
+        default=None,
+        description=(
+            "Where cell_timeout_s came from: ``launch`` (the launch named it), ``kind`` (the kind's launcher "
+            "wired its own) or ``default`` (the engine's default). Kept beside it for the reason "
+            "max_cost_usd_origin is. None exactly when cell_timeout_s is."
+        ),
+    )
     turn_budget_s: float | None = Field(
         default=None,
         gt=0.0,
@@ -2987,6 +3016,21 @@ class EvalRun(EvalDocumentModel):
                 f"cassette_corpus_id is set exactly when cassette_mode is 'replay' (got mode {self.cassette_mode!r}, "
                 f"corpus {self.cassette_corpus_id!r}): a replay serves the corpus of the capture run it names, a "
                 "capture writes the corpus its own id names, and a run with cassettes off reads none"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _cell_timeout_names_its_origin(self) -> Self:
+        """Require the per-cell deadline and its origin together, or neither.
+
+        Raises:
+            ValueError: One is recorded without the other.
+        """
+        if (self.cell_timeout_s is None) != (self.cell_timeout_s_origin is None):
+            raise ValueError(
+                f"cell_timeout_s and cell_timeout_s_origin are recorded together or not at all (got "
+                f"{self.cell_timeout_s!r}, {self.cell_timeout_s_origin!r}): a deadline whose origin is unknown cannot "
+                "say whether a launch chose it"
             )
         return self
 
@@ -4586,6 +4630,7 @@ __all__ = [
     "stale_goal_check_proofs",
     "ApparatusSettingValue",
     "MeteredCallOrigin",
+    "CellTimeoutOrigin",
     "CANDIDATE_SPEAKER",
     "DEFAULT_JUDGE_TEMPERATURE",
     "EVAL_SCHEMA_VERSION",

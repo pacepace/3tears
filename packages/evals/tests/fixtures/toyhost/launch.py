@@ -128,6 +128,8 @@ def toyhost_launch_host(
     trace_sink: TraceSink | None = None,
     settings: Callable[[], LaunchSettings] = lambda: TOYHOST_LAUNCH_SETTINGS,
     clients: CompletionClients | None = None,
+    extraction_client: ScriptedExtractionClient | None = None,
+    kind_cell_timeout_s: float | None = None,
 ) -> tuple[LaunchHost, ScriptedExtractionClient]:
     """The toy host as a launching host: its :class:`~threetears.evals.contracts.host.EvalHost`, plus its launch registry.
 
@@ -138,6 +140,9 @@ def toyhost_launch_host(
         settings: Reads the launch settings; a callable because a host's settings hot-reload.
         clients: The completion-client factory, for a drive that also analyses what it launched. The
             extractor itself calls no model.
+        extraction_client: The extractor's scripted client; ``None`` is one over the toy scripts.
+        kind_cell_timeout_s: The per-cell deadline the launcher wires for its kind
+            (``KindWiring.cell_timeout_s``); ``None`` leaves the engine's default.
 
     Returns:
         The host, and the scripted client its extractor calls — so a caller can see what was asked.
@@ -145,7 +150,7 @@ def toyhost_launch_host(
     eval_host = toyhost_host(profile=profile, storage=storage, trace_sink=trace_sink, clients=clients)
     world = eval_host.profile.world
     assert world is not None, "the toy host declares a world"
-    client = ScriptedExtractionClient()
+    client = extraction_client if extraction_client is not None else ScriptedExtractionClient()
 
     def place(run: EvalRun) -> dict[str, WorldPlacement]:
         # The algebra over what this run's kind can actually do: the dimensions its seed sets,
@@ -182,6 +187,7 @@ def toyhost_launch_host(
                 kind_factory=lambda _cell: graded,
                 subject=subject,
                 test_cases=cases,
+                cell_timeout_s=kind_cell_timeout_s,
                 payload={
                     "toyhost": {
                         "grader_version": TOYHOST_GRADER_VERSION,

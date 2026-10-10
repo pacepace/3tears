@@ -108,6 +108,13 @@ class LaunchArguments(EvalBaseModel):
     )
     judge_model: str | None = Field(default=None, description="The judge model, where the kind is model-judged.")
     simulator_model: str | None = Field(default=None, description="The simulated user's model, where the kind has one.")
+    cell_timeout_s: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+        description="The deadline each cell runs under, in seconds, in place of the kind's own; at or below the "
+        "host's ceiling (a host declaring none allows only lowering the kind's deadline). Recorded on every run.",
+    )
 
 
 class RunDeleted(EvalBaseModel):
@@ -222,6 +229,7 @@ async def run_launch(host: OpsHost, arguments: LaunchArguments, scope_id: str) -
         judge_model=arguments.judge_model,
         simulator_model=arguments.simulator_model,
         scope_id=scope_id,
+        cell_timeout_s=arguments.cell_timeout_s,
     )
     return JobsStarted(
         jobs=[

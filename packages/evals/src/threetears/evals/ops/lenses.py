@@ -462,6 +462,7 @@ async def launch_estimate(
         simulator_model=arguments.simulator_model,
         scope_id=scope_id,
         case_count=n_test_cases,
+        cell_timeout_s=arguments.cell_timeout_s,
     )
     arms = [_arm_estimate(arm, quote.k_runs, quote.n_variations) for arm in quote.arms]
     predicted = [arm.predicted_usd for arm in arms]

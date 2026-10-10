@@ -50,6 +50,7 @@ from threetears.evals.contracts.models import (
     DEFAULT_LAUNCH_K_RUNS,
     GOAL_CHECK_PROOF_RULES,
     ApparatusSettingValue,
+    CellTimeoutOrigin,
     EvalRun,
     refused_goal_checks,
     JudgedArtifact,
@@ -140,6 +141,10 @@ class LaunchSettings(BaseModel):
             pins per dim: those are choices. ``None`` substitutes nothing, and a run judged on a candidate's
             model says so on every surface that lists its judges
             (:func:`~threetears.evals.contracts.judge_attribution.judges_sharing_a_candidate_model`).
+        max_cell_timeout_s: The longest per-cell deadline a launch may name (``cell_timeout_s``), in seconds.
+            ``None`` declares no ceiling of the host's own: a launch may then only LOWER its kind's deadline (the
+            one the kind's launcher wires, or :data:`~threetears.evals.run.runner.DEFAULT_CELL_TIMEOUT_S`), so a
+            host that declares nothing cannot be overridden upward.
         setting_names: What the host calls each of the fields above, keyed by field name, so a
             refusal names the knob an operator turns. A field the host does not name here is
             called by its own name; the engine names no host setting of its own.
@@ -155,6 +160,7 @@ class LaunchSettings(BaseModel):
     max_metered_calls: int | None = Field(gt=0)
     max_out_of_run_cost_usd: float = Field(gt=0)
     judge_alternate_model: str | None = Field(default=None, min_length=1)
+    max_cell_timeout_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     setting_names: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -779,6 +785,10 @@ class LaunchRequest:
             (:func:`~threetears.evals.contracts.models.refused_goal_checks`). ``template`` already leaves them
             out (:func:`~threetears.evals.run.runner.template_as_graded`), so every launcher and every cell
             grades the rest, and the run records these (``EvalRun.refused_goal_checks``).
+        cell_timeout_s: The per-cell deadline the launch named, in seconds, already checked positive and within
+            the host's declared ceiling (:attr:`LaunchSettings.max_cell_timeout_s`); ``None`` runs every cell under
+            the kind's own deadline. The launch tail holds it to the kind's deadline when the host declares no
+            ceiling, and records the deadline every cell ran under (``EvalRun.cell_timeout_s``).
     """
 
     template: EvalTemplate
@@ -805,6 +815,7 @@ class LaunchRequest:
     launch_group: LaunchGroup
     settings: LaunchSettings
     refused_goal_checks: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
+    cell_timeout_s: float | None = None
 
     def overlays_as(self, model: type[_Validated]) -> _Validated:
         """The launch's overlays as the kind's own overlay model, typed.
@@ -1433,6 +1444,7 @@ async def start_run(
     scope_id: str,
     launch_group: LaunchGroup | None = None,
     admission: AdmissionTicket | None = None,
+    cell_timeout_s: float | None = None,
 ) -> list[EvalRun]:
     """Refuse what no kind can run, admit the launch, and dispatch each arm to its kind's launcher.
 
@@ -1487,6 +1499,11 @@ async def start_run(
         admission: A reservation the caller already holds, of which this launch takes its runs'
             share instead of asking for room of its own. Ignored with ``launch_group``, whose
             caller's admission covers it. When omitted, a launch that owns its group is admitted here.
+        cell_timeout_s: The deadline each cell of the launch's runs runs under, in seconds, in place of the
+            kind's own; ``None`` keeps the kind's. Bounded by the host's ceiling
+            (:attr:`LaunchSettings.max_cell_timeout_s`, or the kind's own deadline when the host declares none,
+            so an undeclared host can only be lowered). The run's job budget is sized from it, and the run
+            records it with its origin (``EvalRun.cell_timeout_s``, ``cell_timeout_s_origin``).
 
     **Every arm is priced before any launcher runs, by one rule.** Before calling the launcher this asks
     the kind what each arm will run (:attr:`LaunchableKind.plan_arm` — the template's stored cases it
@@ -1542,6 +1559,7 @@ async def start_run(
         scope_id=scope_id,
         launch_group=launch_group,
         admission=admission,
+        cell_timeout_s=cell_timeout_s,
     )
 
 
@@ -1581,6 +1599,42 @@ def _refuse_raised_ceilings(
         raise ValidationFailedError(str(refused)) from refused
 
 
+def _refuse_cell_timeout(settings: LaunchSettings, cell_timeout_s: float | None, *, ceiling: float | None) -> None:
+    """Refuse a per-cell deadline no cell could run under, or one above the ceiling it is held to.
+
+    Asked twice with one rule: before anything is read, against the host's declared ceiling (``None`` there checks
+    only the value), and at the launch tail against the ceiling in force — the declared one, or the kind's own
+    deadline for a host that declares none, which a launch may then only lower.
+
+    Args:
+        settings: The launch's settings snapshot, which names the host's ceiling in a refusal.
+        cell_timeout_s: The launch's per-cell deadline, or ``None`` for none.
+        ceiling: The most it may be, or ``None`` for no ceiling to check here.
+
+    Raises:
+        ValidationFailedError: The deadline is not a finite number above zero, or is above ``ceiling``.
+    """
+    if cell_timeout_s is None:
+        return
+    if not (math.isfinite(cell_timeout_s) and cell_timeout_s > 0):
+        raise ValidationFailedError(
+            f"cell_timeout_s must be a finite number of seconds above 0 (got {cell_timeout_s}); a cell with no time "
+            "to run measures nothing"
+        )
+    if ceiling is not None and cell_timeout_s > ceiling:
+        declared = settings.max_cell_timeout_s is not None
+        raise ValidationFailedError(
+            f"cell_timeout_s={cell_timeout_s:g} is above the {'host' if declared else 'kind'}'s ceiling of "
+            f"{ceiling:g}s"
+            + (
+                f" ({settings.name_of('max_cell_timeout_s')})"
+                if declared
+                else f"; the host declares no {settings.name_of('max_cell_timeout_s')}, so a launch may only lower "
+                "the kind's own deadline"
+            )
+        )
+
+
 def _refuse_launch_arguments(
     host: LaunchHost,
     settings: LaunchSettings,
@@ -1590,6 +1644,7 @@ def _refuse_launch_arguments(
     max_metered_calls: int | None,
     cassette_mode: str | None,
     cassette_corpus_id: str | None,
+    cell_timeout_s: float | None = None,
 ) -> CassetteMode:
     """The refusals a launch makes of its arguments alone, before it reads anything — one place, for the launch and its quote.
 
@@ -1601,12 +1656,14 @@ def _refuse_launch_arguments(
         max_metered_calls: The per-run metered-call ceiling override.
         cassette_mode: The cassette mode, unnormalised.
         cassette_corpus_id: The corpus a replay serves.
+        cell_timeout_s: The launch's per-cell deadline, or ``None``.
 
     Returns:
         The cassette mode, normalised.
 
     Raises:
-        ValidationFailedError: A non-positive ``max_cost_usd`` or ``max_metered_calls`` (or any
+        ValidationFailedError: A ``cell_timeout_s`` that is not a finite number above zero, or above the
+            host's declared ceiling; a non-positive ``max_cost_usd`` or ``max_metered_calls`` (or any
             ``max_metered_calls`` on a host declaring no metered tools), either one above the host's configured
             ceiling, a ``k_runs`` outside the run's bounds, a ``cassette_mode`` that is not a mode, or a corpus
             the mode cannot use.
@@ -1629,6 +1686,7 @@ def _refuse_launch_arguments(
             "without max_metered_calls"
         )
     _refuse_raised_ceilings(settings, max_cost_usd=max_cost_usd, max_metered_calls=max_metered_calls)
+    _refuse_cell_timeout(settings, cell_timeout_s, ceiling=settings.max_cell_timeout_s)
     # The run model bounds k_runs, but it is built after the cases are resolved — so an out-of-range
     # value from a surface that does not bound it at the wire would be refused after generation had
     # been paid for. Checked against the model's own field, so the bound is stated once.
@@ -1665,6 +1723,7 @@ async def _start_run(
     launch_group: LaunchGroup | None,
     admission: AdmissionTicket | None,
     priced: _PricedArms | None = None,
+    cell_timeout_s: float | None = None,
 ) -> list[EvalRun]:
     """:func:`start_run` under a settings snapshot its caller read — the launch's own, or a battery's.
 
@@ -1686,6 +1745,7 @@ async def _start_run(
         max_metered_calls=max_metered_calls,
         cassette_mode=cassette_mode,
         cassette_corpus_id=cassette_corpus_id,
+        cell_timeout_s=cell_timeout_s,
     )
     dispatch = partial(
         _dispatch,
@@ -1732,6 +1792,7 @@ async def _start_run(
             cassette_corpus_id=cassette_corpus_id,
             max_cost_usd=max_cost_usd,
             max_metered_calls=max_metered_calls,
+            cell_timeout_s=cell_timeout_s,
         )
         # Every arm priced before the first launcher runs, whether it generates or not: a launcher is what
         # pays for the generation the arms share and what builds an arm's clients, so pricing an arm after
@@ -1836,6 +1897,7 @@ def _arm_requests(
     cassette_corpus_id: str | None,
     max_cost_usd: float | None,
     max_metered_calls: int | None,
+    cell_timeout_s: float | None = None,
 ) -> list[LaunchRequest]:
     """One request per arm — per model, or one on the kind's default when the launch names none.
 
@@ -1861,6 +1923,7 @@ def _arm_requests(
         cassette_corpus_id: The corpus a replay serves.
         max_cost_usd: The per-run cost-cap override.
         max_metered_calls: The per-run metered-call ceiling override.
+        cell_timeout_s: The launch's per-cell deadline, or ``None`` for the kind's own.
 
     Returns:
         The requests, in arm order, with no arm plan yet.
@@ -1907,6 +1970,7 @@ def _arm_requests(
             arm_price=None,
             launch_group=group,
             settings=settings,
+            cell_timeout_s=cell_timeout_s,
         )
         for arm_model in arm_models
     ]
@@ -2268,6 +2332,7 @@ async def quote_launch(
     max_metered_calls: int | None = None,
     scope_id: str,
     case_count: int | None = None,
+    cell_timeout_s: float | None = None,
 ) -> LaunchQuote:
     """What :func:`start_run` with the same arguments would make of its arms' prices — read-only.
 
@@ -2300,6 +2365,7 @@ async def quote_launch(
         scope_id: As :func:`start_run` takes it.
         case_count: A case count to quote every planned arm at in place of its plan's, for a hypothetical
             grid; ``None`` quotes each at its plan, as the launch prices it.
+        cell_timeout_s: As :func:`start_run` takes it; refused as the launch refuses it, and prices nothing.
 
     Returns:
         The quote.
@@ -2321,6 +2387,7 @@ async def quote_launch(
         max_metered_calls=max_metered_calls,
         cassette_mode=cassette_mode,
         cassette_corpus_id=cassette_corpus_id,
+        cell_timeout_s=cell_timeout_s,
     )
     _refuse_oversized_launch(max(1, len(models)), settings.max_launch_arms, settings.name_of("max_launch_arms"))
     dispatched = await _dispatch(
@@ -2828,6 +2895,22 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
         configured_max_metered_calls = settings.max_metered_calls
 
         refused_checks = dict(request.refused_goal_checks)
+        # The deadline every cell of this run runs under: the launch's, held to the host's ceiling — or, for a host
+        # that declares none, to the kind's own deadline, which a launch may then only lower — else the kind's.
+        kind_cell_timeout_s = wiring.cell_timeout_s if wiring.cell_timeout_s is not None else DEFAULT_CELL_TIMEOUT_S
+        _refuse_cell_timeout(
+            settings,
+            request.cell_timeout_s,
+            ceiling=settings.max_cell_timeout_s if settings.max_cell_timeout_s is not None else kind_cell_timeout_s,
+        )
+        cell_timeout_s = request.cell_timeout_s if request.cell_timeout_s is not None else kind_cell_timeout_s
+        cell_timeout_origin: CellTimeoutOrigin = (
+            "launch"
+            if request.cell_timeout_s is not None
+            else "kind"
+            if wiring.cell_timeout_s is not None
+            else "default"
+        )
         try:
             run = EvalRun(
                 scope_id=request.scope_id,
@@ -2870,6 +2953,8 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 cassette_corpus_id=request.cassette_corpus_id,
                 simulator_model=wiring.simulator_model,
                 turn_budget_s=wiring.turn_budget_s,
+                cell_timeout_s=cell_timeout_s,
+                cell_timeout_s_origin=cell_timeout_origin,
                 # How each apparatus role was ASKED, stamped from the one value the host's client
                 # builder applies to it, and only for a role this kind ran: a resolved model is
                 # recorded exactly when the role ran, so it is the predicate here too.
@@ -2972,7 +3057,8 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
             # dispatch's kind is the only key, so the factory cannot be registered under another.
             candidate_kinds={request.kind: wiring.kind_factory},
             external_rates=wiring.external_rates,
-            cell_timeout_s=wiring.cell_timeout_s if wiring.cell_timeout_s is not None else DEFAULT_CELL_TIMEOUT_S,
+            # Each cell's own deadline, the one the run records: every cell opens its own timeout from it.
+            cell_timeout_s=cell_timeout_s,
             # Measurement-condition probe (R4): the job manager is the only thing that can
             # see a SECOND job executing beside this one, which is the contention that
             # corrupts a latency pool — cells within a run are serial. The run is this job
