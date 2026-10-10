@@ -280,7 +280,7 @@ insight retracts it; each insight's `invalidation_trigger` states both rules. Th
 actions show the ledger and each insight's standing (live, retracted or orphaned); `insight_delete` removes one wrong
 insight.
 
-The bundle stays closed: the generator has no tools to fetch more context, such as a `bisect_runs` or `pivot`
+The bundle stays closed: the generator has no tools to fetch more context, such as a `runs_bisect` or `scope_pivot`
 drill-down. A generator that fetched its own context would read different inputs on every call, so nothing could
 be fingerprinted before generation and two prompts could no longer be compared on one bundle. A question the
 bundle cannot answer is answered by adding a field to it.

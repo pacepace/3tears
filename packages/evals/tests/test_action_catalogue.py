@@ -117,6 +117,7 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "reporter_cases_list": "read",
         "scope_pivot": "read",
         "runs_compare": "read",
+        "runs_bisect": "read",
         "scope_history": "read",
         "scope_frontier": "read",
         "scope_out_of_run_spend": "read",

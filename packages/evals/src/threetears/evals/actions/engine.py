@@ -63,6 +63,7 @@ from threetears.evals.ops import (
     RunDeleted,
     RunLine,
     RunListing,
+    RunsBisected,
     RunsCompared,
     ScoreExport,
     SecondJudgeRead,
@@ -100,6 +101,7 @@ from threetears.evals.ops import (
     run_delete,
     run_get,
     run_launch,
+    runs_bisect,
     runs_compare,
     runs_list,
     scope_export,
@@ -441,6 +443,10 @@ class RunsCompareParams(EvalBaseModel):
     candidate_run_id: Annotated[
         str, Field(min_length=1, description="The run read against the baseline (B), as runs_list names it.")
     ]
+
+
+class RunsBisectParams(RunsCompareParams):
+    """``runs_bisect``: the same two runs ``runs_compare`` takes."""
 
 
 class ScopeHistoryParams(EvalBaseModel):
@@ -847,6 +853,18 @@ async def _runs_compare(host: OpsHost, caller: Caller, params: RunsCompareParams
     return await run_blocking(
         eval_host.blocking_executor,
         runs_compare,
+        eval_host,
+        params.baseline_run_id,
+        params.candidate_run_id,
+        caller.scope_id,
+    )
+
+
+async def _runs_bisect(host: OpsHost, caller: Caller, params: RunsBisectParams) -> RunsBisected:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        runs_bisect,
         eval_host,
         params.baseline_run_id,
         params.candidate_run_id,
@@ -1576,6 +1594,23 @@ def engine_actions() -> tuple[Action, ...]:
                 "delivered less than its matrix carries its sentence, and the answer says when the two were "
                 "measured over spans that do not overlap or recorded different cassette modes. A run not in the "
                 "caller's scope is not found."
+            ),
+        ),
+        Action(
+            name="runs_bisect",
+            summary="Split the versioned inputs of two runs into those that differ, agree and cannot be decided.",
+            workflow=ANALYSE,
+            permission="read",
+            params=RunsBisectParams,
+            result=RunsBisected,
+            handler=_runs_bisect,
+            render=render.render_runs_bisected,
+            example={"baseline_run_id": run_id, "candidate_run_id": "0193a1b2-run-b"},
+            detail=(
+                "The what-changed question behind a history step: every input the host declares as sweepable, each "
+                "with both runs' values. An input one run or both recorded nothing for is undecided, never the same. "
+                "Each run that delivered less than its matrix carries its sentence, and the answer says when the two "
+                "were measured over spans that do not overlap. A run not in the caller's scope is not found."
             ),
         ),
         Action(

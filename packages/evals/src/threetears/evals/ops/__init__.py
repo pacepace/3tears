@@ -11,9 +11,10 @@ The operations are named as the actions over them are (``noun_verb``), so a name
 catalogue (:mod:`threetears.evals.actions`) is the operation it calls.
 
 The read lenses — :func:`scope_pivot`, :func:`scope_history`, :func:`scope_export`, :func:`scope_frontier`,
-:func:`runs_compare` and :func:`launch_estimate` — return their result models (the first four the analysis package's own,
-re-exported here because they are what these operations hand back; the comparison its own
-:class:`RunsCompared`, the two-run lens's answer with the disclosures every comparison carries; the
+:func:`runs_compare`, :func:`runs_bisect` and :func:`launch_estimate` — return their result models (the first four the
+analysis package's own, re-exported here because they are what these operations hand back; the comparison its own
+:class:`RunsCompared`, the two-run lens's answer with the disclosures every comparison carries, and the bisection
+its own :class:`RunsBisected`, which versioned inputs differ between two runs, with the same disclosures; the
 estimate its own :class:`LaunchEstimate`, priced by the launch's rule), with the text a surface shows for each (:func:`pivot_text`
 and its siblings) beside them, so a command line and an agent read one rendering.
 :class:`RegressionWatch` reads the history for a launching host as each run completes, and hands each
@@ -102,7 +103,10 @@ from threetears.evals.ops.lenses import (
     history_launch_pricer,
     launch_estimate,
     pivot_text,
+    RunsBisected,
     RunsCompared,
+    runs_bisect,
+    runs_bisected_text,
     runs_compare,
     runs_compared_text,
     scope_export,
@@ -250,6 +254,7 @@ __all__ = [
     "RunDeleted",
     "RunLine",
     "RunListing",
+    "RunsBisected",
     "RunsCompared",
     "ScoreExport",
     "TemplateLine",
@@ -302,6 +307,8 @@ __all__ = [
     "run_get",
     "run_job_id",
     "run_launch",
+    "runs_bisect",
+    "runs_bisected_text",
     "runs_compare",
     "runs_compared_text",
     "runs_list",
