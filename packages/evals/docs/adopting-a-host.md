@@ -188,6 +188,30 @@ prices it. `plan_arm` is therefore where a kind makes its request-level refusals
 its plan. The full rule is in [Cost and budgets: every arm is priced before any launcher
 runs](cost-and-budgets.md#every-arm-is-priced-before-any-launcher-runs).
 
+### Hearing about a regression when a run completes
+
+`scope_history` flags a regression only when someone reads it. To hear about one as soon as a run
+completes, build a `RegressionWatch` (from `threetears.evals.ops`) over your host, a sink of your own and
+the measures to track, and hand it to the `LaunchHost` as `on_run_end`:
+
+```python
+watch = RegressionWatch(host=eval_host, sink=page_the_owner, measures=("composite", "cost_usd"),
+                        min_absolute_change=0.2)
+launch_host = LaunchHost(eval_host=eval_host, ..., on_run_end=watch)
+```
+
+When a run's `completed` status is stored, the watch reads each measure's history with the same test and
+thresholds `scope_history` uses. For each of the run's contestants whose step into this run reads
+`regressed`, it awaits your sink with one `RegressionAlert`. The alert names the contestant, the measure
+and the two runs of the step, and carries the history's flag whole: the verdict, its test and its
+thresholds. It also states whether code or a judge graded the measure, and the judges' evidence tier.
+
+A judged measure fires only when every judge behind the step's scores is `calibrated` (see
+[Judges and calibration](judges-and-calibration.md)). A run that ended any other way than `completed` is
+not a point on the history, so it is never checked. The engine ships no delivery: with no watch, nothing
+is checked. A sink that raises is logged, the next alert is still delivered, and the run's status never
+changes.
+
 ### Generating cases at launch
 
 A launch with `n_variations` > 0 asks for that many new cases from the template's variation axes,
