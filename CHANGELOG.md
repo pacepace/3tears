@@ -32,6 +32,11 @@ packages (bumped in lock-step).
   The rebuild claim is a `KVLease` hold too, never taken back once lost; a rebuild that lost it says
   so and skips the store sweep. No per-process claim table and no renewal loop of the snapshot's
   own remain in the module.
+- **Fixed, `publish_staged` part way**: a stage whose claim is lost just before its pointer moves (after
+  its chunks were checked) is skipped and left to the catch-up, as one lost earlier is, not raised. A
+  publish that raises part way (a move that kept failing, a transport error) still indexes the scopes
+  whose pointers already moved, so a new scope's pointer is never left unserved, and still retires
+  the unmoved stages and the moved scopes' older epochs.
 
 ### Datasources: a relation read by parts in bulk, through one export or pages read side by side
 
