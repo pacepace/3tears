@@ -669,7 +669,9 @@ def test_a_code_only_report_states_the_contrasts_code_tested_against_the_control
 
     report = campaign_report(host, campaign.id, campaign.scope_id)
     (comparisons,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"]
-    assert comparisons.rows and {row["question"] for row in comparisons.rows} == {"q-chunk-width"}
+    # The question in the words it was asked, never its id.
+    asked = next(q.text for q in campaign.declared_design.questions if q.id == "q-chunk-width")
+    assert comparisons.rows and {row["question"] for row in comparisons.rows} == {asked}
     by_reading = {row["reading"]: row["verdict"] for row in comparisons.rows}
     assert by_reading["Field accuracy"] == "improved on the control"
     assert by_reading["Turn time"] == "regressed from the control"

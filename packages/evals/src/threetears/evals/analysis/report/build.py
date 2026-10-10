@@ -47,8 +47,10 @@ from threetears.evals.analysis.report.words import (
     ARM_STATUS_WORDS,
     COMPARISON_VERDICT_WORDS,
     CONFIDENCE_WORDS,
+    EVIDENCE_COLUMNS,
     GUARDRAIL_DECISION_WORDS,
     arm_namer,
+    evidence_rows,
     positions,
     stands_on_words,
 )
@@ -78,7 +80,7 @@ from threetears.evals.contracts.metrics import (
     ClassifierStatistic,
     classifier_label_of,
 )
-from threetears.evals.contracts.declaration import JUDGED_MERIT_AXIS, Question, exploratory_reading
+from threetears.evals.contracts.declaration import JUDGED_MERIT_AXIS, CampaignDesign, Question, exploratory_reading
 from threetears.evals.contracts.surface import (
     STRATUM_MIN_CASES,
     CellFacts,
@@ -120,7 +122,10 @@ def build_report(analysis: EvalAnalysis) -> Report:
             role="answer",
             body=answer.answer,
             rests_on=list(answer.rests_on),
-            facts=[Fact(name="Question", value=answer.question_id), Fact(name="Resolution", value=answer.resolution)],
+            facts=[
+                Fact(name="Question", value=_question_words(analysis.design_snapshot, answer.question_id)),
+                Fact(name="Resolution", value=answer.resolution),
+            ],
         )
         for answer in document.questions
     )
@@ -264,29 +269,14 @@ def _finding_blocks(
     if finding.body.strip():
         blocks.append(TextBlock(section="findings", role="finding_body", finding=position, body=finding.body))
     if resolution is not None and resolution.evidence:
-        rows: list[dict[str, Cell]] = [
-            {
-                "arm": arm(row.cell_ref),
-                "measure": analysis.decision_surface.measure_heading(row.measure_id, row.reading),
-                "value": row.value,
-                "n": row.n,
-                "spread": row.dispersion,
-            }
-            for row in resolution.evidence
-        ]
+        rows = evidence_rows(analysis, resolution.evidence, arm)
         blocks.append(
             TableBlock(
                 section="findings",
                 finding=position,
                 name="evidence",
                 title="Evidence",
-                columns=[
-                    TableColumn(key="arm", header="Arm"),
-                    TableColumn(key="measure", header="Measure"),
-                    TableColumn(key="value", header="Value"),
-                    TableColumn(key="n", header="n"),
-                    TableColumn(key="spread", header="Spread"),
-                ],
+                columns=[TableColumn(key=key, header=header) for key, header in EVIDENCE_COLUMNS],
                 rows=rows,
                 order="as the author listed the readings",
                 total_rows=len(rows),
@@ -382,6 +372,11 @@ def _guardrail_standing(cells: Sequence[str], surface: DecisionSurface, arm: Cal
         if said:
             parts.append(f"{arm(cell)}: {'; '.join(said)}")
     return " | ".join(parts) or None
+
+
+def _question_words(design: CampaignDesign | None, question_id: str) -> str:
+    """A declared question in the words it was asked, or its id where the design holds none."""
+    return design.question_words(question_id) if design is not None else question_id
 
 
 def _cell_namer(surface: DecisionSurface, variant_index: Sequence[VariantIndexEntry]) -> Callable[[str, str], str]:
@@ -1075,7 +1070,11 @@ def _comparison_blocks(bundle: AnalysisContextBundle, surface: DecisionSurface) 
         for comparison in family.comparisons:
             rows.append(
                 {
-                    "question": family.question_id if family.question_id is not None else "(campaign-wide)",
+                    "question": (
+                        _question_words(bundle.declared_design, family.question_id)
+                        if family.question_id is not None
+                        else "(campaign-wide)"
+                    ),
                     "reading": surface.measure_heading(comparison.name, comparison.reading),
                     "contrast": arm(comparison.contrast.variant_key, comparison.contrast.apparatus_class_id),
                     "control": arm(comparison.control.variant_key, comparison.control.apparatus_class_id),

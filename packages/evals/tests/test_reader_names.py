@@ -17,6 +17,7 @@ from threetears.evals.analysis import (
     ChartBlock,
     TableBlock,
     campaign_report,
+    render_memo_as_written,
 )
 from threetears.evals.analysis.references import ReadingRef
 from threetears.evals.analysis.surface_table import build_surface_table
@@ -26,6 +27,9 @@ from threetears.evals.contracts.host import EvalHost
 from threetears.evals.contracts.host.measures import MeasureRegistrationError, MeasureRegistry
 from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS, MetricDescriptor, goal_check_of
 from threetears.evals.vega.compiler import compile_chart, draw_intent
+from packages.evals.tests.fixtures.toyhost.campaign import (
+    TOYHOST_QUESTION_ID,
+)
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES
 from packages.evals.tests.report_support import toy_report
 
@@ -135,3 +139,25 @@ def test_every_core_measure_and_every_one_described_by_construction_has_a_reader
 def test_a_descriptor_stored_before_the_field_reads_with_none_and_is_headed_by_its_key() -> None:
     stored = {k: v for k, v in METRIC_DESCRIPTORS["total_ms"].model_dump(mode="json").items() if k != "reader_name"}
     assert MetricDescriptor.model_validate_json(json.dumps(stored)).reader_name is None
+
+
+# --- #581: the memo names the declared question and tabulates each finding's evidence --------------------------
+
+
+async def test_the_memo_prints_a_declared_question_in_its_words_never_its_id(toy) -> None:
+    _, analysis, _ = toy
+    memo = render_memo_as_written(analysis)
+    asked = analysis.design_snapshot.question_words(TOYHOST_QUESTION_ID)
+    assert asked != TOYHOST_QUESTION_ID
+    assert f"- {asked} — answered:" in memo
+    assert TOYHOST_QUESTION_ID not in memo
+
+
+async def test_the_memo_prints_each_findings_evidence_as_one_table_headed_by_reader_names(toy) -> None:
+    _, analysis, _ = toy
+    memo = render_memo_as_written(analysis)
+    evidence = memo.split("Evidence:\n\n", 1)[1].split("\n\n", 1)[0].splitlines()
+    assert evidence[:2] == ["| Arm | Measure | Value | n | Spread |", "|---|---|---|---|---|"]
+    assert len(evidence) == 2 + len(analysis.resolutions[0].evidence) == 4
+    assert all(row.split(" | ")[1] == "Turn time" for row in evidence[2:])
+    assert "total_ms" not in memo
