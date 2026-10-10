@@ -32,7 +32,7 @@ from threetears.evals.analysis.reads import RunLister, compare_two_runs, export_
 
 from threetears.evals.analysis.numbers import format_number, format_signed
 
-from threetears.evals.analysis.bundle.assemble import PlanningReading, planning_readings
+from threetears.evals.analysis.bundle.comparisons import PlanningReading, planning_readings
 
 from threetears.evals.analysis.stats import (
     DETECTABLE_POWER,
