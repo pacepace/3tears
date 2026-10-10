@@ -9,9 +9,14 @@ stored shapes it writes into — the
 not here. The pipeline:
 
 - ``reporting``, ``stats`` and ``numbers`` — the query-time projection of runs + results into
-  comparable rows, the statistics over them, and how a number is spelled for a reader.
-- ``bundle`` — :func:`~threetears.evals.analysis.bundle.assemble_context_bundle`
-  composes the reporting lenses into a deterministic, fingerprintable context bundle.
+  comparable rows, the statistics over them, and how a number is spelled for a reader; beside them the
+  disclosures every reader shares (``completeness``, ``significance``, ``measurement_windows``,
+  ``cassette_mode``).
+- ``lenses`` — one module per reporting lens over that projection: comparison sets, pivot, frontier,
+  history, the program budget, orphaned runs, export and the cost estimate.
+- ``bundle`` — :func:`~threetears.evals.analysis.bundle.assemble.assemble_context_bundle`
+  composes the reporting lenses into a deterministic, fingerprintable context bundle; the bundle's schema
+  and each family of derivation it composes are modules of that package.
 - ``gen_prompt`` + ``generator`` — the hot-reloadable ``eval_analysis_gen``
   prompt and the closed, one-shot
   :func:`~threetears.evals.analysis.generator.generate_analysis` that turns a bundle into

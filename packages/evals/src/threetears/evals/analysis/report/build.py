@@ -1141,7 +1141,7 @@ def build_code_only_report(
     code-only report — and the first block says plainly that no analysis was generated.
 
     Args:
-        bundle: The campaign's evidence, as :func:`~threetears.evals.analysis.bundle.assemble_context_bundle`
+        bundle: The campaign's evidence, as :func:`~threetears.evals.analysis.bundle.assemble.assemble_context_bundle`
             assembled it.
         measures: The host's measure registry, which a chart's payload reads.
         assembled_at: When the bundle was assembled (ISO-8601), stated as the report's ``generated_at``.

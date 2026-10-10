@@ -2,8 +2,13 @@
 
 This module is the read tier's foundation: one projection,
 :func:`project_score_records`, that every downstream reporting surface consumes
-(pivots, export, and the estimation engine), plus :func:`compute_comparison_sets`, which
-answers *which of these runs may honestly be compared with each other*.
+(pivots, export, and the estimation engine). Those surfaces are the read lenses, one module
+each under :mod:`threetears.evals.analysis.lenses` — among them
+:mod:`~threetears.evals.analysis.lenses.comparison_sets`, which answers *which of these runs
+may honestly be compared with each other*. The disclosures the lenses and the context bundle
+share sit beside this module: :mod:`~threetears.evals.analysis.completeness`,
+:mod:`~threetears.evals.analysis.significance`, :mod:`~threetears.evals.analysis.measurement_windows`
+and :mod:`~threetears.evals.analysis.cassette_mode`.
 
 **Nothing here is stored.** Records are recomputed per query, exactly as
 :func:`~threetears.evals.kernel.scoring.compute_pass_hat_k` is. That keeps the row shape free to
@@ -61,7 +66,6 @@ from threetears.evals.kernel.scoring import (
     result_composite,
 )
 from threetears.observe import get_logger
-
 from threetears.evals.analysis.completeness import degraded_run_disclosures
 
 if TYPE_CHECKING:

@@ -30,7 +30,7 @@ class StatusFilterError(ValueError):
     """A run-status filter was supplied that no run can carry.
 
     Raised rather than passed through, for the reason
-    :class:`~threetears.evals.analysis.reporting.HistoryError` is
+    :class:`~threetears.evals.analysis.lenses.history.HistoryError` is
     raised rather than returned as an empty series: a status outside
     :data:`~threetears.evals.schema.models.RUN_STATUSES` matches no run, so the answer is a
     well-formed EMPTY one that reads exactly like the truthful "no runs of that
@@ -78,7 +78,7 @@ def validate_status_filter(status: str | None) -> EvalRunStatus | None:
     compared by exact equality against ``EvalRun.status`` downstream. Every other
     enumerated argument a read surface takes refuses the same way — an unknown
     ``metric`` and an unknown ``fmt``
-    (:func:`~threetears.evals.analysis.reporting.serialize_export`) are both exact-match. Folding ``"Completed"``
+    (:func:`~threetears.evals.analysis.lenses.export.serialize_export`) are both exact-match. Folding ``"Completed"``
     instead of refusing it would buy nothing now that a refusal names the
     vocabulary: the operator learns ``completed`` in one round-trip either way.
 

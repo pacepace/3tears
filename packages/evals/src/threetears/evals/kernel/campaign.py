@@ -1156,7 +1156,7 @@ class EvalInsight(EvalDocumentModel):
     Lives in the ``scope_id`` of the analysis that minted it. Traces back to the analysis that minted it
     via ``source_campaign_id`` / ``source_analysis_id``; ``invalidation_trigger``
     states the two rules that retire it — its analysis archived, or a later analysis restating it
-    (:func:`~threetears.evals.analysis.bundle.superseding_insights`).
+    (:func:`~threetears.evals.analysis.bundle.insights.superseding_insights`).
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))

@@ -548,7 +548,7 @@ class TimeAxis(EvalDocumentModel):
 #: Whether the frontier lens shows a contestant dominated: ``dominated`` — another is shown better on every
 #: axis it measured; ``not_separated`` — tested against at least one other and no domination shown, which says
 #: nothing about whether one exists; ``untested`` — nothing could be tested against it. The lens's own words
-#: (:attr:`threetears.evals.analysis.reporting.FrontierPoint.dominance`), defined here so a frozen surface can
+#: (:attr:`threetears.evals.analysis.lenses.frontier.FrontierPoint.dominance`), defined here so a frozen surface can
 #: carry them without importing the analysis.
 FrontierDominance = Literal["dominated", "not_separated", "untested"]
 

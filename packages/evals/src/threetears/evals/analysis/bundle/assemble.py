@@ -12,14 +12,15 @@ bundle and compare. So the bundle is fingerprinted
 that fingerprint is stamped onto every analysis' ``generation`` provenance — two
 prompts run over the same fingerprint are comparable apples-to-apples.
 
-**Reads reporting, never the runner.** The assembler composes existing
-:mod:`threetears.evals.analysis.reporting` lenses (``compute_comparison_sets`` / ``compute_frontier`` /
-``compute_program_budget`` / ``project_score_records``), the core ``stats`` /
-``identity`` helpers, and storage. It introduces **no new scoring statistics** —
-quality/cost/frontier math stays in ``reporting``; the only aggregation here is
+**Reads reporting, never the runner.** The assembler composes existing reporting
+lenses (:mod:`threetears.evals.analysis.lenses`: ``compute_comparison_sets`` / ``compute_frontier`` /
+``compute_program_budget``, over :mod:`threetears.evals.analysis.reporting`'s ``project_score_records``),
+the core ``stats`` / ``identity`` helpers, and storage. It introduces **no new scoring statistics** —
+quality/cost/frontier math stays in the lenses; the only aggregation here is
 descriptive telemetry (per-measure distributions and category counts, token sums)
-that ``reporting`` does not provide and the golden analysis ranks
-on, plus a structural per-lever coverage map. The allowed-dependency matrix
+that the lenses do not provide and the golden analysis ranks
+on, plus a structural per-lever coverage map. The derivations it composes live in the sibling modules of
+:mod:`threetears.evals.analysis.bundle`; this module holds the store port and the composition itself. The allowed-dependency matrix
 (``tests/test_package_matrix.py``) holds the ``threetears.evals.analysis`` package to
 ``schema``, ``kernel`` and itself — the run package's runner, simulator and judge included — and every module
 of the engine is placed in a package, so no edge escapes it.

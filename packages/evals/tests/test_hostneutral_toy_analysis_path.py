@@ -8,7 +8,7 @@ test shares.
 
 Pinned here — each class is a property a mutation of the engine turned red:
 
-- ``analysis/bundle.py``: each cell's facts over its non-faulted observations, with its run notes;
+- ``analysis/bundle/``: each cell's facts over its non-faulted observations, with its run notes;
   the judged half of the surface; an insight's standing; retraction read off the archived flag
   alone; intervals at the one level; the shared remainder predicate and measure description; the
   lever spread's spelling.
@@ -102,7 +102,7 @@ def _finding(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 # =============================================================================
-# analysis/bundle.py
+# analysis/bundle/
 # =============================================================================
 
 

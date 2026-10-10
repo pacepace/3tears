@@ -88,9 +88,9 @@ _SCOPE_SAMPLE = 5
 class AnalysisStore(CampaignReadStore, Protocol):
     """The storage calls the analysis service makes — its own, plus the bundle assembly's it hands the store to.
 
-    It extends :class:`~threetears.evals.analysis.bundle.CampaignReadStore` rather than repeating it,
+    It extends :class:`~threetears.evals.analysis.bundle.assemble.CampaignReadStore` rather than repeating it,
     because every function here that assembles a bundle passes this same store to
-    :func:`~threetears.evals.analysis.bundle.assemble_context_bundle`, so a store satisfying this port
+    :func:`~threetears.evals.analysis.bundle.assemble.assemble_context_bundle`, so a store satisfying this port
     has to satisfy that one. ``query_insights`` is declared again, wider: the ledger listing
     filters on the minting campaign as well as the subject, and the bundle's narrower call is one
     this signature accepts.

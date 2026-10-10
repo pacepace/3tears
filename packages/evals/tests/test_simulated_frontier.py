@@ -1,6 +1,6 @@
 """The frontier's dominance flag and its pass^k interval, against known truths (#601).
 
-:func:`~threetears.evals.analysis.reporting.compute_frontier` ranks each subject's contestants on pass^k ×
+:func:`~threetears.evals.analysis.lenses.frontier.compute_frontier` ranks each subject's contestants on pass^k ×
 production-replicating cost × mean total latency and flags a contestant ``dominated`` when another is shown
 better on every axis it measured. A dominance flag is a claim that one contestant is worse, held to the α
 every other between-arm claim in the engine is held to. Decided on point estimates, it read noise as an

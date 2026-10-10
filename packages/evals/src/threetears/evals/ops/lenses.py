@@ -116,7 +116,7 @@ def scope_pivot(
         status: Only runs with this status; ``"all"`` reads every run.
         predicted_cost: The estimate made before these runs, whose predictions a cost pivot sets beside
             each planned cell's observed cost: a :class:`LaunchEstimate` (:func:`launch_estimate`'s, each priced
-            arm's prediction) or an analysis :class:`~threetears.evals.analysis.reporting.CostEstimate` — the
+            arm's prediction) or an analysis :class:`~threetears.evals.analysis.lenses.cost_estimate.CostEstimate` — the
             model, or its JSON form as a caller across a wire holds it.
         launched_run_ids: The runs the estimated launch made, once it has. Each cell beside a prediction then
             says how many of its observations came from other runs (``PivotCell.n_unplanned``) — the history
@@ -534,7 +534,7 @@ class LaunchEstimate(EvalBaseModel):
                 cost a pivot sets beside each prediction is history the launch did not make.
 
         Returns:
-            One :class:`~threetears.evals.analysis.reporting.PlannedCost` per arm with a model, a plan and a
+            One :class:`~threetears.evals.analysis.lenses.cost_estimate.PlannedCost` per arm with a model, a plan and a
             prediction; the prediction's point is the pricer's central estimate where it gave a range (the
             band then running from its lower to its upper end) and its single figure otherwise.
         """
@@ -647,7 +647,7 @@ def detectable_effects(
     """What a launch of ``template_id`` with ``n_cases`` cases and ``k_runs`` repeats could detect, per reading.
 
     Reads every earlier run of the template in the scope (archived runs left out, as every quality view
-    leaves them) and each reading a comparison family would test on it (:func:`~threetears.evals.analysis.bundle.planning_readings`).
+    leaves them) and each reading a comparison family would test on it (:func:`~threetears.evals.analysis.bundle.comparisons.planning_readings`).
     Per reading, the within-case and between-case variance of those runs
     (:func:`~threetears.evals.analysis.stats.variance_components`) give one case's planned difference of means
     its spread: ``between + 2·within/k``, where ``between`` is how far two arms disagree about one case —

@@ -184,7 +184,7 @@ def test_the_package_set_is_closed_under_import(packages: tuple[str, ...]):
 
     The pair is what the failure prints, because the pair is what the reader has to act on.
     Which half moves is a judgement — move the imported module into the set, or move the
-    import — and only one of the two is usually right: ``analysis/bundle.py`` is a pipeline, so a
+    import — and only one of the two is usually right: ``analysis/bundle/`` is a pipeline, so a
     member reaching it is an import to move rather than a module to bring in.
     """
     breaches = _closure_breaches(_members(packages), _eval_files_named)

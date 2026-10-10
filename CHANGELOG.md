@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the context bundle and the reporting projection are split by concern (#612)
+
+`analysis/bundle.py` (about 10,400 lines) and `analysis/reporting.py` (about 8,000) each held a dozen concerns
+in one file. Code moved; no behaviour changed, and every name `threetears.evals.analysis` exports is still
+exported from it, unchanged.
+
+- **`threetears.evals.analysis.bundle`** is now a package: `schema` (the bundle model and every value object it
+  carries), one module per derivation family (`config`, `observations`, `measures`, `insights`, `design`,
+  `confounds`, `mechanisms`, `divergence`, `coverage`, `telemetry`, `cell_reads`, `bars`, `cell_notes`,
+  `comparisons`, `judges`, `time_axis`, `surface`, with the list caps in `caps`), and `assemble`, which holds
+  `assemble_context_bundle` and composes them.
+- **`threetears.evals.analysis.lenses`** holds one module per reporting lens: `comparison_sets`, `pivot`,
+  `frontier`, `history`, `program_budget`, `orphaned_runs`, `export` and `cost_estimate`, with the `aggregation`
+  vocabulary and the `contestants` key they share. The disclosures the lenses and the bundle both use sit beside
+  `reporting`: `completeness`, `significance`, `measurement_windows` and `cassette_mode`. `reporting` keeps the
+  score projection itself.
+- Code importing from below the public root must name the new module. Two loggers are renamed with their code:
+  the comparison-sets and history lenses log as `threetears.evals.analysis.lenses.comparison_sets` and
+  `threetears.evals.analysis.lenses.history`, not `threetears.evals.analysis.reporting`.
+
 ### 3tears-evals: eval history is kept across releases (#703)
 
 Stored eval documents were disposable: a read refused every schema version but its own, so a release dropped
