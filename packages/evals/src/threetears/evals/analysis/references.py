@@ -298,7 +298,7 @@ def _resolve_measure(surface: DecisionSurface, cell: CellFacts, ref: str, measur
         case_means=summary.case_means,
         dispersion=(
             # F1 is a function of one confusion matrix: there is no spread to estimate at any n, so "unestimable at
-            # n=…" would imply more data could supply one.
+            # … cases" would imply more data could supply one.
             "none by construction: one value computed from the cell's confusion counts"
             if (label := classifier_label_of(measure_id)) is not None and label[0] == "f1"
             else _dispersion(summary.sem, summary.ci_low, summary.ci_high, summary.n, summary.n_independent or None)
@@ -413,7 +413,11 @@ def _dispersion(sem: float | None, ci_low: float | None, ci_high: float | None, 
     if ci_low is None or ci_high is None:
         if n_cases == 1 and n > 1:
             return f"unestimable: {n} obs of one case, which has no between-case spread"
-        return f"unestimable at n={n}"
+        # Cases, never observations: the count every interval is read over, and the count a reader is shown
+        # beside it. A reading with no case count recorded states none rather than its observations.
+        if n_cases is None:
+            return "unestimable"
+        return f"unestimable at {n_cases} case{'' if n_cases == 1 else 's'}"
     # A rate carries its interval and no standard error, and its interval is its spread: stated, never
     # reported as unestimable because the sem it does not have is absent.
     text = f"{stats.INTERVAL_LEVEL:.0%} CI [{format_number(ci_low)}, {format_number(ci_high)}]"
