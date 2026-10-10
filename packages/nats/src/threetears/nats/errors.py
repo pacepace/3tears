@@ -9,10 +9,13 @@ possible to rev ``nats-py`` without breaking every catch site.
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 __all__ = [
     "KvBucketNotFoundError",
     "KvConfigMismatch",
     "KvError",
+    "LockLossReason",
     "NamespaceNotConfiguredError",
     "NatsClientError",
     "NoRespondersError",
@@ -415,3 +418,29 @@ class OpLogSequenceConflict(OpLogError):
     :class:`threetears.nats.AppendResult` with ``deduplicated=True``
     rather than raising.
     """
+
+
+class LockLossReason(StrEnum):
+    """why a holder stopped holding a KV-backed lock or lease before it let it go.
+
+    Not an error itself: the reason a :class:`~threetears.nats.LockLost` carries, and the one
+    :class:`~threetears.core.coordination.HeldLease` reports. It lives here, beside the KV errors,
+    because both of those read it -- :func:`~threetears.nats.nats_distributed_lock` runs on
+    :class:`~threetears.core.coordination.KVLease`, and this package cannot import core at module
+    top -- so there is one vocabulary for a lost hold, not one per primitive.
+
+    :cvar EXPIRED: the entry was gone at renewal -- it expired (the holder stalled past the
+        TTL) and nobody has taken it yet
+    :cvar TAKEN: the entry carries another holder's identity (or a value this holder cannot read,
+        such as an older release's format), or another write landed between the renewal's read and
+        its compare-and-swap -- someone else holds it now
+    :cvar RENEWAL_FAILED: renewals kept failing (broker unreachable) until the entry may
+        have expired, so the hold can no longer be vouched for
+    :cvar MAX_HOLD: the holder kept it past the maximum hold and renewal stopped so the TTL
+        could hand it on
+    """
+
+    EXPIRED = "expired"
+    TAKEN = "taken"
+    RENEWAL_FAILED = "renewal_failed"
+    MAX_HOLD = "max_hold"

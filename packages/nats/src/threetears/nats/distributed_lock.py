@@ -1,91 +1,97 @@
-"""TTL-based distributed NATS lock primitive.
+"""A cross-pod job lock over NATS JetStream KV, held through :class:`~threetears.core.coordination.KVLease`.
 
-Extracted from a production ``scheduler_lock`` implementation
-(which has run the production backup job for months) so any 3tears app
-needing single-active-holder semantics across pods can pick it up
-without re-implementing the heartbeat lifecycle. The agent-wake tick
-engine (``threetears.agent.wake.tick``) is the second canonical
-consumer; the existing ``scheduler_lock`` becomes a one-line
-re-export of this primitive.
+``async with nats_distributed_lock(nats, "backup"):`` runs its body on one pod at a time. It is the
+platform's one lease primitive with a context manager's shape: acquisition, background renewal by
+compare-and-swap, loss detection, the maximum hold and the fenced release are all
+:meth:`KVLease.hold <threetears.core.coordination.KVLease.hold>`'s. What stays here is only what a
+``with`` block adds -- opening the lock's bucket, turning a held key into :class:`LockHeld`, and
+interrupting the body when the hold is lost.
 
 design notes
 ------------
 
-- **NATS JetStream KV-backed.** Acquisition is an atomic
-  ``bucket.create(key, value)`` (put-if-absent). The KV bucket's
-  per-entry TTL bounds the worst-case orphan-lock window when the
-  holder dies between heartbeats.
-- **Bucket-level TTL: first caller wins.** :meth:`NatsClient.kv_bucket`
-  caches buckets by name; the bucket's per-entry TTL is fixed at
-  creation time and applies to every key the bucket stores. Per-key
-  TTL (``msg_ttl`` on :meth:`NatsKvBucket.create`) requires
-  ``AllowMsgTTL=True`` on the underlying JetStream stream and
-  nats-server >= 2.11 -- not enabled by default on the
-  ``scheduler-locks`` bucket, so the bucket-level TTL is the only
-  knob this primitive actually controls. To make the
-  first-caller-wins constraint loud rather than silent, the lock
-  asserts that a subsequent caller's ``ttl`` matches the cached
-  bucket's TTL; a mismatch raises :class:`ValueError`. Callers
-  needing distinct TTLs MUST use distinct ``bucket_name`` values.
-- **Background heartbeat, renewed by compare-and-swap.** A dedicated
-  task renews the KV entry every ``heartbeat`` seconds so a long-running
-  body stays the authoritative holder -- but only while the entry still
-  carries THIS holder's token, and only at the revision just read. A
-  blind ``put`` would let a holder that stalled past ``ttl`` (a blocked
-  loop, a GC pause, a partition) overwrite the successor that acquired
-  the expired key, leaving two holders. ``heartbeat`` must be strictly
-  less than ``ttl``; the contextmanager raises ``ValueError`` otherwise.
-- **The holder is told when it loses the lock.** The context manager
-  yields a :class:`LockHold`. When the entry is gone or someone else's
-  (:attr:`LockLossReason.EXPIRED` / :attr:`LockLossReason.TAKEN`), when
-  renewals keep failing until the entry may have expired
-  (:attr:`LockLossReason.RENEWAL_FAILED`), or when the holder has held
-  past the maximum hold (:attr:`LockLossReason.MAX_HOLD`), ``hold.lost``
-  is set. By default the body is also cancelled and the ``async with``
-  raises :class:`LockLost`: a body that keeps writing after its lock is
-  gone is the damage a lock exists to prevent, and a flag nobody reads
-  prevents none of it. ``cancel_on_loss=False`` is for a body whose
-  correctness does not rest on the lock (it only saves duplicate work);
-  such a body can still read ``hold.lost``.
-- **Clean cancellation on exit.** Normal exit and exception both
-  cancel + await the heartbeat task before releasing the key. The
-  ``finally`` block uses ``asyncio.gather(..., return_exceptions=True)``
-  so a heartbeat death does not mask the body's own exception.
-- **Graceful single-pod fallback.** ``client=None`` yields
-  immediately without acquiring anything -- matches the existing
-  behaviour for dev environments that do not run NATS.
-- **Infrastructure callers only; it declares its bucket.** The lock opens its
-  bucket with create-if-missing, which needs ``STREAM.CREATE`` -- a verb no agent
-  or tool pod holds, and no pod grant names ``{ns}-scheduler-locks``. Every
-  caller today is an infrastructure identity (hub sweeps and reconcilers, the
-  scheduled-jobs tick, a derived collection's build lock). A pod needing
-  cross-pod exclusion binds a hub-declared bucket through
-  ``KVLease(create_if_missing=False)`` instead.
-- **Bucket name namespacing.** The default bucket ``"scheduler-locks"``
-  rides through :meth:`NatsClient.kv_bucket` and picks up the
-  client's ``nats_subject_namespace`` prefix automatically (the
+- **The lease does the holding.** One :class:`~threetears.core.coordination.KVLease` per call, so
+  the holder identity in the entry names this one hold and the release can never delete another's.
+  Renewal runs every ``heartbeat`` (the lease's ``renew_every``), always as a compare-and-swap on the
+  revision just read and only while the entry is this holder's; a failed renewal is retried while
+  the entry cannot have expired; past ``max_hold`` renewal stops so the TTL hands a wedged holder's
+  lock on. The release waits for a renewal in flight, then deletes the entry only if it is still
+  this hold's.
+- **The holder is told when it loses the lock.** The context manager yields a :class:`LockHold`,
+  whose :attr:`~LockHold.lost_reason` is a :class:`LockLossReason`. By default the body is also
+  cancelled and the ``async with`` raises :class:`LockLost`: a body that keeps writing after its
+  lock is gone is the damage a lock exists to prevent. ``cancel_on_loss=False`` is for a body whose
+  correctness does not rest on the lock (it only saves duplicate work); it can still read the hold.
+- **Bucket-level TTL, declared exactly as before.** The lock opens its bucket itself with
+  :meth:`NatsClient.kv_bucket(name, ttl=ttl) <threetears.nats.NatsClient.kv_bucket>` and hands it to
+  the lease bound. A fresh bucket therefore gets what it always got: ``max_age = ttl``, history 1,
+  ``allow_msg_ttl`` on (the stream shape :mod:`threetears.nats.kv` declares every bucket with). An
+  existing bucket is used as it stands: its ``max_age`` is never rewritten, and the declaring open
+  reconciles only ``allow_direct`` / ``allow_msg_ttl``, as it always did. Entries carry NO per-key
+  TTL (the lease's ``expire_entries`` is off): the bucket's ``max_age`` already removes an entry
+  ``ttl`` after its last write, which is the orphan bound a dead holder needs, and a per-key TTL would
+  need ``allow_msg_ttl`` on a bucket created before it was declared. Because the bucket's TTL is
+  bucket-level and fixed at creation (and :meth:`NatsClient.kv_bucket` caches buckets by name), a
+  caller passing a ``ttl`` that differs from the bucket's raises :class:`ValueError`; callers needing
+  distinct TTLs use distinct ``bucket_name`` values.
+- **The TTL is whole seconds.** It is the lease's TTL, which a lease entry expresses in whole
+  seconds of at least one; a fractional TTL raises :class:`ValueError` (every caller uses the
+  60-second default).
+- **Graceful single-pod fallback.** ``client=None`` yields a hold that is never lost, without
+  acquiring anything -- dev environments that do not run NATS.
+- **Infrastructure callers only; it declares its bucket.** The lock opens its bucket with
+  create-if-missing, which needs ``STREAM.CREATE`` -- a verb no agent or tool pod holds, and no pod
+  grant names ``{ns}-scheduler-locks``. Every caller today is an infrastructure identity (hub sweeps
+  and reconcilers, the scheduled-jobs tick, a derived collection's build lock). A pod needing
+  cross-pod exclusion binds a hub-declared bucket through ``KVLease(create_if_missing=False)``.
+- **Needs the ``3tears`` core distribution at call time.** :class:`KVLease` lives in core, and core
+  depends on this package, so the import is deferred to the call. Every caller of the lock installs
+  core already; a process with ``3tears-nats`` alone can import this module but not hold the lock.
+- **Bucket name namespacing.** The default bucket ``"scheduler-locks"`` rides through
+  :meth:`NatsClient.kv_bucket` and picks up the client's ``nats_subject_namespace`` prefix (the
   resulting bucket is ``{namespace}-scheduler-locks``).
+
+rolling upgrade contract
+------------------------
+
+Releases up to 0.66 wrote a lock entry's value as the holder's raw token -- 32 lowercase hex
+characters, nothing else. From this release the value is the :class:`KVLease` JSON envelope
+(``{"holder": ..., "expires_at": ..., "acquired_at": ...}``). During a deploy an old replica and a new
+one contend for the same key in the same bucket, and neither may ever take the other's held lock
+for a free one:
+
+- **A new replica treats an old entry as another holder's.** The lease's create-if-absent fails on
+  the existing key; the lease then reads it, cannot decode it as an envelope -- including an
+  all-digit token, which parses as a JSON number -- and treats it as held by somebody else: the
+  caller gets :class:`LockHeld`, and a renewal or release that meets one reports the lock
+  :attr:`~LockLossReason.TAKEN` and never writes or deletes it. The old entry leaves the way it
+  always did: its holder's release, or the bucket's ``max_age``.
+- **An old replica treats a new entry as held.** Its acquisition is the same create-if-absent, which
+  fails on any existing key whatever its value, so it raises ``LockHeld``; its renewal and release
+  compare the stored value with their own token, which an envelope never equals, so they report the
+  lock taken and leave the entry alone. Old code never reclaims an entry, so it cannot overwrite one.
+- **The bucket is shared unchanged.** Both versions open it with the same ``kv_bucket(name, ttl)``
+  call, so neither redeclares, recreates or narrows it, and either order of upgrade (or a rollback)
+  works. Nothing is migrated: the old format simply stops being written.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-import secrets
 from datetime import timedelta
-from enum import StrEnum
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
-from threetears.observe import get_logger
+from threetears.nats.errors import LockLossReason
 
-from threetears.nats.kv import KvCapable
-from threetears.nats.errors import KvError
+if TYPE_CHECKING:
+    from threetears.core.coordination.lease import HeldLease
+
+    from threetears.nats.kv import KvCapable
 
 __all__ = ["LockHeld", "LockHold", "LockLossReason", "LockLost", "nats_distributed_lock"]
-
-
-log = get_logger(__name__)
 
 
 class LockHeld(Exception):
@@ -96,25 +102,6 @@ class LockHeld(Exception):
     as the expected "another pod is already running this job" branch
     and re-raise / surface ``KvError`` separately.
     """
-
-
-class LockLossReason(StrEnum):
-    """Why a holder stopped holding a :func:`nats_distributed_lock` before its body finished.
-
-    :cvar EXPIRED: the entry was gone at renewal -- it expired (the holder stalled past the
-        TTL) and nobody has taken it yet
-    :cvar TAKEN: the entry carries another holder's token, or another write landed between
-        the renewal's read and its compare-and-swap -- someone else holds the lock now
-    :cvar RENEWAL_FAILED: renewals kept failing (broker unreachable) until the entry may
-        have expired, so the lock can no longer be vouched for
-    :cvar MAX_HOLD: the holder kept the lock past the maximum hold and renewal stopped so
-        the TTL could hand it on
-    """
-
-    EXPIRED = "expired"
-    TAKEN = "taken"
-    RENEWAL_FAILED = "renewal_failed"
-    MAX_HOLD = "max_hold"
 
 
 class LockLost(Exception):
@@ -144,25 +131,6 @@ class LockLost(Exception):
         self.reason = reason
 
 
-class _HoldState:
-    """what the heartbeat and the context manager share about one hold.
-
-    :ivar lost: set once, when the lock is lost
-    :ivar reason: why, once lost
-    :ivar exiting: the body has finished; a loss after this cancels nothing
-    :ivar body_cancelled: the loss cancelled the body, and the exit owes an uncancel
-    """
-
-    __slots__ = ("body_cancelled", "exiting", "lost", "reason")
-
-    def __init__(self) -> None:
-        """start held."""
-        self.lost = asyncio.Event()
-        self.reason: LockLossReason | None = None
-        self.exiting = False
-        self.body_cancelled = False
-
-
 class LockHold:
     """What the body of :func:`nats_distributed_lock` holds: the key, and whether it still does.
 
@@ -170,21 +138,22 @@ class LockHold:
     lost lock interrupts the body and the ``async with`` raises :class:`LockLost`, so a body
     that never looks at the hold is still stopped. A body run with ``cancel_on_loss=False``
     checks it at its own safe points: ``hold.raise_if_lost()``, or ``await hold.lost.wait()``
-    in a task of its own.
+    in a task of its own. A view of the lease that holds the key; it keeps no state of its own.
     """
 
-    __slots__ = ("_key", "_state")
+    __slots__ = ("_held", "_key", "_lost")
 
-    def __init__(self, key: str, state: _HoldState) -> None:
-        """bind the hold to its key and shared state.
+    def __init__(self, key: str, held: HeldLease | None) -> None:
+        """bind the hold to its key and the lease holding it.
 
         :param key: the lock key
         :ptype key: str
-        :param state: the state the heartbeat updates
-        :ptype state: _HoldState
+        :param held: the lease holding the key, or ``None`` for the single-pod no-op, which is never lost
+        :ptype held: HeldLease | None
         """
         self._key = key
-        self._state = state
+        self._held = held
+        self._lost = held.lost if held is not None else asyncio.Event()
 
     @property
     def key(self) -> str:
@@ -202,7 +171,7 @@ class LockHold:
         :return: the loss event
         :rtype: asyncio.Event
         """
-        return self._state.lost
+        return self._lost
 
     @property
     def lost_reason(self) -> LockLossReason | None:
@@ -211,7 +180,7 @@ class LockHold:
         :return: the loss reason
         :rtype: LockLossReason | None
         """
-        return self._state.reason
+        return self._held.lost_reason if self._held is not None else None
 
     def raise_if_lost(self) -> None:
         """raise :class:`LockLost` if the lock has been lost.
@@ -220,28 +189,25 @@ class LockHold:
         :rtype: None
         :raises LockLost: when the lock has been lost
         """
-        if self._state.reason is not None:
-            raise LockLost(self._key, self._state.reason)
+        reason = self.lost_reason
+        if reason is not None:
+            raise LockLost(self._key, reason)
 
 
 _DEFAULT_TTL: Final[timedelta] = timedelta(seconds=60)
 _DEFAULT_HEARTBEAT: Final[timedelta] = timedelta(seconds=20)
 _DEFAULT_BUCKET: Final[str] = "scheduler-locks"
 
-#: How long one holder may keep renewing before the heartbeat gives up.
+#: How long one holder may keep renewing before renewal stops.
 #:
-#: A holder that DIES stops heartbeating and the TTL hands the lock on within
-#: ``ttl``. A holder that WEDGES does not: its heartbeat task is healthy and
-#: goes on renewing while the body makes no progress, so the lock is held for
-#: as long as the process lives. That is how one stuck pod blocked every other
-#: pod's tick in the 2026-08 incident -- the lock behaved exactly as designed
-#: and the fleet starved anyway.
+#: A holder that DIES stops renewing and the TTL hands the lock on within ``ttl``. A holder that
+#: WEDGES does not: its renewal is healthy and goes on while the body makes no progress, so the lock
+#: is held for as long as the process lives. That is how one stuck pod blocked every other pod's tick
+#: in the 2026-08 incident -- the lock behaved exactly as designed and the fleet starved anyway.
 #:
-#: Renewal therefore stops here, the holder is told (:attr:`LockLossReason.MAX_HOLD`),
-#: and the TTL takes over. The default is sized far above any caller in this
-#: workspace (scheduler ticks, a derived-collection rebuild, a backup) so a healthy
-#: long job is never interrupted; a caller whose body legitimately runs longer, or
-#: that wants a wedge noticed sooner, passes its own ``max_hold``.
+#: The default is sized far above any caller in this workspace (scheduler ticks, a derived-collection
+#: rebuild, a backup) so a healthy long job is never interrupted; a caller whose body legitimately
+#: runs longer, or that wants a wedge noticed sooner, passes its own ``max_hold``.
 _DEFAULT_MAX_HOLD: Final[timedelta] = timedelta(hours=6)
 
 
@@ -268,76 +234,58 @@ async def nats_distributed_lock(
         except LockLost:
             return  # we lost it mid-body; the body was interrupted
 
-    A background heartbeat task renews the KV entry every ``heartbeat``
-    seconds, by compare-and-swap on this holder's token, so the lock stays
-    alive for arbitrarily long bodies and a holder that has lost it never
-    writes it back. On normal exit or exception the heartbeat is cancelled
-    and the key is deleted if it is still this holder's. If the process
-    dies the heartbeat stops, the TTL expires the key within ``ttl``
-    seconds, and another claimer can win on the next attempt.
+    The key is held by a :meth:`KVLease.hold <threetears.core.coordination.KVLease.hold>`, renewed
+    every ``heartbeat`` by compare-and-swap so the lock stays alive for arbitrarily long bodies and a
+    holder that has lost it never writes it back. On normal exit or exception the renewal stops and
+    the key is deleted if it is still this holder's. If the process dies, renewal stops, the bucket's
+    TTL removes the key within ``ttl``, and another claimer wins on its next attempt.
 
-    The yielded :class:`LockHold` reports a loss. With ``cancel_on_loss``
-    (the default) a loss also cancels the body at its next ``await`` and
-    the ``async with`` raises :class:`LockLost` instead of the
-    cancellation; a cancellation from anywhere else still propagates as
-    :class:`asyncio.CancelledError`. The loss cannot be reported before
-    the body next yields to the event loop -- a body stalled in
-    synchronous code learns of it when it resumes.
+    The yielded :class:`LockHold` reports a loss. With ``cancel_on_loss`` (the default) a loss also
+    cancels the body at its next ``await`` and the ``async with`` raises :class:`LockLost` instead of
+    the cancellation; a cancellation from anywhere else still propagates as
+    :class:`asyncio.CancelledError`. The loss cannot be reported before the body next yields to the
+    event loop -- a body stalled in synchronous code learns of it when it resumes.
 
-    When ``client`` is ``None`` the context manager yields a hold that is
-    never lost, without acquiring anything -- safe for single-pod dev
-    environments without NATS available.
+    When ``client`` is ``None`` the context manager yields a hold that is never lost, without
+    acquiring anything -- safe for single-pod dev environments without NATS available.
 
     :param client: connected NATS client, or ``None`` to no-op
     :ptype client: KvCapable | None
-    :param key: lock key (per-resource identifier, e.g. ``"backup"``
-        for a backup job or ``"agent_wake_tick"`` for the
-        wake tick engine)
+    :param key: lock key (per-resource identifier, e.g. ``"backup"`` for a backup job or
+        ``"agent_wake_tick"`` for the wake tick engine)
     :ptype key: str
-    :param bucket_name: KV bucket suffix; the connected client's
-        namespace is prefixed automatically. Defaults to
-        ``"scheduler-locks"`` so existing prod state continues
-        to bind to the same bucket post-extraction.
+    :param bucket_name: KV bucket suffix; the connected client's namespace is prefixed
+        automatically. Defaults to ``"scheduler-locks"`` so existing prod state continues to bind to
+        the same bucket.
     :ptype bucket_name: str
-    :param ttl: KV entry TTL; bounds the orphan-lock window after a
-        holder dies between heartbeats. **Bucket-level: the first
-        caller to materialise a given ``bucket_name`` pins the TTL
-        for every key in that bucket**, because
-        :meth:`NatsClient.kv_bucket` caches buckets and JetStream KV
-        does not support per-key TTL without ``AllowMsgTTL`` on the
-        stream (nats-server >= 2.11; not enabled by default on
-        ``scheduler-locks``). Subsequent callers passing a different
-        ``ttl`` against the same ``bucket_name`` raise
-        :class:`ValueError`; use a distinct ``bucket_name`` to vary
-        TTL.
+    :param ttl: the bucket's entry TTL, and the lease's; bounds the orphan-lock window after a holder
+        dies between renewals. Whole seconds, at least one. **Bucket-level: the first caller to
+        materialise a given ``bucket_name`` pins the TTL for every key in that bucket**; a later
+        caller passing a different ``ttl`` against the same ``bucket_name`` raises
+        :class:`ValueError` -- use a distinct ``bucket_name`` to vary TTL.
     :ptype ttl: timedelta
-    :param heartbeat: KV refresh interval; must be strictly less than
-        ``ttl`` or the lock will expire under a live holder
+    :param heartbeat: renewal interval; must be strictly less than ``ttl`` or the lock would expire
+        under a live holder
     :ptype heartbeat: timedelta
-    :param cancel_on_loss: cancel the body when the lock is lost and raise
-        :class:`LockLost` from the ``async with``. ``False`` only reports the
-        loss on the yielded hold -- for a body whose correctness does not
-        rest on the lock and which must not be interrupted mid-way
+    :param cancel_on_loss: cancel the body when the lock is lost and raise :class:`LockLost` from the
+        ``async with``. ``False`` only reports the loss on the yielded hold -- for a body whose
+        correctness does not rest on the lock and which must not be interrupted mid-way
     :ptype cancel_on_loss: bool
-    :param max_hold: the longest this holder renews the lock; past it renewal stops, the
-        hold reports :attr:`LockLossReason.MAX_HOLD` and the TTL hands the lock on, so a
-        wedged body cannot keep every other claimer out for as long as its process lives.
-        Six hours by default
+    :param max_hold: the longest this holder renews the lock; past it renewal stops, the hold reports
+        :attr:`LockLossReason.MAX_HOLD` and the TTL hands the lock on, so a wedged body cannot keep
+        every other claimer out for as long as its process lives. Six hours by default
     :ptype max_hold: timedelta
     :return: async iterator yielding the :class:`LockHold` while the lock is held
     :rtype: AsyncIterator[LockHold]
-    :raises ValueError: when ``heartbeat >= ttl`` (invalid invariant), when ``max_hold``
-        is negative, or when ``ttl`` does not match the bucket's already-cached TTL
+    :raises ValueError: when ``heartbeat >= ttl`` (invalid invariant), when ``ttl`` is not whole
+        seconds, when ``max_hold`` is negative, or when ``ttl`` does not match the bucket's
+        already-cached TTL
     :raises LockHeld: when the key is already owned by another holder
-    :raises LockLost: when the lock was lost while the body ran and
-        ``cancel_on_loss`` is set
-    :raises KvError: on transport / bucket failures (distinct from
-        ``LockHeld``)
+    :raises LockLost: when the lock was lost while the body ran and ``cancel_on_loss`` is set
+    :raises KvError: on transport / bucket failures (distinct from ``LockHeld``)
     """
-    state = _HoldState()
-    hold = LockHold(key, state)
     if client is None:
-        yield hold
+        yield LockHold(key, None)
         return
     if heartbeat >= ttl:
         msg = f"heartbeat {heartbeat} must be less than ttl {ttl}"
@@ -346,21 +294,16 @@ async def nats_distributed_lock(
         msg = f"max_hold {max_hold} must not be negative"
         raise ValueError(msg)
 
-    # DECLARES its bucket (``create_if_missing`` left at its default), deliberately. Every caller
-    # of this lock is an INFRASTRUCTURE identity that owns what it opens -- the hub's sweeps and
-    # reconcilers, the scheduled-jobs tick and its in-flight lock, a derived collection's build
-    # lock -- and none runs in an agent or tool pod: no pod grant names ``{ns}-scheduler-locks``,
-    # so a pod caller would be refused at the first call rather than silently served. A pod holds
-    # no stream-management verb; a pod that ever needs a cross-pod lock gets a bucket the hub
-    # declares and binds it, which is what ``KVLease(create_if_missing=False)`` over a hub-declared
-    # bucket already does.
+    # deferred: core depends on this package, so core cannot be imported at this module's top
+    from threetears.core.coordination.lease import KVLease, LeaseUnavailable
+
+    # DECLARES its bucket (``create_if_missing`` left at its default), deliberately: see "Infrastructure
+    # callers only" above. Opened here rather than by the lease so the declaration -- and with it the
+    # bucket-level TTL -- is exactly the one every earlier release made (the upgrade contract).
     bucket = await client.kv_bucket(name=bucket_name, ttl=ttl)
-    # JetStream KV bucket TTL is bucket-level + fixed-at-creation. The
-    # client caches buckets by name (first-caller wins), so a second
-    # caller passing a different ``ttl`` would silently inherit the
-    # first caller's TTL and the apparent contract of *this* call
-    # ("lock expires after `ttl` seconds") would be wrong. Make the
-    # mismatch loud instead.
+    # JetStream KV bucket TTL is bucket-level and fixed at creation, and the client caches buckets by
+    # name (first caller wins): a second caller passing a different ``ttl`` would silently inherit the
+    # first caller's, and the apparent contract of this call ("expires after ``ttl``") would be wrong.
     if bucket.ttl is not None and bucket.ttl != ttl:
         msg = (
             f"nats_distributed_lock: bucket {bucket_name!r} was created "
@@ -369,180 +312,67 @@ async def nats_distributed_lock(
             f"distinct bucket_name to vary TTL."
         )
         raise ValueError(msg)
-    # This holder's identity, written as the entry's value. The release fences on
-    # it rather than on a revision number: see the `finally` below for why a
-    # revision cannot answer "is this still mine".
-    #
-    # A nonce rather than a uuid7, deliberately: this identifies one HOLD, not an
-    # entity, so it is never stored, joined, or ordered, and the repo's
-    # time-ordered-id convention has nothing to say about it. Hex so an operator
-    # reading a stuck lock out of the bucket sees something legible.
-    holder_token = secrets.token_hex(16).encode()
-    loop = asyncio.get_running_loop()
-    # Taken BEFORE the create is sent: the server stamps the entry no earlier than
-    # this, so it cannot expire before ``acquired_at + ttl``.
-    acquired_at = loop.time()
-    acquired = await bucket.create(key=key, value=holder_token)
-    if acquired is None:
-        raise LockHeld(f"lock already held: {key}")
 
     body_task = asyncio.current_task()
-    heartbeat_seconds = heartbeat.total_seconds()
-    ttl_seconds = ttl.total_seconds()
+    # the loss reaches the body through ``_interrupt``; these two say whether it may still be
+    # interrupted, and whether the cancellation it is unwinding is the loss's own.
+    exiting = False
+    interrupted = False
 
-    def _lose(reason: LockLossReason) -> None:
-        """record the loss, and interrupt the body unless it has finished or opted out.
+    def _interrupt(reason: LockLossReason) -> None:
+        """cancel the body for a lost lock, unless it has finished or opted out.
 
         :param reason: why the lock was lost
         :ptype reason: LockLossReason
         :return: nothing
         :rtype: None
         """
-        state.reason = reason
-        state.lost.set()
-        if cancel_on_loss and not state.exiting and body_task is not None:
-            state.body_cancelled = True
+        nonlocal interrupted
+        if cancel_on_loss and not exiting and body_task is not None:
+            interrupted = True
             body_task.cancel(f"nats_distributed_lock: lock lost ({reason.value}): {key}")
 
-    async def _renew() -> LockLossReason | None:
-        """renew the entry by compare-and-swap on this holder's token.
+    # one lease per hold: its generated holder id names THIS hold, so the release's identity fence
+    # can never mistake another hold's entry -- even this process's next one -- for its own.
+    lease = KVLease(None, bucket=bucket)
+    try:
+        held = await lease.hold(
+            key,
+            ttl=ttl,
+            renew_every=heartbeat,
+            max_hold=max_hold,
+            on_lost=_interrupt,
+            name=f"the lock {key!r}",
+            log_extra={"bucket": bucket_name, "ttl_seconds": ttl.total_seconds()},
+            renew_failure_level=logging.WARNING,
+        )
+    except LeaseUnavailable as exc:
+        raise LockHeld(f"lock already held: {key}") from exc
 
-        :return: the loss this renewal discovered, or ``None`` when renewed
-        :rtype: LockLossReason | None
-        :raises KvError: when the broker cannot be reached
-        """
-        entry = await bucket.get_entry(key=key)
-        result: LockLossReason | None = None
-        if entry is None:
-            result = LockLossReason.EXPIRED
-        elif entry[0] != holder_token:
-            result = LockLossReason.TAKEN
-        elif await bucket.update(key=key, value=holder_token, revision=entry[1]) is None:
-            # another write landed between the read and the swap: only a new holder writes
-            # this key, so the fence refusing is the lock changing hands.
-            result = LockLossReason.TAKEN
-        return result
-
-    async def _heartbeat() -> None:
-        """Renew the entry until cancelled, until the lock is lost, or until held too long.
-
-        ``CancelledError`` is the normal exit path (the contextmanager cancels us on body
-        completion). Every other exit is a loss, reported through :func:`_lose`.
-
-        **A renewal never writes blind.** It reads the entry and swaps it at the revision
-        just read, and only while the entry carries this holder's token. A holder that
-        stalled past the TTL wakes to find the key expired or re-acquired and reports the
-        loss instead of overwriting the successor.
-
-        **A failed renewal is retried while the entry cannot have expired.** One broker
-        blip must not interrupt a healthy body: the entry was last written no earlier than
-        the last renewal was sent, so it is this holder's until that moment plus ``ttl``.
-        Once the next attempt would land past that, the lock can no longer be vouched for
-        and the failure is a loss.
-
-        **Renewal stops at ``max_hold``.** A holder that WEDGES keeps a perfectly
-        healthy heartbeat task renewing a lock whose body is making no progress, which is
-        how one stuck pod starved a whole fleet. Past the maximum hold this stops renewing,
-        reports the loss, and lets the TTL hand the lock on -- loudly, at ERROR, because a
-        lock withdrawn under a live body is a real event a human needs to see.
-        """
-        deadline = loop.time() + max_hold.total_seconds()
-        last_renewal_sent = acquired_at
-        log_extra = {"key": key, "bucket": bucket_name, "ttl_seconds": ttl_seconds}
-        while True:
-            await asyncio.sleep(heartbeat_seconds)
-            if loop.time() >= deadline:
-                log.error(
-                    "nats_distributed_lock: holder has kept this lock past the maximum hold "
-                    "and is still running; refusing to renew so the TTL can hand it on. The "
-                    "body is wedged or far slower than this lock was sized for -- another "
-                    "holder may now acquire it.",
-                    extra={"extra_data": {**log_extra, "max_hold_seconds": max_hold.total_seconds()}},
-                )
-                _lose(LockLossReason.MAX_HOLD)
-                return
-            renewal_sent = loop.time()
-            try:
-                loss = await _renew()
-            except Exception as exc:  # noqa: BLE001 - boundary: a renewal failure is retried or reported as a loss, never raised into the heartbeat's owner
-                expired_by = last_renewal_sent + ttl_seconds
-                if loop.time() + heartbeat_seconds < expired_by:
-                    log.warning(
-                        "nats_distributed_lock: renewal failed; retrying while the entry cannot have expired",
-                        extra={"extra_data": {**log_extra, "error_type": type(exc).__name__, "error": str(exc)}},
-                    )
-                    continue
-                log.warning(
-                    "nats_distributed_lock: renewals failed until the entry may have expired; the lock is lost",
-                    extra={"extra_data": {**log_extra, "error_type": type(exc).__name__, "error": str(exc)}},
-                )
-                _lose(LockLossReason.RENEWAL_FAILED)
-                return
-            if loss is not None:
-                log.error(
-                    "nats_distributed_lock: the lock was lost while its holder was still running -- the "
-                    "holder stalled past the TTL or the entry was taken; not renewing it",
-                    extra={"extra_data": {**log_extra, "reason": loss.value}},
-                )
-                _lose(loss)
-                return
-            last_renewal_sent = renewal_sent
-
-    hb_task = asyncio.create_task(_heartbeat(), name=f"nats-lock-heartbeat:{key}")
     cancelling_at_entry = body_task.cancelling() if body_task is not None else 0
     try:
-        yield hold
+        yield LockHold(key, held)
     except BaseException as exc:
-        # The loss cancelled the body: take back exactly that cancellation, and turn it
-        # into LockLost -- unless something else ALSO cancelled the task, whose
-        # cancellation must still propagate. The same bookkeeping asyncio.timeout does.
-        if state.body_cancelled and body_task is not None:
-            state.body_cancelled = False
+        # The loss cancelled the body: take back exactly that cancellation, and turn it into
+        # LockLost -- unless something else ALSO cancelled the task, whose cancellation must still
+        # propagate. The same bookkeeping asyncio.timeout does.
+        if interrupted and body_task is not None:
+            interrupted = False
             remaining = body_task.uncancel()
-            lost_the_lock = state.reason is not None and remaining <= cancelling_at_entry
-            if isinstance(exc, asyncio.CancelledError) and lost_the_lock and state.reason is not None:
-                raise LockLost(key, state.reason) from exc
+            reason = held.lost_reason
+            if isinstance(exc, asyncio.CancelledError) and reason is not None and remaining <= cancelling_at_entry:
+                raise LockLost(key, reason) from exc
         raise
     else:
-        # The body swallowed the cancellation (or finished before it arrived): withdraw
-        # it so it cannot fire at the caller's next await, and still report the loss.
-        if state.body_cancelled and body_task is not None and state.reason is not None:
-            state.body_cancelled = False
+        # The body swallowed the cancellation (or finished before it arrived): withdraw it so it
+        # cannot fire at the caller's next await, and still report the loss.
+        reason = held.lost_reason
+        if interrupted and body_task is not None and reason is not None:
+            interrupted = False
             body_task.uncancel()
-            raise LockLost(key, state.reason)
+            raise LockLost(key, reason)
     finally:
-        state.exiting = True
-        hb_task.cancel()
-        # return_exceptions=True so heartbeat-death does not mask a
-        # body exception that we are about to re-raise via the context
-        # manager protocol.
-        await asyncio.gather(hb_task, return_exceptions=True)
-        try:
-            # FENCED on IDENTITY, not on sequence. An unconditional delete is a correctness
-            # bug whenever the lock did not survive the body: if the heartbeat died, or
-            # stopped at the maximum hold, the TTL expires the key and another pod acquires
-            # it -- and a plain delete then removes the SUCCESSOR's lock, handing the same
-            # key to a third holder while the second still believes it owns it.
-            #
-            # Fencing on "the revision this holder last wrote" was the first answer and it
-            # is not sound, because a holder can be BEHIND its own writes. The heartbeat
-            # recorded a revision by assigning the result of its renewal, so a cancellation
-            # delivered after the write landed but before that assignment -- a window one
-            # network round trip wide -- left the holder one revision short of the entry it
-            # owned. The fence then refused its owner's own release and the lock sat there
-            # for its whole TTL while every other pod waited: the very outcome the fence
-            # exists to prevent, reached from the other side.
-            #
-            # The token answers the question the revision was standing in for. The
-            # heartbeat is already cancelled and awaited above, so nothing of ours can
-            # write between this read and the delete, and the delete stays fenced on the
-            # revision just read, so anything ELSE that writes in between still wins.
-            entry = await bucket.get_entry(key=key)
-            if entry is not None and entry[0] == holder_token:
-                await bucket.delete(key=key, revision=entry[1])
-        except KvError as exc:
-            log.debug(
-                "nats_distributed_lock: cleanup delete failed (key already gone, or the lock "
-                "moved to another holder and the identity fence refused)",
-                extra={"extra_data": {"key": key, "bucket": bucket_name, "error": str(exc)}},
-            )
+        exiting = True
+        # stops renewal and deletes the entry if it is still this hold's; never raises, so a cleanup
+        # failure cannot replace the body's own outcome (the TTL frees an entry nobody deleted)
+        await held.release()

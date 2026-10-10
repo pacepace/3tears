@@ -422,3 +422,55 @@ class TestOwnerScopedLeaseKeys:
     def test_a_scope_that_is_not_one_literal_token_is_refused(self, scope: str) -> None:
         with pytest.raises(ValueError, match="key_scope"):
             KVLease(FakeNatsClient(), bucket_name="leases", key_scope=scope)  # type: ignore[arg-type]
+
+
+class TestAnEntryInAnotherFormatIsAnotherHolders:
+    """a value the lease did not write is somebody's claim: never reclaimed, refreshed or deleted, never a crash.
+
+    The NATS lock wrote its holder's raw ``token_hex(16)`` before it ran on this lease, and during a
+    deploy those entries share keys with lease envelopes. A hex token can parse as JSON -- all digits
+    is a number, digits around an ``e`` an exponent -- so "unreadable" has to cover those too.
+    """
+
+    @pytest.mark.parametrize(
+        "foreign",
+        [
+            b"9f86d081884c7d659a2feaa0c55ad015",
+            b"12345678901234567890123456789012",
+            b"1234e567890123456789012345678901",
+            b"1",
+            b'["pod-alpha"]',
+        ],
+    )
+    async def test_acquire_reports_it_held(self, foreign: bytes) -> None:
+        lease, client = await _make_lease()
+        bucket = await _bucket_for(client, "test_leases")
+        await bucket.create(key="lock/a", value=foreign)
+        with pytest.raises(LeaseUnavailable):
+            await lease.acquire("lock/a", ttl_seconds=30, max_wait_seconds=0)
+        assert await bucket.get(key="lock/a") == foreign
+
+    async def test_refresh_reports_it_taken_and_release_leaves_it(self) -> None:
+        lease, client = await _make_lease()
+        handle = await lease.acquire("lock/a", ttl_seconds=30)
+        bucket = await _bucket_for(client, "test_leases")
+        assert await bucket.delete(key="lock/a", revision=handle.revision)
+        await bucket.create(key="lock/a", value=b"12345678901234567890123456789012")
+        with pytest.raises(LeaseLost) as lost:
+            await handle.refresh()
+        assert lost.value.reason is lease_module.LeaseLossReason.TAKEN
+        await handle.release()
+        assert await bucket.get(key="lock/a") == b"12345678901234567890123456789012"
+
+
+class TestLeaseLostSaysWhy:
+    async def test_a_missing_entry_is_expired(self) -> None:
+        lease, client = await _make_lease()
+        handle = await lease.acquire("lock/a", ttl_seconds=30)
+        assert await (await _bucket_for(client, "test_leases")).delete(key="lock/a", revision=handle.revision)
+        with pytest.raises(LeaseLost) as lost:
+            await handle.refresh()
+        assert lost.value.reason is lease_module.LeaseLossReason.EXPIRED
+
+    def test_a_lease_lost_raised_without_a_reason_still_constructs(self) -> None:
+        assert LeaseLost("gone").reason is None

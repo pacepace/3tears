@@ -26,7 +26,7 @@ from typing import Any
 
 import pytest
 
-from threetears.core.coordination.lease import HeldLease, KVLease, LeaseUnavailable
+from threetears.core.coordination.lease import HeldLease, KVLease, LeaseLossReason, LeaseUnavailable
 from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
 
 _BUCKET = "held"
@@ -594,3 +594,184 @@ async def test_a_release_cancelled_while_it_waits_still_frees_the_entry(monkeypa
     releasing.cancel()
     await asyncio.wait([releasing])
     assert await bucket.get_entry(key="job") is None, "a cancelled release left the entry behind"
+
+
+# ---------------------------------------------------------------------------
+# why a lease was lost, the maximum hold, and the loss callback
+# ---------------------------------------------------------------------------
+
+
+@_in_virtual_time
+async def test_a_takeover_is_reported_as_taken() -> None:
+    client = FakeNatsClient()
+    held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
+    assert held.lost_reason is None
+    try:
+        await _take_over(client, "job")
+        await asyncio.wait_for(held.until_lost(), timeout=5)
+        assert held.lost_reason is LeaseLossReason.TAKEN
+    finally:
+        await held.release()
+
+
+@_in_virtual_time
+async def test_an_entry_that_went_away_is_reported_as_expired() -> None:
+    client = FakeNatsClient()
+    held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
+    try:
+        assert await (await _bucket(client)).delete(key="job")
+        await asyncio.wait_for(held.until_lost(), timeout=5)
+        assert held.lost_reason is LeaseLossReason.EXPIRED
+    finally:
+        await held.release()
+
+
+@_in_virtual_time
+async def test_renewals_failing_past_the_ttl_are_reported_as_renewal_failed() -> None:
+    client = FakeNatsClient()
+    held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
+    try:
+        (await _bucket(client)).become_unreachable(_outage())
+        await asyncio.wait_for(held.until_lost(), timeout=5)
+        assert held.lost_reason is LeaseLossReason.RENEWAL_FAILED
+    finally:
+        await held.release()
+
+
+@_in_virtual_time
+async def test_a_release_is_not_a_loss() -> None:
+    client = FakeNatsClient()
+    held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
+    await held.release()
+    assert held.lost_reason is None
+    assert not held.lost.is_set()
+
+
+@_in_virtual_time
+async def test_past_its_maximum_hold_a_lease_stops_renewing_and_says_so() -> None:
+    """A holder whose work wedges keeps a healthy renewal going; the maximum hold is what stops it.
+
+    Without it, one stuck pod holds the key for as long as its process lives and every other
+    claimer waits on it.
+    """
+    client = FakeNatsClient()
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW, max_hold=timedelta(seconds=0.2))
+    bucket = await _bucket(client)
+    try:
+        await asyncio.wait_for(held.until_lost(), timeout=5)
+        assert held.lost_reason is LeaseLossReason.MAX_HOLD
+        assert loop.time() - started < 0.2 + _RENEW.total_seconds() * 2
+        entry = await bucket.get_entry(key="job")
+        assert entry is not None
+        await asyncio.sleep(_RENEW.total_seconds() * 4)
+        # the entry is left to its TTL (stamped on the wall clock, which virtual time does not move)
+        assert await bucket.get_entry(key="job") == entry, "a lease past its maximum hold was renewed"
+    finally:
+        await held.release()
+
+
+@_in_virtual_time
+async def test_a_lease_inside_its_maximum_hold_keeps_renewing() -> None:
+    client = FakeNatsClient()
+    held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW, max_hold=timedelta(hours=6))
+    try:
+        await asyncio.sleep(_TTL.total_seconds() * 3)
+        assert held.held
+        assert held.lost_reason is None
+    finally:
+        await held.release()
+
+
+@_in_virtual_time
+async def test_a_negative_maximum_hold_is_refused() -> None:
+    with pytest.raises(ValueError, match="max_hold"):
+        await _lease(FakeNatsClient(), "pod-a").hold(
+            "job", ttl=_TTL, renew_every=_RENEW, max_hold=timedelta(seconds=-1)
+        )
+
+
+@_in_virtual_time
+async def test_the_loss_callback_hears_the_reason_once_the_moment_it_is_lost() -> None:
+    client = FakeNatsClient()
+    heard: list[tuple[LeaseLossReason, bool]] = []
+    held: HeldLease | None = None
+
+    def on_lost(reason: LeaseLossReason) -> None:
+        assert held is not None
+        heard.append((reason, held.lost.is_set()))
+
+    held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW, on_lost=on_lost)
+    try:
+        await _take_over(client, "job")
+        await asyncio.wait_for(held.until_lost(), timeout=5)
+        await asyncio.sleep(_RENEW.total_seconds() * 4)
+        assert heard == [(LeaseLossReason.TAKEN, True)]
+    finally:
+        await held.release()
+    assert heard == [(LeaseLossReason.TAKEN, True)], "a release after the loss was reported as another loss"
+
+
+@_in_virtual_time
+async def test_a_release_never_calls_the_loss_callback() -> None:
+    client = FakeNatsClient()
+    heard: list[LeaseLossReason] = []
+    held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW, on_lost=heard.append)
+    await held.release()
+    await asyncio.sleep(_TTL.total_seconds() * 2)
+    assert heard == []
+
+
+@_in_virtual_time
+async def test_a_renewal_whose_answer_never_comes_does_not_keep_the_entry_past_the_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The server applied the renewal; its answer never arrived, so the release stopped waiting.
+
+    The handle is then a revision behind its own entry, and a delete fenced on the revision it
+    recorded would refuse -- leaving the entry to hold everyone else off for a whole TTL. The entry
+    is recognisably this renewal's own write, so the release deletes it.
+    """
+    client = FakeNatsClient()
+    held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
+    bucket = await _bucket(client)
+    real_update = bucket.update
+    landed = asyncio.Event()
+
+    async def applied_but_unanswered(**kwargs: Any) -> int | None:
+        await real_update(**kwargs)
+        landed.set()
+        await asyncio.sleep(3600)
+        return None  # pragma: no cover - cancelled first
+
+    monkeypatch.setattr(bucket, "update", applied_but_unanswered)
+    await asyncio.wait_for(landed.wait(), timeout=5)
+    await held.release()
+    assert await bucket.get_entry(key="job") is None, "the release left its own renewed entry behind"
+
+
+@_in_virtual_time
+async def test_the_release_still_never_deletes_a_successors_entry_after_an_unanswered_renewal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recognising its own write must not widen the fence: another holder's entry always survives."""
+    client = FakeNatsClient()
+    held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
+    bucket = await _bucket(client)
+    real_update = bucket.update
+    landed = asyncio.Event()
+
+    async def applied_but_unanswered(**kwargs: Any) -> int | None:
+        await real_update(**kwargs)
+        landed.set()
+        await asyncio.sleep(3600)
+        return None  # pragma: no cover - cancelled first
+
+    monkeypatch.setattr(bucket, "update", applied_but_unanswered)
+    await asyncio.wait_for(landed.wait(), timeout=5)
+    monkeypatch.undo()
+    await _take_over(client, "job")
+    await held.release()
+    surviving = await bucket.get_entry(key="job")
+    assert surviving is not None and b"pod-b" in surviving[0]

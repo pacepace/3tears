@@ -17,6 +17,41 @@ packages (bumped in lock-step).
   with `Claude-Session`). They are not rewritten, which would take a force-push of a shared branch;
   `scripts/attribution-exemptions.txt` exempts them by full hash.
 
+### Coordination: one lease primitive -- `nats_distributed_lock` runs on `KVLease`
+
+- **Changed, `nats_distributed_lock`** holds its key through `KVLease.hold` (one lease per hold) and
+  keeps its public API: `LockHeld`, `LockLost`, `LockLossReason`, `LockHold` (`key`, `lost`,
+  `lost_reason`, `raise_if_lost`), and every parameter with its default. Its own heartbeat task,
+  renewal loop and hold state are deleted; acquisition, compare-and-swap renewal, retry inside the
+  TTL, the maximum hold and the fenced release are the lease's. It still opens its bucket itself with
+  `kv_bucket(name, ttl=ttl)` and refuses a `ttl` that differs from the bucket's.
+- **Changed, the lock's TTL is whole seconds** (the lease's): a fractional `ttl` raises `ValueError`.
+  Every caller uses the 60-second default.
+- **Changed, the lock needs the `3tears` core distribution at call time** (it imports `KVLease`
+  inside the call, since core depends on `3tears-nats`). Every caller installs core already.
+- **Upgrade contract (rolling; any order, and rollback):** releases up to 0.66 store a lock entry's
+  value as the holder's raw `token_hex(16)`; from this release it is the `KVLease` envelope. A new
+  replica treats an old entry as another holder's -- `LockHeld` on acquire, `TAKEN` on renewal,
+  never written or deleted -- including an all-digit token, which parses as a JSON number. An old
+  replica treats a new entry as held: its acquire is create-if-absent (fails on any existing key),
+  its renewal and release compare the value with its own token (an envelope never matches), and it
+  never reclaims. The bucket is shared unchanged: both versions open it with the same
+  `kv_bucket(name, ttl)`, so an existing `{ns}-scheduler-locks` keeps its bucket-level `max_age`
+  and is never redeclared or recreated. A fresh bucket gets what it always got: `max_age = ttl`,
+  history 1, `allow_msg_ttl` on. Entries carry no per-key TTL (`expire_entries` is off): the bucket's
+  `max_age` already removes an entry `ttl` after its last write.
+- **Added, `KVLease.hold(max_hold=, on_lost=)` and `HeldLease.lost_reason`**: a maximum hold past
+  which renewal stops (reported at ERROR as `LeaseLossReason.MAX_HOLD`), a callback told the reason
+  the moment the lease is lost, and why it was lost (`EXPIRED`, `TAKEN`, `RENEWAL_FAILED`,
+  `MAX_HOLD`). `LeaseLost.reason` says what a refresh found. `LeaseLossReason` (exported from
+  `threetears.core.coordination`) is `threetears.nats.errors.LockLossReason`: one vocabulary for both.
+- **Fixed, a lease entry holding a JSON number** (an older lock's all-digit token) made `KVLease`
+  raise `AttributeError` instead of treating it as another holder's.
+- **Fixed, a lease released while its renewal's answer never came** (the server applied it; the
+  release stopped waiting and cancelled it) left its entry for a whole TTL: the handle was a revision
+  behind its own write and the fenced delete refused. The release now recognises that exact write
+  (`LeaseHandle.in_flight_value`) and deletes it; another holder's entry still always survives.
+
 ### Coordination: a lease on a bucket it was handed, whose key lapses with its holder; snapshot write claims held on it
 
 - **Added, `KVLease(None, bucket=...)`**: a lease over a bucket already bound (one another owner

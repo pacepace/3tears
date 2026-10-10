@@ -9,6 +9,7 @@ live in ``tests/integration/test_distributed_lock_round_trip.py``.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Callable
 import inspect
@@ -261,11 +262,13 @@ async def test_heartbeat_refreshes_key() -> None:
             what="two heartbeat refreshes",
         )
     assert len(fake_kv.update_calls) >= 2
-    # Every renewal rewrites the SAME value the acquire created: that value is
-    # the holder's identity, and the release fences on it, so a heartbeat that
-    # wrote anything else would hand the lock away mid-hold.
-    created_token = fake_kv.create_calls[0][1]
-    assert all(call[:2] == ("job", created_token) for call in fake_kv.update_calls)
+    # Every renewal names the SAME holder the acquire wrote: that holder is the
+    # lock's identity, and the release fences on it, so a heartbeat that wrote
+    # any other would hand the lock away mid-hold. (The entry is the lease's
+    # envelope, whose expiry moves on with each renewal; the holder never does.)
+    created_holder = json.loads(fake_kv.create_calls[0][1])["holder"]
+    assert created_holder
+    assert all(call[0] == "job" and json.loads(call[1])["holder"] == created_holder for call in fake_kv.update_calls)
     # And never unconditionally: a blind put is how a stalled holder overwrites its successor.
     assert fake_kv.put_calls == []
 
@@ -339,8 +342,12 @@ async def test_external_cancellation_during_body_cleans_up() -> None:
         await task
     assert cleanup_done.is_set()
     assert fake_kv.delete_calls == ["job"]
-    # heartbeat task should not leak as a pending task in the event loop
-    pending = [t for t in asyncio.all_tasks() if "nats-lock-heartbeat" in (t.get_name() or "")]
+    # the renewal task should not leak as a pending task in the event loop
+    pending = [
+        t
+        for t in asyncio.all_tasks()
+        if "nats-lock-heartbeat" in (t.get_name() or "") or "kv-lease-renew:job" in (t.get_name() or "")
+    ]
     assert pending == []
 
 
@@ -885,7 +892,8 @@ class TestTheHolderIsToldWhenTheLockIsLost:
             client,  # type: ignore[arg-type]
             "unreachable",
             heartbeat=timedelta(seconds=0.02),
-            ttl=timedelta(seconds=0.2),
+            # the lease's TTL is whole seconds; one second is the shortest a lock can have
+            ttl=timedelta(seconds=1),
             cancel_on_loss=False,
         ) as hold:
             await asyncio.wait_for(hold.lost.wait(), timeout=5)
@@ -1027,3 +1035,119 @@ class TestTheMaximumHoldIsTheCallersToSet:
                 max_hold=timedelta(seconds=-1),
             ):
                 pass
+
+
+# ---------------------------------------------------------------------------
+# rolling upgrade: an old replica and a new one contend for the same key
+# ---------------------------------------------------------------------------
+
+#: values the lock wrote before it ran on KVLease: the holder's token, ``secrets.token_hex(16)``.
+#: A typical token, and the shapes a hex token can take that a JSON parser ACCEPTS -- all digits (a
+#: number), digits around an ``e`` (an exponent), a leading zero -- because "unreadable" must hold
+#: for every one of them, not only for the typical token that is not JSON at all.
+_OLD_RELEASE_TOKENS = (
+    b"9f86d081884c7d659a2feaa0c55ad015",
+    b"12345678901234567890123456789012",
+    b"1234e567890123456789012345678901",
+    b"01234567890123456789012345678901",
+)
+
+
+# parity-exempt: a frozen copy of the pre-KVLease lock's three KV operations, the OTHER side of a rolling upgrade; not a fake of any production surface
+class _OldReleaseLock:
+    """the lock as releases up to 0.66 ran it, reduced to what it did to the key.
+
+    Acquire was ``create`` (put-if-absent) of the holder's raw token; renewal read the entry and
+    swapped it only while it still carried that token; release deleted it only while it still did.
+    It never reclaimed an entry. Kept verbatim in behaviour so the new lock is tested against the
+    replica it shares a bucket with during a deploy, not against a description of it.
+    """
+
+    def __init__(self, bucket: NatsKvBucket, key: str, token: bytes = _OLD_RELEASE_TOKENS[0]) -> None:
+        self.bucket = bucket
+        self.key = key
+        self.token = token
+
+    async def acquire(self) -> bool:
+        return await self.bucket.create(key=self.key, value=self.token) is not None
+
+    async def renew(self) -> LockLossReason | None:
+        entry = await self.bucket.get_entry(key=self.key)
+        if entry is None:
+            return LockLossReason.EXPIRED
+        if entry[0] != self.token:
+            return LockLossReason.TAKEN
+        if await self.bucket.update(key=self.key, value=self.token, revision=entry[1]) is None:
+            return LockLossReason.TAKEN
+        return None
+
+    async def release(self) -> None:
+        entry = await self.bucket.get_entry(key=self.key)
+        if entry is not None and entry[0] == self.token:
+            await self.bucket.delete(key=self.key, revision=entry[1])
+
+
+def _bucket_over(fake_kv: _FakeKv) -> NatsKvBucket:
+    return NatsKvBucket(client=None, full_name="itest-scheduler-locks", kv=fake_kv, ttl=timedelta(seconds=60))  # type: ignore[arg-type]
+
+
+class TestARollingUpgradeNeverFreesAHeldLock:
+    """During a deploy an old replica (raw-token entries) and a new one (lease envelopes) share a key.
+
+    Neither may take the other's held lock for a free one, in either order of upgrade.
+    """
+
+    @pytest.mark.parametrize("old_token", _OLD_RELEASE_TOKENS)
+    @pytest.mark.asyncio
+    async def test_a_new_replica_reads_an_old_replicas_entry_as_held(self, old_token: bytes) -> None:
+        fake_kv = _FakeKv()
+        client = _FakeClient(fake_kv)
+        old = _OldReleaseLock(_bucket_over(fake_kv), "tick", old_token)
+        assert await old.acquire()
+        before = fake_kv.store["tick"]
+
+        with pytest.raises(LockHeld, match="tick"):
+            async with nats_distributed_lock(client, "tick"):  # type: ignore[arg-type]
+                pass  # pragma: no cover - never enters
+
+        assert fake_kv.store["tick"] == before, "the new replica wrote over an old replica's held lock"
+        assert fake_kv.delete_calls == []
+
+    @pytest.mark.parametrize("old_token", _OLD_RELEASE_TOKENS)
+    @pytest.mark.asyncio
+    async def test_a_new_holder_that_meets_an_old_entry_reports_it_taken_and_leaves_it(self, old_token: bytes) -> None:
+        fake_kv = _FakeKv()
+        client = _FakeClient(fake_kv)
+
+        async with nats_distributed_lock(
+            client,  # type: ignore[arg-type]
+            "tick",
+            heartbeat=timedelta(seconds=0.01),
+            ttl=timedelta(seconds=1),
+            cancel_on_loss=False,
+        ) as hold:
+            # the entry lapsed and an old replica's create won the key
+            del fake_kv.store["tick"]
+            assert await _OldReleaseLock(_bucket_over(fake_kv), "tick", old_token).acquire()
+            successor = fake_kv.store["tick"]
+            await asyncio.wait_for(hold.lost.wait(), timeout=5)
+
+        assert hold.lost_reason is LockLossReason.TAKEN
+        assert fake_kv.store["tick"] == successor, "the new holder overwrote or released an old replica's lock"
+
+    @pytest.mark.asyncio
+    async def test_an_old_replica_reads_a_new_replicas_entry_as_held(self) -> None:
+        fake_kv = _FakeKv()
+        client = _FakeClient(fake_kv)
+        old = _OldReleaseLock(_bucket_over(fake_kv), "tick")
+
+        async with nats_distributed_lock(client, "tick", heartbeat=timedelta(seconds=30)):  # type: ignore[arg-type]
+            held_entry = fake_kv.store["tick"]
+            assert not await old.acquire(), "an old replica acquired a lock a new replica holds"
+            # an old holder that had lost the key to this one: its renewal and release leave it alone
+            assert await old.renew() is LockLossReason.TAKEN
+            await old.release()
+            assert fake_kv.store["tick"] == held_entry, "an old replica wrote or deleted a new replica's lock"
+
+        # released by the new replica, the key is free for the old one
+        assert await old.acquire()

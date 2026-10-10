@@ -17,6 +17,7 @@ public surface:
 - :class:`LeaseUnavailable` — raised by fail-fast acquire when key is held
 - :class:`LeaseTimeout` — raised when acquire deadline elapses
 - :class:`LeaseLost` — raised when ownership changes mid-operation
+- :class:`LeaseLossReason` — why a held lease was lost (the one vocabulary the NATS lock reports too)
 - :class:`ReplayGuard` -- single-use nonce guard (shared, fail-closed) for replay protection, for
   the seconds an artifact is acceptable; memory-backed, and a wipe fails closed
 - :class:`ReplayAnchor` / :class:`CollectionReplayAnchor` -- the durable record of when a
@@ -62,6 +63,7 @@ from threetears.core.coordination.lease import (
     HeldLease,
     KVLease,
     LeaseHandle,
+    LeaseLossReason,
     LeaseLost,
     LeaseTimeout,
     LeaseUnavailable,
@@ -87,6 +89,7 @@ __all__ = [
     "HeldLease",
     "KVLease",
     "LeaseHandle",
+    "LeaseLossReason",
     "LeaseLost",
     "LeaseTimeout",
     "LeaseUnavailable",

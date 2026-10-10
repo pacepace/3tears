@@ -11,11 +11,10 @@ So a pod claims a session before it acts as that session's owner, and stops acti
 the claim goes. :func:`claim_session` is that claim.
 
 **Why this reaches for KVLease and not nats_distributed_lock.** The lock looks like the closer
-fit -- it is one context manager, it owns its own heartbeat, it renews by compare-and-swap, and
-it reports a lost hold through :class:`~threetears.nats.LockHold`. The one property that still
-rules it out is its fixed maximum hold: past it the lock stops renewing so a wedged body cannot
-starve a fleet, and an operator session has no such ceiling -- a long solve would lose its
-display mid-session. :meth:`LeaseHandle.refresh` is a compare-and-swap against the recorded
+fit -- it is one context manager over this same :meth:`KVLease.hold`, and it reports a lost hold
+through :class:`~threetears.nats.LockHold`. The one property that still rules it out is that it
+always has a maximum hold: past it the lock stops renewing so a wedged body cannot starve a fleet,
+and an operator session has no such ceiling -- a long solve would lose its display mid-session. :meth:`LeaseHandle.refresh` is a compare-and-swap against the recorded
 holder and raises :class:`LeaseLost`, and :meth:`KVLease.hold` renews on that in the background
 and turns it into the loss this module reports.
 
