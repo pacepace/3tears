@@ -54,6 +54,7 @@ from threetears.evals.contracts.analysis_measures import BarDecision
 from threetears.evals.contracts.base import EvalBaseModel, VerbatimText
 from threetears.evals.contracts.hashing import canonical_digest, canonical_json
 from threetears.evals.contracts.host.profile import HostProfile
+from threetears.evals.contracts.host.values import PooledProductionFooting, ProductionFooting
 from threetears.evals.contracts.host.sweepables import CANDIDATE_MODEL_LEVER
 from threetears.evals.contracts.identity import IDENTITY_VERSION, resolve_context_identity
 from threetears.evals.contracts.metrics import MetricDescriptor, describe_measure
@@ -4478,6 +4479,11 @@ class FrontierPoint(EvalBaseModel):
     # cost is unknown or pass^1 is zero (dividing by a zero pass rate is undefined,
     # not "infinitely expensive").
     cost_per_acceptable_outcome: float | None = None
+    #: What the runs behind ``production_replicating_cost`` set away from the subject's production configuration
+    #: (#571), each run's own footing read off the host's sweepable declarations: the cost is what production would
+    #: spend only where no run moved anything (``moved_nothing``). ``None`` when the frontier was computed without
+    #: the host's declarations, and on a point stored before it was read — nobody checked, never "nothing moved".
+    production_footing: PooledProductionFooting | None = None
 
     # Latency — total wall-clock ms, the performance axis. Mean over the turns the candidate took
     # (`delivered_a_turn`) that harvested a total; ``None`` when none did. The mean, not a tail: it is
@@ -4606,6 +4612,9 @@ class FrontierVerdict(EvalBaseModel):
     pass_hat_k_ci_high: float | None = None
     production_replicating_cost: float | None = None
     cost_is_partial: bool = False
+    #: The picked point's :attr:`FrontierPoint.production_footing`: the pick is made on a cost that is
+    #: production's only where its runs moved nothing, so what they moved rides on the recommendation (#571).
+    production_footing: PooledProductionFooting | None = None
     cassette_mode_disclosure: str | None = None
     template_span_disclosure: str | None = None
     completeness_disclosures: dict[str, str] = {}
@@ -4820,6 +4829,7 @@ def _frontier_point(
     cassette_modes_by_run: Mapping[str, str],
     templates_by_run: Mapping[str, str | None],
     degraded_by_run: Mapping[str, str],
+    footing_by_run: Mapping[str, ProductionFooting | None] | None,
 ) -> tuple[FrontierPoint, _ContestantCases]:
     """Aggregate one contestant's results into a single frontier point, and the per-case values behind it.
 
@@ -4863,6 +4873,9 @@ def _frontier_point(
             default**, on the rule its two neighbours state: an unsupplied map and a pool
             of genuinely complete runs both yield no disclosure, so a default would let a
             caller that forgot it rank a truncated contestant as if it were whole.
+        footing_by_run: Each candidate run's production footing (``None`` for a run nobody could check), or
+            ``None`` when the frontier was given no host declarations to read one with; narrowed here to the
+            runs these results came from.
 
     Returns:
         A :class:`FrontierPoint` with quality (and its interval), cost, latency, and every
@@ -5037,6 +5050,11 @@ def _frontier_point(
         cost_is_partial=cost_is_partial,
         cost_compositions=cost_compositions,
         cost_per_acceptable_outcome=cost_per_acceptable_outcome,
+        production_footing=(
+            PooledProductionFooting(runs={run_id: footing_by_run.get(run_id) for run_id in contributing_runs})
+            if footing_by_run is not None
+            else None
+        ),
         mean_total_ms=mean_total_ms,
         n_latency=n_latency,
         n_no_turn=sum(
@@ -5302,6 +5320,7 @@ def compute_frontier(
     rubric_threshold: int = 3,
     known_run_ids: set[str] | None = None,
     archived_run_ids: set[str] | None,
+    profile: HostProfile | None = None,
 ) -> FrontierResult:
     """Rank each subject's variants on quality x cost x latency and pick the cheapest above bar.
 
@@ -5382,6 +5401,10 @@ def compute_frontier(
             archival exclusion is counted as ``results_from_archived_runs``
             rather than under the caller's ``status`` filter. See
             :func:`place_results`.
+        profile: The host whose sweepable declarations each point's cost is read against: with it, every point
+            and verdict names what each of its runs set away from the subject's production configuration
+            (:attr:`FrontierPoint.production_footing`, #571). Read off the runs as given, so a run handed with its
+            host payload elided reads as unchecked. ``None`` leaves that field ``None`` — nobody checked.
 
     Returns:
         A :class:`FrontierResult` — one :class:`SubjectFrontier` per subject,
@@ -5433,6 +5456,9 @@ def compute_frontier(
     # The depth each subject is ranked at: the shallowest k any of its ranked runs was
     # commissioned to (see SubjectFrontier.k).
     k_by_subject: dict[str, int] = {}
+    # Each placed run and its results, for the production footing a point's cost names (#571).
+    placed_runs: dict[str, EvalRun] = {}
+    results_of_run: dict[str, list[EvalResult]] = {}
 
     for run, result, resolved in placed:
         if subject_id is not None and resolved != subject_id:
@@ -5446,10 +5472,23 @@ def compute_frontier(
         cassette_modes_by_run[run.id] = run.cassette_mode
         templates_by_run[run.id] = run.template_id
         cell_of_run[run.id] = pass_hat_k_cell(run)
+        placed_runs[run.id] = run
+        results_of_run.setdefault(run.id, []).append(result)
         k_by_subject[resolved] = min(k_by_subject.get(resolved, run.k_runs), run.k_runs)
         if (short := completeness_disclosure(run.completeness)) is not None:
             degraded_by_run[run.id] = short
             n_degraded_observations += 1
+
+    footing_by_run: dict[str, ProductionFooting | None] | None = (
+        {
+            run_id: None
+            if run.elided_payload_paths
+            else profile.sweepables.production_footing(run, results_of_run[run_id])
+            for run_id, run in placed_runs.items()
+        }
+        if profile is not None
+        else None
+    )
 
     subjects: list[SubjectFrontier] = []
     for resolved in sorted(by_subject):
@@ -5465,6 +5504,7 @@ def compute_frontier(
                 cassette_modes_by_run=cassette_modes_by_run,
                 templates_by_run=templates_by_run,
                 degraded_by_run=degraded_by_run,
+                footing_by_run=footing_by_run,
             )
             for key in sorted(groups, key=lambda k: (str(k), ""))
         ]
@@ -5516,6 +5556,7 @@ def compute_frontier(
                     pass_hat_k_ci_high=pick.pass_hat_k_ci_high,
                     production_replicating_cost=pick_cost,
                     cost_is_partial=pick.cost_is_partial,
+                    production_footing=pick.production_footing,
                     # Carried from the picked point rather than re-derived: one predicate,
                     # so the verdict and the row it names cannot disagree about whether
                     # that contestant's observations spanned cassette modes.

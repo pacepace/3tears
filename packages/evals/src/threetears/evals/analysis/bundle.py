@@ -149,7 +149,7 @@ from threetears.evals.contracts.declaration import (
 )
 from threetears.evals.contracts.hashing import canonical_digest, canonical_json
 from threetears.evals.contracts.host.profile import CANDIDATE_MODEL_LEVER, UNSEATED_LEVEL, HostProfile
-from threetears.evals.contracts.host.values import ProductionFooting, SweepableValue
+from threetears.evals.contracts.host.values import PooledProductionFooting, ProductionFooting, SweepableValue
 from threetears.evals.contracts.identity import IDENTITY_VERSION, resolve_variant_identity
 from threetears.evals.contracts.metrics import (
     ACCURACY_MEASURE,
@@ -2425,6 +2425,17 @@ class AnalysisContextBundle(EvalDocumentModel):
             "be one model. An arm whose candidate left no usage row is absent. Wherever one requested id was "
             "answered by more than one model across a comparison's runs, the comparison names the "
             "`served_model:candidate` confound."
+        ),
+    )
+    arm_production_footings: dict[str, PooledProductionFooting] = Field(
+        default_factory=dict,
+        description=(
+            "Arm (variant key) -> what each of its runs set away from the subject's production configuration, read "
+            "off the host's sweepable declarations: `runs` maps run id -> that run's footing (`moved` with levels, "
+            "`unchecked`, `held`; null for a run nobody could check). An arm's production_replicating_cost — on its "
+            "cells, contrasts and bars — is what production would spend only where every run moved nothing; where a "
+            "run moved or left unchecked an input, it is the cost of those settings, with no reliable sign of "
+            "error. Empty on a bundle assembled before it was read: nobody checked, never 'nothing moved'."
         ),
     )
     cell_model_version: int = Field(
@@ -5163,6 +5174,36 @@ def _model_contrast_confounds(
     )
 
 
+def _arm_production_footings(
+    arms: _CampaignArms, results_by_run: Mapping[str, list[EvalResult]], *, profile: HostProfile
+) -> dict[str, PooledProductionFooting]:
+    """Each arm's production footing: what each of its runs set away from production (#571).
+
+    An arm's production-replicating cost (its cells, contrasts and bars on that measure) pools its runs, and
+    each run's footing is read off the host's sweepable declarations as :class:`RunSummary` reads it — so the
+    arm carries every run's own, and says where they disagree, rather than one merged claim.
+
+    Args:
+        arms: The campaign's arms. A run that resolved no arm is in none.
+        results_by_run: Each run's results.
+        profile: The host whose declarations are read.
+
+    Returns:
+        Variant key -> the arm's pooled footing, for every arm.
+    """
+    return {
+        variant_key: PooledProductionFooting(
+            runs={
+                run.id: None
+                if run.elided_payload_paths
+                else profile.sweepables.production_footing(run, results_by_run.get(run.id, []))
+                for run in members
+            }
+        )
+        for variant_key, members in sorted(arms.keyed.items())
+    }
+
+
 def _design_with_mechanism_confounds(
     design: RealizedDesign,
     results_by_run: Mapping[str, list[EvalResult]],
@@ -7013,6 +7054,7 @@ def assemble_context_bundle(
             known_run_ids=known_run_ids,
             archived_run_ids=None,
             rubric_threshold=profile.bars.pass_threshold(campaign.behavior),
+            profile=profile,
         ),
         frontier_bar_withheld=frontier_bar_withheld,
         telemetry=_telemetry_rollup(runs, results, budget, profile=profile),
@@ -7054,6 +7096,7 @@ def assemble_context_bundle(
         apparatus_confounds=_apparatus_confounds(run_ids, apparatus_levels, profile=profile),
         arm_mechanisms=_arm_mechanisms(arms, results_by_run, mechanisms),
         arm_served_models=_arm_served_models(arms, results_by_run, served),
+        arm_production_footings=_arm_production_footings(arms, results_by_run, profile=profile),
         cells=cells,
         variant_index=variant_index,
         refused_merges=refused_merges,

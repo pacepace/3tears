@@ -187,6 +187,13 @@ apparatus input that moves the candidate off its production footing. A run launc
 model's origin was recorded reads its model as unchecked; a summary assembled before the disclosure
 carries `None`, "nobody checked".
 
+A cost pooled over runs carries every run's footing (`PooledProductionFooting`, run id to footing), and says
+where the runs ran at different footings rather than merging them: a frontier point's cost axis and its
+verdict (`FrontierPoint.production_footing`, when the frontier is given the host's profile; the bundle's
+frontier always is), and each analysis arm (`AnalysisContextBundle.arm_production_footings`), whose cells,
+contrasts and bars on `production_replicating_cost` pool its runs. A code-only report says per arm what its
+runs set, left unchecked, or that they moved nothing.
+
 **A cost pivot says what its cells pool.** `scope_pivot(metric="cost_usd")` averages measuring spend, so each
 cell names the role sets its dollars were summed over (`cost_compositions`, with `cost_compositions_differ` when
 they are not one set: a cheaper cell may only have priced fewer things). A cell pooling a replayed run with a

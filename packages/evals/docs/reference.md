@@ -586,6 +586,7 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`Ordinal`** · dataclass · Mark a `Literal` or `Enum` field as ordered: its levels rank in the order they are declared.
 - **`OrdinalScale`** · model · Ordered but unspaced — `small` / `medium` / `large`.
 - **`PassThreshold`** · dataclass · The 1–5 level a capability criterion must reach for an attempt to pass, for one behavior.
+- **`PooledProductionFooting`** · model · The production footings of the runs a POOLED production-replicating cost was drawn from (#571).
 - **`ProductionFooting`** · model · Which inputs one run held away from the subject's production configuration, read off the host's declarations.
 - **`ProfileRegistrationError`** · exception · Two of a host's registries contradict each other, raised where both are in hand.
 - **`RegistrationError`** · exception · A declaration contradicts what this module promises, raised where it is written.
@@ -986,7 +987,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`freeze_reporter_case`** · function · Freeze a campaign's analysis bundle into a reporter case of `template_id`.
   <br>`freeze_reporter_case(host: EvalHost, *, template_id: str, campaign_id: str, scope_id: str, analysis_id: str | None = None, labels: Sequence[Any] = (), supersedes: Sequence[str] = (), load_template: Callable[[str], EvalTemplate]) -> EvalTestCase`
 - **`frontier`** · function · Rank each subject's variants on quality x cost x latency, cheapest above bar.
-  <br>`frontier(storage: LensStore, scope_id: str, *, list_runs: RunLister, bar: float | str | None = None, subject_id: str | None = None, status: str | None = 'completed') -> dict[str, Any]`
+  <br>`frontier(storage: LensStore, scope_id: str, *, list_runs: RunLister, bar: float | str | None = None, subject_id: str | None = None, status: str | None = 'completed', profile: HostProfile | None = None) -> dict[str, Any]`
 - **`frozen_case_receipt`** · function · Project a stored reporter case onto the receipt a freeze answers with.
   <br>`frozen_case_receipt(test_case: EvalTestCase) -> FrozenReporterCase`
 - **`generate_analysis`** · async function · Generate one campaign's analysis from its context bundle, in one LLM call or two.
@@ -1966,6 +1967,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `apparatus_confounds` | `list[Confound]` | `[]` | Apparatus dimensions that varied across the WHOLE campaign, scanned independently of any lever. |
 | `arm_mechanisms` | `list[ArmMechanismReading]` | `[]` | Each arm's mean of every covariate read as an observed mechanism (today the candidate's reasoning share, `reasoning_ratio`), sorted by arm then covariate. |
 | `arm_served_models` | `list[ArmServedModel]` | `[]` | Which model the provider's responses named as having answered each arm's candidate calls, sorted by arm. |
+| `arm_production_footings` | `dict[str, PooledProductionFooting]` | `{}` | Arm (variant key) -> what each of its runs set away from the subject's production configuration, read off the host's sweepable declarations: `runs` maps run id -> that run's footing (`moved` with levels, `unchecked`, `held`; null for a run nobody could check). |
 | `cell_model_version` | `int` | `11` | Which definition of a cell produced `cells`. |
 | `host_declarations_digest` | `str \| None` | `None` | sha256 of the host's declared sweepables (each one's name, role and blank rule) and world dimension names — the declarations that partition observations into apparatus classes and arms (`host_declarations_digest`). |
 | `cells` | `list[Cell]` | `[]` | Every (variant, apparatus class) that any observation landed in, with how many observations pooled there and over how many cases and repeats per case. |

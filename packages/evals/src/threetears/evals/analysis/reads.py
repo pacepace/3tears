@@ -481,6 +481,7 @@ def frontier(
     bar: float | str | None = None,
     subject_id: str | None = None,
     status: str | None = "completed",
+    profile: HostProfile | None = None,
 ) -> dict[str, Any]:
     """Rank each subject's variants on quality x cost x latency, cheapest above bar.
 
@@ -506,6 +507,10 @@ def frontier(
             are counted as filtered-out rather than dropped silently.
         status: Raw run-status filter, defaulting to ``"completed"`` for the
             same reason as :func:`pivot`. ``"all"`` ranks over every run.
+        profile: The host whose sweepable declarations each point's production-replicating cost is read
+            against (#571): every point and verdict then names what each of its runs set away from the subject's
+            production configuration, read off the WHOLE run. ``None`` leaves that disclosure ``None`` — nobody
+            checked, never "nothing moved".
 
     Returns:
         A JSON-safe :class:`~threetears.evals.analysis.reporting.FrontierResult` dict.
@@ -526,6 +531,10 @@ def frontier(
     # exclusion-accounting reason spelled out in :func:`pivot`.
     all_runs, cohort, archived_run_ids = _corpus_and_cohort(list_runs, scope_id)
     runs = [run for run in cohort if run.status == status] if status else cohort
+    if profile is not None:
+        # A listing elides host payload, and a payload-carried lever read off it would report as the subject's
+        # own setting, so a run whose footing is read is read whole (`run_summary` does the same).
+        runs = [(storage.load_eval_run(run.id, scope_id) or run) if run.elided_payload_paths else run for run in runs]
     results = storage.query_eval_results(scope_id)
     try:
         result = compute_frontier(
@@ -535,6 +544,7 @@ def frontier(
             subject_id=subject,
             known_run_ids={run.id for run in all_runs},
             archived_run_ids=archived_run_ids,
+            profile=profile,
         )
     except FrontierError as e:
         raise ValidationFailedError(str(e)) from e

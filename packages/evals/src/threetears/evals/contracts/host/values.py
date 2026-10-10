@@ -306,4 +306,64 @@ class ProductionFooting(BaseModel):
         )
 
 
-__all__ = ["IntervalScale", "NominalScale", "OrdinalScale", "ProductionFooting", "Scale", "SweepableValue"]
+class PooledProductionFooting(BaseModel):
+    """The production footings of the runs a POOLED production-replicating cost was drawn from (#571).
+
+    A frontier point's cost axis and an analysis arm's cost each mean one cost over several runs, and each run
+    may have set different inputs away from the subject's production configuration — or one run may have been
+    read and another not. So the pooled figure carries every run's own :class:`ProductionFooting`, keyed by run,
+    and says where they disagree rather than merging them into one claim none of the runs made.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    runs: dict[str, ProductionFooting | None] = Field(
+        default_factory=dict,
+        description=(
+            "Run id -> that run's production footing, for every run the pooled cost was drawn from. None where "
+            "nobody checked the run (it was read with its host payload elided), which is never 'nothing moved'."
+        ),
+    )
+
+    @property
+    def moved_nothing(self) -> bool:
+        """True only when every pooled run was checked and moved nothing."""
+        return bool(self.runs) and all(footing is not None and footing.moved_nothing for footing in self.runs.values())
+
+    def sentence(self) -> str:
+        """The pooled disclosure in words, grouping runs that ran at one footing.
+
+        Returns:
+            One sentence per footing the pooled runs ran at, naming its runs where they differ, and the runs
+            nobody checked.
+        """
+        groups: dict[str, tuple[ProductionFooting, list[str]]] = {}
+        unread: list[str] = []
+        for run_id, footing in sorted(self.runs.items()):
+            if footing is None:
+                unread.append(run_id)
+                continue
+            key = canonical_digest(footing.model_dump(mode="json"))
+            groups.setdefault(key, (footing, []))[1].append(run_id)
+        parts: list[str] = []
+        if len(groups) == 1 and not unread:
+            ((footing, run_ids),) = groups.values()
+            parts.append(f"every one of the {len(run_ids)} run(s) pooled here: " + footing.sentence())
+        else:
+            if len(groups) > 1:
+                parts.append(f"the runs pooled here ran at {len(groups)} different production footings")
+            parts += [f"run(s) {', '.join(run_ids)}: {footing.sentence()}" for footing, run_ids in groups.values()]
+            if unread:
+                parts.append(f"nobody checked run(s) {', '.join(unread)}, so whether they moved anything is unknown")
+        return "; ".join(parts)
+
+
+__all__ = [
+    "IntervalScale",
+    "NominalScale",
+    "OrdinalScale",
+    "PooledProductionFooting",
+    "ProductionFooting",
+    "Scale",
+    "SweepableValue",
+]
