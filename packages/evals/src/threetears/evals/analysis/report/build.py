@@ -21,11 +21,11 @@ from itertools import chain
 from threetears.evals.analysis.agreement import tier_sentence
 from threetears.evals.schema.models import CHECK_REFUSED_UNDER_CURRENT_GRAMMAR
 from threetears.evals.analysis.arms import ArmTable, arm_names, arm_table, arm_table_of, short_digest, surface_order
-from threetears.evals.analysis.bundle.assemble import (
+from threetears.evals.analysis.bundle.assemble import bundle_decision_surface
+from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
     FamilyComparison,
     GoalCheckProofReading,
-    bundle_decision_surface,
     exploratory_disclosure,
 )
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref

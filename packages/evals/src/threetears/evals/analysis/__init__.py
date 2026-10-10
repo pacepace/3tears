@@ -64,18 +64,20 @@ from threetears.evals.analysis.judge_drift import DriftVerdict, JudgeDrift, Judg
 from threetears.evals.analysis.arms import ArmTable, cell_label, multi_rig_variants, short_digest
 from threetears.evals.analysis.bar_proposals import BaselineBarProposals, propose_bars
 from threetears.evals.analysis.bundle.assemble import (
-    AnalysisContextBundle,
-    JudgeChange,
-    JudgeDriftLink,
-    JudgeIdentityLevel,
-    BundleInspection,
-    GoalCheckProofReading,
     InsightStanding,
     assemble_context_bundle,
     component_carrier,
     insight_standing,
     measure_movement,
     variant_key_of_run,
+)
+from threetears.evals.analysis.bundle.schema import (
+    AnalysisContextBundle,
+    JudgeChange,
+    JudgeDriftLink,
+    JudgeIdentityLevel,
+    BundleInspection,
+    GoalCheckProofReading,
 )
 from threetears.evals.analysis.campaigns import (
     DeclarableAxes,
@@ -218,11 +220,11 @@ from threetears.evals.analysis.service import (
 from threetears.evals.analysis.stats import EQUIVALENCE_TEST_NAME, PAIRED_TEST_NAME, ChangeLabel
 from threetears.evals.analysis.surface_table import SurfaceTable
 from threetears.evals.analysis.arms import ArmLevel, ArmMeasurement, ArmRow, ArmStatus
-from threetears.evals.analysis.bundle.assemble import (
+from threetears.evals.analysis.bundle.assemble import CampaignReadStore
+from threetears.evals.analysis.bundle.schema import (
     AliasedFactors,
     ArmMechanismReading,
     ArmServedModel,
-    CampaignReadStore,
     CellCoordinate,
     ComparedCell,
     ComparisonFamily,

@@ -22,7 +22,8 @@ import pytest
 from pydantic import BaseModel, Field
 
 from threetears.evals.analysis import DisclosureBlock, build_code_only_report
-from threetears.evals.analysis.bundle.assemble import AnalysisContextBundle, assemble_context_bundle
+from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.generator import generate_analysis
 from threetears.evals.analysis.reads import run_summary
 from threetears.evals.analysis.reporting import FrontierPoint, compute_frontier

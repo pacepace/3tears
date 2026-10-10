@@ -23,7 +23,7 @@ import json
 
 from threetears.evals.actions import Caller, MountedTool, eval_catalogue, standard_tools
 from threetears.evals.analysis import assemble_context_bundle
-from threetears.evals.analysis.bundle.assemble import (
+from threetears.evals.analysis.bundle.schema import (
     NO_DESIGN_EXPLORATORY,
     NO_QUESTION_EXPLORATORY,
     AnalysisContextBundle,

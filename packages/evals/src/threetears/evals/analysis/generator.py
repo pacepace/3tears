@@ -72,13 +72,12 @@ from pydantic import BaseModel, Field, ValidationError
 
 from threetears.evals.analysis import viz_refs
 from threetears.evals.analysis.arms import arm_names, contradicted_arms, writer_arms
-from threetears.evals.analysis.bundle.assemble import (
+from threetears.evals.analysis.bundle.assemble import bundle_decision_surface, insight_restatement_key
+from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
     FamilyComparison,
     LeverCoverageInput,
     RunSummary,
-    bundle_decision_surface,
-    insight_restatement_key,
 )
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal, UnresolvableReference

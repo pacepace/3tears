@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle, build_code_only_report
-from threetears.evals.analysis.bundle.assemble import INTERACTION_ALIASING_UNCHECKED
+from threetears.evals.analysis.bundle.schema import INTERACTION_ALIASING_UNCHECKED
 from threetears.evals.analysis.report import DisclosureBlock
 from threetears.evals.kernel import EvalCampaign
 from packages.evals.tests.factories import memory_storage

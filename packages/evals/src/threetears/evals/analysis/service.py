@@ -32,12 +32,8 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
-from threetears.evals.analysis.bundle.assemble import (
-    BundleInspection,
-    CampaignReadStore,
-    assemble_context_bundle,
-    superseding_insights,
-)
+from threetears.evals.analysis.bundle.assemble import CampaignReadStore, assemble_context_bundle, superseding_insights
+from threetears.evals.analysis.bundle.schema import BundleInspection
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
 from threetears.evals.analysis.generator import MAX_GENERATION_CALLS, GenerationTally, build_user_message, first_request
 from threetears.evals.analysis.generator import generate_analysis as _generate_analysis
@@ -67,7 +63,7 @@ from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
-    from threetears.evals.analysis.bundle.assemble import AnalysisContextBundle
+    from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
     from threetears.evals.analysis.reporter_bank import ReporterCalibration, ReporterCaseBank
     from threetears.evals.analysis.viz.intent import ChartIntent
     from threetears.evals.kernel.campaign import AttemptOutcome, EvalAnalysis, EvalCampaign, EvalInsight
