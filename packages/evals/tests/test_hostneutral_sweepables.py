@@ -167,7 +167,9 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # The bundle also carries the host declarations digest (#575), and bounds its prior insights, refused merges
     # and next experiments, each with an omitted count (#614, #572). Every measure in the catalog carries a
     # reader-facing name (#627), and a level the campaign declared a name for is displayed by it in the variant
-    # index (#581); neither moves a key.
+    # index (#581); neither moves a key. Each frontier point names what its composite was meaned over and marks a
+    # ragged pool (#638), every pass^k records the behavior's declared pass threshold it was computed at (#642),
+    # and an attempt with nothing for pass^k to conjoin is left out as unmeasured rather than read as a fail (#688).
     ((47, 11), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
 )
 

@@ -46,10 +46,11 @@ from threetears.evals.analysis.reporting import (
 )
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
-from threetears.evals.contracts.host import EvalHost
+from threetears.evals.contracts.host import DEFAULT_PASS_THRESHOLD, EvalHost, pass_threshold_label
 from threetears.evals.contracts.metrics import measure_title
 from threetears.evals.contracts.models import EvalRun, EvalTemplate
 from threetears.evals.contracts.out_of_run import OutOfRunPurpose, OutOfRunSpend
+from threetears.evals.contracts.scoring import CompositeBasis
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.runs import LaunchArguments
 from threetears.evals.run.launch import ArmOutcome, ArmPrice, ArmQuote, ArmVerdict, LaunchPricer, quote_launch
@@ -840,11 +841,16 @@ def pivot_text(table: PivotTable) -> str:
             f"; pools {key} versions {', '.join(f'v{version}' for version in found)}"
             for key, found in cell.identity_versions.items()
         )
+        basis = (
+            f"; meaned over {_basis_sets(cell.composite_basis.model_dump())}"
+            if table.composite_bases_differ and cell.composite_basis is not None
+            else ""
+        )
         withheld = f"; withheld: it {cell.withheld}" if cell.withheld else ""
         substituted = f"; {cell.substitution_disclosure}" if cell.substitution_disclosure else ""
         lines.append(
             f"- {cell.row} / {cell.column}: {format_number(cell.value)} ({cell.status}; n={cell.n}, "
-            f"{cell.n_cases} case(s){spread}{unmeasured}){roles}{versions}{withheld}{substituted}"
+            f"{cell.n_cases} case(s){spread}{unmeasured}){roles}{basis}{versions}{withheld}{substituted}"
             f"{_predicted(cell.predicted, cell.n_unplanned)}"
         )
     if not table.cells:
@@ -860,6 +866,11 @@ def pivot_text(table: PivotTable) -> str:
         lines.append(
             "cost compositions differ: these dollars were not all summed over the same roles, so a cheaper cell "
             "may only have priced fewer things — each cell names what it covered"
+        )
+    if table.composite_bases_differ:
+        lines.append(
+            "ragged composite: these composites were not all meaned over the same dimensions, so a difference "
+            "between cells may be a difference in what was averaged — each cell names the sets it pooled"
         )
     if table.cassette_mode_disclosure:
         lines.append(table.cassette_mode_disclosure)
@@ -897,6 +908,7 @@ def history_text(result: HistoryResult) -> str:
         lines.append(f"## {series.model} — subject {series.subject_label or series.subject_id}")
         if series.identity_version_disclosure:
             lines.append(series.identity_version_disclosure)
+        previous_basis: CompositeBasis | None = None
         for point in series.points:
             flag = point.regression
             verdict = f"; {flag.label} vs previous ({flag.test})" if flag is not None else ""
@@ -905,9 +917,21 @@ def history_text(result: HistoryResult) -> str:
             )
             epoch = ", suite changed here" if point.epoch_boundary else ""
             short = f"; {point.completeness_disclosure}" if point.completeness_disclosure else ""
+            ragged = (
+                f"; {point.composite_basis.disclosure()}"
+                if point.composite_basis is not None and point.composite_basis.ragged
+                else ""
+            )
+            if (
+                point.composite_basis is not None
+                and previous_basis is not None
+                and point.composite_basis.bases != previous_basis.bases
+            ):
+                ragged += f"; composite basis changed here, to {_basis_sets(point.composite_basis.model_dump())}"
+            previous_basis = point.composite_basis or previous_basis
             lines.append(
                 f"- {point.created_at} {point.run_id}: {format_number(point.value)} (n={point.n}, "
-                f"{point.n_cases} case(s)){baseline}{epoch}{verdict}{short}"
+                f"{point.n_cases} case(s)){baseline}{epoch}{verdict}{short}{ragged}"
             )
     if not result.series:
         lines.append("- no series")
@@ -957,6 +981,14 @@ def export_text(export: ScoreExport) -> str:
     return "\n".join(lines) + "\n\n" + export.body
 
 
+def _basis_sets(basis: Mapping[str, Any] | None) -> str:
+    """A pooled composite's dimension sets, as text: ``{a, b} | {c}``, marked ragged when there are several."""
+    if not basis:
+        return "nothing"
+    sets = " | ".join("{" + ", ".join(dims) + "}" for dims in basis.get("bases", [])) or "{}"
+    return f"{sets} (ragged)" if basis.get("ragged") else sets
+
+
 def runs_compared_text(compared: RunsCompared) -> str:
     """Two runs compared as text: the arms, each reading with its delta and test, then every disclosure."""
     view = compared.comparison
@@ -966,7 +998,8 @@ def runs_compared_text(compared: RunsCompared) -> str:
         f"run {compared.baseline_run_id} ({arm.get('model_a')}) against run {compared.candidate_run_id} "
         f"({arm.get('model_b')}); "
         + (f"paired over {arm.get('n_pairs')} shared case(s)" if paired else "unpaired: no case scored in both"),
-        f"pass^k at k={format_number(arm.get('k'))}: {format_number(arm.get('pass_hat_k_a'))} vs "
+        f"{pass_threshold_label(arm.get('k'), view.get('rubric_threshold', DEFAULT_PASS_THRESHOLD))}: "
+        f"{format_number(arm.get('pass_hat_k_a'))} vs "
         f"{format_number(arm.get('pass_hat_k_b'))} (delta {format_signed(arm.get('pass_hat_k_delta'))}; "
         f"{arm.get('count_a')} vs {arm.get('count_b')} case(s))",
         f"mean composite: {format_number(arm.get('composite_a'))} vs {format_number(arm.get('composite_b'))} "
@@ -980,8 +1013,26 @@ def runs_compared_text(compared: RunsCompared) -> str:
             hedges=True,
         ),
     ]
+    for run_id, key in (
+        (compared.baseline_run_id, "pass_hat_k_unmeasured_reason_a"),
+        (compared.candidate_run_id, "pass_hat_k_unmeasured_reason_b"),
+    ):
+        if arm.get(key):
+            lines.append(f"pass^k of run {run_id} is unmeasured: {arm[key]}")
     if view.get("composite_comparability"):
         lines.append(str(view["composite_comparability"]))
+    if arm.get("composite_bases_differ"):
+        lines.append(
+            "composite bases differ: "
+            + "; ".join(
+                f"run {run_id} meaned over {_basis_sets(arm.get(key))}"
+                for run_id, key in (
+                    (compared.baseline_run_id, "composite_basis_a"),
+                    (compared.candidate_run_id, "composite_basis_b"),
+                )
+            )
+            + " — the delta is partly a difference in what was averaged, not only in what was measured"
+        )
     lines += _completeness(compared.completeness_disclosures)
     lines += [
         sentence for sentence in (compared.measurement_window_disclosure, compared.cassette_mode_disclosure) if sentence

@@ -1124,6 +1124,31 @@ _SEED: tuple[MetricDescriptor, ...] = (
         ),
     ),
     _d(
+        name="n_no_criterion_excluded",
+        reader_name="Iterations with no pass criterion",
+        data_type="numeric",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="end_to_end",
+        unit="iterations",
+        description=(
+            "Iterations left out of pass^k because they carried nothing for it to conjoin: no goal-state check "
+            "and no judge, as a classifier scored only against its expected label. Unmeasured, never a fail; "
+            "where every iteration is one, pass_hat_k is null and pass_hat_k_unmeasured_reason says why."
+        ),
+    ),
+    _d(
+        name="pass_hat_k_unmeasured_reason",
+        reader_name="Why pass^k is unmeasured",
+        data_type="text",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="end_to_end",
+        description=(
+            "Why pass_hat_k is null when the reason is that no iteration carried a pass criterion; null otherwise."
+        ),
+    ),
+    _d(
         name="n_cases_at_k",
         reader_name="Cases scored k times",
         data_type="numeric",
@@ -1577,7 +1602,12 @@ _SEED: tuple[MetricDescriptor, ...] = (
         description=(
             "pass^k (τ-bench): the chance that k attempts at a case ALL pass — never pass@k, the chance that at "
             "least one does. An attempt passes only if it cleared every capability rubric dimension and every "
-            "goal-state check; a boundary dimension is a guardrail and is decided apart. Unbiased at any depth; infra-excluded attempts count toward no case's n."
+            "goal-state check; a boundary dimension is a guardrail and is decided apart. A 1-5 criterion clears at "
+            "or above the pass threshold recorded beside the figure (`rubric_threshold`): the behavior's "
+            "host-declared threshold (`PassThreshold`, registered with its bars), 3 where it declares none; a "
+            "pass/fail criterion clears on its pass. An attempt with no goal-state check and no judge has nothing to "
+            "conjoin and is left out (n_no_criterion_excluded), never failed; with none measurable there is no "
+            "pass^k. Unbiased at any depth; infra-excluded attempts count toward no case's n."
         ),
     ),
     _d(
@@ -1888,7 +1918,12 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
 )
 
-_SEED = _SEED + _compare_trio("pass_hat_k", "Reliability (pass^k at the shared depth k)", "scenario_bound")
+_SEED = _SEED + _compare_trio(
+    "pass_hat_k",
+    "Reliability (pass^k at the shared depth k, each 1-5 criterion at or above the compare's recorded "
+    "rubric_threshold of 5)",
+    "scenario_bound",
+)
 _SEED = _SEED + _compare_trio("composite", "Mean composite quality", "judge_mediated")
 
 #: The engine's own measures, each one's descriptor keyed by its name.

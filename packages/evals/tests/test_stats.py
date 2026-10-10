@@ -551,13 +551,13 @@ class TestEquivalence:
         assert verdict.label == "improved"
         assert verdict.equivalence_p is not None and verdict.equivalence_p < SIGNIFICANCE_ALPHA
 
-    @pytest.mark.parametrize(("n_pairs", "label"), [(5, "not_separated"), (6, "equivalent")])
-    def test_identical_samples_are_equivalent_only_from_the_pair_floor(self, n_pairs, label) -> None:
-        """Zero spread has no t; the deterministic-gap floor governs it, so a coincidence of a coarse scale is not a finding."""
+    @pytest.mark.parametrize(("n_pairs", "label", "p"), [(4, "not_separated", None), (5, "equivalent", 2.0**-5)])
+    def test_identical_samples_are_equivalent_once_the_exact_one_sided_p_reaches_alpha(self, n_pairs, label, p) -> None:
+        """Zero spread has no t; the exact one-sided sign-flip test decides, 2^-n, and below α's reach nothing is claimed."""
         verdict = self._change([0.5] * n_pairs, [0.5] * n_pairs, margin=0.05)
 
         assert verdict.label == label
-        assert verdict.equivalence_p is None
+        assert verdict.equivalence_p == p
 
     def test_fewer_than_two_pairs_runs_no_equivalence_test(self) -> None:
         verdict = self._change([0.5], [0.5], margin=0.05)

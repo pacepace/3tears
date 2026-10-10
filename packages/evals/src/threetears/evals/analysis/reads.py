@@ -61,6 +61,7 @@ from threetears.evals.analysis.reporting import (
     cross_subject_disclosure,
     export_projection,
     normalize_bar,
+    pooled_composite_basis,
     project_score_records,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, composite_significance, difference_interval
@@ -1105,14 +1106,16 @@ def compare_two_runs(
 
     Returns:
         ``{"run_id_a", "run_id_b", "comparison_basis",
-        "composite_comparability", "comparison": {"arm": {...},
+        "composite_comparability", "rubric_threshold", "comparison": {"arm": {...},
         "per_template": [...]}, "subject_detail_a",
         "subject_detail_b"}``. ``comparison_basis`` says only whether the
         two runs share a template — it is NOT the significance basis.
         ``composite_comparability`` is the withholding disclosure, or
         ``None`` when the composites are comparable.
         The ``arm`` row carries ``model_{a,b}``, ``k``, ``pass_hat_k_{a,b,delta}``,
-        ``composite_{a,b,delta}``, ``composite_interval`` (at ``interval_level``),
+        ``composite_{a,b,delta}``, ``composite_basis_{a,b}`` (what each composite was meaned over, ragged
+        when its results carried different dimension sets), ``composite_bases_differ``,
+        ``composite_interval`` (at ``interval_level``),
         ``n_cases_{a,b}``, ``n_left_out_{a,b}``, ``count_{a,b}``, ``paired``, ``n_pairs``,
         ``hedges_g``, ``p``, ``significant`` (nulls where a run scored nothing,
         a test is undefined, or the composites are not comparable).
@@ -1193,6 +1196,17 @@ def compare_two_runs(
     # own it left out. The same rule a campaign contrast follows (`bundle._compare`).
     composite_a = sum(sample_a) / len(sample_a) if sample_a else None
     composite_b = sum(sample_b) / len(sample_b) if sample_b else None
+    # What each composite above was meaned over, read over the same cases (#638): a side pooling results scored on
+    # different dimension sets is ragged, and two sides meaned over different sets differ partly in what was
+    # averaged. Disclosed, not withheld — the sets can differ for a reason the reader knows to be harmless.
+    cases_a = set(paired_cases) if shared_cases else {tc for (_m, r, tc) in per_case_a if r == run_a_id}
+    cases_b = set(paired_cases) if shared_cases else {tc for (_m, r, tc) in per_case_b if r == run_b_id}
+    basis_a = pooled_composite_basis(
+        [r for r in results_a if r.model == model_a and r.test_case_id in cases_a] if sample_a else []
+    )
+    basis_b = pooled_composite_basis(
+        [r for r in results_b if r.model == model_b and r.test_case_id in cases_b] if sample_b else []
+    )
     n_scored_a = sum(1 for (_m, r, _tc) in per_case_a if r == run_a_id)
     n_scored_b = sum(1 for (_m, r, _tc) in per_case_b if r == run_b_id)
     interval: tuple[float, float] | None = None
@@ -1211,9 +1225,19 @@ def compare_two_runs(
         "pass_hat_k_a": pass_hat_k_a,
         "pass_hat_k_b": pass_hat_k_b,
         "pass_hat_k_delta": _score_delta(pass_hat_k_a, pass_hat_k_b),
+        # Why a side has no pass^k when none of its attempts had a criterion to pass (#688); None otherwise.
+        "pass_hat_k_unmeasured_reason_a": entry_a.get("pass_hat_k_unmeasured_reason") if entry_a else None,
+        "pass_hat_k_unmeasured_reason_b": entry_b.get("pass_hat_k_unmeasured_reason") if entry_b else None,
         "composite_a": composite_a,
         "composite_b": composite_b,
         "composite_delta": _score_delta(composite_a, composite_b) if composites_comparable else None,
+        # What each composite was meaned over (`CompositeBasis` as a dict: dimensions, bases, ragged), and whether
+        # the two sides' dimension sets differ — then the delta is partly a difference in what was averaged.
+        "composite_basis_a": basis_a.model_dump() if basis_a is not None else None,
+        "composite_basis_b": basis_b.model_dump() if basis_b is not None else None,
+        "composite_bases_differ": basis_a is not None
+        and basis_b is not None
+        and (basis_a.ragged or basis_b.ragged or basis_a.bases != basis_b.bases),
         # The interval on `composite_delta` from the same test as `p`, at the engine's interval level. None
         # wherever no test ran: too few cases, no spread, or composites that are not comparable.
         "composite_interval": None if interval is None else list(interval),
@@ -1250,6 +1274,8 @@ def compare_two_runs(
         # unpaired, so read each row's own `paired` for that.
         "comparison_basis": "shared-template-intersection" if shared_template else "independent",
         "composite_comparability": comparability,
+        # The 1–5 level a criterion had to reach in both pass^k figures (#642).
+        "rubric_threshold": rubric_threshold,
         "comparison": {"arm": arm, "per_template": per_template},
         "subject_detail_a": subject_detail(run_a),
         "subject_detail_b": subject_detail(run_b),

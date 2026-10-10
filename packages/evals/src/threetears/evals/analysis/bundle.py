@@ -98,6 +98,7 @@ from threetears.evals.analysis.reporting import (
     compute_frontier,
     compute_program_budget,
     decompose_total_ms,
+    pooled_composite_basis,
     lever_level,
     measurement_window,
     measurement_window_disclosure,
@@ -6007,20 +6008,28 @@ def _within_level_dispersion(
         lever: The lever to group by.
         effective_by_run: Each run's resolved levers, keyed by run id.
 
+    **A ragged pool says so in the text** (#638): where the composites behind the spread were meaned over
+    different dimension sets (:func:`~threetears.evals.analysis.reporting.pooled_composite_basis`), the spread
+    is partly the difference between those sets, and the text carries the sets beside the number.
+
     Returns:
         ``"±"`` and the mean within-level SEM in :func:`~threetears.evals.analysis.numbers.format_number`'s spelling,
-        or ``"unscored"``.
+        followed by the ragged-composite disclosure in parentheses where the pool is ragged, or ``"unscored"``.
     """
     by_level: dict[str, tuple[list[float], list[str]]] = {}
+    pooled: list[ScoreRecord] = []
     for record in composite_records:
         if record.value is not None and (level := _lever_value(record, lever, effective_by_run)) is not None:
             values, cases = by_level.setdefault(level, ([], []))
             values.append(record.value)
             cases.append(record.test_case_id)
+            pooled.append(record)
     sems = [sem for values, cases in by_level.values() if (sem := clustered_standard_error(values, cases)) is not None]
     if not sems:
         return "unscored"
-    return f"±{format_number(sum(sems) / len(sems))}"
+    basis = pooled_composite_basis(pooled)
+    ragged = f" ({basis.disclosure()})" if basis is not None and basis.ragged else ""
+    return f"±{format_number(sum(sems) / len(sems))}{ragged}"
 
 
 def _lever_k_floor(
@@ -6909,7 +6918,15 @@ def assemble_context_bundle(
         # Called without them, this surface was blind to exactly the difference a judge A/B is
         # made of while the bundle beside it reported that difference from the same readers.
         comparison=compute_comparison_sets(runs, results=results, profile=profile),
-        frontier=compute_frontier(runs, results, bar=frontier_bar, known_run_ids=known_run_ids),
+        # pass^k at the behavior's declared threshold (#642), recorded on the frontier beside every figure,
+        # and ranked against the campaign's bar on pass^k when it declares one (#679).
+        frontier=compute_frontier(
+            runs,
+            results,
+            bar=frontier_bar,
+            known_run_ids=known_run_ids,
+            rubric_threshold=profile.bars.pass_threshold(campaign.behavior),
+        ),
         frontier_bar_withheld=frontier_bar_withheld,
         telemetry=_telemetry_rollup(runs, results, budget, profile=profile),
         coverage=coverage,
@@ -8008,7 +8025,9 @@ def _compare(
     # The equivalence test only where the separation test produced a p, so each equivalence hypothesis has
     # its comparison's separation hypothesis beside it in the family (see holm_adjust's max_true).
     margin = threshold if paired and threshold and p_raw is not None else None
-    _, equivalence_p_raw = paired_equivalence([y - x for x, y in zip(a, b)], margin)
+    # The differences of exact values, so a constant shift reaches the exact one-sided test rather than either
+    # vanishing from the family (no t, no p) or carrying a float residue a t-test reads as a tiny spread.
+    _, equivalence_p_raw = paired_equivalence([exact_decimal(y) - exact_decimal(x) for x, y in zip(a, b)], margin)
     delta = None if mean_a is None or mean_b is None else mean_b - mean_a
     comparison = FamilyComparison(
         reading=reading[0],
@@ -8801,6 +8820,7 @@ def bundle_decision_surface(bundle: AnalysisContextBundle) -> DecisionSurface:
         dimensions=cell_dimension_facts(bundle),
         time_axis=bundle.time_axis,
         frontier_dominance=_frontier_dominance(bundle.frontier),
+        rubric_threshold=bundle.frontier.rubric_threshold,
         guardrails=bundle.guardrails,
     )
 

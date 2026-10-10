@@ -732,6 +732,14 @@ class DecisionSurface(EvalDocumentModel):
             "surface frozen before standings were carried; a chart drawn from one states no domination."
         ),
     )
+    rubric_threshold: int = Field(
+        default=3,
+        description=(
+            "The 1–5 level a capability criterion had to reach for an attempt to pass in the pass^k the frontier "
+            "standings were decided on: the behavior's host-declared pass threshold, 3 where it declares none. A "
+            "surface frozen before this was recorded reads 3, the threshold every pass^k was computed at then."
+        ),
+    )
     guardrails: GuardrailReadings | None = Field(
         default=None,
         description=(

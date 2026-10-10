@@ -4603,7 +4603,11 @@ def _fr_result(
     if infra_error is not None:
         overrides["infra_error"] = infra_error
     if candidate_error is not None:
-        overrides.update(candidate_error=candidate_error, rubric_scores=[], goal_state_outcomes=[])
+        # The run pinned a judge, as every judged run does: the judge never ran on a failed candidate, but its
+        # criteria were asked, so the failure is a failed attempt rather than one with nothing to pass (#688).
+        overrides.update(
+            candidate_error=candidate_error, rubric_scores=[], goal_state_outcomes=[], judge_model="judge-model"
+        )
     else:
         overrides.update(
             rubric_scores=[RubricScore(dim="reply.quality", score=4 if passes else 2, scale="ordinal")],

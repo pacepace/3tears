@@ -37,7 +37,13 @@ package imports its own modules directly.
 from __future__ import annotations
 
 from threetears.evals.contracts.host.apparatus import ApparatusError
-from threetears.evals.contracts.host.bars import Bar, BarRegistry
+from threetears.evals.contracts.host.bars import (
+    DEFAULT_PASS_THRESHOLD,
+    Bar,
+    BarRegistry,
+    PassThreshold,
+    pass_threshold_label,
+)
 from threetears.evals.contracts.host.eval_host import CompletionClients, CompletionRole, EvalHost
 from threetears.evals.contracts.host.kinds import (
     ActsOn,
@@ -134,6 +140,9 @@ __all__ = [
     "ActsOn",
     "ApparatusError",
     "Bar",
+    "DEFAULT_PASS_THRESHOLD",
+    "PassThreshold",
+    "pass_threshold_label",
     "BarProposal",
     "BarRegistrationError",
     "BarRegistry",

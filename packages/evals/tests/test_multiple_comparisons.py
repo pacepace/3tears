@@ -482,6 +482,23 @@ def test_equivalent_is_claimed_only_by_the_equivalence_test_against_a_declared_m
         assert comparison.equivalence_p_raw is None and comparison.equivalence_p_adjusted is None
 
 
+@pytest.mark.parametrize("cases", [6, 12])
+def test_two_arms_alike_on_every_case_are_shown_equivalent_by_the_exact_test(cases: int) -> None:
+    """No spread, so no t: the exact one-sided sign-flip p (2^-n) joins the Holm family rather than dropping out of it.
+
+    The equivalence test once returned no p for a difference with no spread, so the comparison could never read
+    ``equivalent`` however many cases agreed, and the family silently lost the hypothesis.
+    """
+    alike = ([0.8] * cases, [0.8] * cases)
+    family = _family(_bundle([], accuracy=alike, cases=cases, profile=_accuracy_threshold(0.05)))
+    (comparison,) = [c for c in family.comparisons if c.name == "field_accuracy"]
+
+    assert (comparison.test, comparison.p_raw) == ("paired", 1.0)
+    assert comparison.equivalence_p_raw == 2.0**-cases
+    assert family.n_equivalence_tests == 1
+    assert comparison.verdict == "equivalent"
+
+
 def test_the_means_and_counts_are_over_the_cases_the_test_read_and_the_dropped_ones_are_counted() -> None:
     """The contrast ran nine of the control's twelve cases: the test pairs over nine, and so do its means."""
     accuracy = ([0.5] * 9 + [0.9] * 3, [0.6, 0.62, 0.61, 0.6, 0.63, 0.6, 0.61, 0.62, 0.6] + [0.0] * 3)

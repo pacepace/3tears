@@ -33,6 +33,7 @@ from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     composite_significance,
     difference_interval,
+    exact_decimal,
     holm_adjust,
     paired_equivalence,
 )
@@ -409,7 +410,7 @@ def family_verdicts(
         margin = margins[index] if margins is not None else None
         equivalence_p = None
         if paired and margin and p_raw is not None:
-            equivalence_p = paired_equivalence([y - x for x, y in zip(a, b)], margin)[1]
+            equivalence_p = paired_equivalence([exact_decimal(y) - exact_decimal(x) for x, y in zip(a, b)], margin)[1]
         tested.append((p_raw, equivalence_p, delta, a, b, paired))
     m = sum(1 for p_raw, *_ in tested if p_raw is not None)
     raw = [p for p_raw, equivalence_p, *_ in tested for p in (p_raw, equivalence_p) if p is not None]

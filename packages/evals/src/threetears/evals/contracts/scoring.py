@@ -43,6 +43,7 @@ from collections.abc import Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, TypedDict
 
+from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.models import (
     AsyncDelivery,
     CellTermination,
@@ -265,6 +266,74 @@ def result_composite(result: EvalResult) -> float | None:
     return sum(s.normalized for s in scores) / len(scores)
 
 
+def composite_basis(result: EvalResult) -> list[str] | None:
+    """The dimensions one result's composite was meaned over, sorted — None exactly when it has no composite.
+
+    Read off the same scores :func:`result_composite` means (:func:`capability_scores`), so the basis names
+    what the arithmetic used rather than what the template declares. ``[]`` is a composite meaned over
+    nothing: a candidate failure's ``0.0`` is a score by policy, not an average of any dimension.
+
+    Args:
+        result: The eval result.
+
+    Returns:
+        The sorted dimension names, ``[]`` for a composite set by policy, or None when there is no composite.
+    """
+    if result_composite(result) is None:
+        return None
+    return sorted({score.dim for score in capability_scores(result)})
+
+
+class CompositeBasis(EvalBaseModel):
+    """What a pooled composite was meaned over: the union of its members' bases, and whether they agreed.
+
+    A composite is a mean across whatever capability dimensions each result carried, so two results scored on
+    different dimension sets each give a number on 0-1 whose mean is arithmetic over two different questions.
+    ``ragged`` marks that pool where the number is shown; ``bases`` names each distinct set so a reader can see
+    what was pooled. A member meaned over nothing — a candidate failure's ``0.0``, set by policy — names no set
+    and does not make a pool ragged: it is a floor on the same scale, not a mean over other dimensions.
+    """
+
+    #: Every dimension any pooled composite was meaned over, sorted.
+    dimensions: list[str]
+    #: The distinct non-empty dimension sets the pooled composites were meaned over, sorted.
+    bases: list[list[str]]
+    #: True when the pool's members were meaned over more than one dimension set.
+    ragged: bool
+
+    def disclosure(self) -> str | None:
+        """The sentence a ragged pool carries where its number is shown, or None when the bases agree."""
+        if not self.ragged:
+            return None
+        sets = " | ".join("{" + ", ".join(basis) + "}" for basis in self.bases)
+        return (
+            f"ragged composite: pooled over {len(self.bases)} different dimension sets ({sets}), so the mean "
+            "averages different questions and is not one measurement"
+        )
+
+
+def pool_composite_bases(bases: Iterable[Sequence[str] | None]) -> CompositeBasis | None:
+    """The basis of a composite pooled from members with these bases — the one reading every pooled surface uses.
+
+    Args:
+        bases: Each pooled member's basis (:func:`composite_basis`, or
+            :attr:`~threetears.evals.analysis.reporting.ScoreRecord.dimension_basis` on a composite row); None
+            for a member with no composite, which pooled nothing.
+
+    Returns:
+        The pooled basis, or None when no member carried a composite.
+    """
+    present = [tuple(basis) for basis in bases if basis is not None]
+    if not present:
+        return None
+    distinct = sorted({basis for basis in present if basis})
+    return CompositeBasis(
+        dimensions=sorted({dim for basis in distinct for dim in basis}),
+        bases=[list(basis) for basis in distinct],
+        ragged=len(distinct) > 1,
+    )
+
+
 def _result_passes(result: EvalResult, *, rubric_threshold: int) -> bool:
     """A result passes iff every goal-state and every capability rubric dim cleared the bar.
 
@@ -379,6 +448,36 @@ def pass_hat_k_at(curve: Sequence[PassHatPoint], k: int) -> PassHatPoint:
     return {"k": k, "pass_hat_k": None, "n_cases": 0}
 
 
+#: Why a pass^k has no value when every attempt behind it had nothing to pass (#688).
+NO_PASS_CRITERION_REASON = (
+    "no attempt carried a pass criterion — no goal-state check and no judge — so there is nothing for pass^k to "
+    "conjoin: it is unmeasured, not 0; read the arm's own grade (its host measures, e.g. accuracy) instead"
+)
+
+
+def has_pass_criterion(result: EvalResult) -> bool:
+    """Whether pass^k has anything to conjoin on this result: a goal-state check, a capability criterion, or a judge.
+
+    A result with none — a classifier scored only against its expected label, no goal check and no judge — is
+    not a failed attempt: pass^k cannot ask it anything, so it is left out of pass^k (#688) rather than read as
+    failing every criterion it never had. A result whose run pinned a judge (``judge_model``) is in, scored or
+    not: its criteria were asked, so a judged arm whose candidate failed before the judge ran still fails.
+
+    Args:
+        result: The eval result.
+
+    Returns:
+        True when pass^k can decide the attempt.
+    """
+    capability_cannot_tell = set(result.judge_cannot_tell) - set(result.judge_cannot_tell_boundary)
+    return bool(
+        result.goal_state_outcomes
+        or capability_scores(result)
+        or capability_cannot_tell
+        or result.judge_model is not None
+    )
+
+
 def _trial_pass(result: EvalResult, *, rubric_threshold: int) -> tuple[bool | None, bool]:
     """Whether one attempt passed, ``None`` when it is left out — and whether it left as cannot-tell.
 
@@ -396,15 +495,30 @@ def _trial_pass(result: EvalResult, *, rubric_threshold: int) -> tuple[bool | No
         exclusion = None
     if exclusion is not None:
         return None, exclusion == "judge_cannot_tell"
+    if not has_pass_criterion(result):
+        # Nothing to conjoin: unmeasured for pass^k, never a fail (#688). Counted by the callers.
+        return None, False
     return classify_result(result) is ResultOutcome.OK and _result_passes(
         result, rubric_threshold=rubric_threshold
     ), False
 
 
-def _pass_hat_k_entry(attempts_by_case: Mapping[Any, list[bool]], *, k: int, n_cannot_tell: int) -> dict[str, Any]:
+def _no_criterion_count(results: Iterable[EvalResult]) -> int:
+    """The attempts pass^k leaves out because they carry no pass criterion (:func:`has_pass_criterion`).
+
+    Only those it would otherwise have read: an attempt left out for a fault or a judge's can't-tell is counted
+    there, not here.
+    """
+    return sum(1 for r in results if trial_exclusion(r) is None and not has_pass_criterion(r))
+
+
+def _pass_hat_k_entry(
+    attempts_by_case: Mapping[Any, list[bool]], *, k: int, n_cannot_tell: int, n_no_criterion: int = 0
+) -> dict[str, Any]:
     """The one row shape both pass^k producers return, so the two cannot describe a pool differently."""
     curve = _pass_hat_k_curve(attempts_by_case.values())
     headline = pass_hat_k_at(curve, k)
+    scored = any(attempts_by_case.values())
     return {
         "pass_hat_k": headline["pass_hat_k"],
         "k": k,
@@ -415,6 +529,10 @@ def _pass_hat_k_entry(attempts_by_case: Mapping[Any, list[bool]], *, k: int, n_c
         # Iterations left out because the judge could not tell on a rubric dim — the one exclusion
         # that is not a fault, so it is counted on its own rather than vanishing.
         "n_cannot_tell_excluded": n_cannot_tell,
+        # Attempts with nothing for pass^k to conjoin — no goal check, no judge (#688): left out, never failed.
+        "n_no_criterion_excluded": n_no_criterion,
+        # Why pass^k has no value at all, where the reason is that nothing had a criterion; None otherwise.
+        "pass_hat_k_unmeasured_reason": NO_PASS_CRITERION_REASON if n_no_criterion and not scored else None,
     }
 
 
@@ -456,7 +574,12 @@ def compute_pass_hat_k(
     Returns:
         ``{(model, eval_run_id): {"pass_hat_k": float | None, "k": int, "n_cases_at_k": int,
         "pass_hat_k_curve": [{"k", "pass_hat_k", "n_cases"}, ...], "n_test_cases": int,
-        "n_cannot_tell_excluded": int}}``.
+        "n_cannot_tell_excluded": int, "n_no_criterion_excluded": int,
+        "pass_hat_k_unmeasured_reason": str | None}}``.
+
+        An attempt with nothing to conjoin — no goal-state check and no judge (:func:`has_pass_criterion`)
+        — is left out and counted in ``n_no_criterion_excluded``, never read as a fail (#688); where no
+        attempt had one, ``pass_hat_k`` is None and ``pass_hat_k_unmeasured_reason`` says why.
 
         ``pass_hat_k`` is the curve's value at ``k`` and ``n_cases_at_k`` the cases it averages:
         ``None`` and 0 when no case was scored that deep — nothing was measured there, which is
@@ -490,11 +613,16 @@ def compute_pass_hat_k(
             continue
         cases.setdefault(r.test_case_id, []).append(passed)
 
+    no_criterion: dict[tuple[str, str], int] = {}
+    for r in results:
+        group = (r.model, r.eval_run_id)
+        no_criterion[group] = no_criterion.get(group, 0) + _no_criterion_count([r])
     return {
         group: _pass_hat_k_entry(
             cases,
             k=k if k is not None else k_observed.get(group, 1),
             n_cannot_tell=cannot_tell.get(group, 0),
+            n_no_criterion=no_criterion.get(group, 0),
         )
         for group, cases in attempts.items()
     }
@@ -618,7 +746,7 @@ def pool_pass_hat_k(
     if k < 1:
         raise ValueError(f"pass^k needs k >= 1, got {k}")
     cases, n_cannot_tell = pool_pass_hat_k_attempts(results, cell_of_run=cell_of_run, rubric_threshold=rubric_threshold)
-    return _pass_hat_k_entry(cases, k=k, n_cannot_tell=n_cannot_tell)
+    return _pass_hat_k_entry(cases, k=k, n_cannot_tell=n_cannot_tell, n_no_criterion=_no_criterion_count(results))
 
 
 # =============================================================================
@@ -1167,10 +1295,13 @@ def _group_case_composites(
     composite is undefined there, not zero.
 
     Returns:
-        ``{(model, run_id): {"has_rubric": bool, "per_case": {tc_id: float}}}``.
+        ``{(model, run_id): {"has_rubric": bool, "per_case": {tc_id: float}, "basis": CompositeBasis | None}}``
+        — ``basis`` is what the group's composites were meaned over (:func:`pool_composite_bases`), None when
+        the group has no composite.
     """
     raw: dict[tuple[str, str], dict[str, list[float | None]]] = {}
     has_rubric: dict[tuple[str, str], bool] = {}
+    bases: dict[tuple[str, str], list[list[str] | None]] = {}
     for r in results:
         key = (r.model, r.eval_run_id)
         has_rubric.setdefault(key, False)  # register the group even if all-excluded
@@ -1178,6 +1309,7 @@ def _group_case_composites(
             continue  # a fault, or the judge could not tell on a dim the composite needs — unmeasured, not zero
         has_rubric[key] = has_rubric[key] or bool(capability_scores(r))
         raw.setdefault(key, {}).setdefault(r.test_case_id, []).append(result_composite(r))
+        bases.setdefault(key, []).append(composite_basis(r))
 
     out: dict[tuple[str, str], dict[str, Any]] = {}
     for key, rubric in has_rubric.items():
@@ -1187,7 +1319,11 @@ def _group_case_composites(
             for tc_id, comps in cases.items():
                 vals = [c if c is not None else 0.0 for c in comps]
                 per_case[tc_id] = sum(vals) / len(vals)
-        out[key] = {"has_rubric": rubric, "per_case": per_case}
+        out[key] = {
+            "has_rubric": rubric,
+            "per_case": per_case,
+            "basis": pool_composite_bases(bases.get(key, [])) if per_case else None,
+        }
     return out
 
 
@@ -1201,22 +1337,30 @@ def compute_composite_summary(
     case weighs equally, matching pass^k's per-case denominator). Query-time,
     never stored; reused by an analytics tier.
 
+    **The pool says what it was meaned over** (#638). Each result's composite is a mean over the dimensions
+    that result carries, so a group whose results carried different dimension sets pools means of different
+    questions. ``composite_basis`` carries the union of the bases and marks that pool ragged
+    (:class:`CompositeBasis`), so the number cannot be read without it.
+
     Returns:
-        ``{(model, run_id): {"mean_composite": float | None, "n_cases": int}}``.
+        ``{(model, run_id): {"mean_composite": float | None, "n_cases": int, "composite_basis": dict | None}}``.
         ``mean_composite`` is ``None`` for goal-only groups (no rubric dims);
         ``n_cases`` is the number of cases contributing to the composite (0 when
-        undefined).
+        undefined); ``composite_basis`` is the :class:`CompositeBasis` as a dict
+        (``dimensions``, ``bases``, ``ragged``), ``None`` exactly when ``mean_composite`` is.
     """
     out: dict[tuple[str, str], dict[str, Any]] = {}
     for key, info in _group_case_composites(results).items():
         per_case: dict[str, float] = info["per_case"]
+        basis: CompositeBasis | None = info["basis"]
         if info["has_rubric"] and per_case:
             out[key] = {
                 "mean_composite": sum(per_case.values()) / len(per_case),
                 "n_cases": len(per_case),
+                "composite_basis": basis.model_dump() if basis is not None else None,
             }
         else:
-            out[key] = {"mean_composite": None, "n_cases": 0}
+            out[key] = {"mean_composite": None, "n_cases": 0, "composite_basis": None}
     return out
 
 
@@ -1240,8 +1384,11 @@ def compute_per_case_composites(
 
 
 __all__ = [
+    "NO_PASS_CRITERION_REASON",
     "CellSummary",
+    "CompositeBasis",
     "capability_scores",
+    "composite_basis",
     "compute_async_delivery_summary",
     "compute_composite_summary",
     "compute_cost_summary",
@@ -1249,6 +1396,7 @@ __all__ = [
     "compute_latency_summary",
     "compute_pass_hat_k",
     "compute_per_case_composites",
+    "has_pass_criterion",
     "case_pass_hat_k",
     "median_unbiased_quantile",
     "median_unbiased_quantile_min_n",
@@ -1256,6 +1404,7 @@ __all__ = [
     "pass_hat_k_cell",
     "PassHatPoint",
     "percentile",
+    "pool_composite_bases",
     "pool_pass_hat_k",
     "pool_pass_hat_k_attempts",
     "reconstruct_completeness",
