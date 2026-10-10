@@ -27,7 +27,9 @@ than failing at once. A network filesystem is outside what SQLite's locking prom
 local disk.
 
 **The file's layout is versioned** (``PRAGMA user_version``): a file written by a later layout is refused,
-never read as this one.
+never read as this one. The documents inside it are the engine's, read as strictly as from any store: a release
+whose ``EVAL_SCHEMA_VERSION`` differs from the one that wrote them refuses them, and there is no migration, so
+across such an upgrade the file is deleted and the runs made again.
 """
 
 from __future__ import annotations

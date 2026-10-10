@@ -55,7 +55,7 @@ from threetears.evals.analysis import (
     set_campaign_control,
     variant_key_of_run,
 )
-from threetears.evals.contracts import ACCURACY_MEASURE, DEFAULT_LAUNCH_K_RUNS, CassetteMode, utc_now_iso
+from threetears.evals.contracts import ACCURACY_MEASURE, DEFAULT_LAUNCH_K_RUNS, CassetteMode, DocumentStore, utc_now_iso
 from threetears.evals.contracts.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS
 from threetears.evals.ops.summary import CaseResult, EvalSummary, self_judging_text
@@ -72,6 +72,7 @@ from threetears.evals.quick.one_call import (
     CallableArm,
     run_arms,
     callable_host,
+    refuse_a_store_beside_a_host,
 )
 from threetears.evals.run import list_results
 from threetears.evals.quick.tools import Tool, ToolUsingCandidate
@@ -466,6 +467,7 @@ async def compare(
     judge: Judge | None = None,
     intent: str | None = None,
     host: EvalHost | None = None,
+    store: DocumentStore | None = None,
     k: int = DEFAULT_LAUNCH_K_RUNS,
     name: str | None = None,
     created_by: str = COMPARE_CREATED_BY,
@@ -511,6 +513,10 @@ async def compare(
         host: Where to run and store: ``None`` builds one :func:`~threetears.evals.quick.callable_host` over
             the scorers and the factors other than ``model`` for every arm. A host of the caller's own is held
             to what ``run_eval`` holds it to, and must declare those factors as levers.
+        store: Where the host ``compare`` builds stores every run and the campaign, as
+            :func:`~threetears.evals.quick.run_eval` takes it: ``store=SqliteDocumentStore("evals.sqlite")`` keeps
+            them in a file, and ``margins=``, ``ranges=`` and everything else this call builds work as without it.
+            Never with ``host``.
         k: Repeats per case, per arm.
         name: The campaign's name, which titles its report; ``None`` names it by its arms, control first, or
             by its factors.
@@ -540,13 +546,13 @@ async def compare(
             way "the cheaper model is good enough" is shown. ``None`` declares none and no margin is ever assumed,
             so no contrast can read ``equivalent``, which the report says in one line. A classifier's accuracy is a
             core measure and takes none: grade it with a scorer too, and declare the margin on that. With a
-            ``host`` of your own, declare margins on its measures (``materiality_threshold``) instead. A margin
+            ``host`` of your own, declare them on it instead (``callable_host(margins=...)``). A margin
             on a scorer that does not return a ``bool`` needs its range in ``ranges``: with no range no
             equivalence test holds its error rate, so it is refused rather than never tested.
         ranges: The lowest and highest score a scorer returning a number can give, by the scorer's name
             (``{"rating": (1, 5)}``). Its intervals stay inside it, a margin on it can be tested, and a score
             outside it excludes the cell, naming the scorer. A scorer annotated ``-> bool`` is a pass/fail on 0
-            to 1 already. With a ``host`` of your own, declare ``value_range`` on its measures instead.
+            to 1 already. With a ``host`` of your own, declare them on it instead (``callable_host(ranges=...)``).
 
     Returns:
         The comparison: every arm's summary, the campaign's id and its report.
@@ -556,10 +562,11 @@ async def compare(
             factor, factors without ``model`` or with an unusable or repeated name, a ``control`` that names
             no arm, a ``max_cost_usd`` that is not a positive number, a margin that names no scorer, is not a
             positive number, is on a scorer with no range or comes with a ``host``, a range that is unusable or
-            comes with a ``host``, or anything
+            comes with a ``host``, a ``store`` with a ``host``, or anything
             :func:`~threetears.evals.quick.run_eval` refuses.
         ValidationFailedError: The launch refused, or the host refuses the campaign's declaration.
     """
+    refuse_a_store_beside_a_host(store, host)
     named = _factors(factors)
     if factors is None and (host is None or host.profile.host_sweepables.get(ARM_LEVER) is not None):
         # The arms' names are not models: each is stated as the arm lever's level, every arm at one model.
@@ -573,17 +580,23 @@ async def compare(
     if margins and host is not None:
         raise ValueError(
             "margins= declares margins on the host compare builds; a host of your own declares them on its measures "
-            "(MetricDescriptor.materiality_threshold), so pass one or the other"
+            "(callable_host(margins=...), or MetricDescriptor.materiality_threshold), so pass one or the other"
         )
     if ranges and host is not None:
         raise ValueError(
             "ranges= declares ranges on the host compare builds; a host of your own declares them on its measures "
-            "(MetricDescriptor.value_range), so pass one or the other"
+            "(callable_host(ranges=...), or MetricDescriptor.value_range), so pass one or the other"
         )
     levers = tuple(factor for factor in named if factor not in _UNPREFIXED)
     if host is None:
         host = callable_host(
-            scorers, levers=levers, world=world, arms=named == _NAMED_ARMS, margins=margins, ranges=ranges
+            scorers,
+            levers=levers,
+            world=world,
+            arms=named == _NAMED_ARMS,
+            margins=margins,
+            ranges=ranges,
+            store=store,
         )
     coordinates = {arm: _coordinates(arm, named) for arm in arms_given}
     # Every arm in ONE launch, started together, so the arms are measured side by side rather than one after

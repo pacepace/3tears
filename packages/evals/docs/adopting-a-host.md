@@ -2,8 +2,8 @@
 
 **For** the developer wiring 3tears-evals into an app for real: your own storage, your own launch path, runs
 you can compare over weeks. **Answers:** what you write (a host, a store, a kind, a launcher) and what the engine
-does with each. If you only want to grade a function once, `run_eval` (as in the [tutorial](tutorial.md))
-builds all of this for you. Read
+does with each. If you only want to grade a function, and keep its runs in a file, `run_eval` (as in the
+[tutorial](tutorial.md#7-keep-your-runs)) builds all of this for you. Read
 [Concepts](concepts.md) first: this guide uses its terms (host, kind, lever, apparatus, scope, cell)
 without stopping to define them.
 
@@ -37,7 +37,9 @@ nothing but the public roots and itself:
    Read it once you have the courier host's outline and want to see a particular piece in full.
 
 Both run on `InMemoryDocumentStore` (`threetears.evals.storage`), the engine's in-memory reference
-`DocumentStore`: scoped, with conditional writes, and the shape to compare your own adapter against.
+`DocumentStore`: scoped, with conditional writes, and the shape to compare your own adapter against. Its
+durable sibling, `SqliteDocumentStore`, keeps every document in one SQLite file through the standard library;
+a host with no database of its own can use it as its store.
 
 Import only from a public root (`threetears.evals.PUBLIC_ROOTS` lists them, including
 `threetears.evals.contracts.host`, `threetears.evals.analysis.viz` and `threetears.evals.vega`), and only the names
