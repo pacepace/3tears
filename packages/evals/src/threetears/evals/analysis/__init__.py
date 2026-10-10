@@ -129,8 +129,6 @@ from threetears.evals.analysis.reporter_kind import (
     reporter_cell_timeout_s,
 )
 from threetears.evals.analysis.reporting import (
-    COST_ESTIMATE_MIN_BASIS,
-    COST_PREDICTION_METHOD,
     DECLARED_INPUT_ORIGIN,
     DEFAULT_WEIGHTING,
     METRIC_COMPOSITE,
@@ -144,6 +142,7 @@ from threetears.evals.analysis.reporting import (
     difference_was_declared_at_launch,
     metric_help,
 )
+from threetears.evals.analysis.lenses.cost_estimate import COST_ESTIMATE_MIN_BASIS, COST_PREDICTION_METHOD
 from threetears.evals.analysis.lenses.pivot import CELL_MEASURED, CELL_NOT_RUN, CELL_WITHHELD
 from threetears.evals.analysis.lenses.history import HISTORY_METRICS
 from threetears.evals.analysis.significance import format_significance, significance_disclosure
@@ -274,17 +273,14 @@ from threetears.evals.analysis.reporting import (
     CaseSetIdentity,
     ComparisonSet,
     ComparisonSetsResult,
-    CostEstimate,
-    CostEstimateCell,
     FrontierDominance,
     LatencyPartition,
     MeasurementWindow,
-    PlannedCost,
-    PredictedValue,
     ProjectionExclusions,
     ServedModelReading,
     ServedModelState,
 )
+from threetears.evals.analysis.lenses.cost_estimate import CostEstimate, CostEstimateCell, PlannedCost, PredictedValue
 from threetears.evals.analysis.lenses.pivot import PivotCell, PivotTable, SimpsonsFlag
 from threetears.evals.analysis.lenses.frontier import (
     FrontierCostDecision,

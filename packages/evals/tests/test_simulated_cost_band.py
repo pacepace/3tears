@@ -22,7 +22,7 @@ from collections.abc import Callable
 
 import pytest
 
-from threetears.evals.analysis.reporting import compute_estimate_cost
+from threetears.evals.analysis.lenses.cost_estimate import compute_estimate_cost
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile

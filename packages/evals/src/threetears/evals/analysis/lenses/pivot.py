@@ -22,15 +22,12 @@ from threetears.evals.analysis.reporting import (
     _effective_formula,
     _metric_vocabulary,
     cassette_mode_disclosure,
-    CostEstimate,
     DEFAULT_WEIGHTING,
     METRIC_COMPOSITE,
     METRIC_COST_USD,
-    PlannedCost,
     pooled_composite_basis,
     pooled_cost_compositions,
     pooled_served_models,
-    PredictedValue,
     PROJECTED_METRICS,
     ProjectionExclusions,
     resolve_measure_name,
@@ -40,6 +37,7 @@ from threetears.evals.analysis.reporting import (
     SUBSTITUTING_CASSETTE_MODE,
     WEIGHTINGS,
 )
+from threetears.evals.analysis.lenses.cost_estimate import CostEstimate, PlannedCost, PredictedValue
 
 
 # A cell's three states, which a renderer must keep visually distinct.

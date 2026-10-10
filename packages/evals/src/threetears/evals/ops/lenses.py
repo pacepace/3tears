@@ -44,16 +44,15 @@ from threetears.evals.analysis.stats import (
 )
 
 from threetears.evals.analysis.reporting import (
-    COST_ESTIMATE_MIN_BASIS,
     cassette_mode_disclosure,
-    compute_estimate_cost,
     measurement_window,
     measurement_window_disclosure,
 )
+from threetears.evals.analysis.lenses.cost_estimate import COST_ESTIMATE_MIN_BASIS, compute_estimate_cost
 from threetears.evals.analysis.significance import format_significance
 from threetears.evals.analysis.completeness import completeness_disclosure
 
-from threetears.evals.analysis.reporting import CostEstimate, PlannedCost, PredictedValue
+from threetears.evals.analysis.lenses.cost_estimate import CostEstimate, PlannedCost, PredictedValue
 from threetears.evals.analysis.lenses.pivot import PivotTable
 from threetears.evals.analysis.lenses.frontier import FrontierResult
 from threetears.evals.analysis.lenses.history import HistoryResult

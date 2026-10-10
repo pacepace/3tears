@@ -40,20 +40,18 @@ from threetears.evals.analysis.reporting import (
     WITHHELD_PARTS_EXCEED_WHOLE,
     WITHHELD_UNMEASURED_COMPONENT,
     ComparisonSet,
-    CostEstimateError,
     LatencyPartition,
-    PredictedValue,
     ScoreProjection,
     ScoreRecord,
     cassette_mode_disclosure,
     compute_comparison_sets,
-    compute_estimate_cost,
     decompose_total_ms,
     difference_was_declared_at_launch,
     dim_judge_model,
     place_results,
     project_score_records,
 )
+from threetears.evals.analysis.lenses.cost_estimate import CostEstimateError, PredictedValue, compute_estimate_cost
 from threetears.evals.analysis.lenses.pivot import (
     CELL_MEASURED,
     CELL_UNMEASURED,
