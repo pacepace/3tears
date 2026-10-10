@@ -16,6 +16,10 @@ packages (bumped in lock-step).
   existed (f6d43aa0 and 5440a306 with `Co-Authored-By`; 4d575851, f114794c, d5897cd7 and a491ab0a
   with `Claude-Session`). They are not rewritten, which would take a force-push of a shared branch;
   `scripts/attribution-exemptions.txt` exempts them by full hash.
+- **Added, `scripts/install-hooks.sh`**: installs the check as the clone's commit-msg hook
+  (`check-attribution.sh --message`), in the hooks directory git uses (so every worktree of the
+  clone), idempotently. A commit-msg hook already there (a git template's, a tool's) is kept as
+  `commit-msg.chained` and runs first; CLAUDE.md points at the script instead of a hand-typed hook.
 
 ### Coordination: one lease primitive -- `nats_distributed_lock` runs on `KVLease`
 

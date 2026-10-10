@@ -70,7 +70,7 @@ Referring to Claude Code as a tool the project uses is fine. Naming this file is
 
 **Before every commit and every `gh pr create`, read back what you wrote.** Run `git log -1 --format=%B`, read the PR body, and delete any attribution you find. A commit is not done until that check passes.
 
-**Enforced.** CI's `check` job runs `./scripts/check-attribution.sh <base>..<head>` over every commit a pull request adds and fails on attribution. Run it yourself before pushing (`./scripts/check-attribution.sh origin/develop..HEAD`), or install it as your commit-msg hook: `printf '#!/bin/sh\nexec ./scripts/check-attribution.sh --message "$1"\n' > .git/hooks/commit-msg && chmod +x .git/hooks/commit-msg`. Commits that landed with a trailer before the check existed are exempt by hash in `scripts/attribution-exemptions.txt`; never add a new one.
+**Enforced.** CI's `check` job runs `./scripts/check-attribution.sh <base>..<head>` over every commit a pull request adds and fails on attribution. Run it yourself before pushing (`./scripts/check-attribution.sh origin/develop..HEAD`), and install it as your commit-msg hook once per clone with `./scripts/install-hooks.sh` (idempotent; covers every worktree of the clone; a commit-msg hook already there is kept and runs first). Commits that landed with a trailer before the check existed are exempt by hash in `scripts/attribution-exemptions.txt`; never add a new one.
 
 **Already-landed attribution stays landed.** Do not rewrite history to scrub old trailers. That means force-pushing, which is separately forbidden below, and the cure is worse than the disease. Fix the flow going forward and leave the record alone.
 

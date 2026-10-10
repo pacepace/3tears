@@ -5,7 +5,9 @@ credits an agent (a ``Co-Authored-By`` naming one, an Anthropic noreply address,
 with" footer, a ``Claude-Session`` trailer). CI runs it on every pull request. These tests run the
 real script over a throwaway repository, so they fail if it stops catching a trailer, starts
 flagging a mention of the tool, examines history already on the base, or ignores its exemptions;
-and they fail if the CI step goes away.
+and they fail if the CI step goes away. ``scripts/install-hooks.sh`` installs the same check as a
+commit-msg hook; it is run over a throwaway repository too, and a commit through the hook it wrote
+is what proves it.
 """
 
 from __future__ import annotations
@@ -20,6 +22,8 @@ import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _REPO_ROOT / "scripts" / "check-attribution.sh"
+_INSTALLER = _REPO_ROOT / "scripts" / "install-hooks.sh"
+_CLAUDE_MD = _REPO_ROOT / "CLAUDE.md"
 _EXEMPTIONS = _REPO_ROOT / "scripts" / "attribution-exemptions.txt"
 _WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 
@@ -131,3 +135,116 @@ class TestTheGate:
         entries = [line for line in _EXEMPTIONS.read_text().splitlines() if line and not line.startswith("#")]
         assert entries, "the exemption ledger is empty; delete it rather than leave it"
         assert all(re.fullmatch(r"[0-9a-f]{40} .+", line) for line in entries), entries
+
+
+@pytest.fixture
+def hooked_repo(repo: Path) -> Path:
+    """a throwaway repository carrying the real check script and the real installer, and no hooks.
+
+    ``git init`` copies the developer's template hooks in (``init.templateDir``), and a template
+    commit-msg hook that strips trailers would pass a message the check must refuse; each test that
+    wants a hook already there puts its own.
+    """
+    shutil.copy2(_INSTALLER, repo / "scripts" / "install-hooks.sh")
+    hooks = Path(_run("git", "rev-parse", "--path-format=absolute", "--git-path", "hooks", cwd=repo).stdout.strip())
+    for name in ("commit-msg", "commit-msg.chained"):
+        (hooks / name).unlink(missing_ok=True)
+    return repo
+
+
+def _install(repo: Path) -> subprocess.CompletedProcess[str]:
+    return _run("bash", "scripts/install-hooks.sh", cwd=repo)
+
+
+def _commit_through_hooks(repo: Path, message: str) -> subprocess.CompletedProcess[str]:
+    return _run("git", "commit", "-q", "--allow-empty", "-m", message, cwd=repo)
+
+
+def _hook(repo: Path) -> Path:
+    return (
+        Path(_run("git", "rev-parse", "--path-format=absolute", "--git-path", "hooks", cwd=repo).stdout.strip())
+        / "commit-msg"
+    )
+
+
+class TestTheHookInstaller:
+    @pytest.mark.parametrize("line", _ATTRIBUTED)
+    def test_the_installed_hook_refuses_a_message_crediting_an_agent(self, hooked_repo: Path, line: str) -> None:
+        assert _install(hooked_repo).returncode == 0
+        head = _run("git", "rev-parse", "HEAD", cwd=hooked_repo).stdout.strip()
+        result = _commit_through_hooks(hooked_repo, f"a change\n\n{line}\n")
+        assert result.returncode != 0, "the hook let an attributed commit through"
+        assert "credits an agent" in result.stderr
+        assert _run("git", "rev-parse", "HEAD", cwd=hooked_repo).stdout.strip() == head
+
+    @pytest.mark.parametrize("line", _CLEAN)
+    def test_the_installed_hook_lets_a_clean_message_through(self, hooked_repo: Path, line: str) -> None:
+        assert _install(hooked_repo).returncode == 0
+        result = _commit_through_hooks(hooked_repo, f"a change\n\n{line}\n")
+        assert result.returncode == 0, result.stderr
+
+    def test_installing_twice_leaves_one_working_hook(self, hooked_repo: Path) -> None:
+        assert _install(hooked_repo).returncode == 0
+        first = _hook(hooked_repo).read_text()
+        assert _install(hooked_repo).returncode == 0
+        assert _hook(hooked_repo).read_text() == first
+        assert (
+            _commit_through_hooks(hooked_repo, "x\n\nClaude-Session: https://claude.ai/code/session_x\n").returncode
+            != 0
+        )
+
+    def test_a_hook_it_did_not_write_is_kept_and_runs_first(self, hooked_repo: Path) -> None:
+        """a template's or a tool's commit-msg hook (one that strips trailers, say) keeps working."""
+        hook = _hook(hooked_repo)
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        # a stand-in for a trailer-stripping hook: it drops every Claude-Session line
+        foreign = '#!/bin/sh\ngrep -v \'^Claude-Session:\' "$1" > "$1.tmp"; mv "$1.tmp" "$1"\n'
+        hook.write_text(foreign)
+        hook.chmod(0o755)
+        assert _install(hooked_repo).returncode == 0
+        assert (hook.parent / "commit-msg.chained").read_text() == foreign
+        # the kept hook ran first: the trailer it strips never reached the check
+        stripped = _commit_through_hooks(hooked_repo, "x\n\nClaude-Session: https://claude.ai/code/session_x\n")
+        assert stripped.returncode == 0, stripped.stderr
+        assert "Claude-Session" not in _run("git", "log", "-1", "--format=%B", cwd=hooked_repo).stdout
+        # and the check still refuses what it does not strip
+        assert (
+            _commit_through_hooks(hooked_repo, "x\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n").returncode != 0
+        )
+        # a re-run keeps the chain as it is
+        assert _install(hooked_repo).returncode == 0
+        assert (hook.parent / "commit-msg.chained").read_text() == foreign
+
+    def test_a_refusal_from_the_kept_hook_stops_the_commit(self, hooked_repo: Path) -> None:
+        hook = _hook(hooked_repo)
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        hook.write_text("#!/bin/sh\necho kept hook refused >&2\nexit 3\n")
+        hook.chmod(0o755)
+        assert _install(hooked_repo).returncode == 0
+        refused = _commit_through_hooks(hooked_repo, "a clean change")
+        assert refused.returncode != 0
+        assert "kept hook refused" in refused.stderr
+
+    def test_two_different_foreign_hooks_are_never_overwritten(self, hooked_repo: Path) -> None:
+        hook = _hook(hooked_repo)
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        hook.write_text("#!/bin/sh\nexit 0\n")
+        (hook.parent / "commit-msg.chained").write_text("#!/bin/sh\nexit 1\n")
+        result = _install(hooked_repo)
+        assert result.returncode != 0
+        assert str(hook) in result.stderr
+        assert hook.read_text() == "#!/bin/sh\nexit 0\n"
+        assert (hook.parent / "commit-msg.chained").read_text() == "#!/bin/sh\nexit 1\n"
+
+    def test_a_commit_in_another_worktree_is_checked_too(
+        self, hooked_repo: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        assert _install(hooked_repo).returncode == 0
+        other = tmp_path_factory.mktemp("wt") / "other"
+        assert _run("git", "worktree", "add", "-q", "-b", "side", str(other), cwd=hooked_repo).returncode == 0
+        refused = _commit_through_hooks(other, "x\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n")
+        assert refused.returncode != 0
+        assert _commit_through_hooks(other, "a clean change").returncode == 0
+
+    def test_claude_md_tells_a_contributor_to_run_it(self) -> None:
+        assert "./scripts/install-hooks.sh" in _CLAUDE_MD.read_text()
