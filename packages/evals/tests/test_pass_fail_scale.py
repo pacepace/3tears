@@ -241,7 +241,7 @@ class TestTheProjection:
         """Project through the toy host: the projection reads the installed host's levers."""
         run = make_eval_run(id="run-1", **run_overrides)
         profile = toyhost_profile()
-        return project_score_records([run], results, profile=profile).records
+        return project_score_records([run], results, profile=profile, archived_run_ids=None).records
 
     def test_a_score_row_carries_its_scale(self):
         records = self._project([_result(rubric_scores=[RubricScore(dim="x.a", scale="pass_fail", score=0)])])

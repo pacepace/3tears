@@ -1116,7 +1116,7 @@ def place_results(
     known_run_ids: set[str] | None,
     *,
     source: str,
-    archived_run_ids: set[str] | None = None,
+    archived_run_ids: set[str] | None,
 ) -> tuple[list[PlacedResult], ProjectionExclusions]:
     """Match each result to its run and resolved subject, accounting for every drop.
 
@@ -1152,7 +1152,9 @@ def place_results(
             ``None`` asserts no archival narrowing was applied, which is correct
             only for a caller whose cohort already includes archived runs; it is
             never a licence to leave archival exclusions attributed to a filter
-            that did not make them.
+            that did not make them. Required with no default, here and on the
+            three surfaces that forward it, so a caller that never thought about
+            archival fails with ``TypeError`` instead of blaming ``status``.
 
     Returns:
         The placed results in input order — each carrying a non-blank
@@ -1311,7 +1313,7 @@ def project_score_records(
     results: list[EvalResult],
     *,
     known_run_ids: set[str] | None = None,
-    archived_run_ids: set[str] | None = None,
+    archived_run_ids: set[str] | None,
     profile: HostProfile,
 ) -> ScoreProjection:
     """Flatten runs + results into one row per (cell, measure).
@@ -4969,7 +4971,7 @@ def compute_frontier(
     subject_id: str | None = None,
     rubric_threshold: int = 3,
     known_run_ids: set[str] | None = None,
-    archived_run_ids: set[str] | None = None,
+    archived_run_ids: set[str] | None,
 ) -> FrontierResult:
     """Rank each subject's variants on quality x cost x latency and pick the cheapest above bar.
 
@@ -5711,7 +5713,7 @@ def compute_history(
     min_relative_change: float = 0.0,
     subject_id: str | None = None,
     known_run_ids: set[str] | None = None,
-    archived_run_ids: set[str] | None = None,
+    archived_run_ids: set[str] | None,
     profile: HostProfile,
 ) -> HistoryResult:
     """Series one measure over time per contestant, flagging real regressions.

@@ -6542,7 +6542,11 @@ def assemble_context_bundle(
     results_by_run = _failures_as_misses(results_by_run)
     results = [result for run in runs for result in results_by_run[run.id]]
 
-    projection = project_score_records(runs, results, known_run_ids=known_run_ids, profile=profile)
+    # ``archived_run_ids=None`` is true here, not a default: archived members were removed
+    # above, so ``runs`` is the whole corpus these surfaces read and none of it is archived.
+    projection = project_score_records(
+        runs, results, known_run_ids=known_run_ids, archived_run_ids=None, profile=profile
+    )
     budget = compute_program_budget(runs, results)
     # What the campaign was not tuning, read once and shared by all three surfaces that
     # disclose it — the coverage map (where most findings are formed), the divergences, and
@@ -6651,7 +6655,7 @@ def assemble_context_bundle(
         # Called without them, this surface was blind to exactly the difference a judge A/B is
         # made of while the bundle beside it reported that difference from the same readers.
         comparison=compute_comparison_sets(runs, results=results, profile=profile),
-        frontier=compute_frontier(runs, results, known_run_ids=known_run_ids),
+        frontier=compute_frontier(runs, results, known_run_ids=known_run_ids, archived_run_ids=None),
         telemetry=_telemetry_rollup(runs, results, budget, profile=profile),
         coverage=coverage,
         declared_design=campaign.declared_design,
