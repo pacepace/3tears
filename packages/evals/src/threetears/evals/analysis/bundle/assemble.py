@@ -234,6 +234,17 @@ from threetears.evals.kernel.usage_capture import (
     spend_observed,
 )
 
+from threetears.evals.analysis.bundle.caps import (
+    _capped,
+    _CELL_STATES,
+    _MAX_DECLARED_CELLS,
+    _MAX_DIVERGENCES,
+    _MAX_FACTOR_PAIR_PIVOTS,
+    _MAX_NEXT_EXPERIMENTS,
+    _MAX_PRIOR_INSIGHTS,
+    _MAX_REFUSED_MERGES,
+)
+
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.kernel.host.measures import MeasureRegistry
     from threetears.evals.kernel.campaign import EvalCampaign
@@ -330,15 +341,6 @@ _COST_MEASURE = "cost_usd"
 #: a contrast between arms is tested on (:func:`_per_case_values`); ``cost_usd`` is what it cost to measure.
 _CANDIDATE_SPEND = "production_replicating_cost"
 
-# The distinguishing clause of each reason a cross-scope difference is withheld. The reason
-# reaches the generator as a SENTENCE (see ``ScopeDivergence.unattributed_withheld``), and that
-# prose gets tuned for its reader — so the clause that identifies WHICH condition fired is named
-# here and shared with the tests. Rewording the sentence around it is then free, while changing
-# what a test actually pins takes editing this line.
-WITHHELD_OPPOSITE_DIRECTIONS = "have opposite better-directions"
-WITHHELD_DIFFERENT_POPULATIONS = "are averaged over different populations"
-WITHHELD_UNKNOWN_POPULATION = "has no observation unit"
-
 # How a divergence is decided. It is a test of the DIFFERENCE between the two movements, never two
 # movements graded apart and set side by side: "the whole moved" beside "the part did not" is the
 # difference between a significant and a non-significant result, which is not itself significant
@@ -348,26 +350,14 @@ WITHHELD_UNKNOWN_POPULATION = "has no observation unit"
 # together by Holm's method. A movement graded on its own still reads `improved`, `regressed`,
 # `not_separated` or `equivalent`, but it is context: no verdict on one movement decides a divergence.
 
-# How many divergences may be reported. Every (lever × level-pair × cross-scope measure
-# pair) is a candidate, so the space is quadratic in a campaign's measure count and a
-# thorough campaign can produce more of these than a reader will ever act on — which is
-# the failure the gate exists to prevent, arriving by volume instead of by noise. The
-# count dropped is reported rather than silently truncated.
-_MAX_DIVERGENCES = 8
-
-# The same cap, for the three other lists that grow with the campaign or the ledger rather than with what a
-# reader can act on, each with what it dropped counted beside it (see `_capped`). `refused_merges` is
-# quadratic in the cells a variant spans, `next_experiments` grows with variants × unrecorded dimensions, and
-# `prior_insights` grows with every generation over the subject — and all three ride whole into a paid prompt.
-# Starting values, not measured ones: tuning them is separate work.
-_MAX_REFUSED_MERGES = 8
-_MAX_NEXT_EXPERIMENTS = 8
-_MAX_PRIOR_INSIGHTS = 12
-# Pivots over co-varying factor pairs, which grow with the square of the factors in the worst case.
-_MAX_FACTOR_PAIR_PIVOTS = 8
-# The cells of a declared crossing listed, which grow with the product of the declared levels.
-_MAX_DECLARED_CELLS = 64
-_CELL_STATES = ("ran", "not_run", "skipped_by_design", "undetermined")
+# The distinguishing clause of each reason a cross-scope difference is withheld. The reason
+# reaches the generator as a SENTENCE (see ``ScopeDivergence.unattributed_withheld``), and that
+# prose gets tuned for its reader — so the clause that identifies WHICH condition fired is named
+# here and shared with the tests. Rewording the sentence around it is then free, while changing
+# what a test actually pins takes editing this line.
+WITHHELD_OPPOSITE_DIRECTIONS = "have opposite better-directions"
+WITHHELD_DIFFERENT_POPULATIONS = "are averaged over different populations"
+WITHHELD_UNKNOWN_POPULATION = "has no observation unit"
 
 # Why another swept lever varying inside a cohort clouds the comparison. Generic on
 # purpose: which lever it is says nothing extra here, because a campaign sweeping it
@@ -10285,30 +10275,6 @@ def _prior_insights(live: list[EvalInsight]) -> tuple[list[EvalInsight], int]:
     return carried, len(live) - len(carried)
 
 
-def _capped[T](items: list[T], cap: int, *, weight: Callable[[T], float] | None) -> tuple[list[T], int]:
-    """Keep at most ``cap`` of ``items`` and count the rest, so a capped list is never read as a complete one.
-
-    The one cap the bundle's growing lists share. Deterministic, so the fingerprint stays stable: the kept
-    entries are the ``cap`` heaviest by ``weight`` (earlier entries winning ties), or the first ``cap`` when
-    there is no weight, and they keep their order in ``items``.
-
-    Args:
-        items: The full list, in the order it is reported.
-        cap: How many may be reported.
-        weight: What ranks an entry for keeping, heaviest first; None keeps the leading entries.
-
-    Returns:
-        ``(kept, omitted)``.
-    """
-    if len(items) <= cap:
-        return items, 0
-    if weight is None:
-        return items[:cap], len(items) - cap
-    ranked = sorted(range(len(items)), key=lambda index: (-weight(items[index]), index))
-    kept = sorted(ranked[:cap])
-    return [items[index] for index in kept], len(items) - cap
-
-
 def host_declarations_digest(profile: HostProfile) -> str:
     """sha256 of the host declarations that partition observations — derived, so no host has a counter to forget.
 
@@ -10379,33 +10345,33 @@ def _telemetry_rollup(
 
 
 __all__ = [
-    "INTERACTION_ALIASING_UNCHECKED",
     "AliasedFactors",
     "AnalysisContextBundle",
+    "assemble_context_bundle",
+    "bundle_decision_surface",
     "BundleInspection",
+    "component_carrier",
     "DeclaredCellCoverage",
     "DeclaredCrossing",
     "DeclaredLevelCoverage",
     "FactorPairCell",
     "FactorPairPivot",
     "FactorPairScan",
+    "goal_check_proofs_of",
     "GoalCheckProofReading",
+    "host_declarations_digest",
+    "insight_restatement_key",
+    "INTERACTION_ALIASING_UNCHECKED",
     "LeverCoverageInput",
+    "measure_movement",
     "MeasureCollection",
     "MeasureMovement",
     "MeasureSummary",
+    "planning_readings",
     "PlanningReading",
     "RunSummary",
     "ScopeDivergence",
+    "superseding_insights",
     "TelemetryRollup",
     "TokenRollup",
-    "assemble_context_bundle",
-    "bundle_decision_surface",
-    "component_carrier",
-    "goal_check_proofs_of",
-    "host_declarations_digest",
-    "insight_restatement_key",
-    "measure_movement",
-    "planning_readings",
-    "superseding_insights",
 ]
