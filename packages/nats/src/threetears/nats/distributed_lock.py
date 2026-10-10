@@ -15,8 +15,9 @@ design notes
   Renewal runs every ``heartbeat`` (the lease's ``renew_every``), always as a compare-and-swap on the
   revision just read and only while the entry is this holder's; a failed renewal is retried while
   the entry cannot have expired; past ``max_hold`` renewal stops so the TTL hands a wedged holder's
-  lock on. The release waits for a renewal in flight, then deletes the entry only if it is still
-  this hold's.
+  lock on. The release gives a renewal in flight a short while (one renewal interval, at most one
+  KV operation's ceiling) -- never the TTL, so a silent broker cannot stretch a shutdown -- then
+  deletes the entry only if it is still this hold's.
 - **The holder is told when it loses the lock.** The context manager yields a :class:`LockHold`,
   whose :attr:`~LockHold.lost_reason` is a :class:`LockLossReason`. By default the body is also
   cancelled and the ``async with`` raises :class:`LockLost`: a body that keeps writing after its

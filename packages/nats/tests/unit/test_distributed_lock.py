@@ -708,6 +708,9 @@ class TestAHolderReleasesALockItRenewedMidFlight:
                 fake_kv.put_landed.is_set,
                 what="a renewal write to land but not yet be acknowledged",
             )
+            exiting = time.monotonic()
+        # the exit does not wait out the TTL for an acknowledgement that has not come
+        assert time.monotonic() - exiting < 2.5, "the body's exit waited out the lock's TTL"
         fake_kv.release_ack.set()
         await _wait_until(
             lambda: "raced" not in fake_kv.store,

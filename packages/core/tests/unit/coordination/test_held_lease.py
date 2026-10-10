@@ -26,7 +26,14 @@ from typing import Any
 
 import pytest
 
-from threetears.core.coordination.lease import HeldLease, KVLease, LeaseLossReason, LeaseUnavailable
+from threetears.core.coordination.lease import (
+    RENEWAL_ANSWER_WAIT_SECONDS,
+    HeldLease,
+    KVLease,
+    LeaseLossReason,
+    LeaseUnavailable,
+)
+from threetears.nats.kv import KvTimings
 from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
 
 _BUCKET = "held"
@@ -747,7 +754,10 @@ async def test_a_renewal_whose_answer_never_comes_does_not_keep_the_entry_past_t
 
     monkeypatch.setattr(bucket, "update", applied_but_unanswered)
     await asyncio.wait_for(landed.wait(), timeout=5)
+    loop = asyncio.get_running_loop()
+    releasing = loop.time()
     await held.release()
+    assert loop.time() - releasing <= _RENEW.total_seconds() * 1.5, "the release waited past its bound"
     assert await bucket.get_entry(key="job") is None, "the release left its own renewed entry behind"
 
 
@@ -775,3 +785,56 @@ async def test_the_release_still_never_deletes_a_successors_entry_after_an_unans
     await held.release()
     surviving = await bucket.get_entry(key="job")
     assert surviving is not None and b"pod-b" in surviving[0]
+
+
+@_in_virtual_time
+async def test_a_release_waits_for_an_unanswered_renewal_only_briefly_never_a_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An owner shutting down releases its leases; a renewal the broker never answers must not hold
+    that shutdown for a whole TTL. The entry the renewal never wrote is still this holder's, and goes."""
+    client = FakeNatsClient()
+    ttl = timedelta(seconds=30)
+    held = await _lease(client, "pod-a").hold("job", ttl=ttl, renew_every=_RENEW)
+    bucket = await _bucket(client)
+    in_flight = asyncio.Event()
+
+    async def never_answered(**kwargs: Any) -> int | None:
+        in_flight.set()
+        await asyncio.sleep(3600)
+        return None  # pragma: no cover - cancelled first
+
+    monkeypatch.setattr(bucket, "update", never_answered)
+    await asyncio.wait_for(in_flight.wait(), timeout=5)
+    loop = asyncio.get_running_loop()
+    releasing = loop.time()
+    await held.release()
+    waited = loop.time() - releasing
+    assert waited <= _RENEW.total_seconds() * 1.5, f"the release waited {waited}s for an unanswered renewal"
+    assert await bucket.get_entry(key="job") is None
+
+
+@_in_virtual_time
+async def test_a_slow_renewal_interval_still_waits_no_longer_than_one_kv_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeNatsClient()
+    held = await _lease(client, "pod-a").hold("job", ttl=timedelta(seconds=300), renew_every=timedelta(seconds=100))
+    bucket = await _bucket(client)
+    in_flight = asyncio.Event()
+
+    async def never_answered(**kwargs: Any) -> int | None:
+        in_flight.set()
+        await asyncio.sleep(3600)
+        return None  # pragma: no cover - cancelled first
+
+    monkeypatch.setattr(bucket, "update", never_answered)
+    await asyncio.wait_for(in_flight.wait(), timeout=500)
+    loop = asyncio.get_running_loop()
+    releasing = loop.time()
+    await held.release()
+    assert loop.time() - releasing <= RENEWAL_ANSWER_WAIT_SECONDS + 0.1
+
+
+def test_the_release_bound_is_one_kv_operations_own_ceiling() -> None:
+    assert RENEWAL_ANSWER_WAIT_SECONDS == KvTimings().op_timeout_seconds

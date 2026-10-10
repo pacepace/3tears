@@ -65,6 +65,13 @@ packages (bumped in lock-step).
   release stopped waiting and cancelled it) left its entry for a whole TTL: the handle was a revision
   behind its own write and the fenced delete refused. The release now recognises that exact write
   (`LeaseHandle.in_flight_value`) and deletes it; another holder's entry still always survives.
+- **Fixed, a release waits for a renewal in flight only briefly**: one renewal interval, never more
+  than one KV operation's own ceiling (`RENEWAL_ANSWER_WAIT_SECONDS`, equal to
+  `KvTimings.op_timeout_seconds`), instead of up to the whole TTL -- which stretched an owner's
+  shutdown (the scheduler's, a tool pod's SIGTERM) by a lease TTL whenever the broker stopped
+  answering. Past it the renewal is cancelled; the entry is deleted only when it is this holder's at
+  the revision it recorded or is exactly that renewal's write, and otherwise left to lapse by its TTL
+  (logged).
 
 ### NATS: a public composer for a KV bucket's stream name
 

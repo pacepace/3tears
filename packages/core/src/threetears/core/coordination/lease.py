@@ -52,7 +52,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid7
 
 from threetears.core.serialization import deserialize_from_json, json_datetime, serialize_to_json
@@ -78,6 +78,12 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: the longest a release waits for a renewal already in flight to be answered: one KV operation's own
+#: ceiling (``threetears.nats.kv.KvTimings.op_timeout_seconds``, which bounds every KV round trip; a
+#: test pins the two equal). A renewal unanswered by then is not coming back in time to matter, and
+#: waiting longer -- the TTL, as a release once did -- stretches every owner's shutdown by that much.
+RENEWAL_ANSWER_WAIT_SECONDS: Final[float] = 10.0
 
 #: why a held lease was lost (:attr:`HeldLease.lost_reason`): the one vocabulary
 #: :func:`~threetears.nats.nats_distributed_lock` reports too, so it is that enum, under the name
@@ -446,6 +452,8 @@ class HeldLease:
         self._stop = asyncio.Event()
         self._ttl = ttl_seconds
         self._renew_every = renew_every_seconds
+        # a renewal is due every interval, so one not answered within an interval is already late
+        self._release_wait = min(renew_every_seconds, RENEWAL_ANSWER_WAIT_SECONDS)
         self._expires_at = expires_at
         self._log_extra = {"key": handle.key, **dict(log_extra or {})}
         self._released = False
@@ -637,8 +645,13 @@ class HeldLease:
     async def release(self) -> None:
         """stop renewing and delete the entry if this pod still holds it; idempotent.
 
-        a renewal in flight is allowed to finish rather than being cancelled mid-write (bounded by the
-        TTL), so the delete that follows is keyed on the revision the server really holds. releasing a
+        a renewal in flight is given a short while to be answered -- one renewal interval, and never
+        longer than one KV operation's own ceiling (:data:`RENEWAL_ANSWER_WAIT_SECONDS`) -- so the delete
+        that follows is keyed on the revision the server really holds; past that the renewal is
+        cancelled and the release goes on, so a broker that stopped answering cannot hold an owner's
+        shutdown for a TTL. A cancelled renewal may still have landed: the entry is then deleted only
+        when it is exactly that renewal's write (:attr:`LeaseHandle.in_flight_value`), and otherwise left
+        to lapse by its TTL, which the release logs. releasing a
         LOST lease is a no-op on the entry (the delete is fenced on the holder), so it never frees the
         new holder's claim. best-effort: the likeliest reason a release fails is the unreachable bucket
         that cost the lease in the first place, and a cleanup error must not replace whatever ended the
@@ -656,7 +669,7 @@ class HeldLease:
         renewal, self._renewal = self._renewal, None
         try:
             if renewal is not None:
-                done, _pending = await asyncio.wait([renewal], timeout=self._ttl)
+                done, _pending = await asyncio.wait([renewal], timeout=self._release_wait)
                 if not done:
                     renewal.cancel()
                     await asyncio.wait([renewal])
@@ -1282,8 +1295,10 @@ class KVLease:
         # effectively gone from our view" -- diagnostic-only here.
         deleted = await bucket.delete(key=handle.key, revision=revision)
         if not deleted:
-            log.debug(
-                "KVLease release raced on %s; marking released anyway",
+            # a write landed after the read: another holder's, or a renewal of this one's that is not
+            # recognisably its own -- either way not provably this holder's to delete
+            log.info(
+                "KVLease: the entry %s moved on before its release could delete it; it is left to lapse by its TTL",
                 handle.key,
             )
         handle.released = True
