@@ -7,7 +7,10 @@ Driven over the toy host through :meth:`MountedTool.call`, the path every transp
 - **The control is addressed from a run**, and resolves to the same variant key ``set_campaign_control`` gives.
 - **Every refusal names what was wrong**: an axis the host does not declare (with its vocabulary), a control run
   with no design or outside the campaign, a typed control beside a control run, and the old ``controls`` name.
-- **Without a design the campaign is undeclared**, as it always was.
+- **An axis the host does not declare is refused naming ``declarable_axes()``**, the call listing what it does.
+- **Without a design the campaign is exploratory** (#685): derived from ``declared_design is None``, never stored as a
+  flag, and said once, at the top, by the bundle, the code-only report, the report of a generated analysis and the
+  message the writer is sent; the writer's prompt calls the design it reads inferred from the runs, never declared.
 """
 
 from __future__ import annotations
@@ -16,11 +19,21 @@ from typing import Any
 
 import pytest
 
+import json
+
 from threetears.evals.actions import Caller, MountedTool, eval_catalogue, standard_tools
+from threetears.evals.analysis import assemble_context_bundle
+from threetears.evals.analysis.bundle import NO_DESIGN_EXPLORATORY, NO_QUESTION_EXPLORATORY, AnalysisContextBundle
 from threetears.evals.analysis.campaigns import set_campaign_control
+from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
+from threetears.evals.analysis.generator import build_user_message, generate_analysis
+from threetears.evals.analysis.report import build_report
+from threetears.evals.analysis.report.model import DisclosureBlock, Report
+from threetears.evals.contracts.models import utc_now_iso
 from threetears.evals.ops import CampaignLine
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_AXIS, toyhost_design
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, TOYHOST_SUBJECT, OpsFixture, ops_fixture
+from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
 
 
 @pytest.fixture
@@ -98,7 +111,7 @@ async def test_the_control_is_resolved_from_a_run_as_set_campaign_control_resolv
                     axes=[{"axis_id": "no_such_lever", "values": [{"content": "x", "display": "x"}]}]
                 )
             },
-            "no_such_lever",
+            "`declarable_axes()` lists every axis this host accepts",
             id="an-axis-the-host-does-not-declare",
         ),
         pytest.param({"control_from_run_id": "{run}"}, "declare a design", id="a-control-run-with-no-design"),
@@ -134,11 +147,96 @@ async def test_a_design_the_host_cannot_honour_is_refused_naming_why(
     assert fixture.host.eval_host.storage.list_campaigns(TOYHOST_SCOPE) == before, "a refused create writes nothing"
 
 
-async def test_without_a_design_the_campaign_is_undeclared(evals: MountedTool) -> None:
+async def test_an_undeclared_axis_is_named_beside_the_pointer(evals: MountedTool) -> None:
     fixture = ops_fixture()
+    lever = {"axis_id": "no_such_lever", "values": [{"content": "x", "display": "x"}]}
 
-    outcome = await _create(evals, fixture)
+    outcome = await _create(evals, fixture, declared_design=_design(axes=[lever]))
 
+    assert outcome.is_error and "no_such_lever" in outcome.text and "declarable_axes()" in outcome.text, outcome.text
+
+
+# --- with no design the campaign is exploratory (#685) --------------------------------------------------------------
+
+
+async def _exploratory(tool: MountedTool) -> tuple[OpsFixture, str, AnalysisContextBundle]:
+    """A campaign created through the action with no design, and its bundle as an analysis would assemble it."""
+    fixture = ops_fixture()
+    outcome = await _create(tool, fixture)
     assert not outcome.is_error, outcome.text
-    stored = fixture.host.eval_host.storage.load_campaign(outcome.structured["id"], TOYHOST_SCOPE)
-    assert stored is not None and stored.declared_design is None
+    eval_host = fixture.host.eval_host
+    stored = eval_host.storage.load_campaign(outcome.structured["id"], TOYHOST_SCOPE)
+    assert stored is not None and stored.declared_design is None, "a create with no design declares none"
+    bundle = assemble_context_bundle(stored, storage=eval_host.storage, profile=eval_host.profile)
+    return fixture, stored.id, bundle
+
+
+def _scope_said(report: Report) -> list[DisclosureBlock]:
+    return [block for block in report.blocks if isinstance(block, DisclosureBlock) and block.source == "scope"]
+
+
+async def test_the_bundle_calls_an_undeclared_campaign_exploratory_once(evals: MountedTool) -> None:
+    _fixture, _campaign_id, bundle = await _exploratory(evals)
+
+    assert bundle.declared_design is None
+    assert bundle.reading_scope.disclosure == NO_DESIGN_EXPLORATORY
+    assert bundle.reading_scope.exploratory_measures == [] and bundle.reading_scope.exploratory_dimensions == [], (
+        "said once for the campaign, never on every reading"
+    )
+    assert "inferred from the runs" in NO_DESIGN_EXPLORATORY and "confirm nothing" in NO_DESIGN_EXPLORATORY
+
+
+async def test_the_code_only_report_says_so_once_straight_after_its_opening_line(evals: MountedTool) -> None:
+    fixture, campaign_id, _bundle = await _exploratory(evals)
+
+    read = await evals.call(
+        {"action": "report_read", "campaign_id": campaign_id, "format": "json"}, host=fixture.host, caller=CALLER
+    )
+
+    assert not read.is_error, read.text
+    report = Report.model_validate_json(read.structured["body"])
+    assert report.basis == "code_only"
+    (said,) = _scope_said(report)
+    assert said.text == NO_DESIGN_EXPLORATORY
+    # At the top: the first block after the one-line opening saying no analysis was generated, which stays one line.
+    assert report.blocks.index(said) == 1 and said.section == "questions"
+
+
+async def test_the_writer_is_told_and_its_report_says_so_once_at_the_top(evals: MountedTool) -> None:
+    fixture, _campaign_id, bundle = await _exploratory(evals)
+
+    message = build_user_message(bundle)
+    assert message.count(NO_DESIGN_EXPLORATORY) == 1, "the writer's view carries the line once"
+    assert "the design inferred from the runs (`design`" in EVAL_ANALYSIS_GEN_DEFAULT
+    assert "never called declared" in EVAL_ANALYSIS_GEN_DEFAULT
+
+    memo = memo_payload(bundle)
+    memo["questions"] = []  # the toy memo answers the toy campaign's question; this one declares none
+    analysis, _insights = await generate_analysis(
+        bundle,
+        prompt=PROMPT,
+        model=MODEL,
+        client=FixturedClient(json.dumps(memo)),
+        prompt_id=PROMPT_ID,
+        bundle_assembled_at=utc_now_iso(),
+        profile=fixture.host.eval_host.profile,
+    )
+    report = build_report(analysis)
+
+    assert analysis.design_snapshot is None
+    (said,) = _scope_said(report)
+    assert said.text == NO_DESIGN_EXPLORATORY and said.section == "summary"
+    assert all(block.section == "summary" for block in report.blocks[: report.blocks.index(said) + 1])
+
+
+async def test_a_declared_campaign_with_no_question_keeps_the_no_question_line(evals: MountedTool) -> None:
+    fixture = ops_fixture()
+    outcome = await _create(evals, fixture, declared_design=_design(questions=[]))
+    assert not outcome.is_error, outcome.text
+    eval_host = fixture.host.eval_host
+    stored = eval_host.storage.load_campaign(outcome.structured["id"], TOYHOST_SCOPE)
+    assert stored is not None
+
+    bundle = assemble_context_bundle(stored, storage=eval_host.storage, profile=eval_host.profile)
+
+    assert bundle.reading_scope.disclosure == NO_QUESTION_EXPLORATORY, "a declared design is not called undeclared"

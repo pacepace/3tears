@@ -901,6 +901,15 @@ def resolve_bar_name(
     )
 
 
+class UndeclarableAxisError(ValueError):
+    """A declared axis this host will not accept: neither a registered lever nor a recognised open-family member.
+
+    A :class:`ValueError` like every refusal :func:`refuse_an_undeclarable_design` raises, and distinct so the
+    authoring surface can point its author at the one call listing what IS declarable
+    (:func:`~threetears.evals.analysis.campaigns.declarable_axes`) — a pointer that would be noise on a refused bar.
+    """
+
+
 def refuse_an_undeclarable_design(
     design: CampaignDesign,
     *,
@@ -965,12 +974,11 @@ def refuse_an_undeclarable_design(
         profile: The host whose levers, measures and bars the declaration is checked against.
 
     Raises:
-        ValueError: An axis the host will not accept — neither a registered lever nor a
+        UndeclarableAxisError: An axis the host will not accept — neither a registered lever nor a
             recognised open-family member — naming the
-            axis and carrying the registry's own ``axis_remedy`` as the vocabulary to pick from; a
-            bar names nothing a verdict can be given on, naming the bar, why, and every set it
-            could have named; a
-            bar is looser than the registered incumbent, quoting the
+            axis and carrying the registry's own ``axis_remedy`` as the vocabulary to pick from.
+        ValueError: A bar names nothing a verdict can be given on, naming the bar, why, and every
+            set it could have named; a bar is looser than the registered incumbent, quoting the
             registered value; or a bar contradicts the declared better-direction of what it names,
             naming it and which way its descriptor runs.
     """
@@ -991,7 +999,9 @@ def refuse_an_undeclarable_design(
         # `lever_names` is what left an author reading a vocabulary that omitted every open-family
         # member this same gate accepts: `lever_names` cannot express a family, and `axis_remedy`
         # can. One derivation, not two free to disagree.
-        raise ValueError(f"host '{profile.host_id}' cannot vary every axis this campaign declares — {reasons}")
+        raise UndeclarableAxisError(
+            f"host '{profile.host_id}' cannot vary every axis this campaign declares — {reasons}"
+        )
 
     # The naming check and the direction check read ONE resolver, and the bundle's bar adjudication
     # reads the same one — so what this gate admits is exactly what a verdict can be given on, and
@@ -1143,6 +1153,7 @@ __all__ = [
     "ControlDeclaration",
     "Question",
     "SweptAxis",
+    "UndeclarableAxisError",
     "UnreadableBarName",
     "JUDGED_MERIT_AXIS",
     "axis_in_question_scope",

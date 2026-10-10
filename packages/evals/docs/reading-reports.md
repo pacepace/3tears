@@ -133,9 +133,9 @@ of the time, and a t-test, or the exact sign-flip reading of a difference with n
 called such samples equivalent up to three times in four. The price is that equivalence on a small margin
 takes many cases, whatever the test: identical arms show a pass rate within 0.25 from 12 shared cases, within
 0.1 from 33, and a 1–5 score within 0.5 from 26 (no valid test could do it in fewer than 11, 29 and 23).
-Below that the row reads `not_separated`, which claims nothing. On a measure with no declared range the test
-is the paired t-test, a large-sample reading with no such guarantee, and a difference with no spread is not
-tested for equivalence. Its p is corrected in the same Holm family as the separations, with the multiplier capped at the number of
+Below that the row reads `not_separated`, which claims nothing. A measure with a margin and no declared range
+is not tested for equivalence at all, since no test of a mean holds 5% without one: its rows never read
+`equivalent`, and the report names the measure once with the remedy, declare `value_range`. The p is corrected in the same Holm family as the separations, with the multiplier capped at the number of
 compared rows (Shaffer's refinement: a difference cannot be both zero and at least the margin), so the
 chance that any verdict in the family is wrong stays at 5%.
 
@@ -170,8 +170,10 @@ A campaign's declared questions say what it set out to learn. A reading on no ax
 **exploratory**: worth reporting as a lead for the next campaign, never as a confirmed answer. Where
 questions are declared, the bundle lists those readings (`reading_scope`), the code-only report names them
 under the questions, and a finding resting only on them carries a `Scope` fact. Where none are declared,
-every finding is exploratory, and the report says so once near the top rather than on every row. A
-guardrail is never exploratory.
+every finding is exploratory, and the report says so once at the top rather than on every row. A campaign
+that declared no design at all is an exploratory campaign, and that sentence says so: its readings confirm
+nothing, and the design its comparisons read was inferred from the runs, not declared
+([when to declare one](choosing-a-design.md)). A guardrail is never exploratory.
 
 ## Methods
 
@@ -185,7 +187,7 @@ unit of analysis: a case's repeats are averaged first, because they are not inde
 | Mean composite | The mean of each result's capability dimensions put on 0–1, per case first. Every pooled composite (run summary, compare, pivot cell, frontier point, history point, a lever's dispersion) names the dimension sets it was meaned over, and a pool whose results carried different sets is marked *ragged*: its mean averages different questions. |
 | pass^k | An attempt passes when every goal-state check passed and every capability criterion reached the behavior's pass threshold (3 of 5 unless declared; recorded as `rubric_threshold`, printed as `pass^k (k=3, criterion >= 4 of 5)`). An attempt with no goal-state check and no judge, such as a classifier scored only against its expected label, has nothing to pass: it is left out and counted (`n_no_criterion_excluded`), and an arm with none measurable has no pass^k (`pass_hat_k_unmeasured_reason`), never 0. Unbiased C(c, k) / C(n, k) per case, averaged over the cases with n ≥ k, pooled across the runs of one cell; its interval is Clopper–Pearson on an effective size. |
 | A contrast against the control | Paired t-test on per-case means over the shared cases (two or more), else Welch's t on Hsu's `min(n_a, n_b) − 1` df; a gap with no spread is read by the exact permutation test, as for scope divergence, with no interval and no g. Effect size Hedges' g (g_z when paired). Holm correction within each family; interval Bonferroni at 1 − α/m. |
-| `equivalent` | Paired TOST against the measure's `materiality_threshold`, in the same Holm family, capped at the number of compared rows (Shaffer); on a declared range each one-sided test is the bounded test by betting (Waudby-Smith & Ramdas), which holds α for any distribution on the range at any n; with no range the one-sided t-test, and a difference with no spread is not tested. |
+| `equivalent` | Paired TOST against the measure's `materiality_threshold`, in the same Holm family, capped at the number of compared rows (Shaffer); each one-sided test is the bounded test by betting (Waudby-Smith & Ramdas) on the measure's declared range, which holds α for any distribution on the range at any n; a measure with no declared range is not tested for equivalence. |
 | A bar | Three-valued: the cell's interval against the threshold less the margin (cleared, missed, undecided). A seeded threshold is the incumbent's mean moved √2 − 1 of its half-width toward the permissive end. |
 | A guardrail | Non-inferiority: the 95% interval on arm − control against zero change less the margin. |
 | Scope divergence, mechanism checks | The difference tested directly, paired or Welch as for a contrast; a gap with no spread is read by an exact permutation test, which can reach 0.05 only from six shared cases, or unshared where 2 / C(n_a + n_b, n_a) ≤ 0.05 (four a side, or three against five). |

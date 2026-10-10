@@ -180,6 +180,11 @@ def create_campaign(
     campaign's runs and the key is resolved from it exactly as :func:`set_campaign_control` resolves
     one. A design that types ``control`` itself is held to the key's shape by the contract.
 
+    **The design is optional.** A campaign created without one is exploratory — someone learning to run
+    evals, or testing an intuition with no settled question — and that is derived from
+    ``declared_design is None`` wherever it is read, never stored as a second flag: its report and analysis
+    bundle say so once, and its analysis reads a design inferred from the runs.
+
     Args:
         storage: The campaign store.
         definition: Campaign fields. Any ``run_ids`` it carries must live in ``scope_id``.
@@ -335,16 +340,21 @@ def _gate_declaration(
 
     Raises:
         ValidationFailedError: An axis the host will not accept — neither a registered
-            lever nor a recognised open-family member — a bar naming neither a described
+            lever nor a recognised open-family member, pointing at :func:`declarable_axes` — a bar naming neither a described
             measure nor a rubric dimension or goal-state check of the campaign's template, a
             bar is looser than the registered incumbent, a bar contradicts the better-direction
             of what it names.
     """
-    from threetears.evals.contracts.declaration import refuse_an_undeclarable_design
+    from threetears.evals.contracts.declaration import UndeclarableAxisError, refuse_an_undeclarable_design
 
     template = storage.load_template(campaign.template_id, campaign.scope_id) if campaign.template_id else None
     try:
         refuse_an_undeclarable_design(design, behavior=campaign.behavior, template=template, profile=profile)
+    except UndeclarableAxisError as e:
+        raise ValidationFailedError(
+            f"invalid campaign design: {str(e).rstrip('.')}. `declarable_axes()` lists every axis this host accepts — its levers and "
+            "the open families whose members it recognises — read from the registry this gate decides with"
+        ) from e
     except ValueError as e:
         raise ValidationFailedError(f"invalid campaign design: {e}") from e
 

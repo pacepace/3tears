@@ -23,6 +23,7 @@ from typing import NamedTuple
 import pytest
 
 from threetears.evals.analysis.stats import (
+    EQUIVALENCE_NEEDS_RANGE,
     SIGNIFICANCE_ALPHA,
     bar_seed,
     interval_clears,
@@ -232,13 +233,29 @@ def test_without_a_declared_margin_no_read_claims_equivalence() -> None:
     assert all(label != "equivalent" and p is None for label, p in readings)
 
 
-def test_a_precisely_measured_null_inside_the_margin_reads_equivalent() -> None:
-    """Equivalence is reachable: no true change, fifteen cases, spread at the margin — mostly `equivalent`.
+def test_a_precisely_measured_null_with_a_margin_and_no_range_is_never_equivalent() -> None:
+    """No true change, fifteen cases, spread at the margin — and no declared range, so no test (#695).
 
-    Simulated: about 92%. At p = 0.92 the standard error is sqrt(0.92 * 0.08 / 4000) ≈ 0.0043, so
-    0.85 is about sixteen standard errors below.
+    The paired t TOST this replaced called about 92% of these equivalent, and the same t TOST claimed equivalence
+    11-13% of the time against 5% on skewed coarse values. No test of a mean holds α without a range (Bahadur and
+    Savage), so the engine refuses: none reads ``equivalent``, and each names the remedy. Equivalence on a
+    declared range is reachable, at the rate ``test_simulated_equivalence`` pins.
     """
     rng = random.Random(5592)
-    labels = Counter(_paired(rng, 15, 0.0, 0.2, 0.2)[0] for _ in range(REPS))
+    verdicts = []
+    for _ in range(500):
+        baseline = [rng.gauss(0.0, 1.0) for _ in range(15)]
+        current = [value + rng.gauss(0.0, 0.2) for value in baseline]
+        verdicts.append(
+            paired_change(
+                baseline,
+                current,
+                min_absolute_change=0.0,
+                min_relative_change=0.0,
+                higher_is_better=True,
+                equivalence_margin=0.2,
+            )
+        )
 
-    assert labels["equivalent"] / REPS >= 0.85
+    assert not [v for v in verdicts if v.label == "equivalent" or v.equivalence_p is not None]
+    assert all(v.equivalence_untested_reason == EQUIVALENCE_NEEDS_RANGE for v in verdicts)

@@ -2,8 +2,10 @@
 
 **For** anyone planning work on the engine, or wondering whether a weakness in a report is known. **Answers:**
 what is missing today and why it matters. Each entry is a gap in today's code, or a limit chosen on purpose and marked as such: what is missing, why it
-matters, and the fix where one is known. Each has a tracking issue; the change that closes it deletes its entry. The figures behind several entries are in [measuring soundly](measuring-soundly.md),
-and the outside sources in [prior art](prior-art.md).
+matters, and the fix where one is known. Each has a tracking issue; the change that closes it deletes its entry,
+except a limit decided on purpose, which stays, marked "Decided in" its issue with the decision, so the record
+survives. The figures behind several entries are in [measuring soundly](measuring-soundly.md), and the outside
+sources in [prior art](prior-art.md).
 
 ## Measurement
 
@@ -45,6 +47,18 @@ The frontier, which ranks contestants against an absolute bar with no control, l
 out of pass^k and the composite but does not disqualify a contestant on one, and says so
 (`TwoPillarDisclosure`). Fix: a declared margin per judged guardrail, and a frontier rule for the boundary
 pillar.
+
+### Equivalence needs a declared range (accepted limit)
+
+Decided in [#695](https://github.com/pacepace/3tears/issues/695): a measure that declares a margin and no
+`value_range` is never tested for equivalence, so it never reads `equivalent`.
+
+With no declared range no test of a mean holds its error rate at a few cases (an unbounded value can hide a rare
+large move). The paired t-test the engine used there claimed `equivalent` 11-13% of the time against 5% on skewed
+coarse values. Every engine measure with a margin declares its range, so this binds host measures. Such a
+comparison still reads `improved`, `regressed` or `not_separated`; its equivalence is untested, with the reason
+"declare value_range on this measure to test equivalence", and a report says so once per measure. Fix, on the
+host's side: declare the measure's range.
 
 ## Judging
 
@@ -99,7 +113,8 @@ separation needs 120 results.
 
 ### Pairwise judging (declined for now)
 
-Tracked in [#599](https://github.com/pacepace/3tears/issues/599).
+Decided in [#599](https://github.com/pacepace/3tears/issues/599): declined for now. Every judged score stays a
+single-trial score.
 
 All judging scores one trial alone. For subjective comparisons (tone, style), practitioners find pairwise
 judging with position swap more reliable. It was deliberately not adopted, but "is arm B better than arm
@@ -120,7 +135,8 @@ contribution removed, which makes a two-arm fold testable.
 
 ### A shared third-party quota can still be exhausted (accepted limit)
 
-Tracked in [#600](https://github.com/pacepace/3tears/issues/600).
+Decided in [#600](https://github.com/pacepace/3tears/issues/600): an accepted limit. The ceiling stays in memory
+and per run, and a cross-run, host-declared per-provider quota is not planned.
 
 The per-run metered-call ceiling (`run/metering.py`) refuses calls past a run's limit. It is in memory
 and per run, so concurrent runs, out-of-run calls and the host's live traffic can exhaust one provider

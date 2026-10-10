@@ -17,6 +17,10 @@ lattice, pass/fail differences with and without a rare full drop, 1-5 difference
 four-point drop or symmetric noise — and checks the false-equivalence rate is at most α within Monte-Carlo
 error in every cell. If the t-test or the sign-flip reading of a sample with no spread came back on a declared
 range, the rare-drop cells would fail at once (``test_the_simulation_catches_the_readings_it_replaced``).
+
+**With no declared range nothing is tested (#695).** No test of a mean holds α there, and the paired t TOST the
+engine used until then claimed ``equivalent`` 11-13% of the time on the same cells; the engine now refuses, and
+the refusal names the remedy (``test_with_no_range_nothing_is_ever_called_equivalent``).
 """
 
 from __future__ import annotations
@@ -28,8 +32,10 @@ from fractions import Fraction
 import pytest
 
 from threetears.evals.analysis.stats import (
+    EQUIVALENCE_NEEDS_RANGE,
     SIGNIFICANCE_ALPHA,
     bounded_mean_p,
+    equivalence_untested_reason,
     paired_equivalence,
     t_critical_two_sided,
 )
@@ -68,15 +74,40 @@ def _support(name: str, margin: Fraction) -> tuple[list[Fraction], list[float]]:
     return values, [float(w) for w in weights]
 
 
+def _t_tost_equivalent(diffs: list[Fraction], margin: float) -> bool:
+    """The reading the engine used with no declared range until #695, kept here only as the simulation's foil.
+
+    The paired t TOST: equivalent when both one-sided t-tests reject at α — exactly when the (1 − 2α) t interval on
+    the mean difference sits inside ± the margin. A sample with no spread has no t, and was untested.
+    """
+    values = [float(d) for d in diffs]
+    n = len(values)
+    mean = sum(values) / n
+    sd = math.sqrt(sum((v - mean) ** 2 for v in values) / (n - 1))
+    if sd == 0.0:
+        return False
+    half = t_critical_two_sided(1 - 2 * SIGNIFICANCE_ALPHA, n - 1) * sd / math.sqrt(n)
+    return -margin < mean - half and mean + half < margin
+
+
 def _false_equivalence_rate(
-    shape: str, margin: Fraction, n: int, value_range: tuple[float, float] | None, replicates: int = REPLICATES
+    shape: str,
+    margin: Fraction,
+    n: int,
+    value_range: tuple[float, float] | None,
+    replicates: int = REPLICATES,
+    *,
+    reading: str = "engine",
 ) -> float:
     values, weights = _support(shape, margin)
     rng = random.Random(f"tost-{shape}-{margin}-{n}")
     claimed = 0
     for _ in range(replicates):
         diffs = rng.choices(values, weights, k=n)
-        claimed += paired_equivalence(diffs, float(margin), value_range=value_range)[0] is True
+        if reading == "t":
+            claimed += _t_tost_equivalent(diffs, float(margin))
+        else:
+            claimed += paired_equivalence(diffs, float(margin), value_range=value_range)[0] is True
     return claimed / replicates
 
 
@@ -118,13 +149,25 @@ def test_a_false_equivalence_is_claimed_at_most_alpha_on_every_coarse_support(
     ],
 )
 def test_the_simulation_catches_the_readings_it_replaced(shape: str, margin: Fraction, n: int, old_rate: float) -> None:
-    """With no declared range the engine still reads a spread by the t-test and these cells go over α — what the
-    old reading did on every range. ``old_rate`` is what the old reading measured (the t-test where the
-    differences had spread, ``2 ** -n`` where they had none); the no-range reading, untested where there is no
-    spread, still exceeds α, which is the proof the cells above would catch either reading coming back."""
+    """The t TOST — the engine's reading with no declared range until #695, and on every range before #693 — goes
+    over α on these cells. ``old_rate`` is what the old reading measured (the t-test where the differences had
+    spread, ``2 ** -n`` where they had none); the t reading alone, untested where there is no spread, still exceeds
+    α, which is the proof the cells above would catch it coming back."""
     replicates = 4000
-    rate = _false_equivalence_rate(shape, margin, n, None, replicates)
+    rate = _false_equivalence_rate(shape, margin, n, None, replicates, reading="t")
     assert rate > at_most(SIGNIFICANCE_ALPHA, replicates) and old_rate > SIGNIFICANCE_ALPHA
+
+
+@pytest.mark.parametrize("n", [5, 12, 30])
+@pytest.mark.parametrize(("shape", "margin", "value_range"), CELLS, ids=lambda v: str(v))
+def test_with_no_range_nothing_is_ever_called_equivalent(
+    shape: str, margin: Fraction, value_range: tuple[float, float], n: int
+) -> None:
+    """A margin with no declared range is refused outright (#695): on the cells where the t TOST went over α, and on
+    every other, nothing reads equivalent, and the refusal names the remedy."""
+    assert _false_equivalence_rate(shape, margin, n, None, replicates=200) == 0.0
+    assert equivalence_untested_reason(float(margin), None) == EQUIVALENCE_NEEDS_RANGE
+    assert equivalence_untested_reason(float(margin), value_range) is None
 
 
 class TestKnownAnswers:
@@ -146,15 +189,11 @@ class TestKnownAnswers:
         """No t, and no bound on a case that moved unseen: no test decides, so neither label nor p."""
         assert paired_equivalence([0.0] * 30, 0.5) == (None, None)
 
-    def test_with_no_range_a_spread_is_read_by_the_t_test(self) -> None:
-        """Equivalent exactly when the 90% t interval on the mean difference sits inside ± the margin."""
+    def test_with_no_range_a_spread_is_not_tested_either(self) -> None:
+        """A sample whose 90% t interval sits well inside ± the margin — equivalent to the t TOST — is untested."""
         diffs = [0.1, -0.1, 0.05, 0.0, -0.05, 0.02]
-        n, mean = len(diffs), sum(diffs) / len(diffs)
-        sd = math.sqrt(sum((d - mean) ** 2 for d in diffs) / (n - 1))
-        half = t_critical_two_sided(1 - 2 * SIGNIFICANCE_ALPHA, n - 1) * sd / math.sqrt(n)
-        for margin in (abs(mean) + half * 1.01, abs(mean) + half * 0.99):
-            equivalent, p = paired_equivalence(diffs, margin)
-            assert p is not None and equivalent is (margin > abs(mean) + half)
+        assert _t_tost_equivalent([Fraction(d).limit_denominator() for d in diffs], 1.0)
+        assert paired_equivalence(diffs, 1.0) == (None, None)
 
     def test_a_difference_outside_the_declared_range_is_untested(self) -> None:
         """Values that contradict their declared range leave its bound no bound: no test, rather than a wrong one."""

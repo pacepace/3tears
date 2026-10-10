@@ -926,7 +926,8 @@ def engine_actions() -> tuple[Action, ...]:
                 "optionally its questions, bars and merit priority — and is refused, naming why, when this host "
                 "cannot honour it: an axis it does not declare, a bar looser than the registered one. control_from_run_id "
                 "names the run whose variant every other cell is read against. Omit both and the campaign is "
-                "undeclared, and its analysis infers the design from the runs."
+                "exploratory: its report and analysis say once that its readings confirm nothing, and its design is "
+                "inferred from the runs."
             ),
         ),
         Action(

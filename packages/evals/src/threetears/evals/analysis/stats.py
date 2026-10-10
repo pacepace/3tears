@@ -94,10 +94,34 @@ UNPAIRED_TEST_NAME = (
 #: The equivalence test the change classifier runs beside the paired test, named for
 #: the same reason: an `equivalent` label names the statistics it rests on.
 EQUIVALENCE_TEST_NAME = (
-    "two one-sided paired tests (TOST) against ± the measure's declared margin: on a declared range, bounded tests "
-    "by betting that hold α for any distribution on it at every n; with no range, one-sided t-tests (approximate), "
-    f"α={SIGNIFICANCE_ALPHA}"
+    "two one-sided paired tests (TOST) against ± the measure's declared margin, each a bounded test by betting on "
+    "the measure's declared range, which holds α for any distribution on it at every n; a measure declaring no "
+    f"range is not tested for equivalence, α={SIGNIFICANCE_ALPHA}"
 )
+
+#: Why a measure that declares a margin and no range is never tested for equivalence — the reason every surface
+#: carrying the refusal states, naming the remedy first.
+EQUIVALENCE_NEEDS_RANGE = (
+    "declare value_range on this measure to test equivalence: it declares a margin and no range, and with no range "
+    "no test of a mean holds its error rate (an unbounded value can hide a rare large move), so equivalence is "
+    "untested and nothing here says the two are alike"
+)
+
+
+def equivalence_untested_reason(margin: float | None, value_range: tuple[float, float] | None) -> str | None:
+    """Why :func:`paired_equivalence` refuses a measure's margin outright, or None when it does not.
+
+    One derivation for every surface that carries the refusal beside its verdict. Only the missing range is named
+    here: the per-sample refusals (too few pairs, a difference outside the range) are the test's own outcome.
+
+    Args:
+        margin: The measure's declared margin, or None.
+        value_range: The measure's declared inclusive bounds, or None.
+
+    Returns:
+        :data:`EQUIVALENCE_NEEDS_RANGE` when a positive margin is declared with no range, else None.
+    """
+    return EQUIVALENCE_NEEDS_RANGE if margin is not None and margin > 0.0 and value_range is None else None
 
 
 def _sample_std(values: list[float]) -> float:
@@ -193,16 +217,6 @@ def _student_t_two_sided_p(t: float, df: float) -> float:
     if df <= 0.0:
         return float("nan")
     return _betai(0.5 * df, 0.5, df / (df + t * t))
-
-
-def _student_t_upper_tail(t: float, df: float) -> float:
-    """One-tailed ``P(T > t)`` on ``df`` degrees of freedom, from the two-sided closed form.
-
-    The t distribution is symmetric, so the upper tail is half the two-sided p above zero and one
-    minus that half below it.
-    """
-    half = 0.5 * _student_t_two_sided_p(t, df)
-    return half if t >= 0.0 else 1.0 - half
 
 
 @lru_cache(maxsize=1024)
@@ -1236,16 +1250,18 @@ class ChangeVerdict(NamedTuple):
     #: (:func:`separation_p`'s reading of the same pattern). ``None`` when the verdict
     #: is ``untested``.
     p_value: float | None = None
-    #: The margin the equivalence test ran against, in the measure's units — the
+    #: The margin the equivalence test runs against, in the measure's units — the
     #: measure's declared materiality threshold. ``None`` when none was declared, and
-    #: then no equivalence test ran and no label claims one.
+    #: then no equivalence test ran and no label claims one. Declared with no range, no
+    #: test ran either, and ``equivalence_untested_reason`` says so.
     equivalence_margin: float | None = None
     #: The TOST p: the larger of the two one-sided p's, thresholded at α — each the bounded
-    #: test's on the measure's declared range, a t-test's where it declares none
-    #: (:func:`paired_equivalence`). ``None`` wherever no equivalence test could decide — no
-    #: margin, fewer than two pairs, a difference outside the declared range, or with no range
-    #: a difference with no spread.
+    #: test's on the measure's declared range (:func:`paired_equivalence`). ``None`` wherever no equivalence test could decide — no
+    #: margin, no declared range, fewer than two pairs, or a difference outside the declared range.
     equivalence_p: float | None = None
+    #: Why a measure with a margin was not tested for equivalence at all: it declares no range
+    #: (:data:`EQUIVALENCE_NEEDS_RANGE`, which names the remedy). ``None`` otherwise.
+    equivalence_untested_reason: str | None = None
 
 
 #: The largest fraction of its capital :func:`bounded_mean_p` stakes on one case: the betting fraction is capped
@@ -1341,10 +1357,11 @@ def paired_equivalence(
     differences (width 4) within 0.5 need 23 agreeing pairs under any valid test, and 26 under this one. Below that the test
     still runs and its p says the data could not show equivalence, which claims nothing either way.
 
-    **Without a declared range there is no finite-sample-valid test of a mean** (Bahadur and Savage 1956:
-    an unbounded value can hide a rare large move), and each one-sided test is the t-test, the conventional
-    large-sample reading; it can exceed α on skewed or coarse values, which is why a coarse measure declares
-    its range. A sample with no spread then has no t and no bound, so it is untested.
+    **Without a declared range nothing is tested** (:data:`EQUIVALENCE_NEEDS_RANGE`). There is no
+    finite-sample-valid test of a mean then (Bahadur and Savage 1956: an unbounded value can hide a rare large
+    move), and the paired t TOST this used to fall back on claimed ``equivalent`` 11-13% of the time against a
+    nominal 5% on skewed coarse values (#695). An ``equivalent`` reading is the one claim that two arms are
+    alike, so it is never made at an error rate above α: a measure with a margin declares its range to be tested.
 
     Args:
         diffs: The paired differences, current minus baseline, in a fixed case order — exact
@@ -1353,34 +1370,18 @@ def paired_equivalence(
         value_range: The measure's declared inclusive bounds, or None when it declares none.
 
     Returns:
-        ``(equivalent, p)``. Both None when no test could decide: no positive margin, fewer than two
-        pairs, a difference outside ± the range's width (the declared range is contradicted, so its bound
-        is not a bound), or with no range a difference with no spread or a spread that vanishes in
-        floating point.
+        ``(equivalent, p)``. Both None when no test could decide: no positive margin, no declared range
+        (:func:`equivalence_untested_reason` says so), fewer than two pairs, or a difference outside ± the
+        range's width (the declared range is contradicted, so its bound is not a bound).
     """
     n = len(diffs)
-    if margin is None or margin <= 0.0 or n < 2:
+    if margin is None or margin <= 0.0 or value_range is None or n < 2:
         return None, None
     exact = [exact_decimal(d) for d in diffs]
-    if value_range is not None:
-        width = exact_decimal(value_range[1]) - exact_decimal(value_range[0])
-        bounds = (float(-width), float(width))
-        if any(abs(d) > width for d in exact):
-            return None, None
-        p = _bounded_tost_p(exact, margin, bounds)
-        return p < SIGNIFICANCE_ALPHA, p
-    if no_spread_p([Fraction(0)] * n, exact, paired=True) is not None:
+    width = exact_decimal(value_range[1]) - exact_decimal(value_range[0])
+    if any(abs(d) > width for d in exact):
         return None, None
-    values = [float(d) for d in exact]
-    mean = sum(values) / n
-    sd = _sample_std(values)
-    if sd == 0.0:
-        return None, None
-    se = sd / math.sqrt(n)
-    df = float(n - 1)
-    p_above_lower = _student_t_upper_tail((mean + margin) / se, df)
-    p_below_upper = _student_t_upper_tail((margin - mean) / se, df)
-    p = max(p_above_lower, p_below_upper)
+    p = _bounded_tost_p(exact, margin, (float(-width), float(width)))
     return p < SIGNIFICANCE_ALPHA, p
 
 
@@ -1445,7 +1446,9 @@ def paired_change(
             when it declares none — then no equivalence test runs and no label
             claims one.
         value_range: The measure's declared inclusive bounds, or None. The equivalence test reads it
-            (:func:`paired_equivalence`): on a declared range its error rate holds at every n.
+            (:func:`paired_equivalence`): on a declared range its error rate holds at every n, and with
+            none it does not run, so the move never reads ``"equivalent"`` and the verdict carries
+            :data:`EQUIVALENCE_NEEDS_RANGE` as its ``equivalence_untested_reason``.
 
     Returns:
         A :class:`ChangeVerdict`. ``delta``/``relative_delta`` are ``None`` only
@@ -1533,6 +1536,7 @@ def paired_change(
             p_value,
             equivalence_margin,
             equivalence_p,
+            equivalence_untested_reason(equivalence_margin, value_range),
         )
 
     if significant is None:
@@ -1622,7 +1626,8 @@ def level_difference[Case: Hashable](
         equivalence_margin: The measure's declared margin, or None. With one, a paired difference is also
             tested for equivalence (:func:`paired_equivalence`); an unpaired one never is.
         value_range: The quantity's declared inclusive bounds, or None. The equivalence test reads it
-            (:func:`paired_equivalence`): on a declared range its error rate holds at every n.
+            (:func:`paired_equivalence`): on a declared range its error rate holds at every n; with none
+            no equivalence test runs.
 
     Returns:
         A :class:`LevelDifference`.
@@ -1834,6 +1839,7 @@ def lognormal_sum_prediction_band(history: Sequence[float], n_future: int) -> tu
 
 __all__ = [
     "BAR_SEED_HALF_WIDTH_FRACTION",
+    "EQUIVALENCE_NEEDS_RANGE",
     "EQUIVALENCE_TEST_NAME",
     "GuardrailVerdict",
     "INTERVAL_LEVEL",
@@ -1855,6 +1861,7 @@ __all__ = [
     "cohen_kappa",
     "composite_significance",
     "difference_interval",
+    "equivalence_untested_reason",
     "exact_decimal",
     "guardrail_decision",
     "hedges_j",

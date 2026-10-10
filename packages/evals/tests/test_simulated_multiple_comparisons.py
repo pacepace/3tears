@@ -195,10 +195,11 @@ class TestTheCampaignFamilyHoldsTheFamilyWiseError:
 class TestEveryVerdictTheFamilyReaches:
     """Equivalence verdicts and intervals join the family, and its error stays at α over all of them.
 
-    Four readings at 10 cases: two that do not move, with a wide margin, so the arms are often (rightly)
-    shown equivalent while any separation called on them is false; and two that move by exactly their
-    margin, the boundary where an equivalence claim is false as often as it can be while the separation is
-    real. Every verdict that could be wrong is counted.
+    Four readings: two that do not move, with a wide margin, so the arms are often (rightly) shown
+    equivalent while any separation called on them is false; and two that move by exactly their margin, the
+    boundary where an equivalence claim is false as often as it can be while the separation is real. Every
+    verdict that could be wrong is counted. Equivalence is tested only on a declared range (#695), so the
+    normal readings, which declare none, reach no equivalent verdict, and the pass-rate readings do.
     """
 
     #: 3,000 replicates: SE at α is 0.0040, a 4-SE band of ±0.016.
@@ -229,7 +230,35 @@ class TestEveryVerdictTheFamilyReaches:
         assert uncovered / self.REPLICATES <= at_most(SIGNIFICANCE_ALPHA, self.REPLICATES), (
             f"the intervals failed to cover together {uncovered / self.REPLICATES:.4f} of the time"
         )
-        assert equivalences / (2 * self.REPLICATES) > 0.5, "the fixture must reach the equivalent verdict"
+        assert equivalences == 0, "a margin with no declared range is never tested for equivalence (#695)"
+
+    #: 1,500 replicates: SE at α is 0.0056, a 4-SE band of ±0.023.
+    BOUNDED_REPLICATES = 1500
+
+    def test_on_a_declared_range_equivalence_joins_the_family_and_its_error_stays_at_alpha(self) -> None:
+        """Pass rates over 30 cases at five repeats, on their declared range [0, 1] with a margin of 0.3."""
+        rng = random.Random("family-equivalence-bounded")
+        margin, shifts = 0.3, [0.0, 0.0, 0.3, -0.3]
+        cases = [f"case-{index}" for index in range(30)]
+        wrong = equivalences = 0
+        for _ in range(self.BOUNDED_REPLICATES):
+            family = []
+            for shift in shifts:
+                # Each case's own rate, in [0.3, 0.7] so a shift of ±0.3 stays a probability and the true
+                # difference is exactly the shift.
+                rates = {case: rng.uniform(0.3, 0.7) for case in cases}
+                control = {case: sum(rng.random() < rates[case] for _ in range(5)) / 5 for case in cases}
+                contrast = {case: sum(rng.random() < rates[case] + shift for _ in range(5)) / 5 for case in cases}
+                family.append((control, contrast, True))
+            verdicts = family_verdicts(family, margins=[margin] * 4, value_ranges=[(0.0, 1.0)] * 4)
+            wrong += any(v.verdict in ("improved", "regressed") for v in verdicts[:2]) or any(
+                v.verdict == "equivalent" for v in verdicts[2:]
+            )
+            equivalences += sum(v.verdict == "equivalent" for v in verdicts[:2])
+        assert wrong / self.BOUNDED_REPLICATES <= at_most(SIGNIFICANCE_ALPHA, self.BOUNDED_REPLICATES), (
+            f"family-wise error over every verdict {wrong / self.BOUNDED_REPLICATES:.4f} against α={SIGNIFICANCE_ALPHA}"
+        )
+        assert equivalences / (2 * self.BOUNDED_REPLICATES) > 0.5, "the fixture must reach the equivalent verdict"
 
 
 # --- the bundle applies the rule ----------------------------------------------------------------------

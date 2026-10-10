@@ -116,6 +116,7 @@ from threetears.evals.analysis.stats import (
     clustered_standard_error,
     composite_significance,
     difference_interval,
+    equivalence_untested_reason,
     exact_decimal,
     guardrail_decision,
     holm_adjust,
@@ -937,7 +938,7 @@ class DesignArm(EvalDocumentModel):
 
 
 class RealizedDesign(EvalDocumentModel):
-    """What kind of experiment this campaign turned out to be — DERIVED from the runs.
+    """What kind of experiment this campaign turned out to be — INFERRED from the runs, never declared.
 
     **The derived twin of the declaration, and the two must not share a name.** The declaration
     (:class:`~threetears.evals.contracts.declaration.CampaignDesign`, on the campaign) says what an
@@ -1878,6 +1879,15 @@ class FamilyComparison(EvalDocumentModel):
             "audit and withheld from the writer, as `p_raw` is. None when no equivalence test ran."
         ),
     )
+    equivalence_untested_reason: str | None = Field(
+        default=None,
+        description=(
+            "Set when the measure declares a margin and no `value_range`: no equivalence test ran, because none "
+            "holds its error rate on a mean with no declared range, so this comparison can never read "
+            "`equivalent`. The sentence names the remedy: declare value_range. None otherwise, including where no "
+            "margin is declared."
+        ),
+    )
     equivalence_p_adjusted: float | None = Field(
         default=None,
         description="The TOST p adjusted within the family — the one figure an `equivalent` verdict rests on.",
@@ -2018,7 +2028,9 @@ class ReadingScope(EvalDocumentModel):
         default=None,
         description=(
             "Set when the campaign declares no live question: the one sentence saying every finding is "
-            "exploratory. None when questions are declared, where the two lists above carry the label."
+            "exploratory — and, when it declared no design at all (`declared_design` null), that it is an "
+            "exploratory campaign whose design was inferred from the runs. None when questions are declared, "
+            "where the two lists above carry the label."
         ),
     )
 
@@ -2028,6 +2040,33 @@ NO_QUESTION_EXPLORATORY = (
     "This campaign declares no live question, so every finding it supports is exploratory: nothing was asked "
     "before the evidence was read, and a pattern found in it is a lead for a campaign that asks, not an answer."
 )
+
+#: The same sentence for a campaign that declared no design at all — an exploratory campaign, which is a valid
+#: one: it has no question either, and the arms its comparisons read were inferred from the runs.
+NO_DESIGN_EXPLORATORY = (
+    "This campaign declares no design, so it is exploratory and its readings confirm nothing: nothing was asked "
+    "before the evidence was read, a pattern found in it is a lead for a campaign that declares one, not an "
+    "answer, and the design its comparisons read was inferred from the runs, not declared."
+)
+
+
+def exploratory_disclosure(declared: CampaignDesign | None) -> str | None:
+    """The one sentence saying a whole campaign is exploratory, or None when a live question makes it confirmatory.
+
+    One derivation for the bundle's ``reading_scope`` and the report built from a stored analysis, so the two
+    cannot word it differently. An undeclared campaign (``declared is None``) is exploratory by definition — that
+    is derived here, never stored as a flag of its own — and says so as such; a declared one with no live
+    question gets the no-question line.
+
+    Args:
+        declared: The campaign's declaration, or None when it declared none.
+
+    Returns:
+        The disclosure, or None when the campaign declares at least one live question.
+    """
+    if declared is None:
+        return NO_DESIGN_EXPLORATORY
+    return None if declared.live_questions() else NO_QUESTION_EXPLORATORY
 
 
 class AnalysisContextBundle(EvalDocumentModel):
@@ -2174,15 +2213,19 @@ class AnalysisContextBundle(EvalDocumentModel):
             "denominator every completeness claim needs: 'the answer addressed every declared axis' and 'each "
             "declared question got exactly one resolution' are both uncheckable without it, and inferring the "
             "declaration from `design` below would make coverage a description of whatever ran. None means the "
-            "campaign declared nothing, which is a different fact from declaring nothing to sweep."
+            "campaign declared nothing — an exploratory campaign, as `reading_scope.disclosure` says — which is a "
+            "different fact from declaring nothing to sweep."
         ),
     )
     design: RealizedDesign = Field(
         default_factory=RealizedDesign,
         description=(
-            "What kind of experiment this is — the run carrying the declared control, each cell's moved levers, and "
+            "What kind of experiment this is, inferred from the runs — never a declaration, and never to be "
+            "called declared: the run carrying the declared control, each cell's moved levers, and "
             "whether the design is one-factor-at-a-time. Read it before any comparison: it says which "
-            "runs were meant to be read together, which a curated bag of run ids cannot."
+            "runs were meant to be read together, which a curated bag of run ids cannot. What the campaign "
+            "declared is `declared_design`; where that is null, this is the only design there is, and it is "
+            "inferred from the runs."
         ),
     )
     incomplete_runs: dict[str, str] = Field(
@@ -2344,7 +2387,8 @@ class AnalysisContextBundle(EvalDocumentModel):
         default_factory=ReadingScope,
         description=(
             "Which readings no declared question asked about: exploratory, reportable as leads and never as "
-            "confirmed answers. Where no question is declared, one sentence says every finding is exploratory."
+            "confirmed answers. Where no question is declared, or no design, one sentence says every finding is "
+            "exploratory."
         ),
     )
     verdict_order: VerdictOrder = Field(
@@ -8159,6 +8203,11 @@ def _compare(
     # The equivalence test only where the separation test produced a p, so each equivalence hypothesis has
     # its comparison's separation hypothesis beside it in the family (see holm_adjust's max_true).
     margin = threshold if paired and threshold and p_raw is not None else None
+    # A margin with no declared range is not tested at all (#695): no test of a mean holds α without one, and
+    # `equivalent` is the one claim that arms are alike. The comparison says why, naming the remedy.
+    equivalence_refused = equivalence_untested_reason(margin, value_range)
+    if equivalence_refused is not None:
+        margin = None
     # The differences of exact values, so a float residue cannot pass for a spread nor a spread for a constant; on
     # the measure's declared range the bounded test decides either, at the error rate it states.
     _, equivalence_p_raw = paired_equivalence(
@@ -8189,6 +8238,7 @@ def _compare(
         p_raw=p_raw,
         equivalence_margin=margin,
         equivalence_p_raw=equivalence_p_raw,
+        equivalence_untested_reason=equivalence_refused,
         verdict="untested" if p_raw is None else "not_separated",
         untested_reason=untested_reason,
         materiality=None if delta is None else materiality(threshold, delta),
@@ -8414,7 +8464,7 @@ def _reading_scope(
     """
     questions = declared.live_questions() if declared is not None else []
     if not questions:
-        return ReadingScope(questions_declared=False, disclosure=NO_QUESTION_EXPLORATORY)
+        return ReadingScope(questions_declared=False, disclosure=exploratory_disclosure(declared))
     return ReadingScope(
         questions_declared=True,
         exploratory_measures=sorted(

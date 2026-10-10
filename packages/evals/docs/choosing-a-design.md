@@ -112,6 +112,18 @@ campaign = create_campaign(
 | `questions` | What you set out to learn. Their `merit_axes` set the Holm families, and a reading no question covers is [exploratory](reading-reports.md#readings-no-question-asked-about-exploratory). | a confirmatory answer |
 | `bars`, `merit_priority` | Thresholds tighter than the host's, and the tie-break order between merit axes. | a bar verdict, a tie-break |
 
+**Declare a design when you know the question; explore when you do not.** The design is optional. Declare
+one when the question is settled before the runs: you know which lever you are comparing, against which
+control, and what answer would change what you do. Only a declared question can confirm anything, so a
+decision you will act on needs one. Leave it out when you are learning how to run evals, or testing an
+intuition you cannot yet put as a question. A campaign with no design is **exploratory**: its report and its
+bundle say so once, at the top, and its readings confirm nothing. Its analysis reads the design inferred from
+the runs, and never calls that design declared. Do not declare a design you do not have just to get past this:
+a made-up question makes leads read as answers, which is worse than declaring none. When an exploratory
+campaign finds something worth knowing, declare a design for the campaign that tests it. A design that names
+an axis your host cannot vary is refused naming `declarable_axes()`, which lists the levers and open families
+your host accepts.
+
 **The control is a variant, not an earlier baseline run.** It is a configuration, resolved through any member
 run that carries it. A run of the incumbent from last month is not a control: run the control in the same
 launch as the other arms, on the same rig. A run of the same configuration from another launch pools into the
