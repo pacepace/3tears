@@ -305,6 +305,30 @@ controlled or not, and the apparatus, commissioned or witnessed). *Example:* "tr
 the v1 variant, held fixed = one case battery on a commissioned rig. Which design to declare for a question:
 [Choosing a campaign design](choosing-a-design.md).
 
+#### Control
+The arm every other arm in a campaign is tested against: usually what runs today. It is a variant, not a run,
+so any run of that configuration counts toward it. `compare` sets it from `control=`. *Example:* the v1 arm.
+
+#### Delta, interval and adjusted p
+What a comparison reports for each arm against the control, per reading. The **delta** is the arm's mean minus
+the control's, over the cases the test read. Its **interval** is where the true difference plausibly lies, widened so
+that every interval tested together holds at once, 95% of the time. The **p (Holm-adjusted)** is the p-value
+corrected for every comparison in its family; a verdict reads only that p. See
+[reading a comparison](reading-reports.md#reading-a-comparison).
+
+#### Verdict
+What a comparison's evidence supports, per arm and reading: **separated** (printed `improved` or `regressed`
+on the control), **not separated** (the cases could not tell the arms apart, which never means "no
+difference"), **equivalent** (shown inside a margin the measure declares), or **untested** (no test could
+decide). A guardrail is decided apart, as `held`, `breached` or `undecided`, and a bar as `cleared`, `missed` or
+`undecided`. See [reading a comparison](reading-reports.md#reading-a-comparison).
+
+#### Miss
+A result the candidate got wrong: a wrong label, a scorer that gave 0 or less, a failed goal check, a failed
+pass/fail judgement, or a result the candidate failed outright (it raised, say). An excluded result is never a
+miss. `summary.misses()` lists them, each with its reason; the [tutorial](tutorial.md#3-read-your-misses) says how
+to read them.
+
 #### Analysis bundle
 Everything code computed about a campaign, assembled once and fingerprinted (`AnalysisContextBundle`), so
 two analysis prompts run over the same fingerprint are comparable. Nothing is fetched while an analysis is
