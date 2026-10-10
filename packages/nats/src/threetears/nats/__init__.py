@@ -187,6 +187,7 @@ from threetears.nats.subject_permissions import (
     CROSS_PLATFORM_CACHE_INVALIDATE,
     DATA_VERSIONS_BUCKET_SUFFIX,
     KV_KEY_SCOPE_GRAMMAR,
+    KV_STREAM_PREFIX,
     WORKSPACE_LOCKS_BUCKET_SUFFIX,
     AgentBucketGrant,
     AgentTableGrant,
@@ -208,6 +209,7 @@ from threetears.nats.subject_permissions import (
     kv_bucket_names,
     kv_key_scope_for,
     kv_key_scope_for_service,
+    kv_stream_name,
 )
 from threetears.nats.subjects import (
     DEAD_LETTER_ORIGINAL_SUBJECT_HEADER,
@@ -467,6 +469,7 @@ __all__ = [
     "CROSS_PLATFORM_CACHE_INVALIDATE",
     "DATA_VERSIONS_BUCKET_SUFFIX",
     "KV_KEY_SCOPE_GRAMMAR",
+    "KV_STREAM_PREFIX",
     "WORKSPACE_LOCKS_BUCKET_SUFFIX",
     "AgentBucketGrant",
     "AgentTableGrant",
@@ -488,6 +491,7 @@ __all__ = [
     "kv_bucket_names",
     "kv_key_scope_for",
     "kv_key_scope_for_service",
+    "kv_stream_name",
     # NATS v2 user-JWT minting (decentralized auth)
     "account_public_key",
     "generate_account_seed",

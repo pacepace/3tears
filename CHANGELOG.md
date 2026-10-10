@@ -52,6 +52,14 @@ packages (bumped in lock-step).
   behind its own write and the fenced delete refused. The release now recognises that exact write
   (`LeaseHandle.in_flight_value`) and deletes it; another holder's entry still always survives.
 
+### NATS: a public composer for a KV bucket's stream name
+
+- **Added, `threetears.nats.subject_permissions.kv_stream_name(bucket)`** (and `KV_STREAM_PREFIX`;
+  both re-exported from `threetears.nats`), beside the bucket-name composers: the JetStream stream
+  backing a KV bucket, `KV_{bucket}`. Every place 3tears spelled it by hand now composes it -- the
+  KV stream config, live-config reads, stream info, the reconcile hint, `JsResource.stream_name`,
+  `NatsClient`'s bucket withdraw, the collection-key purge and the grant remedy text.
+
 ### Coordination: a lease on a bucket it was handed, whose key lapses with its holder; snapshot write claims held on it
 
 - **Added, `KVLease(None, bucket=...)`**: a lease over a bucket already bound (one another owner

@@ -67,6 +67,7 @@ __all__ = [
     "COORDINATION_BUCKET_SUFFIX_GRAMMAR",
     "DATA_VERSIONS_BUCKET_SUFFIX",
     "KV_KEY_SCOPE_GRAMMAR",
+    "KV_STREAM_PREFIX",
     "MAX_COORDINATION_BUCKETS",
     "MAX_COORDINATION_BUCKET_SUFFIX_CHARS",
     "SERVER_USER_INFO_SUBJECT",
@@ -165,6 +166,10 @@ TOOL_POD_OBJECTS_BUCKET_SUFFIX: Final[str] = "objects"
 #: naming which objects are current, watched by every replica of the pod. Declared with the Object
 #: Store, in the uniform pod-bucket shape.
 TOOL_POD_POINTERS_BUCKET_SUFFIX: Final[str] = "pointers"
+
+#: the prefix of the JetStream stream backing a KV bucket: a bucket ``<b>`` is the stream ``KV_<b>``, as
+#: NATS (and nats-py's ``create_key_value``) names it. Compose the name with :func:`kv_stream_name`.
+KV_STREAM_PREFIX: Final[str] = "KV_"
 
 #: the server's own answer to "what is my credential": a connection that publishes here gets its
 #: OWN user, account, permissions and remaining credential lifetime back on its inbox, and nothing
@@ -484,7 +489,7 @@ class JsResource:
         :rtype: str
         """
         if self.kind is JsResourceKind.KV_BUCKET:
-            return f"KV_{self.name}"
+            return kv_stream_name(self.name)
         if self.kind is JsResourceKind.OBJECT_STORE:
             return f"OBJ_{self.name}"
         return self.name
@@ -1456,6 +1461,22 @@ def coordination_bucket_name(scope: str, suffix: str, *, ns: str | None = None) 
     """
     _validate_coordination_suffix(suffix)
     return f"{ns if ns is not None else _ns()}-{scope}-{suffix}"
+
+
+def kv_stream_name(bucket: str) -> str:
+    """the JetStream stream backing a KV bucket, ``KV_{bucket}``.
+
+    The ONE composition, beside the bucket-name composers, so code that addresses a bucket's stream
+    (a stream-info read, a purge, a withdraw, a grant on the stream's API subjects) names the stream
+    the bucket really is instead of spelling the prefix by hand.
+
+    :param bucket: the fully-qualified bucket name, namespace prefix included (as
+        :func:`coordination_bucket_name` and :func:`tool_pod_pointers_bucket_name` return it)
+    :ptype bucket: str
+    :return: the stream's name
+    :rtype: str
+    """
+    return f"{KV_STREAM_PREFIX}{bucket}"
 
 
 def tool_pod_object_store_name(pod_id: str | UUID, *, ns: str | None = None) -> str:

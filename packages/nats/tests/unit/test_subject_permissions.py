@@ -20,6 +20,7 @@ import json
 import uuid
 
 import pytest
+from nats.js.api import StorageType
 
 from threetears.nats.subject_permissions import (
     AGENT_POD_PLATFORM_BUCKET_SUFFIXES,
@@ -48,9 +49,11 @@ from threetears.nats.subject_permissions import (
     kv_bucket_names,
     kv_key_scope_for,
     kv_key_scope_for_service,
+    kv_stream_name,
     tool_pod_object_store_name,
     tool_pod_pointers_bucket_name,
 )
+from threetears.nats.kv import build_kv_stream_config
 from threetears.nats.result_delivery import result_stream_name
 from threetears.nats.subjects import Subjects, parse_tool_pod_audit_subject, set_default_namespace
 from threetears.nats.user_jwt import generate_account_seed, js_api_grants_for_stream, mint_user_jwt
@@ -2772,3 +2775,29 @@ class TestAclInvalidationSubjectsAreRetired:
         assert {str(Subjects.acl_invalidate(kind)) for kind in ("membership", "assignment", "role")} <= set(
             perm.subscribe
         )
+
+
+class TestTheKvStreamNameIsComposedInOnePlace:
+    """a KV bucket's stream name has one public composer, beside the bucket-name composers.
+
+    Code that addresses a bucket's stream (a stream-info read, a purge, a withdraw) names it through
+    :func:`kv_stream_name`; the stream the bucket is declared as, and the stream a grant pins, are the
+    same composition, so the three can never name different streams.
+    """
+
+    def test_it_names_the_stream_nats_backs_a_bucket_with(self) -> None:
+        pointers = tool_pod_pointers_bucket_name(_POD_X, ns=_NS)
+        assert kv_stream_name(pointers) == f"KV_{pointers}"
+
+    def test_the_declared_stream_is_the_composed_one(self) -> None:
+        bucket = coordination_bucket_name("scope", "locks", ns=_NS)
+        declared = build_kv_stream_config(
+            bucket=bucket, ttl_seconds=0, history=1, storage_type=StorageType.MEMORY, direct=True
+        )
+        assert declared.name == kv_stream_name(bucket)
+
+    def test_the_granted_stream_is_the_composed_one(self) -> None:
+        pointers = {
+            r.name: r for r in build_permissions(Principal.TOOL_POD, pod_id=_POD_X, object_store=True).js_resources
+        }[tool_pod_pointers_bucket_name(_POD_X, ns=_NS)]
+        assert pointers.stream_name == kv_stream_name(pointers.name)

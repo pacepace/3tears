@@ -36,6 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_serializer
 from threetears.observe import get_logger
 
 from threetears.nats.hub_requests import ask_hub
+from threetears.nats.subject_permissions import kv_stream_name
 from threetears.nats.subjects import Subjects
 
 if TYPE_CHECKING:
@@ -220,5 +221,5 @@ async def purge_scoped_keys(jetstream: Any, *, bucket: str, scope: str, keys: li
         {"identity_token": "checked", "correlation_id": uuid7(), "keys": keys}
     )
     for key in checked.keys:
-        await jetstream.purge_stream(f"KV_{bucket}", subject=f"$KV.{bucket}.{scope}.{key}")
+        await jetstream.purge_stream(kv_stream_name(bucket), subject=f"$KV.{bucket}.{scope}.{key}")
     return len(checked.keys)
