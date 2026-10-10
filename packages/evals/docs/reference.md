@@ -1780,6 +1780,10 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`run_job_id(run_id: str) -> str`
 - **`run_launch`** · async function · Launch a template's runs, one per model, and return a job per run.
   <br>`run_launch(host: OpsHost, arguments: LaunchArguments, scope_id: str) -> JobsStarted`
+- **`runs_bisect`** · function · Split two runs' versioned inputs into those that differ, agree and cannot be decided, with each disclosure.
+  <br>`runs_bisect(host: EvalHost, baseline_run_id: str, candidate_run_id: str, scope_id: str) -> RunsBisected`
+- **`runs_bisected_text`** · function · Two runs' inputs split as text: each difference with both values, each undecided input, then every disclosure.
+  <br>`runs_bisected_text(bisected: RunsBisected) -> str`
 - **`runs_compare`** · function · Compare two runs' arms, with each run's completeness, clock and cassette disclosures beside the numbers.
   <br>`runs_compare(host: EvalHost, baseline_run_id: str, candidate_run_id: str, scope_id: str) -> RunsCompared`
 - **`runs_compared_text`** · function · Two runs compared as text: the arms, each reading with its delta and test, then every disclosure.
@@ -1843,6 +1847,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`RunDeleted`** · model · What deleting a run removed.
 - **`RunLine`** · model · One run, as a listing shows it.
 - **`RunListing`** · model · A scope's runs, newest first as the store lists them.
+- **`RunsBisected`** · model · Which versioned inputs differ between two runs, with what either run could not deliver said beside them.
 - **`RunsCompared`** · model · One run's arm against another's, with what either run could not deliver said beside the numbers.
 - **`SecondJudgeRead`** · model · A second judge's pass over a run, and what its pairs say: agreement between the judges, and drift.
 - **`SweepArguments`** · model · What a sweep names: its shared settings and campaign (`SweepSettings`), and its arms in order.
@@ -2479,6 +2484,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `reporter_cases_list` | `read` | `template_id`, `include_archived?` | List a reporter template's cases: which each campaign and memo launches, superseded or retired. |
 | `scope_pivot` | `read` | `row_factor`, `column_factor`, `metric?`, `weighting?`, `subject_filter?`, `run_status?`, `predicted_cost?`, `launched_run_ids?` | Aggregate one measure over the scope's observations by two coordinates, cell by cell. |
 | `runs_compare` | `read` | `baseline_run_id`, `candidate_run_id` | Compare one run's arm against another's: pass^k, mean composite, their deltas and the test. |
+| `runs_bisect` | `read` | `baseline_run_id`, `candidate_run_id` | Split the versioned inputs of two runs into those that differ, agree and cannot be decided. |
 | `scope_out_of_run_spend` | `read` | `purpose_filter?`, `launch_group_filter?`, `template_filter?` | List what the engine spent outside any run — case generations, rubric proposals and analysis generations — with totals. |
 | `scope_history` | `read` | `metric?`, `min_absolute_change?`, `min_relative_change?`, `subject_filter?`, `run_status?` | Series one measure over time for each contestant in the scope, flagging regressions. |
 | `scope_frontier` | `read` | `bar?`, `subject_filter?`, `run_status?` | Rank each subject's variants on quality, cost and latency, and name the cheapest that clears a bar. |
