@@ -371,3 +371,29 @@ def test_a_config_pinning_another_model_than_the_arm_is_refused() -> None:
             failure_describer=withhold_failure_detail,
             configs={FAITHFULNESS_DIM: config},
         )
+
+
+async def test_the_freeze_operation_loads_the_template_in_scope_and_renders_its_receipt() -> None:
+    from threetears.evals.actions import engine_actions
+    from threetears.evals.ops import JudgeCasesFreeze, judge_cases_freeze
+
+    host = toyhost_host()
+    source = await _judged_source(host)
+    template = _judge_template()
+    host.storage.save_template(template)
+    freeze = JudgeCasesFreeze(
+        template_id=template.id,
+        judged_run_ids=sorted({result.eval_run_id for result in source}),
+        criteria=[FAITHFULNESS_DIM],
+        into_case_set="faithfulness",
+    )
+
+    report = judge_cases_freeze(host, freeze, TOYHOST_SCOPE)
+
+    assert report.case_set is not None and report.case_set.version == 1 and len(report.cases) == len(source)
+    action = next(action for action in engine_actions() if action.name == "judge_cases_freeze")
+    assert action.permission == "write"
+    text = action.render(report)
+    assert f"{len(source)} judge case(s) of template {template.id}" in text and "case set faithfulness v1" in text
+    # The same freeze again answers with the version already listing exactly these cases.
+    assert judge_cases_freeze(host, freeze, TOYHOST_SCOPE).case_set == report.case_set

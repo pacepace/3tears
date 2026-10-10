@@ -111,3 +111,15 @@ frozen case, never a generated one.
 - `reporter_case_archive` retires a case or restores it.
 
 The template then launches through `run_launch`, by the reporter kind the host registers.
+
+## Judge campaigns: evaluating a judge itself
+
+A judge campaign (the `judge` kind) makes a judge configuration the subject: its model, its prompt per criterion and
+its temperature. It starts from frozen cases, never generated ones.
+
+- `judge_cases_freeze` (write) freezes judged runs (`judged_run_ids`)'s stored outputs into cases of a judge template: per judged dim of
+  each result, the evidence its judge read and the person ratings given on it as labels. With `into_case_set`, it mints
+  the set a launch targets. It answers with each case and every result it skipped, with why.
+- Then `run_launch` the judge template, one arm per judge: the arm's model, and its `config_ids` and `temperature`
+  as overlays. The trials call only the judge, and their spend is recorded under the `judge` role.
+  See [judges and calibration](judges-and-calibration.md#evaluating-a-judge-as-a-subject).

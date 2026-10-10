@@ -54,6 +54,7 @@ from threetears.evals.ops import (
     OutOfRunSpendReport,
     PivotTable,
     ReportDocument,
+    JudgeCasesFreeze,
     ReporterCaseFreeze,
     ReporterCaseListing,
     ResultDetail,
@@ -91,6 +92,7 @@ from threetears.evals.ops import (
     launch_estimate,
     report_read,
     reporter_case_archive,
+    judge_cases_freeze,
     reporter_case_freeze,
     reporter_cases_list,
     result_get,
@@ -112,6 +114,7 @@ from threetears.evals.ops import (
 from threetears.evals.schema.models import SecondJudge
 from threetears.evals.run import (
     DEFAULT_TEMPERATURE_REPEATS,
+    JudgeCaseFreezeReport,
     JudgeTemperatureComparison,
     JudgeTemperatureEstimate,
     SecondJudgeEstimate,
@@ -388,6 +391,10 @@ class ReportReadParams(EvalBaseModel):
 
     campaign_id: CampaignId
     format: Format = "markdown"
+
+
+class JudgeCasesFreezeParams(JudgeCasesFreeze):
+    """``judge_cases_freeze`` — the freeze's own arguments, declared once on :class:`~threetears.evals.ops.JudgeCasesFreeze`."""
 
 
 class ReporterCaseFreezeParams(ReporterCaseFreeze):
@@ -792,6 +799,12 @@ async def _report_read(host: OpsHost, caller: Caller, params: ReportReadParams) 
 async def _bars_propose(host: OpsHost, caller: Caller, params: CampaignParams) -> BarProposals:
     eval_host = host.eval_host
     return await run_blocking(eval_host.blocking_executor, bars_propose, eval_host, params.campaign_id, caller.scope_id)
+
+
+async def _judge_cases_freeze(host: OpsHost, caller: Caller, params: JudgeCasesFreezeParams) -> JudgeCaseFreezeReport:
+    eval_host = host.eval_host
+    freeze = JudgeCasesFreeze.model_validate(params.model_dump())
+    return await run_blocking(eval_host.blocking_executor, judge_cases_freeze, eval_host, freeze, caller.scope_id)
 
 
 async def _reporter_case_freeze(host: OpsHost, caller: Caller, params: ReporterCaseFreezeParams) -> FrozenReporterCase:
@@ -1540,6 +1553,26 @@ def engine_actions() -> tuple[Action, ...]:
                 "listed rather than refused, since this is where it is found; while one is listed, which case is "
                 "live cannot be decided. A pair holding more than one live case is named, since every launch of the "
                 "template refuses until one freeze supersedes them all."
+            ),
+        ),
+        Action(
+            name="judge_cases_freeze",
+            summary="Freeze stored judged outputs, their criteria and their labels into cases of a judge template.",
+            workflow=ANALYSE,
+            permission="write",
+            params=JudgeCasesFreezeParams,
+            result=JudgeCaseFreezeReport,
+            handler=_judge_cases_freeze,
+            render=render.render_judge_case_freeze,
+            example={"template_id": "tmpl-judge", "judged_run_ids": [run_id], "into_case_set": "faithfulness"},
+            detail=(
+                "A judge campaign measures a judge configuration as its subject, and its cases are never generated: "
+                "each is one stored output and the criterion it was judged on, with the evidence its judge read "
+                "rebuilt from what its run recorded and the person ratings given on it as labels. One case per judged "
+                "dim of each result; a result whose run did not record its judging, or whose template was edited "
+                "since, is skipped with why. With into_case_set, the next version of that set lists exactly these cases. "
+                "Then run_launch the judge template, one arm per judge (its model, and its overlays config_ids and "
+                "temperature); the trials call only the judge. Calls no model."
             ),
         ),
         Action(
