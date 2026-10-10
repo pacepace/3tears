@@ -94,6 +94,8 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
   <br>`fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> None`
 - **`goal_check_of`** · function · The check a measure name was minted for by `goal_check_measure`, or None.
   <br>`goal_check_of(name: str) -> str | None`
+- **`is_pass`** · function · Whether `call` is the engine's deliberate-pass entry rather than a call the candidate made.
+  <br>`is_pass(call: RecordedCall) -> bool`
 - **`judges_sharing_a_candidate_model`** · function · The dims whose judge is one of the run's candidate models: a model grading its own output.
   <br>`judges_sharing_a_candidate_model(effective_judges: dict[str, str] | None, candidate_models: Sequence[str]) -> dict[str, str]`
 - **`keep_fields`** · function · Return `document` reduced to the top-level `fields` it has — the meaning of `keep`.
@@ -325,6 +327,7 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
 - **`VariationLLM`** · protocol · The client the variation generator writes an `llm` axis's values with, naming the model it calls.
 - **`Viz`** · model · A visualization spec attached to a finding.
 - **`WorldEvent`** · model · One thing that moved a cell's world after it was seeded, in the order it happened.
+- **`WorldRound`** · model · A round whose stimulus is a world event rather than an actor's line.
 - **`WorldSeed`** · model · Initial state for the eval's stateful world.
 - **`WorldSession`** · class · One cell's handle on the host's world, and the record of what happened to it.
 - **`WorldSessionError`** · exception · A kind asked its cell's world session for something the host's world, or the moment, cannot give.
@@ -513,6 +516,10 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
   <br>`= 'not established'`
 - **`OUTCOME_DIM_ID`** · constant (str) · Reserved `rubric_dim_id` for the dual-score outcome axis.
   <br>`= '__outcome__'`
+- **`PASS_ACTION`** · constant (str) · The action half of the reserved deliberate-pass entry (`__engine__.pass`).
+  <br>`= 'pass'`
+- **`PASS_TOOL`** · constant (str) · The tool half of the reserved ledger entry a deliberate pass is recorded as (`__engine__.pass`); no host tool takes this name.
+  <br>`= '__engine__'`
 - **`PROSE_SCHEMA_KEY`** · constant (str) · The JSON Schema keyword marking a string property as model prose, for vocabularies declared as schema rather than as Pydantic models (a world dimension's value schema).
   <br>`= 'x-model-prose'`
 - **`REASONING_RATIO_KEY`** · constant (str) · Covariate key: the share of the candidate's generated tokens that were reasoning — candidate `reasoning_tokens` over candidate `completion_tokens`, summed across the candidate's usage rows.
@@ -537,6 +544,8 @@ The engine's contracts: the stored shapes, and the vocabulary every other packag
   <br>`= 'truncated_rounds'`
 - **`TURN_BUDGET_ENDED_KEY`** · constant (str) · Covariate key: how many of the candidate's turns the HOST's turn budget ended before they finished.
   <br>`= 'turns_ended_by_budget'`
+- **`WORLD_SPEAKER`** · constant (str) · The speaker label a world round's event carries in a simulated transcript, so an actor speaking after it reads that the world moved.
+  <br>`= '__world__'`
 
 <a id="api-contracts-host"></a>
 ### `threetears.evals.contracts.host`
@@ -727,7 +736,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`delete_run`** · function · Delete a run, the results it owns, and its campaign memberships.
   <br>`delete_run(storage: CurationStore, run: EvalRun, scope_id: str, *, confirm: str | None = None) -> dict[str, Any]`
 - **`drive_conversation`** · async function · Run `driver`'s conversation from its first turn until it stops on a structural signal.
-  <br>`drive_conversation(driver: TurnDriver, candidate_turn: Callable[[Sequence[SimulatorTurn]], Awaitable[CandidateTurn]], post_user_turn: Callable[[SimulatorTurn], Awaitable[None]], *, llm: SimulatorLLM, sink: CellSink) -> ConversationStopCause`
+  <br>`drive_conversation(driver: TurnDriver, candidate_turn: Callable[[Sequence[SimulatorTurn]], Awaitable[CandidateTurn]], post_user_turn: Callable[[SimulatorTurn], Awaitable[None]], *, llm: SimulatorLLM, sink: CellSink, world: WorldSession | None = None) -> ConversationStopCause`
 - **`estimate_judge_repeat`** · async function · Price repeating a run's judge scores against the cap it would be held to, and make no call.
   <br>`estimate_judge_repeat(host: EvalHost, run_id: str, scope_id: str, *, out_of_run_cap_usd: float | None, result_ids: Sequence[str] | None = None) -> JudgeRepeatEstimate`
 - **`evaluate_goal_state`** · function · Run every expression in `template.goal_state_checks` and capture outcomes.
@@ -2087,6 +2096,22 @@ call_count("inventory.place_order") >= 2
 last_call_was("inventory.place_order")
 ```
 
+Each ordering predicate is False when either action never happened, so "never acted" reads like "acted in
+the wrong order", and `not called_before(a, b)` holds for a candidate that did neither. A check about order
+pairs it with `call_count(a) >= 1`. `last_call_was` reads only the cell's final call, across the whole
+cell, so a candidate that acted and then called something else answers False for the action it did take.
+
+A deliberate pass (the engine's reserved ledger entry, recorded by `CallLedger.record_pass`) is not a call:
+none of the call builtins sees it, and `passed()` reads it, the same for every host:
+
+```python
+passed()
+not passed() and call_count("inventory.place_order") >= 1
+```
+
+`passed()` holds when the cell recorded a pass and no call: a candidate that acted and then passed did not
+pass. A cell that did nothing and recorded no pass did not pass either.
+
 Call parameters (`calls()` returns the matching calls' recorded parameters, in order):
 
 ```python
@@ -2213,6 +2238,7 @@ a run starts.
 | `intersects` | `a, b` | Whether two sets-of-elements share at least one element; `Missing` when either is Missing. |
 | `last_call_was` | `spec` | True when the most recent recorded call matches `tool.action`. |
 | `length` | `value` | Return `len(value)` or Missing if unsizable. |
+| `passed` | `` | True when the cell recorded a deliberate pass and made no call. |
 
 <a id="actions"></a>
 ## The action catalogue (MCP)

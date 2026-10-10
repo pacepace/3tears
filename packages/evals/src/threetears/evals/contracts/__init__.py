@@ -31,7 +31,7 @@ from threetears.evals.contracts.campaign import (
     SweepOutcome,
     GenerationProvenance,
 )
-from threetears.evals.contracts.call_ledger import CallLedger, RecordedCall
+from threetears.evals.contracts.call_ledger import PASS_ACTION, PASS_TOOL, CallLedger, RecordedCall, is_pass
 from threetears.evals.contracts.world_events import Firings, WorldEvent, WorldEventCause, WorldEventKind
 from threetears.evals.contracts.world_session import WorldSession, WorldSessionError
 from threetears.evals.contracts.candidate_kind import (
@@ -142,6 +142,8 @@ from threetears.evals.contracts.models import (
     OUTCOME_DIM_ID,
     RESERVED_DIM_IDS,
     ROUND_DONE,
+    WORLD_SPEAKER,
+    WorldRound,
     SCALES,
     TRANSCRIPT_DIM_ID,
     ActorPolicy,
@@ -416,6 +418,8 @@ __all__ = [
     "REASONING_RATIO_KEY",
     "REFUSED_TOOL_ATTACHES_KEY",
     "ROUND_DONE",
+    "WORLD_SPEAKER",
+    "WorldRound",
     "RaterKind",
     "ReasoningEffort",
     "SCALES",
@@ -446,6 +450,9 @@ __all__ = [
     "BoundCompletionClient",
     "CalibrationRating",
     "CallLedger",
+    "PASS_ACTION",
+    "PASS_TOOL",
+    "is_pass",
     "CallUsage",
     "CampaignDesign",
     "CampaignView",

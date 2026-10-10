@@ -269,6 +269,12 @@ that cell and ends the run `budget_stopped`, so one conversation (thousands of s
 schema's maxima) cannot run far past the cap. Fold the driver's calls with `fold_usage`: the stored
 `simulator` rows are one per actor and purpose (`RoleUsage.actor_id`, `RoleUsage.purpose`).
 
+**A round can be the world's.** `ConversationSpec.world_rounds` names rounds whose stimulus is a triggered
+world dimension firing rather than an actor's line. Before that answer, the loop fires the dimension through
+the cell's world session (pass `world=`), and the case's seed must arm it. Your `candidate_turn` receives one
+turn spoken by `WORLD_SPEAKER` naming what fired, and nothing is posted. A template whose world supplies every
+round declares no actors at all, and its conversation makes no simulator call.
+
 ## Background work, payloads and spend
 
 **Background work** a candidate hands off and gets back turns later is recorded as `async_deliveries`,

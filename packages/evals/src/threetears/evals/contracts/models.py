@@ -155,6 +155,10 @@ as they were decided then, so no stored decision moves.
 (#676). A store written before them holds no sets, and a run stored before carries None: it was launched over its
 template's cases, which is what None says, and history epochs it by its frozen ids as before.
 
+**Within v8, not a bump**: ``ConversationSpec.world_rounds`` joined as an OPTIONAL field, and ``actors`` may be empty
+when world rounds supply every round (#578). A template stored before it carries none, and reads as it did: every
+round is the actors'.
+
 **Within v8, not a bump**: ``EvalSweep`` joined as a new stored type (#632) — the record of a multi-arm launch
 run arm after arm. A store written before it holds none, which reads as "no sweep was started".
 
@@ -281,6 +285,27 @@ ROUND_DONE = "round_done"
 #: reason as :data:`ROUND_DONE`: an actor named for it would read as the candidate to every other actor.
 CANDIDATE_SPEAKER = "__candidate__"
 
+#: The speaker label a world round's event carries in a simulated transcript, so an actor speaking after it
+#: reads that the world moved. Reserved for the reason :data:`CANDIDATE_SPEAKER` is.
+WORLD_SPEAKER = "__world__"
+
+
+class WorldRound(EvalDocumentModel):
+    """A round whose stimulus is a world event rather than an actor's line.
+
+    Before the candidate's ``turn``-th answer, the engine fires ``dimension`` through the cell's world session —
+    a triggered dimension the case's seed armed — and the candidate answers with no simulated line in the
+    round. So "something happens and the candidate should notice", with nobody talking, needs no invented
+    speaker whose line would become part of what the candidate reacts to.
+    """
+
+    turn: int = Field(ge=1, le=100, description="The candidate answer (from 1) this round's event comes before.")
+    dimension: str = Field(
+        min_length=1,
+        description="The triggered world dimension the round fires, through the host's fire handle; the case's "
+        "seed must arm it.",
+    )
+
 
 class ConversationSpec(EvalDocumentModel):
     """The simulated side of a conversing candidate: who talks to it, in what order, for how long.
@@ -303,13 +328,20 @@ class ConversationSpec(EvalDocumentModel):
     """
 
     actors: list[ActorPolicy] = Field(
-        min_length=1,
+        default_factory=list,
         description=(
             "The simulated actors. Their order is the round-robin order, and the first actor's "
-            "initial_utterance_template, when set, opens the conversation under either scheduler. At least "
-            "one: a conversation with nobody on the other side is not a conversation, and a template with "
-            "nothing to simulate declares no block at all. Ids are unique, and neither 'round_done' nor "
-            "'__candidate__', which the scheduler and the transcript reserve."
+            "initial_utterance_template, when set, opens the conversation under either scheduler. Empty only "
+            "when world_rounds supply every round's stimulus: a round needs someone or something on the other "
+            "side. Ids are unique, and none of 'round_done', '__candidate__' and '__world__', which the "
+            "scheduler and the transcript reserve."
+        ),
+    )
+    world_rounds: list[WorldRound] = Field(
+        default_factory=list,
+        description=(
+            "Rounds whose stimulus is a triggered world event rather than an actor's line, by the candidate "
+            "answer they come before. Each turn once, within max_turns. Every other round is the actors'."
         ),
     )
     turn_scheduler: Literal["round_robin", "llm_decided"] = Field(
@@ -355,7 +387,7 @@ class ConversationSpec(EvalDocumentModel):
         """
         seen: set[str] = set()
         for actor in self.actors:
-            if actor.id in (ROUND_DONE, CANDIDATE_SPEAKER):
+            if actor.id in (ROUND_DONE, CANDIDATE_SPEAKER, WORLD_SPEAKER):
                 raise ValueError(f"actor id {actor.id!r} is reserved; choose another id")
             if actor.id in seen:
                 raise ValueError(f"actor id {actor.id!r} appears twice; a scheduler could not tell the two apart")
@@ -364,7 +396,26 @@ class ConversationSpec(EvalDocumentModel):
             raise ValueError(
                 f"sessions={self.sessions} exceeds max_turns={self.max_turns}; every session holds at least one turn"
             )
+        turns = [world.turn for world in self.world_rounds]
+        if repeated := sorted({turn for turn in turns if turns.count(turn) > 1}):
+            raise ValueError(f"world_rounds name turn(s) {repeated} twice; a round has one stimulus")
+        if beyond := sorted(turn for turn in turns if turn > self.max_turns):
+            raise ValueError(f"world_rounds name turn(s) {beyond} past max_turns={self.max_turns}; no such round runs")
+        if not self.actors and (unsupplied := sorted(set(range(1, self.max_turns + 1)) - set(turns))):
+            raise ValueError(
+                f"a conversation with no actors needs a world round for every turn; turn(s) {unsupplied} have no "
+                "stimulus — add an actor, or a world round for each"
+            )
+        if self.actors and self.actors[0].initial_utterance_template and 1 in turns:
+            raise ValueError(
+                f"actor {self.actors[0].id!r}'s initial_utterance_template opens round 1, which is a world round; "
+                "drop the opener or the world round on turn 1"
+            )
         return self
+
+    def world_round(self, turn: int) -> WorldRound | None:
+        """The world round that comes before the candidate's ``turn``-th answer, or ``None`` for an actors' round."""
+        return next((world for world in self.world_rounds if world.turn == turn), None)
 
 
 class WorldSeed(EvalDocumentModel):
@@ -4751,6 +4802,8 @@ __all__ = [
     "ApparatusSettingValue",
     "MeteredCallOrigin",
     "CellTimeoutOrigin",
+    "WORLD_SPEAKER",
+    "WorldRound",
     "CaseSet",
     "CaseSetRef",
     "case_set_doc_id",

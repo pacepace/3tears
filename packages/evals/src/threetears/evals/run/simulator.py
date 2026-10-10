@@ -108,14 +108,17 @@ from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.models import (
     CANDIDATE_SPEAKER,
     ROUND_DONE,
+    WORLD_SPEAKER,
     ActorPolicy,
     ClientRequestSettings,
     ConversationSpec,
     ConversationStopCause,
     ReasoningEffort,
     SimulatorPurpose,
+    WorldRound,
 )
 from threetears.evals.contracts.provider import SimulatorLLM
+from threetears.evals.contracts.world_events import WorldEvent
 from threetears.evals.contracts.usage_capture import CallUsage, RoleUsageLedger
 
 #: How hard the simulated user reasons: the router's ``reasoning.effort``, at its lowest level that
@@ -409,6 +412,8 @@ class TurnDriver:
         """
         if self.user_turns or self.candidate_turns:
             raise ValueError("initial_utterance opens a conversation, and this one has already taken turns")
+        if not self.conversation.actors:
+            return None
         actor = self.conversation.actors[0]
         template_text = actor.initial_utterance_template
         if not template_text:
@@ -558,6 +563,45 @@ class TurnDriver:
             session_break=flag,
             session_index=self._session_index,
             round_index=self._round_index,
+        )
+
+    # ---- World rounds -------------------------------------------------------
+
+    def world_round(self) -> WorldRound | None:
+        """The world round the current round is, or ``None`` when the actors speak in it."""
+        return self.conversation.world_round(self.candidate_turns + 1)
+
+    def record_world_event(self, world_round: WorldRound, event: WorldEvent) -> SimulatorTurn:
+        """Record that the current round's stimulus fired, and return it as the round's one turn.
+
+        The turn is spoken by :data:`~threetears.evals.contracts.models.WORLD_SPEAKER`, so the kind answering the
+        round knows the world moved and nobody spoke. It carries a due session break, as a delivered line would.
+        It is not delivered through ``post_user_turn``: the host's fire handle already moved the candidate's
+        world. The transcript records it, so an actor speaking in a later round reads that it happened.
+
+        Args:
+            world_round: The current round, as :meth:`world_round` named it.
+            event: What the world session recorded when it fired.
+
+        Returns:
+            The round's turn.
+
+        Raises:
+            ValueError: ``world_round`` is not the current round.
+        """
+        if world_round != self.world_round():
+            raise ValueError(f"turn {world_round.turn} is not the current round's world event")
+        content = f"[world] {world_round.dimension} fired ({event.condition or event.kind})"
+        self.transcript.append((WORLD_SPEAKER, content))
+        flag = self._pending_session_break
+        self._pending_session_break = False
+        return SimulatorTurn(
+            actor_id=WORLD_SPEAKER,
+            content=content,
+            session_break=flag,
+            session_index=self._session_index,
+            round_index=self._round_index,
+            metadata={"world_event": event.model_dump(mode="json")},
         )
 
     def record_candidate_turn(self, turn: CandidateTurn) -> None:

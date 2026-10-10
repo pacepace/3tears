@@ -17,6 +17,11 @@ without re-running it (:mod:`threetears.evals.run.recheck`).
 **A refused call is not recorded.** A call the tool refused changed nothing, and a check that
 counted it would grade an attempt as an effect.
 
+**A deliberate pass is the engine's entry, not a host's spelling.** A candidate that decides to do nothing
+is recorded with :meth:`CallLedger.record_pass` as one reserved entry (:data:`PASS_TOOL`.:data:`PASS_ACTION`),
+the same for every host. The goal language reads it through ``passed()`` and nothing else: it is not a call,
+so the call builtins (``call_count``, ``calls``, the ordering predicates) do not see it.
+
 Pure data: no I/O, no clients, JSON-serializable by construction.
 """
 
@@ -26,6 +31,12 @@ import copy
 from typing import Any
 
 from pydantic import Field
+
+#: The tool half of the reserved ledger entry a deliberate pass is recorded as (``__engine__.pass``); no host tool
+#: takes this name.
+PASS_TOOL = "__engine__"
+#: The action half of the reserved deliberate-pass entry (``__engine__.pass``).
+PASS_ACTION = "pass"
 
 from threetears.evals.contracts.base import EvalDocumentModel
 
@@ -63,5 +74,21 @@ class CallLedger(EvalDocumentModel):
         """
         self.calls.append(RecordedCall(tool=tool, action=action, params=copy.deepcopy(params or {})))
 
+    def record_pass(self, reason: str | None = None) -> None:
+        """Record that the candidate deliberately did nothing here: the engine's one spelling of a pass.
 
-__all__ = ["CallLedger", "RecordedCall"]
+        A kind records it when its candidate says it passes, in whatever form its host gives a pass, so a check
+        asks ``passed()`` rather than knowing the host's spelling.
+
+        Args:
+            reason: The candidate's stated reason, kept on the entry; ``None`` for none.
+        """
+        self.record(PASS_TOOL, PASS_ACTION, {} if reason is None else {"reason": reason})
+
+
+def is_pass(call: RecordedCall) -> bool:
+    """Whether ``call`` is the engine's deliberate-pass entry rather than a call the candidate made."""
+    return call.tool == PASS_TOOL and call.action == PASS_ACTION
+
+
+__all__ = ["PASS_ACTION", "PASS_TOOL", "CallLedger", "RecordedCall", "is_pass"]
