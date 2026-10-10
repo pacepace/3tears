@@ -7217,7 +7217,11 @@ def assemble_context_bundle(
     # carried here so that staying off it is not read as never having been measured.
     results_by_cell = _results_by_cell(cells, results)
     bundle.cost_unmeasured_cells, bundle.cost_unmeasured = _cost_unmeasured(results_by_cell)
-    bundle.latency_contended_cells, bundle.latency_contended = _latency_contended(results_by_cell, contended_ids)
+    bundle.latency_contended_cells, bundle.latency_contended = _latency_contended(
+        results_by_cell,
+        contended_ids,
+        declared=campaign.declared_design is not None and campaign.declared_design.measure_latency,
+    )
     bundle.judged_measures = _judged_measures(
         projection.records, results_by_cell, campaign.declared_design, tiers=bundle.judge_evidence_tiers
     )
@@ -7932,7 +7936,7 @@ def _cost_unmeasured(results_by_cell: dict[_CellKey, list[EvalResult]]) -> tuple
 
 
 def _latency_contended(
-    results_by_cell: dict[_CellKey, list[EvalResult]], contended_ids: Collection[str]
+    results_by_cell: dict[_CellKey, list[EvalResult]], contended_ids: Collection[str], *, declared: bool = False
 ) -> tuple[list[CellCoordinate], str | None]:
     """Name every cell whose latency read under concurrency was left out, with the one sentence that says so.
 
@@ -7940,6 +7944,8 @@ def _latency_contended(
         results_by_cell: Each cell's results, from :func:`_results_by_cell`.
         contended_ids: The results whose latency :func:`~threetears.evals.analysis.contention.withhold_contended_latency`
             removed before anything read them.
+        declared: The campaign's design declares latency under test, so a run read under concurrency is one it
+            cannot read its question from — said, with the remedy, rather than left to a reader to infer.
 
     Returns:
         The cells in coordinate order, and the sentence — None when nothing was left out.
@@ -7954,7 +7960,13 @@ def _latency_contended(
             withheld += here
             cells.append(CellCoordinate(variant_key=variant_key, apparatus_class_id=apparatus_class_id))
     where = "" if len(cells) == len(results_by_cell) else f" in {len(cells)} of {len(results_by_cell)} cells"
-    return cells, contended_latency_sentence(withheld, total, where=where)
+    sentence = contended_latency_sentence(withheld, total, where=where)
+    if sentence is not None and declared:
+        sentence += (
+            " This campaign declares latency under test, and those runs were not measured that way: relaunch them "
+            "with measure_latency=True, or read its latency from the runs that were."
+        )
+    return cells, sentence
 
 
 def _all_failed(cells: list[CellFacts]) -> tuple[list[CellCoordinate], str | None]:

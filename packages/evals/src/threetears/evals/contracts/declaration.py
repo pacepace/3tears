@@ -54,6 +54,7 @@ from threetears.evals.contracts.metrics import (
     describe_rubric_dim,
     goal_check_of,
     is_code_graded,
+    is_latency_measure,
     list_metrics,
 )
 from threetears.evals.contracts.models import (
@@ -452,6 +453,18 @@ class CampaignDesign(EvalDocumentModel):
         description=(
             "Tie-break order when no bar picks a winner, strongest first. The bundle ranks the adjudicated bars "
             "by it (`verdict_order`). Empty = no stated preference, and the analysis must not invent one."
+        ),
+    )
+    measure_latency: bool = Field(
+        default=False,
+        description=(
+            "Whether latency is under test in this campaign — the declaration a bar, a question or a ranking on "
+            "latency needs (#701). Its runs must then be launched with `measure_latency=True`, which executes their "
+            "cells one at a time with nothing beside them; latency a run read under concurrency is withheld from "
+            "every reading, and the bundle says which. False (the default, and what a campaign stored before the "
+            "field reads as): latency is not what this campaign asks about, so a bar on a latency measure, a "
+            "question naming the latency axis or `latency` in `merit_priority` is refused when the design is "
+            "declared."
         ),
     )
     declared_at: str = Field(default_factory=utc_now_iso, description="When the declaration was made (ISO-8601).")
@@ -979,8 +992,10 @@ def refuse_an_undeclarable_design(
             axis and carrying the registry's own ``axis_remedy`` as the vocabulary to pick from.
         ValueError: A bar names nothing a verdict can be given on, naming the bar, why, and every
             set it could have named; a bar is looser than the registered incumbent, quoting the
-            registered value; or a bar contradicts the declared better-direction of what it names,
-            naming it and which way its descriptor runs.
+            registered value; a bar contradicts the declared better-direction of what it names,
+            naming it and which way its descriptor runs; or a bar, a live question or the merit priority
+            asks about latency in a design that does not declare ``measure_latency``, naming each and the
+            setting to turn on.
     """
     # ASK the profile rather than re-deriving from its registry. `HostProfile.controllable` is
     # R10's evaluability map and the design names this gate as its one use — re-deriving
@@ -1142,6 +1157,31 @@ def refuse_an_undeclarable_design(
             f"declares — {'; '.join(contradicted)}. The descriptor owns the direction, so a bar read the "
             "other way round is not a tighter standard — it is cleared by exactly the values it should fail"
         )
+
+    # Latency is under test only when the design says so (#701), never inferred from a bar or a question: a
+    # campaign that asks about latency while its runs execute their cells concurrently has every latency
+    # reading withheld, so the declaration that asks must be the declaration that measures. Refused, naming
+    # the setting, rather than a silent switch to serial execution behind the author's back.
+    if not design.measure_latency:
+        latency = [
+            f"the bar on {override.measure_id}"
+            for override in design.bars
+            if isinstance(reading := resolved[override.measure_id], BarName) and is_latency_measure(reading.descriptor)
+        ]
+        latency.extend(
+            f"the question {question.text!r}"
+            for question in design.live_questions()
+            if "latency" in question.merit_axes
+        )
+        if "latency" in design.merit_priority:
+            latency.append("latency in merit_priority")
+        if latency:
+            raise ValueError(
+                f"this campaign asks about latency — {'; '.join(latency)} — and does not declare latency under test. "
+                "Set measure_latency=True on its design and launch its runs with measure_latency=True (start_run, "
+                "run_eval or compare), so their cells run one at a time and their latency is read clean; a run "
+                "launched without it executes its cells concurrently, and the latency it records is never compared"
+            )
 
 
 __all__ = [

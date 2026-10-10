@@ -232,6 +232,7 @@ class Comparison:
             behavior=campaign.behavior,
             repetitions=repetitions,
             created_by=created_by,
+            measure_latency=design.measure_latency if design is not None else False,
         )
 
 
@@ -308,6 +309,7 @@ def _declare(
     behavior: str,
     repetitions: int | None,
     created_by: str,
+    measure_latency: bool = False,
 ) -> Comparison:
     """File the arms' runs as one campaign, one axis per factor, designate ``control``, and read its report.
 
@@ -335,6 +337,8 @@ def _declare(
     design: dict[str, Any] = {"axes": axes, "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"}}
     if repetitions is not None:
         design["intended_repetitions"] = repetitions
+    if measure_latency:
+        design["measure_latency"] = True
     campaign = create_campaign(
         host.storage,
         {
@@ -636,6 +640,7 @@ async def compare(
         behavior="classify" if expected is not None else "score",
         repetitions=k,
         created_by=created_by,
+        measure_latency=measure_latency,
     )
 
 

@@ -146,6 +146,9 @@ roles component is not composable, its scores' judge reads unknown, and nothing 
 stored before them carries None in both: its cells executed one at a time (the runner of that build had no other
 way), so its ``cell_concurrency`` reads as 1, and whether it declared latency reads as not recorded — never as
 declared. Whether another RUN executed beside it is what its results' ``execution_mode`` says, as it always was.
+``CampaignDesign.measure_latency`` joined the same way, defaulting to False: a campaign (or an analysis's design
+snapshot) stored before it reads as not declaring latency under test, which is what it declared — a stored
+design asking about latency still loads, and is refused only when it is declared again.
 
 ``JudgeConfigTombstone`` joined the same way, for a judge config's slot; a config deleted before it is written
 back at the next seed. ``EvalRun`` gained ``goal_check_proof_rules`` (None on a run stored before it, read as rules
