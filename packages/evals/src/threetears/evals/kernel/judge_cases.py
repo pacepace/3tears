@@ -260,6 +260,7 @@ def judge_trial_of(kind_payload: object) -> JudgeTrial | None:
     try:
         return JudgeTrial.model_validate(kind_payload)
     except ValidationError:
+        # NOSILENT: None IS the answer -- a payload this build cannot read as a trial is not one, as documented
         return None
 
 
