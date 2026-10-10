@@ -581,6 +581,10 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 
 - **`ACCURACY_MEASURE`** · constant (str) · The classifier family's quality measure: 1.0 or 0.0 per observation, DERIVED by the engine from `MATCH_MEASURE` and never landed by a kind.
   <br>`= 'accuracy'`
+- **`ANALYSIS_GEN_PROMPT`** · constant (str) · The analysis generator's system prompt — a single string, seeded into a shared-prompt registry.
+  <br>`= 'eval_analysis_gen'`
+- **`BOUNDARY_GEN_PROMPT`** · constant (str) · The adversarial boundary proposer's prompt — a sectioned template, seeded into a template registry.
+  <br>`= 'eval_boundary_gen'`
 - **`CALIBRATION_MIN_AGREEMENT`** · constant (float) · The least judge–human agreement (weighted kappa; kappa on pass/fail) a dimension's judge must reach to be `calibrated` on it. Owner ruling, 2026-10-06.
   <br>`= 0.6`
 - **`CALIBRATION_MIN_RESULTS`** · constant (int) · The fewest distinct results a calibration must cover before it can decide anything: below it the calibration is `insufficient`, whatever its kappa.
@@ -635,6 +639,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`= 2`
 - **`NOT_ESTABLISHED`** · constant (str) · The prefix of every detail recording a check that rested on a value the world did not hold.
   <br>`= 'not established'`
+- **`PROPOSER_PROMPT`** · constant (str) · The capability-rubric proposer's prompt — a sectioned template, seeded into a template registry.
+  <br>`= 'eval_proposer'`
 - **`REASONING_RATIO_KEY`** · constant (str) · Covariate key: the share of the candidate's generated tokens that were reasoning — candidate `reasoning_tokens` over candidate `completion_tokens`, summed across the candidate's usage rows.
   <br>`= 'reasoning_ratio'`
 - **`REFUSED_TOOL_ATTACHES_KEY`** · constant (str) · Covariate key: how many times the candidate asked to attach a tool outside its run's `tools_allowed` and the harness refused.
@@ -642,6 +648,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`RUBRIC_FAMILY`** · constant (str) · A judge's score on an authored rubric dimension.
   <br>`= 'rubric'`
 - **`RUN_MARGIN_MEASURES`** · constant (frozenset) · The core rate measures a run may declare a margin on (`EvalRun.declared_margins`, `run_margin_refusal`): numeric, on 0 to 1, with a better end and a merit axis (so a comparison tests them), no guardrail, and no margin of their own.
+- **`SEED_PROMPTS`** · constant (tuple) · Every prompt the engine ships a default for, in the order a registry seeds them.
 - **`SEPARATION_MIN_AGREEMENT`** · constant (float) · The least agreement a judge must reach with its own repeated scores (the same statistic as calibration) to earn `separation`. Owner ruling, 2026-10-06.
   <br>`= 0.8`
 - **`SEPARATION_MIN_RESULTS`** · constant (int) · The fewest distinct results a self-agreement must cover before it can decide anything.

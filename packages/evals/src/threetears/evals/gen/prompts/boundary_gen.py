@@ -19,13 +19,14 @@ Seeded empty-slot-only; the store is master once set.
 
 from __future__ import annotations
 
+from threetears.evals.kernel.prompts.catalogue import BOUNDARY_GEN_PROMPT
 from threetears.evals.kernel.prompts.seed import SeedSection, SeedTemplate
 
 #: The seeded default ``eval_boundary_gen`` template: drafts a battery of simulated actors that pressure a
 #: subject's boundaries, and the refusal dimensions they are scored on.
 EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT = SeedTemplate(
     template_name="default",
-    template_type="eval_boundary_gen",
+    template_type=BOUNDARY_GEN_PROMPT,
     scope="base",
     description="Eval boundary proposer — drafts a universal boundary battery (adversarial actors + refusal dims).",
     sections=(

@@ -293,6 +293,29 @@ launcher reads every one off `request.apparatus_settings` with no default of its
 the rig as set up (`EvalRun.apparatus_settings`), a component of its measurement context — a launch naming
 a default and one leaving it out are one condition.
 
+## The engine's prompts: seeded into your registry
+
+The engine steers three LLM calls of its own with a prompt: the analysis generator (`ANALYSIS_GEN_PROMPT`,
+one string), the capability proposer (`PROPOSER_PROMPT`) and the boundary proposer (`BOUNDARY_GEN_PROMPT`),
+both sectioned templates. Each is store-master. Your prompt registry holds the copy that runs, an operator
+tunes it with no deploy, and the engine ships only the default a fresh deployment starts from.
+
+`SEED_PROMPTS` (from `threetears.evals.kernel`) is that list, one `SeedPrompt` per prompt. Each names its id
+(`prompt_type`), which registry seeds it (`kind`: `template` or `text`), and where the default lives:
+`seed_ref` is the `(module, constant)` to import it from, and `promotion_ref` the source file a promotion
+writes a tuned preset back into. Seed an empty slot from each entry and never overwrite a stored one:
+
+```python
+for entry in SEED_PROMPTS:
+    module, constant = entry.seed_ref
+    default = getattr(importlib.import_module(module), constant)
+    registry.seed_if_empty(entry.prompt_type, entry.kind, default)  # your registry's own call
+```
+
+Key the slots by the exported constants rather than by the strings. Declare your own prompts with the
+same `SeedPrompt` type and seed from both lists. The engine's ids start with `eval_`, so your own can use
+any other name. A `SeedPrompt` refuses an unknown `kind` or a blank field when it is constructed.
+
 ## A world, through the cell's session
 
 Skip this section if your subject is stateless (a classifier, an extractor). A world is for a subject that
