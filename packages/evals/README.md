@@ -256,7 +256,9 @@ The verdict is one of five:
   *immaterial*, the move is real but smaller than the measure's declared margin. Don't act on it.
 - **equivalent to the control**: an equivalence test (TOST) shows the difference inside the measure's
   declared margin. This is the only verdict that says two arms are alike, so it is how "the cheaper model is
-  good enough" gets shown. It needs a margin (`materiality_threshold`) on the measure.
+  good enough" gets shown. It needs a margin (`materiality_threshold`) on the measure. On a pass rate or a
+  1–5 score the test holds its 5% error rate exactly, so a small margin takes many cases: identical arms
+  show a pass rate within 0.25 from 12 cases, within 0.1 from 33.
 - **not separated from the control**: the cases could not tell the arms apart. It does not mean they are
   equal. Add cases (above all hard ones), or declare a margin so equivalence can be tested.
 - **untested**: no test could decide (fewer than two cases on a side, or no spread over too few cases for an

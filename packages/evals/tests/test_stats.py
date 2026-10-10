@@ -551,13 +551,31 @@ class TestEquivalence:
         assert verdict.label == "improved"
         assert verdict.equivalence_p is not None and verdict.equivalence_p < SIGNIFICANCE_ALPHA
 
-    @pytest.mark.parametrize(("n_pairs", "label", "p"), [(4, "not_separated", None), (5, "equivalent", 2.0**-5)])
-    def test_identical_samples_are_equivalent_once_the_exact_one_sided_p_reaches_alpha(self, n_pairs, label, p) -> None:
-        """Zero spread has no t; the exact one-sided sign-flip test decides, 2^-n, and below α's reach nothing is claimed."""
-        verdict = self._change([0.5] * n_pairs, [0.5] * n_pairs, margin=0.05)
+    def test_identical_samples_with_no_declared_range_are_not_tested_for_equivalence(self) -> None:
+        """Zero spread has no t, and with no range nothing bounds a case that could have moved unseen (#693)."""
+        verdict = self._change([0.5] * 30, [0.5] * 30, margin=0.05)
+
+        assert verdict.label == "not_separated"
+        assert verdict.equivalence_p is None
+
+    @pytest.mark.parametrize(("n_pairs", "label"), [(11, "not_separated"), (12, "equivalent")])
+    def test_identical_samples_on_a_declared_range_are_equivalent_once_the_bounded_test_rejects(
+        self, n_pairs, label
+    ) -> None:
+        """On a 0-1 range at margin 0.25, a hidden full drop in one case of four survives n agreeing cases 0.75^n of
+        the time; the bounded test needs twelve (any valid test, eleven)."""
+        verdict = paired_change(
+            [0.5] * n_pairs,
+            [0.5] * n_pairs,
+            min_absolute_change=0.0,
+            min_relative_change=0.0,
+            higher_is_better=True,
+            equivalence_margin=0.25,
+            value_range=(0.0, 1.0),
+        )
 
         assert verdict.label == label
-        assert verdict.equivalence_p == p
+        assert verdict.equivalence_p is not None and verdict.equivalence_p >= 0.75**n_pairs
 
     def test_fewer_than_two_pairs_runs_no_equivalence_test(self) -> None:
         verdict = self._change([0.5], [0.5], margin=0.05)

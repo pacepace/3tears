@@ -116,10 +116,17 @@ the control on each reading, under one rig.
 | not separated | the cases could not tell the arms apart | add cases, or declare a margin; never read it as a tie |
 | untested | no test could decide: fewer than two cases on a side, or a gap with no spread (every shared case moved by exactly the same amount, or each side constant) over too few cases for the exact test to reach 0.05; the row says why | fix what it names (usually too few cases) |
 
-`equivalent` needs a declared margin (`MetricDescriptor.materiality_threshold`) and a paired test. Where
-every paired difference is one amount there is no t, and the exact one-sided sign-flip test decides: a
-constant difference inside the margin has the TOST p `2^-n`, so two arms identical on five or more shared
-cases can read `equivalent`. Its p is corrected in the same Holm family as the separations, with the multiplier capped at the number of
+`equivalent` needs a declared margin (`MetricDescriptor.materiality_threshold`) and a paired test. On a
+measure that declares its range (`value_range`), as every pass rate and 1–5 score does, each one-sided test
+is a bounded test by betting, which holds 5% for any distribution of differences on that range at any number
+of cases. Coarse scores need that: a regression that fails one case in ten leaves twelve agreeing cases 28%
+of the time, and a t-test, or the exact sign-flip reading of a difference with no spread it replaced,
+called such samples equivalent up to three times in four. The price is that equivalence on a small margin
+takes many cases, whatever the test: identical arms show a pass rate within 0.25 from 12 shared cases, within
+0.1 from 33, and a 1–5 score within 0.5 from 26 (no valid test could do it in fewer than 11, 29 and 23).
+Below that the row reads `not_separated`, which claims nothing. On a measure with no declared range the test
+is the paired t-test, a large-sample reading with no such guarantee, and a difference with no spread is not
+tested for equivalence. Its p is corrected in the same Holm family as the separations, with the multiplier capped at the number of
 compared rows (Shaffer's refinement: a difference cannot be both zero and at least the margin), so the
 chance that any verdict in the family is wrong stays at 5%.
 
@@ -169,7 +176,7 @@ unit of analysis: a case's repeats are averaged first, because they are not inde
 | Mean composite | The mean of each result's capability dimensions put on 0–1, per case first. Every pooled composite (run summary, compare, pivot cell, frontier point, history point, a lever's dispersion) names the dimension sets it was meaned over, and a pool whose results carried different sets is marked *ragged*: its mean averages different questions. |
 | pass^k | An attempt passes when every goal-state check passed and every capability criterion reached the behavior's pass threshold (3 of 5 unless declared; recorded as `rubric_threshold`, printed as `pass^k (k=3, criterion >= 4 of 5)`). An attempt with no goal-state check and no judge, such as a classifier scored only against its expected label, has nothing to pass: it is left out and counted (`n_no_criterion_excluded`), and an arm with none measurable has no pass^k (`pass_hat_k_unmeasured_reason`), never 0. Unbiased C(c, k) / C(n, k) per case, averaged over the cases with n ≥ k, pooled across the runs of one cell; its interval is Clopper–Pearson on an effective size. |
 | A contrast against the control | Paired t-test on per-case means over the shared cases (two or more), else Welch's t on Hsu's `min(n_a, n_b) − 1` df; a gap with no spread is read by the exact permutation test, as for scope divergence, with no interval and no g. Effect size Hedges' g (g_z when paired). Holm correction within each family; interval Bonferroni at 1 − α/m. |
-| `equivalent` | Paired TOST against the measure's `materiality_threshold`, in the same Holm family, capped at the number of compared rows (Shaffer); a difference with no spread is read by the exact one-sided sign-flip test (p = 2^-n inside the margin). |
+| `equivalent` | Paired TOST against the measure's `materiality_threshold`, in the same Holm family, capped at the number of compared rows (Shaffer); on a declared range each one-sided test is the bounded test by betting (Waudby-Smith & Ramdas), which holds α for any distribution on the range at any n; with no range the one-sided t-test, and a difference with no spread is not tested. |
 | A bar | Three-valued: the cell's interval against the threshold less the margin (cleared, missed, undecided). A seeded threshold is the incumbent's mean moved √2 − 1 of its half-width toward the permissive end. |
 | A guardrail | Non-inferiority: the 95% interval on arm − control against zero change less the margin. |
 | Scope divergence, mechanism checks | The difference tested directly, paired or Welch as for a contrast; a gap with no spread is read by an exact permutation test, which can reach 0.05 only from six shared cases, or unshared where 2 / C(n_a + n_b, n_a) ≤ 0.05 (four a side, or three against five). |

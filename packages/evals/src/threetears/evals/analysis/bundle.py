@@ -5244,7 +5244,9 @@ def _movement(
     Returns:
         The movement, read by :func:`~threetears.evals.analysis.stats.level_difference`.
     """
-    tested = level_difference(at_a, at_b, equivalence_margin=descriptor.materiality_threshold)
+    tested = level_difference(
+        at_a, at_b, equivalence_margin=descriptor.materiality_threshold, value_range=descriptor.value_range
+    )
     assert tested.mean_a is not None and tested.mean_b is not None and tested.delta is not None
     direction: MovementDirection
     if tested.separated is None:
@@ -7642,6 +7644,7 @@ def _compare(
     contrast: tuple[_CellKey, dict[str, float]],
     *,
     threshold: float | None,
+    value_range: tuple[float, float] | None = None,
     no_turn: tuple[str, ...] = (),
 ) -> _Tested:
     """Test one contrast against the control on one reading, before correction.
@@ -7663,6 +7666,9 @@ def _compare(
         threshold: The measure's declared materiality threshold, which labels the delta through the one
             predicate every surface uses (:func:`~threetears.evals.contracts.metrics.materiality`) and is the
             equivalence test's margin; None for a measure that declared none and for a judged dimension.
+        value_range: The measure's declared inclusive bounds, which the equivalence test reads so its error
+            rate holds on coarse values at every n (:func:`~threetears.evals.analysis.stats.paired_equivalence`);
+            None where it declares none.
         no_turn: Which sides (``"control"``, ``"arm"``) have no turn to read a turn's time or spend over —
             every result there failed with no turn taken — so an untested comparison says that, the reason,
             rather than that too few cases carried the reading.
@@ -7716,9 +7722,11 @@ def _compare(
     # The equivalence test only where the separation test produced a p, so each equivalence hypothesis has
     # its comparison's separation hypothesis beside it in the family (see holm_adjust's max_true).
     margin = threshold if paired and threshold and p_raw is not None else None
-    # The differences of exact values, so a constant shift reaches the exact one-sided test rather than either
-    # vanishing from the family (no t, no p) or carrying a float residue a t-test reads as a tiny spread.
-    _, equivalence_p_raw = paired_equivalence([exact_decimal(y) - exact_decimal(x) for x, y in zip(a, b)], margin)
+    # The differences of exact values, so a float residue cannot pass for a spread nor a spread for a constant; on
+    # the measure's declared range the bounded test decides either, at the error rate it states.
+    _, equivalence_p_raw = paired_equivalence(
+        [exact_decimal(y) - exact_decimal(x) for x, y in zip(a, b)], margin, value_range=value_range
+    )
     delta = None if mean_a is None or mean_b is None else mean_b - mean_a
     comparison = FamilyComparison(
         reading=reading[0],
@@ -7931,6 +7939,7 @@ def _multiple_comparisons(
                     (control_key, control_values),
                     (contrast_key, contrast_values),
                     threshold=catalog[reading[1]].materiality_threshold if reading[0] == "measure" else None,
+                    value_range=catalog[reading[1]].value_range if reading[0] == "measure" else None,
                     no_turn=tuple(
                         side
                         for side, key in (("control", control_key), ("arm", contrast_key))

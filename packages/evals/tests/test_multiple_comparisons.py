@@ -32,7 +32,7 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.bundle import _compare
 from threetears.evals.analysis.generator import build_user_message
-from threetears.evals.analysis.stats import composite_significance, holm_adjust, separation_p
+from threetears.evals.analysis.stats import composite_significance, holm_adjust, paired_equivalence, separation_p
 from threetears.evals.contracts import EvalCampaign, EvalResult, Question, RubricScore
 from threetears.evals.contracts.models import LatencyMetrics
 from threetears.evals.contracts.host import HostProfile, MeasureRegistry
@@ -457,16 +457,18 @@ def test_a_contrast_carries_its_interval_and_effect_size_at_the_family_level() -
     assert "97.5%" in family.disclosure
 
 
-#: Two arms within a point of each other on every case: shown inside a five-point margin.
-_ALIKE = ([0.80, 0.81, 0.79, 0.80] * 3, [0.80, 0.80, 0.80, 0.81] * 3)
+#: Two arms within a point of each other on each of 24 cases: shown inside a 25-point margin. The test reads
+#: ``field_accuracy``'s declared 0-1 range, so no fewer cases could show it: one case in four might have dropped
+#: the full range unseen at the margin, and a dozen agreeing cases are needed just to make that unlikely.
+_ALIKE = ([0.80, 0.81, 0.79, 0.80] * 6, [0.80, 0.80, 0.80, 0.81] * 6)
 
 
-@pytest.mark.parametrize(("threshold", "expected"), [(0.05, "equivalent"), (None, "not_separated")])
+@pytest.mark.parametrize(("threshold", "expected"), [(0.25, "equivalent"), (None, "not_separated")])
 def test_equivalent_is_claimed_only_by_the_equivalence_test_against_a_declared_margin(
     threshold: float | None, expected: str
 ) -> None:
     """With no margin a move that does not separate says nothing either way; with one, TOST can show it inside."""
-    family = _family(_bundle([], accuracy=_ALIKE, profile=_accuracy_threshold(threshold)))
+    family = _family(_bundle([], accuracy=_ALIKE, cases=24, profile=_accuracy_threshold(threshold)))
     (comparison,) = [c for c in family.comparisons if c.name == "field_accuracy"]
 
     assert comparison.verdict == expected
@@ -479,27 +481,30 @@ def test_equivalent_is_claimed_only_by_the_equivalence_test_against_a_declared_m
             comparison.interval is not None and -threshold < comparison.interval[0] < comparison.interval[1] < threshold
         )
         assert "equivalence_p_raw" not in build_user_message(
-            _bundle([], accuracy=_ALIKE, profile=_accuracy_threshold(threshold))
+            _bundle([], accuracy=_ALIKE, cases=24, profile=_accuracy_threshold(threshold))
         )
     else:
         assert comparison.equivalence_p_raw is None and comparison.equivalence_p_adjusted is None
 
 
-@pytest.mark.parametrize("cases", [6, 12])
-def test_two_arms_alike_on_every_case_are_shown_equivalent_by_the_exact_test(cases: int) -> None:
-    """No spread, so no t: the exact one-sided sign-flip p (2^-n) joins the Holm family rather than dropping out of it.
+@pytest.mark.parametrize(("cases", "expected"), [(11, "not_separated"), (12, "equivalent")])
+def test_two_arms_alike_on_every_case_are_tested_on_the_measures_range(cases: int, expected: str) -> None:
+    """No spread, so no t: the bounded test on the declared 0-1 range decides, and its p joins the Holm family.
 
-    The equivalence test once returned no p for a difference with no spread, so the comparison could never read
-    ``equivalent`` however many cases agreed, and the family silently lost the hypothesis.
+    Agreeing cases show equivalence only once they rule out a regression that dropped one case in four by the
+    whole range — which leaves ``n`` agreeing cases ``0.75 ** n`` of the time, so no valid test's p is smaller.
+    The exact sign-flip reading this replaced said ``2 ** -n`` and claimed equivalence from five cases, which on
+    pass/fail data at the margin was false up to three times in four (#693).
     """
     alike = ([0.8] * cases, [0.8] * cases)
-    family = _family(_bundle([], accuracy=alike, cases=cases, profile=_accuracy_threshold(0.05)))
+    family = _family(_bundle([], accuracy=alike, cases=cases, profile=_accuracy_threshold(0.25)))
     (comparison,) = [c for c in family.comparisons if c.name == "field_accuracy"]
 
     assert (comparison.test, comparison.p_raw) == ("paired", 1.0)
-    assert comparison.equivalence_p_raw == 2.0**-cases
+    assert comparison.equivalence_p_raw == paired_equivalence([0.0] * cases, 0.25, value_range=(0.0, 1.0))[1]
+    assert comparison.equivalence_p_raw >= 0.75**cases
     assert family.n_equivalence_tests == 1
-    assert comparison.verdict == "equivalent"
+    assert comparison.verdict == expected
 
 
 def test_the_means_and_counts_are_over_the_cases_the_test_read_and_the_dropped_ones_are_counted() -> None:

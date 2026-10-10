@@ -94,8 +94,9 @@ UNPAIRED_TEST_NAME = (
 #: The equivalence test the change classifier runs beside the paired test, named for
 #: the same reason: an `equivalent` label names the statistics it rests on.
 EQUIVALENCE_TEST_NAME = (
-    "two one-sided paired t-tests (TOST) against ± the measure's declared margin (the exact one-sided sign-flip "
-    f"tests where every difference is one amount), α={SIGNIFICANCE_ALPHA}"
+    "two one-sided paired tests (TOST) against ± the measure's declared margin: on a declared range, bounded tests "
+    "by betting that hold α for any distribution on it at every n; with no range, one-sided t-tests (approximate), "
+    f"α={SIGNIFICANCE_ALPHA}"
 )
 
 
@@ -1239,54 +1240,137 @@ class ChangeVerdict(NamedTuple):
     #: measure's declared materiality threshold. ``None`` when none was declared, and
     #: then no equivalence test ran and no label claims one.
     equivalence_margin: float | None = None
-    #: The TOST p: the larger of the two one-sided p's, thresholded at α — each a t-test's,
-    #: or where every paired difference is one amount the exact one-sided sign-flip p
+    #: The TOST p: the larger of the two one-sided p's, thresholded at α — each the bounded
+    #: test's on the measure's declared range, a t-test's where it declares none
     #: (:func:`paired_equivalence`). ``None`` wherever no equivalence test could decide — no
-    #: margin, fewer than two pairs, or a constant difference over too few pairs for the
-    #: exact p to reach α.
+    #: margin, fewer than two pairs, a difference outside the declared range, or with no range
+    #: a difference with no spread.
     equivalence_p: float | None = None
 
 
-def paired_equivalence(diffs: Sequence[float | Fraction], margin: float | None) -> tuple[bool | None, float | None]:
+#: The largest fraction of its capital :func:`bounded_mean_p` stakes on one case: the betting fraction is capped
+#: at this share of the most the bet could stake without risking ruin on a case at the bottom of the range.
+#: Waudby-Smith and Ramdas suggest 1/2 or 3/4; 0.9 was chosen by simulation over the coarse supports the engine
+#: produces (pass/fail and 1-5 differences, 5 to 50 pairs), where it reached equivalence at the fewest pairs
+#: on agreeing and on noisy samples alike. The cap moves power only: any cap below 1 is valid.
+_BET_CAP = 0.9
+
+
+def bounded_mean_p(
+    values: Sequence[float | Fraction],
+    null_mean: float | Fraction,
+    value_range: tuple[float, float],
+    *,
+    alpha: float = SIGNIFICANCE_ALPHA,
+) -> float:
+    """The one-sided p for H0 ``E[X] ≤ null_mean`` against ``E[X] > null_mean``, for any ``X`` inside ``value_range``.
+
+    A test by betting (Waudby-Smith and Ramdas, "Estimating means of bounded random variables by betting",
+    JRSS-B 2024, the predictable plug-in bet): rescaled to ``[0, 1]``, each value in turn multiplies a capital
+    of 1 by ``1 + λ (x − m)``, where ``m`` is the rescaled null mean and the stake ``λ`` is set from the values
+    before it, ``min(sqrt(2 ln(1/α) / (n σ̂²)), cap / m)``, with ``σ̂²`` their regularised variance. Under H0
+    the capital is a nonnegative supermartingale started at 1, so by Ville's inequality it ever reaches ``1/α``
+    with probability at most α, and the p is ``1 / max capital``. **That holds at every n and for every
+    distribution on the range** — a two-point lattice, a pass/fail difference, a 1-5 difference with a rare
+    four-point drop — which is what a t-test on coarse values cannot promise: it reads a sample of agreeing
+    cases as having no spread, when a regression that broke one case in ten leaves ten agreeing cases one time
+    in three.
+
+    The stakes are set in the order the values come, so pass them in an order fixed before the values were
+    seen (the engine's is the cases' sorted ids); a different fixed order is an equally valid test.
+
+    Args:
+        values: The observations, each inside ``value_range``.
+        null_mean: The largest mean H0 allows.
+        value_range: The declared inclusive bounds every observation lies in.
+        alpha: The level the stake is tuned for.
+
+    Returns:
+        The p, in ``[0, 1]``.
+
+    Raises:
+        ValueError: The range is empty, or a value lies outside it.
+    """
+    low, high = exact_decimal(value_range[0]), exact_decimal(value_range[1])
+    if high <= low:
+        raise ValueError(f"value_range {value_range} is empty")
+    exact = [exact_decimal(v) for v in values]
+    if any(not low <= v <= high for v in exact):
+        raise ValueError(f"a value lies outside value_range {value_range}")
+    # Checked exactly above; the betting itself is float arithmetic, clamped so a rounding cannot leave the range.
+    low_f, width = float(low), float(high - low)
+    scaled = [min(1.0, max(0.0, (float(v) - low_f) / width)) for v in exact]
+    m = float((exact_decimal(null_mean) - low) / (high - low))
+    if m <= 0.0:
+        # H0 puts every value at the bottom of the range, so one value above it refutes H0 outright.
+        return 0.0 if any(z > 0.0 for z in scaled) else 1.0
+    if m >= 1.0:
+        return 1.0
+    n = len(scaled)
+    log_capital = best = 0.0
+    total = squares = 0.0
+    for t, z in enumerate(scaled):
+        variance = (0.25 + squares) / (t + 1)
+        stake = min(math.sqrt(2.0 * math.log(1.0 / alpha) / (n * variance)), _BET_CAP / m)
+        log_capital += math.log1p(stake * (z - m))
+        best = max(best, log_capital)
+        total += z
+        squares += (z - (0.5 + total) / (t + 2)) ** 2
+    return min(1.0, math.exp(-best))
+
+
+def paired_equivalence(
+    diffs: Sequence[float | Fraction], margin: float | None, *, value_range: tuple[float, float] | None = None
+) -> tuple[bool | None, float | None]:
     """The paired TOST against ``± margin``: whether the mean difference is shown inside it, and its p.
 
     Two one-sided tests on the paired differences, each at :data:`SIGNIFICANCE_ALPHA`: H0 ``δ ≤ −margin``
     and H0 ``δ ≥ margin``. Equivalence is claimed only when both reject — the larger of the two p's
-    below α. Where the differences have spread, each is a one-sided t-test.
+    below α.
 
-    **Where every difference is one amount there is no t, and the exact test decides** — the reading
-    :func:`no_spread_p` gives :func:`separation_p` and :func:`level_difference`, one-sided. Shifted by the
-    margin, every difference sits on one side of zero, and of the ``2 ** n`` equally likely sign flips only
-    the observed one is that extreme in the tested direction, so each one-sided p is ``2 ** −n`` (half the
-    two-sided :func:`_sign_flip_p`) when the shifted amount is on the rejecting side, and 1 when it is not.
-    A constant difference strictly inside the margin therefore has the TOST p ``2 ** −n``, and one on or
-    beyond it has p 1. Where that p cannot reach α (fewer than five pairs at α = 0.05) no test can decide,
-    and the answer is untested, never a p — as :func:`separation_p` answers below its floor. Decided on
-    exact values (:func:`exact_decimal`), so pass the differences of exact values: a float residue must not
-    pass for a spread, nor a spread for a constant.
+    **With the measure's declared range, each one-sided test is the bounded test by betting**
+    (:func:`bounded_mean_p`) on differences that lie within ± the range's width. It holds α for every
+    distribution of differences on that range, at every n — the guarantee coarse scores need. A one-sided
+    t-test does not hold it there: at the margin, on a two-point lattice over 12 pairs it claimed
+    ``equivalent`` 7% of the time, and where a regression broke a few cases outright (pass/fail differences
+    of 0 save a rare −1) the t-test and the old exact sign-flip reading of a sample with no spread claimed it
+    up to 30-60% of the time, because a sample of agreeing cases is what such a regression usually leaves.
+    The price is the truth about coarse data: no valid test can show a mean inside a margin that is small
+    against the range from a few cases. Even n cases that all agree give p ``(1 − margin / width) ** n`` at
+    best (one case in ``width / margin`` could have dropped the full width unseen), so 1-5 rubric
+    differences (width 4) within 0.5 need 23 agreeing pairs under any valid test, and 26 under this one. Below that the test
+    still runs and its p says the data could not show equivalence, which claims nothing either way.
+
+    **Without a declared range there is no finite-sample-valid test of a mean** (Bahadur and Savage 1956:
+    an unbounded value can hide a rare large move), and each one-sided test is the t-test, the conventional
+    large-sample reading; it can exceed α on skewed or coarse values, which is why a coarse measure declares
+    its range. A sample with no spread then has no t and no bound, so it is untested.
 
     Args:
-        diffs: The paired differences, current minus baseline — exact (:class:`~fractions.Fraction`)
-            where the caller read its samples exactly.
+        diffs: The paired differences, current minus baseline, in a fixed case order — exact
+            (:class:`~fractions.Fraction`) where the caller read its samples exactly.
         margin: The declared margin, or None.
+        value_range: The measure's declared inclusive bounds, or None when it declares none.
 
     Returns:
         ``(equivalent, p)``. Both None when no test could decide: no positive margin, fewer than two
-        pairs, a constant difference over too few pairs for the exact p to reach α, or a spread that
-        vanishes in floating point.
+        pairs, a difference outside ± the range's width (the declared range is contradicted, so its bound
+        is not a bound), or with no range a difference with no spread or a spread that vanishes in
+        floating point.
     """
     n = len(diffs)
     if margin is None or margin <= 0.0 or n < 2:
         return None, None
     exact = [exact_decimal(d) for d in diffs]
-    if no_spread_p([Fraction(0)] * n, exact, paired=True) is not None:
-        # Every difference is one amount, so each shifted test is all-one-sign: the one-sided sign-flip p.
-        bound = exact_decimal(margin)
-        shift_above_lower, shift_below_upper = exact[0] + bound, bound - exact[0]
-        p = max(_sign_flip_p(n) / 2.0 if shift > 0 else 1.0 for shift in (shift_above_lower, shift_below_upper))
-        if p != 1.0 and p > SIGNIFICANCE_ALPHA:
+    if value_range is not None:
+        width = exact_decimal(value_range[1]) - exact_decimal(value_range[0])
+        bounds = (float(-width), float(width))
+        if any(abs(d) > width for d in exact):
             return None, None
+        p = _bounded_tost_p(exact, margin, bounds)
         return p < SIGNIFICANCE_ALPHA, p
+    if no_spread_p([Fraction(0)] * n, exact, paired=True) is not None:
+        return None, None
     values = [float(d) for d in exact]
     mean = sum(values) / n
     sd = _sample_std(values)
@@ -1300,6 +1384,13 @@ def paired_equivalence(diffs: Sequence[float | Fraction], margin: float | None) 
     return p < SIGNIFICANCE_ALPHA, p
 
 
+def _bounded_tost_p(diffs: Sequence[Fraction], margin: float, bounds: tuple[float, float]) -> float:
+    """The TOST p of :func:`paired_equivalence` on a declared range: the larger bounded one-sided p."""
+    above_lower = bounded_mean_p(diffs, -exact_decimal(margin), bounds)
+    below_upper = bounded_mean_p([-d for d in diffs], -exact_decimal(margin), bounds)
+    return max(above_lower, below_upper)
+
+
 def paired_change(
     baseline: list[float],
     current: list[float],
@@ -1308,6 +1399,7 @@ def paired_change(
     min_relative_change: float,
     higher_is_better: bool,
     equivalence_margin: float | None = None,
+    value_range: tuple[float, float] | None = None,
 ) -> ChangeVerdict:
     """Classify the change from ``baseline`` to ``current``: a direction, equivalence, or not separated.
 
@@ -1352,6 +1444,8 @@ def paired_change(
         equivalence_margin: The measure's declared margin, in its own unit, or None
             when it declares none — then no equivalence test runs and no label
             claims one.
+        value_range: The measure's declared inclusive bounds, or None. The equivalence test reads it
+            (:func:`paired_equivalence`): on a declared range its error rate holds at every n.
 
     Returns:
         A :class:`ChangeVerdict`. ``delta``/``relative_delta`` are ``None`` only
@@ -1423,7 +1517,9 @@ def paired_change(
         # would say the data was asked and could not tell). Composite values live on a coarse lattice,
         # so "every case moved by exactly the same amount" is an ordinary coincidence at small n.
         hedges_g, significant, p_value = None, None, None
-    equivalent, equivalence_p = paired_equivalence([y - x for x, y in zip(a, b)], equivalence_margin)
+    equivalent, equivalence_p = paired_equivalence(
+        [y - x for x, y in zip(a, b)], equivalence_margin, value_range=value_range
+    )
 
     def verdict(label: ChangeLabel) -> ChangeVerdict:
         return ChangeVerdict(
@@ -1493,6 +1589,7 @@ def level_difference[Case: Hashable](
     values_b: Mapping[Case, float | Fraction],
     *,
     equivalence_margin: float | None = None,
+    value_range: tuple[float, float] | None = None,
 ) -> LevelDifference:
     """Test the difference between two levels of a quantity, over one value per case at each level.
 
@@ -1524,6 +1621,8 @@ def level_difference[Case: Hashable](
         values_b: Case -> its value at the second level.
         equivalence_margin: The measure's declared margin, or None. With one, a paired difference is also
             tested for equivalence (:func:`paired_equivalence`); an unpaired one never is.
+        value_range: The quantity's declared inclusive bounds, or None. The equivalence test reads it
+            (:func:`paired_equivalence`): on a declared range its error rate holds at every n.
 
     Returns:
         A :class:`LevelDifference`.
@@ -1550,7 +1649,7 @@ def level_difference[Case: Hashable](
     if exact is not None:
         if paired:
             # Decided on the exact differences, so the equivalence test reads no residue either.
-            equivalent, equivalence_p = paired_equivalence(diffs, equivalence_margin)
+            equivalent, equivalence_p = paired_equivalence(diffs, equivalence_margin, value_range=value_range)
         else:
             equivalent, equivalence_p = None, None
         if exact == 1.0:
@@ -1567,7 +1666,7 @@ def level_difference[Case: Hashable](
             )
         return LevelDifference(test, n_a, n_b, mean_a, mean_b, delta, 0.0, exact, True, None, None, None)
     if paired:
-        equivalent, equivalence_p = paired_equivalence(diffs, equivalence_margin)
+        equivalent, equivalence_p = paired_equivalence(diffs, equivalence_margin, value_range=value_range)
     # The spread is exactly nonzero, so the shared statistic exists; its float residue is all that could
     # still vanish, and then no t is quoted.
     statistic = _t_statistic([float(x) for x in a], [float(y) for y in b], paired=paired)
@@ -1749,6 +1848,7 @@ __all__ = [
     "LevelDifference",
     "SignificanceResult",
     "bar_seed",
+    "bounded_mean_p",
     "case_rate_interval",
     "ci_half_width",
     "clustered_standard_error",
