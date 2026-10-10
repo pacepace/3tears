@@ -3,7 +3,7 @@
 The generated Analysis lens is a *closed system*: the
 generator reads a **pre-assembled context bundle** — the computed
 reporting lenses' data plus a coverage map and prior insights — and writes the
-:class:`~threetears.evals.contracts.campaign.EvalAnalysis` in one shot. Nothing fetches
+:class:`~threetears.evals.kernel.campaign.EvalAnalysis` in one shot. Nothing fetches
 during generation; the bundle *is* the context. This module builds that bundle.
 
 Why closed matters: to A/B a generation prompt you regenerate over a **fixed**
@@ -63,7 +63,7 @@ from threetears.evals.analysis.agreement import (
     inter_judge_agreement,
     tier_for_judges,
 )
-from threetears.evals.contracts.evidence_tiers import (
+from threetears.evals.kernel.evidence_tiers import (
     CALIBRATION_MIN_AGREEMENT,
     CALIBRATION_MIN_RESULTS,
     SEPARATION_MIN_AGREEMENT,
@@ -141,17 +141,11 @@ from threetears.evals.analysis.stats import (
     separation_test,
     small_sample_case_means,
 )
-from threetears.evals.contracts.analysis_measures import BarAdjudication, BarVerdict, MeasureCollection, MeasureSummary
-from threetears.evals.contracts.campaign import (
-    CampaignWindow,
-    EvalInsight,
-    ReadingKind,
-    VariantIndexEntry,
-    derive_window,
-)
-from threetears.evals.contracts.covariates import REASONING_RATIO_KEY
-from threetears.evals.contracts.scoring import median_unbiased_quantile
-from threetears.evals.contracts.declaration import (
+from threetears.evals.kernel.analysis_measures import BarAdjudication, BarVerdict, MeasureCollection, MeasureSummary
+from threetears.evals.kernel.campaign import CampaignWindow, EvalInsight, ReadingKind, VariantIndexEntry, derive_window
+from threetears.evals.kernel.covariates import REASONING_RATIO_KEY
+from threetears.evals.kernel.scoring import median_unbiased_quantile
+from threetears.evals.kernel.declaration import (
     JUDGED_MERIT_AXIS,
     BarName,
     CampaignDesign,
@@ -161,11 +155,11 @@ from threetears.evals.contracts.declaration import (
     exploratory_reading,
     resolve_bar_name,
 )
-from threetears.evals.contracts.hashing import canonical_digest, canonical_json
-from threetears.evals.contracts.host.profile import CANDIDATE_MODEL_LEVER, UNSEATED_LEVEL, HostProfile
-from threetears.evals.contracts.host.values import PooledProductionFooting, ProductionFooting, SweepableValue
-from threetears.evals.contracts.identity import IDENTITY_VERSION, resolve_variant_identity
-from threetears.evals.contracts.metrics import (
+from threetears.evals.schema.hashing import canonical_digest, canonical_json
+from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER, UNSEATED_LEVEL, HostProfile
+from threetears.evals.schema.values import PooledProductionFooting, ProductionFooting, SweepableValue
+from threetears.evals.kernel.identity import IDENTITY_VERSION, resolve_variant_identity
+from threetears.evals.kernel.metrics import (
     ACCURACY_MEASURE,
     CONFUSION_CELL_MEASURE,
     FRONTIER_RANKING_MEASURE,
@@ -194,11 +188,11 @@ from threetears.evals.contracts.metrics import (
     summary_population,
     undeclarable_host_measures,
 )
-from threetears.evals.contracts.covariates import undeclarable_covariates
-from threetears.evals.contracts.base import EvalDocumentModel
+from threetears.evals.kernel.covariates import undeclarable_covariates
+from threetears.evals.schema.base import EvalDocumentModel
 
 # At runtime for its field set, which tells a result-level measure from a row-level one.
-from threetears.evals.contracts.models import (
+from threetears.evals.schema.models import (
     goal_check_proofs_as_read,
     stale_goal_check_proofs,
     ApparatusProvenance,
@@ -209,8 +203,8 @@ from threetears.evals.contracts.models import (
     RubricAxis,
     RubricScale,
 )
-from threetears.evals.contracts.provider import sum_optional_tokens
-from threetears.evals.contracts.result_condition import (
+from threetears.evals.kernel.provider import sum_optional_tokens
+from threetears.evals.kernel.result_condition import (
     JUDGE_CANNOT_TELL_OUTCOME,
     ResultOutcome,
     classify_result,
@@ -218,7 +212,7 @@ from threetears.evals.contracts.result_condition import (
     delivered_a_turn,
     harness_faulted,
 )
-from threetears.evals.contracts.surface import (
+from threetears.evals.kernel.surface import (
     CellFacts,
     DecisionSurface,
     FrontierDominance,
@@ -234,16 +228,16 @@ from threetears.evals.contracts.surface import (
     TimePosition,
     all_failed_sentence,
 )
-from threetears.evals.contracts.usage_capture import (
+from threetears.evals.kernel.usage_capture import (
     count_substituted_deliveries,
     production_replicating_cost,
     spend_observed,
 )
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
-    from threetears.evals.contracts.host.measures import MeasureRegistry
-    from threetears.evals.contracts.campaign import EvalCampaign
-    from threetears.evals.contracts.models import EvalCaseStratum, EvalRun, SecondJudge
+    from threetears.evals.kernel.host.measures import MeasureRegistry
+    from threetears.evals.kernel.campaign import EvalCampaign
+    from threetears.evals.schema.models import EvalCaseStratum, EvalRun, SecondJudge
 
 
 class CampaignReadStore(Protocol):
@@ -263,7 +257,7 @@ class CampaignReadStore(Protocol):
     function that asks neither.
 
     Structural, so a host's own storage satisfies it by having the methods —
-    :class:`~threetears.evals.contracts.storage.EvalStorage` does, with no
+    :class:`~threetears.evals.kernel.storage.EvalStorage` does, with no
     inheritance and no registration.
 
     Every read is within the campaign's scope, which holds its runs, their results, and
@@ -280,7 +274,7 @@ class CampaignReadStore(Protocol):
         A run that does not resolve there is absent from the answer.
 
         **Every returned run must record what the read left out**: an implementation calls
-        :meth:`~threetears.evals.contracts.models.EvalRun.note_elided_payload` with ``elide_payload`` on each run
+        :meth:`~threetears.evals.schema.models.EvalRun.note_elided_payload` with ``elide_payload`` on each run
         it returns. The store's projection cannot say so itself — a document with a path left out
         looks exactly like one stored without it — and an unmarked run reads as whole, so rebuilding
         the host's subject from it, or writing it back, proceeds with the value silently gone
@@ -781,7 +775,7 @@ class MechanismCheck(EvalDocumentModel):
 
     A lever that did not move an outcome and a lever that never took effect read alike in every
     outcome measure, and they lead to opposite actions. The lever's own declaration
-    (:attr:`~threetears.evals.contracts.host.sweepables.Sweepable.acts_on`) names the measure that
+    (:attr:`~threetears.evals.kernel.host.sweepables.Sweepable.acts_on`) names the measure that
     should have moved; this records whether it did, with the per-level evidence beside the verdict.
 
     **Read with the engine's own separation test, never by inequality.** Each pair of levels is
@@ -979,7 +973,7 @@ class RealizedDesign(EvalDocumentModel):
     """What kind of experiment this campaign turned out to be — INFERRED from the runs, never declared.
 
     **The derived twin of the declaration, and the two must not share a name.** The declaration
-    (:class:`~threetears.evals.contracts.declaration.CampaignDesign`, on the campaign) says what an
+    (:class:`~threetears.evals.kernel.declaration.CampaignDesign`, on the campaign) says what an
     operator SET OUT to learn; this says what the observations actually show. The delta between
     them is the coverage story — a declared value with no observations is NAMED, ``not_run`` in its
     axis row's ``declared_levels`` (``undetermined`` where some run's level cannot be established),
@@ -1227,7 +1221,7 @@ def _frontier_bar(
 ) -> tuple[float | None, str | None]:
     """The bar the frontier is given, or why it is given none.
 
-    The frontier ranks on pass^k (:data:`~threetears.evals.contracts.metrics.FRONTIER_RANKING_MEASURE`) and
+    The frontier ranks on pass^k (:data:`~threetears.evals.kernel.metrics.FRONTIER_RANKING_MEASURE`) and
     reads a bar only on it, while a campaign's bars may name any measure. So it takes the campaign's
     effective bar on that measure — the declared one, else the host's registered one, exactly as
     :func:`_applicable_bars` resolves every bar — and none otherwise; a bar on another measure is adjudicated
@@ -1741,7 +1735,7 @@ class LeverCoverageInput(EvalDocumentModel):
     """Structural coverage of one lever, as the bundle computes it.
 
     The generator copies it, field for field, into the stored
-    :class:`~threetears.evals.contracts.campaign.LeverCoverage`: it reports how finely a
+    :class:`~threetears.evals.kernel.campaign.LeverCoverage`: it reports how finely a
     lever was swept (``cells`` = distinct observed levels), how many samples inform
     it (``n`` = distinct results), the repeat floor (``k``), a scored-signal spread
     (``dispersion``, the composite SEM read via the core ``stats`` helper — never a
@@ -1844,9 +1838,9 @@ class TelemetryRollup(EvalDocumentModel):
 class HeldFixedReading(EvalDocumentModel):
     """What the campaign declared held still, beside what its runs say about the apparatus.
 
-    The declaration (:class:`~threetears.evals.contracts.declaration.ControlDeclaration`) is a claim
+    The declaration (:class:`~threetears.evals.kernel.declaration.ControlDeclaration`) is a claim
     about every run the campaign holds, and each run records whether its apparatus was set or found
-    (:attr:`~threetears.evals.contracts.models.EvalRun.apparatus_provenance`). The two use the same
+    (:attr:`~threetears.evals.schema.models.EvalRun.apparatus_provenance`). The two use the same
     words, so they are compared value for value here, once, and a writer quotes the result rather
     than reading a declaration of `commissioned` over a campaign half made of captured sessions.
     """
@@ -3008,7 +3002,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     def fingerprint(self) -> str:
         """Return the sha256 of the bundle's canonical JSON — a stable A/B key.
 
-        Routes through :func:`threetears.evals.contracts.hashing.canonical_digest` (sorted
+        Routes through :func:`threetears.evals.schema.hashing.canonical_digest` (sorted
         keys, tight separators) so two structurally identical bundles produce
         identical bytes. Because the bundle carries no wall-clock value, identical
         (runs, results, insights) yield an identical fingerprint — the invariant
@@ -3075,7 +3069,7 @@ class BundleInspection(EvalDocumentModel):
     renamed a sweepable, which moves the apparatus partition without touching package code), or
     neither did and the evidence moved — a member archived, a result deleted, an insight the
     generation read since deleted or superseded, or the analysis that minted one archived. An
-    analysis stored before :class:`~threetears.evals.contracts.campaign.GenerationProvenance`
+    analysis stored before :class:`~threetears.evals.kernel.campaign.GenerationProvenance`
     recorded both reads ``cannot_say``: a version that was never written is never read as the
     same one.
 
@@ -3198,7 +3192,7 @@ class BundleInspection(EvalDocumentModel):
 def _percentile(sorted_values: list[float], q: float) -> float | None:
     """A measure's ``q`` quantile, median-unbiased, or ``None`` where its sample cannot give one.
 
-    :func:`~threetears.evals.contracts.scoring.median_unbiased_quantile` (Hyndman–Fan type 8), the rule the
+    :func:`~threetears.evals.kernel.scoring.median_unbiased_quantile` (Hyndman–Fan type 8), the rule the
     run summary's ``p95_total_ms`` reads too, so a tail figure means one thing on every surface. It replaced
     linear interpolation (numpy's default), which at the sizes a campaign's cells have sat below the true
     95th percentile 0.84 (n=5), 0.73 (n=15) and 0.68 (n=30) of the time — a tail figure that understates
@@ -3228,8 +3222,8 @@ def _percentile(sorted_values: list[float], q: float) -> float | None:
 #: the effective config and plain off the record, is what bound every plain-named host lever to
 #: ``'—'``, which is why it was retired.
 #:
-#: Declared in :mod:`threetears.evals.contracts.host.sweepables`, beside the core declaration that carries it,
-#: so the literal has one owner; :mod:`threetears.evals.contracts.host.profile` re-exports it, and that is
+#: Declared in :mod:`threetears.evals.kernel.host.sweepables`, beside the core declaration that carries it,
+#: so the literal has one owner; :mod:`threetears.evals.kernel.host.profile` re-exports it, and that is
 #: where a host recovery rule claiming the name is refused. Read here.
 _CANDIDATE_MODEL_LEVER = CANDIDATE_MODEL_LEVER
 
@@ -3258,7 +3252,7 @@ def _observed_model_levers(profile: HostProfile) -> dict[str, str]:
 
     Returns:
         The engine's rule merged with the host's. A host declaration colliding with the engine's
-        reserved name cannot reach here — :class:`~threetears.evals.contracts.host.profile.HostProfile`
+        reserved name cannot reach here — :class:`~threetears.evals.kernel.host.profile.HostProfile`
         refuses it at registration.
     """
     return {**profile.observed_model_levers, _CANDIDATE_MODEL_LEVER: "candidate"}
@@ -3304,7 +3298,7 @@ def _effective_config(run: EvalRun, results: list[EvalResult], *, profile: HostP
 
     **Read through the host's registry, never off one host's carriers.** The registry is the
     single lever vocabulary, so this asks
-    :meth:`~threetears.evals.contracts.host.sweepables.SweepableRegistry.resolve_levers` what this run's
+    :meth:`~threetears.evals.kernel.host.sweepables.SweepableRegistry.resolve_levers` what this run's
     levers are called and what it carried under them. While it read one host's overlay fields by
     hand, a host whose levers live anywhere else got ``coverage == []`` and an empty
     ``RunSummary.config``, and a real model reading that bundle correctly refused to attach
@@ -3437,7 +3431,7 @@ def _lever_value(record: ScoreRecord, lever: str, effective_by_run: dict[str, di
 
     The exception is :data:`_CANDIDATE_MODEL_LEVER`, and it is the ONLY one: the engine reserves
     that name for a declared coordinate of the observation itself, and
-    :class:`~threetears.evals.contracts.host.profile.HostProfile` refuses a host recovery rule that claims it.
+    :class:`~threetears.evals.kernel.host.profile.HostProfile` refuses a host recovery rule that claims it.
     Every record knows which model produced it, including one whose candidate role left no usage
     row for the run-level resolution to recover a model from, so reading it off the record is the
     true answer.
@@ -3479,7 +3473,7 @@ def _is_reportable(descriptor: MetricDescriptor, measures: MeasureRegistry) -> b
     - **Seeded only.** ``family is None`` marks a name nobody has described; the
       registry itself refuses to guess at one, and pooling it here would be that same
       guess made silently.
-    - **Code-graded families only** (:func:`~threetears.evals.contracts.metrics.is_code_graded`, the
+    - **Code-graded families only** (:func:`~threetears.evals.kernel.metrics.is_code_graded`, the
       predicate the bar-name resolver asks too, so the two cannot disagree). The generator ranks on
       mechanism, never on judged quality — and quality already has a home in the ``reporting`` lenses.
       This is a filter on registry *metadata*, not on a subject or scenario type. A host's own family
@@ -3504,14 +3498,14 @@ def _is_reportable(descriptor: MetricDescriptor, measures: MeasureRegistry) -> b
       ``GoalStateOutcome`` carries ``expression`` / ``passed`` / ``detail``, so the generic
       carrier walk yields names and never a verdict. :func:`_goal_check_leaves` is the
       producer: one 0/1 per check per observation, named by
-      :func:`~threetears.evals.contracts.metrics.goal_check_measure`, so each check's pass rate reaches every
+      :func:`~threetears.evals.kernel.metrics.goal_check_measure`, so each check's pass rate reaches every
       measure surface whether or not a bar names it.
     - **A numeric measure must have a direction, unless it is a declared diagnostic.**
       ``higher_is_better is None`` marks a raw count with no better end — per-role token
       counts, call counts. Nothing can be ranked on one, and pooling a per-role count
       across the candidate, judge and simulator rows produces a distribution of nothing in
       particular. A measure whose descriptor declares
-      :attr:`~threetears.evals.contracts.metrics.MetricDescriptor.diagnostic` is the one exception,
+      :attr:`~threetears.evals.kernel.metrics.MetricDescriptor.diagnostic` is the one exception,
       and a declared one — the engine's own (the candidate provider's output rate) and a host's
       (a signed error against what was asked) alike, through this one predicate: it has no better
       end either, but it explains a movement and a reader needs it beside the measures it
@@ -3773,7 +3767,7 @@ def _goal_check_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, b
     scalars are its expression and detail as TEXT, and ``passed`` is a boolean the walk skips —
     so they are yielded here, one per check, under the name the registry mints for a check's
     measure. Per result, since an observation evaluates each of its checks once. Each verdict is
-    the one :func:`~threetears.evals.contracts.result_condition.counted_goal_verdicts` says every rate counts, so
+    the one :func:`~threetears.evals.kernel.result_condition.counted_goal_verdicts` says every rate counts, so
     this and the pivot cannot disagree: none from a harness-faulted result, whose checks read the
     harness (the cells already skip it through :func:`_non_faulted`, but run summaries, the
     telemetry rollup and the scope divergences collect over every result, and without this they
@@ -3796,7 +3790,7 @@ def _failures_as_misses(results_by_run: dict[str, list[EvalResult]]) -> dict[str
     arm that refused the cases it would have got wrong read MORE accurate than one that answered them, and
     one that refused everything had no accuracy to compare at all. So a candidate failure carrying no
     ``match`` is read with ``match`` False — the rule
-    :func:`~threetears.evals.contracts.result_condition.counted_goal_verdicts` keeps for every goal check —
+    :func:`~threetears.evals.kernel.result_condition.counted_goal_verdicts` keeps for every goal check —
     when both of these hold:
 
     - **its case is a classification**: some result in the campaign landed ``match`` on that test case. A
@@ -3858,7 +3852,7 @@ def _accuracy_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, boo
     bool — that value is the walk's to drop and report, under ``match``'s own name.
 
     **A candidate failure is a miss**, whatever its ``match`` says — the rule
-    :func:`~threetears.evals.contracts.result_condition.counted_goal_verdicts` keeps for every goal check,
+    :func:`~threetears.evals.kernel.result_condition.counted_goal_verdicts` keeps for every goal check,
     carried to a classifier's accuracy. A refused call answered nothing; read as anything but a miss, an arm
     that refused the cases it would have got wrong read MORE accurate than one that answered them. A
     classifier kind lands ``match`` on a failure for this reason — the quick callable kind lands it False
@@ -3949,7 +3943,7 @@ def _lineage_leaves(result: EvalResult, *, profile: HostProfile) -> Iterator[tup
     from this source.
 
     **``cost_usd`` is an observation only where the result observed spend**
-    (:func:`~threetears.evals.contracts.usage_capture.spend_observed`): a row in its cost roles carrying
+    (:func:`~threetears.evals.kernel.usage_capture.spend_observed`): a row in its cost roles carrying
     dollars. Without one the stored 0.0 is the sum of nothing — a candidate that reported no spend, not one
     that spent none — so it is left out here, and with it out of every cell, run, case and stratum this
     walk summarises. Decided per result, so every slicing of the same results agrees; a cell where no
@@ -4021,7 +4015,7 @@ def _undeclarable_host_entries(results: Sequence[EvalResult]) -> list[str]:
     """The unreported-observation entries for host-measure keys the walk dropped as engine-owned.
 
     Each entry is the key with its reason in parentheses, the form
-    :attr:`~threetears.evals.contracts.analysis_measures.MeasureCollection.unreported_observations` reads —
+    :attr:`~threetears.evals.kernel.analysis_measures.MeasureCollection.unreported_observations` reads —
     the plain name could not carry it, because the engine's own measure of that name is usually pooled
     beside it and the bare name would read as a gap in the engine's reading rather than a drop of the host's.
 
@@ -4047,13 +4041,13 @@ def in_population(population: MeasurePopulation, result: EvalResult) -> bool:
 
     The one membership rule the measure walk applies, per measure and per result: a result the harness
     faulted is in ``all_observed`` only; ``delivered`` holds exactly the turns the candidate took
-    (:func:`~threetears.evals.contracts.result_condition.delivered_a_turn`), so a failure that took no turn
+    (:func:`~threetears.evals.kernel.result_condition.delivered_a_turn`), so a failure that took no turn
     — a refusal, a model error — is in every population but that one, and a failure that took a turn (one
     its budget ended, its output cap cut, its deadline struck mid-call) is in all three.
 
     Args:
         population: The population the measure's summary is computed over
-            (:func:`~threetears.evals.contracts.metrics.summary_population`).
+            (:func:`~threetears.evals.kernel.metrics.summary_population`).
         result: The result.
 
     Returns:
@@ -4089,14 +4083,14 @@ def _collect_measures(
     **Each measure is computed over its own population** (``MetricDescriptor.population``): a
     ``scored`` measure leaves out every result the harness faulted, an ``all_observed`` one keeps
     them, a ``delivered`` one holds only the turns the candidate took
-    (:func:`~threetears.evals.contracts.result_condition.delivered_a_turn`), and every summary states which
+    (:func:`~threetears.evals.kernel.result_condition.delivered_a_turn`), and every summary states which
     it was. ``results`` is therefore EVERY result in scope, faulted and failed ones included — the walk
     does the excluding, per measure, so a cell, a bar, a run summary and a divergence lens reporting
     one measure name report it over one population. A measure that declares none is computed over
     ``undeclared``, the population of the surface asking: ``scored`` for the decision surface's cells
     and bars, ``all_observed`` for a run's summary and the rollups, which is what each of those always
     computed — except a cost or latency measure, which every surface reads over ``delivered``
-    (:func:`~threetears.evals.contracts.metrics.summary_population`): a refused call is a failure every
+    (:func:`~threetears.evals.kernel.metrics.summary_population`): a refused call is a failure every
     rate counts against its arm, and not a 50 ms turn costing nothing on any of them.
 
     The second return value maps every pooled measure to its **observation unit**:
@@ -4270,7 +4264,7 @@ def _classifier_label_summaries(
         observations: The ``(confusion_cell, test_case_id)`` observations it summarises.
 
     Returns:
-        The derived summaries, named by :func:`~threetears.evals.contracts.metrics.classifier_label_measure`.
+        The derived summaries, named by :func:`~threetears.evals.kernel.metrics.classifier_label_measure`.
         A label never predicted has no precision; one never expected has no recall; either has no F1.
     """
     derived: list[MeasureSummary] = []
@@ -4428,10 +4422,10 @@ class _SurfaceFolds:
     """The ONE answer to "did this resolved surface move on its own, across these runs".
 
     A host may register a knob AND the surface it is merged into as levers
-    (:attr:`~threetears.evals.contracts.host.sweepables.Sweepable.resolves_into`): an open family's
+    (:attr:`~threetears.evals.kernel.host.sweepables.Sweepable.resolves_into`): an open family's
     members and the tool configuration they are written into, or a kind's ``reasoning_effort``
     overlay and the resolved model parameters it is written into
-    (:class:`~threetears.evals.contracts.host.kinds.ResolvesInto`). One turn of the knob then reaches
+    (:class:`~threetears.evals.kernel.host.kinds.ResolvesInto`). One turn of the knob then reaches
     every lens twice — as the knob and as the surface's content hash — and a lens that counted both
     reported a one-knob arm as ``multi_factor`` and each lever as confounded by the other. Every lens
     that decides what a comparison moved or what confounds it asks this object, over the cohort it is
@@ -4455,7 +4449,7 @@ class _SurfaceFolds:
     that folds it (:data:`UNVERIFIED_FOLD_PREFIX`), so it is never read as a checked non-confound.
 
     **A fixed lever's level is the level its variant coordinate carries**
-    (:meth:`~threetears.evals.contracts.host.profile.HostProfile.engine_levels` and the host's
+    (:meth:`~threetears.evals.kernel.host.profile.HostProfile.engine_levels` and the host's
     variant-lever reader), so the fold and the variant key cannot disagree about whether two runs sat
     at one level — in particular, a run of another kind sits at that kind's "not this kind" level,
     never at a ``None`` a run of the lever's own kind can also hold. The lever does not apply to such
@@ -5074,7 +5068,7 @@ def _apparatus_levels(
         all, which is how a level that looks empty stops being read as an absence.
 
         A dimension these runs do not HAVE — pinned to a rig seat no kind among them fills
-        (:attr:`~threetears.evals.contracts.host.kinds.KindContract.seats`) — is absent from the
+        (:attr:`~threetears.evals.kernel.host.kinds.KindContract.seats`) — is absent from the
         result entirely rather than present with a ``None`` level. That absence is the claim the
         confound scan already makes about a dimension that held still, and it is what keeps the
         dimension out of the apparatus class as well, since that is built from these keys.
@@ -6037,7 +6031,7 @@ def _carried_by(
     """Grade each declared component of a whole between two levels, and name the one carrying it.
 
     The components are read from the same declarations :func:`_unsound_subtraction` reads —
-    :func:`~threetears.evals.contracts.metrics.partition_components` over the whole describable measure space —
+    :func:`~threetears.evals.kernel.metrics.partition_components` over the whole describable measure space —
     so the partition this names and the partition that withholds a remainder are one partition.
     What this adds is where the movement went, which a withheld remainder deliberately leaves
     unsaid: the lens's own rule is to report the other components rather than a remainder, and a
@@ -6314,7 +6308,7 @@ def _scope_divergences(
 def _token_rollup(results: list[EvalResult]) -> TokenRollup | None:
     """Sum token usage across results carrying a usage breakdown, or None.
 
-    Sums what was reported (:func:`~threetears.evals.contracts.provider.sum_optional_tokens`, the
+    Sums what was reported (:func:`~threetears.evals.kernel.provider.sum_optional_tokens`, the
     package's one definition of that) and counts the results whose token-metered rows left a count
     unreported, rather than adding an unreported count as zero.
     """
@@ -6351,7 +6345,7 @@ def _result_has_error(result: EvalResult) -> bool:
     """True if a result carries any runner/judge/candidate/infra error.
 
     Deliberately NOT
-    :func:`~threetears.evals.contracts.result_condition.resolve_result_condition`'s ``scoring`` axis,
+    :func:`~threetears.evals.kernel.result_condition.resolve_result_condition`'s ``scoring`` axis,
     which every per-result read surface uses. The two answer different questions: this counts
     results that carry an error field at all, while the scoring axis decides how a result
     participates in aggregates — a candidate failure the turn budget or the output cap caused
@@ -6377,7 +6371,7 @@ def _measured_prod_costs(run_results: list[EvalResult]) -> list[float]:
     they are incomplete.
 
     Read over the turns the candidate took
-    (:func:`~threetears.evals.contracts.result_condition.delivered_a_turn`), as every cost reading is: a
+    (:func:`~threetears.evals.kernel.result_condition.delivered_a_turn`), as every cost reading is: a
     billed refusal's dollars are no turn's spend, and averaged in they made a refusing configuration cheap.
 
     Args:
@@ -6660,7 +6654,7 @@ def _declared_crossing(
 
     A cell is one declared level of every declared axis. A run sits at a cell when each axis's level joins to
     that cell's level (:func:`_run_axis_identities`). An unrun cell the design left out on purpose
-    (:meth:`~threetears.evals.contracts.declaration.CampaignDesign.skipped_by_design`) is ``skipped_by_design``
+    (:meth:`~threetears.evals.kernel.declaration.CampaignDesign.skipped_by_design`) is ``skipped_by_design``
     and is never a gap; an unrun cell it meant to run is ``not_run``, unless some run's level on an axis cannot
     be established, when it may be sitting there and the cell is ``undetermined``.
 
@@ -7139,7 +7133,7 @@ def _listed_names(names: list[str]) -> str:
 #: (the condition below), while unrecorded here means the run filled the seat, so its owner reads a recorded or
 #: an unrecorded level, never unseated — the owner's own level tells the two classes apart. A dimension's
 #: unseated level paired with a recorded owner (a run that filled no judge seat yet recorded a judge, which
-#: :meth:`~threetears.evals.contracts.host.profile.HostProfile.omits_apparatus` reports as a contradiction) is
+#: :meth:`~threetears.evals.kernel.host.profile.HostProfile.omits_apparatus` reports as a contradiction) is
 #: therefore digested, not neutral.
 CELL_ID_NEUTRAL: Mapping[str, str] = {"judge_temperature": "judge_model"}
 
@@ -7393,9 +7387,9 @@ def _variant_key_of(
     The key is the one the runner STAMPED on the result. The map behind it comes from the run's RECORDED
     pre-image when the run carries one, and only from a fresh derivation for a run its host
     assembled without the launch — see
-    :func:`~threetears.evals.contracts.identity.resolve_variant_identity`, which owns that choice. The
+    :func:`~threetears.evals.kernel.identity.resolve_variant_identity`, which owns that choice. The
     difference is the whole of this function's behaviour across an
-    :data:`~threetears.evals.contracts.identity.IDENTITY_VERSION` bump: a recorded map needs no predicate to
+    :data:`~threetears.evals.kernel.identity.IDENTITY_VERSION` bump: a recorded map needs no predicate to
     read it, so the arm stays described, while a derivation replays today's predicate and cannot.
 
     Args:
@@ -7454,7 +7448,7 @@ def _undescribable_arm_reason(result: EvalResult, run: EvalRun) -> str:
         run: The batch it belongs to.
 
     Returns:
-        The reason, for :attr:`~threetears.evals.contracts.campaign.VariantIndexEntry.levels_unavailable`.
+        The reason, for :attr:`~threetears.evals.kernel.campaign.VariantIndexEntry.levels_unavailable`.
     """
     if run.variant_levers is not None:
         return (
@@ -7998,7 +7992,7 @@ def _as_launched(runs: Sequence[EvalRun], profile: HostProfile) -> tuple[HostPro
         ``(profile, sentences)``: the profile every lens reads, and one sentence per measure read otherwise than
         the reader declares it.
     """
-    from threetears.evals.contracts.host.measures import MeasureRegistry
+    from threetears.evals.kernel.host.measures import MeasureRegistry
 
     recorded = [run for run in runs if run.declared_measures]
     if not recorded:
@@ -8347,7 +8341,7 @@ def _non_faulted(members: list[EvalResult]) -> list[EvalResult]:
 def _candidate_failed(members: list[EvalResult]) -> int:
     """How many of a cell's results the candidate failed, for any cause — each counted against the arm.
 
-    By :func:`~threetears.evals.contracts.result_condition.classify_result`, the rule every rate and bar
+    By :func:`~threetears.evals.kernel.result_condition.classify_result`, the rule every rate and bar
     counts a failure by.
     """
     return sum(1 for result in members if classify_result(result) is ResultOutcome.CANDIDATE_FAIL)
@@ -8357,7 +8351,7 @@ def _took_no_turn(members: list[EvalResult]) -> bool:
     """Whether a cell's results include a failure and no turn — the reading :attr:`CellFacts.all_failed` makes.
 
     Read off the results, for the lenses that hold them rather than the cell's facts, by the same predicate
-    (:func:`~threetears.evals.contracts.result_condition.delivered_a_turn`), so the two cannot disagree.
+    (:func:`~threetears.evals.kernel.result_condition.delivered_a_turn`), so the two cannot disagree.
     """
     return _no_turn(members) > 0 and not any(delivered_a_turn(result) for result in members)
 
@@ -8366,7 +8360,7 @@ def _no_turn(members: list[EvalResult]) -> int:
     """How many of a cell's failures took no turn — the ones its cost and latency readings left out.
 
     Exactly the candidate failures outside
-    :func:`~threetears.evals.contracts.result_condition.delivered_a_turn`, the predicate the measure walk's
+    :func:`~threetears.evals.kernel.result_condition.delivered_a_turn`, the predicate the measure walk's
     ``delivered`` population is, so the count beside a cell's cost and latency is the number they left out.
     """
     return sum(
@@ -8474,7 +8468,7 @@ def _bar_adjudications(
 ) -> list[BarAdjudication]:
     """Adjudicate every applicable bar against every cell.
 
-    **What a bar names is resolved by** :func:`~threetears.evals.contracts.declaration.resolve_bar_name`
+    **What a bar names is resolved by** :func:`~threetears.evals.kernel.declaration.resolve_bar_name`
     — the function the declaration gate asks — so a bar is read the way it was admitted, and a name
     the gate refuses is one this can never read. The gate supplies the template's names; this
     supplies the names the results actually carry (the judged dimensions they were scored on and
@@ -8649,11 +8643,11 @@ def _cost_unmeasured(results_by_cell: dict[_CellKey, list[EvalResult]]) -> tuple
     """Name every cell where no result observed spend, with the one sentence that says what that means.
 
     A cell is listed when it holds a result storing a ``cost_usd`` and no result in it observed spend
-    (:func:`~threetears.evals.contracts.usage_capture.spend_observed`): every number it stores is the sum of
+    (:func:`~threetears.evals.kernel.usage_capture.spend_observed`): every number it stores is the sum of
     nothing, so the measure walk read none of them and the cell carries no ``cost_usd`` reading. A cell whose
     every result went unpriced is not listed — its cost is unknown for a reason ``cost_usd`` null already
     states — and neither is one where any result observed spend, whose own ``n`` discloses the rest. Read
-    over the turns the candidate took (:func:`~threetears.evals.contracts.result_condition.delivered_a_turn`),
+    over the turns the candidate took (:func:`~threetears.evals.kernel.result_condition.delivered_a_turn`),
     the population a cell's ``cost_usd`` reading is read over (``delivered``), so a billed refusal cannot
     make a cell whose turns reported no spend look measured. A cell where no result took a turn is not
     listed: it has no cost because every call failed, which :func:`_all_failed` says, and "nobody reported
@@ -8718,7 +8712,7 @@ def _latency_contended(
 def _all_failed(cells: list[CellFacts]) -> tuple[list[CellCoordinate], str | None]:
     """Name every cell where no counted result took a turn, with the one sentence that says so.
 
-    Read off the cells' own counts (:attr:`~threetears.evals.contracts.surface.CellFacts.all_failed`), so the
+    Read off the cells' own counts (:attr:`~threetears.evals.kernel.surface.CellFacts.all_failed`), so the
     list and the surface cannot disagree about which cell took no turn. Such a cell has no cost or latency
     reading, and without this the absence reads as "not measured" beside the arms that were.
 
@@ -8727,7 +8721,7 @@ def _all_failed(cells: list[CellFacts]) -> tuple[list[CellCoordinate], str | Non
 
     Returns:
         The cells in coordinate order, and the sentence
-        (:func:`~threetears.evals.contracts.surface.all_failed_sentence`) — None when there are none.
+        (:func:`~threetears.evals.kernel.surface.all_failed_sentence`) — None when there are none.
     """
     failed = [
         CellCoordinate(variant_key=cell.variant_key, apparatus_class_id=cell.apparatus_class_id)
@@ -8966,7 +8960,7 @@ def _family_readings(
     axis — is in no family: it is held, never traded against a gain, and is decided on its own
     (:func:`_guardrails`). An unscoped question (no axes) asks about every axis — every axis, not every measure:
     a measure that serves no merit axis contributes to no verdict (:data:`MeritAxis`), scoped or not
-    (:func:`~threetears.evals.contracts.declaration.axis_in_question_scope`).
+    (:func:`~threetears.evals.kernel.declaration.axis_in_question_scope`).
     That is how the measuring apparatus's own readings stay out of a contrast between candidates: the
     judge phase's time (``judge_ms``), the drain wait, and ``cost_usd`` and ``program_cost``, which sum the
     judge's spend — what it cost to MEASURE an arm. The candidate's spend is ``production_replicating_cost``,
@@ -9050,7 +9044,7 @@ def _compare(
         control: The control cell and its per-case values.
         contrast: The contrast cell and its per-case values.
         threshold: The measure's declared materiality threshold, which labels the delta through the one
-            predicate every surface uses (:func:`~threetears.evals.contracts.metrics.materiality`) and is the
+            predicate every surface uses (:func:`~threetears.evals.kernel.metrics.materiality`) and is the
             equivalence test's margin; None for a measure that declared none and for a judged dimension.
         margin_source: Where ``threshold`` came from (:func:`_margin_of`), which the comparison records.
         value_range: The reading's declared inclusive bounds, which the equivalence test reads so its error
@@ -9159,7 +9153,7 @@ def _margin_of(
 ) -> tuple[float | None, Literal["measure", "run"] | None]:
     """A reading's margin and where it came from: the descriptor's threshold, else its runs' declared margin.
 
-    A core rate measure's descriptor declares none (:data:`~threetears.evals.contracts.metrics.RUN_MARGIN_MEASURES`),
+    A core rate measure's descriptor declares none (:data:`~threetears.evals.kernel.metrics.RUN_MARGIN_MEASURES`),
     so the two never both exist for one measure. A judged dimension has neither.
     """
     if reading[0] != "measure":
@@ -9424,7 +9418,7 @@ def _reading_scope(
 ) -> ReadingScope:
     """Label the readings no live question asks about exploratory — or, with no question, say so once.
 
-    The same rule the families are scoped by (:func:`~threetears.evals.contracts.declaration.exploratory_reading`),
+    The same rule the families are scoped by (:func:`~threetears.evals.kernel.declaration.exploratory_reading`),
     so a reading is exploratory exactly when no question's family could test it.
     """
     questions = declared.live_questions() if declared is not None else []

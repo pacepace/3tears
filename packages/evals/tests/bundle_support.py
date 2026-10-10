@@ -13,9 +13,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
-from threetears.evals.contracts import EvalResult
-from threetears.evals.contracts.campaign import EvalCampaign
-from threetears.evals.contracts.host import HostProfile
+from threetears.evals.schema import EvalResult
+from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.kernel.host import HostProfile
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 

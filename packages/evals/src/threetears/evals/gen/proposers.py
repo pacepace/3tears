@@ -5,15 +5,15 @@ and its scenario axes; on the ``boundary`` axis it drafts a universal boundary b
 refusal dims. Either way it sends a system prompt and a two-feed user message — the subject
 feed (what the subject under test is) and the catalog feed (the reusable rubric dims the
 operator already trusts) — and validates the reply into a
-:class:`~threetears.evals.contracts.models.RubricProposal`. No draft is persisted: the operator
+:class:`~threetears.evals.schema.models.RubricProposal`. No draft is persisted: the operator
 edits it and commits the parts they accept through the authoring operations. What IS written is
 the call's spend: the call runs outside any run, so it is priced before it is made and ledgered
-once it is, through the :class:`~threetears.evals.contracts.out_of_run.OutOfRunBudget` the host hands in.
+once it is, through the :class:`~threetears.evals.kernel.out_of_run.OutOfRunBudget` the host hands in.
 
 **What arrives here is text.** The host renders the subject feed from its own subject, the
 catalog feed from its rubric-dim store, and the system prompt from its prompt registry — each
 for the axis it is proposing on — then hands this module the three strings and a
-:class:`~threetears.evals.contracts.completion.BoundCompletionClient`. So the proposer knows neither what
+:class:`~threetears.evals.schema.completion.BoundCompletionClient`. So the proposer knows neither what
 a subject is nor where a prompt is kept, and every host drafts with the same code whatever its
 subject is.
 """
@@ -24,17 +24,17 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 from pydantic import ValidationError
 
-from threetears.evals.contracts.errors import ValidationFailedError
-from threetears.evals.contracts.models import RubricAxis, RubricProposal
-from threetears.evals.contracts.out_of_run_spend import OutOfRunSpend
-from threetears.evals.contracts.out_of_run import PlannedCall
-from threetears.evals.contracts.completion import JSON_OBJECT_RESPONSE_FORMAT
-from threetears.evals.contracts.provider import extract_json
+from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.schema.models import RubricAxis, RubricProposal
+from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
+from threetears.evals.kernel.out_of_run import PlannedCall
+from threetears.evals.schema.completion import JSON_OBJECT_RESPONSE_FORMAT
+from threetears.evals.kernel.provider import extract_json
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.out_of_run import OutOfRunBudget
-    from threetears.evals.contracts.completion import BoundCompletionClient
+    from threetears.evals.kernel.out_of_run import OutOfRunBudget
+    from threetears.evals.schema.completion import BoundCompletionClient
 
 log = get_logger(__name__)
 
@@ -88,7 +88,7 @@ async def propose_draft(
     or abusive rather than merely off-topic.
 
     One call on ``client`` renders both feeds into a strict-JSON draft, which is validated
-    into a :class:`~threetears.evals.contracts.models.RubricProposal` and **returned for operator
+    into a :class:`~threetears.evals.schema.models.RubricProposal` and **returned for operator
     review — no draft is persisted**. The call runs outside any run, so it goes through ``budget``:
     priced on the client before it is made and refused when the cap cannot pay for it, and its
     spend ledgered as soon as it returns — before the reply is read, so a draft refused for its
@@ -97,7 +97,7 @@ async def propose_draft(
 
     Args:
         client: The completion client to draft with — the host's client for the ``proposer`` role
-            (:data:`~threetears.evals.contracts.host.CompletionRole`). This function owns it from here
+            (:data:`~threetears.evals.kernel.host.CompletionRole`). This function owns it from here
             and releases it.
         budget: The out-of-run budget the call is priced against and ledgered through. Its
             ``subject_id``, when it names one, is the subject the draft is for.
@@ -109,7 +109,7 @@ async def propose_draft(
             so the model can name reuses in ``reused_dim_keys``.
 
     Returns:
-        The validated :class:`~threetears.evals.contracts.models.RubricProposal` draft, and its call's
+        The validated :class:`~threetears.evals.schema.models.RubricProposal` draft, and its call's
         ledger row.
 
     Raises:
@@ -198,7 +198,7 @@ def _coerce_new_dim_axis(payload: Any, axis: RubricAxis) -> None:
     The axis ('capability' vs 'boundary') is determined by *which* axis the proposer ran on,
     not a judgment the drafting LLM should make. Models nonetheless sometimes
     echo a dim's own key/name into the ``axis`` field, which would fail the
-    :data:`~threetears.evals.contracts.models.RubricAxis` validation and reject an otherwise-valid
+    :data:`~threetears.evals.schema.models.RubricAxis` validation and reject an otherwise-valid
     draft. Overwriting it before validation removes that failure mode at the
     cause (the field is server-determined, so the LLM's value is never trusted).
 

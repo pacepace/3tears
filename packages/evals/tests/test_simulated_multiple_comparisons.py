@@ -27,7 +27,8 @@ import pytest
 
 from threetears.evals.analysis import AnalysisContextBundle, ComparisonFamily, assemble_context_bundle
 from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, holm_adjust
-from threetears.evals.contracts import EvalCampaign, EvalResult, Question
+from threetears.evals.kernel import EvalCampaign, Question
+from threetears.evals.schema import EvalResult
 from packages.evals.tests.factories import fixture_variant_key, make_eval_result, make_eval_run, minimal_declaration
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile

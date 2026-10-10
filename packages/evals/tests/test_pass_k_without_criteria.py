@@ -14,9 +14,10 @@ import random
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.generator import build_user_message
 from threetears.evals.analysis.reporting import compute_frontier
-from threetears.evals.contracts import EvalCampaign, RubricScore
-from threetears.evals.contracts.models import GoalStateOutcome, RoleUsage
-from threetears.evals.contracts.scoring import NO_PASS_CRITERION_REASON, compute_pass_hat_k, has_pass_criterion
+from threetears.evals.kernel import EvalCampaign
+from threetears.evals.schema import RubricScore
+from threetears.evals.schema.models import GoalStateOutcome, RoleUsage
+from threetears.evals.kernel.scoring import NO_PASS_CRITERION_REASON, compute_pass_hat_k, has_pass_criterion
 from packages.evals.tests.factories import fixture_variant_key, make_eval_result, make_eval_run, minimal_declaration
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -130,8 +131,8 @@ def test_the_bundle_the_writer_reads_carries_the_reason() -> None:
 
 def test_the_rendered_comparison_says_the_classifier_has_no_pass_k() -> None:
     from threetears.evals.analysis.reads import compare_two_runs
-    from threetears.evals.contracts.errors import NotFoundError
-    from threetears.evals.contracts.models import EvalTemplate
+    from threetears.evals.kernel.errors import NotFoundError
+    from threetears.evals.schema.models import EvalTemplate
     from threetears.evals.ops.lenses import RunsCompared, runs_compared_text
 
     classifier, judged, results = _arms(3688)

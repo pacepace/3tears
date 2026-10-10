@@ -16,8 +16,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from threetears.evals.contracts.candidate_kind import CandidateOutput, CellPending
-from threetears.evals.contracts.models import ActorPolicy
+from threetears.evals.kernel.candidate_kind import CandidateOutput, CellPending
+from threetears.evals.schema.models import ActorPolicy
 
 __all__ = ["DONE", "FakeCellSink", "Raw", "ScriptedResponse", "ScriptedTable", "actor"]
 
@@ -88,7 +88,7 @@ class ScriptedTable:
         return ScriptedResponse(json.dumps({"utterance": line, "done": False}), cost_usd=self.cost_usd)
 
 
-# parity-with: threetears.evals.contracts.candidate_kind.CellSink
+# parity-with: threetears.evals.kernel.candidate_kind.CellSink
 @dataclass
 class FakeCellSink:
     """A cell's sink whose cost cap is ``cap_usd`` of simulator spend (``None``: no cap), recording every ask.

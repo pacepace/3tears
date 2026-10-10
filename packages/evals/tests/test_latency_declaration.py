@@ -15,8 +15,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import Question
-from threetears.evals.contracts.declaration import BarOverride, refuse_an_undeclarable_design
+from threetears.evals.kernel import Question
+from threetears.evals.kernel.declaration import BarOverride, refuse_an_undeclarable_design
 from threetears.evals.quick import compare, run_eval
 from threetears.evals.run.executor import DEFAULT_MAX_CONCURRENT_CELLS
 from packages.evals.tests.factories import minimal_declaration

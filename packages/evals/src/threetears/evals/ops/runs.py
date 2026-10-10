@@ -14,10 +14,10 @@ from pydantic import Field, model_validator
 
 from threetears.evals.analysis.agreement import InterJudgeAgreement, inter_judge_agreement
 from threetears.evals.analysis.judge_drift import JudgeDrift, judge_drift
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.host import EvalHost
-from threetears.evals.contracts.models import DEFAULT_LAUNCH_K_RUNS, CaseSet, CaseSetRef, EvalRun, SecondJudge
-from threetears.evals.contracts.offload import run_blocking
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.host import EvalHost
+from threetears.evals.schema.models import DEFAULT_LAUNCH_K_RUNS, CaseSet, CaseSetRef, EvalRun, SecondJudge
+from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, run_job_id
 from threetears.evals.analysis.summary import EvalSummary, summarize_run

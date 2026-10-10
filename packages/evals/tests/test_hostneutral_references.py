@@ -19,14 +19,14 @@ from pydantic import ValidationError
 from threetears.evals.analysis import errors, viz_refs
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.contracts.host import MeasureRegistry
+from threetears.evals.kernel.host import MeasureRegistry
 from threetears.evals.analysis.viz_refs import build_viz_payload, cell_arm_labels, reference_from_chart
-from threetears.evals.contracts.analysis_measures import MeasureCollection, MeasureSummary
-from threetears.evals.contracts.authored import Chart, MeasureRef
-from threetears.evals.contracts.campaign import VariantIndexEntry
-from threetears.evals.contracts.host.values import SweepableValue
-from threetears.evals.contracts.identity import compute_variant_key
-from threetears.evals.contracts.surface import (
+from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
+from threetears.evals.kernel.authored import Chart, MeasureRef
+from threetears.evals.kernel.campaign import VariantIndexEntry
+from threetears.evals.schema.values import SweepableValue
+from threetears.evals.kernel.identity import compute_variant_key
+from threetears.evals.kernel.surface import (
     CellFacts,
     DecisionSurface,
     JudgedDimensionFacts,

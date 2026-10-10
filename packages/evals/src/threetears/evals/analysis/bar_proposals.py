@@ -4,7 +4,7 @@ A behavior's bar should start where the incumbent already performs, so that ship
 worse is a visible regression rather than a matter of opinion. :func:`propose_bars` measures the
 incumbent the way every analysis does — it assembles the baseline campaign's bundle and reads its
 one cell's measures — and hands each measure with a better end to
-:meth:`~threetears.evals.contracts.host.bars.BarRegistry.propose`, which flags a vacuous seed and
+:meth:`~threetears.evals.kernel.host.bars.BarRegistry.propose`, which flags a vacuous seed and
 registers nothing.
 
 **A baseline measures one configuration under one rig.** A campaign of several cells has several
@@ -24,12 +24,12 @@ from typing import TYPE_CHECKING
 from threetears.evals.analysis.bundle import assemble_context_bundle
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, bar_seed
-from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
-from threetears.evals.contracts.host.bars import BarProposal, no_better_end
+from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.host.bars import BarProposal, no_better_end
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.host.eval_host import EvalHost
+    from threetears.evals.kernel.host.eval_host import EvalHost
 
 log = get_logger(__name__)
 

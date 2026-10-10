@@ -1,6 +1,6 @@
 """Repeat a finished run's judge scores: the same judge asked the same question again, to measure its agreement with itself.
 
-The ``separation`` evidence tier (:mod:`threetears.evals.contracts.evidence_tiers`) reads how often a
+The ``separation`` evidence tier (:mod:`threetears.evals.kernel.evidence_tiers`) reads how often a
 judge gives the same score when it scores the same evidence twice. Nothing in a run measures that: a
 cell is judged once. This module takes the measurement, on a run that has finished:
 
@@ -15,12 +15,12 @@ cell is judged once. This module takes the measurement, on a run that has finish
   each scored dim's first attempt and every parse retry
   (:data:`~threetears.evals.run.judge.JUDGE_CALL_ATTEMPTS`) — is priced on the client it will be made
   on and admitted against the host's out-of-run cap
-  (:class:`~threetears.evals.contracts.out_of_run.OutOfRunBudget`) before the first one is sent. Over
+  (:class:`~threetears.evals.kernel.out_of_run.OutOfRunBudget`) before the first one is sent. Over
   the cap, or unpriceable under an enforced cap, the whole repeat is refused with nothing spent. Each
   call made is written to the out-of-run ledger under purpose ``judge``, stamped with the run, whether
   it returns or raises.
 - **A measurement of the judge, never a change to the result.** The repeat's answers are recorded on
-  the result as a :class:`~threetears.evals.contracts.models.JudgeRepeat` beside the first scores they
+  the result as a :class:`~threetears.evals.schema.models.JudgeRepeat` beside the first scores they
   repeat; the scores every lens reads stay the ones the cell was judged with.
 
 Only dims the result holds a SCORE on are repeated: a dim the judge could not tell on, or whose call
@@ -36,19 +36,13 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError as PydanticValidationError
 
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
-from threetears.evals.contracts.models import (
-    NON_TERMINAL_RUN_STATUSES,
-    EvalResult,
-    EvalRun,
-    JudgeRepeat,
-    RepeatedScore,
-)
-from threetears.evals.contracts.offload import run_blocking
-from threetears.evals.contracts.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
-from threetears.evals.contracts.out_of_run_spend import OutOfRunPurpose
-from threetears.evals.contracts.completion import JSON_OBJECT_RESPONSE_FORMAT
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
+from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES, EvalResult, EvalRun, JudgeRepeat, RepeatedScore
+from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
+from threetears.evals.schema.out_of_run_spend import OutOfRunPurpose
+from threetears.evals.schema.completion import JSON_OBJECT_RESPONSE_FORMAT
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
 from threetears.evals.run.rejudge import (
@@ -61,10 +55,10 @@ from threetears.evals.run.runner import build_judge_context, judge_dims, judge_r
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.host.eval_host import EvalHost
-    from threetears.evals.contracts.models import JudgeConfig
-    from threetears.evals.contracts.completion import BoundCompletionClient, CompletionResult
-    from threetears.evals.contracts.storage import EvalStorage
+    from threetears.evals.kernel.host.eval_host import EvalHost
+    from threetears.evals.schema.models import JudgeConfig
+    from threetears.evals.schema.completion import BoundCompletionClient, CompletionResult
+    from threetears.evals.kernel.storage import EvalStorage
     from threetears.evals.run.judge_service import JudgeContext, JudgeOutcome, JudgeRequest
 
 log = get_logger(__name__)

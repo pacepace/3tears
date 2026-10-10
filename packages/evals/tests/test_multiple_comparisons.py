@@ -38,10 +38,11 @@ from threetears.evals.analysis.stats import (
     paired_equivalence,
     separation_p,
 )
-from threetears.evals.contracts import EvalCampaign, EvalResult, Question, RubricScore
-from threetears.evals.contracts.models import LatencyMetrics
-from threetears.evals.contracts.host import HostProfile, MeasureRegistry
-from threetears.evals.contracts.metrics import MeritAxis
+from threetears.evals.kernel import EvalCampaign, Question
+from threetears.evals.schema import EvalResult, RubricScore
+from threetears.evals.schema.models import LatencyMetrics
+from threetears.evals.kernel.host import HostProfile, MeasureRegistry
+from threetears.evals.kernel.metrics import MeritAxis
 from packages.evals.tests.factories import fixture_variant_key, make_eval_result, make_eval_run, minimal_declaration
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile

@@ -175,14 +175,14 @@ class TestRegistry:
 
     def test_registry_lists_only_types_the_viz_model_declares(self):
         """A payload model for a type the stored model cannot hold would never run."""
-        from threetears.evals.contracts.campaign import Viz
+        from threetears.evals.kernel.campaign import Viz
 
         declared = set(Viz.model_fields["type"].annotation.__args__)
         assert set(PAYLOAD_MODELS) <= declared
 
     def test_every_type_the_viz_model_declares_is_validated(self):
         """The other direction: a stored type with no model would be stored unchecked."""
-        from threetears.evals.contracts.campaign import Viz
+        from threetears.evals.kernel.campaign import Viz
 
         assert set(Viz.model_fields["type"].annotation.__args__) <= set(PAYLOAD_MODELS)
 

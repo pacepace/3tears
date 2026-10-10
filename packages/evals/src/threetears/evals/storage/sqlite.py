@@ -1,4 +1,4 @@
-"""A durable :class:`~threetears.evals.contracts.store_port.DocumentStore` in one SQLite file.
+"""A durable :class:`~threetears.evals.schema.store_port.DocumentStore` in one SQLite file.
 
 The store for keeping runs past the process without running a database: the standard library's
 :mod:`sqlite3`, one file, no dependency. Hand it to ``run_eval(..., store=...)`` or
@@ -13,8 +13,8 @@ kit (``threetears.evals.testing``) proves it case by case:
 - **Predicates and ordering run in SQLite**, on the stored JSON type: ``json_type`` tells ``true`` from
   ``1`` and a number from its text, as the port requires, and a document without the order field (or
   with it null) sorts below every document that has it. A projection (``exclude``, ``keep``) is applied
-  on the way out with the port's own :func:`~threetears.evals.contracts.store_port.omit_paths` and
-  :func:`~threetears.evals.contracts.store_port.keep_fields`.
+  on the way out with the port's own :func:`~threetears.evals.schema.store_port.omit_paths` and
+  :func:`~threetears.evals.schema.store_port.keep_fields`.
 - **Optimistic concurrency** is one statement: a conditional write is an ``UPDATE ... WHERE etag = ?``
   that lands or touches no row, so its compare and its write cannot be split, between threads or between
   processes. Every write mints a random etag, so a document deleted and written again never honours a
@@ -42,7 +42,7 @@ import uuid
 from collections.abc import Iterator, Sequence
 from typing import Any
 
-from threetears.evals.contracts.store_port import StoreConflict, keep_fields, omit_paths
+from threetears.evals.schema.store_port import StoreConflict, keep_fields, omit_paths
 
 __all__ = ["SQLITE_STORE_LAYOUT", "SqliteDocumentStore"]
 
@@ -92,7 +92,7 @@ def _predicate(field: str, value: Any) -> tuple[str, list[Any]]:
 
 
 class SqliteDocumentStore:
-    """A :class:`~threetears.evals.contracts.store_port.DocumentStore` over one SQLite file.
+    """A :class:`~threetears.evals.schema.store_port.DocumentStore` over one SQLite file.
 
     Args:
         path: The database file, created with its table when absent. ``":memory:"`` keeps it in this

@@ -12,8 +12,9 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import compare_two_runs
-from threetears.evals.contracts import EvalRun, EvalStorage, EvalTemplate, RubricScore
-from threetears.evals.contracts.scoring import compute_per_case_composites
+from threetears.evals.schema import EvalRun, EvalTemplate, RubricScore
+from threetears.evals.kernel import EvalStorage
+from threetears.evals.kernel.scoring import compute_per_case_composites
 from packages.evals.tests.factories import make_eval_result, make_eval_run, make_template
 from threetears.evals.storage import InMemoryDocumentStore
 

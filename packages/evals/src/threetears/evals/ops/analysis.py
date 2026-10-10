@@ -4,7 +4,7 @@ A generation is the analysis side's long work, and it follows the same job contr
 (:mod:`threetears.evals.ops.jobs`): :func:`analysis_generate` checks and builds everything before it
 spends — so a refused generation raises to its caller and costs nothing — then starts the paid call as a
 background task and returns its job. The job's record is the
-:class:`~threetears.evals.contracts.campaign.EvalAnalysisAttempt` the generation writes however it ends.
+:class:`~threetears.evals.kernel.campaign.EvalAnalysisAttempt` the generation writes however it ends.
 
 One generation per campaign runs at a time: a second is refused while the first is live, BEFORE it
 prepares, because preparing builds a client and resolves the prompt — work a refused request need not
@@ -34,10 +34,10 @@ from threetears.evals.analysis.service import (
     prepare_analysis_generation,
     run_analysis_generation,
 )
-from threetears.evals.contracts.base import EvalBaseModel, VerbatimText
-from threetears.evals.contracts.campaign import ConfidenceTier, EvalAnalysis, EvalCampaign, EvalInsight
-from threetears.evals.contracts.errors import ConflictError, NotFoundError, ValidationFailedError
-from threetears.evals.contracts.host import EvalHost
+from threetears.evals.schema.base import EvalBaseModel, VerbatimText
+from threetears.evals.kernel.campaign import ConfidenceTier, EvalAnalysis, EvalCampaign, EvalInsight
+from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
+from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops.host import AnalysisGeneration, OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, analysis_job_id, generation_key
 from threetears.evals.run.curation import delete_analysis, delete_insight, set_analysis_archived, set_campaign_archived
@@ -570,7 +570,7 @@ def bars_propose(host: EvalHost, campaign_id: str, scope_id: str) -> BarProposal
     :func:`~threetears.evals.analysis.bar_proposals.propose_bars`, read through: each proposal seeded from the
     incumbent's measured interval and flagged vacuous where nothing could fail it, and every reading nothing
     could be proposed on named with why. **Nothing is registered**: a bar reaches a registry only when a person
-    writes it into the host's registrations, since :class:`~threetears.evals.contracts.host.BarRegistry` has no
+    writes it into the host's registrations, since :class:`~threetears.evals.kernel.host.BarRegistry` has no
     mutation API.
 
     Args:

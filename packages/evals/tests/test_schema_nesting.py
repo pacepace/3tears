@@ -16,11 +16,11 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts.dsl import call_parameter_matches, undefined_call_references, world_prose_matches
-from threetears.evals.contracts.host.world import WorldDimension, WorldRegistrationError, WorldRegistry
-from threetears.evals.contracts.host.world_schema import UnsupportedSchemaError, honoured_kind
-from threetears.evals.contracts.prose import PROSE_SCHEMA_KEY, schema_nodes_at
-from threetears.evals.contracts.schema_nesting import nested_schemas
+from threetears.evals.kernel.dsl import call_parameter_matches, undefined_call_references, world_prose_matches
+from threetears.evals.kernel.host.world import WorldDimension, WorldRegistrationError, WorldRegistry
+from threetears.evals.kernel.host.world_schema import UnsupportedSchemaError, honoured_kind
+from threetears.evals.schema.prose import PROSE_SCHEMA_KEY, schema_nodes_at
+from threetears.evals.schema.schema_nesting import nested_schemas
 
 
 class _Position:

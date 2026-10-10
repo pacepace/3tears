@@ -11,7 +11,7 @@ not passing it — and the domain-width rule tells the model how to pick an
 out-of-domain ask for a broad subject, where "off topic" collapses toward
 "unsafe" instead. It carries the same namespaced-dim and catalog-reuse rules
 the capability proposer does: a draft naming a bare dimension fails validation
-(:data:`~threetears.evals.contracts.models.DimName`) and is discarded, so the
+(:data:`~threetears.evals.schema.models.DimName`) and is discarded, so the
 prompt has to teach the rule rather than leave it to be discovered.
 
 Seeded empty-slot-only; the store is master once set.
@@ -19,7 +19,7 @@ Seeded empty-slot-only; the store is master once set.
 
 from __future__ import annotations
 
-from threetears.evals.contracts.prompts.seed import SeedSection, SeedTemplate
+from threetears.evals.kernel.prompts.seed import SeedSection, SeedTemplate
 
 #: The seeded default ``eval_boundary_gen`` template: drafts a battery of simulated actors that pressure a
 #: subject's boundaries, and the refusal dimensions they are scored on.

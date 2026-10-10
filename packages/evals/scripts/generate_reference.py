@@ -503,7 +503,7 @@ def field_table(model: type, *, full: bool) -> Iterator[str]:
 
 
 def configuration_section() -> Iterator[str]:
-    from threetears.evals.contracts.host import HostProfile
+    from threetears.evals.kernel.host import HostProfile
     from threetears.evals.run import LaunchSettings
 
     yield anchor("configuration")
@@ -593,7 +593,8 @@ def rst_to_markdown(doc: str, heading: str) -> Iterator[str]:
 
 
 def goal_language_section() -> Iterator[str]:
-    from threetears.evals.contracts import dsl, goal_grammar
+    from threetears.evals.kernel import dsl
+    from threetears.evals.schema import goal_grammar
 
     yield anchor("goal-checks")
     yield "## The goal-check language"
@@ -640,14 +641,12 @@ def goal_functions(grammar_source: str, evaluator_source: str) -> list[tuple[str
         if "_BUILTINS" in _assigned_names(node) and isinstance(node, ast.Assign):
             names = sorted(ast.literal_eval(node.value.args[0]))  # type: ignore[attr-defined]
     if not names:
-        raise SystemExit(
-            "the goal-check language's function set (_BUILTINS in contracts/goal_grammar.py) was not found"
-        )
+        raise SystemExit("the goal-check language's function set (_BUILTINS in schema/goal_grammar.py) was not found")
     rows = []
     for name in names:
         handler = handlers.get(_SHARED_HANDLERS.get(name, f"_builtin_{name}"))
         if handler is None:
-            raise SystemExit(f"goal-check function {name!r} has no handler in contracts/dsl.py to document it from")
+            raise SystemExit(f"goal-check function {name!r} has no handler in kernel/dsl.py to document it from")
         if name in ("any", "all"):
             arguments = "<body> for it in <path>"
         else:
@@ -769,7 +768,7 @@ def command_help(parser: argparse.ArgumentParser, command: str) -> str:
 
 
 def measures_section() -> Iterator[str]:
-    from threetears.evals.contracts import METRIC_DESCRIPTORS
+    from threetears.evals.kernel import METRIC_DESCRIPTORS
 
     yield anchor("measures")
     yield "## Measures"

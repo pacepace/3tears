@@ -42,7 +42,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from threetears.evals.contracts import (
+from threetears.evals.kernel import (
     CandidateOutput,
     CandidatePreparationFailed,
     CandidateTelemetry,
@@ -50,36 +50,36 @@ from threetears.evals.contracts import (
     CellSink,
     CellSpanWindow,
     EvalCampaign,
-    EvalResult,
-    EvalRun,
     EvalStorage,
-    EvalTemplate,
-    EvalTestCase,
-    JudgedArtifact,
     NotFoundError,
     ValidationFailedError,
     MetricDescriptor,
-    RoleUsage,
-    WorldSeed,
     WorldSession,
     VariantConfig,
     withhold_failure_detail,
 )
-from threetears.evals.contracts.host import (
+from threetears.evals.schema import (
+    EvalResult,
+    EvalRun,
+    EvalTemplate,
+    EvalTestCase,
+    JudgedArtifact,
+    RoleUsage,
+    WorldSeed,
+)
+from threetears.evals.kernel.host import (
     SHARED_CORE,
     EvalHost,
     HostProfile,
-    IntervalScale,
     KindContract,
     MeasureRegistry,
     SeedRefused,
-    SubjectSnapshot,
     Sweepable,
-    SweepableValue,
     WorldDimension,
     WorldRegistry,
     default_cell_timeout,
 )
+from threetears.evals.schema import IntervalScale, SubjectSnapshot, SweepableValue
 from threetears.evals.run import (
     KindWiring,
     LaunchableKind,

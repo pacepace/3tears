@@ -1,7 +1,7 @@
 """Every writer of an existing campaign takes the campaign write lock — derived from the code, not listed.
 
 A campaign document carries no ETag, so each edit of one is a blind read-modify-write, and two that
-interleave lose the first one's change (``threetears.evals.contracts.campaign_writes._CAMPAIGN_WRITES``). The lock is taken
+interleave lose the first one's change (``threetears.evals.kernel.campaign_writes._CAMPAIGN_WRITES``). The lock is taken
 by decorating each writer with ``serialized_campaign_write``, and a decorator list fails by omission:
 a new archive, rename or membership path written without it brings the lost-update race back with
 nothing going red. So the population here is every function in the package source that calls

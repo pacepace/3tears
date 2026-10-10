@@ -9,7 +9,7 @@ guardrails are decided by, so the two never disagree about which arm breached.
 from __future__ import annotations
 
 from threetears.evals.analysis.bundle import bundle_decision_surface
-from threetears.evals.contracts.models import EvalTemplate, RubricDim
+from threetears.evals.schema.models import EvalTemplate, RubricDim
 from packages.evals.tests.guardrail_support import BOUNDARY, CAPABILITY, CONTRAST, two_arm_bundle
 
 _CASES = 20

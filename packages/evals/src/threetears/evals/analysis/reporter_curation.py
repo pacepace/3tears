@@ -18,12 +18,12 @@ from typing import TYPE_CHECKING, Protocol
 
 from threetears.evals.analysis.reporter_bank import case_pair, decidable_reporter_case_bank
 from threetears.evals.analysis.reporter_kind import reporter_case_of
-from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.storage import EvalStorage
-    from threetears.evals.contracts.models import EvalTestCase
+    from threetears.evals.kernel.storage import EvalStorage
+    from threetears.evals.schema.models import EvalTestCase
 
 log = get_logger(__name__)
 
@@ -100,7 +100,7 @@ def set_reporter_case_archived(
             decided).
         StorageError: The updated case could not be persisted.
     """
-    from threetears.evals.contracts.models import EvalTestCase
+    from threetears.evals.schema.models import EvalTestCase
 
     current = storage.load_test_case(test_case_id, scope_id)
     if current is None:

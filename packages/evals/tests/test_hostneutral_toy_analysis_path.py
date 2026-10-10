@@ -12,7 +12,7 @@ Pinned here — each class is a property a mutation of the engine turned red:
   the judged half of the surface; an insight's standing; retraction read off the archived flag
   alone; intervals at the one level; the shared remainder predicate and measure description; the
   lever spread's spelling.
-- ``contracts/declaration.py``: a refused bar quoted as declared.
+- ``kernel/declaration.py``: a refused bar quoted as declared.
 - ``analysis/generator.py``: the surface a generation freezes; the prompt version over the
   assembled prompt; the billed-cost spelling; one parser for every reference site; prose is not
   refused; the two functions made public for the reporter's judge.
@@ -40,10 +40,10 @@ from threetears.evals.analysis.generator import (
     refuse_an_undescribable_arm_table,
 )
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.contracts.campaign import EvalAnalysis, EvalInsight
-from threetears.evals.contracts.declaration import BarOverride, refuse_an_undeclarable_design
-from threetears.evals.contracts.metrics import WITHHELD_PARTITION_INCOMPLETE
-from threetears.evals.contracts.models import LatencyMetrics, RunCompleteness, utc_now_iso
+from threetears.evals.kernel.campaign import EvalAnalysis, EvalInsight
+from threetears.evals.kernel.declaration import BarOverride, refuse_an_undeclarable_design
+from threetears.evals.kernel.metrics import WITHHELD_PARTITION_INCOMPLETE
+from threetears.evals.schema.models import LatencyMetrics, RunCompleteness, utc_now_iso
 from packages.evals.tests.fixtures.toyhost.campaign import (
     TOYHOST_NARROW,
     TOYHOST_WIDE,
@@ -347,7 +347,7 @@ class TestTheLeverSpreadIsSpelledByTheNumberRule:
 
 
 class TestARefusedBarIsQuotedAsDeclared:
-    """``contracts/declaration.py``: the refusal echoes the author's value.
+    """``kernel/declaration.py``: the refusal echoes the author's value.
 
     The threshold is spelled with ``repr``, which keeps the contracts set closed, rather than with
     ``:g`` or the reader-facing number rule. A value ``:g`` rounds and the number rule separates is

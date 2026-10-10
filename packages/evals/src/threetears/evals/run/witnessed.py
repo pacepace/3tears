@@ -2,8 +2,8 @@
 
 A host that witnesses a session — real people, no rig — and wants it read beside the cells its runs
 produce records it through :func:`record_witnessed_cell`. That builds the cell's
-:class:`~threetears.evals.contracts.models.EvalResult` and
-:class:`~threetears.evals.contracts.models.EvalTrace` through
+:class:`~threetears.evals.schema.models.EvalResult` and
+:class:`~threetears.evals.schema.models.EvalTrace` through
 :func:`~threetears.evals.run.runner.assemble_completed_cell`, the same function the runner calls for
 every cell that reaches its end, so the two cannot drift apart.
 
@@ -41,12 +41,12 @@ import math
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any, Literal
 
-from threetears.evals.contracts.candidate_kind import CandidateOutput
-from threetears.evals.contracts.errors import ValidationFailedError
-from threetears.evals.contracts.host.eval_host import EvalHost
-from threetears.evals.contracts.host.traces import CellTrace
-from threetears.evals.contracts.identity import resolve_variant_identity
-from threetears.evals.contracts.models import (
+from threetears.evals.kernel.candidate_kind import CandidateOutput
+from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.schema.traces import CellTrace
+from threetears.evals.kernel.identity import resolve_variant_identity
+from threetears.evals.schema.models import (
     DEFAULT_JUDGE_TEMPERATURE,
     ConversationStopCause,
     EvalResult,
@@ -57,8 +57,8 @@ from threetears.evals.contracts.models import (
     JudgeConfig,
     JudgedArtifact,
 )
-from threetears.evals.contracts.spend import ExternalRateTable
-from threetears.evals.contracts.world_events import WorldEvent
+from threetears.evals.kernel.spend import ExternalRateTable
+from threetears.evals.schema.world_events import WorldEvent
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
@@ -69,7 +69,7 @@ from threetears.evals.run.rejudge import (
     recorded_judge_pins,
     recorded_judged_dims,
 )
-from threetears.evals.contracts.offload import run_blocking
+from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.run.runner import (
     DEFAULT_JUDGE_CONCURRENCY,
     assemble_completed_cell,
@@ -210,7 +210,7 @@ async def record_witnessed_cell(
     """Record one cell a host observed — a session it witnessed, not one the engine ran — as a result and its trace.
 
     The host hands over what the candidate produced, in the same
-    :class:`~threetears.evals.contracts.candidate_kind.CandidateOutput` a kind's ``invoke`` returns, and
+    :class:`~threetears.evals.kernel.candidate_kind.CandidateOutput` a kind's ``invoke`` returns, and
     this builds the two documents through **the same assembly every completed cell of a run takes**:
     the async-delivery spend folded into the usage rows, the candidate/infra error taxonomy, the blended
     cost, the covariates, the latency record and the trace's id. So a witnessed cell and a run's cell
@@ -260,7 +260,7 @@ async def record_witnessed_cell(
     **A witnessed cell's goal checks read what fired as a witnessed cell's.** The host grades the cell's checks
     itself (they arrive on ``output``), and builds what fired with
     ``Firings.of(world_events, provenance="witnessed")`` — or, grading through a
-    :class:`~threetears.evals.contracts.world_session.WorldSession`, by constructing that session with
+    :class:`~threetears.evals.kernel.world_session.WorldSession`, by constructing that session with
     ``provenance="witnessed"``, whose ``fired`` reads the same rule — the rule a re-check reads the stored
     cell back by (:func:`~threetears.evals.run.recheck.recheck_goal_states`). No seed armed the session, so
     its events say ``armed=False`` because nothing could mark them armed, and ``fired_armed()`` is not
@@ -269,7 +269,7 @@ async def record_witnessed_cell(
     refused: no seed armed it and no rig made it happen, so it is a rig's record, not an observation.
 
     **What the host writes around it.** A witnessed session has no template that set it, so its case
-    carries ``template_id=None`` whatever its run names: an :class:`~threetears.evals.contracts.models.EvalTestCase`
+    carries ``template_id=None`` whatever its run names: an :class:`~threetears.evals.schema.models.EvalTestCase`
     with ``template_id=None``, its stimulus in ``variation_params`` and ``host_payload``, saved with
     ``host.storage.save_test_case`` — re-check and re-judge read it back by id, and no launch will run it,
     because a launch refuses a case whose template is not its own. Its run's ``template_id`` is None too,

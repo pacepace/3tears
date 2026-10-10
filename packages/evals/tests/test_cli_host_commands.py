@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts.errors import NotFoundError
+from threetears.evals.kernel.errors import NotFoundError
 from threetears.evals.quick import ENGINE_COMMANDS, HostCommand, callable_host, run_cli
 from threetears.evals.quick.cli import build_parser
 

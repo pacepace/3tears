@@ -15,8 +15,8 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle, build_code_only_report
 from threetears.evals.analysis.report import DisclosureBlock
-from threetears.evals.contracts import CampaignDesign, ControlDeclaration, EvalCampaign, SweptAxis
-from threetears.evals.contracts.host import IntervalScale, SweepableValue
+from threetears.evals.kernel import CampaignDesign, ControlDeclaration, EvalCampaign, SweptAxis
+from threetears.evals.schema import IntervalScale, SweepableValue
 from packages.evals.tests.factories import memory_storage
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_INSTANT,

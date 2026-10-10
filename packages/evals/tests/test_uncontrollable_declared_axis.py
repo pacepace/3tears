@@ -14,8 +14,8 @@ from __future__ import annotations
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle, build_code_only_report
 from threetears.evals.analysis.report import DisclosureBlock
-from threetears.evals.contracts import SweptAxis
-from threetears.evals.contracts.host import SweepableValue
+from threetears.evals.kernel import SweptAxis
+from threetears.evals.schema import SweepableValue
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 

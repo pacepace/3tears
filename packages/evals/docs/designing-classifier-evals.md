@@ -390,12 +390,7 @@ Its `invoke` calls your production classifier on the test case and lands two cor
 `CandidateOutput.host_measures`:
 
 ```python
-from threetears.evals.contracts import (
-    CONFUSION_CELL_MEASURE,
-    MATCH_MEASURE,
-    CandidateOutput,
-    confusion_cell,
-)
+from threetears.evals.kernel import CONFUSION_CELL_MEASURE, MATCH_MEASURE, CandidateOutput, confusion_cell
 
 predicted = parsed_label or "UNPARSEABLE"
 return CandidateOutput(

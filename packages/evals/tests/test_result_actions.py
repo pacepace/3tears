@@ -27,7 +27,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
-from threetears.evals.contracts import (
+from threetears.evals.schema import (
     TRANSCRIPT_DIM_ID,
     CallLedger,
     EvalResult,
@@ -37,13 +37,13 @@ from threetears.evals.contracts import (
     JudgeEvidence,
     LatencyMetrics,
     RecordedCall,
-    ResultOutcome,
     RoleUsage,
     RubricScore,
     eval_trace_doc_id,
 )
+from threetears.evals.kernel import ResultOutcome
 from threetears.evals.analysis.reporting import decompose_total_ms
-from threetears.evals.contracts.errors import ValidationFailedError
+from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.ops import ResultDetail, ResultListing, results_list
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture

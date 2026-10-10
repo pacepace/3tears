@@ -40,9 +40,9 @@ from threetears.evals.analysis.errors import SoundnessRefusal
 from threetears.evals.analysis.generator import generate_analysis
 from threetears.evals.analysis.report import build_report
 from threetears.evals.analysis.report.model import TextBlock
-from threetears.evals.contracts.surface import GuardrailCell, GuardrailCheck, GuardrailDecision, GuardrailReadings
-from threetears.evals.contracts.campaign import EvalAnalysis
-from threetears.evals.contracts.models import utc_now_iso
+from threetears.evals.kernel.surface import GuardrailCell, GuardrailCheck, GuardrailDecision, GuardrailReadings
+from threetears.evals.kernel.campaign import EvalAnalysis
+from threetears.evals.schema.models import utc_now_iso
 
 _UNTESTED_REASON = "fewer than two cases carry this reading on a side"
 

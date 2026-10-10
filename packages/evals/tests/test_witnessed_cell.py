@@ -1,7 +1,7 @@
 """Recording a cell a host witnessed: the runner's own assembly, its refusals, and what the host writes around it.
 
 :func:`~threetears.evals.run.record_witnessed_cell` builds a cell's result and trace from a
-:class:`~threetears.evals.contracts.CandidateOutput` the host observed, through the same function the
+:class:`~threetears.evals.kernel.CandidateOutput` the host observed, through the same function the
 runner assembles every completed cell with. The first test is the one that holds that: the toy host's
 real run, every cell's output captured as the runner received it, re-recorded through the public
 operation under the runner's own ids — and the two records are equal, field for field.
@@ -20,11 +20,14 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.contracts import (
+from threetears.evals.kernel import (
     CandidateKindDefect,
     CandidateOutput,
     CandidateTelemetry,
     CellSummary,
+    summarize_completeness,
+)
+from threetears.evals.schema import (
     ConversationStopCause,
     EvalResult,
     EvalRun,
@@ -32,11 +35,11 @@ from threetears.evals.contracts import (
     JudgedArtifact,
     JudgeEvidence,
     RoleUsage,
-    summarize_completeness,
 )
-from threetears.evals.contracts.world_events import WorldEvent
-from threetears.evals.contracts.host import CellTrace, EvalHost
-from threetears.evals.contracts.models import eval_trace_doc_id
+from threetears.evals.schema.world_events import WorldEvent
+from threetears.evals.schema import CellTrace
+from threetears.evals.kernel.host import EvalHost
+from threetears.evals.schema.models import eval_trace_doc_id
 from threetears.evals.run import RunnerOptions, execute_run, record_witnessed_cell
 from threetears.evals.run.runner import RunCallbacks
 from packages.evals.tests.factories import make_eval_run

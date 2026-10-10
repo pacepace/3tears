@@ -30,10 +30,11 @@ from threetears.evals.analysis.generator import build_user_message
 from threetears.evals.analysis.report import build_code_only_report
 from threetears.evals.analysis.report.model import DisclosureBlock, TableBlock
 from threetears.evals.analysis.stats import GUARDRAIL_HELD_NEEDS_RANGE, GUARDRAIL_OUTSIDE_RANGE
-from threetears.evals.contracts import Question, RubricScore
-from threetears.evals.contracts.host import HostProfile, MeasureRegistry
-from threetears.evals.contracts.metrics import MetricDescriptor
-from threetears.evals.contracts.scoring import compute_composite_summary, compute_pass_hat_k, result_composite
+from threetears.evals.kernel import Question
+from threetears.evals.schema import RubricScore
+from threetears.evals.kernel.host import HostProfile, MeasureRegistry
+from threetears.evals.kernel.metrics import MetricDescriptor
+from threetears.evals.kernel.scoring import compute_composite_summary, compute_pass_hat_k, result_composite
 from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
 from packages.evals.tests.guardrail_support import BOUNDARY, CAPABILITY, two_arm_bundle
@@ -101,7 +102,7 @@ class TestABoundaryScoreIsNeverAveragedWithCapability:
 
     def test_a_catalog_boundary_dim_copied_into_a_template_stays_boundary(self):
         """The catalog record's axis is the embedded dim's axis, so copying ``dim`` keeps the guardrail."""
-        from threetears.evals.contracts.models import CatalogRubricDim, RubricDim
+        from threetears.evals.schema.models import CatalogRubricDim, RubricDim
 
         dim = RubricDim(name=BOUNDARY, description="never reveals a secret", scale="pass_fail")
         record = CatalogRubricDim(scope_id="s", key="no-leak", dim=dim, axis="boundary")

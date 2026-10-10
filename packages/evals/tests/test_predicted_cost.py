@@ -34,8 +34,8 @@ from threetears.evals.analysis.reporting import (
     compute_pivot,
 )
 from threetears.evals.analysis.stats import lognormal_sum_prediction_band
-from threetears.evals.contracts import ValidationFailedError
-from threetears.evals.contracts.models import EvalResult, EvalRun
+from threetears.evals.kernel import ValidationFailedError
+from threetears.evals.schema.models import EvalResult, EvalRun
 from threetears.evals.run.reads import list_runs
 from packages.evals.tests.factories import make_eval_result, make_eval_run, memory_storage
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host

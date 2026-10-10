@@ -132,7 +132,7 @@ ALLOWED: dict[tuple[str, str], str] = {
         "the font directories already handed to the chart library, so none is registered twice — "
         "part of the same process-wide font cache"
     ),
-    ("threetears/evals/contracts/campaign_writes.py", "_CAMPAIGN_WRITES"): (
+    ("threetears/evals/kernel/campaign_writes.py", "_CAMPAIGN_WRITES"): (
         "serialises every read-modify-write of a campaign in the process. Shared across hosts, which "
         "over-serialises and never leaks: it holds no value, and a per-store lock would be weaker, "
         "since a host may build two storages over one document store"
@@ -142,7 +142,7 @@ ALLOWED: dict[tuple[str, str], str] = {
         "resets it on leaving, and the value names the ledger it meters for, so a call decided under one "
         "run's ledger is never counted by another host's cell"
     ),
-    ("threetears/evals/contracts/host/sweepables.py", "SHARED_CORE"): (
+    ("threetears/evals/kernel/host/sweepables.py", "SHARED_CORE"): (
         "the engine's own core declarations every host extends — engine vocabulary, built once from "
         "constants and never mutated (extend returns a new registry)"
     ),
@@ -359,7 +359,7 @@ def test_every_allowance_is_still_state_the_walk_finds() -> None:
     ("source", "name"),
     [
         (
-            "from threetears.evals.contracts.host import HostProfile\n"
+            "from threetears.evals.kernel.host import HostProfile\n"
             "_ACTIVE: HostProfile | None = None\n"
             "def install(p):\n    global _ACTIVE\n    _ACTIVE = p\n",
             "_ACTIVE",
@@ -369,7 +369,7 @@ def test_every_allowance_is_still_state_the_walk_finds() -> None:
         ("_SEEN = []\ndef note(x):\n    _SEEN.append(x)\n", "_SEEN"),
         ("import contextvars\n_CURRENT = contextvars.ContextVar('host')\n", "_CURRENT"),
         (
-            "from functools import cache\nfrom threetears.evals.contracts.host import HostProfile\n"
+            "from functools import cache\nfrom threetears.evals.kernel.host import HostProfile\n"
             "@cache\ndef levers(profile: HostProfile):\n    return profile.sweepables\n",
             "levers",
         ),

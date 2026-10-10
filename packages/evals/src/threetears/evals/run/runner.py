@@ -3,8 +3,8 @@
 :func:`execute_run` runs a run's matrix — each ``(test_case × model × k_iteration)`` once, in a
 shuffled order derived from the run's id (:func:`cell_execution_order`) — and :func:`run_one_result`
 runs one cell: it asks the template's candidate kind for a candidate, judges what it produced, and
-builds the :class:`~threetears.evals.contracts.models.EvalResult` and its sibling
-:class:`~threetears.evals.contracts.models.EvalTrace`. Nothing here knows what a subject is.
+builds the :class:`~threetears.evals.schema.models.EvalResult` and its sibling
+:class:`~threetears.evals.schema.models.EvalTrace`. Nothing here knows what a subject is.
 
 The candidate-kind seam
 -----------------------
@@ -13,13 +13,13 @@ Everything that differs between one evaluable subject and another lives behind o
 :func:`run_one_result` dispatches on ``template.candidate_kind``
 **exactly once**, at the top of the cell, and everything after that point — judging, goal-state
 recording, usage capture, the cell summary, storage — reads a
-:class:`~threetears.evals.contracts.candidate_kind.CandidateOutput`. The protocol is
-:mod:`threetears.evals.contracts.candidate_kind`; every implementation belongs to whoever owns its
+:class:`~threetears.evals.kernel.candidate_kind.CandidateOutput`. The protocol is
+:mod:`threetears.evals.kernel.candidate_kind`; every implementation belongs to whoever owns its
 subject, and reaches the runner as a :class:`KindFactory` on :attr:`RunnerOptions.candidate_kinds`
 with its collaborators already bound. A host's kinds live in its own adapter; the one this
 package ships is the reporter kind, :mod:`threetears.evals.analysis.reporter_kind`.
 
-The host reaches this loop only through the :class:`~threetears.evals.contracts.host.eval_host.EvalHost`
+The host reaches this loop only through the :class:`~threetears.evals.kernel.host.eval_host.EvalHost`
 it is handed — its storage, trace sink, cell timeout, failure describer, blocking-I/O executor and
 vocabulary — and through the run's options: the kind factories and values such as the rate table, the
 metered-call ledger and the judge concurrency. That is what lets any host run a trial through the same
@@ -37,10 +37,10 @@ For each cell:
 3. ``invoke`` it. The kind reports its output, its mechanical facts, its telemetry and its errors —
    the candidate's own failures and the rig's apart — and, through the cell's sink, what it is waiting
    on and how to read what it has spent so far, so a cell its deadline cancels is still recorded.
-   An :class:`~threetears.evals.contracts.host.apparatus.ApparatusError` out of ``prepare`` or
+   An :class:`~threetears.evals.kernel.host.apparatus.ApparatusError` out of ``prepare`` or
    ``invoke`` is recorded the same way, as that one cell excluded, and the run goes on.
 4. Run the rubric judge, when a judge service is wired and the cell produced something to judge.
-5. Build one :class:`~threetears.evals.contracts.models.EvalResult`, and one trace document beside it.
+5. Build one :class:`~threetears.evals.schema.models.EvalResult`, and one trace document beside it.
 
 A cell cut off before step 5 — by its deadline, its run's cancel, or an apparatus fault — is built
 from its sink instead (``_cut_short_cell``): the spend it had reported, its errors with the cut's own
@@ -64,7 +64,7 @@ from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
-from threetears.evals.contracts.candidate_kind import (
+from threetears.evals.kernel.candidate_kind import (
     CandidateKind,
     CandidateKindDefect,
     CandidateOutput,
@@ -73,24 +73,24 @@ from threetears.evals.contracts.candidate_kind import (
     UnknownCandidateKind,
     VariantConfig,
 )
-from threetears.evals.contracts.covariates import (
+from threetears.evals.kernel.covariates import (
     count_delivered_turns,
     count_dropped_tool_calls,
     count_refused_tool_attaches,
     count_truncated_rounds,
     derive_covariates,
 )
-from threetears.evals.contracts.dsl import evaluate_with_detail
-from threetears.evals.contracts.errors import StorageError
-from threetears.evals.contracts.host.apparatus import ApparatusError
-from threetears.evals.contracts.host.eval_host import EvalHost
-from threetears.evals.contracts.host.spend import ExternalSpend
-from threetears.evals.contracts.host.subject import SubjectSnapshot
-from threetears.evals.contracts.host.timeouts import EvalCellTimeout
-from threetears.evals.contracts.host.traces import CellIdentity, CellTrace, TraceSink
-from threetears.evals.contracts.identity import DerivedVariantIdentity, resolve_variant_identity
-from threetears.evals.contracts.metrics import ACCURACY_MEASURE, MATCH_MEASURE, undeclarable_host_measures
-from threetears.evals.contracts.models import (
+from threetears.evals.kernel.dsl import evaluate_with_detail
+from threetears.evals.kernel.errors import StorageError
+from threetears.evals.kernel.host.apparatus import ApparatusError
+from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.schema.external_spend import ExternalSpend
+from threetears.evals.schema.subject import SubjectSnapshot
+from threetears.evals.kernel.host.timeouts import EvalCellTimeout
+from threetears.evals.schema.traces import CellIdentity, CellTrace, TraceSink
+from threetears.evals.kernel.identity import DerivedVariantIdentity, resolve_variant_identity
+from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, undeclarable_host_measures
+from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
     AsyncDelivery,
@@ -112,11 +112,11 @@ from threetears.evals.contracts.models import (
     scored_dim_ids,
     utc_now_iso,
 )
-from threetears.evals.contracts.scoring import CellSummary, boundary_dim_names
-from threetears.evals.contracts.call_ledger import CallLedger
-from threetears.evals.contracts.world_events import Firings, WorldEvent
-from threetears.evals.contracts.world_session import WorldSession
-from threetears.evals.contracts.usage_capture import (
+from threetears.evals.kernel.scoring import CellSummary, boundary_dim_names
+from threetears.evals.schema.call_ledger import CallLedger
+from threetears.evals.schema.world_events import Firings, WorldEvent
+from threetears.evals.kernel.world_session import WorldSession
+from threetears.evals.kernel.usage_capture import (
     ExternalRateTable,
     RoleUsageLedger,
     async_delivery_usage,
@@ -133,11 +133,11 @@ from threetears.evals.run.judge_service import (
     fold_judge_outcomes,
 )
 from threetears.evals.run.metering import MeteredCallLedger, MeteredCallTally
-from threetears.evals.contracts.offload import run_blocking, wait_through_cancellation
+from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.host.world import WorldRegistry
+    from threetears.evals.kernel.host.world import WorldRegistry
     from threetears.evals.run.budget import CapBreach
 
 log = get_logger(__name__)
@@ -160,7 +160,7 @@ class RunnerOptions:
     """The run's own knobs that don't fit on the run document — per-run values, never host wiring.
 
     What every run of a host shares — its storage, tracing, cell timeout, executor and failure
-    describer — is the :class:`~threetears.evals.contracts.host.eval_host.EvalHost` the loop is
+    describer — is the :class:`~threetears.evals.kernel.host.eval_host.EvalHost` the loop is
     handed. What is here is decided per run: the kinds a launch bound for it, its ceilings and
     rates, its ledger, its probe of the job it runs in, and a test's pinned cell order.
     """
@@ -283,7 +283,7 @@ class KindFactory(Protocol):
     The one shape a kind reaches the runner in (:attr:`RunnerOptions.candidate_kinds`). A host
     binds the kind's collaborators when it builds the factory — a client, a subject factory, the
     host's own subject object — and the runner supplies the cell. A kind that needs nothing per
-    cell returns the same instance every time, which :class:`~threetears.evals.contracts.candidate_kind.CandidateKind`
+    cell returns the same instance every time, which :class:`~threetears.evals.kernel.candidate_kind.CandidateKind`
     permits because it holds no state between cells.
     """
 
@@ -302,7 +302,7 @@ class CellOutcome(NamedTuple):
     They are separate because ``trace`` and ``otel_trace`` are most of a stored
     result's bytes and no list, aggregate or cost path reads them — so the analysis
     record stays narrow and the payload lives in a sibling
-    :class:`~threetears.evals.contracts.models.EvalTrace` keyed by the result's id.
+    :class:`~threetears.evals.schema.models.EvalTrace` keyed by the result's id.
 
     A :class:`~typing.NamedTuple` rather than a dataclass so a caller that only wants
     the result can unpack and ignore the rest (``result, _ = await run_one_result(...)``)
@@ -434,7 +434,7 @@ class ErrorLedger:
         Infra, because the scoring question is the same one — a broken rig is not the
         candidate's failure and must not be scored as one. The extra flag is what makes
         it *stop*, and that matters for a reason the classification alone does not cover:
-        :func:`~threetears.evals.contracts.result_condition.classify_result` gives ``candidate_error``
+        :func:`~threetears.evals.kernel.result_condition.classify_result` gives ``candidate_error``
         precedence over ``infra_error``, so a cell that keeps driving turns after the rig
         broke can pick up a candidate LLM error and be relabelled a candidate failure —
         a harness fault attributed to the candidate. It also stops paying for turns whose
@@ -592,7 +592,7 @@ class _CellSink:
     spent, or of what it was waiting on, cannot be taken from its return value.
     The run loop builds one of these per cell, hands it down through :func:`run_one_result` to
     the kind's ``invoke`` — the kind-facing half is
-    :class:`~threetears.evals.contracts.candidate_kind.CellSink` — and reads it in its own timeout
+    :class:`~threetears.evals.kernel.candidate_kind.CellSink` — and reads it in its own timeout
     arm, which reads nothing else about the cell.
 
     It holds two things the kind reports — :attr:`pending` and how to read the candidate side
@@ -618,7 +618,7 @@ class _CellSink:
     #: deadline's own charge.
     errors: ErrorLedger = field(default_factory=ErrorLedger)
     #: How to read the candidate side so far, as the kind registered it — see
-    #: :meth:`~threetears.evals.contracts.candidate_kind.CellSink.report_progress`.
+    #: :meth:`~threetears.evals.kernel.candidate_kind.CellSink.report_progress`.
     progress: Callable[[], CandidateOutput] | None = None
     #: The judge phase, once it has begun — what it reads and every dim it asks — so a cell cut
     #: off while it is judged keeps the evidence and can name the dims that did not finish.
@@ -768,11 +768,11 @@ class _CellTraceScopes:
 
     **The runner owns the harvest and a kind owns only the extents**, and that split is the
     no-host-shapes rule made structural: the host-shaped span payload never crosses the
-    candidate-kind seam (see :mod:`threetears.evals.contracts.candidate_kind`), while the decision of
+    candidate-kind seam (see :mod:`threetears.evals.kernel.candidate_kind`), while the decision of
     *where* each window opens stays with the code that knows which work is a turn and which
     is apparatus.
 
-    This is the engine side of :class:`~threetears.evals.contracts.candidate_kind.CellSpanWindow`, which
+    This is the engine side of :class:`~threetears.evals.kernel.candidate_kind.CellSpanWindow`, which
     is the whole of what a kind is handed — structurally, so the two scopes are all a kind
     can reach, and the sink, the cell identity and the record stay on this side of the seam.
 
@@ -937,7 +937,7 @@ async def _run_one_result(
     **The candidate is built and driven behind one seam**: this
     function dispatches on ``template.candidate_kind`` exactly once, and everything after
     that point — judging, goal-state recording, usage capture, the cell summary, storage —
-    reads a :class:`~threetears.evals.contracts.candidate_kind.CandidateOutput` and knows nothing about
+    reads a :class:`~threetears.evals.kernel.candidate_kind.CandidateOutput` and knows nothing about
     subjects, simulators or worlds. That is what makes one refactor cover every kind of
     subject rather than one.
 
@@ -967,7 +967,7 @@ async def _run_one_result(
     ``variant`` is this cell's resolved contestant identity, computed once per
     model by the caller (which holds the run) and stamped onto every result
     this function returns, successful or not. Required: every result carries the key
-    (:func:`~threetears.evals.contracts.identity.resolve_variant_identity`).
+    (:func:`~threetears.evals.kernel.identity.resolve_variant_identity`).
 
     ``judge_model`` is the judge the run records, stamped onto the result on every exit. The run
     loop passes ``run.judge_model``, the one carrier of that fact; a direct caller passes the
@@ -1573,7 +1573,7 @@ def _ran_its_course(output: CandidateOutput, sink: _CellSink) -> bool:
 
     No error on the output, no breach of the run's cost cap, and a conversation — if the kind held one —
     that stopped on its turn budget. Every other ending may have come before turn 1
-    (:meth:`~threetears.evals.contracts.world_session.WorldSession.require_schedule_announced`).
+    (:meth:`~threetears.evals.kernel.world_session.WorldSession.require_schedule_announced`).
 
     Args:
         output: What the kind returned.
@@ -1595,7 +1595,7 @@ def hold_to_goal_checks(kind_name: str, goal_checks: Sequence[str], output: Cand
     its cells carry no outcome for the checks it skipped, and every per-check rate is computed over
     the cells that happened to grade them while reading as though it covered the run.
 
-    - **An excluded cell** (any ``infra_errors``) is in no rate (:func:`~threetears.evals.contracts.result_condition.counted_goal_verdicts`),
+    - **An excluded cell** (any ``infra_errors``) is in no rate (:func:`~threetears.evals.kernel.result_condition.counted_goal_verdicts`),
       so what it graded is stored as reported.
     - **A failed candidate** (any ``candidate_errors``) may stop before its kind grades anything. A candidate
       failure counts every check as failed — but only the checks a result carries — so each check it did
@@ -1644,7 +1644,7 @@ def hold_to_goal_checks(kind_name: str, goal_checks: Sequence[str], output: Cand
 def refuse_inner_agent_usage(usage: Sequence[RoleUsage]) -> None:
     """Refuse a kind's telemetry that reports its background work's spend a second time.
 
-    Background work reports its spend on its :class:`~threetears.evals.contracts.models.AsyncDelivery`,
+    Background work reports its spend on its :class:`~threetears.evals.schema.models.AsyncDelivery`,
     which the engine folds (:func:`_candidate_side_usage`); a kind reporting ``inner_agent`` rows of
     its own would be counted beside it. Its own function so the runner can refuse before its judge
     phase pays for anything, while the fold itself happens once, when the cell is assembled.
@@ -1667,13 +1667,13 @@ def refuse_engine_derived_host_measures(host_measures: Mapping[str, bool | float
     """Refuse a kind's ``host_measures`` that land a measure the engine derives.
 
     ``accuracy`` is derived from each observation's ``match``
-    (:data:`~threetears.evals.contracts.metrics.ACCURACY_MEASURE`); a kind landing it too would put a
+    (:data:`~threetears.evals.kernel.metrics.ACCURACY_MEASURE`); a kind landing it too would put a
     second producer of one reading beside the engine's, and which one a surface reported would depend
     on the walk's precedence rather than on what was measured. Called by the runner before its judge
     phase pays for anything, and by the assembly every completed cell takes, a witnessed one included.
 
     **Every other engine-owned name is refused too**
-    (:func:`~threetears.evals.contracts.metrics.undeclarable_host_measures`): a core measure (``cost_usd``,
+    (:func:`~threetears.evals.kernel.metrics.undeclarable_host_measures`): a core measure (``cost_usd``,
     ``score`` …) or a name in a namespace the engine mints (``goal_state:…``, ``classifier:…``). A host
     cannot declare one, so a kind landing it reports a value no host described, and the analysis walk would pool it into the engine's own
     observations of that name with ``n`` inflated. Refused rather than dropped: a kind's measures are its own
@@ -2211,7 +2211,7 @@ def _degraded_capture_fields(
     hold is the call that was in flight when the deadline struck, whose spend no response ever
     reported — for a single-call kind that is the whole of it; ``termination`` is what tells a
     reader the total stops there (see
-    :func:`~threetears.evals.contracts.usage_capture.resolve_result_usage`).
+    :func:`~threetears.evals.kernel.usage_capture.resolve_result_usage`).
 
     **Once the kind's ``invoke`` has returned, its whole output is the candidate side's record**
     (:attr:`_CellSink.returned`): a deadline in judging keeps the goal-state facts, host
@@ -2324,13 +2324,13 @@ def _candidate_side_usage(
 ) -> list[RoleUsage]:
     """The candidate side's rows: the kind's own, plus what its background work spent.
 
-    Background work reports its spend on its :class:`~threetears.evals.contracts.models.AsyncDelivery`,
-    so the runner folds it (:func:`~threetears.evals.contracts.usage_capture.async_delivery_usage`)
+    Background work reports its spend on its :class:`~threetears.evals.schema.models.AsyncDelivery`,
+    so the runner folds it (:func:`~threetears.evals.kernel.usage_capture.async_delivery_usage`)
     rather than each kind — work still in flight when the cell ended included, and a substituted
     entry, which can report none, contributing nothing. That is the one path such spend takes: a kind
     reporting ``inner_agent`` rows of its own would be counted beside it, so it is refused. The
     dollars are not summed here: the cell's cost is derived from these rows once, by
-    :func:`~threetears.evals.contracts.usage_capture.cell_cost`.
+    :func:`~threetears.evals.kernel.usage_capture.cell_cost`.
 
     Args:
         usage: The rows the kind reported on its telemetry.
@@ -2447,7 +2447,7 @@ def assert_preconditions(
     the first turn, against the world its session read back when the seed settled — so no kind has to
     remember to, and a failed presumption is excluded rather than scored as the subject's failure. It
     stays engine API for a kind that wants to refuse earlier, inside its own ``prepare``
-    (:exc:`~threetears.evals.contracts.candidate_kind.CandidatePreparationFailed` with
+    (:exc:`~threetears.evals.kernel.candidate_kind.CandidatePreparationFailed` with
     ``termination="precondition_failed"``): the assertion is pure over the t=0 world, so asking it twice
     gives one answer.
 
@@ -2457,7 +2457,7 @@ def assert_preconditions(
             ``variation.tone`` beside the world.
         seeded: The seeded world, immediately after seeding and before any turn, keyed by declared
             dimension name — read back through the dimensions' ``read`` handles, or named from the
-            seed by :meth:`~threetears.evals.contracts.host.world.WorldRegistry.named`. Read with an
+            seed by :meth:`~threetears.evals.kernel.host.world.WorldRegistry.named`. Read with an
             empty call ledger: at t=0 the candidate has made no call.
         world: The host's world registry (``profile.world``), so a path reads the dimension the
             authoring gate resolved it to.
@@ -2496,7 +2496,7 @@ def _failed_preconditions(
     """The engine's own t=0 assertion of a template's preconditions: the exclusion it makes, or None when they held.
 
     Asserted against the world the cell's session read back the moment its seed settled
-    (:attr:`~threetears.evals.contracts.world_session.WorldSession.seeded_state`). A cell whose kind never seeded
+    (:attr:`~threetears.evals.kernel.world_session.WorldSession.seeded_state`). A cell whose kind never seeded
     through its session has no t=0 world the engine saw, so its presumptions are asserted against an empty one,
     where none is established — excluded rather than scored, since a presumption nobody checked is not one that
     held (:func:`assert_preconditions`).
@@ -2551,7 +2551,7 @@ class GoalCheckUnevaluable(RuntimeError):
 
     The check is a claim about the world, and a check that cannot be evaluated has made no claim.
     Scoring it as failed would put a harness or DSL fault on the candidate's record, so a kind that
-    catches it raises :class:`~threetears.evals.contracts.host.ApparatusError` from ``invoke``, which
+    catches it raises :class:`~threetears.evals.kernel.host.ApparatusError` from ``invoke``, which
     the runner records as an apparatus fault that excludes the cell.
 
     Engine API beside :func:`evaluate_goal_state`, which raises it: a kind catches it to tell a
@@ -2620,7 +2620,7 @@ def grade_goal_checks(
 ) -> list[GoalStateOutcome]:
     """Grade goal checks against a call ledger, an end state and what fired: the one evaluation every caller uses.
 
-    **Callable by every kind.** A kind fills a :class:`~threetears.evals.contracts.call_ledger.CallLedger`
+    **Callable by every kind.** A kind fills a :class:`~threetears.evals.schema.call_ledger.CallLedger`
     as its candidate acts, reads its end state, and grades here; :func:`evaluate_goal_state` is the
     same call over a template's checks. The check-controls gate
     (:mod:`threetears.evals.run.check_controls`) grades a template's control end states through here,
@@ -2634,8 +2634,8 @@ def grade_goal_checks(
         end_state: The world to read, keyed by declared dimension name — a cell's end state, or a
             control end state.
         fired: What fired, read by ``fired()`` and ``fired_armed()`` — a cell's
-            (:attr:`~threetears.evals.contracts.world_session.WorldSession.fired`), a stored result's
-            (:meth:`~threetears.evals.contracts.world_events.Firings.of` its world events), or a control's.
+            (:attr:`~threetears.evals.kernel.world_session.WorldSession.fired`), a stored result's
+            (:meth:`~threetears.evals.schema.world_events.Firings.of` its world events), or a control's.
             Required rather than defaulted: ``None`` says no world events were recorded, and a check
             reading either then raises rather than scoring "nothing fired" for a cell nobody watched.
         variation: The case parameters a check may read as ``variation.*``.
@@ -2645,7 +2645,7 @@ def grade_goal_checks(
     Returns:
         One outcome per expression, in order. A check whose value rests on something the end state
         does not hold is *not established* — never a pass, negated or not — and is recorded failed
-        with a detail starting :data:`~threetears.evals.contracts.dsl.NOT_ESTABLISHED` that names
+        with a detail starting :data:`~threetears.evals.kernel.dsl.NOT_ESTABLISHED` that names
         the paths that resolved to nothing, so a reader can tell it from a check that evaluated False.
 
     Raises:
@@ -2670,7 +2670,7 @@ def template_as_graded(template: EvalTemplate, refused: Mapping[str, str] | None
     A template stored before a grammar rule can carry a check the rule now refuses, and grading it raises in
     every cell — each then a rig fault, with the check's reason buried in a generic apparatus error and every
     other measure of the cell lost with it. The launch freezes the refused checks on the run
-    (:func:`~threetears.evals.contracts.models.refused_goal_checks`); the cells grade the rest, and every surface
+    (:func:`~threetears.evals.schema.models.refused_goal_checks`); the cells grade the rest, and every surface
     counts the refused check as excluded, with its reason.
 
     Args:
@@ -2693,7 +2693,7 @@ def _unevaluated_goal_checks(template: EvalTemplate, *, waiting_on: str) -> list
     A deadline that strikes while the candidate's turn or its background work is pending cancels
     the cell before the goal state is graded, and fails the candidate (``_DEADLINE_CHARGE``). A
     candidate failure counts every goal-state check as failed, and
-    :func:`~threetears.evals.contracts.result_condition.counted_goal_verdicts` is where every per-check rate
+    :func:`~threetears.evals.kernel.result_condition.counted_goal_verdicts` is where every per-check rate
     applies that — but only to the checks a result carries. Carrying them here is what puts this
     cell in those rates; left empty, an arm whose candidate keeps hitting its deadline would show
     per-check pass rates over only the cells it finished, while pass^k counted it as failing.
@@ -2801,7 +2801,7 @@ async def judge_dims(
     no call reads another's output. The judge client builds each request locally, which
     is what makes gathering on the one client the service caches per ``(model,
     temperature)`` sound; the port states the requirement
-    (:class:`~threetears.evals.contracts.completion.CompletionClient`). ``concurrency=1`` reproduces a
+    (:class:`~threetears.evals.schema.completion.CompletionClient`). ``concurrency=1`` reproduces a
     serial phase exactly.
 
     The order is DIMENSION order — transcript axis, outcome axis, then ``template.rubric``
@@ -3027,7 +3027,7 @@ async def execute_run(
     the cap counts as such. Both default ``None`` (no gating / no
     recording) — the pure-function contract for tests and cap-disabled contexts.
 
-    Apparatus faults: a cell an :class:`~threetears.evals.contracts.host.apparatus.ApparatusError`
+    Apparatus faults: a cell an :class:`~threetears.evals.kernel.host.apparatus.ApparatusError`
     ended is recorded excluded and the loop goes on. Only when EVERY cell of the run ended that
     way does the loop raise :class:`EveryCellApparatusFailedError`, after the last cell is saved:
     the rig never worked, so the run measured nothing, and the job manager files it ``failed``.

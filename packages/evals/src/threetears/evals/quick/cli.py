@@ -1,7 +1,7 @@
 """The engine's command line: launch a template's runs, list what a scope holds, and read a campaign's report.
 
 ``python -m threetears.evals`` runs it with ``--host module:factory`` naming the host to work in: a
-zero-argument callable returning an :class:`~threetears.evals.contracts.host.EvalHost`, or a
+zero-argument callable returning an :class:`~threetears.evals.kernel.host.EvalHost`, or a
 :class:`~threetears.evals.run.LaunchHost` for ``run``, which launches. A product mounts the same
 commands under its own CLI by calling :func:`run_cli` with its own ``host_factory``, and its users
 then never name the host::
@@ -103,8 +103,9 @@ from threetears.evals.analysis import (
     scope_out_of_run_spend,
     serialize_report,
 )
-from threetears.evals.contracts import DEFAULT_LAUNCH_K_RUNS, EvalServiceError, OutOfRunPurpose
-from threetears.evals.contracts.host import EvalHost
+from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, OutOfRunPurpose
+from threetears.evals.kernel import EvalServiceError
+from threetears.evals.kernel.host import EvalHost
 from threetears.evals.analysis.summary import summarize_run
 from threetears.evals.run import LaunchHost, list_runs, list_templates, start_run
 
@@ -130,7 +131,7 @@ class HostCommand:
             already there.
         handler: Carries the command out and returns its exit code. It may be a coroutine function,
             which the command line runs to completion. A refusal it raises as
-            :class:`~threetears.evals.contracts.EvalServiceError` is printed to stderr and exits 2, as
+            :class:`~threetears.evals.kernel.EvalServiceError` is printed to stderr and exits 2, as
             the engine's commands' refusals are.
     """
 

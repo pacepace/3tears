@@ -13,12 +13,12 @@ The engine never reaches into a candidate. :func:`~threetears.evals.run.runner.e
 the run's :class:`CassetteLane` once (:meth:`CassetteLane.for_run`) and hands each cell's ``prepare``
 that cell's :class:`CassetteCell`, which already knows the corpus, the template and the case. The
 kind calls :meth:`CassetteCell.wire` with the
-:class:`~threetears.evals.contracts.cassettes.CassetteSeams` its candidate exposes, and the cell arms
-them; the vocabulary a kind implements is :mod:`threetears.evals.contracts.cassettes`.
+:class:`~threetears.evals.kernel.cassettes.CassetteSeams` its candidate exposes, and the cell arms
+them; the vocabulary a kind implements is :mod:`threetears.evals.kernel.cassettes`.
 
 * **Action seam** — each declared synchronous tool is swapped for a :class:`CassetteProxy`, which
   wraps ``act()`` — or ``act_sync()``, for a kind whose tools block inside its own turn loop
-  (:class:`~threetears.evals.contracts.cassettes.SyncActionSeam`). Both entry points take one
+  (:class:`~threetears.evals.kernel.cassettes.SyncActionSeam`). Both entry points take one
   record-and-replay implementation on the cell, so the two paths key, capture, replay and fail
   identically, and a recording made on either replays on either.
 * **Delivery seam** — capture hands the kind a recorder it calls where background work STARTS and
@@ -27,7 +27,7 @@ them; the vocabulary a kind implements is :mod:`threetears.evals.contracts.casse
 Every recording is keyed by what was asked and by which time it was asked
 --------------------------------------------------------------------------
 
-A recording's :class:`~threetears.evals.contracts.models.CassetteKey` is the corpus, template, case,
+A recording's :class:`~threetears.evals.schema.models.CassetteKey` is the corpus, template, case,
 tool, action, a digest of the parameters (or of the background work's request) and the
 **occurrence** — the Nth time this cell asked exactly that, counted in the order the candidate
 asked. A session that rolls ``1d20`` twice replays both of its rolls in order, and two scouts that
@@ -36,14 +36,14 @@ work is recorded against its request at the moment it starts and written when it
 failed, or still in flight when the cell ended — so how the work finished is part of what a replay
 serves. Replay never falls back to the real tool:
 
-* :class:`~threetears.evals.contracts.cassettes.CassetteMiss` — the corpus never recorded this ask.
-* :class:`~threetears.evals.contracts.cassettes.CassetteExhausted` — it recorded this ask fewer times
+* :class:`~threetears.evals.kernel.cassettes.CassetteMiss` — the corpus never recorded this ask.
+* :class:`~threetears.evals.kernel.cassettes.CassetteExhausted` — it recorded this ask fewer times
   than the candidate has now made it.
-* :class:`~threetears.evals.contracts.cassettes.CassetteCorrupt` — a recording could not be read
+* :class:`~threetears.evals.kernel.cassettes.CassetteCorrupt` — a recording could not be read
   back: its row no longer loads, the store failed, or its payload no longer rebuilds as the type the
   seam declares; or a capture could not clear the case's previous recording.
 
-Every one is an :class:`~threetears.evals.contracts.host.apparatus.ApparatusError`. A failed write
+Every one is an :class:`~threetears.evals.kernel.host.apparatus.ApparatusError`. A failed write
 during capture is logged and leaves a hole at exactly that key, which a replay reports as a miss or
 an exhaustion naming it — never as a neighbouring answer served in its place.
 
@@ -69,7 +69,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 
-from threetears.evals.contracts.cassettes import (
+from threetears.evals.kernel.cassettes import (
     ActionSeam,
     CassetteCorrupt,
     CassetteExhausted,
@@ -83,13 +83,13 @@ from threetears.evals.contracts.cassettes import (
     SyncToolLike,
     ToolLike,
 )
-from threetears.evals.contracts.errors import StorageError
-from threetears.evals.contracts.models import AsyncDelivery, CassetteKey, CassetteSeam, EvalCassette
-from threetears.evals.contracts.storage import CassetteStore
+from threetears.evals.kernel.errors import StorageError
+from threetears.evals.schema.models import AsyncDelivery, CassetteKey, CassetteSeam, EvalCassette
+from threetears.evals.kernel.storage import CassetteStore
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.models import EvalRun
+    from threetears.evals.schema.models import EvalRun
 
 log = get_logger(__name__)
 
@@ -293,7 +293,7 @@ class CassetteCell:
             seams: The cell candidate's seams.
 
         Raises:
-            TypeError: ``seams`` is not a :class:`~threetears.evals.contracts.cassettes.CassetteSeams`.
+            TypeError: ``seams`` is not a :class:`~threetears.evals.kernel.cassettes.CassetteSeams`.
             ValueError: The cell was already wired; ``seams`` declares no seam at all; its action seam
                 names no tool; a tool is declared on both seams; or the action seam did not apply the
                 wrap exactly once over every tool it declared.
@@ -573,16 +573,16 @@ class CassetteProxy:
     """A recorded synchronous tool, as the candidate sees it once its cell is wired.
 
     Composition and ``__getattr__`` delegation: every attribute except the
-    :class:`~threetears.evals.contracts.cassettes.ToolLike` and
-    :class:`~threetears.evals.contracts.cassettes.SyncToolLike` members passes through to the wrapped
+    :class:`~threetears.evals.kernel.cassettes.ToolLike` and
+    :class:`~threetears.evals.kernel.cassettes.SyncToolLike` members passes through to the wrapped
     tool, so the candidate's own tool machinery interacts with the proxy exactly as with the tool.
     A call goes to the cell: in capture the tool runs live and its result is recorded under the
     call's key and occurrence (a failed result too — a failure pattern is itself replayable signal);
     in replay the recording of this call's occurrence is served and the tool is never called.
 
     **One entry point is bound, by the seam that wired it.** ``act`` for an
-    :class:`~threetears.evals.contracts.cassettes.ActionSeam`, ``act_sync`` for a
-    :class:`~threetears.evals.contracts.cassettes.SyncActionSeam`. Both are defined here, so the other
+    :class:`~threetears.evals.kernel.cassettes.ActionSeam`, ``act_sync`` for a
+    :class:`~threetears.evals.kernel.cassettes.SyncActionSeam`. Both are defined here, so the other
     one can never fall through ``__getattr__`` to the wrapped tool's live method; calling it is refused
     before anything is keyed.
     """

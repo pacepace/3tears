@@ -26,7 +26,7 @@ from threetears.evals.vega.compiler import (
     value_label_layers,
 )
 from threetears.evals.analysis.viz.intent import ChartIntent
-from threetears.evals.contracts.host import ChartFont
+from threetears.evals.kernel.host import ChartFont
 from threetears.evals.analysis.viz.intents.attribution import REMAINDER_SCOPE
 from threetears.evals.analysis.viz.quantities import signed_with_unit
 from threetears.evals.vega.palette import CONTEXT_STYLE

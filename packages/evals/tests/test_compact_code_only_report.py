@@ -44,9 +44,9 @@ from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.surface_table import SURFACE_PROVENANCE
 from threetears.evals.analysis.viz.intent import chart_intent
 from threetears.evals.analysis.viz.intents.distribution import SHAPE_UNKNOWN
-from threetears.evals.contracts.analysis_measures import MeasureSummary
-from threetears.evals.contracts.authored import AuthoredAnalysis
-from threetears.evals.contracts.metrics import classifier_label_of
+from threetears.evals.kernel.analysis_measures import MeasureSummary
+from threetears.evals.kernel.authored import AuthoredAnalysis
+from threetears.evals.kernel.metrics import classifier_label_of
 from threetears.evals.quick import Comparison, compare
 from packages.evals.tests.test_surface_table import CANDIDATE, analysis, key, two_arm_surface
 

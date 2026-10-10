@@ -61,19 +61,17 @@ from threetears.evals.analysis import (
     set_campaign_control,
     variant_key_of_run,
 )
-from threetears.evals.contracts import (
+from threetears.evals.kernel import (
     ACCURACY_MEASURE,
-    DEFAULT_LAUNCH_K_RUNS,
     ArmGuardrails,
     CassetteMode,
-    DocumentStore,
     GuardrailCheck,
     GuardrailMargin,
     GuardrailReadings,
-    utc_now_iso,
 )
-from threetears.evals.contracts.host import CANDIDATE_MODEL_LEVER, EvalHost
-from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS, RUN_MARGIN_MEASURES, run_margin_refusal
+from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, DocumentStore, utc_now_iso
+from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
+from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, RUN_MARGIN_MEASURES, run_margin_refusal
 from threetears.evals.analysis.summary import CaseResult, EvalSummary, self_judging_text
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Judge

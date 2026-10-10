@@ -27,7 +27,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
-from threetears.evals.contracts import ValidationFailedError
+from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.ops import (
     analysis_estimate,
     analysis_generate,

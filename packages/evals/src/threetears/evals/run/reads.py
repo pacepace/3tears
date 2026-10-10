@@ -2,7 +2,7 @@
 
 These are the reads every read surface stands on — the run listing the comparison lenses narrow,
 the results a run produced, and the trace a drill-down opens — written as functions over
-:class:`~threetears.evals.contracts.storage.ResultStore` (the listing, over the host) and typed
+:class:`~threetears.evals.kernel.storage.ResultStore` (the listing, over the host) and typed
 parameters, so a client of the package reads its runs without a host's service. A host's service may keep its own method names and
 delegate here, so every surface it serves reaches these through it.
 
@@ -14,14 +14,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
-from threetears.evals.contracts.status_filter import StatusFilterError, validate_status_filter
+from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.status_filter import StatusFilterError, validate_status_filter
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.host.eval_host import EvalHost
-    from threetears.evals.contracts.models import EvalResult, EvalRun, EvalRunStatus, EvalTrace
-    from threetears.evals.contracts.storage import ResultStore
+    from threetears.evals.kernel.host.eval_host import EvalHost
+    from threetears.evals.schema.models import EvalResult, EvalRun, EvalRunStatus, EvalTrace
+    from threetears.evals.kernel.storage import ResultStore
 
 log = get_logger(__name__)
 
@@ -32,7 +32,7 @@ def _listing_status_filter(status: str | None) -> EvalRunStatus | None:
     The twin of the comparison lenses' status seam (``_status_filter`` in
     :mod:`threetears.evals.analysis.reads`) for the one surface where an UNSPECIFIED
     filter means "every run" rather than ``completed`` — see
-    :func:`~threetears.evals.contracts.status_filter.validate_status_filter` for why those two
+    :func:`~threetears.evals.kernel.status_filter.validate_status_filter` for why those two
     defaults cannot honestly be one function.
 
     What is duplicated between the two is four lines of ``try``/``except``; what
@@ -133,7 +133,7 @@ def list_results(storage: ResultStore, run_id: str, scope_id: str) -> list[EvalR
         scope_id: Partition key — the scope the run lives in.
 
     Returns:
-        Every :class:`~threetears.evals.contracts.models.EvalResult` produced by the run.
+        Every :class:`~threetears.evals.schema.models.EvalResult` produced by the run.
     """
     return storage.query_eval_results_by_run(run_id, scope_id)
 
@@ -147,7 +147,7 @@ def get_result(storage: ResultStore, result_id: str, scope_id: str) -> EvalResul
         scope_id: Partition key — the scope the result lives in.
 
     Returns:
-        The loaded :class:`~threetears.evals.contracts.models.EvalResult`.
+        The loaded :class:`~threetears.evals.schema.models.EvalResult`.
 
     Raises:
         NotFoundError: No result with that id in the scope.

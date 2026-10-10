@@ -19,11 +19,11 @@ from dataclasses import replace
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.contracts import MetricDescriptor
-from threetears.evals.contracts import UnreadableBarName, resolve_bar_name
-from threetears.evals.contracts.host import Bar, BarRegistry, MeasureRegistry
-from threetears.evals.contracts.host.bars import BarRegistrationError
-from threetears.evals.contracts.metrics import describe_measure
+from threetears.evals.kernel import MetricDescriptor
+from threetears.evals.kernel import UnreadableBarName, resolve_bar_name
+from threetears.evals.kernel.host import Bar, BarRegistry, MeasureRegistry
+from threetears.evals.kernel.host.bars import BarRegistrationError
+from threetears.evals.kernel.metrics import describe_measure
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.kind import FIELD_COUNT_ERROR
 from packages.evals.tests.fixtures.toyhost.profile import (

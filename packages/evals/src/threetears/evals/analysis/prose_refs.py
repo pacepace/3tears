@@ -53,11 +53,11 @@ from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.numbers import ABSENT, format_number
 from threetears.evals.analysis.references import cell_aliases, cell_of_alias, require_cell, resolve_reading
 from threetears.evals.analysis.viz.quantities import UNSPACED_UNITS, display_scale
-from threetears.evals.contracts.analysis_measures import MeasureCollection, MeasureSummary
-from threetears.evals.contracts.authored import AuthoredAnalysis
-from threetears.evals.contracts.campaign import ReadingKind
-from threetears.evals.contracts.metrics import goal_check_measure, goal_check_of
-from threetears.evals.contracts.surface import CellFacts, DecisionSurface, MeasureFacts
+from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
+from threetears.evals.kernel.authored import AuthoredAnalysis
+from threetears.evals.kernel.campaign import ReadingKind
+from threetears.evals.kernel.metrics import goal_check_measure, goal_check_of
+from threetears.evals.kernel.surface import CellFacts, DecisionSurface, MeasureFacts
 
 #: The statistics a measure reference may name: its mean, n and zero count, and its distribution's points.
 MeasureStat = Literal["mean", "n", "n_zero", "p05", "p50", "p95", "max"]

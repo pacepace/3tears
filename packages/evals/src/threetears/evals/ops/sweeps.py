@@ -36,11 +36,11 @@ from typing import Annotated, Any
 from pydantic import Field, model_validator
 
 from threetears.evals.analysis.campaigns import add_runs_to_campaign
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.campaign import EvalSweep, SweepArmRecord
-from threetears.evals.contracts.errors import ValidationFailedError
-from threetears.evals.contracts.models import DEFAULT_LAUNCH_K_RUNS, CaseSetRef, utc_now_iso
-from threetears.evals.contracts.offload import run_blocking
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.campaign import EvalSweep, SweepArmRecord
+from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.schema.models import DEFAULT_LAUNCH_K_RUNS, CaseSetRef, utc_now_iso
+from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.ops.analysis import CampaignDefinition, campaign_create
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, sweep_job_id, sweep_key

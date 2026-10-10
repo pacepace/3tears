@@ -18,9 +18,9 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts.errors import ConflictError
-from threetears.evals.contracts.models import EvalRun
-from threetears.evals.contracts.scoring import CellSummary
+from threetears.evals.kernel.errors import ConflictError
+from threetears.evals.schema.models import EvalRun
+from threetears.evals.kernel.scoring import CellSummary
 from threetears.evals.run.lifecycle import record_completeness
 from threetears.evals.run.jobs import (
     JOB_TIMEOUT_CAP_S,

@@ -10,7 +10,7 @@ function to the :class:`LaunchGroup` the launch starts together. The universal b
 build (:func:`build_judge_service`) are here for the same reason: neither names a kind.
 
 What only a host can answer arrives on the :class:`LaunchHost` every entrypoint here takes: the
-:class:`~threetears.evals.contracts.host.eval_host.EvalHost` the rest of the engine reads (vocabulary,
+:class:`~threetears.evals.kernel.host.eval_host.EvalHost` the rest of the engine reads (vocabulary,
 storage, tracing, cell timeout, executor), composed with what starting runs needs — the registry of
 kinds this host launches, its launch settings (read when the launch needs them rather than once at
 construction, because they hot-reload), how a run is placed in its world, and the job manager it
@@ -37,16 +37,16 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, NamedTuple, Protocol,
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
-from threetears.evals.contracts.host.eval_host import EvalHost
-from threetears.evals.contracts.host.kinds import freeze
-from threetears.evals.contracts.models import WorldPlacement
+from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.kernel.host.kinds import freeze
+from threetears.evals.schema.models import WorldPlacement
 
-from threetears.evals.contracts.arguments import normalize_blank
-from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
-from threetears.evals.contracts.host.sweepables import CORE_SWEEPABLES
-from threetears.evals.contracts.metrics import declaration_of, run_margin_refusal
-from threetears.evals.contracts.identity import derive_context_identity, variant_levers_of_run
-from threetears.evals.contracts.models import (
+from threetears.evals.kernel.arguments import normalize_blank
+from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.host.sweepables import CORE_SWEEPABLES
+from threetears.evals.kernel.metrics import declaration_of, run_margin_refusal
+from threetears.evals.kernel.identity import derive_context_identity, variant_levers_of_run
+from threetears.evals.schema.models import (
     DEFAULT_JUDGE_TEMPERATURE,
     DEFAULT_LAUNCH_K_RUNS,
     GOAL_CHECK_PROOF_RULES,
@@ -63,12 +63,12 @@ from threetears.evals.contracts.models import (
     resolve_effective_judges,
     scored_dim_ids,
 )
-from threetears.evals.contracts.out_of_run import OutOfRunBudget, plan_variation_calls
+from threetears.evals.kernel.out_of_run import OutOfRunBudget, plan_variation_calls
 from threetears.evals.run.authoring import validated_kind_spec
 from threetears.evals.run.budget import EvalRunCostCap
 from threetears.evals.run.case_sets import resolve_case_set
 from threetears.evals.run.ceilings import CeilingRaisedError, refuse_raised_ceiling
-from threetears.evals.contracts.cassettes import CassetteMode
+from threetears.evals.kernel.cassettes import CassetteMode
 from threetears.evals.run.jobs import (
     MAX_CONCURRENT_JOBS,
     EvalJobManager,
@@ -81,7 +81,7 @@ from threetears.evals.run.judge_service import JudgeService, judge_clients_for_r
 from threetears.evals.run.lifecycle import record_completeness
 from threetears.evals.run.executor import DEFAULT_MAX_CONCURRENT_CELLS, CellExecutor
 from threetears.evals.run.metering import MeteredCallLedger
-from threetears.evals.contracts.offload import run_blocking, wait_through_cancellation
+from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
 from threetears.evals.run.check_controls import goal_check_proofs
 from threetears.evals.run.runner import (
     DEFAULT_CELL_TIMEOUT_S,
@@ -95,13 +95,13 @@ from threetears.evals.run.simulator import SIMULATOR_REQUEST_SETTINGS
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.host.subject import SubjectSnapshot
-    from threetears.evals.contracts.host.sweepables import SweepableRegistry
-    from threetears.evals.contracts.models import EvalTemplate, JudgeConfig, VariationCounts
-    from threetears.evals.contracts.completion import PricedCompletion
-    from threetears.evals.contracts.scoring import CellSummary
-    from threetears.evals.contracts.storage import DefinitionStore
-    from threetears.evals.contracts.usage_capture import ExternalRateTable
+    from threetears.evals.schema.subject import SubjectSnapshot
+    from threetears.evals.kernel.host.sweepables import SweepableRegistry
+    from threetears.evals.schema.models import EvalTemplate, JudgeConfig, VariationCounts
+    from threetears.evals.schema.completion import PricedCompletion
+    from threetears.evals.kernel.scoring import CellSummary
+    from threetears.evals.kernel.storage import DefinitionStore
+    from threetears.evals.kernel.usage_capture import ExternalRateTable
     from threetears.evals.run.jobs import AdmissionTicket, WorkFn
 
 log = get_logger(__name__)
@@ -144,7 +144,7 @@ class LaunchSettings(BaseModel):
             launch naming a ceiling is refused, since it would bound nothing.
         max_out_of_run_cost_usd: The most a launch's out-of-run calls — its case generation, which runs
             before any run exists and so under no run's cap — may together be priced at before they are
-            made (:class:`~threetears.evals.contracts.out_of_run.OutOfRunBudget`). Enforced exactly when
+            made (:class:`~threetears.evals.kernel.out_of_run.OutOfRunBudget`). Enforced exactly when
             ``enforcement_enabled`` is. Per LAUNCH, as ``max_cost_usd`` is per run: a battery is one launch
             per template, so a battery of N generating templates may spend up to N times this out of run,
             as its runs may spend up to their count times their cap. An analysis generation is held to it
@@ -156,7 +156,7 @@ class LaunchSettings(BaseModel):
             the model they resolve. It never overrides a judge the launch named, nor a model a judge config
             pins per dim: those are choices. ``None`` substitutes nothing, and a run judged on a candidate's
             model says so on every surface that lists its judges
-            (:func:`~threetears.evals.contracts.judge_attribution.judges_sharing_a_candidate_model`).
+            (:func:`~threetears.evals.schema.judge_attribution.judges_sharing_a_candidate_model`).
         max_cell_timeout_s: The longest per-cell deadline a launch may name (``cell_timeout_s``), in seconds.
             ``None`` declares no ceiling of the host's own: a launch may then only LOWER its kind's deadline (the
             one the kind's launcher wires, or :data:`~threetears.evals.run.runner.DEFAULT_CELL_TIMEOUT_S`), so a
@@ -407,7 +407,7 @@ class LaunchPricer(Protocol):
 
 @dataclass(frozen=True, kw_only=True)
 class LaunchHost:
-    """An :class:`~threetears.evals.contracts.host.eval_host.EvalHost`, and what starting its runs needs.
+    """An :class:`~threetears.evals.kernel.host.eval_host.EvalHost`, and what starting its runs needs.
 
     What :func:`start_run`, :func:`start_universal_battery` and the launch tail take. It COMPOSES the
     host rather than extending it: the host is built once and handed in whole, so no field of it can
@@ -568,7 +568,7 @@ def _refuse_oversized_launch(n_runs: int, ceiling: int, setting: str) -> None:
 def _normalized_cassette_mode(cassette_mode: str | None) -> CassetteMode:
     """Read a launch's cassette mode, blank spelling ``'off'``, refusing anything that is not a mode.
 
-    Blank is normalised through :func:`~threetears.evals.contracts.arguments.normalize_blank`, the helper
+    Blank is normalised through :func:`~threetears.evals.kernel.arguments.normalize_blank`, the helper
     the cost estimate reads this field through: it exists because two surfaces once disagreed about
     what blank meant, so a second spelling of that rule here would recreate the divergence.
 
@@ -832,7 +832,7 @@ class LaunchRequest:
             and records it, and its group holds every job slot. ``False``: the cells run up to
             :attr:`LaunchSettings.max_concurrent_cells` at once, and their latency is stamped read under concurrency.
         refused_goal_checks: Each of the stored template's goal checks the current grammar refuses, with why
-            (:func:`~threetears.evals.contracts.models.refused_goal_checks`). ``template`` already leaves them
+            (:func:`~threetears.evals.schema.models.refused_goal_checks`). ``template`` already leaves them
             out (:func:`~threetears.evals.run.runner.template_as_graded`), so every launcher and every cell
             grades the rest, and the run records these (``EvalRun.refused_goal_checks``).
         cell_timeout_s: The per-cell deadline the launch named, in seconds, already checked positive and within
@@ -845,7 +845,7 @@ class LaunchRequest:
             (``EvalRun.case_set``).
         case_set_cases: The set's cases, resolved in the set's order; empty when :attr:`case_set` is ``None``.
         margins: The margins the launch declared on core rate measures, already checked
-            (:func:`~threetears.evals.contracts.metrics.run_margin_refusal`), which the run records
+            (:func:`~threetears.evals.kernel.metrics.run_margin_refusal`), which the run records
             (``EvalRun.declared_margins``); empty when it declared none.
     """
 
@@ -961,7 +961,7 @@ class LaunchableKind:
     reaches a cell.
 
     What a launch may turn on a kind's runs is not here: it is the kind's overlay model, declared on
-    the host profile (:attr:`~threetears.evals.contracts.host.profile.HostProfile.kinds`), and the
+    the host profile (:attr:`~threetears.evals.kernel.host.profile.HostProfile.kinds`), and the
     dispatch refuses an overlay that model refuses.
 
     Attributes:
@@ -1575,7 +1575,7 @@ async def start_run(
         cassette_corpus_id: For ``'replay'``, and only for it: the id of the capture run whose corpus
             the launch replays — a capture of this template in ``scope_id``.
         overlays: The knobs this launch turns on its runs, by field of the kind's overlay model
-            (:attr:`~threetears.evals.contracts.host.profile.HostProfile.kinds`). Validated before any arm is
+            (:attr:`~threetears.evals.kernel.host.profile.HostProfile.kinds`). Validated before any arm is
             prepared; every run records the validated model, defaults included.
         apparatus_settings: Host-declared apparatus values this launch sets its runs' rig up with, by
             apparatus dimension — each one the kind declares it honours
@@ -2752,7 +2752,7 @@ def resolve_judge_pin(request: LaunchRequest, role_default: str, *, candidate_mo
     for an arm that named none), in which case :attr:`LaunchSettings.judge_alternate_model` scores instead,
     provided it is set and is itself none of the candidates. Otherwise the default stands, and the run's
     surfaces disclose the overlap
-    (:func:`~threetears.evals.contracts.judge_attribution.judges_sharing_a_candidate_model`). A judged kind
+    (:func:`~threetears.evals.schema.judge_attribution.judges_sharing_a_candidate_model`). A judged kind
     calls this in its ``plan_arm`` and in its launcher alike — the plan's judges and the launcher's must agree
     — and the launch tail refuses a launcher that kept a candidate's model where an alternate stood ready.
 
@@ -3737,8 +3737,8 @@ def build_judge_service(
 ) -> RunJudge:
     """Build the :class:`~threetears.evals.run.judge_service.JudgeService` for a run, with its judge attribution.
 
-    Resolves one :class:`~threetears.evals.contracts.models.JudgeConfig` per dim the kind's judge
-    scores (:func:`~threetears.evals.contracts.models.scored_dim_ids`: the two reserved dual-score
+    Resolves one :class:`~threetears.evals.schema.models.JudgeConfig` per dim the kind's judge
+    scores (:func:`~threetears.evals.schema.models.scored_dim_ids`: the two reserved dual-score
     axes for a conversation, then every declared ``template.rubric`` dim) — so per-result scoring is
     a dict lookup, and a document run's attribution names no conversation axis it is never asked. A dim named in ``selection``
     resolves to exactly that config; every other dim resolves to the active
@@ -3909,7 +3909,7 @@ def _resolve_selected_judge_configs(
         storage: Where the judge configs are read.
         selection: ``{dim_id: config_id}`` as passed to the launch, or ``None``.
         dim_ids: This template's scored dims, from
-            :func:`~threetears.evals.contracts.models.scored_dim_ids`.
+            :func:`~threetears.evals.schema.models.scored_dim_ids`.
         scope_id: The template's scope, where its judge configs live.
 
     Returns:

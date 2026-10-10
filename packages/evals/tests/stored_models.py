@@ -1,6 +1,6 @@
 """The stored eval models, derived from the model graph rather than listed.
 
-A stored model is any :class:`~threetears.evals.contracts.base.EvalBaseModel` subclass defined in the
+A stored model is any :class:`~threetears.evals.schema.base.EvalBaseModel` subclass defined in the
 package that declares a ``doc_type`` — the field a document store discriminates on. Deriving the set
 is the point: a list kept by hand fails by omission, and a model added without a row would then be
 exempt from every rule the set is used to enforce, with nothing going red.
@@ -12,7 +12,7 @@ import importlib
 import pkgutil
 
 import threetears.evals
-from threetears.evals.contracts.base import EvalBaseModel
+from threetears.evals.schema.base import EvalBaseModel
 
 __all__ = ["doc_type_of", "stored_models"]
 

@@ -10,7 +10,7 @@ assembled through a real store and read back:
   down, and its report has no strata table and no strata disclosure.
 - **The report carries it**: a ``strata`` table, a column per stratum after the pooled one, each
   stratum's case count first, and a disclosure naming every stratum under
-  :data:`~threetears.evals.contracts.STRATUM_MIN_CASES` cases — in the code-only report and in an
+  :data:`~threetears.evals.kernel.STRATUM_MIN_CASES` cases — in the code-only report and in an
   analysis's, in JSON the published schema accepts, Markdown and HTML.
 - **The stored shapes refuse what cannot be true**: strata that do not add up to their cell, a stratum
   listed twice, a breakdown made only of undeclared cases, two nominated stratum axes, an ``llm`` one.
@@ -44,20 +44,18 @@ from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle import bundle_decision_surface
 from threetears.evals.analysis.report.build import NO_STRATUM, TOO_FEW_CASES
 from threetears.evals.analysis.surface_table import SURFACE_ORDER_NO_CONTROL
-from threetears.evals.contracts import (
+from threetears.evals.kernel import (
     STRATUM_MIN_CASES,
     CellFacts,
-    EvalResult,
     EvalStorage,
-    EvalTestCase,
-    RubricScore,
     StratumFacts,
     classifier_label_measure,
     confusion_cell,
 )
-from threetears.evals.contracts.analysis_measures import MeasureSummary
-from threetears.evals.contracts.host import SHARED_CORE, HostProfile, MeasureRegistry
-from threetears.evals.contracts.models import VariationAxis
+from threetears.evals.schema import EvalResult, EvalTestCase, RubricScore
+from threetears.evals.kernel.analysis_measures import MeasureSummary
+from threetears.evals.kernel.host import SHARED_CORE, HostProfile, MeasureRegistry
+from threetears.evals.schema.models import VariationAxis
 from threetears.evals.gen import generate_variations
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import (

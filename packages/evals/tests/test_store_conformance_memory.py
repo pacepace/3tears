@@ -25,7 +25,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import DocumentStore, StoreConflict
+from threetears.evals.schema import DocumentStore, StoreConflict
 from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.testing import STORE_CONFORMANCE_CASES, StoreConformanceCase, StoreConformanceFailure
 

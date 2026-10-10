@@ -25,8 +25,8 @@ from pathlib import Path
 from typing import Any
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle, get_campaign
-from threetears.evals.contracts import EvalRun, MeasureDeclaration
-from threetears.evals.contracts.host import EvalHost
+from threetears.evals.schema import EvalRun, MeasureDeclaration
+from threetears.evals.kernel.host import EvalHost
 from threetears.evals.quick import Comparison, Guardrail, callable_host, compare
 from threetears.evals.run import list_runs
 from threetears.evals.storage import SqliteDocumentStore

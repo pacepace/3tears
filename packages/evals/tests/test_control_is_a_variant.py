@@ -46,7 +46,7 @@ _RETIRED_USES = (_RETIRED,)
 #: that compatibility message went with the other legacy-field readers, and the key now meets the
 #: same unknown-field refusal as any other.)
 _DELIBERATE_MENTIONS = {
-    "threetears/evals/contracts/campaign.py": "EvalCampaign's docstring, recording what the control replaced",
+    "threetears/evals/kernel/campaign.py": "EvalCampaign's docstring, recording what the control replaced",
 }
 
 
@@ -102,7 +102,7 @@ def test_no_model_carries_the_name_so_the_scan_above_may_forbid_it_bare() -> Non
     it — this says why that refusal is right rather than a false red.
     """
     from threetears.evals.analysis.bundle import RealizedDesign
-    from threetears.evals.contracts.campaign import EvalCampaign
+    from threetears.evals.kernel.campaign import EvalCampaign
 
     assert _RETIRED not in RealizedDesign.model_fields
     assert _RETIRED not in EvalCampaign.model_fields
@@ -129,8 +129,8 @@ def test_the_campaign_no_longer_declares_the_field_and_the_declaration_does() ->
     Asserting only the removal would pass on a change that deleted the control outright, which
     is a different product.
     """
-    from threetears.evals.contracts.campaign import EvalCampaign
-    from threetears.evals.contracts.declaration import CampaignDesign
+    from threetears.evals.kernel.campaign import EvalCampaign
+    from threetears.evals.kernel.declaration import CampaignDesign
 
     assert _RETIRED not in EvalCampaign.model_fields
     assert "control" in CampaignDesign.model_fields
@@ -143,7 +143,7 @@ def test_a_stored_campaign_carrying_the_retired_key_is_refused() -> None:
     """
     from pydantic import ValidationError
 
-    from threetears.evals.contracts.campaign import EvalCampaign
+    from threetears.evals.kernel.campaign import EvalCampaign
 
     legacy = EvalCampaign(
         scope_id="scope-1", name="c", subject_id="subject-1", behavior="triage", created_by="test:fixture"

@@ -27,8 +27,9 @@ import pytest
 
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA
-from threetears.evals.contracts import EvalCampaign, EvalResult, EvalRun
-from threetears.evals.contracts.host import HostProfile
+from threetears.evals.kernel import EvalCampaign
+from threetears.evals.schema import EvalResult, EvalRun
+from threetears.evals.kernel.host import HostProfile
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_DOCUMENTS,
     TOYHOST_SCOPE,

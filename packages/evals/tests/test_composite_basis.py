@@ -18,9 +18,9 @@ from threetears.evals.analysis.reporting import (
     pooled_composite_basis,
     project_score_records,
 )
-from threetears.evals.contracts.errors import NotFoundError
-from threetears.evals.contracts.models import EvalTemplate, GoalStateOutcome, RubricScore
-from threetears.evals.contracts.scoring import composite_basis, compute_composite_summary, pool_composite_bases
+from threetears.evals.kernel.errors import NotFoundError
+from threetears.evals.schema.models import EvalTemplate, GoalStateOutcome, RubricScore
+from threetears.evals.kernel.scoring import composite_basis, compute_composite_summary, pool_composite_bases
 from threetears.evals.ops.lenses import RunsCompared, history_text, pivot_text, runs_compared_text
 from packages.evals.tests.factories import make_eval_result, make_eval_run, make_subject
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -173,7 +173,7 @@ class TestWhereThePoolIsShown:
 def test_a_lever_dispersion_built_from_a_ragged_pool_says_so() -> None:
     """The bundle's per-lever spread is a figure built from composites; its text carries the ragged mark."""
     from threetears.evals.analysis import assemble_context_bundle
-    from threetears.evals.contracts import EvalCampaign
+    from threetears.evals.kernel import EvalCampaign
 
     from packages.evals.tests.factories import fixture_variant_key, minimal_declaration
     from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage

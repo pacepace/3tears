@@ -23,8 +23,8 @@ import pydantic
 import pytest
 
 from threetears.evals.analysis.stats import wilson_interval
-from threetears.evals.contracts import ValidationFailedError, classifier_label_measure, confusion_cell, confusion_of
-from threetears.evals.contracts.host import EvalHost, KindContract
+from threetears.evals.kernel import ValidationFailedError, classifier_label_measure, confusion_cell, confusion_of
+from threetears.evals.kernel.host import EvalHost, KindContract
 from threetears.evals.quick import (
     CALLABLE_KIND,
     CALLABLE_KIND_CONTRACT,

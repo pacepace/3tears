@@ -63,20 +63,20 @@ from threetears.evals.analysis.reporting import (
     ScoreExport,
 )
 
-from threetears.evals.contracts.base import EvalBaseModel
+from threetears.evals.schema.base import EvalBaseModel
 
-from threetears.evals.contracts.campaign import ReadingKind
+from threetears.evals.kernel.campaign import ReadingKind
 
-from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 
-from threetears.evals.contracts.host import DEFAULT_PASS_THRESHOLD, EvalHost, pass_threshold_label
+from threetears.evals.kernel.host import DEFAULT_PASS_THRESHOLD, EvalHost, pass_threshold_label
 
-from threetears.evals.contracts.metrics import measure_title
+from threetears.evals.kernel.metrics import measure_title
 
-from threetears.evals.contracts.models import EvalRun, EvalTemplate
+from threetears.evals.schema.models import EvalRun, EvalTemplate
 
 
-from threetears.evals.contracts.scoring import CompositeBasis
+from threetears.evals.kernel.scoring import CompositeBasis
 
 from threetears.evals.ops.host import OpsHost
 

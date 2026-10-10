@@ -1,6 +1,6 @@
 """A measure declared on the function that computes it: :func:`measure` and the :class:`Measure` it returns.
 
-A host declares each measure it reads (:class:`~threetears.evals.contracts.MetricDescriptor`) in its profile, and
+A host declares each measure it reads (:class:`~threetears.evals.kernel.MetricDescriptor`) in its profile, and
 computes it somewhere else — in its kind, from what the candidate did. Two places to keep in step. ``@measure(...)``
 puts the declaration on the function: the returned :class:`Measure` is that function, still callable, carrying its
 descriptor, so a host registers ``field_accuracy.descriptor`` and grades with ``field_accuracy(...)``. A
@@ -18,7 +18,7 @@ from collections.abc import Callable
 from functools import update_wrapper
 from typing import Any
 
-from threetears.evals.contracts import MetricDescriptor
+from threetears.evals.kernel import MetricDescriptor
 
 
 class Measure:
@@ -72,11 +72,11 @@ def measure(
         reader_name: What a reader calls it; the name in words, marked a score, when ``None``.
         description: One sentence an operator reads; the first line of the function's docstring when ``None``.
         family: Its measure family: ``mechanical`` (the default), another engine family, or one the host declares
-            (:class:`~threetears.evals.contracts.MeasureFamily`).
+            (:class:`~threetears.evals.kernel.MeasureFamily`).
         transferability_class: How far a reading of it carries; ``mechanical`` by default.
         attribution_scope: What it is a reading of; ``end_to_end`` by default.
         data_type: ``numeric`` by default.
-        **declared: Every other :class:`~threetears.evals.contracts.MetricDescriptor` field by name:
+        **declared: Every other :class:`~threetears.evals.kernel.MetricDescriptor` field by name:
             ``higher_is_better``, ``merit_axis``, ``value_range``, ``materiality_threshold``, ``unit``,
             ``population``, ``diagnostic``, ``guardrail``, ``reader_prose`` and the rest.
 

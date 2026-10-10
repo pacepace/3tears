@@ -22,7 +22,7 @@ import pytest
 from threetears.evals.analysis import campaign_report, report_markdown
 from threetears.evals.analysis.stats import mean_interval, observed_mean_interval, wilson_interval
 from threetears.evals.analysis.viz.payloads import ConfidenceInterval
-from threetears.evals.contracts.metrics import METRIC_DESCRIPTORS, MetricDescriptor
+from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor
 from threetears.evals.ops import CampaignDefinition, campaign_create
 from threetears.evals.quick import Answer, callable_host, compare, run_eval
 from threetears.evals.run import list_results

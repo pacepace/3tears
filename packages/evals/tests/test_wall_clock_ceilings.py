@@ -2,7 +2,7 @@
 
 :func:`~threetears.evals.analysis.generation_ceiling_s`, :func:`~threetears.evals.analysis.judge_phase_ceiling_s`
 and :func:`~threetears.evals.analysis.reporter_cell_timeout_s` each count requests and multiply by the host's own
-ceiling for one request (:data:`~threetears.evals.contracts.RequestCeiling`). The host owns that answer because only
+ceiling for one request (:data:`~threetears.evals.schema.RequestCeiling`). The host owns that answer because only
 it knows its client: how many provider calls one request can become and how long the client sleeps between them. The
 engine once reconstructed it from per-call parameters with no term for those sleeps, so a host whose client retries
 could not state its own worst case, and the engine shipped a package-side calls-per-request figure a host would read
@@ -19,7 +19,8 @@ import inspect
 
 import pytest
 
-import threetears.evals.contracts as contracts
+import threetears.evals.kernel as kernel
+import threetears.evals.schema as schema
 from threetears.evals.analysis import generation_ceiling_s, judge_phase_ceiling_s, reporter_cell_timeout_s
 
 _GENERATOR_MAX_TOKENS = 8_000
@@ -128,5 +129,5 @@ class TestTheHostOwnsTheRequest:
 
     def test_the_package_states_no_calls_per_request_of_its_own(self) -> None:
         """The contract names the host's answer, and no package-side count a host could mistake for its client's."""
-        assert "RequestCeiling" in contracts.__all__
-        assert not [name for name in contracts.__all__ if "ATTEMPTS" in name and "REQUEST" in name]
+        assert "RequestCeiling" in schema.__all__
+        assert not [name for name in (*schema.__all__, *kernel.__all__) if "ATTEMPTS" in name and "REQUEST" in name]

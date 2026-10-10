@@ -169,7 +169,7 @@ async def test_a_sibling_that_cannot_be_saved_cancels_the_runs_already_saved():
 
 
 async def test_a_cancellation_that_cannot_be_saved_neither_stops_the_rest_nor_masks_the_cause():
-    from threetears.evals.contracts.errors import StorageError
+    from threetears.evals.kernel.errors import StorageError
 
     runs = [make_eval_run(), make_eval_run(), make_eval_run()]
 

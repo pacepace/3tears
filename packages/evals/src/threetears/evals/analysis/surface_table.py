@@ -1,6 +1,6 @@
 """The decision surface's table — laid out once, here, and served to every surface that shows it.
 
-:mod:`threetears.evals.contracts.surface` freezes the FACTS: one entry per cell, the bars adjudicated
+:mod:`threetears.evals.kernel.surface` freezes the FACTS: one entry per cell, the bars adjudicated
 against them, and what each measure is. How those facts become a table — the row order, which
 measures stand in as the cost and latency columns, the one unit each column is stated in, which
 verdict sits under which bar, the replication sentence, the run notes — is a layout, and a layout
@@ -51,11 +51,11 @@ from threetears.evals.analysis.arms import (
 )
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.viz.quantities import display_scale
-from threetears.evals.contracts.analysis_measures import BarAdjudication, BarDecision, BarVerdict, MeasureSummary
-from threetears.evals.contracts.campaign import EvalAnalysis, VariantIndexEntry
-from threetears.evals.contracts.metrics import MeritAxis
-from threetears.evals.contracts.base import EvalDocumentModel
-from threetears.evals.contracts.surface import CellFacts, DecisionSurface, all_failed_sentence
+from threetears.evals.kernel.analysis_measures import BarAdjudication, BarDecision, BarVerdict, MeasureSummary
+from threetears.evals.kernel.campaign import EvalAnalysis, VariantIndexEntry
+from threetears.evals.kernel.metrics import MeritAxis
+from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.kernel.surface import CellFacts, DecisionSurface, all_failed_sentence
 
 #: Said in place of the table when the surface froze no cell.
 NO_CELLS = "No cells — the campaign measured nothing this analysis could freeze."
@@ -70,7 +70,7 @@ _SURFACE_AXES: tuple[MeritAxis, ...] = ("cost", "latency")
 SurfaceState = Literal["no_cells", "measured"]
 
 #: A bar's verdict on one cell, as a word — never a colour alone, and one per
-#: :attr:`~threetears.evals.contracts.analysis_measures.BarVerdict.decision`. ``clears`` and ``misses`` are
+#: :attr:`~threetears.evals.kernel.analysis_measures.BarVerdict.decision`. ``clears`` and ``misses`` are
 #: the interval shown wholly on one side of the threshold less the measure's margin; ``undecided`` is an
 #: interval that straddles it, which is neither. ``no_interval`` is a cell with a value but fewer than two
 #: observations, which is not read; ``no_data`` is the verdict the server wrote for a cell that carried no
@@ -97,7 +97,7 @@ _VERDICT_OF: dict[BarDecision, SurfaceVerdict] = {
 
 
 #: Said under a cost or latency column — and under a bar that read nothing — for a cell where no result took a
-#: turn (:attr:`~threetears.evals.contracts.surface.CellFacts.all_failed`), and by the strata table for such a
+#: turn (:attr:`~threetears.evals.kernel.surface.CellFacts.all_failed`), and by the strata table for such a
 #: stratum. Not a blank: a blank reads as "not measured", and this arm was measured — every result failed,
 #: which its rates and bars count. Never a number: a refused call's round trip and its empty spend are what
 #: read as a fast, free arm.
@@ -686,7 +686,7 @@ def _all_failed_disclosure(rows: list[SurfaceRow]) -> str | None:
         rows: The table's rows.
 
     Returns:
-        :func:`~threetears.evals.contracts.surface.all_failed_sentence`, followed by the failed rows' labels
+        :func:`~threetears.evals.kernel.surface.all_failed_sentence`, followed by the failed rows' labels
         when only some failed; None when none did.
     """
     failed = [row.label for row in rows if row.all_failed]

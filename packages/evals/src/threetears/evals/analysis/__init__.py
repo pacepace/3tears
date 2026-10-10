@@ -1,11 +1,11 @@
 """The engine's analysis package: campaigns, context bundles, generated analyses and the read lenses.
 
-It turns a campaign's runs into a generated, stored analysis. Of the engine it imports only itself
-and :mod:`threetears.evals.contracts`, and ships no charting library. The
+It turns a campaign's runs into a generated, stored analysis. Of the engine it imports only itself,
+:mod:`threetears.evals.schema` and :mod:`threetears.evals.kernel`, and ships no charting library. The
 stored shapes it writes into — the
-:class:`~threetears.evals.contracts.campaign.EvalCampaign` hub and the
-:class:`~threetears.evals.contracts.campaign.EvalAnalysis` /
-:class:`~threetears.evals.contracts.campaign.EvalInsight` documents — live in the contracts package,
+:class:`~threetears.evals.kernel.campaign.EvalCampaign` hub and the
+:class:`~threetears.evals.kernel.campaign.EvalAnalysis` /
+:class:`~threetears.evals.kernel.campaign.EvalInsight` documents — live in the contracts package,
 not here. The pipeline:
 
 - ``reporting``, ``stats`` and ``numbers`` — the query-time projection of runs + results into

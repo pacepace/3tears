@@ -6,7 +6,7 @@ Five parts, each pinned in both directions:
   failing that two days, carries one; each position's cells are the decision surface's own algebra over that
   position's runs, so a position reads exactly as a campaign of only its runs would. Positions are ordered
   by when each first ran — never by name, which would put ``0.10`` before ``0.9``.
-- **The host's release label** (``contracts/host/profile.py``). It must name a registered ``label``.
+- **The host's release label** (``kernel/host/profile.py``). It must name a registered ``label``.
 - **The builder** (``analysis/viz_refs.py``). A chart over a surface with no time axis is refused; every
   point is the resolver's reading over its position; a position a cell lacks is a stated gap.
 - **The payload and the intent** (``analysis/viz/payloads.py``, ``analysis/viz/intents/timeseries.py``).
@@ -35,12 +35,12 @@ from threetears.evals.analysis.references import cell_aliases, resolve_reading
 from threetears.evals.analysis.viz import chart_intent
 from threetears.evals.analysis.viz.payloads import PayloadError, parse_payload
 from threetears.evals.analysis.viz_refs import TimeseriesRef, build_viz_payload, reference_from_chart
-from threetears.evals.contracts.authored import NO_CHART, Chart, MeasureRef
-from threetears.evals.contracts.host.measures import MeasureRegistry
-from threetears.evals.contracts.host.profile import HostProfile, ProfileRegistrationError
-from threetears.evals.contracts.models import EvalResult, EvalRun, utc_now_iso
-from threetears.evals.contracts.analysis_measures import MeasureSummary
-from threetears.evals.contracts.surface import DecisionSurface, MeasureFacts, TimeAxis, TimePosition
+from threetears.evals.kernel.authored import NO_CHART, Chart, MeasureRef
+from threetears.evals.kernel.host.measures import MeasureRegistry
+from threetears.evals.kernel.host.profile import HostProfile, ProfileRegistrationError
+from threetears.evals.schema.models import EvalResult, EvalRun, utc_now_iso
+from threetears.evals.kernel.analysis_measures import MeasureSummary
+from threetears.evals.kernel.surface import DecisionSurface, MeasureFacts, TimeAxis, TimePosition
 from packages.evals.tests.fixtures.toyhost.campaign import (
     TOYHOST_NARROW,
     TOYHOST_WIDE,

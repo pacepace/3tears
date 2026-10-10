@@ -45,7 +45,7 @@ opaque bytes with no name given falls back to its digest's prefix (`sha256:<12>`
 `scale` is nominal, ordinal or interval, not a bare rank, because a lever swept at 0.1 / 0.4 / 0.85 drawn
 as ranks 1 / 2 / 3 puts the knee in the wrong place.
 
-Rules that came with it (`contracts/identity.py`):
+Rules that came with it (`kernel/identity.py`):
 
 - **Hash resolved config, never the request.** A launch parameter of `None` meaning "role default" would
   compare equal across a change to that default. Whether a value was named or inherited is recorded, never
@@ -209,7 +209,7 @@ what exists; the words around it are never read, so a figure typed into a senten
 is appended from the parser's constants, because a copy in a stored prompt went stale.
 
 **Typed shape, freeform content** (2026-09-25). A strict schema derived from the stored analysis was
-refused by some providers as a grammar too large. The authored document (`contracts/authored.py`) types
+refused by some providers as a grammar too large. The authored document (`kernel/authored.py`) types
 only its parts (findings, decisions, question answers, next steps), their order, links by position and
 the readings code fills, under a measured slot budget; everything said is prose. The evidence tier is read
 off the readings a finding names, never chosen by the writer.

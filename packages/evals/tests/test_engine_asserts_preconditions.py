@@ -13,20 +13,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from threetears.evals.contracts import (
-    CandidateOutput,
-    CandidatePreparationFailed,
-    CellSink,
-    EvalTemplate,
-    EvalTestCase,
-    JudgedArtifact,
-    Precondition,
-    WorldSeed,
-    WorldSession,
-)
-from threetears.evals.contracts.identity import IDENTITY_VERSION, DerivedVariantIdentity, compute_variant_key
-from threetears.evals.contracts.host.values import SweepableValue
-from threetears.evals.contracts.result_condition import ResultOutcome, classify_result
+from threetears.evals.kernel import CandidateOutput, CandidatePreparationFailed, CellSink, WorldSession
+from threetears.evals.schema import EvalTemplate, EvalTestCase, JudgedArtifact, Precondition, WorldSeed
+from threetears.evals.kernel.identity import IDENTITY_VERSION, DerivedVariantIdentity, compute_variant_key
+from threetears.evals.schema.values import SweepableValue
+from threetears.evals.kernel.result_condition import ResultOutcome, classify_result
 from threetears.evals.run import assert_preconditions
 from threetears.evals.run.runner import RunnerOptions, run_one_result
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host

@@ -25,7 +25,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
-from threetears.evals.contracts import ConflictError, NotFoundError, ValidationFailedError
+from threetears.evals.kernel import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.ops import (
     AnalysisGeneration,
     CampaignDefinition,

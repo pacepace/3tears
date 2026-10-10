@@ -1,6 +1,6 @@
 """What the operations run over: a launching host, and how it generates an analysis in the background.
 
-Every operation that reads takes the :class:`~threetears.evals.contracts.host.EvalHost`; every one that
+Every operation that reads takes the :class:`~threetears.evals.kernel.host.EvalHost`; every one that
 starts long work — a launch, an analysis generation — needs the process's job manager too, which the
 :class:`~threetears.evals.run.LaunchHost` builds. :class:`OpsHost` is the two together with the
 things neither carries: what a background generation is told (its prompt, its output cap and its
@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from threetears.evals.contracts.host import EvalHost
+from threetears.evals.kernel.host import EvalHost
 from threetears.evals.run.launch import LaunchHost
 
 
@@ -57,7 +57,7 @@ class OpsHost:
     """The host the operations, and the actions over them, work in.
 
     Attributes:
-        launch: The launching host: its :class:`~threetears.evals.contracts.host.EvalHost`, its kinds and
+        launch: The launching host: its :class:`~threetears.evals.kernel.host.EvalHost`, its kinds and
             the job manager every long-running operation is tracked by.
         generation: How an analysis is generated in the background; ``None`` for a host that does not
             generate analyses here, whose generation start is refused saying so.

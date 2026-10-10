@@ -28,7 +28,7 @@ classifier run (`expected=`) every field holding the expected label is left out,
 answer key by accident. To grade against a reference answer, render the reference through `case_material`.
 
 ```python
-from threetears.evals.contracts import RubricDim
+from threetears.evals.schema import RubricDim
 from threetears.evals.quick import Judge
 
 POLICY = "Unworn items can be returned within 30 days of delivery for a full refund. Sale items are exchange only."
@@ -216,7 +216,7 @@ another judge agrees, or about all of them after a judge change to see how far t
 
 ```python
 from threetears.evals.analysis import inter_judge_agreement, judge_drift
-from threetears.evals.contracts import SecondJudge
+from threetears.evals.schema import SecondJudge
 
 report = await ask_second_judge(
     judging_host, summary.run_id, summary.scope_id,

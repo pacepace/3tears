@@ -29,7 +29,7 @@ from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.analysis.generator import build_user_message, generate_analysis
 from threetears.evals.analysis.report import build_report
 from threetears.evals.analysis.report.model import DisclosureBlock, Report
-from threetears.evals.contracts.models import utc_now_iso
+from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.ops import CampaignLine
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_AXIS, toyhost_design
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, TOYHOST_SUBJECT, OpsFixture, ops_fixture

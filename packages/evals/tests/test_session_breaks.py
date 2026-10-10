@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from packages.evals.tests.scripted_table import DONE, ScriptedTable, actor
-from threetears.evals.contracts.models import ConversationSpec
+from threetears.evals.schema.models import ConversationSpec
 from threetears.evals.run.simulator import CandidateTurn, SimulatorTurn, TurnDriver
 
 

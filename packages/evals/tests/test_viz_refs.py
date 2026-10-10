@@ -30,14 +30,14 @@ from threetears.evals.analysis.viz_refs import (
     build_viz_payload,
     reference_from_chart,
 )
-from threetears.evals.contracts.analysis_measures import BarAdjudication, BarVerdict, MeasureCollection, MeasureSummary
-from threetears.evals.contracts.authored import Chart, MeasureRef
-from threetears.evals.contracts.campaign import VariantIndexEntry
-from threetears.evals.contracts.host.measures import MeasureRegistry
-from threetears.evals.contracts.host.values import IntervalScale, SweepableValue
-from threetears.evals.contracts.identity import compute_variant_key
-from threetears.evals.contracts.metrics import WITHHELD_NOT_CONTAINED, WITHHELD_PARTITION_INCOMPLETE
-from threetears.evals.contracts.surface import (
+from threetears.evals.kernel.analysis_measures import BarAdjudication, BarVerdict, MeasureCollection, MeasureSummary
+from threetears.evals.kernel.authored import Chart, MeasureRef
+from threetears.evals.kernel.campaign import VariantIndexEntry
+from threetears.evals.kernel.host.measures import MeasureRegistry
+from threetears.evals.schema.values import IntervalScale, SweepableValue
+from threetears.evals.kernel.identity import compute_variant_key
+from threetears.evals.kernel.metrics import WITHHELD_NOT_CONTAINED, WITHHELD_PARTITION_INCOMPLETE
+from threetears.evals.kernel.surface import (
     CellFacts,
     DecisionSurface,
     JudgedDimensionFacts,
@@ -624,7 +624,7 @@ def test_an_attribution_states_the_remainder_of_a_sole_component_a_host_declares
     """
     from dataclasses import replace
 
-    from threetears.evals.contracts.metrics import MetricDescriptor
+    from threetears.evals.kernel.metrics import MetricDescriptor
     from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
 
     def descriptor(name: str, scope: str, contained_by: str | None = None) -> MetricDescriptor:

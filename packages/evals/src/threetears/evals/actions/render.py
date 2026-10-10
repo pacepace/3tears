@@ -21,8 +21,9 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
-from threetears.evals.contracts import GoalStateOutcome, ResultOutcome, counted_goal_verdicts
-from threetears.evals.contracts.errors import EvalServiceError
+from threetears.evals.schema import GoalStateOutcome
+from threetears.evals.kernel import ResultOutcome, counted_goal_verdicts
+from threetears.evals.kernel.errors import EvalServiceError
 from threetears.evals.ops import (
     AnalysisDeleted,
     CaseSetLine,
@@ -297,7 +298,7 @@ def _goal_check_line(outcome: GoalStateOutcome, counted: bool | None, condition:
     """One goal check as evaluated, and as every rate counts it when the two differ.
 
     A candidate failure counts every check failed and a harness fault counts none
-    (:func:`~threetears.evals.contracts.counted_goal_verdicts`), so a check that evaluated True on such a
+    (:func:`~threetears.evals.kernel.counted_goal_verdicts`), so a check that evaluated True on such a
     result says both, rather than reading as a pass the listing's count does not hold.
     """
     evaluated = "passed" if outcome.passed else "failed"

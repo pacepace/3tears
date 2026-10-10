@@ -14,10 +14,11 @@ from dataclasses import fields, replace
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.contracts import EvalRun, EvalStorage, EvalTestCase, NotFoundError, ValidationFailedError
-from threetears.evals.contracts.errors import AdmissionRefusedError
-from threetears.evals.contracts.host import EvalHost
-from threetears.evals.contracts.models import VariationCounts
+from threetears.evals.schema import EvalRun, EvalTestCase
+from threetears.evals.kernel import EvalStorage, NotFoundError, ValidationFailedError
+from threetears.evals.kernel.errors import AdmissionRefusedError
+from threetears.evals.kernel.host import EvalHost
+from threetears.evals.schema.models import VariationCounts
 from threetears.evals.run import (
     ArmPlan,
     ArmPrice,
@@ -211,7 +212,7 @@ def test_a_host_with_no_clients_refuses_the_work_that_needs_one_by_name():
 
 def test_an_admission_refusal_reads_as_its_message_wherever_it_is_printed():
     """A log line or traceback prints ``str(error)``; a refusal built from keywords used to print nothing."""
-    from threetears.evals.contracts.errors import NotFoundError
+    from threetears.evals.kernel.errors import NotFoundError
 
     refused = AdmissionRefusedError(requested=3, admitted=7, limit=8, limit_name="toyhost.launch.admitted")
 

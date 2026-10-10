@@ -10,9 +10,9 @@ This module holds the callable that code outside the rubric judge depends on:
 
 **This is engine, and a host calling it is a host using the engine's public API**.
 It is constructed with the injected
-:class:`~threetears.evals.contracts.completion.CompletionClient` rather than building one, takes
+:class:`~threetears.evals.schema.completion.CompletionClient` rather than building one, takes
 prompts and criteria as plain data, returns eval's own
-:class:`~threetears.evals.contracts.usage_capture.CallUsage`, and names no host concept. The
+:class:`~threetears.evals.kernel.usage_capture.CallUsage`, and names no host concept. The
 in-package caller is what forecloses the alternative rather than merely arguing
 against it: moving this host-side would make an eval-core module import host code.
 It is exported from the run package's public root, which is where a host imports it —
@@ -29,27 +29,27 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from threetears.evals.contracts.models import (
+from threetears.evals.schema.models import (
     MODEL_DEFAULT_TEMPERATURE,
     PASS_FAIL_SCORES,
     SCALES,
     ClientRequestSettings,
     JudgeTemperature,
 )
-from threetears.evals.contracts.completion import JSON_OBJECT_RESPONSE_FORMAT, ProviderFailureDescriber
-from threetears.evals.contracts.provider import (
+from threetears.evals.schema.completion import JSON_OBJECT_RESPONSE_FORMAT, ProviderFailureDescriber
+from threetears.evals.kernel.provider import (
     describe_and_log_failure,
     describe_incomplete_completion,
     extract_json,
     sum_optional_tokens,
 )
-from threetears.evals.contracts.usage_capture import CallUsage
+from threetears.evals.kernel.usage_capture import CallUsage
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
 
 #: Extra judge attempts when a FINISHED response cannot be parsed. The
-#: parse step is robust (see :func:`threetears.evals.contracts.provider.extract_json`), but a
+#: parse step is robust (see :func:`threetears.evals.kernel.provider.extract_json`), but a
 #: single malformed response would otherwise silently drop a whole rubric dimension
 #: (score=None) from the run. Because the judge call is non-deterministic, a re-ask
 #: almost always returns parseable JSON, so one retry recovers the dim rather than
@@ -195,7 +195,7 @@ def _pass_fail_score(name: str, value: Any) -> int:
     return PASS_FAIL_SCORES[value]
 
 
-#: How each scale's answer is read into its stored score. Keyed like :data:`~threetears.evals.contracts.models.SCALES`,
+#: How each scale's answer is read into its stored score. Keyed like :data:`~threetears.evals.schema.models.SCALES`,
 #: so a scale this module has not learned is a KeyError, not another scale's reader.
 SCALE_READERS: dict[str, Callable[[str, Any], int]] = {"ordinal": _ordinal_score, "pass_fail": _pass_fail_score}
 
@@ -310,7 +310,7 @@ async def run_judge_llm(
 
     Args:
         client: LLM client with an async ``generate(system=..., user=...)``
-            method returning a :class:`~threetears.evals.contracts.completion.CompletionResult`:
+            method returning a :class:`~threetears.evals.schema.completion.CompletionResult`:
             ``content``, ``input_tokens``, ``output_tokens``, ``cost_usd``,
             ``model``, ``served_model``, ``reasoning_tokens`` and the normalized ``stop_reason``.
         system_prompt: System prompt for the judge.
@@ -515,16 +515,16 @@ async def run_judge_llm(
 def sent_temperature(completion: Any) -> JudgeTemperature | None:
     """The temperature a judge completion was actually sent at, as its client reports it (#633).
 
-    Read off :attr:`~threetears.evals.contracts.completion.CompletionResult.temperature`, which the client
+    Read off :attr:`~threetears.evals.schema.completion.CompletionResult.temperature`, which the client
     sets to what its request carried — ``None`` when it sent none, as it must for a model that refuses a
-    temperature. The engine asks every judge call for :data:`~threetears.evals.contracts.models.DEFAULT_JUDGE_TEMPERATURE`
+    temperature. The engine asks every judge call for :data:`~threetears.evals.schema.models.DEFAULT_JUDGE_TEMPERATURE`
     unless a config says otherwise, and never assumes the request was honoured.
 
     Args:
         completion: The judge call's completion.
 
     Returns:
-        The number sent; :data:`~threetears.evals.contracts.models.MODEL_DEFAULT_TEMPERATURE` when the client
+        The number sent; :data:`~threetears.evals.schema.models.MODEL_DEFAULT_TEMPERATURE` when the client
         sent none; ``None`` when the completion reports nothing about it (a client predating the attribute, or
         a test double) — not recorded, which every comparison reads as unknown.
     """

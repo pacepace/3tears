@@ -28,9 +28,9 @@ from typing import Any, Literal, NamedTuple
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from threetears.evals.analysis.reporting import NULL_LEVEL
-from threetears.evals.contracts.host.style import SERIES_SLOTS, VALIDATED_SLOTS
-from threetears.evals.contracts.prose import ModelProse
-from threetears.evals.contracts.metrics import Materiality, MeasureScale
+from threetears.evals.kernel.host.style import SERIES_SLOTS, VALIDATED_SLOTS
+from threetears.evals.schema.prose import ModelProse
+from threetears.evals.kernel.metrics import Materiality, MeasureScale
 
 
 #: How far a breakdown's parts may miss the `total` they claim to make up, as a
@@ -727,7 +727,7 @@ class AttributionPayload(_VizPayload):
     simultaneously disowns.
 
     **A quantified remainder is earned by declared containment, never by a shared
-    unit.** ``contained_by`` carries :attr:`~threetears.evals.contracts.metrics.MetricDescriptor.contained_by`
+    unit.** ``contained_by`` carries :attr:`~threetears.evals.kernel.metrics.MetricDescriptor.contained_by`
     for the part — the measure catalog's declaration of which whole it is a
     component of — as DATA, so a stored analysis keeps rendering when the catalog
     moves under it. Milliseconds of detached background work are disjoint from the

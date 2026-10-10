@@ -31,7 +31,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import EvalStorage, EvalTemplate, ValidationFailedError
+from threetears.evals.kernel import EvalStorage, ValidationFailedError
+from threetears.evals.schema import EvalTemplate
 from threetears.evals.run import (
     SeedCorpus,
     SeedOutcome,

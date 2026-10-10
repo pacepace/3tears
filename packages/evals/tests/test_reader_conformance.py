@@ -20,8 +20,9 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import EvalResult, EvalRun
-from threetears.evals.contracts.host import HostProfile, Sweepable, SweepableRegistry, SweepableValue
+from threetears.evals.schema import EvalResult, EvalRun
+from threetears.evals.kernel.host import HostProfile, Sweepable, SweepableRegistry
+from threetears.evals.schema import SweepableValue
 from threetears.evals.testing import (
     READER_CONFORMANCE_CASES,
     ReaderConformanceCase,

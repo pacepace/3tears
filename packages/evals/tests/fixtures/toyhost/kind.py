@@ -21,7 +21,7 @@ spread in an arm's numbers is the three documents' alone. That is the honest sha
 The three spans and where each one opens
 ----------------------------------------
 
-``prepare`` is handed this cell's :class:`~threetears.evals.contracts.CellSpanWindow` and carries it
+``prepare`` is handed this cell's :class:`~threetears.evals.kernel.CellSpanWindow` and carries it
 on the instance, because the windows are the CELL's and one kind instance drives every cell of a
 run. :meth:`ToyExtractorKind.invoke` opens both, and what falls inside each is a measurement
 decision this kind owns:
@@ -42,25 +42,28 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Literal, get_args
 
-from threetears.evals.contracts import (
+from threetears.evals.kernel import (
     MeasureFamily,
-    CallLedger,
     CandidateOutput,
     CandidatePreparationFailed,
     CandidateTelemetry,
     CellCassettes,
     CellSink,
     CellSpanWindow,
+    WorldSession,
+    VariantConfig,
+)
+from threetears.evals.schema import (
+    CallLedger,
     EvalTestCase,
     GoalStateOutcome,
     JudgedArtifact,
     JudgeEvidence,
     RoleUsage,
     WorldSeed,
-    WorldSession,
-    VariantConfig,
 )
-from threetears.evals.contracts.host import ApparatusError, SeedRefused, SubjectSnapshot, WorldRegistry
+from threetears.evals.kernel.host import ApparatusError, SeedRefused, WorldRegistry
+from threetears.evals.schema import SubjectSnapshot
 from threetears.evals.quick import measure
 from threetears.evals.run import GoalCheckUnevaluable, grade_goal_checks
 from packages.evals.tests.fixtures.toyhost.product import ExtractionRequest, extraction_request
@@ -410,7 +413,7 @@ class ToyExtractorKind:
         """Which declared dimensions a seed asks this kind to set.
 
         The run records this on ``EvalRun.world_placements`` through
-        :meth:`~threetears.evals.contracts.host.world.WorldRegistry.place`, which needs the facts a run
+        :meth:`~threetears.evals.kernel.host.world.WorldRegistry.place`, which needs the facts a run
         actually produced rather than a mode anybody declared.
 
         Args:
@@ -434,7 +437,7 @@ class ToyExtractorKind:
         """Seed this cell's world through its world session and hand back the prepared extractor.
 
         The refusals are the engine's, not this kind's: the session runs
-        :func:`~threetears.evals.contracts.host.check_seed`, the one seed walk every host calls — a
+        :func:`~threetears.evals.kernel.host.check_seed`, the one seed walk every host calls — a
         carrier this kind does not attach, a key no dimension declares, a value under the wrong carrier, a dimension no run can set, and a value
         its dimension's schema refuses. Any of them would leave the grader reading state the
         extractor never received, which is the candidate/judge divergence the seeding step exists to

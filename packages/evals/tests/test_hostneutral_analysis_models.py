@@ -4,7 +4,7 @@ The subject is an invoice extractor swept over two models. The analysis, its sur
 finding are built here by hand. Nothing is imported from a host adapter, and the toy corpus is not
 used, because these are the stored models' own rules and none of them reads a bundle.
 
-Pinned here, from ``contracts/campaign.py`` and ``contracts/authored.py``:
+Pinned here, from ``kernel/campaign.py`` and ``kernel/authored.py``:
 
 - confidence is a tier, on the authored finding and decision alike; an evidence row names the
   reading it resolved; a chart keeps the reference it was compiled from.
@@ -19,10 +19,10 @@ from typing import Any, get_args
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.contracts import authored
-from threetears.evals.contracts.analysis_measures import MeasureCollection, MeasureSummary
-from threetears.evals.contracts.authored import AuthoredAnalysis, Chart, Decision, Finding
-from threetears.evals.contracts.campaign import (
+from threetears.evals.kernel import authored
+from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
+from threetears.evals.kernel.authored import AuthoredAnalysis, Chart, Decision, Finding
+from threetears.evals.kernel.campaign import (
     CONFIDENCE_TIERS,
     EvalAnalysis,
     EvidenceRow,
@@ -30,10 +30,10 @@ from threetears.evals.contracts.campaign import (
     GenerationProvenance,
     Viz,
 )
-from threetears.evals.contracts.declaration import CampaignDesign, ControlDeclaration, SweptAxis
-from threetears.evals.contracts.host.values import SweepableValue
-from threetears.evals.contracts.identity import compute_variant_key
-from threetears.evals.contracts.surface import CellFacts, DecisionSurface, MeasureFacts
+from threetears.evals.kernel.declaration import CampaignDesign, ControlDeclaration, SweptAxis
+from threetears.evals.schema.values import SweepableValue
+from threetears.evals.kernel.identity import compute_variant_key
+from threetears.evals.kernel.surface import CellFacts, DecisionSurface, MeasureFacts
 
 
 AXIS = "extractor_model"

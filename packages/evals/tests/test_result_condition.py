@@ -15,7 +15,7 @@ from typing import get_args
 
 import pytest
 
-from threetears.evals.contracts.models import (
+from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
     CellTermination,
@@ -23,15 +23,15 @@ from threetears.evals.contracts.models import (
     GoalStateOutcome,
     RubricScore,
 )
-from threetears.evals.contracts.result_condition import (
+from threetears.evals.kernel.result_condition import (
     JudgingState,
     ResultOutcome,
     candidate_failure_cause,
     counted_goal_verdicts,
     resolve_result_condition,
 )
-from threetears.evals.contracts.usage_capture import resolve_result_usage
-from threetears.evals.contracts.identity import IDENTITY_VERSION
+from threetears.evals.kernel.usage_capture import resolve_result_usage
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from packages.evals.tests.factories import result_capture_defaults
 
 
@@ -491,7 +491,7 @@ def test_every_candidate_failure_cause_has_its_own_disclosure():
     Driven through the resolver, one result per cause: a cause with no sentence raises there, and two
     causes sharing one would resolve to the same disclosure.
     """
-    from threetears.evals.contracts.result_condition import CandidateFailureCause
+    from threetears.evals.kernel.result_condition import CandidateFailureCause
 
     causes: dict[str, dict[str, object]] = {
         "model_failed": {"candidate_error": "provider returned 500"},

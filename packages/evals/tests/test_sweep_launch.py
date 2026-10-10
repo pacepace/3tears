@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.actions import Caller
-from threetears.evals.contracts import EvalStorage, ValidationFailedError
+from threetears.evals.kernel import EvalStorage, ValidationFailedError
 from threetears.evals.ops import (
     JobStatus,
     OpsHost,

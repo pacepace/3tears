@@ -47,7 +47,7 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
-from threetears.evals.contracts.host import CHART_FONT_CHARACTERS
+from threetears.evals.kernel.host import CHART_FONT_CHARACTERS
 from threetears.evals.vega.palette import font_weights
 from threetears.evals.vega.text_metrics import METRICS_PATH, write_font_metrics
 

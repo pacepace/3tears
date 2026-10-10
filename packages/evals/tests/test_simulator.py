@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from threetears.evals.contracts.models import ActorPolicy, ConversationSpec, ConversationStopCause, RoleUsage
-from threetears.evals.contracts.usage_capture import CallUsage, RoleUsageLedger
+from threetears.evals.schema.models import ActorPolicy, ConversationSpec, ConversationStopCause, RoleUsage
+from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
 from threetears.evals.run.simulator import (
     SIMULATED_USER_RESPONSE_FORMAT,
     SIMULATOR_ANSWER_BUDGET_TOKENS,

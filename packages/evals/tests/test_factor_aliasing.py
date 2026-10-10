@@ -19,7 +19,7 @@ from typing import Any
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle, build_code_only_report
 from threetears.evals.analysis.bundle import INTERACTION_ALIASING_UNCHECKED
 from threetears.evals.analysis.report import DisclosureBlock
-from threetears.evals.contracts import EvalCampaign
+from threetears.evals.kernel import EvalCampaign
 from packages.evals.tests.factories import memory_storage
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, toyhost_batch, toyhost_measurements
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile

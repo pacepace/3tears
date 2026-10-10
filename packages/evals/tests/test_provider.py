@@ -1,6 +1,6 @@
 """Contract for what the eval package needs from a model provider.
 
-``threetears/evals/contracts/provider.py`` holds the provider trivia the engine needs, so it
+``threetears/evals/kernel/provider.py`` holds the provider trivia the engine needs, so it
 names no host LLM module. This file asserts the contract itself -- what the engine depends on.
 Parity with a particular host's own copies of those values is that host's test to keep, and so is the
 fit of its concrete completion type to the port, which it checks with
@@ -14,13 +14,13 @@ from typing import get_args
 
 import pytest
 
-from threetears.evals.contracts.completion import (
+from threetears.evals.schema.completion import (
     COMPLETION_RESULT_ATTRIBUTES,
     JSON_OBJECT_RESPONSE_FORMAT,
     USAGE_LEDGER_ATTRIBUTES,
     StopReason,
 )
-from threetears.evals.contracts.provider import (
+from threetears.evals.kernel.provider import (
     INCOMPLETE_STOP_REASONS,
     describe_incomplete_completion,
     extract_json,
@@ -128,7 +128,7 @@ class TestCompletionPort:
         already missed ``price_source`` once, and a rename on ``CallUsage`` degraded every judge and
         simulator row to "unreported" with nothing failing.
         """
-        from threetears.evals.contracts.usage_capture import CALL_USAGE_ONLY_ATTRIBUTES, CallUsage
+        from threetears.evals.kernel.usage_capture import CALL_USAGE_ONLY_ATTRIBUTES, CallUsage
 
         usage = CallUsage()
         for field in (*USAGE_LEDGER_ATTRIBUTES, *CALL_USAGE_ONLY_ATTRIBUTES):
@@ -172,7 +172,7 @@ class TestCompletionPort:
 
     def test_the_ledger_reads_the_served_model_never_the_requested_one(self):
         """A completion naming the alias in ``model`` and the concrete model in ``served_model`` lands both, apart."""
-        from threetears.evals.contracts.usage_capture import RoleUsageLedger
+        from threetears.evals.kernel.usage_capture import RoleUsageLedger
 
         ledger = RoleUsageLedger(role="candidate")
         ledger.add_llm_result(_Completion(model="~vendor/model-latest", served_model="vendor/model-2026-03"))

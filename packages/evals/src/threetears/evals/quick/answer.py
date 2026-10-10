@@ -5,7 +5,7 @@ returns and nothing of what it spent: a candidate that calls a paid model report
 it says otherwise. Returning an :class:`Answer` is how it says so. Its ``value`` is what the scorers, the
 classifier's ``expected=`` and the judge grade, exactly as a plain return value would be; its spend becomes
 the cell's ``candidate`` usage row, which the engine derives the result's ``cost_usd`` from as it does for
-any kind (:attr:`~threetears.evals.contracts.CandidateTelemetry.usage`). A candidate that returns anything
+any kind (:attr:`~threetears.evals.kernel.CandidateTelemetry.usage`). A candidate that returns anything
 else reports no spend, as before.
 
 The spend fields carry the names a completion client's reply carries, so the usage ledger reads an
@@ -19,7 +19,7 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-from threetears.evals.contracts import CandidateTelemetry, RoleUsageLedger
+from threetears.evals.kernel import CandidateTelemetry, RoleUsageLedger
 
 
 @dataclass(frozen=True)

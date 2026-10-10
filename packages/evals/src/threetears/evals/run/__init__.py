@@ -1,6 +1,6 @@
 """The engine's run package: launching and executing a run, judging it, metering it, and storing it.
 
-Of the engine it imports only itself and :mod:`threetears.evals.contracts`; what it needs from a host arrives
+Of the engine it imports only itself, :mod:`threetears.evals.schema` and :mod:`threetears.evals.kernel`; what it needs from a host arrives
 through the ports a host implements.
 
 **This module is the package's public root.** A host imports from here and from no module below
@@ -103,7 +103,7 @@ from threetears.evals.run.executor import (
     InProcessCellExecutor,
 )
 from threetears.evals.run.metering import CellMeter, MeteredCallLedger, MeteredCallTally
-from threetears.evals.contracts.offload import run_blocking
+from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.run.reads import get_result, get_result_trace, list_results, list_runs
 from threetears.evals.run.recheck import (
     CheckFlip,

@@ -22,8 +22,8 @@ from collections.abc import Mapping
 from typing import Any
 
 from threetears.evals.analysis import ChartBlock, DisclosureBlock, TableBlock, inspect_campaign_bundle
-from threetears.evals.contracts.models import RoleUsage
-from threetears.evals.contracts.usage_capture import spend_observed
+from threetears.evals.schema.models import RoleUsage
+from threetears.evals.kernel.usage_capture import spend_observed
 from threetears.evals.quick import Answer, Comparison, compare
 
 SCOPE = "code-only-chart-tests"

@@ -1,9 +1,9 @@
 """The 95th percentiles the engine reports, checked against the population percentile they stand for (#601).
 
 Both tails — ``p95_total_ms`` in a run's latency summary
-(:func:`~threetears.evals.contracts.scoring.compute_latency_summary`) and a numeric measure's ``p95`` in the
+(:func:`~threetears.evals.kernel.scoring.compute_latency_summary`) and a numeric measure's ``p95`` in the
 analysis bundle (``MeasureSummary.p95``) — are one estimator,
-:func:`~threetears.evals.contracts.scoring.median_unbiased_quantile` (Hyndman–Fan type 8). The two rules it
+:func:`~threetears.evals.kernel.scoring.median_unbiased_quantile` (Hyndman–Fan type 8). The two rules it
 replaced understated the tail: the summary's nearest-rank was the sample maximum for every ``n <= 19`` (below
 the true p95 0.86 of the time at n=3, 0.77 at n=5), and the bundle's linear interpolation sat below it 0.84,
 0.73 and 0.68 of the time at n=5, 15 and 30.
@@ -28,9 +28,9 @@ from statistics import NormalDist
 
 import pytest
 
-from threetears.evals.contracts import LatencyMetrics
-from threetears.evals.contracts.analysis_measures import MeasureSummary
-from threetears.evals.contracts.scoring import compute_latency_summary, median_unbiased_quantile
+from threetears.evals.schema import LatencyMetrics
+from threetears.evals.kernel.analysis_measures import MeasureSummary
+from threetears.evals.kernel.scoring import compute_latency_summary, median_unbiased_quantile
 from packages.evals.tests.bundle_support import one_batch_bundle
 from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile

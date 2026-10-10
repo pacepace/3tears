@@ -49,13 +49,13 @@ durable sibling, `SqliteDocumentStore`, keeps every document in one SQLite file 
 a host with no database of its own can use it as its store.
 
 Import only from a public root (`threetears.evals.PUBLIC_ROOTS` lists them, including
-`threetears.evals.contracts.host`, `threetears.evals.analysis.viz` and `threetears.evals.vega`), and only the names
+`threetears.evals.kernel.host`, `threetears.evals.analysis.viz` and `threetears.evals.vega`), and only the names
 its `__all__` declares; never from a module below one. Every engine type a public signature hands you — a protocol you implement, a value you
 receive, an exception you catch, a literal you annotate with — is exported from one of those roots.
 
 ## The host
 
-**Your app is one value, the host.** Build an `EvalHost` (in `threetears.evals.contracts.host`) and
+**Your app is one value, the host.** Build an `EvalHost` (in `threetears.evals.kernel.host`) and
 pass it to every entrypoint. It holds:
 
 - your `HostProfile` — the levers you sweep, the measures you record, your bars and your world. Every measure
@@ -117,7 +117,7 @@ def test_my_store_conforms(case: StoreConformanceCase, tmp_path: Path) -> None:
 
 The engine reads and writes through `EvalStorage`, built over that one store. Its consumers name the
 area they touch rather than the whole of it — `RunStore`, `ResultStore`, `RunRecordStore`,
-`DefinitionStore`, `CassetteStore` and `JobStore` (in `threetears.evals.contracts`) — so a function
+`DefinitionStore`, `CassetteStore` and `JobStore` (in `threetears.evals.kernel`) — so a function
 typed `DefinitionStore` cannot reach a run, and a test of one hands it only that area.
 
 **Stored data is disposable, and reads are strict.** Every stored model refuses an unknown field, a

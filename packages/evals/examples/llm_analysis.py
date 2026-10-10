@@ -22,7 +22,7 @@ from typing import Any
 
 from _live import Completion, claude, online
 from threetears.evals.analysis import EVAL_ANALYSIS_GEN_DEFAULT, generate_analysis, inspect_campaign_bundle
-from threetears.evals.contracts import EvalAnalysis
+from threetears.evals.kernel import EvalAnalysis
 from threetears.evals.quick import compare
 
 MODEL = "claude-haiku-5-5"

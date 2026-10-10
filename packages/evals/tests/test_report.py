@@ -46,9 +46,9 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.analysis.report import SCHEMA_PATH
-from threetears.evals.contracts.campaign import EvalAnalysis, Viz
-from threetears.evals.contracts.errors import NotFoundError
-from threetears.evals.contracts.host import EvalHost
+from threetears.evals.kernel.campaign import EvalAnalysis, Viz
+from threetears.evals.kernel.errors import NotFoundError
+from threetears.evals.kernel.host import EvalHost
 from threetears.evals.run import set_analysis_archived
 from packages.evals.tests.report_support import minimal_report, toy_campaign_host, toy_report
 

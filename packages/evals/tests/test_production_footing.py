@@ -26,11 +26,11 @@ from threetears.evals.analysis.bundle import AnalysisContextBundle, assemble_con
 from threetears.evals.analysis.generator import generate_analysis
 from threetears.evals.analysis.reads import run_summary
 from threetears.evals.analysis.reporting import FrontierPoint, compute_frontier
-from threetears.evals.contracts.host import SHARED_CORE, HostProfile, Sweepable
-from threetears.evals.contracts.host.kinds import KindContract
-from threetears.evals.contracts.host.sweepables import RegistrationError
-from threetears.evals.contracts.host.values import PooledProductionFooting, ProductionFooting
-from threetears.evals.contracts.models import EvalResult, EvalRun, utc_now_iso
+from threetears.evals.kernel.host import SHARED_CORE, HostProfile, Sweepable
+from threetears.evals.kernel.host.kinds import KindContract
+from threetears.evals.kernel.host.sweepables import RegistrationError
+from threetears.evals.schema.values import PooledProductionFooting, ProductionFooting
+from threetears.evals.schema.models import EvalResult, EvalRun, utc_now_iso
 from threetears.evals.quick import Answer, compare
 from packages.evals.tests.factories import as_listed, make_eval_run
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign

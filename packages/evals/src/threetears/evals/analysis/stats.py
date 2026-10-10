@@ -17,7 +17,7 @@ per-model composite delta. The p travels with the flag rather than being
 consumed and dropped: a verdict a reader cannot check against the number it was
 thresholded on is indistinguishable from one no test produced.
 Composite scores are continuous per-case quality values in ``[0, 1]``
-(see :func:`threetears.evals.contracts.scoring.compute_per_case_composites`). Samples are
+(see :func:`threetears.evals.kernel.scoring.compute_per_case_composites`). Samples are
 *paired* by case when the two runs actually scored the same frozen
 ``test_case_id`` s (a paired t-test, far more powerful); when they scored
 different cases — including two runs of one template whose case sets do not
@@ -40,7 +40,7 @@ from functools import lru_cache
 from statistics import NormalDist
 from typing import Final, Literal, NamedTuple
 
-from threetears.evals.contracts.surface import GuardrailDecision
+from threetears.evals.kernel.surface import GuardrailDecision
 
 # Two-sided p-value below which a composite delta is called significant.
 SIGNIFICANCE_ALPHA = 0.05
@@ -1846,7 +1846,7 @@ def paired_change(
     The gate and the margin are different things on purpose. The gate is the
     caller's, per request: how large a move must be before this read flags it.
     The margin is the host's declaration about the measure: the difference too
-    small to act on (:attr:`~threetears.evals.contracts.metrics.MetricDescriptor.materiality_threshold`),
+    small to act on (:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.materiality_threshold`),
     the same margin a bar's verdict is read against. Only the margin licenses a
     claim of no meaningful change.
 

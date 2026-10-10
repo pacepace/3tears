@@ -48,11 +48,11 @@ from threetears.evals.analysis.reporter_kind import (
     reporter_case_of,
     writer_message_check,
 )
-from threetears.evals.contracts.errors import ValidationFailedError
+from threetears.evals.kernel.errors import ValidationFailedError
 
 if TYPE_CHECKING:
     from threetears.evals.analysis.bundle import AnalysisContextBundle
-    from threetears.evals.contracts.models import CalibrationRating, EvalResult, EvalTestCase, RubricScore
+    from threetears.evals.schema.models import CalibrationRating, EvalResult, EvalTestCase, RubricScore
 
 
 def case_limits(

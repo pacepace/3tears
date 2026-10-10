@@ -13,7 +13,7 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.analysis.bundle import RunSummary
-from threetears.evals.contracts.models import EvalRun
+from threetears.evals.schema.models import EvalRun
 from threetears.evals.run.runner import cell_execution_order
 from packages.evals.tests.factories import make_eval_run, make_test_case
 

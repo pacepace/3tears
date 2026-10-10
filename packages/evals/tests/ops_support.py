@@ -14,8 +14,8 @@ from typing import Any
 
 from threetears.evals.actions import Caller
 from threetears.evals.analysis import assemble_context_bundle
-from threetears.evals.contracts import EvalCampaign, EvalStorage
-from threetears.evals.contracts.host import EvalHost, HostProfile
+from threetears.evals.kernel import EvalCampaign, EvalStorage
+from threetears.evals.kernel.host import EvalHost, HostProfile
 from threetears.evals.ops import AnalysisGeneration, JobStatus, OpsHost, job_poll
 from threetears.evals.run import LaunchSettings
 from threetears.evals.storage import InMemoryDocumentStore

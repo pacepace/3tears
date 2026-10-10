@@ -17,8 +17,8 @@ from typing import Any, Self
 
 import pytest
 
-from threetears.evals.contracts import JudgedArtifact, RubricDim, StopReason
-from threetears.evals.contracts.host import EvalHost, KindContract
+from threetears.evals.schema import JudgedArtifact, RubricDim, StopReason
+from threetears.evals.kernel.host import EvalHost, KindContract
 from threetears.evals.quick import (
     CALLABLE_KIND_CONTRACT,
     JUDGED_CALLABLE_KIND,
@@ -69,7 +69,7 @@ class _Reply:
     stop_reason: StopReason = "end_turn"
 
 
-# parity-with: threetears.evals.contracts.CompletionClient
+# parity-with: threetears.evals.schema.CompletionClient
 class _FakeJudgeClient:
     """A judge that gives a committed answer 5 and a hedge 2, or a reply set up per test."""
 

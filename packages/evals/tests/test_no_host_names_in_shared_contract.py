@@ -112,7 +112,7 @@ that lands after the declaration with nobody classifying it leaves the canary pa
 proves only that it is not looking — so the completeness test below refuses an unclassified
 module. Three classifications are worth their reasons:
 
-- ``contracts/completion.py`` and ``contracts/provider.py`` — **shared contract, declared.** They are the extraction seam's own port:
+- ``schema/completion.py`` and ``kernel/provider.py`` — **shared contract, declared.** They are the extraction seam's own port:
   the completion protocol every eval consumer is constructed with, plus the provider
   trivia the host's LLM layer used to own. A second consumer implements
   ``CompletionClient`` and inherits the rest verbatim, so nothing in it may name a host.
@@ -183,26 +183,34 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # The stored analysis shapes, which are contracts rather than analysis (the stored campaign,
     # analysis and insight models, the campaign declaration, the decision surface, the authored
     # document shape, and the analysis measures). `contracts/` is split, so each is listed.
-    "contracts/campaign.py",
-    "contracts/declaration.py",
-    "contracts/surface.py",
-    "contracts/authored.py",
-    "contracts/analysis_measures.py",
+    "kernel/campaign.py",
+    "kernel/declaration.py",
+    "kernel/surface.py",
+    "kernel/authored.py",
+    "kernel/analysis_measures.py",
     # The engine's own Pydantic base. Shared contract by construction — it exists precisely so
     # that the models above it can be constructed in a host that has none of the first host installed —
     # and every module in this list sits on top of it, so a host noun reaching here reaches all
     # of them. It names the host base it was copied from, in prose, and that is the point of
     # scanning it: the next edit is the one that reaches for a host TYPE instead of a sentence.
-    "contracts/base.py",
-    # The contracts package's public root: its ``__all__`` is what a
-    # second consumer imports, so every name it exports is scanned here. Declared module by module,
-    # like `gen/__init__.py`, because `contracts/` was classified module by module while it held
-    # host-coupled modules, and the list stays the record of each one's move.
-    "contracts/__init__.py",
+    "schema/base.py",
+    # The schema and kernel public roots: their ``__all__`` is what a
+    # second consumer imports, so every name they export is scanned here. Declared module by module,
+    # like `gen/__init__.py`, because the old `contracts/` they split from was classified module by
+    # module while it held host-coupled modules, and the list stays the record of each one's move.
+    "schema/__init__.py",
+    "kernel/__init__.py",
+    # The host-facing value shapes that moved out of the host contract's tree with the schema: the
+    # sweepable value and its scales, the subject snapshot, external spend and the trace port. Scanned
+    # there as part of the tree; scanned here by name.
+    "schema/values.py",
+    "schema/subject.py",
+    "schema/external_spend.py",
+    "schema/traces.py",
     "analysis/bundle.py",
     "analysis/gen_prompt.py",
     # The gen package's public root, its exports scanned. Declared module by module, like
-    # `contracts/__init__.py`, because `gen/` was classified module by module while it held a
+    # `kernel/__init__.py`, because `gen/` was classified module by module while it held a
     # host-coupled module, and the list stays the record of each one's move.
     "gen/__init__.py",
     # The rubric proposers. Shared contract by construction: they take the subject and catalog feeds
@@ -214,40 +222,40 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "run/__init__.py",
     # Named, versioned case sets: engine vocabulary for which cases a launch targets.
     "run/case_sets.py",
-    "contracts/dsl.py",
+    "kernel/dsl.py",
     # The goal grammar, the static half the stored template validates through.
-    "contracts/goal_grammar.py",
+    "schema/goal_grammar.py",
     # The model-prose marker. Shared contract by construction: the models above
     # declare their prose fields with it and `dsl.py` reads its schema helpers.
-    "contracts/prose.py",
+    "schema/prose.py",
     # Where one JSON Schema can sit inside another: the one answer the honoured-subset audit, the
     # registry's self-contradiction check and the prose gate all walk.
-    "contracts/schema_nesting.py",
-    "contracts/errors.py",
+    "schema/schema_nesting.py",
+    "kernel/errors.py",
     # The write-seam refusal of an undeclared authoring field, and the lock every writer of an
     # existing campaign holds. Each is shared by two packages that may not import each other —
     # authoring in run and in analysis, campaign writes in analysis and run's delete cascade — so
     # each lives in contracts, and a host noun here would reach both sides at once.
-    "contracts/authoring_fields.py",
-    "contracts/campaign_writes.py",
+    "kernel/authoring_fields.py",
+    "kernel/campaign_writes.py",
     # The run-status filter's vocabulary, its two defaults and its refusal: read by the run listing
     # in run and by the comparison lenses in analysis, which may not import each other.
-    "contracts/status_filter.py",
+    "kernel/status_filter.py",
     # The blank-argument rule, on the same terms one argument over: read by the analysis lenses
     # and by the run package's launch, which may not import each other.
-    "contracts/arguments.py",
+    "kernel/arguments.py",
     # Which model scored each dim, and what a run may claim about it: a rule over two fields the
     # stored run carries, read by the context key, the comparison badge and every renderer.
-    "contracts/judge_attribution.py",
-    "contracts/metrics.py",
-    "contracts/identity.py",
+    "schema/judge_attribution.py",
+    "kernel/metrics.py",
+    "kernel/identity.py",
     # The shared pre-image of every eval key. Nothing in it is host-shaped and nothing in it may
     # become so: it is in the dependency closure of `identity.py` and the whole `analysis` tree,
     # so a host noun reaching here reaches every key and every bundle at once.
-    "contracts/hashing.py",
-    "contracts/provider.py",
+    "schema/hashing.py",
+    "kernel/provider.py",
     # The completion port itself, split from how the engine reads what it returns.
-    "contracts/completion.py",
+    "schema/completion.py",
     "run/fidelity.py",
     # The criteria judge. It left the host-coupled set when its last host reach went: the JSON
     # parser it calls now lives in contracts, and it logs under its own module name rather than the
@@ -256,17 +264,17 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # The external-spend vocabulary. It is the one place a provider name could most plausibly be
     # hardcoded again — the shape it replaced held one provider's configured rate as a module
     # constant — so it is scanned rather than trusted.
-    "contracts/spend.py",
+    "kernel/spend.py",
     # The out-of-run budget and its ledger: a call's purpose is the engine's own role vocabulary and its
     # model is the host's word carried as data, so a host noun here would be one host's rate or model
     # written into the cap every host's generation is held to.
-    "contracts/out_of_run.py",
-    "contracts/out_of_run_spend.py",
+    "kernel/out_of_run.py",
+    "schema/out_of_run_spend.py",
     # How the engine hands a blocking call to an executor its host chooses, and waits through a
     # cancellation on one — here because the shared contract's own coroutines (the out-of-run ledger,
     # case generation, an analysis attempt) make store calls. A host noun here would be the engine
     # choosing one host's pool, or one host's cancellation rule, for every host.
-    "contracts/offload.py",
+    "kernel/offload.py",
     # The seeder, not the corpus it ships. It resolves occupancy by each type's natural key and
     # writes through the storage port; the host-specific part is the corpus a host hands it.
     # A host noun appearing HERE would mean the empty-slots-only rule
@@ -314,11 +322,11 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # existed rather than by promotion — and it is scanned because the host noun that would
     # most plausibly arrive here is a third ceiling named after whatever the host meters.
     "run/ceilings.py",
-    "contracts/result_condition.py",
+    "kernel/result_condition.py",
     # Which of a result's judged dims failed, and how a re-judge's outcomes land on it: pure
     # functions over eval models and the judge's outcome type, with the I/O left to the service.
     "run/rejudge.py",
-    "contracts/store_port.py",
+    "schema/store_port.py",
     # The curation family, the variation generator and the job manager moved off
     # _HOST_COUPLED_MODULES when the runtime tier's host-named partition became `scope_id`: that
     # parameter name was the only host coupling any of them exhibited where this scanner looks,
@@ -337,7 +345,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # in `runner.py`, which an extraction replaces wholesale, so an engine module wanting a
     # composite had to import the one file that cannot travel. Scanned because the host noun that
     # would most plausibly arrive here is a scoring rule stated in one host's vocabulary.
-    "contracts/scoring.py",
+    "kernel/scoring.py",
     # The candidate-kind seam: the protocol a kind implements, the object it hands back, and
     # the two failures the dispatch site tells apart. Shared contract from the day it existed
     # rather than by promotion — every kind IMPLEMENTATION lives host-side and this file is the
@@ -347,12 +355,12 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # paragraph, and it is the check that moved the async-delivery record off
     # `CandidateTelemetry` and into engine vocabulary (`AsyncDelivery`) beside the kind's opaque
     # `kind_payload`.
-    "contracts/candidate_kind.py",
+    "kernel/candidate_kind.py",
     # The cassette seams a kind implements and the cell handle ``prepare`` is handed. Split out of
     # `run/cassette_proxy.py` so the protocol that declares ``prepare`` could name its argument: it
     # is what every host's kind is written against, so a host noun here would be one host's
     # candidate shape written into every host's contract.
-    "contracts/cassettes.py",
+    "kernel/cassettes.py",
     # The safe-edit protocol for a run document, and the two-method port it composes. It moved
     # out of `storage.py` because the policy names no backend, no tier and no host — `EvalStorage`
     # is one implementation of the two methods it drives and a test double is another — while
@@ -373,10 +381,10 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # How a run's cells are executed, serially or several at once: the runner's own seam, which a host may fill
     # with its own pool. It names no host and reads nothing a host owns.
     "run/executor.py",
-    "contracts/evidence_tiers.py",
+    "kernel/evidence_tiers.py",
     # Tool recording and replay. It moved off _HOST_COUPLED_MODULES when the lane stopped reaching
     # into a host's candidate and started wiring only the seams a kind hands it (now declared in
-    # `contracts/cassettes.py`); what is here records and replays through them for every host alike.
+    # `kernel/cassettes.py`); what is here records and replays through them for every host alike.
     "run/cassette_proxy.py",
     # The three below moved off _HOST_COUPLED_MODULES when the judge stopped rendering one host's
     # subject and transcript. The judge now places the evidence a kind renders
@@ -391,7 +399,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # The call ledger every kind fills and every goal check's call predicates read: tool and action
     # names are the host's words carried as data, never declared here. A host noun in this module
     # would be one host's tool written into the record every kind keeps.
-    "contracts/call_ledger.py",
+    "schema/call_ledger.py",
     # The re-check that re-grades a stored run from the ledgers its cells stored, through the run's
     # own grading function. It reads no kind's trace shape, so a host noun here would be one kind's
     # replay written back into the engine.
@@ -405,7 +413,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # template's kind spec: what a template states for its kind is the kind's
     # model's to validate, so a host noun arriving here would be one host's taxonomy written into
     # the store every host reads through.
-    "contracts/storage.py",
+    "kernel/storage.py",
     # The generic trial loop and the per-result covariate derivation, both importing nothing of the
     # host. Moved off _HOST_COUPLED_MODULES when a host tool's delivery record became
     # `AsyncDelivery` and its conclusion-path covariate was deleted: the runner stores a kind's
@@ -415,21 +423,21 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # The runner's completed-cell assembly, called for a cell a host witnessed rather than ran. Born
     # host-neutral: a host noun here would be one host's session shape written into every host's capture.
     "run/witnessed.py",
-    "contracts/covariates.py",
+    "kernel/covariates.py",
     # The per-role usage ledger. Moved off _HOST_COUPLED_MODULES when its rows stopped defaulting
     # their price source to the first host's provider: a completion client says
     # where its price came from and the ledger stores that, so a provider name arriving here would
     # be one host's pricing claimed for every host's dollars.
-    "contracts/usage_capture.py",
+    "kernel/usage_capture.py",
     # A cell's world events and the session every world-bearing kind seeds, fires and reads back
     # through: dimension names and conditions are the host's words carried as data. A host noun here
     # would be one host's world written into every kind's cell.
-    "contracts/world_events.py",
-    "contracts/world_session.py",
+    "schema/world_events.py",
+    "kernel/world_session.py",
     # The stored eval models. Host-coupled while ``EvalRun`` and ``EvalResult`` carried a host's
     # subject, overlays and async tool record; the last of those has left, and with it the per-type entry ``ContextComponents`` needed while the module around it was not
     # scanned. A host noun arriving here would be one host's shape stored by every host.
-    "contracts/models.py",
+    "schema/models.py",
 )
 #: Individual types inside a HOST-COUPLED module that are nevertheless shared contract, scanned as
 #: if each were its own file. Module path (relative to ``threetears/evals/``) -> the class names in it.
@@ -481,9 +489,9 @@ _SHARED_CONTRACT_TYPES: dict[str, tuple[str, ...]] = {}
 #: host's concepts on purpose, and an extraction deletes it rather than porting it. Scanning it
 #: would report the design as a violation.
 _SHARED_CONTRACT_TREES: tuple[str, ...] = (
-    "contracts/host",
+    "kernel/host",
     "analysis",
-    "contracts/prompts",
+    "kernel/prompts",
     "gen/prompts",
     "storage",
     "testing",

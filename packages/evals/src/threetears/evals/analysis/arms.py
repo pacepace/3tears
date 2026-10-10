@@ -2,7 +2,7 @@
 
 An analysis's central table answers one question: *which contestant won, which are out, and
 what did the incumbent do?* Every number in it is already an
-:class:`~threetears.evals.contracts.campaign.EvidenceRow` resolved under a finding, and every status
+:class:`~threetears.evals.kernel.campaign.EvidenceRow` resolved under a finding, and every status
 is already a claim a decision makes about the cells it names. So the table is DERIVED here
 rather than authored: an analysis that re-stated the rows would re-author numbers the store
 already holds, and it would do it through an LLM.
@@ -10,7 +10,7 @@ already holds, and it would do it through an LLM.
 **The join needs a coordinate table, and that is the whole reason the analysis carries one.**
 A decision names cells (``<variant_key>:<apparatus_class_id>``), and an arm is keyed by a
 *variant*, a digest over the whole resolved contestant stack, whose levers a reader pivots on.
-Nothing turns a digest back into levers, so :attr:`~threetears.evals.contracts.campaign.EvalAnalysis.variant_index`
+Nothing turns a digest back into levers, so :attr:`~threetears.evals.kernel.campaign.EvalAnalysis.variant_index`
 carries the map each digest was computed from, and everything below reads coordinates through
 it.
 
@@ -27,16 +27,12 @@ from typing import Literal
 from pydantic import Field, computed_field
 
 from threetears.evals.analysis.cells import variant_of_cell_ref
-from threetears.evals.contracts.authored import Decision
-from threetears.evals.contracts.campaign import (
-    EvalAnalysis,
-    FindingResolution,
-    VariantIndexEntry,
-)
-from threetears.evals.contracts.host.sweepables import CANDIDATE_KIND_LEVER, CANDIDATE_MODEL_LEVER
-from threetears.evals.contracts.host.values import SweepableValue
-from threetears.evals.contracts.base import EvalDocumentModel
-from threetears.evals.contracts.surface import CellFacts
+from threetears.evals.kernel.authored import Decision
+from threetears.evals.kernel.campaign import EvalAnalysis, FindingResolution, VariantIndexEntry
+from threetears.evals.kernel.host.sweepables import CANDIDATE_KIND_LEVER, CANDIDATE_MODEL_LEVER
+from threetears.evals.schema.values import SweepableValue
+from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.kernel.surface import CellFacts
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -238,7 +234,7 @@ class ArmTable(EvalDocumentModel):
 # - An arm is named by the levers on which the report's arms DIFFER (:func:`distinguishing_axes`), and
 #   by nothing else: a lever every arm carried at one level names none of them.
 # - A lever that does not apply to the arm's kind (its level is
-#   :meth:`~threetears.evals.contracts.host.values.SweepableValue.not_this_kind`'s) is never named.
+#   :meth:`~threetears.evals.schema.values.SweepableValue.not_this_kind`'s) is never named.
 # - An arm that differs on nothing it carries is named by its candidate kind and model.
 # - Each level is put on one line and cut in the middle past :data:`LABEL_LEVEL_CHARS` (:func:`elide_level`).
 # - Two arms the above would name alike are told apart by their variant keys' digests (:func:`arm_names`).
@@ -288,7 +284,7 @@ def elide_level(display: str) -> str:
 def arm_levers(entry: VariantIndexEntry | None) -> list[tuple[str, SweepableValue]]:
     """The levers an arm is NAMED by, as ``(axis, level)`` pairs sorted by axis.
 
-    Read through :attr:`~threetears.evals.contracts.campaign.VariantIndexEntry.named_levers`, so an arm is
+    Read through :attr:`~threetears.evals.kernel.campaign.VariantIndexEntry.named_levers`, so an arm is
     named by the knob it swept rather than by the resolved surface that knob was written into. The
     full level is returned — scale included — for the one consumer that needs more than its
     rendering (a sweep chart declares each lever's orderedness from its scale). Levers that do not
@@ -308,7 +304,7 @@ def applicable_levers(entry: VariantIndexEntry | None) -> list[tuple[str, Sweepa
     """:func:`arm_levers` without the levers that do not apply to the arm's kind.
 
     A run of one kind carries every other kind's levers at their
-    :meth:`~threetears.evals.contracts.host.values.SweepableValue.not_this_kind` level, because that is
+    :meth:`~threetears.evals.schema.values.SweepableValue.not_this_kind` level, because that is
     what keeps the variant key honest. It is not something the arm RAN, so no name and no list of what
     an arm ran states it.
 

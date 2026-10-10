@@ -13,7 +13,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import EvalRun, EvalStorage, ValidationFailedError
+from threetears.evals.schema import EvalRun
+from threetears.evals.kernel import EvalStorage, ValidationFailedError
 from threetears.evals.ops import LaunchArguments, launch_estimate, run_launch
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.run import LaunchHost, start_run

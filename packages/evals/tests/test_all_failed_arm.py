@@ -6,7 +6,7 @@ rate and bar counts them against the arm — but their round trip and their empt
 the cell's latency and cost as if each were a turn.
 
 **One predicate decides what a turn's time and spend are averaged over**:
-:func:`~threetears.evals.contracts.delivered_a_turn`. It leaves out the harness's faults and the failures
+:func:`~threetears.evals.kernel.delivered_a_turn`. It leaves out the harness's faults and the failures
 that took no turn — the candidate's model refused or errored straight away. A failure that DID take a turn
 — the host's turn budget ended it, the output cap cut it, the cell's deadline struck a pending call —
 stays in, because that time and spend are what failing cost the arm: leaving them out read a contestant
@@ -63,27 +63,13 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle import CellCoordinate, bundle_decision_surface
 from threetears.evals.analysis.surface_table import NO_SUCCESSFUL_RESULTS, surface_table_of
-from threetears.evals.contracts import (
-    CampaignDesign,
-    CellFacts,
-    EvalResult,
-    EvalStorage,
-    EvalTestCase,
-    GoalStateOutcome,
-    LatencyMetrics,
-    RoleUsage,
-    StratumFacts,
-    delivered_a_turn,
-)
-from threetears.evals.contracts.analysis_measures import MeasureSummary
-from threetears.evals.contracts.covariates import (
-    TRUNCATED_ROUNDS_KEY,
-    TURN_BUDGET_ENDED_KEY,
-    count_delivered_turns,
-)
-from threetears.evals.contracts.declaration import BarOverride
-from threetears.evals.contracts.host import SHARED_CORE, HostProfile, MeasureRegistry
-from threetears.evals.contracts.metrics import MetricDescriptor, goal_check_measure
+from threetears.evals.kernel import CampaignDesign, CellFacts, EvalStorage, StratumFacts, delivered_a_turn
+from threetears.evals.schema import EvalResult, EvalTestCase, GoalStateOutcome, LatencyMetrics, RoleUsage
+from threetears.evals.kernel.analysis_measures import MeasureSummary
+from threetears.evals.kernel.covariates import TRUNCATED_ROUNDS_KEY, TURN_BUDGET_ENDED_KEY, count_delivered_turns
+from threetears.evals.kernel.declaration import BarOverride
+from threetears.evals.kernel.host import SHARED_CORE, HostProfile, MeasureRegistry
+from threetears.evals.kernel.metrics import MetricDescriptor, goal_check_measure
 from threetears.evals.quick import Comparison, callable_host, compare, summarize_run
 from threetears.evals.quick.one_call import UNUSABLE_ANSWER
 from threetears.evals.run import list_results
@@ -396,7 +382,7 @@ class TestCostAndLatencyAreReadOverTurnsTaken:
 
     def test_a_cell_s_measuring_spend_is_the_run_summary_s_program_mean(self) -> None:
         """One population for `cost_usd` on every surface: the cell, the run summary, the pivot and history."""
-        from threetears.evals.contracts.scoring import compute_cost_summary
+        from threetears.evals.kernel.scoring import compute_cost_summary
 
         arms = _three_arms()
         spend = _summaries(_cell(_bundle(arms), _FLAKY))["cost_usd"]

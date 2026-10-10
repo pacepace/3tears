@@ -19,14 +19,16 @@ import json
 import threetears.evals
 import threetears.evals.run
 from threetears.evals import PUBLIC_ROOTS, run
-from threetears.evals.contracts import AsyncDeliveryStatus, EvalRun, SCALES
-from threetears.evals.contracts import TURN_BUDGET_ENDED_KEY, blended_cost_roles, eval_trace_doc_id
-from threetears.evals.contracts import Firings, MATCH_MEASURE, CONFUSION_CELL_MEASURE
-from threetears.evals.contracts.host import UNSEATED_LEVEL
+from threetears.evals.schema import AsyncDeliveryStatus, EvalRun, SCALES
+from threetears.evals.kernel import TURN_BUDGET_ENDED_KEY, blended_cost_roles
+from threetears.evals.schema import eval_trace_doc_id
+from threetears.evals.schema import Firings
+from threetears.evals.kernel import MATCH_MEASURE, CONFUSION_CELL_MEASURE
+from threetears.evals.kernel.host import UNSEATED_LEVEL
 from threetears.evals.run import EvalRunCostCap, resolve_ceiling_origin, resolve_effective_ceiling
 from threetears.evals.run import stamp_witnessed_judge
-from threetears.evals.contracts import host
-from threetears.evals.contracts.host import HostProfile
+from threetears.evals.kernel import host
+from threetears.evals.kernel.host import HostProfile
 from threetears.evals.testing import nonpublic_evals_imports
 from pydantic import BaseModel
 """
@@ -58,32 +60,32 @@ def test_the_package_s_own_example_passes() -> None:
 
 
 def test_a_module_below_a_root_is_refused_and_the_public_home_named(tmp_path: Path) -> None:
-    path = _write(tmp_path, "deep.py", "from threetears.evals.contracts.models import AsyncDeliveryStatus\n")
+    path = _write(tmp_path, "deep.py", "from threetears.evals.schema.models import AsyncDeliveryStatus\n")
 
     finding = _only(nonpublic_evals_imports(tmp_path))
 
     assert (finding.path, finding.line, finding.module, finding.name) == (
         path,
         1,
-        "threetears.evals.contracts.models",
+        "threetears.evals.schema.models",
         "AsyncDeliveryStatus",
     )
     assert "below a public root" in finding.reason
-    assert "import it from threetears.evals.contracts" in finding.reason
+    assert "import it from threetears.evals.schema" in finding.reason
 
 
 def test_a_name_no_root_exports_is_refused_saying_so(tmp_path: Path) -> None:
-    _write(tmp_path, "deep.py", "from threetears.evals.contracts.models import SCALE_LEVELS\n")
+    _write(tmp_path, "deep.py", "from threetears.evals.schema.models import SCALE_LEVELS\n")
 
     assert "no public root exports it" in _only(nonpublic_evals_imports(tmp_path)).reason
 
 
 def test_a_name_a_root_does_not_declare_is_refused(tmp_path: Path) -> None:
-    _write(tmp_path, "undeclared.py", "from threetears.evals.contracts import annotations\n")
+    _write(tmp_path, "undeclared.py", "from threetears.evals.schema import annotations\n")
 
     finding = _only(nonpublic_evals_imports(tmp_path))
 
-    assert finding.reason.startswith("annotations is not in threetears.evals.contracts.__all__")
+    assert finding.reason.startswith("annotations is not in threetears.evals.schema.__all__")
 
 
 def test_a_name_declared_by_another_root_is_refused_naming_that_root(tmp_path: Path) -> None:
@@ -91,25 +93,25 @@ def test_a_name_declared_by_another_root_is_refused_naming_that_root(tmp_path: P
 
     finding = _only(nonpublic_evals_imports(tmp_path))
 
-    assert "EvalRun is not in threetears.evals.run.__all__; it is public from threetears.evals.contracts" in (
+    assert "EvalRun is not in threetears.evals.run.__all__; it is public from threetears.evals.schema" in (
         finding.reason
     )
 
 
 def test_a_star_import_from_a_root_is_refused(tmp_path: Path) -> None:
-    _write(tmp_path, "star.py", "from threetears.evals.contracts import *\n")
+    _write(tmp_path, "star.py", "from threetears.evals.schema import *\n")
 
     assert "star import" in _only(nonpublic_evals_imports(tmp_path)).reason
 
 
 def test_importing_a_module_below_a_root_is_refused_naming_the_root_above(tmp_path: Path) -> None:
-    _write(tmp_path, "module.py", "import threetears.evals.contracts.models\n")
+    _write(tmp_path, "module.py", "import threetears.evals.schema.models\n")
 
     finding = _only(nonpublic_evals_imports(tmp_path))
 
     assert finding.name is None
     assert finding.reason == (
-        "threetears.evals.contracts.models is below a public root; import from threetears.evals.contracts instead"
+        "threetears.evals.schema.models is below a public root; import from threetears.evals.schema instead"
     )
 
 
@@ -125,9 +127,9 @@ def test_imports_inside_functions_and_type_checking_blocks_are_read(tmp_path: Pa
         "nested/late.py",
         "from typing import TYPE_CHECKING\n"
         "if TYPE_CHECKING:\n"
-        "    from threetears.evals.contracts.call_ledger import CallLedger\n"
+        "    from threetears.evals.schema.call_ledger import CallLedger\n"
         "def f() -> None:\n"
-        "    from threetears.evals.contracts.spend import ExternalRateTable\n",
+        "    from threetears.evals.kernel.spend import ExternalRateTable\n",
     )
 
     assert [(finding.line, finding.name) for finding in nonpublic_evals_imports(tmp_path)] == [
@@ -137,11 +139,11 @@ def test_imports_inside_functions_and_type_checking_blocks_are_read(tmp_path: Pa
 
 
 def test_a_file_source_is_read_and_findings_render_as_one_line(tmp_path: Path) -> None:
-    path = _write(tmp_path, "one.py", "from threetears.evals.contracts.spend import ExternalRateTable\n")
+    path = _write(tmp_path, "one.py", "from threetears.evals.kernel.spend import ExternalRateTable\n")
 
     finding = _only(nonpublic_evals_imports(path))
 
-    assert str(finding).startswith(f"{path}:1: from threetears.evals.contracts.spend import ExternalRateTable — ")
+    assert str(finding).startswith(f"{path}:1: from threetears.evals.kernel.spend import ExternalRateTable — ")
 
 
 def test_a_source_that_does_not_exist_is_refused(tmp_path: Path) -> None:

@@ -1,6 +1,6 @@
 """Authoring the definitions a run is built from: templates, catalog rubric dims and judge configs.
 
-Each operation is a function over :class:`~threetears.evals.contracts.storage.DefinitionStore` and typed
+Each operation is a function over :class:`~threetears.evals.kernel.storage.DefinitionStore` and typed
 parameters, the shape the curation family set (:mod:`threetears.evals.run.curation`), so a client of
 the package can author definitions without a host's service layer, and every surface that reaches
 these translates failures the same way (NotFound → 404, Conflict → 409, Validation → 422).
@@ -23,12 +23,12 @@ passes in:
 * ``refuse_undeliverable_template`` — whether the template declares apparatus its candidate kind
   can honour, which is the host's kind capability table.
 
-Each hook raises :class:`~threetears.evals.contracts.errors.ValidationFailedError` to refuse and
+Each hook raises :class:`~threetears.evals.kernel.errors.ValidationFailedError` to refuse and
 returns ``None`` to admit. They are required rather than defaulted: a host with nothing to check
 passes a function that checks nothing, which is a decision its code states.
 
 The world reads go through the host's profile, handed in: a template function that reads both
-the store and the world takes the :class:`~threetears.evals.contracts.host.eval_host.EvalHost`, and
+the store and the world takes the :class:`~threetears.evals.kernel.host.eval_host.EvalHost`, and
 the two gates that read the world alone take its profile.
 """
 
@@ -39,20 +39,20 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ValidationError
 
-from threetears.evals.contracts.authoring_fields import reject_unknown_authoring_fields
-from threetears.evals.contracts.goal_grammar import DSLError, extract_paths
-from threetears.evals.contracts.dsl import (
+from threetears.evals.kernel.authoring_fields import reject_unknown_authoring_fields
+from threetears.evals.schema.goal_grammar import DSLError, extract_paths
+from threetears.evals.kernel.dsl import (
     call_parameter_matches,
     undefined_call_references,
     undefined_fire_references,
     world_prose_matches,
 )
-from threetears.evals.contracts.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
-from threetears.evals.contracts.host.eval_host import EvalHost
-from threetears.evals.contracts.host.kinds import freeze
-from threetears.evals.contracts.host.profile import HostProfile
-from threetears.evals.contracts.host.world import resolve_preconditions
-from threetears.evals.contracts.models import (
+from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
+from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.kernel.host.kinds import freeze
+from threetears.evals.kernel.host.profile import HostProfile
+from threetears.evals.kernel.host.world import resolve_preconditions
+from threetears.evals.schema.models import (
     CatalogRubricDim,
     EvalTemplate,
     JudgeConfig,
@@ -65,7 +65,7 @@ from threetears.evals.run.curation import require_delete_confirmation
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.storage import DefinitionStore
+    from threetears.evals.kernel.storage import DefinitionStore
 
 log = get_logger(__name__)
 
@@ -140,7 +140,7 @@ def create_template(
         host: The host: where templates are read and written, and the world the template's
             expressions are held to.
         definition: Template fields (``name`` + ``intent`` required; the
-            rest optional per :class:`~threetears.evals.contracts.models.EvalTemplate`).
+            rest optional per :class:`~threetears.evals.schema.models.EvalTemplate`).
         scope_id: The scope the template lives in.
         require_known_tools_allowed: The host's check that each name in ``tools_allowed`` is a
             tool type its catalog has; raises ``ValidationFailedError`` to refuse.
@@ -150,7 +150,7 @@ def create_template(
             apparatus its candidate kind can honour; raises ``ValidationFailedError`` to refuse.
 
     Returns:
-        The persisted :class:`~threetears.evals.contracts.models.EvalTemplate`.
+        The persisted :class:`~threetears.evals.schema.models.EvalTemplate`.
 
     Raises:
         ValidationFailedError: ``definition`` fails template validation, its
@@ -307,7 +307,7 @@ def refuse_unsupplied_world(
     Raises:
         ValidationFailedError: An expression names state this host cannot supply, or a goal
             check the language cannot read. The latter is refused here for the reason
-            :class:`~threetears.evals.contracts.models.Precondition` refuses its own at parse: an
+            :class:`~threetears.evals.schema.models.Precondition` refuses its own at parse: an
             expression no run can evaluate is an apparatus failure discovered after the
             spend, attributed to whatever the run was doing. Also a ``fired()`` name that is not a
             triggered dimension, or ambient perturbation on a world with no handle for it. Also a goal check that
@@ -467,7 +467,7 @@ def update_template(
             ``archived``.
 
     Returns:
-        The persisted, updated :class:`~threetears.evals.contracts.models.EvalTemplate`.
+        The persisted, updated :class:`~threetears.evals.schema.models.EvalTemplate`.
 
     Raises:
         NotFoundError: No template with that id.
@@ -576,11 +576,11 @@ def create_rubric_dim(storage: DefinitionStore, definition: dict[str, Any], *, s
     Args:
         storage: Where catalog rubric dims are read and written.
         definition: Catalog-dim fields (``key`` + ``dim`` required; the rest
-            optional per :class:`~threetears.evals.contracts.models.CatalogRubricDim`).
+            optional per :class:`~threetears.evals.schema.models.CatalogRubricDim`).
         scope_id: The scope the dim lives in.
 
     Returns:
-        The persisted :class:`~threetears.evals.contracts.models.CatalogRubricDim`.
+        The persisted :class:`~threetears.evals.schema.models.CatalogRubricDim`.
 
     Raises:
         ValidationFailedError: ``definition`` fails catalog-dim validation.
@@ -642,7 +642,7 @@ def update_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str, fiel
         fields: Partial field map to overlay onto the existing dim.
 
     Returns:
-        The persisted, updated :class:`~threetears.evals.contracts.models.CatalogRubricDim`.
+        The persisted, updated :class:`~threetears.evals.schema.models.CatalogRubricDim`.
 
     Raises:
         NotFoundError: No rubric dim with that id.
@@ -682,17 +682,17 @@ def delete_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str, *, c
     scope carries (:func:`~threetears.evals.run.definition_seed.seed_eval_definitions`), so a delete
     alone would hand a seeded dim's key back to the next boot, which would write the dim again —
     while archiving it, the reversible choice, kept it retired. So the delete first writes a
-    :class:`~threetears.evals.contracts.models.RubricDimTombstone` for the dim's key, and the seeder
+    :class:`~threetears.evals.schema.models.RubricDimTombstone` for the dim's key, and the seeder
     never writes a tombstoned key back. Archive and delete now both retire a seeded dim; what differs
     is that archive keeps the record and can be undone, and delete destroys it. To have a deleted key
     back, author it again (``create_rubric_dim``), which the tombstone does not block.
 
     **Nothing else goes with it, and nothing is orphaned.** Storage removes
-    exactly one dim document (:meth:`~threetears.evals.contracts.storage.EvalStorage.delete_rubric_dim`
+    exactly one dim document (:meth:`~threetears.evals.kernel.storage.EvalStorage.delete_rubric_dim`
     is a single ``delete`` by id), and no stored record points at a catalog
-    dim's ``id``: :attr:`~threetears.evals.contracts.models.JudgeConfig.rubric_dim_id`
+    dim's ``id``: :attr:`~threetears.evals.schema.models.JudgeConfig.rubric_dim_id`
     binds **by name**, ``EvalTemplate.rubric`` embeds name-keyed
-    :class:`~threetears.evals.contracts.models.RubricDim` value objects rather than
+    :class:`~threetears.evals.schema.models.RubricDim` value objects rather than
     references, and the catalog's own DECISION lock-in is that it does not
     rebind the judge's name-keying. The catalog is read as a *feed* (the rubric
     proposer's catalog feed, non-archived only), which copies definitions into a draft
@@ -763,11 +763,11 @@ def create_judge_config(storage: DefinitionStore, definition: dict[str, Any], *,
         storage: Where judge configs are read and written.
         definition: Judge-config fields (``name`` + ``rubric_dim_id`` +
             ``prompt_template`` required; the rest optional per
-            :class:`~threetears.evals.contracts.models.JudgeConfig`).
+            :class:`~threetears.evals.schema.models.JudgeConfig`).
         scope_id: The scope the config lives in.
 
     Returns:
-        The persisted :class:`~threetears.evals.contracts.models.JudgeConfig`.
+        The persisted :class:`~threetears.evals.schema.models.JudgeConfig`.
 
     Raises:
         ValidationFailedError: ``definition`` fails judge-config validation.
@@ -821,7 +821,7 @@ def list_judge_configs(
 def update_judge_config(storage: DefinitionStore, config_id: str, scope_id: str, fields: dict[str, Any]) -> JudgeConfig:
     """Re-author a judge config via archive-and-recreate (immutable versioning).
 
-    :class:`~threetears.evals.contracts.models.JudgeConfig` has no ``updated_at`` and is
+    :class:`~threetears.evals.schema.models.JudgeConfig` has no ``updated_at`` and is
     immutable-versioned (``load_active_judge_config`` = latest non-archived
     record per ``rubric_dim_id``), so there is no in-place edit. An update
     therefore: (1) builds a NEW version — the existing fields overlaid with
@@ -840,7 +840,7 @@ def update_judge_config(storage: DefinitionStore, config_id: str, scope_id: str,
         fields: Partial field map to overlay onto the existing config.
 
     Returns:
-        The persisted new-version :class:`~threetears.evals.contracts.models.JudgeConfig`.
+        The persisted new-version :class:`~threetears.evals.schema.models.JudgeConfig`.
 
     Raises:
         NotFoundError: No judge config with that id.
@@ -895,10 +895,10 @@ def delete_judge_config(storage: DefinitionStore, config_id: str, scope_id: str,
     one document; the pointers at it are left dangling, in two places that
     both read as attribution rather than as a foreign key:
 
-    - :attr:`~threetears.evals.contracts.models.EvalResult.judge_config_ids` — every result
+    - :attr:`~threetears.evals.schema.models.EvalResult.judge_config_ids` — every result
       this config scored records its id, and that map is what the per-dim
       judge attribution renders from.
-    - :attr:`~threetears.evals.contracts.models.EvalRun.judge_config_ids` /
+    - :attr:`~threetears.evals.schema.models.EvalRun.judge_config_ids` /
       ``judge_config_provenance`` — the set a run committed to at launch, and
       the set the launch's judge-config selection re-loads by id when an
       A/B control arm is re-run against a *superseded* version. That path
@@ -906,13 +906,13 @@ def delete_judge_config(storage: DefinitionStore, config_id: str, scope_id: str,
 
     **A delete sticks, seeded config or not.** The seed writes any corpus config whose slot
     (``rubric_dim_id``, ``name``) no record in the scope carries, so the delete first writes a
-    :class:`~threetears.evals.contracts.models.JudgeConfigTombstone` for the slot, and the seeder never
+    :class:`~threetears.evals.schema.models.JudgeConfigTombstone` for the slot, and the seeder never
     writes a tombstoned slot back — the mechanism :func:`delete_rubric_dim` uses. Authoring a config into
     the slot again is the way back; the tombstone does not block it.
 
     **Not refused outright when in use, and that is a cost judgement, not a
     preference.** A referent count is not computable here: ``judge_config_ids``
-    lives on :class:`~threetears.evals.contracts.models.EvalResult`, and counting would mean
+    lives on :class:`~threetears.evals.schema.models.EvalResult`, and counting would mean
     a scan of every stored result in the scope with Python-side filtering on a map that
     is not an indexed field — the largest collection in the store, walked on every delete. So the refusal names
     *what kind* of provenance goes rather than how much, and the gate stays

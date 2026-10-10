@@ -23,7 +23,7 @@ statement names, to read that root's ``__all__``, so a root that needs an extra 
 ``transports.fastmcp``) must be importable where the check runs — as it must be where the host's code runs.
 
 **What it cannot see.** ``importlib.import_module("threetears.evals...")`` with a computed name, and an
-attribute reached through a module object (``import threetears.evals.contracts as c; c._helper``).
+attribute reached through a module object (``import threetears.evals.kernel as k; k._helper``).
 """
 
 from __future__ import annotations

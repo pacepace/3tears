@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.factories import memory_storage
 from threetears.evals.storage import InMemoryDocumentStore
-from threetears.evals.contracts.cassettes import (
+from threetears.evals.kernel.cassettes import (
     ActionSeam,
     CassetteCorrupt,
     CassetteExhausted,
@@ -37,9 +37,9 @@ from threetears.evals.contracts.cassettes import (
     ToolLike,
     ToolWrap,
 )
-from threetears.evals.contracts.host.apparatus import ApparatusError
-from threetears.evals.contracts.models import CassetteKey, EvalCassette
-from threetears.evals.contracts.storage import EvalStorage
+from threetears.evals.kernel.host.apparatus import ApparatusError
+from threetears.evals.schema.models import CassetteKey, EvalCassette
+from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.run.cassette_proxy import (
     DELIVERY_ACTION,
     CassetteCell,
@@ -98,7 +98,7 @@ class ScoutReport(_Strict):
 # =============================================================================
 
 
-# parity-with: threetears.evals.contracts.cassettes.ToolLike
+# parity-with: threetears.evals.kernel.cassettes.ToolLike
 class FakeTool:
     """A synchronous tool whose live answers come from ``answer``, logging every live call."""
 
@@ -124,7 +124,7 @@ class FakeTool:
         return self._answer(parameters)
 
 
-# parity-with: threetears.evals.contracts.cassettes.DeliverySeam
+# parity-with: threetears.evals.kernel.cassettes.DeliverySeam
 class FakeScoutTool(DeliverySeam):
     """An asynchronous tool: ``act()`` acknowledges, and the report reaches the session afterwards.
 
@@ -209,7 +209,7 @@ class FakeScoutTool(DeliverySeam):
         self.delivered.append(report)
 
 
-# parity-with: threetears.evals.contracts.cassettes.ActionSeam
+# parity-with: threetears.evals.kernel.cassettes.ActionSeam
 class FakeGameSession(CassetteSeams):
     """The kind's prepared candidate: its tools, and the seams it hands the lane."""
 
@@ -259,7 +259,7 @@ class FakeGameSession(CassetteSeams):
         await asyncio.gather(*self.scout.pending)
 
 
-# parity-with: threetears.evals.contracts.cassettes.CassetteSeams
+# parity-with: threetears.evals.kernel.cassettes.CassetteSeams
 class FakeSeamlessSession:
     """A candidate whose kind declares no seam at all."""
 
@@ -658,7 +658,7 @@ async def test_a_recording_that_no_longer_reads_back_is_the_rig_s_failure(
     assert isinstance(caught.value, ApparatusError)
 
 
-# parity-with: threetears.evals.contracts.store_port.DocumentStore
+# parity-with: threetears.evals.schema.store_port.DocumentStore
 class FakeUnreadableStore(InMemoryDocumentStore):
     """A store whose reads fail, as a backend outage would."""
 

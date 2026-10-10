@@ -2,7 +2,7 @@
 
 The sweepables registry projects each input for the bisection to compare; the variant key needs
 the typed levels it is digested from, every lever at once.
-:data:`~threetears.evals.contracts.host.profile.VariantLeverReader` is that second question, and this
+:data:`~threetears.evals.kernel.host.profile.VariantLeverReader` is that second question, and this
 module is the toy host's answer to it.
 
 **Why a host writes one.** The variant key is what pools observations into cells, and a lever the
@@ -15,9 +15,9 @@ from the run itself and from the kind's contract on the profile — a reader ret
 refused. This reader resolves only the levers the toy host declares beyond those.
 
 **Two scale kinds, deliberately.** ``chunk_tokens`` and ``retriever_top_k`` resolve as
-:class:`~threetears.evals.contracts.host.values.IntervalScale` levels, so the toy host is the fixture where a
+:class:`~threetears.evals.schema.values.IntervalScale` levels, so the toy host is the fixture where a
 level carries true spacing. ``extraction_schema`` resolves through
-:meth:`~threetears.evals.contracts.host.values.SweepableValue.of_bytes`, the opaque-blob path: a
+:meth:`~threetears.evals.schema.values.SweepableValue.of_bytes`, the opaque-blob path: a
 level known only by its content.
 """
 
@@ -25,11 +25,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from threetears.evals.contracts.host import IntervalScale, SweepableValue
+from threetears.evals.schema import IntervalScale, SweepableValue
 from packages.evals.tests.fixtures.toyhost.sweepables import RESOLVED_RETRIEVAL_CONFIG
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts import EvalRun
+    from threetears.evals.schema import EvalRun
 
 #: Where the toy host keeps its vocabulary on the shared carrier — the same engine-owned slot
 #: ``packages.evals.tests.fixtures.toyhost.sweepables`` reads, named once here rather than imported, so the two

@@ -26,8 +26,9 @@ import pytest
 from threetears.evals.actions import Caller, eval_catalogue, standard_tools
 from threetears.evals.analysis import REPORTER_KIND, ReporterKind, assemble_context_bundle
 from threetears.evals.analysis.reporter_kind import REPORTER_CASE_KEY, LabelCriterion, reporter_case_of
-from threetears.evals.contracts import EvalResult, NotFoundError, ValidationFailedError, delivered_a_turn
-from threetears.evals.contracts.models import EvalTemplate, EvalTestCase, RubricDim
+from threetears.evals.schema import EvalResult
+from threetears.evals.kernel import NotFoundError, ValidationFailedError, delivered_a_turn
+from threetears.evals.schema.models import EvalTemplate, EvalTestCase, RubricDim
 from threetears.evals.ops import (
     FrozenReporterCase,
     ReporterCaseFreeze,

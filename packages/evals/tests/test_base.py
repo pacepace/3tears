@@ -1,6 +1,6 @@
 """The eval engine's own model bases: their stance, pinned, and reads as strict as construction.
 
-The stance is spelled once in ``threetears.evals.contracts.base`` and pinned literally below, so a
+The stance is spelled once in ``threetears.evals.schema.base`` and pinned literally below, so a
 change to it is diff-visible on its own terms. Stored eval documents are disposable, so there is no
 tolerant read: a stored document carrying a field the model does not declare, or written under
 another schema version, is refused — and the last tests here assert that through real storage.
@@ -15,8 +15,8 @@ from typing import Any, ClassVar
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.contracts.base import EvalBaseModel, EvalDocumentModel
-from threetears.evals.contracts.models import (
+from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
+from threetears.evals.schema.models import (
     EVAL_SCHEMA_VERSION,
     CaseSet,
     CassetteKey,
@@ -26,10 +26,10 @@ from threetears.evals.contracts.models import (
     RubricDimTombstone,
     JudgeConfigTombstone,
 )
-from threetears.evals.contracts.campaign import EvalSweep, SweepArmRecord
-from threetears.evals.contracts.out_of_run_spend import OutOfRunSpend
-from threetears.evals.contracts.storage import EvalStorage
-from threetears.evals.contracts.identity import IDENTITY_VERSION
+from threetears.evals.kernel.campaign import EvalSweep, SweepArmRecord
+from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
+from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from packages.evals.tests.factories import (
     make_analysis,
     make_analysis_attempt,
@@ -212,11 +212,11 @@ def test_the_engine_models_are_on_the_engine_base():
     from threetears.evals.analysis.reporting import ScoreRecord
     from threetears.evals.analysis.viz.intent import ChartIntent
     from threetears.evals.analysis.report import Report
-    from threetears.evals.contracts.identity import DerivedContextIdentity
-    from threetears.evals.contracts.metrics import MetricDescriptor
-    from threetears.evals.contracts.models import EvalRun
-    from threetears.evals.contracts.result_condition import ResultCondition
-    from threetears.evals.contracts.usage_capture import ResolvedUsage
+    from threetears.evals.kernel.identity import DerivedContextIdentity
+    from threetears.evals.kernel.metrics import MetricDescriptor
+    from threetears.evals.schema.models import EvalRun
+    from threetears.evals.kernel.result_condition import ResultCondition
+    from threetears.evals.kernel.usage_capture import ResolvedUsage
 
     for cls in (
         DerivedContextIdentity,

@@ -61,37 +61,39 @@ from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any, cast
 
-from threetears.evals.contracts import (
+from threetears.evals.kernel import (
     CandidateKind,
     ACCURACY_MEASURE,
     CONFUSION_CELL_MEASURE,
-    DEFAULT_LAUNCH_K_RUNS,
     MATCH_MEASURE,
     METRIC_DESCRIPTORS,
-    SCALES,
     CandidateOutput,
     CandidateTelemetry,
     CassetteMode,
     CellCassettes,
     CellSink,
     CellSpanWindow,
+    EvalStorage,
+    MetricDescriptor,
+    VariantConfig,
+    WorldSession,
+    confusion_cell,
+    withhold_failure_detail,
+)
+from threetears.evals.schema import (
+    DEFAULT_LAUNCH_K_RUNS,
+    SCALES,
     DocumentStore,
     EvalRun,
-    EvalStorage,
     EvalTemplate,
     EvalTestCase,
     JudgedArtifact,
     JudgeEvidence,
-    MetricDescriptor,
-    VariantConfig,
     WorldSeed,
-    WorldSession,
     canonical_digest,
-    confusion_cell,
-    withhold_failure_detail,
 )
-from threetears.evals.contracts.models import stored_variation
-from threetears.evals.contracts.host import (
+from threetears.evals.schema.models import stored_variation
+from threetears.evals.kernel.host import (
     SHARED_CORE,
     ApparatusError,
     CompletionClients,
@@ -99,17 +101,14 @@ from threetears.evals.contracts.host import (
     HostProfile,
     KindContract,
     MeasureRegistry,
-    NominalScale,
-    SubjectSnapshot,
     Sweepable,
     SweepableRegistry,
-    SweepableValue,
-    TraceSink,
     WorldRegistry,
     default_cell_timeout,
 )
-from threetears.evals.contracts import WorldPlacement
-from threetears.evals.contracts.host.sweepables import CORE_ROLES, CORE_SWEEPABLES
+from threetears.evals.schema import NominalScale, SubjectSnapshot, SweepableValue, TraceSink
+from threetears.evals.schema import WorldPlacement
+from threetears.evals.kernel.host.sweepables import CORE_ROLES, CORE_SWEEPABLES
 from threetears.evals.analysis.summary import CaseResult, EvalSummary, summarize_run
 from threetears.evals.run import (
     CellContext,
@@ -131,7 +130,7 @@ from threetears.evals.run import (
     start_run,
 )
 from threetears.evals.run.authoring import refuse_unsupplied_world
-from threetears.evals.contracts.errors import ValidationFailedError
+from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.quick.answer import unwrap_answer
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Judge, judge_evidence
@@ -625,13 +624,13 @@ def callable_host(
         ranges: The lowest and highest score a scorer returning a number can give, by the scorer's name
             (``{"rating": (1, 5)}``): its intervals stay inside it, and a margin on it can be tested. A ``bool``
             scorer is on 0 to 1 already. A score outside its range excludes its cell, naming the scorer.
-        store: Where every document is stored (any :class:`~threetears.evals.contracts.DocumentStore`):
+        store: Where every document is stored (any :class:`~threetears.evals.schema.DocumentStore`):
             :class:`~threetears.evals.storage.SqliteDocumentStore` keeps the runs in a file. ``None`` builds a fresh
             :class:`~threetears.evals.storage.InMemoryDocumentStore`, which keeps nothing past the process.
         clients: The completion clients the engine's own model calls use after the run (a re-judge, an
-            analysis), as :class:`~threetears.evals.contracts.host.EvalHost` takes them; ``None`` supplies none,
+            analysis), as :class:`~threetears.evals.kernel.host.EvalHost` takes them; ``None`` supplies none,
             and a call needing them is refused. A :class:`~threetears.evals.quick.Judge` brings its own for the run.
-        trace_sink: Where each cell's trace is sent, as :class:`~threetears.evals.contracts.host.EvalHost` takes
+        trace_sink: Where each cell's trace is sent, as :class:`~threetears.evals.kernel.host.EvalHost` takes
             it; ``None`` traces nothing.
         guardrails: The scorers declared guardrails, by name, each with its margin and direction
             (:class:`~threetears.evals.quick.Guardrail`): measures no arm may get worse on, decided apart from
@@ -709,7 +708,7 @@ def callable_kind(
 ) -> CandidateKind:
     """The kind over a plain async candidate and its scorers, for a host of your own to launch.
 
-    What :func:`run_eval` runs each cell through, as an ordinary :class:`~threetears.evals.contracts.CandidateKind`
+    What :func:`run_eval` runs each cell through, as an ordinary :class:`~threetears.evals.kernel.CandidateKind`
     a launcher wires like any other (``KindWiring(kind_factory=lambda _cell: kind, ...)``), declared on the profile
     under :data:`CALLABLE_KIND` by :func:`callable_kind_contracts` (:data:`JUDGED_CALLABLE_KIND` with a judge).
     Each cell calls the candidate with its case, read from the stored test case's ``host_payload["case"]``, where
@@ -1050,7 +1049,7 @@ def _refuse_an_undeclared_callable_contract(host: EvalHost, *, judged: bool) -> 
     """Refuse a caller's host that has not declared what a ``run_eval`` run's rig holds.
 
     A host with no contract for the kind holds its runs to every apparatus dimension
-    (:meth:`~threetears.evals.contracts.host.profile.HostProfile.kind_contract`), so the blank simulator of
+    (:meth:`~threetears.evals.kernel.host.profile.HostProfile.kind_contract`), so the blank simulator of
     every such run — and the blank judge of every unjudged one — reads as unrecoverable and confounds every
     comparison of two of them, silently. A judged kind's contract that leaves the judge unseated is the
     other half of that: a change of judge between two runs would read as no change at all. Both are
@@ -1499,7 +1498,7 @@ async def run_eval(
             (:data:`JUDGED_CALLABLE_KIND_CONTRACT`, or one seating the judge and nothing in
             :data:`JUDGED_CALLABLE_UNSEATED`).
         store: Where the host ``run_eval`` builds stores the run (any
-            :class:`~threetears.evals.contracts.DocumentStore`), so it outlives this call:
+            :class:`~threetears.evals.schema.DocumentStore`), so it outlives this call:
             ``store=SqliteDocumentStore("evals.sqlite")`` keeps it in a file another process reads through
             ``callable_host(<the same scorers>, store=...)``. ``None`` stores it in memory, for this call alone.
             Never with ``host``, which brings its own storage.

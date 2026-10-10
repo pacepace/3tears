@@ -15,8 +15,8 @@ from threetears.evals.analysis import (
     prepare_analysis_generation,
     run_analysis_generation,
 )
-from threetears.evals.contracts.campaign import EvalAnalysis, EvalCampaign
-from threetears.evals.contracts.host import EvalHost
+from threetears.evals.kernel.campaign import EvalAnalysis, EvalCampaign
+from threetears.evals.kernel.host import EvalHost
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, TOYHOST_WIDE, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.toyhost_memo import PROMPT, PROMPT_ID, FixturedClient, alias_at, memo_payload

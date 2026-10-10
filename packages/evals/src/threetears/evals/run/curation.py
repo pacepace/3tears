@@ -8,7 +8,7 @@ echo-the-id discipline every destructive entry point here is gated on. **Detach*
 removing campaign membership without touching the run — is the campaign family's
 (:func:`threetears.evals.analysis.campaigns.remove_runs_from_campaign`); the delete
 cascade here detaches a destroyed run from every campaign itself, under the same
-campaign write lock (:mod:`threetears.evals.contracts.campaign_writes`).
+campaign write lock (:mod:`threetears.evals.kernel.campaign_writes`).
 
 **Functions over storage, not methods on a service.** Each entry point takes a
 :class:`CurationStore` and typed parameters, so a host's service delegates here and
@@ -30,15 +30,15 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Protocol
 
-from threetears.evals.contracts.campaign_writes import serialized_campaign_write
-from threetears.evals.contracts.errors import NotFoundError, StorageError, ValidationFailedError
+from threetears.evals.kernel.campaign_writes import serialized_campaign_write
+from threetears.evals.kernel.errors import NotFoundError, StorageError, ValidationFailedError
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.storage import EvalStorage
-    from threetears.evals.contracts.host.profile import HostProfile
-    from threetears.evals.contracts.campaign import EvalAnalysis, EvalCampaign, EvalInsight
-    from threetears.evals.contracts.models import EvalResult, EvalRun
+    from threetears.evals.kernel.storage import EvalStorage
+    from threetears.evals.kernel.host.profile import HostProfile
+    from threetears.evals.kernel.campaign import EvalAnalysis, EvalCampaign, EvalInsight
+    from threetears.evals.schema.models import EvalResult, EvalRun
 
 log = get_logger(__name__)
 
@@ -57,7 +57,7 @@ class CurationStore(Protocol):
     :class:`~threetears.evals.analysis.reporter_curation.ReporterCaseStore`.)
 
     Structural, so a host's own storage satisfies it by having the methods.
-    :class:`~threetears.evals.contracts.storage.EvalStorage` does, with no
+    :class:`~threetears.evals.kernel.storage.EvalStorage` does, with no
     inheritance and no registration.
 
     **Two members are redeclared rather than inherited, and that is the choice.**
@@ -82,7 +82,7 @@ class CurationStore(Protocol):
         A run that does not resolve there is absent from the answer.
 
         **Every returned run must record what the read left out**: an implementation calls
-        :meth:`~threetears.evals.contracts.models.EvalRun.note_elided_payload` with ``elide_payload`` on each run
+        :meth:`~threetears.evals.schema.models.EvalRun.note_elided_payload` with ``elide_payload`` on each run
         it returns. The store's projection cannot say so itself — a document with a path left out
         looks exactly like one stored without it — and an unmarked run reads as whole, so rebuilding
         the host's subject from it, or writing it back, proceeds with the value silently gone
@@ -243,7 +243,7 @@ def load_run_as_listed(storage: CurationStore, run_id: str, scope_id: str, *, pr
     """Load one run the way a listing loads it: without the payload paths the host declares a listing leaves out.
 
     For a reader of a run's scalars. The returned run records what its payload is missing
-    (:attr:`~threetears.evals.contracts.models.EvalRun.elided_payload_paths`), so a reader that needs a left-out
+    (:attr:`~threetears.evals.schema.models.EvalRun.elided_payload_paths`), so a reader that needs a left-out
     value refuses rather than reading its absence; :func:`~threetears.evals.run.lifecycle.get_run` is the whole read.
 
     Args:
@@ -292,7 +292,7 @@ def set_run_archived(
 
     Returns:
         The run as persisted, read as a listing reads it: its payload is missing the host's
-        listing elisions and says so (:attr:`~threetears.evals.contracts.models.EvalRun.elided_payload_paths`).
+        listing elisions and says so (:attr:`~threetears.evals.schema.models.EvalRun.elided_payload_paths`).
         Read it through ``get_run`` for the whole document.
 
     Raises:
@@ -374,7 +374,7 @@ def set_analysis_archived(
         NotFoundError: No analysis with that id in the scope.
         StorageError: The updated analysis failed to persist.
     """
-    from threetears.evals.contracts.campaign import EvalAnalysis
+    from threetears.evals.kernel.campaign import EvalAnalysis
 
     current = storage.load_analysis(analysis_id, scope_id)
     if current is None:
@@ -414,7 +414,7 @@ def set_campaign_archived(storage: CurationStore, campaign_id: str, scope_id: st
     curation (:func:`set_run_archived`), with its own effect on every cohort.
 
     **A read-modify-write under the campaign write lock**, like every other writer of an existing
-    campaign (:mod:`threetears.evals.contracts.campaign_writes`): campaigns carry no ETag, so the lock
+    campaign (:mod:`threetears.evals.kernel.campaign_writes`): campaigns carry no ETag, so the lock
     is what keeps an archive from dropping a concurrent membership change in this process.
 
     Idempotent: setting the state a campaign already carries writes nothing.
@@ -467,7 +467,7 @@ def delete_run(storage: CurationStore, run: EvalRun, scope_id: str, *, confirm: 
     silently. Cancel first, then delete.
 
     **Insight back-references are left dangling, deliberately.** Any
-    :class:`~threetears.evals.contracts.campaign.EvalInsight` citing this run in
+    :class:`~threetears.evals.kernel.campaign.EvalInsight` citing this run in
     ``evidence_run_ids`` keeps the id, which will no longer resolve. The
     campaign detach above exists because a dangling *member* is
     indistinguishable from a lookup failure; an insight's evidence citation is
@@ -497,7 +497,7 @@ def delete_run(storage: CurationStore, run: EvalRun, scope_id: str, *, confirm: 
         StorageError: A result, a campaign detach, or the run itself failed to
             persist; the message names how far the delete got.
     """
-    from threetears.evals.contracts.models import NON_TERMINAL_RUN_STATUSES
+    from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES
 
     run_id = run.id
     require_delete_confirmation("run", run_id, confirm)
@@ -597,7 +597,7 @@ def delete_result(
         ValidationFailedError: ``confirm`` does not echo the result id.
         StorageError: The result failed to delete, including when its trace could not be
             deleted: the result is then kept rather than leaving the trace unreachable
-            (:meth:`~threetears.evals.contracts.storage.EvalStorage.delete_eval_result`).
+            (:meth:`~threetears.evals.kernel.storage.EvalStorage.delete_eval_result`).
     """
     result_id = result.id
     require_delete_confirmation("result", result_id, confirm, alternative=_ARCHIVE_THE_RUN_INSTEAD)

@@ -67,10 +67,10 @@ from threetears.evals.analysis.reporting import (
     project_score_records,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, composite_significance, difference_interval
-from threetears.evals.contracts.arguments import normalize_blank
-from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
-from threetears.evals.contracts.host.profile import HostProfile
-from threetears.evals.contracts.scoring import (
+from threetears.evals.kernel.arguments import normalize_blank
+from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.host.profile import HostProfile
+from threetears.evals.kernel.scoring import (
     compute_composite_summary,
     compute_async_delivery_summary,
     compute_cost_summary,
@@ -80,13 +80,13 @@ from threetears.evals.contracts.scoring import (
     compute_per_case_composites,
     pass_hat_k_at,
 )
-from threetears.evals.contracts.status_filter import StatusFilterError, normalize_status_filter
+from threetears.evals.kernel.status_filter import StatusFilterError, normalize_status_filter
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.storage import EvalStorage
-    from threetears.evals.contracts.campaign import EvalCampaign
-    from threetears.evals.contracts.models import EvalResult, EvalRun, EvalTemplate
+    from threetears.evals.kernel.storage import EvalStorage
+    from threetears.evals.kernel.campaign import EvalCampaign
+    from threetears.evals.schema.models import EvalResult, EvalRun, EvalTemplate
 
 log = get_logger(__name__)
 
@@ -114,7 +114,7 @@ class LensStore(Protocol):
 
     A scope's runs are not listed through it: they arrive through ``list_runs`` and the caller's
     listed-run loader, which carry the run package's listing rules. Structural, so a host's own storage satisfies it by
-    having the methods — the engine's :class:`~threetears.evals.contracts.storage.EvalStorage` does. Positional
+    having the methods — the engine's :class:`~threetears.evals.kernel.storage.EvalStorage` does. Positional
     parameters are positional-only, which lets the port say ``scope_id`` while an implementation
     names the thing it partitions by.
     """
@@ -174,7 +174,7 @@ def _score_delta(score_a: float | None, score_b: float | None) -> float | None:
 def _status_filter(status: str | None) -> str | None:
     """Resolve a caller's run-status filter, refusing an unknown one as caller input.
 
-    The one translation of :class:`~threetears.evals.contracts.status_filter.StatusFilterError`,
+    The one translation of :class:`~threetears.evals.kernel.status_filter.StatusFilterError`,
     shared by the five COMPARISON surfaces that take a ``status`` —
     ``comparison_sets``, ``pivot``, ``frontier``, ``history``, ``export_results``.
     Written once for the reason the normalizer itself is: five copies of one
@@ -724,7 +724,7 @@ def export_results(
             in storage) rather than the whole scope, so a targeted export of
             a handful of runs reads a handful of runs' rows. What it saves is
             rows, not row width: the stored result carries no trace payload at
-            all — that lives in a sibling :class:`~threetears.evals.contracts.models.EvalTrace`
+            all — that lives in a sibling :class:`~threetears.evals.schema.models.EvalTrace`
             document no export path reads. Unknown ids are silently absent (they
             contribute no rows). ``None`` exports every run, as before.
 
@@ -809,10 +809,10 @@ def run_summary(
 
     Loads the run (404 if missing) plus its results, then composes the
     query-time aggregators
-    (:func:`~threetears.evals.contracts.scoring.compute_pass_hat_k`,
-    :func:`~threetears.evals.contracts.scoring.compute_latency_summary`,
-    :func:`~threetears.evals.contracts.scoring.compute_async_delivery_summary`,
-    :func:`~threetears.evals.contracts.scoring.compute_cost_summary`) into one
+    (:func:`~threetears.evals.kernel.scoring.compute_pass_hat_k`,
+    :func:`~threetears.evals.kernel.scoring.compute_latency_summary`,
+    :func:`~threetears.evals.kernel.scoring.compute_async_delivery_summary`,
+    :func:`~threetears.evals.kernel.scoring.compute_cost_summary`) into one
     JSON-serializable structure. The aggregators key on the
     ``(model, eval_run_id)`` tuple, which is not JSON-safe — so the
     per-group numbers are flattened into a list of rows, one per
@@ -851,7 +851,7 @@ def run_summary(
         ``pass_hat_k`` is pass^k — the chance that ``k`` attempts at a case all
         pass, estimated without bias per case and averaged over the
         ``n_cases_at_k`` cases scored at least ``k`` times
-        (:func:`~threetears.evals.contracts.scoring.compute_pass_hat_k`); ``k`` is
+        (:func:`~threetears.evals.kernel.scoring.compute_pass_hat_k`); ``k`` is
         the deepest iteration *attempted*. ``pass_hat_k_curve`` is every depth
         from 1 to the deepest scored case, each point with its own case count,
         so two rows at different ``k`` are compared at a depth both reached
@@ -876,10 +876,10 @@ def run_summary(
         prod-cost keys and is absent with them: which inputs the run held away from the subject's
         production configuration (``moved``), which could not be checked (``unchecked``), which held
         (``held``), ``moved_nothing`` and the ``sentence`` to print beside the figure — read off the host's
-        declarations (:meth:`~threetears.evals.contracts.host.sweepables.SweepableRegistry.production_footing`),
+        declarations (:meth:`~threetears.evals.kernel.host.sweepables.SweepableRegistry.production_footing`),
         since the figure is what production spends only for a run that moved nothing (#571). The six
         async-delivery keys are the engine's rollup of each result's ``async_deliveries``
-        (:func:`~threetears.evals.contracts.scoring.compute_async_delivery_summary`): absent together on a
+        (:func:`~threetears.evals.kernel.scoring.compute_async_delivery_summary`): absent together on a
         group none of whose results watched for background work, the durations absent when no real
         delivery measured one, and the 95th percentile absent below 13 durations.
         ``measure_latency`` and ``cell_concurrency`` are the run's own record of whether its launch declared

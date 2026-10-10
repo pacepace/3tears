@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools
-from threetears.evals.contracts import DEFAULT_LAUNCH_K_RUNS
+from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS
 from threetears.evals.ops import JobsStarted, LaunchArguments, LaunchEstimate, launch_estimate, run_launch
 from threetears.evals.quick import run_cli, run_eval
 from threetears.evals.quick import cli as quick_cli

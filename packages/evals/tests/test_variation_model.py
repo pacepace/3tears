@@ -29,10 +29,11 @@ import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis import COST_ESTIMATE_MIN_BASIS
-from threetears.evals.contracts import EvalRun, EvalStorage, OutOfRunBudget, ValidationFailedError
-from threetears.evals.contracts.host import CompletionRole
-from threetears.evals.contracts.identity import derive_context_identity
-from threetears.evals.contracts.models import (
+from threetears.evals.schema import EvalRun
+from threetears.evals.kernel import EvalStorage, OutOfRunBudget, ValidationFailedError
+from threetears.evals.kernel.host import CompletionRole
+from threetears.evals.kernel.identity import derive_context_identity
+from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
     EvalTemplate,
@@ -86,7 +87,7 @@ class _Completion:
     content: str
 
 
-# parity-with: threetears.evals.contracts.completion.BoundCompletionClient
+# parity-with: threetears.evals.schema.completion.BoundCompletionClient
 @dataclass
 class _FakeWriter:
     """A variation writer that answers with the toy host's document ids, naming the model it resolved to."""
@@ -119,7 +120,7 @@ class _FakeWriter:
         await self.aclose()
 
 
-# parity-with: threetears.evals.contracts.host.eval_host.CompletionClients
+# parity-with: threetears.evals.kernel.host.eval_host.CompletionClients
 @dataclass
 class _FakeClients:
     """The host's client factory: records every role and model it is asked for; resolves through ``aliases``."""

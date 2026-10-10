@@ -5,7 +5,7 @@ What :func:`~threetears.evals.quick.run_eval` returns, what the CLI prints after
 says the same thing as one made the moment it ended.
 
 Every count is over the run's stored results, and each result is classified once by
-:func:`~threetears.evals.contracts.classify_result`: scored normally, failed by the candidate, or
+:func:`~threetears.evals.kernel.classify_result`: scored normally, failed by the candidate, or
 excluded as a fault of the rig. A measure's mean is over the results that carry it, and its ``n``
 says how many did, so a mean over two results of five is never mistaken for one over five.
 
@@ -16,8 +16,8 @@ confusion matrix and each label's precision, recall and F1, counted by
 :func:`~threetears.evals.analysis.confusion.label_statistics` as the analysis bundle counts them.
 
 **A cost or latency measure is read over the turns the candidate took**
-(:func:`~threetears.evals.contracts.delivered_a_turn`), as every analysis surface reads it
-(:func:`~threetears.evals.contracts.metrics.summary_population`): a call the model refused or errored on
+(:func:`~threetears.evals.kernel.delivered_a_turn`), as every analysis surface reads it
+(:func:`~threetears.evals.kernel.metrics.summary_population`): a call the model refused or errored on
 carries a round trip and an empty spend, and averaged in they read as a fast, free run. What was left out
 is counted beside the mean — the failures that took no turn apart from the results excluded as a fault of
 the rig — and a run none of whose results took a turn says ``no successful results`` instead of a number.
@@ -34,7 +34,7 @@ the same way, unknown rather than zero when any went unpriced. A run whose candi
 carries none of it.
 
 **So are its goal-state checks.** Each check the results carry is counted as every per-check rate counts
-it (:func:`~threetears.evals.contracts.counted_goal_verdicts`): passed as it evaluated, failed on every
+it (:func:`~threetears.evals.kernel.counted_goal_verdicts`): passed as it evaluated, failed on every
 check of a result the candidate failed, and in no count for a result excluded as a fault of the rig.
 """
 
@@ -52,30 +52,25 @@ from threetears.evals.analysis.agreement import InterJudgeDimension, inter_judge
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, confusion_matrix, label_statistics
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.surface_table import NO_SUCCESSFUL_RESULTS
-from threetears.evals.contracts import (
+from threetears.evals.kernel import (
     NotFoundError,
     CONFUSION_CELL_MEASURE,
     MATCH_MEASURE,
-    CostCapOrigin,
-    EvalResult,
-    EvalRun,
-    GoalCheckProof,
     ResultOutcome,
-    RubricScale,
-    UsageRole,
     classify_result,
     counted_goal_verdicts,
     delivered_a_turn,
 )
-from threetears.evals.contracts.host import EvalHost
-from threetears.evals.contracts.host.sweepables import UNCAPPED_SPEND
-from threetears.evals.contracts.models import (
+from threetears.evals.schema import CostCapOrigin, EvalResult, EvalRun, GoalCheckProof, RubricScale, UsageRole
+from threetears.evals.kernel.host import EvalHost
+from threetears.evals.kernel.host.sweepables import UNCAPPED_SPEND
+from threetears.evals.schema.models import (
     CHECK_REFUSED_UNDER_CURRENT_GRAMMAR,
     goal_check_proofs_as_read,
     stale_goal_check_proofs,
 )
-from threetears.evals.contracts.metrics import describe_measure, summary_population
-from threetears.evals.contracts.usage_capture import blended_cost
+from threetears.evals.kernel.metrics import describe_measure, summary_population
+from threetears.evals.kernel.usage_capture import blended_cost
 
 
 def dollars_text(amount: float) -> str:
@@ -157,7 +152,7 @@ class GoalCheckSummary(BaseModel):
             seed is in hand (:func:`~threetears.evals.quick.run_eval`'s world path); ``None`` elsewhere.
         did_nothing_cases: The cases that baseline was graded over; ``None`` with it.
         stale_proof: The run recorded the check ``proven`` under an older proof rule
-            (:func:`~threetears.evals.contracts.models.goal_check_proofs_as_read`), so ``proof`` reads
+            (:func:`~threetears.evals.schema.models.goal_check_proofs_as_read`), so ``proof`` reads
             ``unproven`` and the check needs re-proving by a new launch.
         refused: Why the grammar refused the check when the run launched, for a check a template stored before
             the rule still carried; ``None`` otherwise. Such a check is graded on none of the run's results,
@@ -242,7 +237,7 @@ class DimensionSummary(BaseModel):
     second_judges: list[InterJudgeDimension] = []
 
 
-#: How one result came out, as :func:`~threetears.evals.contracts.classify_result` classifies it: graded normally,
+#: How one result came out, as :func:`~threetears.evals.kernel.classify_result` classifies it: graded normally,
 #: failed by the candidate (it counts against the candidate), or excluded as a fault of the rig (it counts for nothing).
 CaseOutcome = Literal["scored", "failed", "excluded"]
 
@@ -935,7 +930,7 @@ def _goal_checks(results: list[EvalResult], run: EvalRun) -> list[GoalCheckSumma
     """Each goal-state check the results carry, counted as every per-check rate counts it, in the order first met.
 
     Each carries the proof its run froze at launch, as read under the current proof rules
-    (:func:`~threetears.evals.contracts.models.goal_check_proofs_as_read`); a check the run recorded none for is
+    (:func:`~threetears.evals.schema.models.goal_check_proofs_as_read`); a check the run recorded none for is
     unproven. Each check the grammar refused at launch follows, graded on no result and counted as excluded.
     """
     proofs = goal_check_proofs_as_read(run)

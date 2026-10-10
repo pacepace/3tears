@@ -14,13 +14,8 @@ from __future__ import annotations
 
 import pytest
 
-from threetears.evals.contracts.host.profile import HostProfile
-from threetears.evals.contracts.host.world import (
-    Triggered,
-    WorldDimension,
-    WorldRegistrationError,
-    WorldRegistry,
-)
+from threetears.evals.kernel.host.profile import HostProfile
+from threetears.evals.kernel.host.world import Triggered, WorldDimension, WorldRegistrationError, WorldRegistry
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.world import toyhost_world
 

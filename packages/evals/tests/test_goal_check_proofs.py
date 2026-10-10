@@ -17,15 +17,15 @@ import pytest
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.bundle import goal_check_proofs_of
 from threetears.evals.analysis.report import DisclosureBlock, build_code_only_report
-from threetears.evals.contracts import ControlEndState, EvalRun, EvalTestCase, GoalCheckControls, GoalStateOutcome
-from threetears.evals.contracts.errors import ValidationFailedError
-from threetears.evals.contracts.models import (
+from threetears.evals.schema import ControlEndState, EvalRun, EvalTestCase, GoalCheckControls, GoalStateOutcome
+from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.schema.models import (
     GOAL_CHECK_PROOF_RULES,
     goal_check_proofs_as_read,
     stale_goal_check_proofs,
     stored_variation,
 )
-from threetears.evals.contracts.storage import EvalStorage
+from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.analysis.summary import GoalCheckSummary, summarize_run
 from threetears.evals.run import start_run
 from threetears.evals.run.check_controls import (

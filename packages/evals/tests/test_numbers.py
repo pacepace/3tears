@@ -20,7 +20,7 @@ import pytest
 from threetears.evals.analysis import numbers, references, reporting, surface_table
 from threetears.evals.analysis.numbers import ABSENT, WHOLE_FROM, format_number, format_signed
 from threetears.evals.analysis.viz import quantities
-from threetears.evals.contracts.models import LatencyMetrics
+from threetears.evals.schema.models import LatencyMetrics
 
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"

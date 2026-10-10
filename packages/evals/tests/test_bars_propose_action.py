@@ -14,8 +14,9 @@ from dataclasses import replace
 from typing import Any
 
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools
-from threetears.evals.contracts import EvalCampaign, EvalResult, EvalRun
-from threetears.evals.contracts.host import BarRegistry, EvalHost
+from threetears.evals.kernel import EvalCampaign
+from threetears.evals.schema import EvalResult, EvalRun
+from threetears.evals.kernel.host import BarRegistry, EvalHost
 from threetears.evals.ops import BarProposals, OpsHost, bars_propose
 from packages.evals.tests.factories import memory_storage
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, toyhost_batch, toyhost_measurements

@@ -1,20 +1,25 @@
 """Structural gate: the engine's packages import only what the allowed-dependency matrix permits.
 
-``threetears.evals`` is eleven physical subpackages, and one allowed-dependency matrix says which may
+``threetears.evals`` is twelve physical subpackages, and one allowed-dependency matrix says which may
 import which:
 
-============  =========  =====  ========  ===  =======  =======  =====  ====  ============================================
-from          contracts  run    analysis  gen  storage  testing  quick  vega  third-party
-============  =========  =====  ========  ===  =======  =======  =====  ====  ============================================
-contracts     yes        --     --        --   --       --       --     --    pydantic, threetears.observe
-run           yes        yes    --        --   --       --       --     --    pydantic, threetears.observe
-analysis      yes        --     yes       --   --       --       --     --    pydantic, threetears.observe
-gen           yes        --     --        yes  --       --       --     --    pydantic, threetears.observe
-storage       yes        --     --        --   yes      --       --     --    (none)
-testing       yes        --     --        --   --       yes      --     --    (none)
-quick         yes        yes    yes       --   yes      --       yes    --    pydantic, threetears.observe
-vega          yes        --     yes       --   --       --       --     yes   threetears.observe; ``vl_convert`` only in vega.render
-============  =========  =====  ========  ===  =======  =======  =====  ====  ============================================
+============  ======  ======  =====  ========  ===  =======  =======  =====  ====  ============================================
+from          schema  kernel  run    analysis  gen  storage  testing  quick  vega  third-party
+============  ======  ======  =====  ========  ===  =======  =======  =====  ====  ============================================
+schema        yes     --      --     --        --   --       --       --     --    pydantic, threetears.observe
+kernel        yes     yes     --     --        --   --       --       --     --    pydantic, threetears.observe
+run           yes     yes     yes    --        --   --       --       --     --    pydantic, threetears.observe
+analysis      yes     yes     --     yes       --   --       --       --     --    pydantic, threetears.observe
+gen           yes     yes     --     --        yes  --       --       --     --    pydantic, threetears.observe
+storage       yes     --      --     --        --   yes      --       --     --    (none)
+testing       yes     yes     --     --        --   --       yes      --     --    (none)
+quick         yes     yes     yes    yes       --   yes      --       yes    --    pydantic, threetears.observe
+vega          yes     yes     --     yes       --   --       --       --     yes   threetears.observe; ``vl_convert`` only in vega.render
+============  ======  ======  =====  ========  ===  =======  =======  =====  ====  ============================================
+
+``schema`` is the stored shapes and the ports a host implements; ``kernel`` is the behaviour every
+other package runs on, with the host contract under ``kernel.host``. The schema reaches nothing of the
+engine, so a stored shape never depends on behaviour.
 
 ``vega`` is the optional Vega-Lite chart renderer (the ``[vega]`` extra): an adapter over the chart
 intent ``analysis`` decides, so it reaches ``analysis`` and nothing reaches it. Its column is empty
@@ -24,11 +29,11 @@ the renderer, and the rasteriser it takes (``vl_convert``) is the extra's depend
 Three more sit above the engine, as the surfaces an agent drives it through, and the table does not
 name them:
 
-* ``ops`` -- typed operations and the job contract -- may import contracts, run, analysis and itself;
+* ``ops`` -- typed operations and the job contract -- may import schema, kernel, run, analysis and itself;
   pydantic and threetears.observe.
-* ``actions`` -- the action catalogue -- may import contracts, run, ops and itself; pydantic and
+* ``actions`` -- the action catalogue -- may import schema, kernel, run, ops and itself; pydantic and
   threetears.observe. It reaches analysis only through ``ops``.
-* ``transports`` -- one adapter per server -- may import contracts, ops, actions and itself; pydantic, and
+* ``transports`` -- one adapter per server -- may import schema, kernel, ops, actions and itself; pydantic, and
   each adapter its own server alone (``transports.fastmcp``: ``fastmcp``, the package's ``fastmcp`` extra).
 
 Nothing in the engine imports any of the three, ``quick`` included: the run summary it prints, the
@@ -36,8 +41,9 @@ report it serializes and the spend it totals live in ``analysis``, below both. N
 imports ``vega``.
 
 ``storage`` holds adapters behind the one port and ``testing`` the conformance kits an adopter runs
-against its own adapter; each needs nothing but the port it implements or checks, so neither may
-reach the engine's machinery, and nothing in the engine may reach either.
+against its own adapter, and nothing in the engine may reach either. ``storage`` needs nothing but
+the port it implements, in ``schema``. ``testing`` reaches ``kernel`` too: the store kit needs only the
+port, but the reader kit derives identities and reads a host profile.
 
 ``quick`` is the batteries: ``run_eval`` and the command line. It is the one package that COMPOSES
 the others -- a launch from ``run``, a report from ``analysis``, the reference store from ``storage``
@@ -50,10 +56,10 @@ module's logger through it (``get_logger``); it is a declared dependency of the 
 has none.
 
 **Placement is the path, not a list.** A module is in a package because it lives in that package's
-directory: ``threetears/evals/contracts/``, ``run/``, ``analysis/``, ``gen/``, ``storage/``,
+directory: ``threetears/evals/schema/``, ``kernel/``, ``run/``, ``analysis/``, ``gen/``, ``storage/``,
 ``testing/`` or ``quick/``. The two markers the path cannot place -- the ``threetears.evals`` root and its
 ``__main__`` -- are placed by name in :data:`~packages.evals.tests.package_placement.TREE_MARKERS`, the root
-held to contracts' row and ``__main__`` to quick's. The rule
+held to schema's row and ``__main__`` to quick's. The rule
 itself lives in :mod:`packages.evals.tests.package_placement`.
 
 **What is checked:**
@@ -99,25 +105,27 @@ TESTS_ROOT = Path(__file__).resolve().parent
 #: The repository root, which the probes run from.
 REPO_ROOT = TESTS_ROOT.parents[2]
 
-#: The matrix, for the eleven packages.
+#: The matrix, for the twelve packages.
 ALLOWED_PACKAGES: dict[str, frozenset[str]] = {
-    "contracts": frozenset({"contracts"}),
-    "run": frozenset({"contracts", "run"}),
-    "analysis": frozenset({"contracts", "analysis"}),
-    "gen": frozenset({"contracts", "gen"}),
-    "storage": frozenset({"contracts", "storage"}),
-    "testing": frozenset({"contracts", "testing"}),
-    "quick": frozenset({"contracts", "run", "analysis", "storage", "quick"}),
-    "vega": frozenset({"contracts", "analysis", "vega"}),
-    "ops": frozenset({"contracts", "run", "analysis", "ops"}),
-    "actions": frozenset({"contracts", "run", "ops", "actions"}),
-    "transports": frozenset({"contracts", "ops", "actions", "transports"}),
+    "schema": frozenset({"schema"}),
+    "kernel": frozenset({"schema", "kernel"}),
+    "run": frozenset({"schema", "kernel", "run"}),
+    "analysis": frozenset({"schema", "kernel", "analysis"}),
+    "gen": frozenset({"schema", "kernel", "gen"}),
+    "storage": frozenset({"schema", "storage"}),
+    "testing": frozenset({"schema", "kernel", "testing"}),
+    "quick": frozenset({"schema", "kernel", "run", "analysis", "storage", "quick"}),
+    "vega": frozenset({"schema", "kernel", "analysis", "vega"}),
+    "ops": frozenset({"schema", "kernel", "run", "analysis", "ops"}),
+    "actions": frozenset({"schema", "kernel", "run", "ops", "actions"}),
+    "transports": frozenset({"schema", "kernel", "ops", "actions", "transports"}),
 }
 
 #: The matrix's third-party column, by import root (a ``threetears`` namespace package by its two
 #: leading segments, since the namespace itself is shared by the whole family).
 ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
-    "contracts": frozenset({"pydantic", "threetears.observe"}),
+    "schema": frozenset({"pydantic", "threetears.observe"}),
+    "kernel": frozenset({"pydantic", "threetears.observe"}),
     "run": frozenset({"pydantic", "threetears.observe"}),
     "analysis": frozenset({"pydantic", "threetears.observe"}),
     "gen": frozenset({"pydantic", "threetears.observe"}),
@@ -139,12 +147,13 @@ THIRD_PARTY_EXCEPTIONS: dict[str, frozenset[str]] = {
 }
 
 #: The public roots, relative to ``threetears.evals``. A consumer reaches a package only through one
-#: of these. ``contracts.host`` and ``analysis.viz`` are roots of their own inside a package: the first
+#: of these. ``kernel.host`` and ``analysis.viz`` are roots of their own inside a package: the first
 #: is the contract a host implements, the second the chart intent and the renderer seam. ``vega`` is the
 #: optional Vega-Lite renderer.
 PUBLIC_ROOTS: tuple[str, ...] = (
-    "contracts",
-    "contracts.host",
+    "schema",
+    "kernel",
+    "kernel.host",
     "run",
     "analysis",
     "analysis.viz",
@@ -276,7 +285,7 @@ def test_every_eval_module_is_placed() -> None:
     unplaced = sorted(unplaced_modules(SOURCE_ROOT))
     assert not unplaced, (
         f"Engine modules outside every package directory: {unplaced}. Create them under "
-        "threetears/evals/{contracts,run,analysis,gen}/ (the package that owns the data it acts on, among "
+        "threetears/evals/{schema,kernel,run,analysis,gen}/ (the package that owns the data it acts on, among "
         "those the matrix lets it import from). The matrix holds no row for a module in no package, so it "
         "would import anything unchecked."
     )
@@ -285,7 +294,7 @@ def test_every_eval_module_is_placed() -> None:
 def test_the_placed_population_is_not_empty() -> None:
     """The gate means nothing over an empty population, so assert the walk found placed modules."""
     placed = {placement(join(r)) for r in eval_modules(SOURCE_ROOT)} - {None}
-    assert {"analysis", "contracts", "gen", "run"} <= placed, placed
+    assert {"analysis", "schema", "kernel", "gen", "run"} <= placed, placed
 
 
 def _refers_to_file(node: ast.AST) -> bool:
@@ -397,7 +406,7 @@ def _in_a_package(module: str) -> bool:
 #: A string literal that IS a dotted path into one of the engine packages, below the package name.
 #: Whole-string and dotted only: a docstring or a sentence naming a module never matches, and a
 #: file path in slash form is a file to edit rather than a module to import, so it is left alone.
-_DOTTED_PACKAGE_PATH = re.compile(r"threetears\.evals\.(?:contracts|run|analysis|gen|vega)(?:\.\w+)+")
+_DOTTED_PACKAGE_PATH = re.compile(r"threetears\.evals\.(?:schema|kernel|run|analysis|gen|vega)(?:\.\w+)+")
 
 
 def _string_addressed_imports(tree: ast.AST, declared: dict[str, frozenset[str]]) -> Iterator[tuple[int, str]]:
@@ -406,7 +415,7 @@ def _string_addressed_imports(tree: ast.AST, declared: dict[str, frozenset[str]]
     An ``importlib`` string, a registry's ``(module, attribute)`` reference or a module list a walk
     imports by name all reach a module the way an ``import`` statement does, and the import walk
     cannot see any of them. A public root named by string is admitted, exactly as a ``from`` import
-    of it is. A literal naming a root's attribute (``threetears.evals.contracts.EvalRun``) is refused
+    of it is. A literal naming a root's attribute (``threetears.evals.schema.EvalRun``) is refused
     too, because nothing tells it apart from a submodule by its spelling.
     """
     for node in ast.walk(tree):
@@ -569,7 +578,8 @@ def test_each_public_root_imports_first_and_alone(relative: str) -> None:
 _WITHOUT_VL_CONVERT_PROBE = (
     "import sys\n"
     "sys.modules['vl_convert'] = None\n"
-    "import threetears.evals.contracts, threetears.evals.contracts.host, threetears.evals.run, threetears.evals.gen\n"
+    "import threetears.evals.schema, threetears.evals.kernel, threetears.evals.kernel.host\n"
+    "import threetears.evals.run, threetears.evals.gen\n"
     "import threetears.evals.analysis, threetears.evals.analysis.viz\n"
     "from threetears.evals.vega import compile_chart, packaged_palette, render_png\n"
     "try:\n"
@@ -655,11 +665,13 @@ def _consumers(root: Path) -> list[tuple[str, Path]]:
 #: rewritten by the package move that places it, silently changing the case.
 _BASE_FILES = {
     "threetears/evals/legacy.py": "",
-    "threetears/evals/contracts/models.py": "",
+    "threetears/evals/schema/models.py": "",
     "threetears/evals/run/jobs.py": "",
     "threetears/evals/analysis/stats.py": "",
     "threetears/evals/gen/proposers.py": "",
     "threetears/evals/vega/compiler.py": "",
+    "threetears/evals/kernel/scoring.py": "",
+    "threetears/evals/ops/lenses.py": "",
 }
 
 
@@ -691,10 +703,24 @@ _BASE_FILES = {
             "analysis",
         ),
         (
-            "threetears/evals/contracts/leaf.py",
+            "threetears/evals/schema/leaf.py",
             "from threetears.evals.run.jobs import J\n",
             "threetears.evals.run.jobs",
             "run",
+        ),
+        # The stored shapes never reach behaviour.
+        (
+            "threetears/evals/schema/leaf.py",
+            "from threetears.evals.kernel.scoring import S\n",
+            "threetears.evals.kernel.scoring",
+            "kernel",
+        ),
+        # quick sits beside ops, not above it.
+        (
+            "threetears/evals/quick/cli.py",
+            "from threetears.evals.ops.lenses import pivot_text\n",
+            "threetears.evals.ops.lenses",
+            "ops",
         ),
         (
             "threetears/evals/analysis/lens.py",
@@ -742,12 +768,14 @@ def test_the_matrix_refuses_each_forbidden_edge(
 @pytest.mark.parametrize(
     ("relative", "source"),
     [
-        ("threetears/evals/run/loop.py", "from threetears.evals.contracts.models import M\nfrom . import jobs\n"),
+        ("threetears/evals/run/loop.py", "from threetears.evals.schema.models import M\nfrom . import jobs\n"),
         (
             "threetears/evals/analysis/lens.py",
-            "from threetears.evals.contracts import models\nfrom .stats import mean\n",
+            "from threetears.evals.schema import models\nfrom .stats import mean\n",
         ),
-        ("threetears/evals/gen/expand.py", "from ..contracts.models import M\n"),
+        ("threetears/evals/gen/expand.py", "from ..schema.models import M\n"),
+        # The kernel reads the stored shapes it acts on.
+        ("threetears/evals/kernel/scoring.py", "from threetears.evals.schema.models import M\n"),
         # An edge into a module in no package is the placement test's to refuse, not the walk's.
         ("threetears/evals/run/loop.py", "from threetears.evals.legacy import execute_run\n"),
         # An unplaced module is held to no row at all.
@@ -765,7 +793,7 @@ def test_the_matrix_admits_each_permitted_edge(tmp_path: Path, relative: str, so
 @pytest.mark.parametrize(
     ("relative", "source", "refused"),
     [
-        ("threetears/evals/contracts/leaf.py", "import httpx\nimport pydantic\nimport json\n", ["httpx"]),
+        ("threetears/evals/schema/leaf.py", "import httpx\nimport pydantic\nimport json\n", ["httpx"]),
         ("threetears/evals/run/loop.py", "from langchain_openai import ChatOpenAI\n", ["langchain_openai"]),
         ("threetears/evals/analysis/lens.py", "import vl_convert\n", ["vl_convert"]),
         # The rasteriser left the core with the renderer: where it used to be admitted, it is refused.
@@ -826,7 +854,7 @@ _ROOTS_FILES = {
     "threetears/evals/run/__init__.py": (
         "from threetears.evals.run.jobs import EvalJobManager, adaptive_job_timeout_s\n__all__ = ['EvalJobManager']\n"
     ),
-    "threetears/evals/contracts/__init__.py": "from threetears.evals.contracts.models import EvalRun\n__all__ = ['EvalRun']\n",
+    "threetears/evals/schema/__init__.py": "from threetears.evals.schema.models import EvalRun\n__all__ = ['EvalRun']\n",
 }
 
 
@@ -837,8 +865,8 @@ _ROOTS_FILES = {
         ("host/routes.py", "from threetears.evals.run.jobs import EvalJobManager\n", "from threetears.evals.run.jobs"),
         (
             "tools/probe.py",
-            "from threetears.evals.contracts.models import EvalRun\n",
-            "from threetears.evals.contracts.models",
+            "from threetears.evals.schema.models import EvalRun\n",
+            "from threetears.evals.schema.models",
         ),
         # Function-level and TYPE_CHECKING imports count, as the matrix's own rows count them.
         (
@@ -848,8 +876,8 @@ _ROOTS_FILES = {
         ),
         (
             "host/routes.py",
-            "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from threetears.evals.contracts.models import EvalRun\n",
-            "from threetears.evals.contracts.models",
+            "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from threetears.evals.schema.models import EvalRun\n",
+            "from threetears.evals.schema.models",
         ),
         # A name the root binds but does not declare.
         (
@@ -869,10 +897,10 @@ _ROOTS_FILES = {
         ),
         (
             "host/app.py",
-            'SEED = ("threetears.evals.contracts.models", "EvalRun")\n',
-            '"threetears.evals.contracts.models"',
+            'SEED = ("threetears.evals.schema.models", "EvalRun")\n',
+            '"threetears.evals.schema.models"',
         ),
-        ("tools/probe.py", 'MODULES = ["threetears.evals.contracts.models"]\n', '"threetears.evals.contracts.models"'),
+        ("tools/probe.py", 'MODULES = ["threetears.evals.schema.models"]\n', '"threetears.evals.schema.models"'),
         # A root's attribute by string reads exactly like a submodule, so it is refused with them.
         ("host/routes.py", 'TARGET = "threetears.evals.run.EvalJobManager"\n', '"threetears.evals.run.EvalJobManager"'),
     ],
@@ -893,9 +921,9 @@ def test_the_public_root_rule_refuses_each_forbidden_import(
         ("host/app.py", "from threetears.evals.run import EvalJobManager\n"),
         (
             "host/routes.py",
-            "from threetears.evals.contracts import EvalRun\nfrom threetears.evals.run import EvalJobManager\n",
+            "from threetears.evals.schema import EvalRun\nfrom threetears.evals.run import EvalJobManager\n",
         ),
-        ("tools/probe.py", "def f():\n    from threetears.evals.contracts import EvalRun\n"),
+        ("tools/probe.py", "def f():\n    from threetears.evals.schema import EvalRun\n"),
         # A consumer's own modules import each other freely; the rule binds what it takes from the engine.
         ("host/app.py", "from .routes import X\nimport acme.config\n"),
         # A package's own modules import each other directly; the rule binds consumers, not the package.

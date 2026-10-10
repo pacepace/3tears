@@ -28,8 +28,8 @@ import pytest
 
 from threetears.evals.analysis.reporting import compute_frontier
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, SIGNIFICANCE_ALPHA, case_rate_interval
-from threetears.evals.contracts import EvalResult, EvalRun, GoalStateOutcome, LatencyMetrics, RoleUsage, RubricScore
-from threetears.evals.contracts.scoring import case_pass_hat_k
+from threetears.evals.schema import EvalResult, EvalRun, GoalStateOutcome, LatencyMetrics, RoleUsage, RubricScore
+from threetears.evals.kernel.scoring import case_pass_hat_k
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.simulation_support import at_least, at_most
 

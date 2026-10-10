@@ -1,9 +1,9 @@
 """The Vega-Lite renderer, as a :class:`~threetears.evals.analysis.viz.ChartRenderer` with a palette and a font.
 
 **The palette and the font are the host's, bound once.** A host builds one :class:`VegaRenderer` for its
-style (:meth:`VegaRenderer.for_style`) — its declared :class:`~threetears.evals.contracts.host.ChartPalette`,
+style (:meth:`VegaRenderer.for_style`) — its declared :class:`~threetears.evals.kernel.host.ChartPalette`,
 or, when it declares none, the packaged palette in the variant it names; its declared
-:class:`~threetears.evals.contracts.host.ChartFont`, or the packaged face — with the font directory its
+:class:`~threetears.evals.kernel.host.ChartFont`, or the packaged face — with the font directory its
 own face lives in, if it has one, and hands it every intent: :meth:`VegaRenderer.draw` returns the colourless spec a
 browser embeds with :meth:`VegaRenderer.config`, and :meth:`VegaRenderer.png` / :meth:`VegaRenderer.svg`
 rasterise it for a surface that cannot run a browser — which is the one place ``vl_convert`` is needed.
@@ -24,7 +24,7 @@ from typing import Any
 
 from threetears.evals.analysis.viz.intent import Cell, ChartIntent
 from threetears.evals.analysis.viz.quantities import strip_common_prefix
-from threetears.evals.contracts.host import ChartFont, ChartPalette, StyleError, StyleProfile
+from threetears.evals.kernel.host import ChartFont, ChartPalette, StyleError, StyleProfile
 from threetears.evals.vega.compiler import DISPLAY_FIELD, CompiledChart, draw_intent
 from threetears.evals.vega.palette import Theme, packaged_palette, vega_config
 from threetears.evals.vega.render import DEFAULT_SCALE, render_png, render_svg
@@ -56,7 +56,7 @@ class VegaRenderer:
         """Refuse a typeface declared without its metrics.
 
         Raises:
-            StyleError: ``font`` is not a :class:`~threetears.evals.contracts.host.ChartFont`.
+            StyleError: ``font`` is not a :class:`~threetears.evals.kernel.host.ChartFont`.
         """
         if not isinstance(self.font, ChartFont):
             raise StyleError(

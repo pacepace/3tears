@@ -13,13 +13,13 @@ import math
 from collections.abc import Sequence
 
 
-from threetears.evals.contracts.base import EvalBaseModel
+from threetears.evals.schema.base import EvalBaseModel
 
 
-from threetears.evals.contracts.host import EvalHost
+from threetears.evals.kernel.host import EvalHost
 
 
-from threetears.evals.contracts.out_of_run_spend import OutOfRunPurpose, OutOfRunSpend
+from threetears.evals.schema.out_of_run_spend import OutOfRunPurpose, OutOfRunSpend
 
 
 class OutOfRunSpendTotals(EvalBaseModel):

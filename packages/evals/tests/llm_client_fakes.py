@@ -1,6 +1,6 @@
 """Release-contract support for test doubles standing in for an LLM client.
 
-``threetears.evals.contracts.completion.CompletionClient`` declares ``aclose`` because the real
+``threetears.evals.schema.completion.CompletionClient`` declares ``aclose`` because the real
 client owns an httpx pool and every caller that builds one per unit of work has to
 release it. A double that omits it does not just fail — it fails
 *late*, at whichever call site closes, with an ``AttributeError`` that reads as a

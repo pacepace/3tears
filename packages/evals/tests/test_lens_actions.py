@@ -46,7 +46,7 @@ from threetears.evals.analysis import (
     campaign_report,
 )
 from threetears.evals.analysis.reporting import ScoreProjection
-from threetears.evals.contracts import ValidationFailedError
+from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.ops import (
     job_poll,
     LaunchArguments,

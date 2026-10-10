@@ -20,10 +20,10 @@ from threetears.evals.analysis import (
     run_analysis_generation,
 )
 from threetears.evals.analysis.bundle import host_declarations_digest
-from threetears.evals.contracts.campaign import EvalAnalysis
-from threetears.evals.contracts.host import EvalHost
-from threetears.evals.contracts.host.profile import HostProfile
-from threetears.evals.contracts.host.sweepables import Sweepable
+from threetears.evals.kernel.campaign import EvalAnalysis
+from threetears.evals.kernel.host import EvalHost
+from threetears.evals.kernel.host.profile import HostProfile
+from threetears.evals.kernel.host.sweepables import Sweepable
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -170,7 +170,7 @@ class TestAMismatchNamesWhatMoved:
         assert inspect_analysis_bundle(relit, analysis.id, scope_id).mismatch_cause == "cannot_say"
 
     def test_a_stored_provenance_without_the_fields_still_loads(self) -> None:
-        from threetears.evals.contracts.campaign import GenerationProvenance
+        from threetears.evals.kernel.campaign import GenerationProvenance
 
         stored = {
             "prompt_id": "p",

@@ -1,6 +1,6 @@
 """A run's peak memory is bounded by its matrix, not by its total trace volume (#603).
 
-The run loop keeps one :class:`~threetears.evals.contracts.scoring.CellSummary` per cell and hands each
+The run loop keeps one :class:`~threetears.evals.kernel.scoring.CellSummary` per cell and hands each
 full result and trace to storage, so what a run holds at once is one cell's record plus a summary per
 cell. If it accumulated the records too, its peak would grow with every byte of trace the run produced,
 and a large sweep could exhaust its container before it finished.
@@ -25,9 +25,10 @@ from pathlib import Path
 
 import pytest
 
-from threetears.evals.contracts import EvalStorage, EvalTestCase
-from threetears.evals.contracts.candidate_kind import CandidateOutput, CellSink
-from threetears.evals.contracts.host import WorldRegistry
+from threetears.evals.kernel import EvalStorage
+from threetears.evals.schema import EvalTestCase
+from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink
+from threetears.evals.kernel.host import WorldRegistry
 from threetears.evals.run.executor import DEFAULT_MAX_CONCURRENT_CELLS
 from threetears.evals.run.runner import RunnerOptions, execute_run
 from threetears.evals.storage.sqlite import SqliteDocumentStore

@@ -7,13 +7,13 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-import threetears.evals.contracts.dsl as _dsl
-import threetears.evals.contracts.goal_grammar as _grammar
-from threetears.evals.contracts import Firings, Precondition, WorldEvent
-from threetears.evals.contracts.dsl import NOT_ESTABLISHED, Missing, evaluate, evaluate_with_detail
-from threetears.evals.contracts.goal_grammar import DSLError, extract_paths, parse
-from threetears.evals.contracts.host import Triggered, WorldDimension, WorldRegistry
-from threetears.evals.contracts.call_ledger import CallLedger
+import threetears.evals.kernel.dsl as _dsl
+import threetears.evals.schema.goal_grammar as _grammar
+from threetears.evals.schema import Firings, Precondition, WorldEvent
+from threetears.evals.kernel.dsl import NOT_ESTABLISHED, Missing, evaluate, evaluate_with_detail
+from threetears.evals.schema.goal_grammar import DSLError, extract_paths, parse
+from threetears.evals.kernel.host import Triggered, WorldDimension, WorldRegistry
+from threetears.evals.schema.call_ledger import CallLedger
 
 
 def _state_with(**dimensions: dict[str, Any]) -> dict[str, Any]:

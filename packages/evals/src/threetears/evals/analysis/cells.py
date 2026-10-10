@@ -47,9 +47,9 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from threetears.evals.contracts.hashing import canonical_digest
-from threetears.evals.contracts.base import EvalDocumentModel
-from threetears.evals.contracts.models import ApparatusProvenance
+from threetears.evals.schema.hashing import canonical_digest
+from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.schema.models import ApparatusProvenance
 
 #: The cell model this module implements, stamped onto every analysis generated under it
 #: (``GenerationProvenance.cell_model_version``).

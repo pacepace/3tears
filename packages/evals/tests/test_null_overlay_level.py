@@ -24,9 +24,10 @@ from dataclasses import replace
 
 from threetears.evals.analysis import AnalysisContextBundle, RunSummary, assemble_context_bundle
 from threetears.evals.analysis.reporting import NULL_LEVEL, lever_level
-from threetears.evals.contracts import EvalCampaign, EvalResult, EvalRun
-from threetears.evals.contracts.host import HostProfile
-from threetears.evals.contracts.models import RoleUsage
+from threetears.evals.kernel import EvalCampaign
+from threetears.evals.schema import EvalResult, EvalRun
+from threetears.evals.kernel.host import HostProfile
+from threetears.evals.schema.models import RoleUsage
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_SCOPE,
     TOYHOST_SUBJECT,

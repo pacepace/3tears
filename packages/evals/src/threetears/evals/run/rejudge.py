@@ -20,9 +20,9 @@ from __future__ import annotations
 from collections.abc import Collection
 from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol
 
-from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
-from threetears.evals.contracts.scoring import boundary_dim_names
-from threetears.evals.contracts.models import (
+from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.scoring import boundary_dim_names
+from threetears.evals.schema.models import (
     DEFAULT_JUDGE_TEMPERATURE,
     NON_TERMINAL_RUN_STATUSES,
     OUTCOME_DIM_ID,
@@ -35,8 +35,8 @@ from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import fold_judge_outcomes
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.storage import EvalStorage
-    from threetears.evals.contracts.models import (
+    from threetears.evals.kernel.storage import EvalStorage
+    from threetears.evals.schema.models import (
         EvalResult,
         EvalRun,
         EvalTemplate,
@@ -356,7 +356,7 @@ def apply_rejudge(
     the configs, errors and spend are folded exactly as the phase folds them
     (:func:`~threetears.evals.run.judge_service.fold_judge_outcomes`); ``judge_error`` is recomposed
     from the dims that failed again, in the phase's own ``"<dim>: <error>"`` form, and cleared
-    when none did. A :class:`~threetears.evals.contracts.models.JudgeRescore` recording all of it is appended.
+    when none did. A :class:`~threetears.evals.schema.models.JudgeRescore` recording all of it is appended.
 
     ``cost_usd`` and ``usage`` are left as they are — see ``JudgeRescore`` for why.
 

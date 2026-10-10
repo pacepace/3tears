@@ -11,8 +11,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.contracts.host.subject import SubjectSnapshot
-from threetears.evals.contracts.models import ClientRequestSettings, EvalRun
+from threetears.evals.schema.subject import SubjectSnapshot
+from threetears.evals.schema.models import ClientRequestSettings, EvalRun
 
 
 _SUBJECT = SubjectSnapshot(subject_id="summarizer-3", subject_label="Summarizer, config 3", state=None)

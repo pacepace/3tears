@@ -9,7 +9,7 @@ with its own store and its own bindings; a host's service delegates to them.
 
 **What arrives as an argument.** An operation that reads the host's vocabulary — assembling a
 bundle, generating over one, freezing one — takes the
-:class:`~threetears.evals.contracts.host.EvalHost`: its storage, its profile, the client factory the
+:class:`~threetears.evals.kernel.host.EvalHost`: its storage, its profile, the client factory the
 generator is built from and the describer that says what a provider failure may keep. An operation
 that reads documents alone takes storage, through :class:`AnalysisStore`, which a host's store
 satisfies by having the methods; campaigns and runs are loaded through it, a missing one refused
@@ -56,30 +56,26 @@ from threetears.evals.analysis.report import Report, Verdict, build_code_only_re
 from threetears.evals.analysis.viz.intent import chart_intent
 from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.analysis.viz.policy import IntentPolicyError
-from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.campaign import EvalAnalysisAttempt
-from threetears.evals.contracts.errors import NotFoundError, ProviderRefusedError, StorageError, ValidationFailedError
-from threetears.evals.contracts.models import EvalTestCase, utc_now_iso
-from threetears.evals.contracts.offload import run_blocking, wait_through_cancellation
-from threetears.evals.contracts.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
-from threetears.evals.contracts.provider import (
-    describe_failure,
-    log_provider_failure,
-    traceback_is_safe,
-)
+from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.campaign import EvalAnalysisAttempt
+from threetears.evals.kernel.errors import NotFoundError, ProviderRefusedError, StorageError, ValidationFailedError
+from threetears.evals.schema.models import EvalTestCase, utc_now_iso
+from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
+from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
+from threetears.evals.kernel.provider import describe_failure, log_provider_failure, traceback_is_safe
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.storage import EvalStorage
+    from threetears.evals.kernel.storage import EvalStorage
     from threetears.evals.analysis.bundle import AnalysisContextBundle
     from threetears.evals.analysis.reporter_bank import ReporterCalibration, ReporterCaseBank
     from threetears.evals.analysis.viz.intent import ChartIntent
-    from threetears.evals.contracts.campaign import AttemptOutcome, EvalAnalysis, EvalCampaign, EvalInsight
-    from threetears.evals.contracts.models import EvalRun, EvalTemplate
-    from threetears.evals.contracts.host.eval_host import EvalHost
+    from threetears.evals.kernel.campaign import AttemptOutcome, EvalAnalysis, EvalCampaign, EvalInsight
+    from threetears.evals.schema.models import EvalRun, EvalTemplate
+    from threetears.evals.kernel.host.eval_host import EvalHost
     from concurrent.futures import Executor
 
-    from threetears.evals.contracts.completion import BoundCompletionClient, CompletionResult
+    from threetears.evals.schema.completion import BoundCompletionClient, CompletionResult
 
 log = get_logger(__name__)
 
@@ -103,7 +99,7 @@ class AnalysisStore(CampaignReadStore, Protocol):
     this signature accepts.
 
     Structural, so a host's own storage satisfies it by having the methods —
-    :class:`~threetears.evals.contracts.storage.EvalStorage` does. Positional parameters are
+    :class:`~threetears.evals.kernel.storage.EvalStorage` does. Positional parameters are
     positional-only, which lets the port say ``scope_id`` while an implementation names the thing
     it partitions by.
     """
@@ -260,7 +256,7 @@ class BudgetedGenerator:
     The generator is handed this as its client and its :meth:`admit` as its admission hook
     (:func:`~threetears.evals.analysis.generator.generate_analysis`), so the generator never learns what a
     cap is while every call it makes — the repair round-trip, whose prompt exists only once the first output
-    is refused, included — goes through :class:`~threetears.evals.contracts.out_of_run.OutOfRunBudget`'s one
+    is refused, included — goes through :class:`~threetears.evals.kernel.out_of_run.OutOfRunBudget`'s one
     rule: priced on the client before it is made, refused when the price would pass what is left of the cap,
     and written to the out-of-run ledger however it ends.
     """
@@ -590,7 +586,7 @@ async def run_analysis_generation(
     """Make the paid generator call(s) for a prepared generation, then store and record the result.
 
     **Every attempt is recorded.** Once the generator is called, the attempt is stored as an
-    :class:`~threetears.evals.contracts.campaign.EvalAnalysisAttempt` however it ends — stored,
+    :class:`~threetears.evals.kernel.campaign.EvalAnalysisAttempt` however it ends — stored,
     refused, failed or cancelled — with what it sent, what it cost and why it ended, read from a
     tally the generator writes as it goes.
 

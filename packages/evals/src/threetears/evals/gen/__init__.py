@@ -1,6 +1,6 @@
 """The engine's generation package: the prompts and expanders that author test material.
 
-Of the engine it imports only itself and :mod:`threetears.evals.contracts`.
+Of the engine it imports only itself, :mod:`threetears.evals.schema` and :mod:`threetears.evals.kernel`.
 
 **This module is the package's public root.** A host imports from here and from no module below
 it, and only the names in ``__all__``; ``tests/test_package_matrix.py`` holds that, and

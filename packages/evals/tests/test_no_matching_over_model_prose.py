@@ -6,7 +6,7 @@ against a literal over text a model wrote is an eval dimension wearing a validat
 a gate built that way never converges — every real generation finds a phrasing it cannot parse.
 
 **The population is derived, not listed.** A field is prose because its TYPE says so
-(:data:`threetears.evals.contracts.prose.ModelProse`); this test imports every module under ``threetears.evals``,
+(:data:`threetears.evals.schema.prose.ModelProse`); this test imports every module under ``threetears.evals``,
 walks every Pydantic model reachable from ``BaseModel`` (the root, so a subsystem with its own
 base is not lost), and collects the names of the fields carrying the marker. A new prose field is
 covered the moment it is typed, and a hand-kept list — which fails by omission, silently — does
@@ -49,7 +49,7 @@ import pytest
 from pydantic import BaseModel
 
 import threetears.evals
-from threetears.evals.contracts.prose import field_is_prose
+from threetears.evals.schema.prose import field_is_prose
 
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
@@ -196,7 +196,7 @@ class TestThePopulationIsDerivedFromTypes:
         assert {"caption", "mechanism", "statement"} <= names, sorted(names)
 
     def test_a_newly_typed_field_joins_the_population_without_a_list_edit(self):
-        from threetears.evals.contracts.prose import ModelProse
+        from threetears.evals.schema.prose import ModelProse
 
         class _Planted(BaseModel):
             planted_prose_field_for_the_canary: ModelProse = ""
