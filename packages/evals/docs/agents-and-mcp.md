@@ -214,6 +214,9 @@ mount_fastmcp(
   action runs, so a span it starts is the parent of the action's own. A call that raises a defect, rather
   than refusing, is thrown in at the yield, so a `with` or `finally` closes. The defect still propagates,
   whatever the hook does.
+- **The one call timeout holds the whole call**, the caller and host resolvers and the hook with it. A call it
+  stops is closed in the hook at its yield, so the hook's `finally` runs, and the client gets the timeout's
+  error result.
 
 **The hook cannot change the outcome.** What it yields is discarded, the outcome is frozen, and the client
 gets exactly what the catalogue returned.
