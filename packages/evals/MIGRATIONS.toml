@@ -31,7 +31,7 @@
 # callers.
 
 [[release]]
-version = "unreleased"
+version = "0.66.0-evaladopt.17"
 since = "v0.66.0-evaladopt.16"
 summary = """
 A job lease's faults are recorded on its job record (core schema v13): every job record keeps `faults`, beside its
