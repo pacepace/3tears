@@ -320,6 +320,52 @@ Key the slots by the exported constants rather than by the strings. Declare your
 same `SeedPrompt` type and seed from both lists. The engine's ids start with `eval_`, so your own can use
 any other name. A `SeedPrompt` refuses an unknown `kind` or a blank field when it is constructed.
 
+### Launching the analysis reporter
+
+The analysis reporter (`REPORTER_KIND`) evaluates the analysis writer itself. Its cases are frozen campaign
+bundles (see [Agents and MCP](agents-and-mcp.md#reporter-runs-evaluating-the-analysis-writer-itself)). A
+candidate is a preset of the `ANALYSIS_GEN_PROMPT` prompt on a generator model, or `AS_RECORDED_MODEL`,
+which replays the memo each campaign got.
+
+The kind is declared by the engine, so your host supplies only two things:
+
+- **Your prompt registry**, as a `ReporterPrompts`: `resolve(preset)` returns that preset's text, or the
+  system default for `None`. It returns `None` for a preset you do not hold, never the default in its
+  place. A registry that fell back would bill the incumbent prompt under the candidate's name.
+- **Your model resolution**, as a `ReporterModelResolver`: `(role, named)` returns the provider model,
+  or the role's default when `named` is `None`. The roles are `generator` and `judge`. Raise
+  `ValidationFailedError` for a name you do not know.
+
+Declare `REPORTER_KIND_CONTRACT` (from `threetears.evals.analysis`) on your profile's `kinds`. Its one
+overlay is `prompt_preset`, and it seats the judge and the spend ceiling. If the profile refuses it for
+leaving one of your own apparatus dimensions unseated, build it with
+`reporter_kind_contract(host_seats=[...])`. On a reporter template, your `refuse_undeliverable_template`
+hook calls `refuse_undeliverable_reporter_template`.
+
+Then register the kind's launch entry (from `threetears.evals.ops`):
+
+```python
+LaunchableKind(
+    launch=your_reporter_launcher,
+    unhonoured_launch_arguments=REPORTER_UNHONOURED_LAUNCH_ARGUMENTS,
+    plan_arm=lambda request: plan_reporter_arm(eval_host, request, prompts=load_prompts(), resolve_model=resolve),
+)
+```
+
+`plan_reporter_arm` and `admit_reporter_launch` make every refusal before the arm is priced, in this order:
+
+1. a template asking for apparatus a memo writer cannot honour, or with no rubric;
+2. a preset you do not hold, or no default;
+3. a model named by alias (a name you resolve to another model), since the run records the name and an
+   alias's target moves;
+4. a template with no live case, or a campaign-and-memo pair holding two live cases. When the launch
+   names a case set, its cases run instead, and each must carry a reporter case;
+5. the replay over a case with no recorded memo.
+
+Your launcher calls `admit_reporter_launch` again, off the event loop. It builds `ReporterKind` (prompt id
+`ANALYSIS_GEN_PROMPT`) or `AsRecordedReporterKind` from what that returns, and wires its client, subject,
+cell ceiling (`reporter_cell_timeout_s`) and judge as for any kind.
+
 ## A world, through the cell's session
 
 Skip this section if your subject is stateless (a classifier, an extractor). A world is for a subject that

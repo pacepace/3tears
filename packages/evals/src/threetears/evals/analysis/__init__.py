@@ -287,6 +287,13 @@ from threetears.evals.analysis.reporter_bank import (
     DimensionReading,
     LabelReading,
 )
+from threetears.evals.analysis.reporter_contract import (
+    REPORTER_KIND_CONTRACT,
+    ReporterOverlays,
+    live_reporter_cases,
+    refuse_undeliverable_reporter_template,
+    reporter_kind_contract,
+)
 from threetears.evals.analysis.reporter_curation import ReporterCaseStore
 from threetears.evals.analysis.reporter_kind import (
     LabelCriterion,
@@ -423,6 +430,7 @@ __all__ = [
     "PROJECTED_METRICS",
     "READ_TIER_ROW_BUDGET",
     "REPORTER_KIND",
+    "REPORTER_KIND_CONTRACT",
     "SCOPED_METRICS_HELP",  # debt: retires when the English moves to one renderer
     "SERVED_MODEL_UNRECORDED",
     "WEIGHTING_EQUAL_PER_SCENARIO",
@@ -545,6 +553,7 @@ __all__ = [
     "ReporterCaseStore",
     "ReporterKind",
     "ReporterLabel",
+    "ReporterOverlays",
     "RowColumns",
     "RunLister",
     "RunSummary",
@@ -642,7 +651,10 @@ __all__ = [
     "remove_runs_from_campaign",
     "render_memo_as_written",
     "reporter_calibration",
+    "live_reporter_cases",
+    "refuse_undeliverable_reporter_template",
     "reporter_case_bank",
+    "reporter_kind_contract",
     "reporter_cell_timeout_s",
     "run_analysis_generation",
     "run_summary",

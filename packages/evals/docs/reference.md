@@ -1206,6 +1206,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`list_campaigns(storage: CampaignStore, scope_id: str, *, subject_id: str | None = None, behavior: str | None = None, archived: bool | None = None) -> list[EvalCampaign]`
 - **`list_insights`** · function · List insights in a storage scope, newest observation first.
   <br>`list_insights(storage: AnalysisStore, scope_id: str, *, subject_id: str | None = None, scope: str | None = None, source_campaign_id: str | None = None) -> list[EvalInsight]`
+- **`live_reporter_cases`** · function · The cases a launch over the template's own bank runs: its live reporter cases, oldest first.
+  <br>`live_reporter_cases(storage: AnalysisStore, template: EvalTemplate, scope_id: str) -> list[tuple[EvalTestCase, ReporterCase]]`
 - **`measure_movement`** · function · Test one measure's movement between two levels against its own noise, and read it against what matters.
   <br>`measure_movement(descriptor: MetricDescriptor, at_a: Mapping[str, Fraction], at_b: Mapping[str, Fraction]) -> MeasureMovement`
 - **`metric_help`** · function · Render the metrics a surface accepts, each glossed and beside its catalog name, for its help text.
@@ -1234,6 +1236,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`published_report_schema() -> dict[str, Any]`
 - **`read_judge_temperatures`** · function · Read a judge temperature comparison's answers into per-dimension variance and self-agreement, side by side.
   <br>`read_judge_temperatures(answers: JudgeTemperatureAnswers) -> JudgeTemperatureComparison`
+- **`refuse_undeliverable_reporter_template`** · function · Refuse a reporter template that asks for apparatus a memo writer cannot honour, or gives its judge nothing to score.
+  <br>`refuse_undeliverable_reporter_template(template: EvalTemplate) -> None`
 - **`remove_runs_from_campaign`** · function · Detach runs from a campaign — the inverse of `add_runs_to_campaign`.
   <br>`remove_runs_from_campaign(storage: CampaignStore, campaign_id: str, scope_id: str, run_ids: list[str]) -> EvalCampaign`
 - **`render_memo_as_written`** · function · The memo as authored: the model's words, code's figures, in one canonical layout a reader follows.
@@ -1250,6 +1254,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`reporter_case_bank(storage: AnalysisStore, template_id: str, scope_id: str) -> ReporterCaseBank`
 - **`reporter_cell_timeout_s`** · function · The wall-clock ceiling of one reporter cell, derived from the ceilings it wraps.
   <br>`reporter_cell_timeout_s(*, judge_dims: int, judge_concurrency: int, generator_max_tokens: int, judge_call_attempts: int, judge_max_tokens: int, request_s: RequestCeiling) -> float`
+- **`reporter_kind_contract`** · function · The reporter's contract, also seating apparatus dimensions of the host's own that its runs record.
+  <br>`reporter_kind_contract(host_seats: Iterable[str] = ()) -> KindContract`
 - **`run_analysis_generation`** · async function · Make the paid generator call(s) for a prepared generation, then store and record the result.
   <br>`run_analysis_generation(host: EvalHost, prepared: PreparedGeneration, *, prompt_id: str, max_output_tokens: int) -> tuple[EvalAnalysis, list[EvalInsight]]`
 - **`run_summary`** · function · Compose a run's verdict numbers — pass^k, latency, cost — per model.
@@ -1398,6 +1404,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`ReporterCaseStore`** · protocol · The three storage calls a reporter case's retirement and restore make — and nothing else.
 - **`ReporterKind`** · class · A (prompt preset, generator model) candidate: generates a memo over each case's bundle.
 - **`ReporterLabel`** · model · One reader's written verdict on a recorded memo, mapped to the dimension it bears on.
+- **`ReporterOverlays`** · model · The one knob a reporter launch may turn: which preset of the analysis generator's prompt writes the memos.
 - **`ReportSource`** · model · What the report is a report of, and how that analysis was generated — or that none was.
 - **`RunMeasureSummary`** · model · One measure over a run's results.
 - **`RunSummary`** · model · One run's compact digest — the levers it RAN at + its key telemetry.
@@ -1548,6 +1555,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`= 6`
 - **`REPORTER_KIND`** · constant (str) · The `candidate_kind` a reporter template declares.
   <br>`= 'analysis_reporter'`
+- **`REPORTER_KIND_CONTRACT`** · constant (KindContract) · The reporter kind's contract, for a profile's `kinds`: its overlay is the prompt preset, and it seats the judge and the spend ceiling. `reporter_kind_contract` builds it with a host's own seats added.
 - **`SCOPED_METRICS_HELP`** · constant (str) · How each scoped metric must be read, in one sentence per metric, for every surface's help text (REST and MCP alike) — rendered from the table rather than written beside it, so no surface can describe a subset.
 - **`SECTION_TITLES`** · constant (dict) · Each section's heading, in reading order — the order every serializer lays the sections out in.
 - **`SERVED_MODEL_UNRECORDED`** · constant (str) · The token a served-model coordinate (`ScoreRecord.served_model`) carries for candidate calls whose response named no model, or that were stored before served models were recorded.
@@ -1783,6 +1791,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Functions**
 
+- **`admit_reporter_launch`** · function · Every refusal a reporter arm meets before it is priced, and what it resolved to — for its plan and its launcher alike.
+  <br>`admit_reporter_launch(request: LaunchRequest, *, storage: EvalStorage, prompts: ReporterPrompts, resolve_model: ReporterModelResolver) -> ReporterAdmitted`
 - **`analyses_list`** · function · A campaign's stored analyses.
   <br>`analyses_list(host: EvalHost, campaign_id: str, scope_id: str) -> AnalysisListing`
 - **`analyses_undescribable`** · function · The scope's analyses holding an arm whose levels this build cannot describe, with each one's count and reasons.
@@ -1857,6 +1867,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`parse_job_id(job_id: str) -> tuple[JobKind, str, str | None]`
 - **`pivot_text`** · function · A pivot as text: what was computed, each cell with its denominators, and every caveat the table carries.
   <br>`pivot_text(table: PivotTable) -> str`
+- **`plan_reporter_arm`** · function · A reporter arm's plan, for its `LaunchableKind.plan_arm`: every refusal first, then what it will run.
+  <br>`plan_reporter_arm(host: EvalHost, request: LaunchRequest, *, prompts: ReporterPrompts, resolve_model: ReporterModelResolver) -> ArmPlan`
 - **`report_charts`** · function · Draw every chart block of `report` with `renderer`, refusing each chart that cannot be drawn on its own.
   <br>`report_charts(report: Report, renderer: ChartRenderer[DrawingT]) -> ReportCharts[DrawingT]`
 - **`report_read`** · function · The campaign's report, serialized in one form — the same report the command line's `report` prints.
@@ -1948,9 +1960,11 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`RegressionWatch`** · dataclass · Checks a completed run's measures against its contestant's history, and delivers each regression.
 - **`ReportCharts`** · dataclass · Every chart of a report: the ones drawn and the ones refused, each in report order.
 - **`ReportDocument`** · model · A campaign's report, serialized in one form.
+- **`ReporterAdmitted`** · dataclass · What `admit_reporter_launch` resolved of a reporter arm it can honour.
 - **`ReporterCaseEntry`** · model · One readable case of a reporter template, with whether a launch runs it.
 - **`ReporterCaseFreeze`** · model · What freezing a reporter case names: the reporter template, the campaign, and optionally its memo and labels.
 - **`ReporterCaseListing`** · model · A reporter template's cases, in storage order.
+- **`ReporterPrompts`** · protocol · The host's prompt registry, as a reporter launch reads it: what a preset of the generator's prompt resolves to.
 - **`ResultDetail`** · model · One part of one stored result: the record and its condition always, and the trace part asked for.
 - **`ResultLine`** · model · One result, as a run's listing shows it: where it sits, the condition it is in, and its headline measures.
 - **`ResultListing`** · model · One page of a run's results, in a stable order: by case, then repeat, then id.
@@ -1982,6 +1996,10 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`'run'` | `'analysis'` | `'sweep'`
 - **`JobState`** · literal · Where a job stands.
   <br>`'running'` | `'completed'` | `'stopped'` | `'failed'` | `'cancelled'` | `'lost'`
+- **`ReporterModelResolver`** · type alias · The host's model resolution, as a reporter launch asks it: `(role, named)` returns the provider model the name resolves to, or the role's default when `named` is `None`.
+  <br>`Callable[[ReporterModelRole, str | None], str]`
+- **`ReporterModelRole`** · literal · Which model a reporter launch asks the host to resolve: the generator writing the memos, or the judge scoring them.
+  <br>`'generator'` | `'judge'`
 - **`ReportFormat`** · literal · The forms a report is read in: Markdown (the memo, and what an agent reads), its canonical JSON (what the published schema validates) and HTML that reads without any script.
   <br>`'markdown'` | `'json'` | `'html'`
 - **`ResultPart`** · literal · Which part of a stored result `result_get` returns.
@@ -1993,6 +2011,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 - **`ANALYSIS_JOB_PREFIX`** · constant (str) · The prefix of an analysis generation's job id.
   <br>`= 'analysis:'`
+- **`REPORTER_UNHONOURED_LAUNCH_ARGUMENTS`** · constant (frozenset) · The launch arguments a reporter arm cannot honour, for its `LaunchableKind`: it drives no simulated user, calls no tool a cassette could record, and generates no case — each is frozen from a campaign.
 - **`RUN_JOB_PREFIX`** · constant (str) · The prefix of a launched run's job id.
   <br>`= 'run:'`
 - **`SWEEP_JOB_PREFIX`** · constant (str) · The prefix of a sweep's job id.

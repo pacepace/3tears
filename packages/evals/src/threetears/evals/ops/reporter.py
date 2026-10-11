@@ -21,18 +21,34 @@ decides nothing, and it is how an operator finds that case, so it lists it rathe
 
 from __future__ import annotations
 
-from typing import Annotated, Any, get_args
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from typing import Annotated, Any, Literal, Protocol, get_args
 
 from pydantic import Field
 
 from threetears.evals.analysis.reporter_bank import FrozenReporterCase, frozen_case_receipt, reporter_case_bank
 from threetears.evals.analysis.reporter_curation import set_reporter_case_archived
-from threetears.evals.analysis.reporter_kind import REPORTER_KIND, LabelDirection
+from threetears.evals.analysis.reporter_contract import (
+    ReporterOverlays,
+    live_reporter_cases,
+    refuse_undeliverable_reporter_template,
+)
+from threetears.evals.analysis.reporter_kind import (
+    AS_RECORDED_MODEL,
+    REPORTER_KIND,
+    LabelDirection,
+    ReporterCase,
+    reporter_case_of,
+)
 from threetears.evals.analysis.service import freeze_reporter_case
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.schema.models import EvalTemplate
+from threetears.evals.kernel.prompts.catalogue import ANALYSIS_GEN_PROMPT
+from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.run.launch import ArmPlan, LaunchArgument, LaunchRequest, plan_judge, resolve_judge_pin
+from threetears.evals.schema.models import EvalTemplate, EvalTestCase, JudgedArtifact
 from threetears.evals.ops.runs import LaunchArguments
 from threetears.evals.run.authoring import get_template
 
@@ -225,12 +241,254 @@ def reporter_case_archive(
     )
 
 
+# --- launching a reporter arm -----------------------------------------------------------------------------------------
+
+
+#: The launch arguments a reporter arm cannot honour, for its ``LaunchableKind``: it drives no simulated user,
+#: calls no tool a cassette could record, and generates no case — each is frozen from a campaign.
+REPORTER_UNHONOURED_LAUNCH_ARGUMENTS: frozenset[LaunchArgument] = frozenset(
+    {"simulator_model", "cassette_mode", "n_variations"}
+)
+
+#: Which model a reporter launch asks the host to resolve: the generator writing the memos, or the judge scoring them.
+ReporterModelRole = Literal["generator", "judge"]
+
+#: The host's model resolution, as a reporter launch asks it: ``(role, named)`` returns the provider model the name
+#: resolves to, or the role's default when ``named`` is ``None``. It raises
+#: :class:`~threetears.evals.kernel.errors.ValidationFailedError` to refuse a name it does not know. It is called off
+#: the event loop, so it may read the host's registry.
+ReporterModelResolver = Callable[[ReporterModelRole, str | None], str]
+
+
+class ReporterPrompts(Protocol):
+    """The host's prompt registry, as a reporter launch reads it: what a preset of the generator's prompt resolves to.
+
+    The slot is :data:`~threetears.evals.kernel.ANALYSIS_GEN_PROMPT`. Read freshly for each launch, so a preset an
+    operator authored since the process started is seen.
+    """
+
+    def resolve(self, preset: str | None) -> str | None:
+        """The text ``preset`` names, or the registry's system default for ``None``.
+
+        **``None`` for a preset the registry does not hold — never the default in its place.** A registry that
+        answered a missing name with the default would have the run bill the incumbent prompt under the
+        candidate's name; the launch refuses instead.
+
+        Args:
+            preset: The preset's name, or ``None`` for the system default.
+
+        Returns:
+            The prompt text, or ``None`` when no prompt of that name is stored.
+        """
+        ...
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReporterAdmitted:
+    """What :func:`admit_reporter_launch` resolved of a reporter arm it can honour.
+
+    Attributes:
+        preset: The preset the launch named, or ``None`` for the system default.
+        prompt: The text the preset resolved to — what a generating arm's
+            :class:`~threetears.evals.analysis.ReporterKind` writes with, under the prompt id
+            :data:`~threetears.evals.kernel.ANALYSIS_GEN_PROMPT`.
+        candidate_model: The generator model the arm runs on, or
+            :data:`~threetears.evals.analysis.AS_RECORDED_MODEL` for the replay.
+        judge_model: The run-level judge pin, resolved.
+        cases: The cases the arm runs, in run order.
+    """
+
+    preset: str | None
+    prompt: str
+    candidate_model: str
+    judge_model: str
+    cases: tuple[EvalTestCase, ...]
+
+    @property
+    def generates(self) -> bool:
+        """Whether the arm writes memos — ``False`` for the replay, which builds no generator client."""
+        return self.candidate_model != AS_RECORDED_MODEL
+
+
+def _resolved_prompt(prompts: ReporterPrompts, preset: str | None) -> str:
+    """The text a launch's preset resolves to, refused when the registry holds no such prompt."""
+    text = prompts.resolve(preset)
+    if text is None:
+        if preset is None:
+            raise ValidationFailedError(
+                f"the prompt registry holds no system default {ANALYSIS_GEN_PROMPT!r} prompt; seed it from "
+                "SEED_PROMPTS before launching a reporter"
+            )
+        raise ValidationFailedError(
+            f"prompt_preset {preset!r}: no {ANALYSIS_GEN_PROMPT!r} preset of that name — author it first. Refused "
+            "rather than resolved to the default, because the run would bill the incumbent prompt under the "
+            "candidate's name"
+        )
+    if not text.strip():
+        raise ValidationFailedError(
+            f"the {ANALYSIS_GEN_PROMPT!r} prompt {preset or 'system default'!r} resolves to no text, so every memo "
+            "would be written to no instruction"
+        )
+    return text
+
+
+def _candidate_model(request: LaunchRequest, resolve_model: ReporterModelResolver) -> str:
+    """The model the arm runs on: the replay, the generator role's default, or the model the launch named.
+
+    An arm runs on the model the launch NAMED and records that name, so a name the host resolves to another
+    model is an alias: two runs recording it could have run two models as its target moved. It is refused
+    here, before the arm is priced, rather than by the launch tail after.
+    """
+    named = request.candidate_model
+    if named == AS_RECORDED_MODEL:
+        return named
+    resolved = resolve_model("generator", named)
+    if named is not None and resolved != named:
+        raise ValidationFailedError(
+            f"reporter model {named!r} is an alias of {resolved!r}; the run records the name the launch gave, and an "
+            f"alias's target moves — launch {resolved!r} by name"
+        )
+    return resolved
+
+
+def _cases(request: LaunchRequest, storage: EvalStorage) -> list[tuple[EvalTestCase, ReporterCase]]:
+    """The arm's cases: its launch's case set when it names one, else the template's live bank."""
+    if request.case_set is None:
+        return live_reporter_cases(storage, request.template, request.scope_id)
+    read: list[tuple[EvalTestCase, ReporterCase]] = []
+    unusable: list[str] = []
+    for stored in request.case_set_cases:
+        try:
+            case = reporter_case_of(stored)
+        except ValueError as exc:
+            unusable.append(f"{stored.id!r} ({exc})")
+            continue
+        if case is None:
+            unusable.append(f"{stored.id!r} (carries no reporter case)")
+            continue
+        read.append((stored, case))
+    if unusable:
+        raise ValidationFailedError(
+            f"case set {request.case_set.ref.label!r} names case(s) no reporter can run: {', '.join(unusable)}"
+        )
+    return read
+
+
+def _refuse_a_replay_with_nothing_recorded(cases: Sequence[tuple[EvalTestCase, ReporterCase]]) -> None:
+    """Refuse the as-recorded replay over a case that pins no recorded memo, which it would have nothing to replay of."""
+    if unrecorded := [stored.id for stored, case in cases if case.recorded_memo is None]:
+        raise ValidationFailedError(
+            f"model {AS_RECORDED_MODEL!r} replays each case's recorded memo, and case(s) {', '.join(unrecorded)} pin "
+            "none; launch it over cases that each froze the memo their campaign got, or launch a generator model"
+        )
+
+
+def admit_reporter_launch(
+    request: LaunchRequest,
+    *,
+    storage: EvalStorage,
+    prompts: ReporterPrompts,
+    resolve_model: ReporterModelResolver,
+) -> ReporterAdmitted:
+    """Every refusal a reporter arm meets before it is priced, and what it resolved to — for its plan and its launcher alike.
+
+    The host supplies only what the host knows: its prompt registry and its model resolution. Everything else is
+    the kind's, in this order: the template (:func:`~threetears.evals.analysis.refuse_undeliverable_reporter_template`),
+    the preset, the generator model, the cases, the replay's memos, then the judge. Blocking — it reads the case
+    bank and both hooks — so a launcher calls it off the event loop.
+
+    The cases are the launch's case set when it names one, each of which must carry a reporter case this build
+    reads; otherwise the template's live bank (:func:`~threetears.evals.analysis.live_reporter_cases`), refused
+    when empty or ambiguous.
+
+    Args:
+        request: The arm.
+        storage: Where the template's cases are stored.
+        prompts: The host's prompt registry, as just loaded.
+        resolve_model: The host's model resolution.
+
+    Returns:
+        What the arm resolved to.
+
+    Raises:
+        ValidationFailedError: The template asks for what a reporter cannot honour; the preset is not stored, or
+            no default is; the model is an alias, or the host refuses it; there is no live case, a pair holds two,
+            a case of the bank does not read, or a case-set case carries no reporter case; or the replay is
+            launched over a case pinning no recorded memo.
+    """
+    refuse_undeliverable_reporter_template(request.template)
+    preset = request.overlays_as(ReporterOverlays).prompt_preset if request.overlays is not None else None
+    prompt = _resolved_prompt(prompts, preset)
+    candidate_model = _candidate_model(request, resolve_model)
+    cases = _cases(request, storage)
+    if candidate_model == AS_RECORDED_MODEL:
+        _refuse_a_replay_with_nothing_recorded(cases)
+    judge_model = request.judge_model or resolve_judge_pin(
+        request, resolve_model("judge", None), candidate_model=candidate_model
+    )
+    return ReporterAdmitted(
+        preset=preset,
+        prompt=prompt,
+        candidate_model=candidate_model,
+        judge_model=judge_model,
+        cases=tuple(stored for stored, _case in cases),
+    )
+
+
+def plan_reporter_arm(
+    host: EvalHost,
+    request: LaunchRequest,
+    *,
+    prompts: ReporterPrompts,
+    resolve_model: ReporterModelResolver,
+) -> ArmPlan:
+    """A reporter arm's plan, for its ``LaunchableKind.plan_arm``: every refusal first, then what it will run.
+
+    The arm runs its admitted cases on its admitted model, judged on the memo (``JudgedArtifact.DOCUMENT``) by the
+    launch's judge or the judge role's default, with no simulator. A launcher re-admits with the same hooks, so
+    the plan and the run cannot be built from different reads.
+
+    Args:
+        host: The host, where the cases and judge configs are read.
+        request: The arm.
+        prompts: The host's prompt registry, as just loaded.
+        resolve_model: The host's model resolution.
+
+    Returns:
+        The plan.
+
+    Raises:
+        ValidationFailedError: Anything :func:`admit_reporter_launch` or
+            :func:`~threetears.evals.run.plan_judge` refuses.
+    """
+    admitted = admit_reporter_launch(request, storage=host.storage, prompts=prompts, resolve_model=resolve_model)
+    return ArmPlan(
+        case_count=len(admitted.cases),
+        candidate_model=admitted.candidate_model,
+        judge=plan_judge(
+            host,
+            request.template,
+            admitted.judge_model,
+            request.judge_config_ids,
+            judged_artifact=JudgedArtifact.DOCUMENT,
+        ),
+        simulator_model=None,
+    )
+
+
 __all__ = [
+    "REPORTER_UNHONOURED_LAUNCH_ARGUMENTS",
     "AmbiguousReporterPair",
+    "ReporterAdmitted",
+    "ReporterModelResolver",
+    "ReporterModelRole",
+    "ReporterPrompts",
     "ReporterCaseEntry",
     "ReporterCaseFreeze",
     "ReporterCaseListing",
     "UnreadableReporterCase",
+    "admit_reporter_launch",
+    "plan_reporter_arm",
     "reporter_case_archive",
     "reporter_case_freeze",
     "reporter_cases_list",

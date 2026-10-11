@@ -31,7 +31,10 @@ one :class:`ChartRefusal` per chart that does not, so one undrawable chart costs
 
 The reporter case bank's operations — :func:`reporter_case_freeze`, :func:`reporter_cases_list` and
 :func:`reporter_case_archive` — are how a surface makes the cases a reporter run measures: each is one
-campaign's analysis bundle, frozen, and a reporter template launches nothing until one is.
+campaign's analysis bundle, frozen, and a reporter template launches nothing until one is. A host launching
+reporter runs makes every refusal a reporter arm meets with :func:`admit_reporter_launch` — and plans the arm
+with :func:`plan_reporter_arm` — over its own prompt registry (:class:`ReporterPrompts`) and model resolution
+(:data:`ReporterModelResolver`).
 
 **This module is the package's public root.** A host imports from here and from no module below it,
 and only the names in ``__all__``.
@@ -145,7 +148,14 @@ from threetears.evals.ops.judge_profiles import (
 )
 from threetears.evals.ops.regressions import RegressionAlert, RegressionSink, RegressionWatch
 from threetears.evals.ops.reporter import (
+    REPORTER_UNHONOURED_LAUNCH_ARGUMENTS,
     AmbiguousReporterPair,
+    ReporterAdmitted,
+    ReporterModelResolver,
+    ReporterModelRole,
+    ReporterPrompts,
+    admit_reporter_launch,
+    plan_reporter_arm,
     ReporterCaseEntry,
     ReporterCaseFreeze,
     ReporterCaseListing,
@@ -273,6 +283,13 @@ __all__ = [
     "JudgeProfileListing",
     "JudgeProfileRecording",
     "JudgeProfilesRecord",
+    "REPORTER_UNHONOURED_LAUNCH_ARGUMENTS",
+    "ReporterAdmitted",
+    "ReporterModelResolver",
+    "ReporterModelRole",
+    "ReporterPrompts",
+    "admit_reporter_launch",
+    "plan_reporter_arm",
     "ReporterCaseEntry",
     "ReporterCaseFreeze",
     "ReporterCaseListing",
