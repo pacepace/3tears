@@ -18,7 +18,9 @@ What a host gets without rebuilding :meth:`CatalogueTool.over`:
   is not an async generator function is refused at mount. What a hook sets in a context variable before
   its yield is the action's, and its tail undoes it in the call's own task.
 - **The call timeout may be a function**, read once as each call starts; the value a call read is the one
-  it is held to and the one its timeout reports, and a value that is not positive fails that call naming it.
+  it is held to, the one its timeout reports and the one its ``ToolCall`` carries, and a value that is not positive
+  fails that call naming it. A call that outlives it has ``CallTimedOut`` thrown in at its hook's yield; a call
+  cancelled from outside closes the hook with nothing thrown, so the hook tells the two apart.
 - **One ``annotate`` hook adds a note** as a text block after the outcome's, changing nothing else; one that
   raises, answers no string or overruns is logged, and the call returns as if there were no hook.
 - **The host resolver hands per-call state to both hooks**: answering a ``HostResolution`` puts its ``context`` on
@@ -56,6 +58,7 @@ from threetears.evals.transports import fastmcp as fastmcp_transport
 from threetears.evals.transports.fastmcp import (
     CallAnnotator,
     CallHook,
+    DEFAULT_CALL_TIMEOUT_S,
     CallTimedOut,
     HostResolution,
     ToolBinding,
@@ -301,7 +304,9 @@ async def test_the_hook_sees_the_call_and_its_outcome_and_wraps_the_action() -> 
 
     assert result is not None and result["span"] == "span:note_take", "the hook's context is current in the action"
     (ok_call, ok), (no_call, no), (bad_call, bad) = seen
-    assert ok_call == ToolCall(tool="host", action="note_take", caller=CALLER, host=host)
+    assert ok_call == ToolCall(
+        tool="host", action="note_take", caller=CALLER, host=host, timeout_s=DEFAULT_CALL_TIMEOUT_S
+    )
     assert (ok.structured, ok.refusal, ok.action) == (result, None, "note_take")
     assert no_call.action == "note_take" and no.refusal == Refusal(kind="conflict", status=409)
     assert bad_call.action is None, "an action argument that is no string is shown as none"
@@ -425,14 +430,17 @@ async def test_the_call_timeout_holds_a_slow_host_resolver() -> None:
     assert actions.ran_in == [], "no action ran"
 
 
-async def test_a_call_the_timeout_stops_closes_its_hook() -> None:
-    """A call stopped by the timeout is closed in the hook at its yield, so the hook's ``finally`` runs."""
-    seen: list[str] = []
+async def test_a_call_the_timeout_stops_throws_call_timed_out_into_its_hook() -> None:
+    """A stopped call is finished in the hook at its yield, as ``CallTimedOut``, so it tells a timeout from a cancel."""
+    seen: list[Any] = []
 
     async def around(call: ToolCall) -> AsyncGenerator[None, ActionOutcome]:
-        seen.append("entered")
+        seen.append(("entered", call.timeout_s))
         try:
             yield
+        except CallTimedOut as stopped:
+            seen.append(("timed out", stopped.timeout_s))
+            raise
         finally:
             seen.append("closed")
 
@@ -440,7 +448,53 @@ async def test_a_call_the_timeout_stops_closes_its_hook() -> None:
         _served(_Host(), around=around, call_timeout_s=0.05), {"action": "note_take", "note": "slow"}
     )
     assert is_error and "call timeout" in text
-    assert seen == ["entered", "closed"]
+    assert seen == [("entered", 0.05), ("timed out", 0.05), "closed"]
+
+
+async def test_a_hook_that_swallows_call_timed_out_leaves_the_call_timed_out() -> None:
+    caught: list[float] = []
+
+    async def around(call: ToolCall) -> AsyncGenerator[None, ActionOutcome]:
+        try:
+            yield
+        except CallTimedOut as stopped:
+            caught.append(stopped.timeout_s)
+
+    binding = ToolBinding(
+        _Host().catalogue().mount(_TOOLS[0]),
+        host=ops_fixture().host,
+        caller=lambda: CALLER,
+        around=around,
+        call_timeout_s=lambda: 0.05,
+    )
+    with pytest.raises(CallTimedOut) as stopped:
+        await binding.call({"action": "note_take", "note": "slow"})
+    assert stopped.value.timeout_s == 0.05 and caught == [0.05], "the hook saw it, and the call still timed out"
+
+
+async def test_a_call_cancelled_from_outside_closes_its_hook_with_nothing_thrown() -> None:
+    """The client giving up, or the process stopping, is no timeout, and the hook is not told it is one."""
+    seen: list[Any] = []
+    entered = asyncio.Event()
+
+    async def around(call: ToolCall) -> AsyncGenerator[None, ActionOutcome]:
+        entered.set()
+        try:
+            yield
+        except BaseException as finished:
+            seen.append(type(finished))
+            raise
+
+    binding = ToolBinding(
+        _Host().catalogue().mount(_TOOLS[0]), host=ops_fixture().host, caller=lambda: CALLER, around=around
+    )
+    call = asyncio.create_task(binding.call({"action": "note_take", "note": "slow"}))
+    await entered.wait()
+    await asyncio.sleep(0)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    assert seen == [GeneratorExit], "closed at its yield, never handed a CallTimedOut"
 
 
 async def test_a_slow_hook_after_the_action_never_turns_its_outcome_into_a_timeout() -> None:
@@ -616,6 +670,24 @@ async def test_a_call_timeout_function_is_read_once_as_each_call_starts() -> Non
     assert reads == [30.0, 0.05], "once per call"
 
 
+async def test_the_tool_call_carries_the_timeout_this_call_read() -> None:
+    settings = iter([30.0, 12.5])
+    seen: list[float] = []
+
+    async def around(call: ToolCall) -> AsyncGenerator[None, ActionOutcome]:
+        seen.append(call.timeout_s)
+        yield
+
+    def annotate(call: ToolCall, outcome: ActionOutcome) -> None:
+        seen.append(call.timeout_s)
+
+    server = _served(_Host(), around=around, annotate=annotate, call_timeout_s=lambda: next(settings))
+    for _ in range(2):
+        await _call(server, {"action": "note_take", "note": "ok"})
+    _, _, _ = await _call(_served(_Host(), around=around), {"action": "note_take", "note": "ok"})
+    assert seen == [30.0, 30.0, 12.5, 12.5, DEFAULT_CALL_TIMEOUT_S], "the value each call read, to both hooks"
+
+
 async def test_a_call_timed_out_reports_the_timeout_that_call_read() -> None:
     mounted = _Host().catalogue().mount(_TOOLS[0])
     binding = ToolBinding(mounted, host=ops_fixture().host, caller=lambda: CALLER, call_timeout_s=lambda: 0.04)
@@ -658,7 +730,9 @@ async def test_a_note_is_a_block_after_the_outcome_s_and_changes_nothing_else() 
         assert (blocks[:1], structured, is_error) == plain, "the outcome's own block, data and flag are untouched"
         assert blocks[1:] == ([] if note == "ok" else ["the pricing catalogue is stale, so every model is unpriced"])
     assert [(call.action, outcome.is_error) for call, outcome in seen] == [("note_take", False), ("note_take", True)]
-    assert seen[0][0] == ToolCall(tool="host", action="note_take", caller=CALLER, host=host)
+    assert seen[0][0] == ToolCall(
+        tool="host", action="note_take", caller=CALLER, host=host, timeout_s=DEFAULT_CALL_TIMEOUT_S
+    )
 
 
 async def test_an_async_annotator_and_an_empty_note() -> None:
@@ -860,7 +934,7 @@ async def test_a_host_resolution_holding_no_host_is_named() -> None:
 
 def test_a_host_resolution_and_a_tool_call_are_frozen() -> None:
     resolution = HostResolution(ops_fixture().host, context="ctx")
-    call = ToolCall(tool="host", action=None, caller=CALLER, host=None)
+    call = ToolCall(tool="host", action=None, caller=CALLER, host=None, timeout_s=1.0)
     assert call.context is None
     with pytest.raises(dataclasses.FrozenInstanceError):
         resolution.context = "changed"  # type: ignore[misc]

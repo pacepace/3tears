@@ -171,6 +171,8 @@ class ToolCall:
         caller: Who is calling, and their scope, as the caller resolver answered.
         host: The host the call works in — the one mounted, or the one the host resolver answered; ``None`` when
             the host resolver refused the call, so none was resolved.
+        timeout_s: The call timeout this call is held to, in seconds: the value it read as it started
+            (:data:`CallTimeout`), and the one a :class:`CallTimedOut` thrown in at an ``around`` hook's yield reports.
         context: The ``context`` of the :class:`HostResolution` the host resolver answered; ``None`` when it
             answered a bare host, when the binding has one host and no resolver, or when the resolver refused.
     """
@@ -179,6 +181,7 @@ class ToolCall:
     action: str | None
     caller: Caller
     host: OpsHost | None
+    timeout_s: float
     context: Any = None
 
 
@@ -206,9 +209,15 @@ class ToolCall:
 #:
 #: **State the host resolver found reaches the hook on the call.** A resolver answering a :class:`HostResolution`
 #: hands its ``context`` to the hook as :attr:`ToolCall.context`, beside the host it resolved as
-#: :attr:`ToolCall.host` — the tenant, an audit record — for this call alone. A call that raises — a defect, not a refusal — is thrown in at the yield, so a ``with`` or
+#: :attr:`ToolCall.host` — the tenant, an audit record — for this call alone.
+#:
+#: A call that raises — a defect, not a refusal — is thrown in at the yield, so a ``with`` or
 #: ``finally`` closes; the hook cannot catch it on the call's behalf, since it propagates whatever the
-#: hook does. **It cannot change the outcome**: what it yields is discarded, and the outcome is frozen.
+#: hook does. **A call that outlives its timeout has** :class:`CallTimedOut` **thrown in at the yield** — the timeout
+#: it read, as :attr:`ToolCall.timeout_s` — so the hook tells a timeout from a cancel: a call cancelled from outside
+#: (the client gave up, the process is stopping) is closed at the yield instead, and its ``finally`` runs with nothing
+#: thrown. Either way the call goes on as it would with no hook: :class:`CallTimedOut`, or the cancellation,
+#: propagates. **It cannot change the outcome**: what it yields is discarded, and the outcome is frozen.
 #:
 #: **A hook that raises is logged, and the call goes on as if there were no hook.** The hook observes;
 #: if its failure could fail the call, an exporter outage would refuse every eval call, and a failure
@@ -341,7 +350,7 @@ class ToolBinding:
 
         Raises:
             CallTimedOut: The call outlived the call timeout before its action finished; the action was stopped,
-                and the hook closed. It reports the timeout this call read.
+                and a :class:`CallTimedOut` thrown into the hook at its yield. It reports the timeout this call read.
             ValueError: ``call_timeout_s`` is a function and answered anything but a positive number; nothing ran.
             TypeError: A resolver answered with something other than a
                 :class:`~threetears.evals.actions.Caller`, or an :class:`~threetears.evals.ops.OpsHost` or a
@@ -404,6 +413,7 @@ async def _answered(binding: ToolBinding, arguments: dict[str, Any]) -> tuple[Ac
                 action=action if isinstance(action, str) else None,
                 caller=caller,
                 host=host,
+                timeout_s=timeout_s,
                 context=context,
             )
             if binding.around is not None:
@@ -416,7 +426,9 @@ async def _answered(binding: ToolBinding, arguments: dict[str, Any]) -> tuple[Ac
                     outcome = await binding.mounted.call(arguments, host=host, caller=caller)
                 except BaseException as defect:
                     if hook is not None:
-                        await _closed_within(hook, observed, defect)
+                        # Stopped by this call's own deadline, the hook is told so; a cancel from outside closes it.
+                        stopped = isinstance(defect, asyncio.CancelledError) and deadline.expired()
+                        await _closed_within(hook, observed, CallTimedOut(timeout_s) if stopped else defect)
                     raise
     except TimeoutError:
         # A TimeoutError the caller resolver or the action raised of its own is not this call outliving its

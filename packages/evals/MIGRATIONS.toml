@@ -34,12 +34,14 @@
 version = "unreleased"
 since = "v0.66.0-evaladopt.10"
 summary = """
-What adopting .10 found (gaps 40–41): the FastMCP transport enters the `around` hook for a host resolver's refusal,
-and hands per-call state from the host resolver to both hooks on `ToolCall`.
+What adopting .10 found (gaps 40–47): the FastMCP transport enters the `around` hook for a host resolver's refusal,
+hands per-call state from the host resolver to both hooks on `ToolCall`, says to read before retrying a timed-out
+call, and throws `CallTimedOut` into the hook of a call that outlived its timeout.
 """
 notes = [
     "`transports.fastmcp`: a host resolver's `kernel.EvalServiceError` refusal now enters the `around` hook, which runs to its yield and is handed the refused `ActionOutcome` as its outcome, as for an action's; it entered no hook before. A hook that assumed every outcome it sees came from an action that ran now also sees these. A caller resolver's refusal still enters no hook. A host that wrote its audit line for such a refusal from `annotate` (which already saw it) writes it once, from one hook or the other.",
-    "`transports.fastmcp.ToolCall` takes a required `host` (`OpsHost | None`) and an optional `context`: a host that builds a `ToolCall` itself, in a test of its hooks, passes `host=`. A `host_resolver` answering a bare `OpsHost` is unchanged.",
+    "`transports.fastmcp.ToolCall` takes a required `host` (`OpsHost | None`) and `timeout_s` (`float`, the call timeout the call read), and an optional `context`: a host that builds a `ToolCall` itself, in a test of its hooks, passes `host=` and `timeout_s=`. A `host_resolver` answering a bare `OpsHost` is unchanged.",
+    "`transports.fastmcp`: an `around` hook whose call outlives its timeout has `CallTimedOut` thrown in at its yield, where it was closed (a `GeneratorExit`) before. A hook catching `Exception` at its yield to record a defect now catches the timeout too, and can tell it by its type; a call cancelled from outside still closes the hook. The call still raises `CallTimedOut`, whatever the hook does.",
 ]
 
 [[release]]

@@ -251,8 +251,8 @@ mount_fastmcp(
   something other than a `Caller`, or an `OpsHost` or a `HostResolution` holding one, fails the same way, with a `TypeError` naming what it
   answered.
 - **`around`** wraps every call to every tool, for tracing, metrics or an audit log. It is an async generator
-  function. It receives a `ToolCall` (the tool, the `action` argument as given, the caller, the resolved host and
-  the host resolver's `context`), yields once,
+  function. It receives a `ToolCall` (the tool, the `action` argument as given, the caller, the resolved host, the
+  timeout the call read and the host resolver's `context`), yields once,
   and receives the `ActionOutcome` at the yield. Anything it opens before the yield is current while the
   action runs, so a span it starts is the parent of the action's own; a `ContextVar` it sets, or a `with` it
   enters, before the yield is what the action sees, and its code after the yield undoes it in the call's own
@@ -267,7 +267,9 @@ mount_fastmcp(
   that raised or timed out. One that raises, answers something other than a string, or overruns
   `HOOK_TAIL_TIMEOUT_S` is logged, and the call returns as if there were no note.
 - **The one call timeout holds the whole call**, the caller and host resolvers and the hook with it. A call it
-  stops is closed in the hook at its yield, so the hook's `finally` runs, and the client gets the timeout's
+  stops has `CallTimedOut` thrown in at the hook's yield, so the hook's `except CallTimedOut` and `finally` run and
+  it can tell a timeout from a cancel: a call cancelled from outside (the client gave up, the process is stopping)
+  closes the hook with nothing thrown. `call.timeout_s` is the timeout this call read. The client gets the timeout's
   error result, naming the timeout that call read and saying the action may have completed, or begun a
   write, before it was stopped: read before calling again (`job_poll` for a job it may have started, or the list
   for what it was writing), or a retried launch is paid for twice. `call_timeout_s` takes a number, checked positive at mount,

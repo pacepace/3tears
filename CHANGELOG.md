@@ -24,6 +24,11 @@ packages (bumped in lock-step).
   and to read before calling it again: `job_poll` for a job it may have started, or the list for what it was
   writing. A `run_launch` stopped after its job record was written, retried blind, was a second paid launch. The
   text is read by the refusal-remedy reach check, so every action it names is one the catalogue has.
+- **The `around` hook tells a timeout from a cancel (gap 47).** `ToolCall` carries `timeout_s`, the call timeout this
+  call read as it started. A call that outlives it has `CallTimedOut` thrown in at the hook's yield, where it was
+  closed with nothing thrown before; a call cancelled from outside (the client gave up, the process is stopping) is
+  still closed. The outcome and what propagates are unchanged: the call still raises `CallTimedOut`, whatever the hook
+  does. A behaviour change for a host's hook: see `MIGRATIONS.toml`.
 
 ### 3tears-evals: the judge temperature measurement and the prompt-comparison test set (#633)
 
