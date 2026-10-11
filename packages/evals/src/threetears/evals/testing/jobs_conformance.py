@@ -200,6 +200,8 @@ def _call_case(action: Action) -> JobsConformanceCase:
                 await action.handler(built.host, built.caller, params)
             # prawduct:ok-broad-except — the example's ids name nothing; how the call ends is not this case's question
             except Exception:
+                # NOSILENT: the example's ids name nothing in the conformance host, so the call may refuse; how it
+                # ends is not this case's question -- only whether it made a completion request, read just below.
                 pass
             if guard.outside:
                 raise _fail(action, rule, f"its example call made {', '.join(guard.outside)}")
