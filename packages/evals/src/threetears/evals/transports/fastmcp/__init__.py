@@ -25,7 +25,9 @@ These hooks are what a multi-tenant host needs, so no host rebuilds :meth:`Catal
   read from the request context like the caller is. Exactly one of the two is given. **A resolver may refuse**:
   one that raises an :class:`~threetears.evals.kernel.EvalServiceError` — a host still booting, a tenant
   suspended — answers the call as a refusal with that error's kind, status and remedy, exactly as an action's
-  refusal is answered; anything else it raises is a defect. **A resolver may hand state on**: one that answers a
+  refusal is answered; anything else it raises is a defect. The error it raised reaches both hooks whole, as
+  :attr:`ToolCall.refused`, so a host whose one error class covers two cases — a host booting, one that failed to
+  boot — tells them apart by the instance's own attributes. **A resolver may hand state on**: one that answers a
   :class:`HostResolution` in place of the bare host carries a ``context`` of the host's own — the tenant it
   resolved, a span, an audit record — to both hooks as :attr:`ToolCall.context`, beside the host as
   :attr:`ToolCall.host`, so no per-call state passes through context variables the resolver must reset.
@@ -175,6 +177,10 @@ class ToolCall:
             (:data:`CallTimeout`), and the one a :class:`CallTimedOut` thrown in at an ``around`` hook's yield reports.
         context: The ``context`` of the :class:`HostResolution` the host resolver answered; ``None`` when it
             answered a bare host, when the binding has one host and no resolver, or when the resolver refused.
+        refused: The :class:`~threetears.evals.kernel.EvalServiceError` the host resolver raised, the very instance —
+            a host's own subclass with its own attributes — when it refused the call, and ``host`` and ``context``
+            are ``None``; ``None`` in every other case. The outcome carries only the refusal's kind and status, which
+            two cases of one error class share; this is how a hook tells them apart.
     """
 
     tool: str
@@ -183,6 +189,7 @@ class ToolCall:
     host: OpsHost | None
     timeout_s: float
     context: Any = None
+    refused: EvalServiceError | None = None
 
 
 #: Wraps every call for a host's tracing, metrics or audit log, seeing the call and its outcome and
@@ -204,7 +211,9 @@ class ToolCall:
 #: **A host resolver's refusal enters the hook too.** The caller is known, so the :class:`ToolCall` exists: the hook
 #: runs to its yield and is then handed the refusal as its outcome, exactly as an action's — no action runs between,
 #: and an audit log written from the hook records "no host could serve this call" like any other refused call. Its
-#: :class:`ToolCall` has ``host`` and ``context`` ``None``, since no host was resolved. A call refused while its
+#: :class:`ToolCall` has ``host`` and ``context`` ``None``, since no host was resolved, and carries the error the
+#: resolver raised, the very instance, as :attr:`ToolCall.refused` — so a hook logs a host still booting at one level
+#: and one that failed to boot at another, though both answer the same kind and status. A call refused while its
 #: *caller* was being resolved never enters the hook, since there is no :class:`ToolCall` without a caller.
 #:
 #: **State the host resolver found reaches the hook on the call.** A resolver answering a :class:`HostResolution`
@@ -252,7 +261,8 @@ CallHook = Callable[[ToolCall], AsyncGenerator[None, ActionOutcome]]
 #: made, and one the host resolver made — but not a call refused while its caller was being resolved, since there is
 #: no :class:`ToolCall` without one, nor a call that raised or outlived its timeout, which has no outcome. Its
 #: :class:`ToolCall` carries the resolved host and the resolver's ``context`` (:class:`HostResolution`) as ``around``'s
-#: does — both ``None`` for a host resolver's refusal. **An
+#: does — both ``None`` for a host resolver's refusal, which it sees as :attr:`ToolCall.refused`, the error the
+#: resolver raised. **An
 #: annotator that raises, answers something other than a string, or overruns** :data:`HOOK_TAIL_TIMEOUT_S` **is
 #: logged, and the call returns as if there were no hook**: as with ``around``, the outcome is already the caller's,
 #: and a note that failed must not turn a launch that spent into an error the agent repeats. Like ``around``'s code
@@ -399,12 +409,14 @@ async def _answered(binding: ToolBinding, arguments: dict[str, Any]) -> tuple[Ac
             host = binding.host
             context: Any = None
             host_refusal: ActionOutcome | None = None
+            refused_by: EvalServiceError | None = None
             if binding.host_resolver is not None:
                 try:
                     resolved = await _resolved(binding.host_resolver())
                 except EvalServiceError as refused:
                     # The caller is known, so the hook is entered and handed this refusal as its outcome.
                     host_refusal = binding.mounted.refused_by_host(refused, action=action)
+                    refused_by = refused
                 else:
                     host, context = _resolution(binding, resolved)
             # Built once the host is known, so the call the hooks hold carries it and never changes under them.
@@ -415,6 +427,7 @@ async def _answered(binding: ToolBinding, arguments: dict[str, Any]) -> tuple[Ac
                 host=host,
                 timeout_s=timeout_s,
                 context=context,
+                refused=refused_by,
             )
             if binding.around is not None:
                 hook = await _entered(binding.around, observed)
