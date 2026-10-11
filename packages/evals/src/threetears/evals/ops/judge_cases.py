@@ -5,7 +5,8 @@ stored output and the criterion it was judged on, frozen with the person labels 
 ``judge`` template (:func:`~threetears.evals.run.freeze_judge_cases`). :func:`judge_cases_freeze` is how a surface
 takes that step, answering with the receipt every surface renders
 (:class:`~threetears.evals.run.JudgeCaseFreezeReport`): the cases, the case set listing them, and every result it
-could not freeze, with why.
+could not freeze, with why. :func:`judge_template_create` writes the judge template they are frozen into — the
+judge kind and an intent, which is all a judge template is.
 """
 
 from __future__ import annotations
@@ -14,11 +15,16 @@ from typing import Annotated
 
 from pydantic import Field
 
+from threetears.evals.kernel.errors import ConflictError, ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.ops.runs import LaunchArguments
+from threetears.evals.kernel.judge_cases import JUDGE_KIND
+from threetears.evals.kernel.remedies import FIND_TEMPLATE
+from threetears.evals.ops.host import OpsHost
+from threetears.evals.ops.runs import LaunchArguments, TemplateLine
 from threetears.evals.run.authoring import get_template
 from threetears.evals.run.judge_kind import JudgeCaseFreezeReport, freeze_judge_cases
 from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema.models import EvalTemplate
 
 
 class JudgeCasesFreeze(EvalBaseModel):
@@ -75,4 +81,68 @@ def judge_cases_freeze(host: EvalHost, freeze: JudgeCasesFreeze, scope_id: str) 
     )
 
 
-__all__ = ["JudgeCasesFreeze", "judge_cases_freeze"]
+class JudgeTemplateCreate(EvalBaseModel):
+    """What authoring a judge template names: what it is called and what its judge campaign sets out to measure.
+
+    Nothing else: a judge template is the judge kind and an intent, its cases carrying everything a trial reads.
+    """
+
+    template_name: str = Field(min_length=1, description="The judge template's name, unique in the scope.")
+    intent: str = Field(
+        min_length=1, description="What its judge campaign measures, in a sentence a reader of its report is told."
+    )
+
+
+def judge_template_create(host: OpsHost, create: JudgeTemplateCreate, scope_id: str) -> TemplateLine:
+    """Write a template of the judge kind — what :func:`judge_cases_freeze` freezes cases into and a judge campaign launches.
+
+    Wholly the package's: the judge kind, the name and the intent, and no field the judge kind would ignore — the
+    dispatch refuses one (:attr:`~threetears.evals.run.LaunchableKind.ignored_template_fields`). So no host check
+    has anything to read on it, and it is refused only where it could never run: on a host whose launch registry
+    has no judge kind.
+
+    Args:
+        host: The launching host, whose registry must launch the judge kind and whose store receives the template.
+        create: What the template is called and measures.
+        scope_id: The scope it lives in.
+
+    Returns:
+        The template as written.
+
+    Raises:
+        ValidationFailedError: The host launches no judge kind.
+        ConflictError: A template of that name is already in the scope.
+        StorageError: The template could not be written.
+    """
+    if JUDGE_KIND not in host.launch.kinds:
+        raise ValidationFailedError(
+            f"host {host.eval_host.profile.host_id!r} launches no {JUDGE_KIND!r} kind, so a judge template could never "
+            "run here",
+            remedy=(
+                f"register launchable_judge_kind under {JUDGE_KIND!r} in the LaunchHost's kinds and declare "
+                "JUDGE_KIND_CONTRACT on its profile"
+            ),
+        )
+    storage = host.eval_host.storage
+    if storage.load_template_by_name(create.template_name, scope_id) is not None:
+        raise ConflictError(
+            f"a template named '{create.template_name}' already exists",
+            remedy=f"name the judge template something else, or freeze into the existing one ({FIND_TEMPLATE})",
+        )
+    template = EvalTemplate(
+        scope_id=scope_id,
+        name=create.template_name,
+        intent=create.intent,
+        candidate_kind=JUDGE_KIND,
+    )
+    storage.save_template(template)
+    return TemplateLine(
+        id=template.id,
+        name=template.name,
+        candidate_kind=template.candidate_kind,
+        intent=template.intent,
+        archived=template.archived,
+    )
+
+
+__all__ = ["JudgeCasesFreeze", "JudgeTemplateCreate", "judge_cases_freeze", "judge_template_create"]

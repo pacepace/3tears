@@ -247,6 +247,8 @@ The template then launches through `run_launch`, by the reporter kind the host r
 A judge campaign (the `judge` kind) makes a judge configuration the subject: its model, its prompt per criterion and
 its temperature. It starts from frozen cases, never generated ones.
 
+- `judge_template_create` (write) writes the judge template (`template_name`, `intent`): the judge kind and an intent,
+  nothing else, since its cases carry everything a trial reads. Refused on a host that launches no judge kind.
 - `judge_cases_freeze` (write) freezes judged runs (`judged_run_ids`)'s stored outputs into cases of a judge template: per judged dim of
   each result, the evidence its judge read and the person ratings given on it as labels. With `into_case_set`, it mints
   the set a launch targets. It answers with each case and every result it skipped, with why.

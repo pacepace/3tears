@@ -56,6 +56,7 @@ from threetears.evals.ops import (
     PivotTable,
     ReportDocument,
     JudgeCasesFreeze,
+    JudgeTemplateCreate,
     JudgeProfileListing,
     JudgeProfileRecording,
     JudgeProfilesRecord,
@@ -71,6 +72,7 @@ from threetears.evals.ops import (
     RunsBisected,
     RunsCompared,
     ScoreExport,
+    TemplateLine,
     TemplateListing,
     UndescribableArmsListing,
     analyses_list,
@@ -97,6 +99,7 @@ from threetears.evals.ops import (
     report_read,
     reporter_case_archive,
     judge_cases_freeze,
+    judge_template_create,
     judge_profiles_list,
     judge_profiles_record,
     reporter_case_freeze,
@@ -394,6 +397,10 @@ class ReportReadParams(EvalBaseModel):
 
     campaign_id: CampaignId
     format: Format = "markdown"
+
+
+class JudgeTemplateCreateParams(JudgeTemplateCreate):
+    """``judge_template_create`` — the operation's own arguments, declared once on :class:`~threetears.evals.ops.JudgeTemplateCreate`."""
 
 
 class JudgeCasesFreezeParams(JudgeCasesFreeze):
@@ -818,6 +825,13 @@ async def _report_read(host: OpsHost, caller: Caller, params: ReportReadParams) 
 async def _bars_propose(host: OpsHost, caller: Caller, params: CampaignParams) -> BarProposals:
     eval_host = host.eval_host
     return await run_blocking(eval_host.blocking_executor, bars_propose, eval_host, params.campaign_id, caller.scope_id)
+
+
+async def _judge_template_create(host: OpsHost, caller: Caller, params: JudgeTemplateCreateParams) -> TemplateLine:
+    create = JudgeTemplateCreate.model_validate(params.model_dump())
+    return await run_blocking(
+        host.eval_host.blocking_executor, judge_template_create, host, create, caller.scope_id
+    )
 
 
 async def _judge_cases_freeze(host: OpsHost, caller: Caller, params: JudgeCasesFreezeParams) -> JudgeCaseFreezeReport:
@@ -1668,6 +1682,26 @@ def engine_actions() -> tuple[Action, ...]:
                 "listed rather than refused, since this is where it is found; while one is listed, which case is "
                 "live cannot be decided. A pair holding more than one live case is named, since every launch of the "
                 "template refuses until one freeze supersedes them all."
+            ),
+        ),
+        Action(
+            name="judge_template_create",
+            summary="Write a judge template: the judge kind and an intent, which judge cases are frozen into.",
+            workflow=ANALYSE,
+            permission="write",
+            params=JudgeTemplateCreateParams,
+            result=TemplateLine,
+            handler=_judge_template_create,
+            render=render.render_template_line,
+            example={
+                "template_name": "faithfulness judge",
+                "intent": "Score how faithfully an extraction reproduces its invoice.",
+            },
+            detail=(
+                "A judge campaign's template is the package's, not the host's: the judge kind, a name and an intent, "
+                "and nothing else — its cases carry everything a trial reads. Freeze cases into it with "
+                "judge_cases_freeze, then run_launch it. Refused on a host that does not launch the judge kind, and "
+                "for a name the scope already holds. Calls no model."
             ),
         ),
         Action(

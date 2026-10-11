@@ -207,7 +207,8 @@ def _judge_template(template: EvalTemplate) -> EvalTemplate:
     if template.candidate_kind != JUDGE_KIND:
         raise ValidationFailedError(
             f"template {template.id!r} is of kind {template.candidate_kind!r}, not {JUDGE_KIND!r}; a judge case is "
-            f"frozen into a template of the {JUDGE_KIND!r} kind, whose launch is what runs it"
+            f"frozen into a template of the {JUDGE_KIND!r} kind, whose launch is what runs it",
+            remedy="write one with judge_template_create",
         )
     return template
 

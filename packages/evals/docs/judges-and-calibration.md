@@ -465,6 +465,10 @@ prompt, another temperature), make the judge the subject of a campaign of its ow
 - **The grade is code.** Each trial lands `judge_parse_valid` and, on a scored trial of a labelled case,
   `judge_label_agreement` on its `host_measures`. The whole answer goes on its `kind_payload`.
 
+A judge template is the package's, not the host's: the judge kind, a name and an intent
+(`ops.judge_template_create`, the `judge_template_create` action), on a host that registers `launchable_judge_kind`.
+Any other field on it is refused at the launch, since the judge kind never acts on one.
+
 Freeze cases from a judged run into a judge template, and mint the case set a launch targets:
 
 ```python

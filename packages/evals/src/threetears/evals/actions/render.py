@@ -65,6 +65,7 @@ from threetears.evals.ops import (
     RunsCompared,
     ScoreExport,
     SecondJudgeRead,
+    TemplateLine,
     TemplateListing,
     bar_proposals_text,
     UndescribableArmsListing,
@@ -234,6 +235,11 @@ _ACTION_TOKEN = re.compile(r"\b[a-z]+(?:_[a-z]+)+\b")
 
 
 # --- results -----------------------------------------------------------------------------------------
+
+
+def render_template_line(template: TemplateLine) -> str:
+    """One template, as written."""
+    return f"template {template.id}: {template.name} — kind {template.candidate_kind}; {template.intent}"
 
 
 def render_templates(listing: TemplateListing) -> str:
