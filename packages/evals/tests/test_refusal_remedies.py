@@ -21,12 +21,20 @@ an action that took no template. So, over every refusal the engine raises:
 from __future__ import annotations
 
 import ast
+import dataclasses
+import importlib
+import inspect
+import pkgutil
 import re
 from pathlib import Path
 
+import pydantic
+
 import pytest
 
+import threetears.evals
 import threetears.evals.kernel.errors as errors
+from threetears.evals import PUBLIC_ROOTS
 import threetears.evals.kernel.remedies as remedies
 from threetears.evals.actions import ToolSpec
 from threetears.evals.actions.engine import eval_catalogue
@@ -190,25 +198,153 @@ class TestEveryRefusalNamesARemedy:
         )
 
 
+#: A word written like a call or a field: lowercase parts joined by underscores, not qualified by a dotted prefix.
+_IDENTIFIER = re.compile(r"(?<![\w.])[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?![\w])")
+
+#: A public name written qualified by the public root a host imports it from (``run.start_run``,
+#: ``analysis.update_campaign()``): the one way a remedy names a Python call, so its reader knows where it is.
+_QUALIFIED = re.compile(r"(?<![\w.])(?:threetears\.evals\.)?((?:[a-z_]+\.)*[a-z_]+)\.([A-Za-z_][A-Za-z0-9_]*)(?![\w])")
+
+
+#: A value quoted in a remedy, as an argument's value is written: ``'mean_score'``.
+_QUOTED = re.compile(r"'[^'\s]*'")
+
+
+def _module_strings() -> dict[str, str]:
+    """Every module-level string constant in the package, by name: what a remedy written as a name says."""
+    found: dict[str, str] = {}
+    for path in sorted(_SOURCE.rglob("*.py")):
+        for node in ast.parse(path.read_text(encoding="utf-8")).body:
+            targets = (
+                node.targets
+                if isinstance(node, ast.Assign)
+                else [node.target]
+                if isinstance(node, ast.AnnAssign)
+                else []
+            )
+            value = getattr(node, "value", None)
+            text = _literal(value) if value is not None else ""
+            for target in targets:
+                if isinstance(target, ast.Name) and text:
+                    found[target.id] = text
+    return found
+
+
+def _literal(node: ast.expr | None) -> str:
+    """A string expression's literal words: a constant, an f-string's literal parts, a join, both branches of a choice."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return " ".join(_literal(part.value if isinstance(part, ast.FormattedValue) else part) for part in node.values)
+    if isinstance(node, ast.BinOp):
+        return f"{_literal(node.left)} {_literal(node.right)}"
+    if isinstance(node, ast.IfExp):
+        return f"{_literal(node.body)} {_literal(node.orelse)}"
+    if isinstance(node, ast.FormattedValue):
+        return _literal(node.value)
+    return ""
+
+
+def _remedies_written() -> dict[str, str]:
+    """Every remedy the package writes, by where: wherever it is built, not only at a refusal's construction.
+
+    A remedy handed to any call as ``remedy=`` (a literal, an f-string, or a name, read at the constant it names);
+    every constant, attribute or variable named for a remedy (``FIND_RUN``, ``self.remedy = ...``); and every
+    string a function named for one returns from (``registry.axis_remedy(...)`` is read where it is defined). A
+    remedy handed on from a caught refusal (``remedy=e.remedy``) is read where that refusal was built.
+    """
+    constants = _module_strings()
+    written: dict[str, str] = {}
+    for path in sorted(_SOURCE.rglob("*.py")):
+        where = path.relative_to(_SOURCE)
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.keyword) and node.arg == "remedy":
+                text = constants.get(node.value.id, "") if isinstance(node.value, ast.Name) else _literal(node.value)
+                if isinstance(node.value, ast.Attribute) and isinstance(node.value.value, ast.Name):
+                    text = text or constants.get(node.value.attr, "")
+                written[f"{where}:{node.value.lineno}"] = text
+            elif isinstance(node, ast.Assign | ast.AnnAssign):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                named = [
+                    target.id if isinstance(target, ast.Name) else target.attr
+                    for target in targets
+                    if isinstance(target, ast.Name | ast.Attribute)
+                ]
+                if any("remedy" in name.lower() or name.startswith("FIND_") for name in named):
+                    written[f"{where}:{node.lineno}"] = _literal(node.value)
+            elif isinstance(node, ast.FunctionDef) and "remedy" in node.name:
+                # Every string it builds its remedy from, its docstring aside: a remedy assembled from clauses is
+                # read clause by clause.
+                body = node.body[1:] if ast.get_docstring(node) is not None else node.body
+                built = [
+                    part
+                    for statement in body
+                    for part in ast.walk(statement)
+                    if isinstance(part, ast.JoinedStr)
+                    or (isinstance(part, ast.Constant) and isinstance(part.value, str))
+                ]
+                written[f"{where}:{node.lineno} {node.name}()"] = " ".join(_literal(part) for part in built)
+    written |= {f"remedies.{name}": getattr(remedies, name) for name in remedies.__all__}
+    written |= {"STORAGE_REMEDY": STORAGE_REMEDY, "PROVIDER_REMEDY": PROVIDER_REMEDY}
+    return written
+
+
+def _declared_words() -> set[str]:
+    """What a remedy may name that is no call: a field or parameter some model, record or function declares, or a
+    value the package spells as a constant (a kind's name)."""
+    words: set[str] = set()
+    for info in pkgutil.walk_packages(threetears.evals.__path__, "threetears.evals."):
+        try:
+            module = importlib.import_module(info.name)
+        except ImportError:
+            continue  # an extra this environment lacks: its words are read where it is installed
+        for value in vars(module).values():
+            if isinstance(value, str) and _IDENTIFIER.fullmatch(value):
+                words.add(value)
+            if getattr(value, "__module__", None) != module.__name__:
+                continue
+            if isinstance(value, type) and issubclass(value, pydantic.BaseModel):
+                words |= set(value.model_fields)
+            elif isinstance(value, type) and dataclasses.is_dataclass(value):
+                words |= {field.name for field in dataclasses.fields(value)}
+            if callable(value):
+                try:
+                    words |= set(inspect.signature(value).parameters)
+                except TypeError, ValueError:
+                    continue  # a builtin or a class with no signature to read
+    return words
+
+
 class TestEveryRemedyIsReachable:
-    def test_every_action_a_remedy_names_is_in_the_catalogue(self) -> None:
+    def test_every_call_a_remedy_names_is_one_its_caller_can_make(self) -> None:
+        """Each identifier is an action in the catalogue, a public name written qualified by its root, or a word the
+        package declares (a parameter, a field, a kind's name) — never a bare Python name, which a caller reaching the
+        refusal through an action cannot call, and which ``add_runs_to_campaign`` and ``start_run`` were."""
         catalogue = {action.name for action in eval_catalogue().actions}
-        verbs = {name.rsplit("_", 1)[-1] for name in catalogue} | {"update", "delete", "create", "list", "get"}
-        texts = {
-            where: _remedy_text(keyword.value)
-            for where, call in _calls()
-            for keyword in call.keywords
-            if keyword.arg == "remedy"
-        }
-        texts |= {f"remedies.{name}": getattr(remedies, name) for name in remedies.__all__}
-        texts |= {"STORAGE_REMEDY": STORAGE_REMEDY, "PROVIDER_REMEDY": PROVIDER_REMEDY}
-        unreachable = sorted(
-            f"{where}: {token}"
-            for where, text in texts.items()
-            for token in _TOKEN.findall(text)
-            if _action_like(token, verbs) and token not in catalogue
+        declared = _declared_words()
+        exports = {root: set(importlib.import_module(root).__all__) for root in PUBLIC_ROOTS}
+        unreachable: list[str] = []
+        for where, text in _remedies_written().items():
+            for qualifier, name in _QUALIFIED.findall(text):
+                root = f"threetears.evals.{qualifier}"
+                if root in exports and name not in exports[root]:
+                    unreachable.append(f"{where}: {qualifier}.{name} (not exported from {root})")
+            # A quoted word is a value the caller types ('mean_score'), not a call it makes.
+            bare = _QUOTED.sub(" ", _QUALIFIED.sub(" ", text))
+            unreachable += [
+                f"{where}: {token}"
+                for token in _IDENTIFIER.findall(bare)
+                if token not in catalogue and token not in declared
+            ]
+        assert sorted(unreachable) == [], f"remedies naming a call nobody can make: {sorted(unreachable)}"
+
+    def test_the_reach_check_reads_names_calls_and_functions(self) -> None:
+        """Where a remedy is written as a name, a call or a function's return, its words are read, not skipped."""
+        written = _remedies_written()
+        assert any(text == remedies.FIND_RUN for text in written.values()), "a remedy=FIND_RUN reads as its words"
+        assert any(where.endswith("axis_remedy()") and text for where, text in written.items()), (
+            "a function building a remedy is read at its definition"
         )
-        assert unreachable == [], f"remedies naming a call nobody can make: {unreachable}"
 
 
 class TestARefusedCallStatesItsRemedy:
