@@ -7,19 +7,27 @@ What a host gets without rebuilding :meth:`CatalogueTool.over`:
 - **The host is resolved per call** — sync or async, after the caller — when ``host_resolver`` is given
   in place of ``host``; exactly one of the two is accepted, refused before any tool is added.
 - **A resolver that fails fails the call before anything runs**: no action, no hook. One that answers
-  with the wrong type is refused naming it.
+  with the wrong type is refused naming it. **One that refuses** — raises an engine error, a host's own
+  subclass among them — answers the call as a refusal with that error's kind, status and remedy, read as an
+  action's refusal is, still before any action or hook.
 - **One ``around`` hook wraps each call**: it sees the tool, the action as given, the caller and the
   outcome; what it opens before its yield is current while the action runs; a defect is thrown in at the
   yield and still propagates. It cannot change the outcome, and a hook that raises — before its yield,
   after it, or by yielding twice — is logged while the call goes on as if there were no hook. A hook that
-  is not an async generator function is refused at mount.
+  is not an async generator function is refused at mount. What a hook sets in a context variable before
+  its yield is the action's, and its tail undoes it in the call's own task.
+- **The call timeout may be a function**, read once as each call starts; the value a call read is the one
+  it is held to and the one its timeout reports, and a value that is not positive fails that call naming it.
+- **One ``annotate`` hook adds a note** as a text block after the outcome's, changing nothing else; one that
+  raises, answers no string or overruns is logged, and the call returns as if there were no hook.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
@@ -40,7 +48,14 @@ from threetears.evals.kernel import (
 from threetears.evals.ops import OpsHost
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.transports import fastmcp as fastmcp_transport
-from threetears.evals.transports.fastmcp import CallHook, ToolBinding, ToolCall, mount_fastmcp
+from threetears.evals.transports.fastmcp import (
+    CallAnnotator,
+    CallHook,
+    CallTimedOut,
+    ToolBinding,
+    ToolCall,
+    mount_fastmcp,
+)
 from packages.evals.tests.ops_support import CALLER, ops_fixture
 
 #: Set by a hook before its yield; read by the action, to show the hook's context is the call's.
@@ -127,6 +142,13 @@ async def _call(server: FastMCP, arguments: dict[str, Any]) -> tuple[str, dict[s
     async with Client(server) as client:
         result = await client.call_tool("host", arguments, raise_on_error=False)
     return result.content[0].text, result.structured_content, result.is_error
+
+
+async def _blocks(server: FastMCP, arguments: dict[str, Any]) -> tuple[list[str], dict[str, Any] | None, bool]:
+    """Every text block a call returns, in order, with its structured content and error flag."""
+    async with Client(server) as client:
+        result = await client.call_tool("host", arguments, raise_on_error=False)
+    return [block.text for block in result.content], result.structured_content, result.is_error
 
 
 # =============================================================================
@@ -469,3 +491,241 @@ async def test_a_hook_that_will_not_close_does_not_hold_a_stopped_call_open(
     assert "around hook ran past its 0.05s closing host/note_take and was cut short" in [
         record.getMessage() for record in caplog.records if record.name == _LOGGER
     ]
+
+
+# =============================================================================
+# A resolver's refusal
+# =============================================================================
+
+
+class _Booting(EvalServiceError):
+    """A host's own refusal: it is still booting, and says when to come back."""
+
+    def __init__(self) -> None:
+        super().__init__("this host is still booting", status_code=503, remedy="call again in a minute")
+
+
+def _booting() -> Any:
+    raise _Booting()
+
+
+async def _booting_async() -> Any:
+    raise _Booting()
+
+
+@pytest.mark.parametrize(
+    "mount",
+    [{"host_resolver": _booting}, {"host_resolver": _booting_async}, {"caller": _booting}, {"caller": _booting_async}],
+    ids=["host", "async-host", "caller", "async-caller"],
+)
+async def test_a_resolver_that_refuses_answers_a_refusal_before_anything_runs(mount: dict[str, Any]) -> None:
+    """A host booting answered a 503 with its remedy, read as an action's refusal is — not a defect with no remedy."""
+    actions = _Host()
+    entered: list[ToolCall] = []
+
+    async def around(call: ToolCall) -> AsyncGenerator[None, ActionOutcome]:
+        entered.append(call)
+        yield
+
+    text, structured, is_error = await _call(
+        _served(actions, around=around, **mount), {"action": "note_take", "note": "ok"}
+    )
+    assert is_error and structured == {"refusal": {"kind": "refused", "status": 503}}
+    assert text == "refused: note_take: this host is still booting\nremedy: call again in a minute"
+    assert actions.ran_in == [] and entered == [], "no action ran and the hook was never entered"
+
+
+async def test_a_resolver_refusal_is_the_outcome_the_binding_returns() -> None:
+    mounted = _Host().catalogue().mount(_TOOLS[0])
+    binding = ToolBinding(mounted, host_resolver=_booting, caller=lambda: CALLER)
+
+    named = await binding.call({"action": "note_take", "note": "ok"})
+    assert (named.refusal, named.action, named.structured) == (Refusal(kind="refused", status=503), "note_take", None)
+
+    unnamed = await binding.call({"action": "no_such", "note": "ok"})
+    assert unnamed.action is None, "the action was never checked, so an outcome names only one the tool has"
+    assert unnamed.text == "refused: host: this host is still booting\nremedy: call again in a minute"
+
+
+async def test_a_resolver_refusal_of_a_public_class_keeps_that_class_s_kind() -> None:
+    def suspended() -> OpsHost:
+        raise ConflictError("this tenant is suspended", remedy="ask its owner to reinstate it")
+
+    _, structured, is_error = await _call(_served(_Host(), host_resolver=suspended), {"action": "note_take"})
+    assert is_error and structured == {"refusal": {"kind": "conflict", "status": 409}}
+
+
+# =============================================================================
+# The call timeout, read per call
+# =============================================================================
+
+
+async def test_a_call_timeout_function_is_read_once_as_each_call_starts() -> None:
+    reads: list[float] = []
+    settings = iter([30.0, 0.05])
+
+    def call_timeout() -> float:
+        reads.append(next(settings))
+        return reads[-1]
+
+    server = _served(_Host(), call_timeout_s=call_timeout)
+    assert reads == [], "nothing is read at mount"
+    _, structured, is_error = await _call(server, {"action": "note_take", "note": "slow"})
+    assert not is_error and structured is not None, "the first call read 30s and outlived nothing"
+    text, _, is_error = await _call(server, {"action": "note_take", "note": "slow"})
+    assert is_error and "outlived this server's 0.05s call timeout" in text, "the second read the retuned value"
+    assert reads == [30.0, 0.05], "once per call"
+
+
+async def test_a_call_timed_out_reports_the_timeout_that_call_read() -> None:
+    mounted = _Host().catalogue().mount(_TOOLS[0])
+    binding = ToolBinding(mounted, host=ops_fixture().host, caller=lambda: CALLER, call_timeout_s=lambda: 0.04)
+    with pytest.raises(CallTimedOut) as stopped:
+        await binding.call({"action": "note_take", "note": "slow"})
+    assert stopped.value.timeout_s == 0.04
+
+
+@pytest.mark.parametrize("read", [0, -1.0, float("nan"), "60", True, None])
+async def test_a_call_timeout_function_answering_no_positive_number_fails_the_call_naming_it(read: Any) -> None:
+    actions = _Host()
+    binding = ToolBinding(
+        actions.catalogue().mount(_TOOLS[0]),
+        host=ops_fixture().host,
+        caller=lambda: CALLER,
+        call_timeout_s=lambda: read,
+    )
+    with pytest.raises(ValueError, match=f"the call_timeout_s function answered {read!r}, not a positive number"):
+        await binding.call({"action": "note_take", "note": "ok"})
+    assert actions.ran_in == [], "no call is run under a timeout that is no timeout"
+
+
+# =============================================================================
+# The annotate hook
+# =============================================================================
+
+
+async def test_a_note_is_a_block_after_the_outcome_s_and_changes_nothing_else() -> None:
+    seen: list[tuple[ToolCall, ActionOutcome]] = []
+
+    def annotate(call: ToolCall, outcome: ActionOutcome) -> str | None:
+        seen.append((call, outcome))
+        return "the pricing catalogue is stale, so every model is unpriced" if outcome.refusal else None
+
+    server = _served(_Host(), annotate=annotate)
+    for note in ("ok", "AdmissionRefusedError"):
+        plain = await _blocks(_served(_Host()), {"action": "note_take", "note": note})
+        blocks, structured, is_error = await _blocks(server, {"action": "note_take", "note": note})
+        assert (blocks[:1], structured, is_error) == plain, "the outcome's own block, data and flag are untouched"
+        assert blocks[1:] == ([] if note == "ok" else ["the pricing catalogue is stale, so every model is unpriced"])
+    assert [(call.action, outcome.is_error) for call, outcome in seen] == [("note_take", False), ("note_take", True)]
+    assert seen[0][0] == ToolCall(tool="host", action="note_take", caller=CALLER)
+
+
+async def test_an_async_annotator_and_an_empty_note() -> None:
+    async def annotate(call: ToolCall, outcome: ActionOutcome) -> str | None:
+        return "" if outcome.refusal else "noted by the host"
+
+    blocks, _, _ = await _blocks(_served(_Host(), annotate=annotate), {"action": "note_take", "note": "ok"})
+    assert blocks == ["noted ok", "noted by the host"]
+    blocks, _, _ = await _blocks(_served(_Host(), annotate=annotate), {"action": "note_take", "note": "ConflictError"})
+    assert len(blocks) == 1, "an empty note adds nothing"
+
+
+async def test_a_note_follows_a_host_resolver_s_refusal_but_not_a_caller_resolver_s() -> None:
+    def annotate(call: ToolCall, outcome: ActionOutcome) -> str:
+        return f"host note on {call.action}"
+
+    blocks, structured, _ = await _blocks(
+        _served(_Host(), host_resolver=_booting, annotate=annotate), {"action": "note_take", "note": "ok"}
+    )
+    assert structured == {"refusal": {"kind": "refused", "status": 503}}
+    assert blocks[1:] == ["host note on note_take"]
+    blocks, _, _ = await _blocks(_served(_Host(), caller=_booting, annotate=annotate), {"action": "note_take"})
+    assert len(blocks) == 1, "with no caller there is no ToolCall to annotate"
+
+
+def _annotate_raises(call: ToolCall, outcome: ActionOutcome) -> str:
+    raise ConnectionError("pricing service is down")
+
+
+def _annotate_answers_no_string(call: ToolCall, outcome: ActionOutcome) -> str:
+    return 7  # type: ignore[return-value]
+
+
+@pytest.mark.parametrize(
+    ("annotate", "logged"),
+    [
+        (_annotate_raises, "annotate hook failed on host/note_take; the outcome stands with no note"),
+        (
+            _annotate_answers_no_string,
+            "annotate hook answered 7 on host/note_take, not a string or None; the outcome stands with no note",
+        ),
+    ],
+    ids=["raises", "no-string"],
+)
+async def test_an_annotator_that_fails_is_logged_and_the_call_returns_as_if_there_were_none(
+    annotate: CallAnnotator, logged: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    actions = _Host()
+    plain = await _blocks(_served(_Host()), {"action": "note_take", "note": "ok"})
+    with caplog.at_level(logging.ERROR, logger=_LOGGER):
+        answered = await _blocks(_served(actions, annotate=annotate), {"action": "note_take", "note": "ok"})
+    assert answered == plain and len(actions.ran_in) == 1
+    assert [record.getMessage() for record in caplog.records if record.name == _LOGGER] == [logged]
+
+
+async def test_an_annotator_overrunning_is_cut_short_and_the_outcome_stands(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(fastmcp_transport, "HOOK_TAIL_TIMEOUT_S", 0.05)
+
+    async def annotate(call: ToolCall, outcome: ActionOutcome) -> str:
+        await asyncio.sleep(5)
+        return "too late"
+
+    with caplog.at_level(logging.ERROR, logger=_LOGGER):
+        blocks, structured, is_error = await _blocks(
+            _served(_Host(), annotate=annotate, call_timeout_s=0.05), {"action": "note_take", "note": "ok"}
+        )
+    assert blocks == ["noted ok"] and not is_error and structured is not None, "nor is it on the call's clock"
+    assert [record.getMessage() for record in caplog.records if record.name == _LOGGER] == [
+        "annotate hook ran past its 0.05s on host/note_take and was cut short; the outcome stands with no note"
+    ]
+
+
+# =============================================================================
+# What a hook sets in context
+# =============================================================================
+
+
+@contextmanager
+def _span(name: str) -> Iterator[None]:
+    token = _SPAN.set(name)
+    try:
+        yield
+    finally:
+        _SPAN.reset(token)
+
+
+async def test_what_a_hook_sets_before_its_yield_is_the_action_s_and_its_tail_undoes_it_in_the_call_s_task(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A ``ContextVar.reset`` from another task raises; the hook's tail resetting cleanly is the same-task proof."""
+
+    async def by_token(call: ToolCall) -> AsyncGenerator[None, ActionOutcome]:
+        token = _SPAN.set("by-token")
+        yield
+        _SPAN.reset(token)
+
+    async def by_with(call: ToolCall) -> AsyncGenerator[None, ActionOutcome]:
+        with _span("by-with"):
+            yield
+
+    mounted = _Host().catalogue().mount(_TOOLS[0])
+    with caplog.at_level(logging.ERROR, logger=_LOGGER):
+        for around, expected in ((by_token, "by-token"), (by_with, "by-with")):
+            binding = ToolBinding(mounted, host=ops_fixture().host, caller=lambda: CALLER, around=around)
+            outcome = await binding.call({"action": "note_take", "note": "ok"})
+            assert outcome.structured is not None and outcome.structured["span"] == expected
+            assert _SPAN.get() is None, "the tail undid it in the task that called"
+    assert [record for record in caplog.records if record.name == _LOGGER] == [], "no reset failed"

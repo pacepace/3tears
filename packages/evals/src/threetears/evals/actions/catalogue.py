@@ -539,6 +539,33 @@ class MountedTool:
             raise KeyError(name)
         return render.render_help_page(self, action)
 
+    def refused_by_host(self, refused: EvalServiceError, *, action: object = None) -> ActionOutcome:
+        """The outcome of a call the host refused before any action ran — while resolving who calls, or where.
+
+        A transport asks the host who is calling and which :class:`~threetears.evals.ops.OpsHost` the call works in
+        before it hands the call here, and a host may refuse there for a reason the caller can act on: it is still
+        booting, the tenant is suspended, the token has lapsed. Raised as an
+        :class:`~threetears.evals.kernel.EvalServiceError`, that refusal is an outcome built exactly as one the
+        engine raises inside an action — the same ``refused:`` text with its ``remedy:`` line, the same
+        :class:`Refusal` (:meth:`Refusal.of`: the kind of its nearest public class, the status it was raised with)
+        — so a caller reads, and a client branches on, a host's refusal as it does the engine's, and no transport
+        builds one of its own.
+
+        Args:
+            refused: The error the host raised.
+            action: The call's ``action`` argument, as given: it was never checked, so it may name nothing.
+
+        Returns:
+            The refused outcome, carrying ``action`` when it names one of this tool's actions and ``None`` otherwise,
+            as any outcome does.
+        """
+        named = self.action(action) if isinstance(action, str) else None
+        return ActionOutcome(
+            render.refuse_by_resolver(self, named, refused),
+            refusal=Refusal.of(refused),
+            action=named.name if named is not None else None,
+        )
+
     async def call(self, arguments: Mapping[str, Any], *, host: OpsHost, caller: Caller) -> ActionOutcome:
         """Carry out one call: select the action, hold it to its parameters, run it, render what it returns.
 

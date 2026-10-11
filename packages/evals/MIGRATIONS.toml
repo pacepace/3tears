@@ -31,6 +31,18 @@
 # callers.
 
 [[release]]
+version = "unreleased"
+since = "v0.66.0-evaladopt.9"
+summary = """
+What adopting .8 found, continued (gap 39): the FastMCP transport answers a resolver's refusal as a refusal, reads its
+call timeout per call from a function where a host mounts one, and takes an `annotate` hook that appends a host's
+note to what a call returns.
+"""
+notes = [
+    "`transports.fastmcp.ToolBinding.call` returns a caller or host resolver's `kernel.EvalServiceError` as a refused `ActionOutcome` (its kind, status and remedy) where it propagated: a host that caught it around `call`, or that answered it as a transport error, now receives the refusal. Anything else a resolver raises still propagates.",
+]
+
+[[release]]
 version = "0.66.0-evaladopt.9"
 since = "v0.66.0-evaladopt.8"
 summary = """
