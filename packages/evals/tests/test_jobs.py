@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from threetears.evals.kernel import EvalJobTimeout, default_job_timeout
 from threetears.evals.kernel.errors import ConflictError
 from threetears.evals.schema.models import EvalRun
 from threetears.evals.kernel.scoring import CellSummary
@@ -26,9 +27,7 @@ from threetears.evals.run.jobs import (
     JOB_TIMEOUT_CAP_S,
     JOB_TIMEOUT_FLOOR_S,
     EvalJobManager,
-    EvalJobTimeout,
     adaptive_job_timeout_s,
-    default_job_timeout,
 )
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.job_support import InMemoryRunStore, blocked_work, cancelled, settled, start_tracked
@@ -207,7 +206,7 @@ async def test_a_terminal_branch_other_than_cancel_records_the_empty_matrix() ->
     it delivered, so the terminal write owes it.
 
     Injected rather than stubbed: the timeout context is a constructor argument
-    (:class:`~threetears.evals.run.jobs.JobTimeoutFactory`), so the arm is reachable by
+    (:class:`~threetears.evals.kernel.JobTimeoutFactory`), so the arm is reachable by
     handing the manager a factory that raises — no patching of anything the manager
     imports, and nothing here that any host could not also write.
     """
@@ -242,7 +241,7 @@ async def test_a_budget_rejected_before_the_work_starts_still_records_the_empty_
     """The reachable case, with nothing stubbed: the broad handler, before anything ran.
 
     A job's timeout context validates its budget on entry — a non-positive one raises
-    ``ValueError`` before the body, which :class:`~threetears.evals.run.jobs.JobTimeoutFactory` states
+    ``ValueError`` before the body, which :class:`~threetears.evals.kernel.JobTimeoutFactory` states
     as an obligation and this manager's default meets — so the broad ``except Exception`` arm is
     reachable with the work function never started. That arm recorded no completeness, which makes this a
     live gap rather than a latent one: the run went terminal carrying nothing, and a run

@@ -547,7 +547,7 @@ temperature or criterion wording reads no profile
 ([storing a judge's profile](judges-and-calibration.md#storing-a-judges-profile-for-other-campaigns)).
 
 **Measuring self-agreement: judge repeats.** Self-agreement is measured by **repeating** a finished run's
-judge scores: `repeat_judge_scores` (operation `judge_repeat`; `estimate_judge_repeat` /
+judge scores: `judge_repeat_work` (operation `judge_repeat`, a job; `estimate_judge_repeat` /
 `judge_repeat_estimate` price it without a call) asks the same judge the same question again from the
 evidence its first judge read, under the apparatus the run recorded, and records each answer beside the
 score it repeats (`EvalResult.judge_repeats`) without changing the scores. Its spend is out-of-run

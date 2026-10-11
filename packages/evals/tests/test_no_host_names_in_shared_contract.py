@@ -439,6 +439,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # process model written into every host's liveness answer.
     "kernel/job_context.py",
     "kernel/job_leases.py",
+    "kernel/job_timeout.py",
     "schema/job_lease.py",
     # The generic trial loop and the per-result covariate derivation, both importing nothing of the
     # host. Moved off _HOST_COUPLED_MODULES when a host tool's delivery record became

@@ -42,6 +42,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from threetears.evals.kernel import default_job_timeout
 from threetears.evals.kernel import (
     CandidateOutput,
     CandidatePreparationFailed,
@@ -87,7 +88,6 @@ from threetears.evals.run import (
     LaunchRequest,
     LaunchSettings,
     RunnerOptions,
-    default_job_timeout,
     execute_run,
     launch_run,
 )

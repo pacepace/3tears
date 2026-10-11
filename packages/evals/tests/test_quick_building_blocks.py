@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from threetears.evals.kernel import default_job_timeout
 from threetears.evals.schema import EvalTemplate, EvalTestCase
 from threetears.evals.kernel import MetricDescriptor
 from threetears.evals.kernel.host import SHARED_CORE, EvalHost, HostProfile, MeasureRegistry, default_cell_timeout
@@ -37,7 +38,6 @@ from threetears.evals.run import (
     LaunchHost,
     LaunchRequest,
     LaunchSettings,
-    default_job_timeout,
     launch_run,
     list_results,
     start_run,

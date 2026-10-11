@@ -276,7 +276,10 @@ async def test_a_launch_generates_with_the_named_writer_and_every_arm_records_it
     runs = await _launch(host, template, n_variations=2, variation_model=WRITER)
     await _settled(host, [run.id for run in runs])
 
-    assert clients.asked == [("variation", WRITER)], "one writer per launch, in its own role — never the simulator's"
+    # Twice, both in the writer's own role — never the simulator's: once by the launch's admission to price its
+    # calls before any launcher ran (asked its prices, never called), and once by the launcher to write the cases.
+    assert clients.asked == [("variation", WRITER), ("variation", WRITER)]
+    assert [writer.calls for writer in clients.writers] == [0, 1]
     first, second = runs
     assert first.test_case_ids == second.test_case_ids, "every arm answers the same generated cases"
     for run in runs:
@@ -622,7 +625,7 @@ async def test_a_launchs_generation_is_ledgered_once_under_its_group_at_the_out_
         TOYHOST_SUBJECT.subject_id,
     )
     assert (spend.priced_ceiling_usd, spend.cap_usd) == (WRITER_CEILING, host.settings().max_out_of_run_cost_usd)
-    assert [writer.calls for writer in clients.writers] == [1]
+    assert [writer.calls for writer in clients.writers] == [0, 1], "priced once at admission, called once"
 
 
 async def test_a_generation_priced_above_the_out_of_run_cap_is_refused_before_its_call():
@@ -633,6 +636,25 @@ async def test_a_generation_priced_above_the_out_of_run_cap_is_refused_before_it
         await _launch(host, template, n_variations=2, variation_model=WRITER)
 
     assert clients.asked == [("variation", WRITER)], "the writer was built, and priced, and never called"
+    _nothing_was_paid_for(host, storage, clients)
+
+
+async def test_a_launch_through_the_job_contract_refuses_a_generation_above_the_cap_in_its_call():
+    """The call prices the generation, as the battery's pre-flight does: it used to return a job that then failed."""
+    template = _template(LLM_AXIS)
+    host, storage, clients, handed = _generating_host(template, clients=_FakeClients(ceiling=1000.0))
+    arguments = LaunchArguments(
+        template_id=template.id,
+        subject_id=TOYHOST_SUBJECT.subject_id,
+        models=[RUN_MODELS[0]],
+        n_variations=2,
+        variation_model=WRITER,
+    )
+
+    with pytest.raises(ValidationFailedError, match="above the out-of-run cap.*Nothing was called"):
+        await run_launch(OpsHost(launch=host), arguments, TOYHOST_SCOPE)
+
+    assert handed == [], "no launcher ran"
     _nothing_was_paid_for(host, storage, clients)
 
 

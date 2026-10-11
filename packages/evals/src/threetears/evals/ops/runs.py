@@ -25,9 +25,9 @@ from threetears.evals.run.launch import admit_launch
 from threetears.evals.run.launch_job import launch_job_work
 from threetears.evals.run.judge_repeat import (
     JudgeRepeatEstimate,
-    JudgeRepeatReport,
     estimate_judge_repeat,
-    repeat_judge_scores,
+    JUDGE_REPEAT_ACTION,
+    judge_repeat_work,
 )
 from threetears.evals.run.judge_second import (
     DEFAULT_SECOND_JUDGE_SEED,
@@ -507,11 +507,13 @@ async def judge_repeat_estimate(
 
 async def judge_repeat(
     host: OpsHost, run_id: str, scope_id: str, *, result_ids: list[str] | None = None
-) -> JudgeRepeatReport:
-    """Repeat a finished run's judge scores — the measurement the ``separation`` evidence tier reads.
+) -> JobsStarted:
+    """Price and admit repeating a finished run's judge scores, then start it as a job — the ``separation`` tier's read.
 
-    Every call is priced and admitted against the host's out-of-run cap before the first is sent, and
-    ledgered under purpose ``judge`` (:func:`~threetears.evals.run.repeat_judge_scores`).
+    Every call is priced and admitted against the host's out-of-run cap here, and refused here with nothing spent;
+    the job makes them, each ledgered under purpose ``judge`` (:func:`~threetears.evals.run.judge_repeat_work`), so
+    the call returns at once. Poll the job: its result, once completed, is the
+    :class:`~threetears.evals.run.JudgeRepeatReport`.
 
     Args:
         host: The host: its store, its judge clients and its out-of-run cap.
@@ -520,15 +522,19 @@ async def judge_repeat(
         result_ids: The results to repeat; ``None`` for every result of the run.
 
     Returns:
-        What was repeated, what it cost, and what was left out.
+        The repeat's one job (``action:<id>``, its record an :class:`~threetears.evals.run.EvalActionJob` under
+        ``judge_repeat``); its label names the run.
 
     Raises:
         NotFoundError: No run with that id, or a record it names does not load.
         ValidationFailedError: The run cannot be repeated, or its calls are priced above the cap or cannot be
             priced under it — before any call.
     """
-    return await repeat_judge_scores(
+    work = await judge_repeat_work(
         host.eval_host, run_id, scope_id, out_of_run_cap_usd=host.out_of_run_cap(), result_ids=result_ids
+    )
+    return await start_job(
+        host, AdmittedJob(work=work, kind="action", target_id=JUDGE_REPEAT_ACTION, label=f"run {run_id}")
     )
 
 

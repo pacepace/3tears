@@ -37,14 +37,17 @@ from threetears.evals.kernel import (
     ConflictError,
     RUN_JOB,
     SHUTDOWN_CAUSE,
+    SWEEP_JOB,
     EvalAnalysisAttempt,
     EvalStorage,
     EvalSweep,
+    JobFenced,
     JobLeases,
     NotFoundError,
     StorageError,
     SweepArmRecord,
     ValidationFailedError,
+    require_held,
     settle_job_record,
 )
 from threetears.evals.ops import OpsHost, analyses_list, analysis_generate, job_cancel, job_poll, run_job_id, run_launch
@@ -140,6 +143,30 @@ async def _running_run(host: OpsHost) -> str:
     return (await _running_launch(host))[1]
 
 
+class _Heard:
+    """What a holder's process told anyone about its runs: each run-end hook call, and each broadcast."""
+
+    def __init__(self) -> None:
+        """Start with nothing heard."""
+        self.ends: list[tuple[str, str]] = []
+        self.broadcasts: list[tuple[str, dict[str, Any]]] = []
+
+    async def run_end(self, run_id: str, scope_id: str, status: str) -> None:
+        """The run-end hook: record the run and the status."""
+        self.ends.append((run_id, status))
+
+    def broadcast(self, run_id: str, payload: dict[str, Any]) -> None:
+        """The progress broadcast: record it."""
+        self.broadcasts.append((run_id, payload))
+
+
+def _heard(host: OpsHost) -> tuple[OpsHost, _Heard]:
+    """``host`` with a run-end hook and a broadcast that record what its process says about its runs."""
+    heard = _Heard()
+    launch = dataclasses.replace(host.launch, on_run_end=heard.run_end, on_job_progress=heard.broadcast)
+    return dataclasses.replace(host, launch=launch), heard
+
+
 # =============================================================================
 # Another process's job: running there, cancelled from there
 # =============================================================================
@@ -222,6 +249,63 @@ async def test_a_holder_that_stops_renewing_reads_lost_after_its_lease_and_the_l
     assert (attempt.outcome, attempt.lost) == ("cancelled", written)
 
 
+class LostOnStoreStore(ClockedStore):
+    """Writes a running generation's attempt lost — as another process's reader would — once its analysis is stored.
+
+    The race a check before storing cannot close: the holder found its attempt held, stored its paid analysis, and
+    only then did the lease lapse and a reader write the loss.
+    """
+
+    def __init__(self) -> None:
+        """Lose nothing until told to."""
+        super().__init__()
+        self.lose_next = False
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Write; then, for an analysis while told to, lapse the clock past the lease and settle every attempt."""
+        super().upsert(document, if_match=if_match, create_only=create_only)
+        if self.lose_next and document.get("doc_type") == "eval_analysis":
+            self.lose_next = False
+            self.at = self.at + timedelta(seconds=61)
+            storage = EvalStorage(self)
+            scope_id = str(document["scope_id"])
+            for attempt in storage.list_analysis_attempts_by_campaign(str(document["campaign_id"]), scope_id):
+                settle_job_record(storage, ANALYSIS_JOB, attempt.id, scope_id)
+
+
+async def test_a_generation_whose_attempt_is_lost_while_it_stores_withdraws_what_it_stored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import packages.evals.tests.ops_support as support
+
+    memo = support.memo_payload
+
+    def durable_memo(bundle: Any) -> dict[str, Any]:
+        payload = memo(bundle)
+        payload["findings"][0]["durable"] = "the wide chunk is slower per document than the narrow one"
+        return payload
+
+    monkeypatch.setattr(support, "memo_payload", durable_memo)
+    store = LostOnStoreStore()
+    fixture = ops_fixture(store=store)
+    storage = fixture.host.eval_host.storage
+    (first,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    assert (await settled(fixture.host, first.job_id)).state == "completed"
+    (kept,) = analyses_list(fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
+    ledger = storage.query_insights(TOYHOST_SCOPE)
+    assert ledger and all(insight.source_analysis_id == kept.id for insight in ledger)
+
+    store.lose_next = True
+    (second,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    attempt_id = second.job_id.rsplit(":", 1)[1]
+    await _until(lambda: not fixture.host.launch.job_manager.is_task_active(attempt_id))
+
+    assert (await job_poll(fixture.host, second.job_id, TOYHOST_SCOPE)).state == "lost"
+    analyses = analyses_list(fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
+    assert [analysis.id for analysis in analyses] == [kept.id], "the lost attempt keeps no analysis"
+    assert storage.query_insights(TOYHOST_SCOPE) == ledger, "the insights it restated are put back as they stood"
+
+
 async def test_a_holder_whose_own_lease_lapsed_writes_itself_lost_at_renewal_and_stops() -> None:
     gate = asyncio.Event()
     store = ClockedStore()
@@ -246,23 +330,194 @@ async def test_a_run_whose_record_was_written_lost_elsewhere_stops_at_its_next_w
 ) -> None:
     gate = _held_extraction(monkeypatch)
     store = ClockedStore()
-    holder = ops_fixture(store=store)
-    elsewhere = _other_process(holder.host)
-    run_id = await _running_run(holder.host)
+    holder, heard = _heard(ops_fixture(store=store).host)
+    elsewhere = _other_process(holder)
+    run_id = await _running_run(holder)
     assert (await job_poll(elsewhere, run_job_id(run_id), TOYHOST_SCOPE)).state == "running"
 
     store.at = T0 + timedelta(seconds=61)
     lost = await job_poll(elsewhere, run_job_id(run_id), TOYHOST_SCOPE)
     assert (lost.state, lost.status) == ("lost", "cancelled")
-    written = _run(holder.host, run_id)
+    written = _run(holder, run_id)
     assert written.completeness is not None, "the loss reconstructed what the run delivered"
+    heard.broadcasts.clear()
 
+    store.at = T0 + timedelta(seconds=75)  # the holder's own ending would be stamped later than the loss
     gate.set()
-    await _until(lambda: not holder.host.launch.job_manager.is_active(run_id))
-    after = _run(holder.host, run_id)
+    await _until(lambda: not holder.launch.job_manager.is_active(run_id))
+    after = _run(holder, run_id)
     assert (after.status, after.lost, after.completeness) == ("cancelled", written.lost, written.completeness), (
         "the fenced run wrote nothing more: not its progress, its completeness or its ending"
     )
+    assert (after.completed_at, after.cancellation_reason) == (written.completed_at, written.cancellation_reason), (
+        "the loss's own ending stands: its time and its reason"
+    )
+    assert heard.ends == [] and heard.broadcasts == [], "the process that lost the run told nobody it ended"
+
+
+async def test_a_lost_run_cancelled_by_its_old_holder_keeps_the_loss(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The holder's operator cancels a run another process already wrote lost: the cancel's ending is refused."""
+    _held_extraction(monkeypatch)
+    store = ClockedStore()
+    holder, heard = _heard(ops_fixture(store=store).host)
+    elsewhere = _other_process(holder)
+    run_id = await _running_run(holder)
+    store.at = T0 + timedelta(seconds=61)
+    assert (await job_poll(elsewhere, run_job_id(run_id), TOYHOST_SCOPE)).state == "lost"
+    written = _run(holder, run_id)
+    heard.broadcasts.clear()
+
+    assert holder.launch.job_manager.cancel_job(run_id, reason="operator said stop")
+    await _until(lambda: not holder.launch.job_manager.is_active(run_id))
+
+    after = _run(holder, run_id)
+    assert (after.completed_at, after.cancellation_reason, after.lost) == (
+        written.completed_at,
+        written.cancellation_reason,
+        written.lost,
+    )
+    assert after.cancellation_reason is not None and after.cancellation_reason.startswith("lost: ")
+    assert heard.ends == [] and heard.broadcasts == []
+
+
+class RenewalRefusingStore(ClockedStore):
+    """A clocked store that refuses, once told to, every write moving a record's lease — the renewals — and no other.
+
+    A store a holder cannot renew through while the store's clock has not reached the lease's expiry: no reader
+    writes the loss yet, so only the holder's own count can tell it its lease is gone.
+    """
+
+    def __init__(self) -> None:
+        """Start accepting every write."""
+        super().__init__()
+        self.refusing = False
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Refuse a write that moves a stored record's lease while refusing; write anything else."""
+        if self.refusing and document.get("lease") is not None:
+            stored = self.get(str(document["id"]), str(document["scope_id"]))
+            if stored is not None and stored.get("lease") != document["lease"]:
+                raise RuntimeError("the store refused the renewal")
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+async def test_a_run_whose_renewals_fail_for_a_whole_lease_is_stopped_and_writes_nothing_more(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = _held_extraction(monkeypatch)
+    store = RenewalRefusingStore()
+    holder, heard = _heard(ops_fixture(store=store, job_lease_s=0.3).host)
+    elsewhere = _other_process(holder)
+    run_id = await _running_run(holder)
+    store.at = T0 + timedelta(seconds=0.1)  # inside the lease by the store's clock, for the whole test
+    store.refusing = True
+    heard.broadcasts.clear()
+
+    await _until(lambda: not holder.launch.job_manager.is_active(run_id), timeout=5)
+
+    assert not gate.is_set(), "the holder stopped spending, rather than running on past its lease"
+    run = _run(holder, run_id)
+    assert (run.status, run.lost) == ("running", None), "it wrote no ending of its own: it no longer held the run"
+    assert heard.ends == [] and heard.broadcasts == []
+    store.refusing = False
+    store.at = T0 + timedelta(seconds=1)
+    lost = await job_poll(elsewhere, run_job_id(run_id), TOYHOST_SCOPE)
+    assert (lost.state, lost.status) == ("lost", "cancelled"), "the next reader writes the loss, as for any lapse"
+
+
+async def test_a_generation_whose_renewals_fail_for_a_whole_lease_is_stopped_before_its_paid_call() -> None:
+    gate = asyncio.Event()
+    store = RenewalRefusingStore()
+    fixture = ops_fixture(gate=gate, store=store, job_lease_s=0.3)
+    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    attempt_id = job.job_id.rsplit(":", 1)[1]
+    await asyncio.sleep(0)
+    store.at = T0 + timedelta(seconds=0.1)
+    store.refusing = True
+
+    await _until(lambda: not fixture.host.launch.job_manager.is_task_active(attempt_id), timeout=5)
+
+    assert not gate.is_set() and all(not writer.calls for writer in fixture.writers), "no call was paid for"
+    attempt = _attempt(fixture.host, job.job_id)
+    assert (attempt.outcome, attempt.lost) == ("running", None), (
+        "it wrote no ending of its own, though the store took every write but a renewal: it no longer held the attempt"
+    )
+    assert analyses_list(fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses == []
+    store.refusing = False
+    store.at = T0 + timedelta(seconds=1)
+    lost = await job_poll(_other_process(fixture.host), job.job_id, TOYHOST_SCOPE)
+    assert (lost.state, lost.status) == ("lost", "cancelled"), "the next reader writes the loss, as for any lapse"
+
+
+async def test_a_sweep_whose_renewals_fail_for_a_whole_lease_writes_nothing_more_and_launches_nothing_more(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _held_extraction(monkeypatch)  # its first arm runs until the sweep has let go
+    store = RenewalRefusingStore()
+    holder = _sweeping_host(store, job_lease_s=0.3)
+    (job,) = (await sweep_launch(holder, _three_arm_sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
+    sweep_id = job.job_id.removeprefix("sweep:")
+    await _first_arm_running(holder, job.job_id)
+    store.at = T0 + timedelta(seconds=0.1)
+    store.refusing = True
+
+    await _until(lambda: not holder.launch.job_manager.is_task_active(sweep_id), timeout=5)
+
+    sweep, _ = holder.eval_host.storage.load_job_record(EvalSweep, sweep_id, TOYHOST_SCOPE)
+    assert sweep is not None and (sweep.outcome, sweep.lost) == ("running", None), (
+        "it wrote no cancelled ending of its own, though the store took every write but a renewal"
+    )
+    assert len(holder.eval_host.storage.query_eval_runs(TOYHOST_SCOPE)) == 1, "it launched no further arm"
+
+
+class SlotClaimFailingStore(InMemoryDocumentStore):
+    """Fails the claim's read of a campaign's generation slot — its second read; the first is the early refusal."""
+
+    def __init__(self) -> None:
+        """Count the slot's reads."""
+        super().__init__()
+        self.slot_reads = 0
+
+    def get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]:
+        """Read, failing the second read of a generation slot."""
+        if doc_id.startswith("generation-slot:"):
+            self.slot_reads += 1
+            if self.slot_reads == 2:
+                raise RuntimeError("the store dropped the connection")
+        return super().get_with_etag(doc_id, scope_id)
+
+
+async def test_a_start_whose_slot_claim_fails_ends_its_attempt_and_releases_its_client() -> None:
+    fixture = ops_fixture(store=SlotClaimFailingStore())
+
+    with pytest.raises(RuntimeError, match="dropped the connection"):
+        await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
+
+    (attempt,) = fixture.host.eval_host.storage.list_analysis_attempts_by_campaign(fixture.campaign.id, TOYHOST_SCOPE)
+    assert attempt.outcome == "failed" and attempt.error is not None
+    assert "generation slot could not be claimed" in attempt.error, "nothing is left reading running"
+    (writer,) = fixture.writers
+    assert writer.closed == 1 and not writer.calls, "the client the start built was released, and never called"
+
+
+class AttemptRefusingStore(InMemoryDocumentStore):
+    """Refuses every write of a generation's attempt record."""
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Refuse an attempt record; write anything else."""
+        if document.get("doc_type") == "eval_analysis_attempt":
+            raise RuntimeError("the store refused the attempt")
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+async def test_a_start_whose_attempt_cannot_be_written_releases_its_client() -> None:
+    fixture = ops_fixture(store=AttemptRefusingStore())
+
+    with pytest.raises(StorageError, match="refused the attempt"):
+        await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
+
+    (writer,) = fixture.writers
+    assert writer.closed == 1 and not writer.calls
 
 
 # =============================================================================
@@ -273,18 +528,31 @@ async def test_a_run_whose_record_was_written_lost_elsewhere_stops_at_its_next_w
 async def test_a_graceful_shutdown_writes_every_held_job_lost_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
     _held_extraction(monkeypatch)
     gate = asyncio.Event()
-    holder = ops_fixture(gate=gate)
-    elsewhere = _other_process(holder.host)
-    (generation,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
-    launch_id, run_id = await _running_launch(holder.host)
+    store = ClockedStore()
+    fixture = ops_fixture(gate=gate, store=store)
+    holder, heard = _heard(fixture.host)
+    elsewhere = _other_process(holder)
+    (generation,) = (await analysis_generate(holder, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    launch_id, run_id = await _running_launch(holder)
+    heard.broadcasts.clear()
 
-    await holder.host.launch.job_manager.shutdown()
+    store.at = T0 + timedelta(seconds=5)
+    await holder.launch.job_manager.shutdown()
 
     for job_id in (generation.job_id, run_job_id(run_id), launch_id):
         status = await job_poll(elsewhere, job_id, TOYHOST_SCOPE)
         assert (status.state, status.detail) == ("lost", SHUTDOWN_CAUSE), job_id
-    assert _attempt(holder.host, generation.job_id).lease is None, "the lease was released"
-    assert _run(holder.host, run_id).lease is None
+    assert _attempt(holder, generation.job_id).lease is None, "the lease was released"
+    run = _run(holder, run_id)
+    assert run.lease is None
+    # What a shutdown writes is the loss, stamped in the store's time as it shut down; the runs' own
+    # cancelled endings, written as they unwind, are refused, and nobody is told they ended.
+    assert (run.status, run.completed_at, run.cancellation_reason) == (
+        "cancelled",
+        store.at.isoformat(),
+        f"lost: {SHUTDOWN_CAUSE}",
+    )
+    assert heard.ends == [] and heard.broadcasts == []
 
 
 # =============================================================================
@@ -336,6 +604,7 @@ async def test_a_run_not_ended_with_no_lease_reads_lost_and_cannot_be_cancelled(
     lost = await job_poll(fixture.host, run_job_id(run.id), TOYHOST_SCOPE)
     assert (lost.state, lost.status, lost.done) == ("lost", "cancelled", True)
     assert lost.detail is not None and "carries no lease" in lost.detail
+    assert "stop every worker, then upgrade" in lost.detail, "the lost cause names the upgrade rule it follows from"
     stored = _run(fixture.host, run.id)
     assert stored.completeness is not None and stored.completeness.counted_from == "stored_results"
     assert stored.cancellation_reason == f"lost: {lost.detail}"
@@ -452,6 +721,34 @@ async def _first_arm_running(host: OpsHost, job_id: str) -> None:
             await asyncio.sleep(0.005)
 
 
+def test_a_job_asks_whether_it_still_holds_its_record_before_it_spends_again() -> None:
+    """``require_held``: a live record passes, a lapsed one is written lost and refused, an ended one is refused."""
+    fixture = ops_fixture(store=ClockedStore())
+    storage = fixture.host.eval_host.storage
+    sweep = EvalSweep(
+        scope_id=TOYHOST_SCOPE,
+        campaign_id=fixture.campaign.id,
+        template_id=toyhost_template().id,
+        subject_id=TOYHOST_SUBJECT.subject_id,
+        arms=[SweepArmRecord(label="a", model=RUN_MODELS[0])],
+        max_concurrent_arms=1,
+        lease=JobLease(holder="this-process", expires_at=(T0 + timedelta(seconds=1)).isoformat()),
+    )
+    storage.save_sweep(sweep)
+
+    require_held(storage, SWEEP_JOB, sweep.id, TOYHOST_SCOPE)  # live: nothing raised, nothing written
+    assert storage.load_job_record(EvalSweep, sweep.id, TOYHOST_SCOPE)[0] == sweep
+
+    storage.save_sweep(sweep.model_copy(update={"lease": JobLease(holder="x", expires_at=T0.isoformat())}))
+    with pytest.raises(JobFenced, match="was lost; it starts nothing more"):
+        require_held(storage, SWEEP_JOB, sweep.id, TOYHOST_SCOPE)
+    lost, _ = storage.load_job_record(EvalSweep, sweep.id, TOYHOST_SCOPE)
+    assert lost is not None and lost.lost is not None, "the lapse was written, as any reader writes it"
+    with pytest.raises(JobFenced):
+        require_held(storage, SWEEP_JOB, sweep.id, TOYHOST_SCOPE)
+    require_held(storage, SWEEP_JOB, "never-stored", TOYHOST_SCOPE)
+
+
 async def test_a_sweep_another_process_runs_is_cancelled_from_there() -> None:
     holder = _sweeping_host(InMemoryDocumentStore(), job_lease_s=0.3)
     elsewhere = _other_process(holder)
@@ -481,7 +778,12 @@ async def test_a_sweep_whose_lease_lapsed_reads_lost_and_launches_nothing_more()
 
     await _until(lambda: not holder.launch.job_manager.is_task_active(sweep_id))
     after = await job_poll(elsewhere, job.job_id, TOYHOST_SCOPE)
-    assert after.state == "lost" and after.progress["arms_launched"] == 1, "the fenced sweep launched no further arm"
+    assert after.state == "lost"
+    # Counted in the store, not off the sweep's record: the fence makes that record unwritable, so an arm launched
+    # after the loss is exactly the one it could never name.
+    runs = holder.eval_host.storage.query_eval_runs(TOYHOST_SCOPE)
+    assert len(runs) == 1, f"the fenced sweep launched no further arm; the store holds {len(runs)} run(s)"
+    assert runs[0].overlays.get("prompt_style") == STYLES[0]
     sweep, _ = holder.eval_host.storage.load_job_record(EvalSweep, sweep_id, TOYHOST_SCOPE)
     assert sweep is not None and sweep.outcome == "cancelled" and sweep.lost is not None
 

@@ -9,7 +9,13 @@ as this job (:func:`launch_job_work`): the launchers, the start, and the runs to
 **The record is the launch.** :class:`EvalLaunch` is written as the job starts (``running``, carrying its lease),
 again the moment its runs start (``run_ids``, in arm order), and as it ends: ``completed`` once every run has ended,
 ``failed`` when an arm was refused at its launcher or a run ended ``failed``, ``cancelled`` when it was asked to stop
-— which stops the runs it started. Its id is the launch group's, which every run it starts carries as
+— which stops the runs it started — and ``timed_out`` when its preparation outran :data:`LAUNCH_PREPARATION_BUDGET_S`.
+
+**Its budget is its preparation's.** The launchers' work — a generating launch's paid calls, each arm's clients —
+is bounded by :data:`LAUNCH_PREPARATION_BUDGET_S`; the wait for its runs is not bounded by the launch at all. Each
+run is bounded by its own budget from the moment it holds a concurrency slot, and every run holding one is bounded
+the same way, so the wait ends; a launch budget over the wait counted the time its runs spent queued behind other
+launches, and cancelled healthy runs that had not yet started. Its id is the launch group's, which every run it starts carries as
 ``launch_group_id``, so the out-of-run ledger's rows for its case generation are found by it too.
 """
 
@@ -32,6 +38,11 @@ from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION
 
 #: The reason recorded on a run its launch's cancel stopped.
 LAUNCH_CANCEL_REASON = "its launch was cancelled"
+
+#: A launch's wall-clock ceiling on its preparation — its launchers, a generating launch's calls among them — in
+#: seconds: the engine's cap on one run's job, a backstop against a launcher or a provider that hangs. The runs it
+#: starts are bounded by their own budgets, never by this.
+LAUNCH_PREPARATION_BUDGET_S = JOB_TIMEOUT_CAP_S
 
 
 class EvalLaunch(CoreDocumentModel):
@@ -119,7 +130,8 @@ def launch_job_work(
     )
 
     async def launch(recorder: JobRecorder[EvalLaunch]) -> EvalLaunch:
-        runs = await admitted.start()
+        async with host.job_timeout_factory(LAUNCH_PREPARATION_BUDGET_S):
+            runs = await admitted.start()
         run_ids = [run.id for run in runs]
         try:
             await recorder.save(recorder.record.model_copy(update={"run_ids": run_ids}))
@@ -138,10 +150,8 @@ def launch_job_work(
             return end_record(recorder.record, "failed", f"run(s) {', '.join(failed)} ended failed")
         return end_record(recorder.record, "completed")
 
-    # The launchers' work and then the runs': each run is bounded by the engine's job cap, and a launch declaring
-    # latency under test runs its arms one after another.
-    budget_s = (max(1, len(models)) + 1) * JOB_TIMEOUT_CAP_S
-    return JobWork(kind=LAUNCH_JOB, record=record, run=launch, budget_s=budget_s, discard=admitted.discard)
+    # No budget over the whole: the preparation bounds itself above, and each run its own wait (see the module).
+    return JobWork(kind=LAUNCH_JOB, record=record, run=launch, budget_s=None, discard=admitted.discard)
 
 
-__all__ = ["LAUNCH_CANCEL_REASON", "LAUNCH_JOB", "EvalLaunch", "launch_job_work"]
+__all__ = ["LAUNCH_CANCEL_REASON", "LAUNCH_JOB", "LAUNCH_PREPARATION_BUDGET_S", "EvalLaunch", "launch_job_work"]

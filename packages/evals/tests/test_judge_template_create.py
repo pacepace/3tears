@@ -13,9 +13,9 @@ import dataclasses
 from typing import Any
 
 from threetears.evals.actions import Caller, MountedTool, eval_catalogue, standard_tools
-from threetears.evals.kernel import JUDGE_KIND, JUDGE_KIND_CONTRACT
+from threetears.evals.kernel import JUDGE_KIND, JUDGE_KIND_CONTRACT, default_job_timeout
 from threetears.evals.ops import OpsHost, templates_list
-from threetears.evals.run import LaunchHost, default_job_timeout, launchable_judge_kind
+from threetears.evals.run import LaunchHost, launchable_judge_kind
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile

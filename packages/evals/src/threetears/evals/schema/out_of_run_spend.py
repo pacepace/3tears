@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 #: variation axis's values), ``proposer`` drafts a rubric for operator review, ``analysis`` writes a
 #: campaign's analysis memo (its first call and the one repair round-trip a refused output buys), ``judge``
 #: repeats a finished run's judge scores to measure the judge's agreement with itself
-#: (:func:`~threetears.evals.run.repeat_judge_scores`), or at two temperatures to measure what temperature does to it
+#: (:func:`~threetears.evals.run.judge_repeat_work`), or at two temperatures to measure what temperature does to it
 #: (:func:`~threetears.evals.run.judge_temperature_work`), ``second_judge`` asks a judge other than the run's to score
 #: a finished run's evidence (:func:`~threetears.evals.run.second_judge_work`) — measurement cost on its own line, never
 #: the candidate's. Each but ``second_judge`` is the :data:`~threetears.evals.kernel.host.CompletionRole` the host

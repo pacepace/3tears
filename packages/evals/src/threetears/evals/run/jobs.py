@@ -31,10 +31,9 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Sequence
 from concurrent.futures import Executor
-from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, TypeVar
 
@@ -44,6 +43,7 @@ from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.kernel.storage import JobStore
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
 from threetears.evals.kernel.job_context import job_running
+from threetears.evals.kernel.job_timeout import EvalJobTimeout, JobTimeoutFactory, default_job_timeout
 from threetears.evals.kernel.job_leases import RUN_JOB, JobLeases, LeasedJobKind
 from threetears.evals.run.run_document import update_eval_run
 from threetears.observe import get_logger
@@ -139,120 +139,6 @@ class RunEndHook(Protocol):
             status: The terminal status recorded.
         """
         ...  # pragma: no cover — protocol
-
-
-class EvalJobTimeout(Exception):
-    """A job outlived the wall-clock budget its timeout context was enforcing.
-
-    Engine-owned on purpose. The manager needs one type to branch on, so that a
-    breached budget records the designed ``budget_stopped`` with :attr:`stop_reason`
-    instead of falling through to the boundary that catches everything and
-    records ``failed`` — and the context manager enforcing the budget comes from
-    the host. A type the host owned would make the engine name a module it cannot
-    be installed without.
-
-    Attributes:
-        budget_s: The budget that was breached, in seconds.
-        elapsed_s: Wall-clock seconds spent before it fired.
-        attribution: What the host names as innermost when the deadline hit — the
-            operation itself when nothing was nested inside it, for a host whose
-            timeouts carry names. ``None`` only when the implementation has no
-            name to give, which is the case for :func:`default_job_timeout`:
-            plain ``asyncio.timeout`` has no vocabulary of operations at all.
-    """
-
-    def __init__(self, budget_s: float, elapsed_s: float, attribution: str | None = None) -> None:
-        """Record the breached budget, the time spent under it, and the host's attribution."""
-        super().__init__(f"job exceeded its {budget_s:.0f}s budget after {elapsed_s:.0f}s")
-        self.budget_s = budget_s
-        self.elapsed_s = elapsed_s
-        self.attribution = attribution
-
-    @property
-    def stop_reason(self) -> str:
-        """Why the run stopped, as ``EvalRun.budget_stop_reason`` records it.
-
-        Opens with ``wall-clock budget`` so a reader tells it from the cost cap's reason, which names
-        dollars, without a second field: both are a budget the run was launched under doing its job.
-        """
-        named = f"; the host named {self.attribution!r} as running when it fired" if self.attribution else ""
-        return (
-            f"wall-clock budget reached — the run's {self.budget_s:.0f}s time budget ran out after "
-            f"{self.elapsed_s:.0f}s{named}; the cells it delivered are kept and its completeness record counts them"
-        )
-
-
-class JobTimeoutFactory(Protocol):
-    """Builds the context manager a single job runs inside.
-
-    An async timeout is generic machinery rather than eval domain knowledge, and
-    a host that already owns one — a registry of named operation budgets, say,
-    with its own telemetry and its own nesting rules — wants the job to run under
-    that one rather than beside it. So the engine takes the context manager as a
-    value and ships a default (:func:`default_job_timeout`) for a host that has
-    none.
-
-    **Called once per job, with that job's own resolved budget**, never once per
-    manager: two runs in one process size their matrices differently
-    (:func:`adaptive_job_timeout_s`) and must not share a deadline.
-
-    Three obligations, and each is something the manager relies on:
-
-    * Reject a non-positive budget **on entry, before the body runs**. The
-      manager tells "this run never got going" from "this run ran" by whether
-      its work function started, and a budget rejected after the body had begun
-      would make that derivation lie.
-    * Raise :class:`EvalJobTimeout` when the budget is breached, so the manager
-      records the designed ``budget_stopped`` rather than a generic failure.
-    * Let everything else through untouched, cancellation included — an operator
-      cancelling a job is not a timeout and must reach its own branch.
-
-    **The manager binds nothing from the yield** — it enters the context with no
-    ``as`` — so the type is ``Any`` rather than the budget. An implementation may
-    yield whatever its own layer yields (``operation_timeout`` yields the computed
-    budget, and its other callers do read it); the point of saying so here is that
-    a host owes this port three behaviours and no value.
-    """
-
-    def __call__(self, budget_s: float) -> AbstractAsyncContextManager[Any]:
-        """Return the context manager that enforces ``budget_s`` for one job."""
-        ...
-
-
-@asynccontextmanager
-async def default_job_timeout(budget_s: float) -> AsyncIterator[float]:
-    """Enforce a job budget with :func:`asyncio.timeout` and nothing else.
-
-    What the engine ships to a host that supplies no timeout of its own.
-    Deliberately thinner than what a host with a timeout registry injects — no
-    named operation, no nesting, no attribution — because those are the host's
-    concerns, and an engine that assumed them would not install without one.
-
-    Args:
-        budget_s: Wall-clock ceiling for the body, in seconds.
-
-    Yields:
-        The budget, so a caller can honour it at an inner layer.
-
-    Raises:
-        ValueError: If ``budget_s`` is not positive — on entry, before the body
-            runs. See :class:`JobTimeoutFactory` for why the ordering is part of
-            the contract rather than an implementation detail.
-        EvalJobTimeout: If the body outlives the budget.
-    """
-    if budget_s <= 0:
-        raise ValueError(f"job timeout budget must be positive, got {budget_s}")
-    started = time.monotonic()
-    deadline = asyncio.timeout(budget_s)
-    try:
-        async with deadline:
-            yield budget_s
-    except TimeoutError as exc:
-        # A body that raises TimeoutError of its own is not this budget firing, and
-        # converting it would report a job as having outlived a budget it was inside.
-        if not deadline.expired():
-            raise
-        raise EvalJobTimeout(budget_s=budget_s, elapsed_s=time.monotonic() - started) from exc
 
 
 _T = TypeVar("_T")
@@ -595,6 +481,15 @@ class EvalJobManager:
         return self._leases
 
     @property
+    def job_timeout_factory(self) -> JobTimeoutFactory:
+        """What bounds each job's work: the host's factory, or :func:`default_job_timeout`.
+
+        For work that bounds itself rather than being bounded by :meth:`start_task` — a job whose record must say
+        it timed out, which only the work's own frame can write (:func:`~threetears.evals.run.start_job_work`).
+        """
+        return self._job_timeout_factory
+
+    @property
     def active_count(self) -> int:
         """Runs whose task is not done: queued for a concurrency slot or executing in one.
 
@@ -737,7 +632,11 @@ class EvalJobManager:
         **Every job this process holds a lease on ends lost first** (:meth:`JobLeases.shut_down
         <threetears.evals.kernel.job_leases.JobLeases.shut_down>`), its cause the shutdown, its lease released: its
         record reads lost at once in every process, rather than ``running`` until the lease lapses. The jobs are
-        cancelled after, and the endings they write as they unwind are refused — the record has ended.
+        cancelled after, and the endings they write as they unwind are refused — the record has ended. So what a
+        shutdown records of a run it held is the loss alone: ``cancelled``, ``completed_at`` the store's time as
+        it shut down, ``cancellation_reason`` ``lost: process shut down``; nothing is broadcast for it and the
+        run-end hook is not called, since no ending of the run's own was recorded. A run whose loss could not be
+        written (logged) keeps its own ending as it unwinds, which is recorded and heard as any other.
 
         Args:
             timeout: Seconds to wait for every cancelled job to finish.
@@ -787,7 +686,7 @@ class EvalJobManager:
         job_id: str,
         work: Callable[[], Awaitable[None]],
         *,
-        budget_s: float,
+        budget_s: float | None,
         key: str | None = None,
         record: tuple[LeasedJobKind[Any], str] | None = None,
         discard: Callable[[], Awaitable[None]] | None = None,
@@ -810,7 +709,9 @@ class EvalJobManager:
             work: The coroutine function to run. Whatever it raises ends the task and is logged,
                 never re-raised — the work's own record is where its ending is stated.
             budget_s: The wall-clock ceiling, entered through this manager's timeout factory. The
-                caller derives it from the work's own inner ceilings.
+                caller derives it from the work's own inner ceilings. ``None`` for work that enters its own
+                (:attr:`job_timeout_factory`), because how it ends when that fires is the work's to record: a
+                budget firing here cancels the work, which cannot tell it from an operator's cancel.
             key: An exclusivity key: while a task with this key is live, starting another with
                 the same key is refused. ``None`` for no exclusivity.
             record: The work's own record, ``(its kind, its scope)``, whose id is ``job_id``, already
@@ -937,12 +838,16 @@ class EvalJobManager:
                 remedy="poll it with job_poll, or cancel it with job_cancel, before starting another",
             )
 
-    async def _run_task(self, job_id: str, work: Callable[[], Awaitable[None]], budget_s: float) -> None:
-        """Execute one detached task under its budget; log how it ended if it did not end cleanly."""
+    async def _run_task(self, job_id: str, work: Callable[[], Awaitable[None]], budget_s: float | None) -> None:
+        """Execute one detached task under its budget, if it has one; log how it ended if it did not end cleanly."""
         try:
-            async with self._job_timeout_factory(budget_s):
+            if budget_s is None:
                 with job_running(job_id):
                     await work()
+            else:
+                async with self._job_timeout_factory(budget_s):
+                    with job_running(job_id):
+                        await work()
         except asyncio.CancelledError:
             raise
         except EvalJobTimeout as timed_out:
@@ -959,6 +864,7 @@ class EvalJobManager:
             self._task_keys.pop(job_id, None)
             if self._leases is not None:
                 self._leases.release(job_id)
+                self._leases.forget(job_id)
 
     async def start_group(
         self, members: Sequence[tuple[EvalRun, WorkFn, float | None]], *, measure_latency: bool = False
@@ -1015,7 +921,7 @@ class EvalJobManager:
                     run.id,
                     run.scope_id,
                     cancel=functools.partial(self.cancel_job, run.id),
-                    stop=functools.partial(self.cancel_job, run.id),
+                    stop=functools.partial(self._fence, run.id),
                 )
             task = asyncio.create_task(
                 self._run_job(run.id, run.scope_id, work, job_timeout_s, slot=slot),
@@ -1026,6 +932,31 @@ class EvalJobManager:
             task.add_done_callback(lambda _task: slot.leave())
             self._tasks[run.id] = task
         return [run.id for run, _, _ in members]
+
+    def _fence(self, run_id: str) -> None:
+        """Stop a run this process no longer holds: cancel it, and write, broadcast and tell nothing more of it.
+
+        Its lease's renewal found the record ended by another writer — written lost, most often — or the lease
+        lapsed by this process's own count while every renewal failed. In the first case the record already
+        refuses the run's writes; in the second it may not yet (no reader has written the loss, or the store's
+        clock has not reached the expiry), so the refusal is made here too, by the process that knows it let go.
+        The record reads ``running`` until a reader finds the lease lapsed and writes it lost, which is the answer
+        every process gives.
+
+        The let-go is the leases' (:meth:`JobLeases.let_go
+        <threetears.evals.kernel.job_leases.JobLeases.let_go>`), the one rule every leased job kind's writes keep.
+        A manager with no leases holds nothing to let go of: the record's own ``lost`` refuses the run's writes.
+
+        Args:
+            run_id: The run.
+        """
+        if self._leases is not None:
+            self._leases.let_go(run_id)
+        self.cancel_job(run_id)
+
+    def _let_go_of(self, run_id: str) -> bool:
+        """Whether this process let go of the run's lease, so it writes, broadcasts and tells nothing more of it."""
+        return self._leases is not None and self._leases.fenced(run_id)
 
     def _save_group(self, runs: list[EvalRun]) -> None:
         """Save every run of a group, or settle the ones already saved and re-raise.
@@ -1188,6 +1119,8 @@ class EvalJobManager:
             self._tasks.pop(run_id, None)
             self._cancel_reasons.pop(run_id, None)
             self._work_ran.pop(run_id, None)
+            if self._leases is not None:
+                self._leases.forget(run_id)
 
     async def _tell_run_end(self, run_id: str, scope_id: str, status: str) -> None:
         """Hand the recorded terminal status to the run-end hook, if any; never let it change the run.
@@ -1266,6 +1199,14 @@ class EvalJobManager:
         used to come free from being synchronous; it is now stated and tested
         rather than inherited.
         """
+        if self._let_go_of(run_id):
+            log.warning(
+                "Job %s: status=%s not written — this process no longer holds the run's lease; its record answers "
+                "how it ended",
+                run_id,
+                status,
+            )
+            return
         # ``is False`` rather than ``not ...``: an untracked run reads as None, and
         # only a tracked run that never started its work function earns the stamp.
         record_empty_matrix = status in TERMINAL_RUN_STATUSES and self._work_ran.get(run_id) is False
@@ -1287,6 +1228,15 @@ class EvalJobManager:
             # Shielding the non-terminal write would narrow that window rather than
             # close it; refusing the transition closes it.
             if run.status in TERMINAL_RUN_STATUSES and status != run.status:
+                return None
+            # A run another writer recorded LOST — a reader found its lease lapsed, or this
+            # process's shutdown wrote it — refuses every later write, the same status included.
+            # Its loss is ``cancelled``, which is exactly what the fenced holder's own cancel
+            # branch writes as it unwinds, so the rule above let that ending through: it
+            # re-stamped ``completed_at`` in this process's wall time and replaced the loss's
+            # reason, and then the run was broadcast and handed to the run-end hook by a process
+            # that no longer held it. A declined write is neither broadcast nor handed to the hook.
+            if run.lost is not None:
                 return None
             data = run.to_dict()
             data["status"] = status
@@ -1318,11 +1268,13 @@ class EvalJobManager:
             outcome = await write
         if outcome == "declined":
             # Not a failure: the run reached a terminal status first and that document
-            # stands. Deliberately NOT broadcast — a socket message naming this status
-            # would tell every live reader the opposite of what is stored, which is the
+            # stands — its own earlier ending, or a loss another writer recorded. Deliberately
+            # NOT broadcast, nor handed to the run-end hook — a socket message naming this
+            # status would tell every live reader the opposite of what is stored, which is the
             # half of the defect that outlives the process.
             log.info(
-                "Job %s: status=%s not recorded — the run is already terminal and a terminal status is final",
+                "Job %s: status=%s not recorded — the run is already terminal (or was lost) and a terminal "
+                "status is final",
                 run_id,
                 status,
             )
@@ -1379,7 +1331,7 @@ class EvalJobManager:
             # process shut down — so this job no longer holds it: stop at once and write nothing more. Its
             # terminal write is refused by the record, which has ended.
             log.warning("Job %s: its record reads lost — stopping it; nothing more is written", run_id)
-            self.cancel_job(run_id)
+            self._fence(run_id)
             return
         if outcome == "declined":
             # The store already refused to reopen the run; broadcasting `running` here
@@ -1447,11 +1399,8 @@ __all__ = [
     "SHUTDOWN_SETTLE_TIMEOUT_S",
     "AdmissionTicket",
     "EvalJobManager",
-    "EvalJobTimeout",
-    "JobTimeoutFactory",
     "ProgressFn",
     "RunEndHook",
     "WorkFn",
     "adaptive_job_timeout_s",
-    "default_job_timeout",
 ]

@@ -14,12 +14,11 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.kernel import JUDGE_KIND, JUDGE_KIND_CONTRACT, ValidationFailedError
+from threetears.evals.kernel import JUDGE_KIND, JUDGE_KIND_CONTRACT, ValidationFailedError, default_job_timeout
 from threetears.evals.run import (
     TEMPLATE_FIELDS,
     LaunchableKind,
     LaunchHost,
-    default_job_timeout,
     launchable_judge_kind,
     quote_launch,
 )

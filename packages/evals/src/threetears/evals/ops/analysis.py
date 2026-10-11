@@ -13,6 +13,7 @@ pay for.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Literal
 
 from pydantic import Field
@@ -510,23 +511,52 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
         started.lease = leases.grant()
         eval_host.storage.save_analysis_attempt(started)
 
-    await run_blocking(eval_host.blocking_executor, save_started)
-
-    async def refuse(why: str) -> None:
-        # Another start won: release the client this one built, which only the generation itself would
-        # otherwise have entered and released, and end the attempt it recorded — it made no call.
+    async def release_client() -> None:
+        # The client the preparation built, which only the generation itself would otherwise enter and release.
         async with prepared.client:
             pass
+
+    try:
+        await run_blocking(eval_host.blocking_executor, save_started)
+    except BaseException:
+        await release_client()
+        raise
+
+    async def refuse(why: str) -> None:
+        # This start goes no further: release its client and end the attempt it recorded — it made no call. Every
+        # path that stops between the attempt's first write and the job's start comes here, so none leaves an
+        # attempt reading `running` that nothing runs, or a client nothing releases. A failed ending write is
+        # logged, not raised: the caller raises the reason this start stopped.
+        await release_client()
         refused = started.model_copy(
             update={"outcome": "failed", "error": f"refused before any call: {why}", "created_at": utc_now_iso()}
         )
-        await run_blocking(eval_host.blocking_executor, write_held_record, eval_host.storage, ANALYSIS_JOB, refused)
+        try:
+            await run_blocking(eval_host.blocking_executor, write_held_record, eval_host.storage, ANALYSIS_JOB, refused)
+        # prawduct:ok-broad-except — the reason the start stopped is what the caller is told; this is logged beside it
+        except Exception:
+            log.exception(
+                "eval.generate_analysis campaign=%s scope=%s attempt %s stopped before its job started (%s), and "
+                "its ending could not be written; it reads lost once its lease lapses",
+                campaign_id,
+                scope_id,
+                prepared.attempt_id,
+                why,
+            )
 
     # The one step that decides between processes: a conditional write of the campaign's generation slot. The
     # attempt is recorded first, so a start that loses this race finds the winner's attempt to name.
-    holder = await run_blocking(
-        eval_host.blocking_executor, _claim_generation_slot, eval_host, campaign_id, scope_id, prepared.attempt_id
-    )
+    try:
+        holder = await run_blocking(
+            eval_host.blocking_executor, _claim_generation_slot, eval_host, campaign_id, scope_id, prepared.attempt_id
+        )
+    except BaseException as broke:
+        await refuse(
+            "its start was cancelled"
+            if isinstance(broke, asyncio.CancelledError)
+            else f"the campaign's generation slot could not be claimed: {broke}"
+        )
+        raise
     if holder is not None:
         refusal = _already_running(campaign_id, holder)
         await refuse(str(refusal))
@@ -535,7 +565,12 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
     async def work() -> None:
         try:
             await run_analysis_generation(
-                eval_host, prepared, prompt_id=generation.prompt_id, max_output_tokens=generation.max_output_tokens
+                eval_host,
+                prepared,
+                prompt_id=generation.prompt_id,
+                max_output_tokens=generation.max_output_tokens,
+                deadline=manager.job_timeout_factory(generation.budget_s),
+                leases=leases,
             )
         except JobFenced as fenced:
             # Another process wrote the attempt lost (its lease lapsed): its record is the answer, and the
@@ -543,9 +578,9 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
             log.warning("eval.generate_analysis campaign=%s scope=%s stopped: %s", campaign_id, scope_id, fenced)
 
     try:
-        manager.start_task(
-            prepared.attempt_id, work, budget_s=generation.budget_s, key=key, record=(ANALYSIS_JOB, scope_id)
-        )
+        # The generation enters its own budget (``deadline``), so its attempt can say it timed out: one entered
+        # around the task would reach the generation as a cancel.
+        manager.start_task(prepared.attempt_id, work, budget_s=None, key=key, record=(ANALYSIS_JOB, scope_id))
     except ConflictError as lost_race:
         # Another start in this process took the key while this one prepared.
         await refuse(str(lost_race))

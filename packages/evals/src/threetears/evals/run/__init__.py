@@ -50,10 +50,7 @@ from threetears.evals.run.fidelity import FidelityContract, callers_missing_the_
 from threetears.evals.run.jobs import (
     AdmissionTicket,
     EvalJobManager,
-    EvalJobTimeout,
-    JobTimeoutFactory,
     RunEndHook,
-    default_job_timeout,
 )
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_MAX_TOKENS, JUDGE_REQUEST_SETTINGS, run_judge_llm
 from threetears.evals.run.judge_service import JudgeRequest, JudgeService
@@ -127,7 +124,9 @@ from threetears.evals.run.judge_repeat import (
     JudgeRepeatReport,
     JudgeRepeatSkip,
     estimate_judge_repeat,
-    repeat_judge_scores,
+    JUDGE_REPEAT_ACTION,
+    JUDGE_REPEAT_BUDGET_S,
+    judge_repeat_work,
 )
 from threetears.evals.run.judge_temperature import (
     JUDGE_TEMPERATURE_JOB,
@@ -147,7 +146,13 @@ from threetears.evals.run.judge_second import (
     estimate_second_judge,
     second_judge_work,
 )
-from threetears.evals.run.launch_job import LAUNCH_CANCEL_REASON, LAUNCH_JOB, EvalLaunch, launch_job_work
+from threetears.evals.run.launch_job import (
+    LAUNCH_CANCEL_REASON,
+    LAUNCH_JOB,
+    LAUNCH_PREPARATION_BUDGET_S,
+    EvalLaunch,
+    launch_job_work,
+)
 from threetears.evals.run.job_work import (
     ACTION_JOB,
     DEFAULT_ACTION_JOB_BUDGET_S,
@@ -256,12 +261,10 @@ __all__ = [
     "CurationStore",
     "ErrorLedger",
     "EvalJobManager",
-    "EvalJobTimeout",
     "EveryCellApparatusFailedError",
     "FidelityContract",
     "GoalCheckUnevaluable",
     "InProcessCellExecutor",
-    "JobTimeoutFactory",
     "RunEndHook",
     "FrozenJudgeCase",
     "JudgeCaseFreezeReport",
@@ -323,7 +326,6 @@ __all__ = [
     "create_judge_config",
     "create_rubric_dim",
     "create_template",
-    "default_job_timeout",
     "delete_analysis",
     "delete_insight",
     "delete_judge_config",
@@ -366,7 +368,9 @@ __all__ = [
     "stamp_witnessed_judge",
     "refuse_stale_presumptions",
     "rejudge_result",
-    "repeat_judge_scores",
+    "JUDGE_REPEAT_ACTION",
+    "JUDGE_REPEAT_BUDGET_S",
+    "judge_repeat_work",
     "reproducible_judge_inputs",
     "require_delete_confirmation",
     "refuse_raised_ceiling",
@@ -423,6 +427,7 @@ __all__ = [
     "admit_launch",
     "LAUNCH_CANCEL_REASON",
     "LAUNCH_JOB",
+    "LAUNCH_PREPARATION_BUDGET_S",
     "EvalLaunch",
     "launch_job_work",
 ]

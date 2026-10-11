@@ -179,6 +179,19 @@ async def test_every_call_is_held_to_the_one_fixed_call_timeout() -> None:
     assert "outlived this server's 0.05s call timeout" in text and "No action's call waits on a model" in text
 
 
+async def test_a_timeout_the_call_raises_of_its_own_is_not_reported_as_the_call_timeout() -> None:
+    """``except TimeoutError`` caught the call's own timeout too, and answered it as the server's."""
+    fixture = ops_fixture()
+
+    async def timing_out_caller() -> Caller:
+        raise TimeoutError("the identity service did not answer")
+
+    async with Client(_served(fixture, caller=timing_out_caller, call_timeout_s=30.0)) as client:
+        text, _, is_error = await _text(client, "evals", {"action": "templates_list"})
+    assert is_error and "the identity service did not answer" in text
+    assert "outlived this server's" not in text
+
+
 def test_a_call_timeout_that_is_not_positive_is_refused_at_mount() -> None:
     with pytest.raises(ValueError, match="call_timeout_s must be positive"):
         _served(ops_fixture(), call_timeout_s=0)

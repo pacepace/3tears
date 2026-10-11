@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, NamedTuple, Protocol,
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
+from threetears.evals.kernel import JobTimeoutFactory
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.host.kinds import freeze
 from threetears.evals.schema.models import EvalTemplate, WorldPlacement
@@ -72,7 +73,6 @@ from threetears.evals.kernel.cassettes import CassetteMode
 from threetears.evals.run.jobs import (
     MAX_CONCURRENT_JOBS,
     EvalJobManager,
-    JobTimeoutFactory,
     RunEndHook,
     adaptive_job_timeout_s,
 )
@@ -459,7 +459,7 @@ class LaunchHost:
             launch then refuses.
         job_timeout_factory: What bounds each run's job, as
             :class:`~threetears.evals.run.jobs.EvalJobManager` takes it. No default, for the reason the
-            host's cell timeout has none: :func:`~threetears.evals.run.jobs.default_job_timeout` is
+            host's cell timeout has none: :func:`~threetears.evals.kernel.default_job_timeout` is
             right for a host with no timeout layer of its own and silently wrong for one with.
         world_placements: What one assembled run did with every world dimension the host declares,
             stamped on the run before the identity that hashes it. Required exactly when the
@@ -2178,11 +2178,21 @@ async def _admit_run(
         # pays for the generation the arms share and what builds an arm's clients, so pricing an arm after
         # it would refuse a launch already billed. Priced exactly once — here, or by the battery's
         # pre-flight, whose plans the arms then carry.
-        return (
-            await price_arms(host, dispatched.launchable, requests)
-            if priced_arms is None
-            else (priced_arms.carried_by(requests))
+        if priced_arms is not None:
+            return priced_arms.carried_by(requests)
+        priced_requests = await price_arms(host, dispatched.launchable, requests)
+        # And the generation's own calls, against the out-of-run cap they will be admitted under — the battery's
+        # pre-flight quotes its templates' the same way. Without it a generation the cap cannot pay for was refused
+        # only inside the launcher, which a transport runs in the launch's job, after the call had returned.
+        await _quote_generation(
+            host,
+            dispatched.template,
+            requests[0].generation_budget,
+            n_variations=n_variations,
+            variation_model=variation_model,
+            scope_id=scope_id,
         )
+        return priced_requests
 
     async def launched(dispatched: _Dispatched, requests: list[LaunchRequest]) -> list[EvalRun]:
         """Hand each priced arm, one per model, to the kind's launcher — where a generating launch's calls are made."""
@@ -2229,6 +2239,47 @@ async def _admit_run(
         admission=admission,
         event="eval.start_run",
     )
+
+
+async def _quote_generation(
+    host: LaunchHost,
+    template: EvalTemplate,
+    budget: OutOfRunBudget | None,
+    *,
+    n_variations: int,
+    variation_model: str | None,
+    scope_id: str,
+) -> None:
+    """Price a launch's case generation on its writer against the budget it will be admitted under — no call made.
+
+    The plan and the budget are the ones the launcher's generation uses (:func:`plan_variation_calls`,
+    :func:`_generation_budget`), so a generation this passes is one the launcher's admission passes too; the quote
+    commits nothing. A launch that generates nothing, or whose template no model writes, has nothing to price.
+
+    Args:
+        host: The host: its writer client and the store the existing cases are read from.
+        template: The template whose ``llm`` axes the generation writes.
+        budget: The launch's generation budget; ``None`` for a launch that generates nothing.
+        n_variations: The cases the launch generates.
+        variation_model: The writer model the launch named.
+        scope_id: The scope the cases are generated into.
+
+    Raises:
+        ValidationFailedError: Under an enforced cap, a call the writer cannot price, or calls priced above it.
+        ValueError: The host supplies no completion clients.
+    """
+    if budget is None or n_variations <= 0 or variation_model is None or not _llm_axes(template):
+        return
+    existing = await run_blocking(
+        host.eval_host.blocking_executor,
+        partial(host.eval_host.storage.query_test_cases, scope_id, template_id=template.id),
+    )
+    planned = list(plan_variation_calls(template, n_variations, existing).values())
+    if not planned:
+        return
+    writer = host.eval_host.completion_clients("a launch's generation pricing")("variation", variation_model)
+    async with writer:
+        budget.quote(writer, "variation", planned)
 
 
 def _generation_budget(

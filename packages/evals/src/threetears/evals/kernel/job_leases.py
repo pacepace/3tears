@@ -16,8 +16,9 @@ did not start a job read a live one as lost, and a cancel there was refused. Her
 - **A holder that has lost its lease writes nothing more.** Its renewal finding the record ended by someone else,
   or its own lease lapsed (which it writes lost itself, as any reader would), stops the work at once; a write the
   work makes of its own record goes through :func:`write_held_record`, which refuses a record already ended and
-  raises :class:`~threetears.evals.kernel.JobFenced`. A run's own writes are refused the same way by the terminal
-  rule its status writes already keep.
+  raises :class:`~threetears.evals.kernel.JobFenced`. A run's own writes are refused the same way: its status
+  write takes nothing over a record carrying ``lost``, its own ending included, and the process that lost it
+  neither broadcasts that ending nor tells the run-end hook.
 - **A cancel is a field on the record** (``cancel_requested_at``), written by whichever process was asked
   (:func:`request_job_cancel`); the holder reads it at its next renewal and ends the job ``cancelled``, so a cancel
   lands within one renewal interval from anywhere.
@@ -37,6 +38,7 @@ the engine runs.
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from collections.abc import Callable
 from concurrent.futures import Executor
@@ -159,6 +161,13 @@ def _document(record: EvalDocumentModel) -> dict[str, Any]:
 def lease_lapsed(record: LeasedRecord, now: datetime) -> bool:
     """Whether a record's lease has lapsed at ``now`` — or it has none, which no process can be renewing.
 
+    **No grace for a record with no lease.** One was written by a build before leases, which never renews one; a
+    grace measured from when it started, or was last written, would still read a live job lost once the grace ran
+    out, and would only hide that the two builds cannot share a store — the older one's own reclaim reads every
+    job it is not running as abandoned, the newer one's included. So the rule is stated rather than guessed at:
+    every process sharing a store runs a build that keeps leases before any job starts (stop every worker, then
+    upgrade — ``MIGRATIONS.toml``), and a lease-less record that has not ended is lost.
+
     Args:
         record: A job record.
         now: The time to read it at, in the store's time when the store keeps one.
@@ -174,7 +183,8 @@ def _lapse_cause(record: LeasedRecord) -> str:
     if record.lease is None:
         return (
             "it carries no lease, so no process can be running it — it was started by a build that kept a job's "
-            "liveness in its own process, which has since gone"
+            "liveness in its own process, which has since gone. Every process sharing a store must run a build "
+            "that keeps leases before any job starts: stop every worker, then upgrade"
         )
     return (
         f"its lease, held by process {record.lease.holder}, lapsed at {record.lease.expires_at} without renewal — "
@@ -234,6 +244,48 @@ def settle_job_record[R: EvalDocumentModel](
     )
 
 
+def require_held[R: EvalDocumentModel](
+    store: LeaseStore, kind: LeasedJobKind[R], record_id: str, scope_id: str, *, leases: JobLeases | None = None
+) -> None:
+    """Refuse to go on with a job whose record has ended under it: the check a job makes before it spends again.
+
+    A job's own writes are fenced (:func:`write_held_record`), but a job that spends between two writes — a sweep
+    launching its next arm — would pay for work no write of its ever records once its record has ended elsewhere.
+    So it asks first: the record is read as every process reads it (:func:`settle_job_record`, which writes it lost
+    when its lease has lapsed), and one that has ended is refused. A record never stored is not refused.
+
+    Args:
+        store: Where the record lives.
+        kind: Its type.
+        record_id: Its id.
+        scope_id: Its scope.
+        leases: The leases of the process asking; a record it has let go of is refused (see :func:`write_held_record`).
+
+    Raises:
+        JobFenced: The record has ended — written lost by a reader, by a shutdown, or here because its lease lapsed —
+            or this process let go of it.
+        ConflictError: The record kept changing while its lapse was being written; nothing was decided.
+        StorageError: A read or write failed.
+    """
+    _refuse_let_go(leases, kind, record_id)
+    record, _ = settle_job_record(store, kind, record_id, scope_id)
+    if record is not None and kind.ended(record):
+        how = "was lost" if _leased(record).lost is not None else "has ended"
+        raise JobFenced(f"{kind.name} job '{record_id}' {how}; it starts nothing more")
+
+
+def _refuse_let_go(leases: JobLeases | None, kind: LeasedJobKind[Any], record_id: str) -> None:
+    """Refuse a job's own write or spend once its process has let go of its lease — the one rule every kind keeps.
+
+    Raises:
+        JobFenced: ``leases`` has let go of ``record_id``.
+    """
+    if leases is not None and leases.fenced(record_id):
+        raise JobFenced(
+            f"{kind.name} job '{record_id}': this process let go of its lease; it writes and starts nothing more"
+        )
+
+
 def request_job_cancel(store: LeaseStore, record_id: str, scope_id: str, *, reason: str | None) -> bool:
     """Ask a job to stop by writing the request on its record, from any process.
 
@@ -256,7 +308,9 @@ def request_job_cancel(store: LeaseStore, record_id: str, scope_id: str, *, reas
     return store.merge_job_record_fields(record_id, scope_id, fields)
 
 
-def write_held_record[R: EvalDocumentModel](store: JobRecordStore, kind: LeasedJobKind[R], record: R) -> R:
+def write_held_record[R: EvalDocumentModel](
+    store: JobRecordStore, kind: LeasedJobKind[R], record: R, *, leases: JobLeases | None = None
+) -> R:
     """The job's own write of its record: lands only while the stored record has not ended, keeping its lease fields.
 
     Reads the stored record and writes ``record`` over it with ``if_match``, carrying the stored lease, cancel
@@ -269,15 +323,20 @@ def write_held_record[R: EvalDocumentModel](store: JobRecordStore, kind: LeasedJ
         store: Where the record lives.
         kind: Its type.
         record: The record as the job would write it.
+        leases: The leases of the process writing it. A record this process has let go of
+            (:meth:`JobLeases.fenced`) is refused here before anything is read: the store may not say so yet — no
+            reader has written the loss, or the store's clock has not reached the expiry — and the process that
+            let go is the one that knows. ``None`` for a write no process holds a lease for.
 
     Returns:
         The record as written.
 
     Raises:
-        JobFenced: The stored record has already ended; nothing was written.
+        JobFenced: The stored record has already ended, or this process let go of it; nothing was written.
         ConflictError: Every attempt lost its race.
         StorageError: A read or write failed.
     """
+    _refuse_let_go(leases, kind, _leased(record).id)
     for _ in range(LEASE_WRITE_ATTEMPTS):
         stored, etag = store.load_job_record(kind.model, _leased(record).id, _leased(record).scope_id)
         if stored is not None and kind.ended(stored):
@@ -322,6 +381,10 @@ class _Held:
     cancel: Callable[[str | None], object]
     stop: Callable[[], object]
     cancel_delivered: bool = field(default=False)
+    #: When the lease was last known extended, on this process's monotonic clock: as it was held (just after the
+    #: write carrying its grant), then as each successful renewal's write was issued — before it, so the reckoning
+    #: never credits the lease with more life than the store gave it.
+    renewed_at: float = field(default_factory=time.monotonic)
 
 
 class JobLeases:
@@ -335,7 +398,10 @@ class JobLeases:
     Every :attr:`renew_every_s` (a third of :attr:`lease_s`) each held record is re-read and its lease extended with
     a conditional write. What the read finds is acted on there: a cancel asked of the job is handed to the job's
     ``cancel`` (once), and a record ended by someone else, or a lease that lapsed before it was renewed, stops the
-    job through its ``stop`` and releases it — the holder writes nothing more.
+    job through its ``stop`` and releases it — the holder writes nothing more. **A holder whose renewals keep
+    failing fences itself**: once its last successful renewal is a whole :attr:`lease_s` old on its own clock, its
+    lease has lapsed whatever the store can say, so the job is stopped the same way (and written lost, when the
+    store takes the write) rather than left spending past an expiry no reader honours.
     """
 
     def __init__(
@@ -362,6 +428,9 @@ class JobLeases:
         self._executor = blocking_executor
         self._holder_id = str(uuid.uuid7())
         self._held: dict[str, _Held] = {}
+        # Records this process let go of — a renewal found them ended by another writer, or the lease lapsed by
+        # this process's own count — whose jobs have not yet ended. See fenced.
+        self._let_go: set[str] = set()
         self._renewer: asyncio.Task[None] | None = None
 
     @property
@@ -426,11 +495,37 @@ class JobLeases:
         """Stop renewing a record's lease: its job has written its own ending. Idempotent."""
         self._held.pop(record_id, None)
 
+    def let_go(self, record_id: str) -> None:
+        """Give a record's lease up as lost: stop renewing it, and refuse every later write of it from this process.
+
+        Done here when a renewal finds the record ended by another writer or its lease lapsed by this process's own
+        count, and by a job that finds its record lost at its own write. From then until the job ends
+        (:meth:`forget`), :meth:`fenced` answers ``True``, and every job kind's own writes — a run's status, a
+        held record's write (:func:`write_held_record`), a check before spending (:func:`require_held`) — are
+        refused by it. Idempotent.
+
+        Args:
+            record_id: The record.
+        """
+        self._held.pop(record_id, None)
+        self._let_go.add(record_id)
+
+    def fenced(self, record_id: str) -> bool:
+        """Whether this process let go of ``record_id``'s lease (:meth:`let_go`) and its job has not yet ended."""
+        return record_id in self._let_go
+
+    def forget(self, record_id: str) -> None:
+        """Forget a record this process let go of: its job has ended, and writes nothing more. Idempotent."""
+        self._let_go.discard(record_id)
+
     async def _renew_while_held(self) -> None:
         """Renew every held lease each interval, until none is held."""
         while self._held:
             await asyncio.sleep(self.renew_every_s)
             for record_id, held in list(self._held.items()):
+                issued = time.monotonic()
+                verdict: RenewalVerdict | None = None
+                reason: str | None = None
                 try:
                     verdict, reason = await run_blocking(self._executor, self._renew, held)
                 # prawduct:ok-broad-except — a failed renewal is retried next interval; the lease outlives two failures
@@ -442,10 +537,45 @@ class JobLeases:
                         held.scope_id,
                         self.renew_every_s,
                     )
-                    continue
                 if self._held.get(record_id) is not held:
                     continue  # released while the renewal ran: its job wrote its own ending
-                self._act_on(held, verdict, reason)
+                if verdict in ("renewed", "cancel"):
+                    held.renewed_at = issued
+                elif verdict in (None, "contended") and time.monotonic() - held.renewed_at >= self._lease_s:
+                    # Not renewed — failed, or every write lost its race — for a whole lease.
+                    await self._expire(held)
+                    continue
+                if verdict is not None:
+                    self._act_on(held, verdict, reason)
+
+    async def _expire(self, held: _Held) -> None:
+        """Stop a job whose renewals have failed for a whole lease: its lease has lapsed by this process's own count.
+
+        Every reader may already read it lost, and the next one to look writes so — so the holder stops at once
+        rather than spend past an expiry it cannot extend. It writes the loss itself when it can (the store may be
+        what failed); either way the job's own writes are refused from here on (:meth:`let_go`), even once the
+        store recovers.
+        """
+        self.let_go(held.record_id)
+        log.error(
+            "eval.job_lease %s=%s scope=%s could not be renewed for %.0fs, its whole lease — stopping it as lost",
+            held.kind.name,
+            held.record_id,
+            held.scope_id,
+            self._lease_s,
+        )
+        try:
+            await run_blocking(self._executor, settle_job_record, self._store, held.kind, held.record_id, held.scope_id)
+        # prawduct:ok-broad-except — the store may be what failed; the record reads lost to the next reader regardless
+        except Exception:
+            log.warning(
+                "eval.job_lease %s=%s scope=%s: the loss could not be written here; the next reader writes it",
+                held.kind.name,
+                held.record_id,
+                held.scope_id,
+                exc_info=True,
+            )
+        held.stop()
 
     def _act_on(self, held: _Held, verdict: RenewalVerdict, reason: str | None) -> None:
         """Do what a renewal found: deliver a cancel once, or release and stop a job fenced off its record."""
@@ -462,7 +592,7 @@ class JobLeases:
         elif verdict == "ended":
             self.release(held.record_id)
         elif verdict == "fenced":
-            self.release(held.record_id)
+            self.let_go(held.record_id)
             log.warning(
                 "eval.job_lease %s=%s scope=%s lost its lease — stopping it; its record answers how it ended",
                 held.kind.name,
@@ -579,6 +709,7 @@ __all__ = [
     "RenewalVerdict",
     "lease_lapsed",
     "request_job_cancel",
+    "require_held",
     "settle_job_record",
     "write_held_record",
 ]

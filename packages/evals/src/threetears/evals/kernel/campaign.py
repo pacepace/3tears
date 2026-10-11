@@ -984,7 +984,7 @@ class EvalAnalysis(EvalDocumentModel):
 #: a precondition refused before any call, a provider call that raised, a failed write.
 #: ``cancelled``: the attempt was cancelled mid-flight, by a caller's budget or disconnect, or by a shutdown —
 #: or it was lost (its ``lost`` says so: the process running it ended or shut down).
-AttemptOutcome = Literal["running", "stored", "refused", "failed", "cancelled"]
+AttemptOutcome = Literal["running", "stored", "refused", "failed", "cancelled", "timed_out"]
 
 
 class EvalAnalysisAttempt(CoreDocumentModel):
@@ -1022,8 +1022,9 @@ class EvalAnalysisAttempt(CoreDocumentModel):
         description=(
             "Where the attempt stands: running (started, not ended), or how it ended: stored (an analysis was "
             "persisted), refused (the output was refused and so was the repair's), failed (a call cut short, a "
-            "precondition, a provider error or a failed write), or cancelled (a caller's budget or disconnect, or a "
-            "shutdown, ended it mid-flight; or it was lost, which `lost` records)."
+            "precondition, a provider error or a failed write), cancelled (a caller's disconnect or a shutdown ended "
+            "it mid-flight; or it was lost, which `lost` records), or timed_out (its own wall-clock budget ran out "
+            "mid-flight)."
         ),
     )
     analysis_id: str | None = Field(
@@ -1185,8 +1186,9 @@ class EvalGenerationSlot(CoreDocumentModel):
 #: Where a sweep stands: ``running`` while its arms are being launched and run; ``completed`` — every arm ran;
 #: ``failed`` — an arm was refused at launch, or its run ended ``failed``, so no further arm was launched;
 #: ``cancelled`` — a cancel stopped it, cancelling the arms in flight and launching none after; or it was lost
-#: (its ``lost`` says so), its process gone with no further arm launched.
-SweepOutcome = Literal["running", "completed", "failed", "cancelled"]
+#: (its ``lost`` says so), its process gone with no further arm launched; ``timed_out`` — its own wall-clock budget
+#: ran out, stopping the arms in flight and launching none after, as every job kind's budget reads.
+SweepOutcome = Literal["running", "completed", "failed", "cancelled", "timed_out"]
 
 
 class SweepArmRecord(EvalDocumentModel):
