@@ -39,7 +39,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from threetears.evals.kernel.errors import ConflictError, EvalServiceError, JobFenced
+from threetears.evals.kernel.errors import ConflictError, EvalServiceError, JobFenced, StorageError
 from threetears.evals.kernel.job_leases import JobLeases, LeasedJobKind, write_held_record
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
 from threetears.evals.kernel.storage import JobRecordStore, LeaseStore
@@ -69,6 +69,11 @@ DEFAULT_ACTION_JOB_BUDGET_S = 3600.0
 
 #: The detail a job cancelled before it ended records, beside the cancel's reason on the record.
 CANCELLED_DETAIL = "cancelled before it ended"
+
+#: How long a job waits before each further attempt at its ending write when the store fails it, in seconds. The
+#: ending carries the job's result, and a job whose ending is never written reads lost once its lease lapses, so a
+#: store that fails for a moment is waited out rather than costing the result; the lease is held meanwhile.
+ENDING_WRITE_RETRY_DELAYS_S: tuple[float, ...] = (0.5, 2.0, 5.0)
 
 
 def end_record[R: EvalDocumentModel](record: R, outcome: JobOutcome, detail: str | None = None, **fields: Any) -> R:
@@ -266,12 +271,73 @@ async def _run_to_end[R: EvalDocumentModel](
         log.exception("eval.job %s=%s scope=%s failed", name, record_id, scope_id)
         ended = end_record(recorder.record, "failed", _failure_detail(broke))
     try:
-        return await recorder.save(ended)
+        return await _write_ending(recorder, ended, name=name, record_id=record_id, scope_id=scope_id)
     except JobFenced as fenced:
         log.warning(
             "eval.job %s=%s scope=%s ended, but its record was lost first: %s", name, record_id, scope_id, fenced
         )
         return recorder.record
+
+
+async def _write_ending[R: EvalDocumentModel](
+    recorder: JobRecorder[R], ended: R, *, name: str, record_id: str, scope_id: str
+) -> R:
+    """Write a job's ending, waiting out a store that fails it; one never written is logged whole, never dropped.
+
+    The ending is where the job's result is kept, so a failed write is tried again after each of
+    :data:`ENDING_WRITE_RETRY_DELAYS_S`, the lease held meanwhile. A write still failing after the last — or a
+    cancel arriving while it waits — leaves the record to read lost once its lease lapses, and the ending it would
+    have written is logged at ERROR in full, so what the job paid for can be recovered from the log.
+
+    Returns:
+        The record as written; ``ended`` itself when no attempt was, so a foreground caller still holds the result.
+
+    Raises:
+        JobFenced: The record ended elsewhere first; nothing was written.
+        asyncio.CancelledError: Cancelled while waiting to try again; the ending was logged.
+    """
+    delays = iter(ENDING_WRITE_RETRY_DELAYS_S)
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return await recorder.save(ended)
+        except JobFenced:
+            raise
+        except (ConflictError, StorageError) as failed:
+            delay = next(delays, None)
+            if delay is None:
+                log.error(
+                    "eval.job %s=%s scope=%s: its ending was NOT written after %d attempts (%s); the record reads lost "
+                    "once its lease lapses. The ending it would have written: %s",
+                    name,
+                    record_id,
+                    scope_id,
+                    attempt,
+                    failed,
+                    ended.model_dump_json(),
+                )
+                return ended
+            log.warning(
+                "eval.job %s=%s scope=%s: its ending write failed (%s) — tried again in %.1fs",
+                name,
+                record_id,
+                scope_id,
+                failed,
+                delay,
+            )
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            log.error(
+                "eval.job %s=%s scope=%s: cancelled while its failed ending write waited to be tried again; the "
+                "ending it would have written: %s",
+                name,
+                record_id,
+                scope_id,
+                ended.model_dump_json(),
+            )
+            raise
 
 
 async def _save_started[R: EvalDocumentModel](
@@ -490,6 +556,7 @@ __all__ = [
     "ACTION_JOB",
     "CANCELLED_DETAIL",
     "DEFAULT_ACTION_JOB_BUDGET_S",
+    "ENDING_WRITE_RETRY_DELAYS_S",
     "EvalActionJob",
     "JobOutcome",
     "JobRecorder",

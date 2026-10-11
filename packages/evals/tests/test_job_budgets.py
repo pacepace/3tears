@@ -1,10 +1,12 @@
-"""A job's time budget: what it bounds, and how a job it stops reads, over the toy host.
+"""A job's time budget and its ending: what the budget bounds, how a job it stops reads, and how its ending lands.
 
 - **A job whose budget runs out reads timed out** — state ``stopped``, status ``timed_out``, a detail naming the
   budget — never ``cancelled``, which is someone deciding to stop it; an operator's cancel of the same work reads
   ``cancelled``.
 - **A launch's budget is its preparation's**: a launch whose run waits for a concurrency slot longer than that
   budget is not cancelled for it, and a preparation that hangs past it ends ``timed_out`` with nothing started.
+- **A job's ending is not lost to a store that fails for a moment**: the write is tried again, and the result lands;
+  one the store refuses every time is logged whole, so what the job paid for can be recovered.
 """
 
 from __future__ import annotations
@@ -16,9 +18,11 @@ from typing import Any
 import pytest
 from pydantic import Field
 
+import threetears.evals.run.job_work as job_work
 import threetears.evals.run.launch_job as launch_job
 from threetears.evals.ops import LaunchArguments, job_cancel, run_launch, start_action_job
 from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.storage import InMemoryDocumentStore
 import packages.evals.tests.fixtures.toyhost.launch as toyhost_launch
 from packages.evals.tests.fixtures.toyhost.kind import ScriptedExtractionClient
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
@@ -107,3 +111,51 @@ async def test_a_launch_whose_preparation_hangs_past_its_budget_ends_timed_out_w
 
     assert (status.state, status.status, status.run_ids) == ("stopped", "timed_out", [])
     assert fixture.host.launch.job_manager.admitted_count == 0, "the launch's reserved room was handed back"
+
+
+class EndingRefusingStore(InMemoryDocumentStore):
+    """Refuses the next ``refusals`` writes of an action job's ending — a store failing for a moment, or for good."""
+
+    def __init__(self, refusals: int) -> None:
+        """Refuse that many endings."""
+        super().__init__()
+        self.refusals = refusals
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Refuse an action job's ending while refusals remain; write anything else."""
+        if document.get("doc_type") == "eval_action_job" and document.get("outcome") != "running" and self.refusals:
+            self.refusals -= 1
+            raise RuntimeError("the store is not answering")
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+async def _drafted() -> _Draft:
+    return _Draft(text="the paid-for draft")
+
+
+async def test_a_job_whose_ending_write_fails_for_a_moment_still_ends_with_its_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(job_work, "ENDING_WRITE_RETRY_DELAYS_S", (0.01, 0.01))
+    fixture = ops_fixture(store=EndingRefusingStore(refusals=2))
+
+    (job,) = (await start_action_job(fixture.host, TOYHOST_SCOPE, action="draft", run=_drafted)).jobs
+    status = await settled(fixture.host, job.job_id)
+
+    assert (status.state, status.result) == ("completed", {"text": "the paid-for draft"})
+
+
+async def test_a_job_whose_ending_is_never_written_logs_it_whole(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(job_work, "ENDING_WRITE_RETRY_DELAYS_S", (0.01, 0.01))
+    fixture = ops_fixture(store=EndingRefusingStore(refusals=100))
+
+    (job,) = (await start_action_job(fixture.host, TOYHOST_SCOPE, action="draft", run=_drafted)).jobs
+    record_id = job.job_id.split(":", 1)[1]
+    async with asyncio.timeout(5):
+        while fixture.host.launch.job_manager.is_task_active(record_id):
+            await asyncio.sleep(0.01)
+
+    (logged,) = [record for record in caplog.records if "its ending was NOT written after 3 attempts" in record.message]
+    assert "the paid-for draft" in logged.message and '"outcome":"completed"' in logged.message

@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import math
 import uuid
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -425,7 +425,11 @@ class EvalJudgeTemperatureCheck(CoreDocumentModel):
     )
     outcome: JobOutcome = "running"
     answers: JudgeTemperatureAnswers | None = Field(
-        default=None, description="Every answer, per case and setting, with the spend; set once it has run to its end."
+        default=None,
+        description=(
+            "Every answer, per case and setting, with the spend: written as each call returns, so a comparison "
+            "cancelled, timed out or failed part-way keeps every answer it paid for; whole once it has completed."
+        ),
     )
     detail: str | None = Field(default=None, description="Why it ended other than completed.")
     created_at: str = Field(default_factory=utc_now_iso)
@@ -519,7 +523,12 @@ async def judge_temperature_work(
     )
 
     async def compare(recorder: JobRecorder[EvalJudgeTemperatureCheck]) -> EvalJudgeTemperatureCheck:
-        answers = await _ask(prepared, selection=selection, repeats=repeats, out_of_run_cap_usd=out_of_run_cap_usd)
+        async def keep(so_far: JudgeTemperatureAnswers) -> None:
+            await recorder.save(recorder.record.model_copy(update={"answers": so_far}))
+
+        answers = await _ask(
+            prepared, selection=selection, repeats=repeats, out_of_run_cap_usd=out_of_run_cap_usd, keep=keep
+        )
         return end_record(recorder.record, "completed", answers=answers)
 
     async def discard() -> None:
@@ -531,9 +540,22 @@ async def judge_temperature_work(
 
 
 async def _ask(
-    prepared: _Prepared, *, selection: TemperatureSelection, repeats: int, out_of_run_cap_usd: float | None
+    prepared: _Prepared,
+    *,
+    selection: TemperatureSelection,
+    repeats: int,
+    out_of_run_cap_usd: float | None,
+    keep: Callable[[JudgeTemperatureAnswers], Awaitable[None]],
 ) -> JudgeTemperatureAnswers:
     """Make an admitted comparison's calls, and gather every answer per case and setting.
+
+    Args:
+        prepared: The admitted comparison.
+        selection: Which dims were selected.
+        repeats: Calls per dim per setting.
+        out_of_run_cap_usd: The cap the calls were admitted under.
+        keep: Records the answers so far, called as each call returns — what makes a comparison stopped part-way
+            keep what it paid for.
 
     Returns:
         Per case and setting every answer in call order, the case count and the spend.
@@ -552,6 +574,16 @@ async def _ask(
                     )
                     for dim, outcome in outcomes:
                         answered.setdefault((one.result.id, dim, setting), []).append(outcome)
+                    await keep(
+                        _answers(
+                            prepared,
+                            answered,
+                            selection=selection,
+                            repeats=repeats,
+                            stopped=None,
+                            out_of_run_cap_usd=out_of_run_cap_usd,
+                        )
+                    )
                     if any(outcome.account_refused for _, outcome in outcomes):
                         stopped = (
                             f"the account behind the judge refused a call while re-judging result '{one.result.id}', "
@@ -564,6 +596,35 @@ async def _ask(
                 break
     finally:
         await _close(prepared.services)
+    answers = _answers(
+        prepared,
+        answered,
+        selection=selection,
+        repeats=repeats,
+        stopped=stopped,
+        out_of_run_cap_usd=out_of_run_cap_usd,
+    )
+    log.info(
+        "eval.judge_temperature run=%s cases=%d repeats=%d calls=%d cost=%s",
+        answers.run_id,
+        answers.cases,
+        repeats,
+        answers.calls_made,
+        "unpriced" if answers.cost_usd is None else f"${answers.cost_usd:.6f}",
+    )
+    return answers
+
+
+def _answers(
+    prepared: _Prepared,
+    answered: dict[tuple[str, str, TemperatureSetting], list[JudgeOutcome]],
+    *,
+    selection: TemperatureSelection,
+    repeats: int,
+    stopped: str | None,
+    out_of_run_cap_usd: float | None,
+) -> JudgeTemperatureAnswers:
+    """Every answer gathered so far, per case and setting in call order, with what the calls made so far spent."""
     cases: list[TemperatureCaseAnswers] = []
     for one in prepared.planned:
         for dim in one.dims:
@@ -594,7 +655,7 @@ async def _ask(
                 )
     spends = prepared.budget.recorded
     costs = [spend.cost_usd for spend in spends]
-    answers = JudgeTemperatureAnswers(
+    return JudgeTemperatureAnswers(
         run_id=prepared.run_id,
         judge_model=prepared.judge_model,
         selection=selection,
@@ -608,15 +669,6 @@ async def _ask(
         cost_usd=None if None in costs else math.fsum(c for c in costs if c is not None),
         cap_usd=out_of_run_cap_usd,
     )
-    log.info(
-        "eval.judge_temperature run=%s cases=%d repeats=%d calls=%d cost=%s",
-        answers.run_id,
-        answers.cases,
-        repeats,
-        answers.calls_made,
-        "unpriced" if answers.cost_usd is None else f"${answers.cost_usd:.6f}",
-    )
-    return answers
 
 
 __all__ = [

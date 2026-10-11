@@ -24,6 +24,7 @@ What is pinned:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass, field
@@ -162,6 +163,29 @@ class _Client:
 
     async def aclose(self) -> None:
         """Nothing to release."""
+
+
+@dataclass
+class _StallingJudge(_Judge):
+    """A judge that stops answering once it has answered :attr:`stall_after` calls — ``None`` never stops."""
+
+    stall_after: int | None = None
+
+    def client(self, temperature: float | None) -> _Client:
+        self.requested.append(temperature)
+        return _StallingClient(self, temperature)
+
+
+@dataclass
+class _StallingClient(_Client):
+    """A judge client whose call never returns once its judge has stalled."""
+
+    async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
+        judge = self.judge
+        assert isinstance(judge, _StallingJudge)
+        if judge.stall_after is not None and len(judge.calls) >= judge.stall_after:
+            await asyncio.Event().wait()
+        return await super().generate(system=system, user=user, response_format=response_format)
 
 
 class _Kind:
@@ -317,6 +341,36 @@ class TestTheComparisonShowsWhatTemperatureDoes:
         await compare_judge_temperatures(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)
 
         assert _results(host, run_id) == before
+
+
+class TestEveryAnswerPaidForIsKept:
+    async def test_a_comparison_cancelled_part_way_keeps_every_answer_it_had(self):
+        """The answers were kept only in the final write, so a cancel or a failure lost every paid answer."""
+        judge = _StallingJudge()
+        host, run_id = await _judged_run(judge)
+        judge.stall_after = 3
+        leases = JobLeases(host.storage, blocking_executor=host.blocking_executor)
+        work = await judge_temperature_work(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)
+        running = asyncio.create_task(
+            run_job_work(work, store=host.storage, executor=host.blocking_executor, leases=leases)
+        )
+
+        def kept() -> int:
+            stored, _ = host.storage.load_job_record(EvalJudgeTemperatureCheck, work.record_id, _SCOPE)
+            answers = None if stored is None else stored.answers
+            return 0 if answers is None else sum(len(case.answers) for case in answers.answers)
+
+        async with asyncio.timeout(5):
+            while kept() < 3:
+                await asyncio.sleep(0.01)
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+        await leases.shut_down()
+
+        stored, _ = host.storage.load_job_record(EvalJudgeTemperatureCheck, work.record_id, _SCOPE)
+        assert stored is not None and stored.outcome == "cancelled" and stored.answers is not None
+        assert kept() == 3 and stored.answers.calls_made == 3, "every answer paid for before the cancel is kept"
 
 
 class TestWhichCasesAreReJudged:
