@@ -253,6 +253,8 @@ async def _close(hook: AsyncGenerator[None, ActionOutcome], call: ToolCall, defe
             await hook.aclose()
             return
     except StopAsyncIteration:
+        # NOSILENT: the hook took the defect at its yield and finished — the one way a hook is meant to end
+        # here; the caller re-raises the defect itself, so there is nothing to report on the hook's behalf.
         return
     except Exception as raised:
         if raised is not defect:
