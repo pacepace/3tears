@@ -65,8 +65,10 @@ from threetears.evals.kernel.candidate_kind import (
     CandidateTelemetry,
     CellSink,
     CellSpanWindow,
+    CostCapReached,
     VariantConfig,
 )
+from threetears.evals.kernel.capped_completion import CappedCompletion
 from threetears.evals.kernel.cassettes import CellCassettes
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.kernel.host.eval_host import EvalHost
@@ -744,6 +746,11 @@ class ReporterKind:
 
     #: The memo, judged against the bundle it was written over.
     judged_artifact = JudgedArtifact.DOCUMENT
+    #: No limit of the kind's own: a cell's state is what :meth:`prepare` returns and the per-cell recording
+    #: client :meth:`invoke` builds, and the one generator client every cell shares is a completion client,
+    #: which the port requires to be safe to call from several cells at once
+    #: (:class:`~threetears.evals.schema.completion.CompletionClient`).
+    max_concurrent_cells: int | None = None
 
     def __init__(
         self,
@@ -817,7 +824,9 @@ class ReporterKind:
         call was refused for the calling account, which excludes the cell and stops the run
         (``account_refused``). Spend is reported on every exit that reached the provider, because
         a refused generation was still billed — and to ``sink`` as each call returns, because a
-        generation is up to two calls and a deadline in the second must not lose the first.
+        generation is up to two calls and a deadline in the second must not lose the first. Each call is
+        reserved against the run's cost cap before it is sent; one the cap has no room for is not, and
+        the cell returns what the calls before it cost — the runner excludes it for the cap.
 
         Args:
             instance: What :meth:`prepare` bound.
@@ -849,7 +858,10 @@ class ReporterKind:
                     infra_errors=[f"apparatus: test case {test_case.id} cannot be generated over: {exc}"]
                 )
 
-            recorder = _RecordingClient(inner=self._client)
+            # Every generator call is held against the run's cost cap as it is sent — a generation is up to two
+            # calls, and the repair's prompt exists only once the first has returned — and one the cap has no
+            # room for is not sent.
+            recorder = _RecordingClient(inner=CappedCompletion(self._client, sink=sink, source="candidate"))
             sink.report_progress(recorder.progress(instance.model))
             try:
                 with scopes.collecting():
@@ -865,6 +877,10 @@ class ReporterKind:
                         # A reporter run is how a host learns which writers to allow, so it measures any.
                         measuring_writers=True,
                     )
+            except CostCapReached:
+                # The cap had no room for the next call, so none was sent; the sink recorded the breach, and the
+                # runner excludes the cell for the cap and stops the run. What the calls already made cost stays.
+                return CandidateOutput(telemetry=recorder.telemetry(instance.model))
             except GenerationError as exc:
                 # A refused or truncated generation, or a prompt that does not ask for the memo contract:
                 # all the candidate's. SoundnessRefusal is a subclass and lands here too.
@@ -1058,6 +1074,8 @@ class AsRecordedReporterKind:
 
     #: The recorded memo, judged exactly as a generated one is.
     judged_artifact = JudgedArtifact.DOCUMENT
+    #: No limit of the kind's own: it calls nothing and holds nothing between cells.
+    max_concurrent_cells: int | None = None
 
     async def prepare(
         self,

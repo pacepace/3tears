@@ -16,7 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from threetears.evals.kernel.candidate_kind import CandidateOutput, CellPending
+from threetears.evals.kernel.candidate_kind import CandidateOutput, CellPending, CellReservation, CostCapReached
 from threetears.evals.schema.models import ActorPolicy
 
 __all__ = ["DONE", "FakeCellSink", "Raw", "ScriptedResponse", "ScriptedTable", "actor"]
@@ -61,6 +61,12 @@ class ScriptedTable:
     utterance_calls: list[str] = field(default_factory=list)
     #: What every response reports it cost; ``None`` is a client that prices nothing.
     cost_usd: float | None = 0.001
+    #: What the client says one call can cost at most, before it is made; ``None`` is a client that cannot say.
+    ceiling_usd: float | None = None
+
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
+        del system, user, response_format
+        return self.ceiling_usd
 
     async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
         assert response_format is not None, "every simulator-role call sends a schema"
@@ -91,15 +97,22 @@ class ScriptedTable:
 # parity-with: threetears.evals.kernel.candidate_kind.CellSink
 @dataclass
 class FakeCellSink:
-    """A cell's sink whose cost cap is ``cap_usd`` of simulator spend (``None``: no cap), recording every ask.
+    """One cell alone under a cost cap of ``cap_usd`` (``None``: no cap), keeping its spend as the engine's sink does.
 
-    The cap's rule is the engine's: reached once the spend asked about exceeds the cap, or could not be
-    priced (``None``) — which it never is in these suites unless a test scripts it.
+    The engine's rule, for a cell with no sibling: a running total per source, only ever added to; a priced
+    call's ceiling held while it is in flight and refused when it would pass the cap; the cap reached once
+    the pending spend exceeds it, or once any of it could not be priced.
     """
 
     cap_usd: float | None = None
-    #: Every spend ``cost_cap_reached`` was asked about, in order.
+    #: The cell's pending spend each time the cap was asked, in order — ``None`` once part went unpriced.
     asked: list[float | None] = field(default_factory=list)
+    #: The ceiling of every call the cap refused to hold, in order.
+    refused: list[float] = field(default_factory=list)
+    #: Each source's running total.
+    spent: dict[CellPending, float | None] = field(default_factory=dict)
+    #: The reservations of the calls in flight.
+    held: list[_HeldOnFakeSink] = field(default_factory=list)
     pending: list[CellPending] = field(default_factory=list)
 
     def waiting_on(self, pending: CellPending) -> None:
@@ -108,8 +121,53 @@ class FakeCellSink:
     def report_progress(self, read: Callable[[], CandidateOutput]) -> None:
         del read
 
-    def cost_cap_reached(self, spent_usd: float | None) -> bool:
-        self.asked.append(spent_usd)
+    @property
+    def pending_usd(self) -> float | None:
+        if any(total is None for total in self.spent.values()):
+            return None
+        return sum(total or 0.0 for total in self.spent.values()) + sum(hold.ceiling_usd for hold in self.held)
+
+    def add_spend(self, source: CellPending, cost_usd: float | None) -> None:
+        assert cost_usd is None or cost_usd >= 0, cost_usd
+        total = self.spent.get(source, 0.0)
+        self.spent[source] = None if total is None or cost_usd is None else total + cost_usd
+
+    def reserve(self, source: CellPending, ceiling_usd: float | None) -> _HeldOnFakeSink:
+        if self.cost_cap_reached():
+            raise CostCapReached("the cap was already reached")
+        pending = self.pending_usd
+        if ceiling_usd is not None and self.cap_usd is not None and pending is not None:
+            if pending + ceiling_usd > self.cap_usd:
+                self.refused.append(ceiling_usd)
+                raise CostCapReached("no room for the call")
+        hold = _HeldOnFakeSink(sink=self, source=source, ceiling_usd=ceiling_usd or 0.0)
+        self.held.append(hold)
+        return hold
+
+    def cost_cap_reached(self) -> bool:
+        pending = self.pending_usd
+        self.asked.append(pending)
         if self.cap_usd is None:
             return False
-        return spent_usd is None or spent_usd > self.cap_usd
+        return pending is None or pending > self.cap_usd
+
+
+@dataclass(eq=False)
+class _HeldOnFakeSink(CellReservation):
+    """One held call on :class:`FakeCellSink`, closed once."""
+
+    sink: FakeCellSink
+    source: CellPending
+    ceiling_usd: float
+    closed: bool = False
+
+    def settle(self, cost_usd: float | None) -> None:
+        assert not self.closed, "a reservation is settled once"
+        self.closed = True
+        self.sink.held.remove(self)
+        self.sink.add_spend(self.source, cost_usd)
+
+    def release(self) -> None:
+        if not self.closed:
+            self.closed = True
+            self.sink.held.remove(self)

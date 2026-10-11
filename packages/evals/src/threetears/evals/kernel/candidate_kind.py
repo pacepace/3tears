@@ -120,8 +120,10 @@ __all__ = [
     "CandidatePreparationFailed",
     "CandidateTelemetry",
     "CellPending",
+    "CellReservation",
     "CellSink",
     "CellSpanWindow",
+    "CostCapReached",
     "UnknownCandidateKind",
     "VariantConfig",
 ]
@@ -434,6 +436,67 @@ class CellSpanWindow(Protocol):
 CellPending = Literal["apparatus", "candidate", "background_work", "simulator", "judge"]
 
 
+class CostCapReached(Exception):
+    """The run's cost cap has no room for the cell's next paid call, so the cell stops making them.
+
+    Raised by :meth:`CellSink.reserve` when the call it was asked to hold would take the run past its cap,
+    and raised by a kind itself once :meth:`CellSink.cost_cap_reached` has said the cap is reached. Either
+    way the sink has already recorded the breach the run stops on, so raising it is a clean stop rather
+    than a fault: inside :func:`~threetears.evals.run.conversation.drive_conversation`'s callbacks — a
+    ``candidate_turn`` or a ``post_user_turn`` — it ends the conversation
+    ``budget_stopped``, keeping every round already recorded, never ``candidate_error``.
+
+    **A kind that drives its own loop catches it and returns what it has measured.** Out of
+    :meth:`CandidateKind.invoke` it is not a cell-level event — like any other exception it ends the run — so
+    a one-shot kind whose reservation was refused returns its output as it stands, and the runner excludes
+    the cell for the cap and stops the run once it is saved. Deliberately not an ``ApparatusError`` or a
+    ``ValueError``: the cap doing its configured job is neither a rig fault nor a malformed input, and a
+    boundary that absorbs either must not absorb this.
+    """
+
+    def __init__(self, detail: str = "the run's cost cap has no room for another paid call") -> None:
+        """Say what the cap refused.
+
+        Args:
+            detail: What was refused, for a log line; the cell's record names the cap's own numbers.
+        """
+        super().__init__(detail)
+        self.detail = detail
+
+
+class CellReservation(Protocol):
+    """One priced call's ceiling, held against the run's cost cap while the call is in flight.
+
+    Minted by :meth:`CellSink.reserve` before the call is made. Until it is closed, every cell's question of
+    the cap counts the ceiling as spent, so two cells cannot both be admitted into the last of the cap's room.
+    It is closed exactly once: :meth:`settle` when the call returned, :meth:`release` when it did not.
+    """
+
+    def settle(self, cost_usd: float | None) -> None:
+        """Replace the held ceiling with what the call actually cost, in one step.
+
+        The cost lands on the reservation's source as :meth:`CellSink.add_spend` would add it, and the ceiling
+        stops being held, with no moment between in which the call's spend is counted nowhere.
+
+        Args:
+            cost_usd: What the call cost, its every attempt included; ``None`` when the provider priced none,
+                which leaves the source unpriced for the rest of the cell.
+
+        Raises:
+            ValueError: The reservation was already closed, or ``cost_usd`` is negative or not finite.
+        """
+        ...  # pragma: no cover — protocol
+
+    def release(self) -> None:
+        """Stop holding the ceiling, counting nothing — for a call that raised, or was never made.
+
+        A call that raised may still have been billed; a kind that learns what it cost adds it through
+        :meth:`CellSink.add_spend`. Releasing an already-closed reservation does nothing, so a ``finally``
+        may release unconditionally after a settle.
+        """
+        ...  # pragma: no cover — protocol
+
+
 class CellSink(Protocol):
     """One cell's record of where it stands, as the kind driving that cell reports into it.
 
@@ -441,8 +504,16 @@ class CellSink(Protocol):
     of the cancelled frame dies with it — so a cell's spend and what it was waiting on cannot be
     taken from what :meth:`CandidateKind.invoke` returns, because on that exit it returns nothing.
     The runner owns one of these per cell, hands it to ``invoke``, and reads it after the cancel.
-    It is the only thing the deadline's record is built from. It is also how a running cell asks
-    whether the run's cost cap leaves room for another paid call (:meth:`cost_cap_reached`).
+    It is the only thing the deadline's record is built from.
+
+    **It is also where the cell's spend meets the run's cost cap while the cell runs.** The cap otherwise
+    counts a cell's spend only once its result lands, so a cell making many paid calls — and every cell
+    running beside it — could spend far past the cap before anything looked. The sink keeps one running
+    total per source (:data:`CellPending`: the candidate, its background work, the simulator, the judge, the
+    rig), each only ever added to (:meth:`add_spend`), plus the ceilings of the priced calls in flight
+    (:meth:`reserve`); every cell's question of the cap (:meth:`cost_cap_reached`) counts the sum of all of
+    them, its own and every running sibling's. Nothing a cell reports can replace what another part of the
+    cell reported, so no source's spend can drop out of the count.
 
     A kind is handed one per cell, like ``span_window``, and uses it for that cell alone.
     """
@@ -481,24 +552,70 @@ class CellSink(Protocol):
         """
         ...  # pragma: no cover — protocol
 
-    def cost_cap_reached(self, spent_usd: float | None) -> bool:
-        """Whether the run's cost cap is reached once ``spent_usd`` more is counted against it.
+    def add_spend(self, source: CellPending, cost_usd: float | None) -> None:
+        """Count spend the cell has made, on ``source``'s running total, for every cell's question of the cap.
 
-        The run's cap otherwise counts a cell's spend only once the cell's result lands, so a cell that
-        makes many paid calls of its own — a conversation's simulator above all — could spend far past the
-        cap before anything looked. A kind asks before each further paid call, passing what the cell has
-        spent so far that the cap has not yet counted, and stops making calls when this is ``True``;
-        :func:`~threetears.evals.run.conversation.drive_conversation` asks it with the simulator's spend.
-        The cap's own rule decides: priced spend above the ceiling, or any spend that could not be priced
-        (``None``), reaches an enforcing cap; a run that enforces no cap is never reached.
+        Each call ADDS: report each paid call's cost once, as it lands. A source's total only ever grows,
+        so a kind reporting its candidate's spend and the engine reporting the simulator's or the judge's
+        never overwrite one another, and a sibling cell weighing the cap sees all of it. A call made
+        through :meth:`reserve` is counted by settling its reservation instead — adding it here too would
+        count it twice. The engine reports the simulator calls it makes (through
+        :func:`~threetears.evals.run.conversation.drive_conversation`) and the judge phase's; a kind reports
+        its candidate's and its background work's.
+
+        Not the cell's record: what the cell stores is what :meth:`CandidateKind.invoke` returns, or at a
+        deadline what :meth:`report_progress` reads. This is the cap's view of the cell while it runs.
 
         Args:
-            spent_usd: The cell's spend so far that its result has not yet reported, ``None`` when part of
-                it could not be priced.
+            source: Whose spend it is.
+            cost_usd: What it cost; ``None`` when part of it could not be priced, which leaves the source
+                unpriced for the rest of the cell — an enforcing cap is then reached, since unknown is not $0.
+
+        Raises:
+            ValueError: ``cost_usd`` is negative or not finite.
+        """
+        ...  # pragma: no cover — protocol
+
+    def reserve(self, source: CellPending, ceiling_usd: float | None) -> CellReservation:
+        """Hold one paid call's worst-case cost against the run's cap before making it, or refuse the call.
+
+        The ceiling is the most the call can cost — the client's rate for its model applied to a bound on
+        the prompt and to the output cap it was built with, times every attempt one request can become
+        (:meth:`~threetears.evals.schema.completion.PricedCompletion.price_ceiling`). Held, it counts as spent
+        for every cell's question of the cap until the call returns and the reservation is settled to what it
+        actually cost, so concurrent cells cannot together be admitted past the cap: **a run whose paid calls
+        are all reserved never spends past its cap.** A call no one can price (``ceiling_usd=None``) holds
+        nothing and is admitted only while the cap is not yet reached, so such calls can still pass the cap by
+        about one call per running cell.
+
+        Args:
+            source: Whose call it is; its cost lands on that source's total when the reservation settles.
+            ceiling_usd: The most the call can cost, or ``None`` when it cannot be bounded.
 
         Returns:
-            ``True`` once the run's cap is reached. The runner then excludes the cell and stops the run
-            ``budget_stopped`` once the cell is saved.
+            The reservation, to settle once the call returns or release if it does not.
+
+        Raises:
+            CostCapReached: The cap has no room for the call: it would take the run past its cap, or the cap
+                was already reached. The breach is recorded, so the runner excludes the cell for the cap and
+                stops the run ``budget_stopped`` once it is saved. Make no call.
+            ValueError: ``ceiling_usd`` is negative or not finite.
+        """
+        ...  # pragma: no cover — protocol
+
+    def cost_cap_reached(self) -> bool:
+        """Whether the run's cost cap is reached, counting every running cell's spend and held reservations.
+
+        What a kind asks before a paid call it cannot price — :meth:`reserve` asks it for one it can, and
+        refuses the call itself. It reads this cell's per-source totals and reservations and every running
+        sibling's, beside what the run has already recorded. The cap's own rule decides: priced spend above
+        the ceiling, or any spend that could not be priced, reaches an enforcing cap; a run that enforces no
+        cap is never reached. Once it says ``True`` a kind makes no further paid call; inside
+        :func:`~threetears.evals.run.conversation.drive_conversation` it raises :class:`CostCapReached` to stop.
+
+        Returns:
+            ``True`` once the run's cap is reached. The breach is recorded the first time, and the runner
+            excludes the cell and stops the run ``budget_stopped`` once the cell is saved.
         """
         ...  # pragma: no cover — protocol
 
@@ -532,12 +649,19 @@ class CandidateKind(Protocol):
     asked for every cell of the run and may hand back the same instance each time — so it
     must carry no state from one
     ``prepare``/``invoke`` pair to the next; a cell's own state belongs on the instance
-    ``prepare`` returns. **Cells within a run may execute at once** — a run whose launch did not
-    declare latency under test runs up to ``LaunchSettings.max_concurrent_cells`` of them, each in
-    its own task — so one instance may be driving several cells at the same moment, and any
-    collaborator it shares across cells (a client, a pool) must be safe to call from several at
-    once. A host whose collaborators are not sets ``max_concurrent_cells=1``, which runs every
-    run's cells one at a time. Two runs in one process are two callers and two instances.
+    ``prepare`` returns. **Cells within a run may execute at once, but only as many as the kind
+    declares it is safe at** (:attr:`max_concurrent_cells`): a run whose launch did not declare latency
+    under test runs the smaller of that and the host's ``LaunchSettings.max_concurrent_cells`` at once,
+    each in its own task, so one instance may then be driving several cells at the same moment, and
+    any collaborator it shares across cells (a client, a pool) is called from several at once. Two runs
+    in one process are two callers and two instances.
+
+    **What a paid call owes the run's cost cap.** Before a call whose worst case can be priced the kind
+    reserves it on the cell's sink (:meth:`CellSink.reserve`) and settles the reservation to what it cost
+    when it returns; before one that cannot be priced it asks :meth:`CellSink.cost_cap_reached`; any
+    other spend it reports as it lands (:meth:`CellSink.add_spend`). A kind that does none of these is
+    counted by the cap only once each cell's result lands, so a run of it can pass its cap by up to one
+    whole cell per cell running.
     """
 
     judged_artifact: JudgedArtifact
@@ -546,6 +670,23 @@ class CandidateKind(Protocol):
     A declaration about the kind, never about one cell: the runner reads it before ``prepare``
     — refusing a judged run of an :attr:`~JudgedArtifact.UNJUDGED` kind before anything is
     spent — and holds every cell's ``judge_evidence`` to it after ``invoke``.
+    """
+
+    max_concurrent_cells: int | None
+    """The most cells of a run this kind may drive at once — declared by the kind, because only it knows.
+
+    Whether two cells can share this instance and what it holds — its clients, its pools, a subject
+    factory, a world it does not bind per cell — is a fact about the kind's code, and a host's width
+    setting cannot know it. So the run executes at the smaller of the two: the host's setting is a
+    ceiling, this is what the kind has said it is safe at. ``1`` is serial; an int above it is that many;
+    ``None`` is no limit of the kind's own, the host's setting alone deciding — declare it only for a kind
+    that holds nothing per cell and whose collaborators are each safe to call from several cells at once.
+
+    **A kind that declares nothing runs one cell at a time.** That is the safe width, so a kind is never
+    run wider than it said it can be; a host that wants its runs concurrent declares the width on its kind,
+    and its launcher hands the same value to ``KindWiring.max_concurrent_cells``, which is what sizes the
+    run. The runner holds every cell's kind to the width the run executes at, and refuses — before anything
+    is spent — a kind declaring less.
     """
 
     async def prepare(
@@ -610,8 +751,10 @@ class CandidateKind(Protocol):
             instance: Whatever :meth:`prepare` returned.
             test_case: The concrete stimulus — variation parameters and, for a kind that
                 carries one, its own host payload.
-            sink: This cell's sink, for what the kind is waiting on and how to read the
-                spend it has billed so far. The cell's, like ``span_window``, not the kind's.
+            sink: This cell's sink, for what the kind is waiting on, how to read the spend it has
+                billed so far, and holding each paid call against the run's cost cap as it is made
+                (:meth:`CellSink.reserve`, :meth:`CellSink.add_spend`). The cell's, like
+                ``span_window``, not the kind's.
 
         Returns:
             The candidate's output, its judge-free facts and its telemetry.

@@ -39,6 +39,7 @@ from threetears.evals.run import (
 )
 from threetears.evals.schema import DEFAULT_JUDGE_TEMPERATURE, EvalResult, EvalRun, EvalTemplate, JudgeConfig
 from packages.evals.tests.factories import make_eval_run
+from packages.evals.tests.scripted_table import FakeCellSink
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT, TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.judge import (
@@ -358,6 +359,50 @@ async def test_a_trial_on_a_case_with_no_judge_case_is_a_harness_fault() -> None
     output = await kind.invoke(prepared, bare, sink=None)  # type: ignore[arg-type]
     assert output.infra_errors and JUDGE_CASE_KEY in output.infra_errors[0]
     assert not output.telemetry.usage, "nothing was asked, so nothing was spent"
+
+
+async def test_a_judge_trial_holds_its_call_against_the_runs_cap_and_counts_what_it_cost() -> None:
+    campaign = await _campaign()
+    stored = campaign.host.storage.load_test_case(campaign.case_ids[0], TOYHOST_SCOPE)
+    assert stored is not None
+    kind = JudgeKind(
+        clients=lambda role, model, *, temperature=None: campaign.judge,
+        model=TOY_JUDGE_MODEL,
+        failure_describer=withhold_failure_detail,
+    )
+
+    class _Window:
+        def identity(self) -> Any:
+            import contextlib
+
+            return contextlib.nullcontext()
+
+        collecting = identity
+
+    from threetears.evals.kernel import VariantConfig
+
+    prepared = await kind.prepare(
+        subject_snapshot=None,
+        variant_config=VariantConfig(candidate_model=TOY_JUDGE_MODEL),
+        world_seed=None,
+        span_window=_Window(),
+        cassettes=None,
+        world=None,
+    )
+
+    room = FakeCellSink(cap_usd=10.0)
+    answered = await kind.invoke(prepared, stored, sink=room)
+    spent = sum(row.cost_usd or 0.0 for row in answered.telemetry.usage)
+    assert spent > 0
+    assert room.spent == {"candidate": pytest.approx(spent)}, "the trial's call is counted the moment it returns"
+    assert room.held == [], "its reservation was settled"
+
+    full = FakeCellSink(cap_usd=0.0001)
+    full.add_spend("candidate", 1.0)
+    calls = len(campaign.judge.calls)
+    refused = await kind.invoke(prepared, stored, sink=full)
+    assert len(campaign.judge.calls) == calls, "a call the cap has no room for is not sent"
+    assert not refused.output and not refused.candidate_errors and not refused.telemetry.usage
 
 
 def test_a_config_pinning_another_model_than_the_arm_is_refused() -> None:

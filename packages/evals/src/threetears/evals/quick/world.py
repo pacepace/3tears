@@ -419,6 +419,9 @@ class WorldCellKind:
     """
 
     judged_artifact: JudgedArtifact
+    #: The inner callable kind's: this kind is built per cell and binds the cell a fresh world of its own
+    #: (``binds_per_cell``), so it adds nothing two cells could share.
+    max_concurrent_cells: int | None
 
     def __init__(
         self,
@@ -447,6 +450,7 @@ class WorldCellKind:
         acting.__name__ = getattr(candidate, "__name__", "candidate")
         self._inner = inner(acting)
         self.judged_artifact = self._inner.judged_artifact
+        self.max_concurrent_cells = self._inner.max_concurrent_cells
 
     async def prepare(
         self,

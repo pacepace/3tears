@@ -283,6 +283,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`blended_cost_roles(rate_table: ExternalRateTable | None) -> tuple[UsageRole, ...]`
 - **`calibration_criterion`** · function · The calibration criterion over `n` judge–human pairs covering `results` results, at `agreement`.
   <br>`calibration_criterion(n: int, results: int, agreement: float | None, interval: tuple[float, float] | None = None) -> TierCriterion`
+- **`call_ceiling`** · function · The most `attempts` requests of one prompt pair on `client` can cost, or `None` when it cannot say.
+  <br>`call_ceiling(client: object, *, system: str, user: str, response_format: dict[str, Any] | None = None, attempts: int = 1) -> float | None`
 - **`candidate_failure_cause`** · function · Name why `result` is a candidate failure, or `None` when it is not one.
   <br>`candidate_failure_cause(result: EvalResult) -> CandidateFailureCause | None`
 - **`classifier_label_measure`** · function · The measure name one label's precision, recall or F1 is reported under.
@@ -390,6 +392,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`CandidateOutput`** · model · What one candidate produced, as everything below the dispatch sees it.
 - **`CandidatePreparationFailed`** · exception · A candidate could not be built, and the cell is cleanly excluded rather than scored.
 - **`CandidateTelemetry`** · model · What one candidate's execution cost, and the windows nothing else timed.
+- **`CappedCompletion`** · class · One cell's view of a completion client: every call reserved against the run's cap, and settled to its cost.
 - **`CaseSetStore`** · protocol · Named, versioned case sets, and the test cases they name — what minting and resolving a set reads.
 - **`CassetteCorrupt`** · exception · The corpus cannot be used as recorded.
 - **`CassetteExhausted`** · exception · A replay asked for something one more time than its capture did.
@@ -399,6 +402,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`Caveat`** · model · What qualifies a finding, and which class of qualification it is.
 - **`CellCassettes`** · protocol · One cell's handle on its run's cassette lane, as the kind driving that cell sees it.
 - **`CellFacts`** · model · Everything measured in one cell — one arm, under one rig.
+- **`CellReservation`** · protocol · One priced call's ceiling, held against the run's cost cap while the call is in flight.
 - **`CellSink`** · protocol · One cell's record of where it stands, as the kind driving that cell reports into it.
 - **`CellSpanWindow`** · protocol · One cell's two tracing windows, as the kind driving that cell sees them.
 - **`CellSummary`** · dataclass · What a run retains per cell after the full result is durably persisted.
@@ -406,6 +410,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`CompositeBasis`** · model · What a pooled composite was meaned over: the union of its members' bases, and whether they agreed.
 - **`ConflictError`** · exception · State conflict (status 409).
 - **`ControlDeclaration`** · model · What held still, stated — because an absent control is a fact, not a null.
+- **`CostCapReached`** · exception · The run's cost cap has no room for the cell's next paid call, so the cell stops making them.
 - **`CoverageLens`** · model · The coverage lens: per-lever measurement summaries.
 - **`Decision`** · model · A proposal and the verdict on it.
 - **`DecisionSurface`** · model · The campaign's measured cells and the bars they were held to — frozen at generation.
@@ -1063,7 +1068,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 
 **Constants**
 
-- **`DEFAULT_MAX_CONCURRENT_CELLS`** · constant (int) · The width a run executes its cells at when latency is not under test and the host's settings name none: enough to turn hours of a slow candidate into a fraction of that, few enough that a provider's rate limit is not the first thing a default launch meets.
+- **`DEFAULT_MAX_CONCURRENT_CELLS`** · constant (int) · The host's ceiling on a run's width when latency is not under test and its settings name none: enough to turn hours of a slow candidate into a fraction of that, few enough that a provider's rate limit is not the first thing a default launch meets.
   <br>`= 4`
 - **`JUDGE_CALL_ATTEMPTS`** · constant (int) · Calls one judge dimension can make: the first, plus its parse retries.
   <br>`= 2`
@@ -2110,7 +2115,7 @@ The host's launch settings, as one snapshot of values.
 | `max_launch_arms` | `int` | required | How many runs one launch may start together. A group starts every member at once in one job slot, so this is the concurrency one launch adds. |
 | `max_admitted_runs` | `int` | required | How many runs may be admitted and unfinished at once across every launch — the ceiling admission refuses past rather than queueing behind. |
 | `judge_concurrency` | `int` | required | How many judge calls one cell makes at once. |
-| `max_concurrent_cells` | `int` | `4` | How many of a run's cells execute at once when its launch does not declare latency under test (`measure_latency`). A launch that declares it runs its cells one at a time whatever this says. Defaults to `DEFAULT_MAX_CONCURRENT_CELLS`; `1` runs every run serially. |
+| `max_concurrent_cells` | `int` | `4` | The most of a run's cells that execute at once when its launch does not declare latency under test (`measure_latency`) — a ceiling, never a width a kind is pushed to: a run executes at the narrower of this and what its kind declares it is safe at (`KindWiring.max_concurrent_cells`), and a kind that declares nothing runs serially. A launch that declares latency runs its cells one at a time whatever either says. Defaults to `DEFAULT_MAX_CONCURRENT_CELLS`; `1` runs every run serially. |
 | `enforcement_enabled` | `bool` | required | Whether the cost and metered-call ceilings are enforced at all. |
 | `max_cost_usd` | `float` | required | The run cost ceiling a run inherits when its launch names none. |
 | `max_metered_calls` | `int \| None` | required | The metered-call ceiling a run inherits when its launch names none, or `None` for a host that declares it has NO metered tools: its runs record a ceiling of `0` (origin `none_declared`), a metered call on one is refused and counted, and a launch naming a ceiling is refused, since it would bound nothing. |

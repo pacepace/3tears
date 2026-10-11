@@ -135,6 +135,7 @@ def toyhost_launch_host(
     client: ScriptedExtractionClient | None = None,
     cell_executor: CellExecutor | None = None,
     kind_cell_timeout_s: float | None = None,
+    kind_max_concurrent_cells: int | None = None,
 ) -> tuple[LaunchHost, ScriptedExtractionClient]:
     """The toy host as a launching host: its :class:`~threetears.evals.kernel.host.EvalHost`, plus its launch registry.
 
@@ -149,6 +150,8 @@ def toyhost_launch_host(
         cell_executor: What runs each run's cells; ``None`` is the engine's in-process default.
         kind_cell_timeout_s: The per-cell deadline the launcher wires for its kind
             (``KindWiring.cell_timeout_s``); ``None`` leaves the engine's default.
+        kind_max_concurrent_cells: The width the extractor declares it is safe at, which the launcher hands
+            the launch (``KindWiring.max_concurrent_cells``); ``None`` declares no limit of its own.
 
     Returns:
         The host, and the scripted client its extractor calls — so a caller can see what was asked.
@@ -183,6 +186,7 @@ def toyhost_launch_host(
             world=world,
             graded_fields=tuple(spec.graded_fields),
             goal_checks=tuple(request.template.goal_state_checks),
+            max_concurrent_cells=kind_max_concurrent_cells,
         )
         # Everything the request already says — scope, model, repeats, overlays, the template's seed —
         # the engine stamps. What is here is what only this kind resolves. Nothing is model-scored on
@@ -195,6 +199,7 @@ def toyhost_launch_host(
                 subject=subject,
                 test_cases=cases,
                 cell_timeout_s=kind_cell_timeout_s,
+                max_concurrent_cells=graded.max_concurrent_cells,
                 payload={
                     "toyhost": {
                         "grader_version": TOYHOST_GRADER_VERSION,

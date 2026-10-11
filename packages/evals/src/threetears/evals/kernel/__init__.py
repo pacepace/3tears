@@ -71,8 +71,11 @@ from threetears.evals.kernel.candidate_kind import (
     CandidateKind,
     CandidateKindDefect,
     CellPending,
+    CellReservation,
+    CostCapReached,
     UnknownCandidateKind,
 )
+from threetears.evals.kernel.capped_completion import CappedCompletion, call_ceiling
 from threetears.evals.kernel.cassettes import (
     ActionSeam,
     CassetteSeams,
@@ -370,6 +373,7 @@ __all__ = [
     "CandidateOutput",
     "CandidatePreparationFailed",
     "CandidateTelemetry",
+    "CappedCompletion",
     "CassetteCorrupt",
     "CassetteExhausted",
     "CassetteMiss",
@@ -381,6 +385,7 @@ __all__ = [
     "CellCassettes",
     "CellFacts",
     "CellPending",
+    "CellReservation",
     "CellSink",
     "CellSpanWindow",
     "CellSummary",
@@ -389,6 +394,7 @@ __all__ = [
     "ConfidenceTier",
     "ConflictError",
     "ControlDeclaration",
+    "CostCapReached",
     "CoverageLens",
     "Decision",
     "DecisionSurface",
@@ -519,6 +525,7 @@ __all__ = [
     "VizType",
     "WorldSession",
     "WorldSessionError",
+    "call_ceiling",
     "candidate_failure_cause",
     "classify_result",
     "counted_goal_verdicts",

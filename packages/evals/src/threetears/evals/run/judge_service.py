@@ -70,9 +70,14 @@ from threetears.evals.schema.models import (
     label_key_of,
 )
 from threetears.evals.kernel.host.eval_host import CompletionClients
-from threetears.evals.schema.completion import BoundCompletionClient, ProviderFailureDescriber
+from threetears.evals.schema.completion import (
+    JSON_OBJECT_RESPONSE_FORMAT,
+    BoundCompletionClient,
+    ProviderFailureDescriber,
+)
+from threetears.evals.kernel.capped_completion import call_ceiling
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger, blended_cost
-from threetears.evals.run.judge import CANNOT_TELL, run_judge_llm
+from threetears.evals.run.judge import CANNOT_TELL, JUDGE_CALL_ATTEMPTS, run_judge_llm
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -494,6 +499,28 @@ class JudgeService:
             The client, built on first ask and cached like every other.
         """
         return self._client_for(request.config)
+
+    def price_ceiling(self, request: JudgeRequest) -> float | None:
+        """The most sending ``request`` can cost, every attempt included, or ``None`` when its client cannot say.
+
+        What a caller holding the call against a cost cap reserves before sending it (the cell's judge phase,
+        :func:`~threetears.evals.run.runner.judge_dims`, and the judge kind): the client's ceiling for the pair
+        as :func:`~threetears.evals.run.judge.run_judge_llm` sends it, times every attempt its parse retry can
+        make (:data:`~threetears.evals.run.judge.JUDGE_CALL_ATTEMPTS`).
+
+        Args:
+            request: The call, as built.
+
+        Returns:
+            The ceiling in dollars, or ``None`` when the client has no ``price_ceiling`` or answers ``None``.
+        """
+        return call_ceiling(
+            self.client_for(request),
+            system=request.system_prompt,
+            user=request.user_prompt,
+            response_format=JSON_OBJECT_RESPONSE_FORMAT,
+            attempts=JUDGE_CALL_ATTEMPTS,
+        )
 
     # ------------------------------------------------------------------
     # Requests — what each call sends, built without calling anything
