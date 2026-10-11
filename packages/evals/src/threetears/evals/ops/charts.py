@@ -14,11 +14,12 @@ report with one undrawable chart is not a report with none. Each failure is retu
 rather than dropping it: a chart missing from a report is otherwise indistinguishable from a finding that
 carried none.
 
-**What a renderer refuses is a ``ValueError``**, the type every refusal of an intent is (the core's
-:class:`~threetears.evals.analysis.viz.PayloadError` and
-:class:`~threetears.evals.analysis.viz.IntentPolicyError`, the Vega adapter's
-:class:`~threetears.evals.vega.SpecPolicyError`). Anything else a renderer raises is a defect in the renderer,
-not a property of one chart, and propagates.
+**What a renderer refuses is a** :class:`~threetears.evals.analysis.viz.ChartRefused` — the Vega adapter's
+:class:`~threetears.evals.vega.SpecPolicyError` (a rule its drawn spec breaks) and
+:class:`~threetears.evals.vega.RasterRefused` (a spec vl-convert would not convert) are two. Anything else a
+renderer raises, any other ``ValueError`` included, is a defect in the renderer or the compiler behind it, not a
+property of one chart, and propagates: caught as a refusal, a broken compiler read as a report of undrawable
+charts.
 
 **Only the chart blocks are read**, and of each only its intent, its type, the reason it could not be decided
 and the finding it belongs to; nothing here reads a report's text or tables.
@@ -32,7 +33,7 @@ from typing import Literal
 from pydantic import Field
 
 from threetears.evals.analysis.report import ChartBlock, Report
-from threetears.evals.analysis.viz import ChartRenderer, ChartType
+from threetears.evals.analysis.viz import ChartRefused, ChartRenderer, ChartType
 from threetears.evals.schema.base import EvalBaseModel
 
 #: Why a chart was not drawn: ``undrawable`` — the report could not decide the stored chart into an intent,
@@ -98,7 +99,8 @@ def report_charts[DrawingT](report: Report, renderer: ChartRenderer[DrawingT]) -
         The drawings and the refusals. Every chart block is in exactly one of the two.
 
     Raises:
-        Exception: Whatever the renderer raises that is not a ``ValueError`` — a defect in the renderer rather
+        Exception: Whatever the renderer raises that is not a
+            :class:`~threetears.evals.analysis.viz.ChartRefused` — a defect in the renderer or its compiler rather
             than a refusal of one chart.
     """
     drawn: list[DrawnChart[DrawingT]] = []
@@ -119,7 +121,7 @@ def report_charts[DrawingT](report: Report, renderer: ChartRenderer[DrawingT]) -
             continue
         try:
             drawing = renderer.draw(block.intent)
-        except ValueError as exc:
+        except ChartRefused as exc:
             # NOSILENT: the refusal IS the answer -- one chart's failure is returned beside the others, by contract
             refused.append(
                 ChartRefusal(

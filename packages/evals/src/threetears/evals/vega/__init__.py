@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from threetears.evals.vega.compiler import CompiledChart, CompiledColumn, compile_chart, draw_intent
 from threetears.evals.vega.palette import PaletteError, Theme, load_palette, packaged_palette, vega_config
-from threetears.evals.vega.render import register_fonts, render_png, render_svg
+from threetears.evals.vega.render import RasterRefused, register_fonts, render_png, render_svg
 from threetears.evals.vega.renderer import VegaRenderer
 from threetears.evals.vega.spec_policy import SpecPolicyError, check_spec
 from threetears.evals.vega.text_metrics import (
@@ -45,6 +45,7 @@ __all__ = [
     "CompiledChart",
     "CompiledColumn",
     "PaletteError",
+    "RasterRefused",
     "SpecPolicyError",
     "TextMetricsError",
     "Theme",

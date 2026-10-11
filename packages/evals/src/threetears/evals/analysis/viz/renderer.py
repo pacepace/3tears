@@ -50,6 +50,21 @@ DrawingT = TypeVar("DrawingT")
 _SIGNIFICANT_DIGITS = 12
 
 
+class ChartRefused(ValueError):
+    """A renderer's refusal to draw one intent: this chart cannot be drawn as decided, and its neighbours still can.
+
+    **The one exception a renderer raises to refuse a chart**, and the only one
+    :func:`~threetears.evals.ops.report_charts` reports as that chart's refusal. A renderer refuses for a reason
+    of the chart's own — a rule its drawn spec breaks (the Vega adapter's
+    :class:`~threetears.evals.vega.SpecPolicyError`), a spec its rasteriser will not draw (its
+    :class:`~threetears.evals.vega.RasterRefused`) — and says which in the message. Anything else it raises,
+    a ``ValueError`` from its own arithmetic included, is a defect in the renderer or its compiler, says nothing
+    about one chart, and propagates: reported as a refusal, a broken compiler reads as a run of undrawable charts.
+    A ``ValueError`` so that a caller catching refusals of a decided chart as values (``except ValueError``) still
+    catches it.
+    """
+
+
 class ChartRenderer(Protocol[DrawingT]):
     """A chart renderer: a host's palette, bound at construction, applied to any intent.
 
@@ -68,6 +83,9 @@ class ChartRenderer(Protocol[DrawingT]):
 
         Returns:
             The drawing.
+
+        Raises:
+            ChartRefused: The renderer refuses this intent, saying why.
         """
         ...
 
@@ -192,6 +210,7 @@ def assert_renderer_conforms(renderer: ChartRenderer[DrawingT], intents: Sequenc
 
 
 __all__ = [
+    "ChartRefused",
     "ChartRenderer",
     "assert_renderer_conforms",
     "renderer_disagreements",

@@ -75,10 +75,13 @@ calls in this module keeps the rasteriser in one module of the renderer.
 from __future__ import annotations
 
 import json
+import re
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from threetears.evals.analysis.viz.renderer import ChartRefused
 from threetears.evals.kernel.host import ChartFont, ChartPalette
 from threetears.evals.vega.palette import vega_config
 from threetears.evals.vega.text_metrics import check_font_files, packaged_font
@@ -210,6 +213,41 @@ def _prepare_fonts(font_dir: Path | None, font: ChartFont | None = None) -> None
         )
 
 
+#: How vl-convert words its own refusal to convert a spec — the JavaScript runtime would not draw it — as against a
+#: string it could not parse or an argument it could not take, each of which is a defect in what called it.
+_CONVERSION_FAILED = re.compile(r"^(?:Vega-Lite|Vega) to \w+ conversion failed:")
+
+
+class RasterRefused(ChartRefused):
+    """vl-convert refused to convert a chart's spec: its runtime would not draw it.
+
+    Raised only for vl-convert's own conversion failure (``Vega-Lite to PNG conversion failed: ...``), whose text
+    it carries. Every other ``ValueError`` vl-convert raises — a spec string it cannot parse as JSON (a ``NaN`` the
+    compiler let through), an argument it does not take — is a defect in the code that called it and propagates as
+    it was raised.
+    """
+
+
+def _converted[T](convert: Callable[[], T]) -> T:
+    """Run one vl-convert conversion, raising :class:`RasterRefused` for its refusal and nothing else.
+
+    Args:
+        convert: The conversion.
+
+    Returns:
+        What it returns.
+
+    Raises:
+        RasterRefused: vl-convert reported the conversion failed.
+    """
+    try:
+        return convert()
+    except ValueError as failed:
+        if _CONVERSION_FAILED.match(str(failed)) is None:
+            raise
+        raise RasterRefused(str(failed)) from failed
+
+
 def render_png(
     spec: dict[str, Any],
     *,
@@ -235,11 +273,12 @@ def render_png(
 
     Raises:
         TextMetricsError: ``font`` was measured from files its directory no longer holds as measured.
+        RasterRefused: vl-convert refused to convert the spec.
     """
     import vl_convert as vlc
 
     _prepare_fonts(font_dir, font)
-    return vlc.vegalite_to_png(json.dumps(spec), config=vega_config(palette, font), scale=scale)
+    return _converted(lambda: vlc.vegalite_to_png(json.dumps(spec), config=vega_config(palette, font), scale=scale))
 
 
 def render_svg(
@@ -261,11 +300,12 @@ def render_svg(
 
     Raises:
         TextMetricsError: ``font`` was measured from files its directory no longer holds as measured.
+        RasterRefused: vl-convert refused to convert the spec.
     """
     import vl_convert as vlc
 
     _prepare_fonts(font_dir, font)
-    return vlc.vegalite_to_svg(json.dumps(spec), config=vega_config(palette, font))
+    return _converted(lambda: vlc.vegalite_to_svg(json.dumps(spec), config=vega_config(palette, font)))
 
 
 def vega_svg(spec: dict[str, Any]) -> str:
@@ -304,6 +344,7 @@ def vega_png(spec: dict[str, Any]) -> bytes:
 
 __all__ = [
     "DEFAULT_SCALE",
+    "RasterRefused",
     "register_fonts",
     "render_png",
     "render_svg",

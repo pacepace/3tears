@@ -594,9 +594,11 @@ for refused in charts.refused:   # block position, finding, chart type, cause an
 
 Each chart that cannot be drawn is refused on its own, and every other chart is still drawn. The cause is
 `undrawable` when the report could not decide the stored chart into an intent (its block's reason is
-carried), or `refused_by_renderer` when the renderer raised a `ValueError` on the intent. State a refusal
-where the chart would have been. A missing chart otherwise reads as a finding that carried none. Anything
-else a renderer raises is a defect in the renderer, and propagates.
+carried), or `refused_by_renderer` when the renderer refused the intent by raising `ChartRefused` (from
+`threetears.evals.analysis.viz`; the Vega adapter's `SpecPolicyError` and `RasterRefused` are two). State a
+refusal where the chart would have been. A missing chart otherwise reads as a finding that carried none.
+Anything else a renderer raises, any other `ValueError` included, is a defect in the renderer or its compiler,
+and propagates; a renderer of your own refuses a chart with `ChartRefused`.
 
 The packaged palette is a brand-neutral default with a light and a dark variant (`packaged_palette("light")`,
 `packaged_palette("dark")`), a published categorical palette ordered so the four validated slots can be told

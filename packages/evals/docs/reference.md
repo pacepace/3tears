@@ -1721,6 +1721,7 @@ Finding charts — eval's own chart intent, and the seam a renderer sits behind.
 - **`ChartIdentity`** · model · What a chart's rows are named by, and the order they are drawn in.
 - **`ChartIntent`** · model · One chart's intent: what it draws and what it must say, for any renderer to draw.
 - **`ChartReference`** · model · A standard drawn across one axis — the bar the marks are read against, not one of them.
+- **`ChartRefused`** · exception · A renderer's refusal to draw one intent: this chart cannot be drawn as decided, and its neighbours still can.
 - **`ChartRenderer`** · protocol · A chart renderer: a host's palette, bound at construction, applied to any intent.
 - **`IntentPolicyError`** · exception · A chart intent breaks a presentation rule — a data problem, never a rendering one.
 - **`PayloadError`** · exception · A viz payload does not match the contract declared for its type.
@@ -2320,7 +2321,8 @@ The Vega-Lite chart renderer — an optional adapter over eval's chart intent.
 - **`CompiledChart`** · dataclass · One finding's chart: its intent, and the Vega-Lite spec drawn from it.
 - **`CompiledColumn`** · typed dict · One column of the values-as-drawn table, as the compilation hands it on.
 - **`PaletteError`** · exception · The chart palette artifact is missing or cannot be drawn with.
-- **`SpecPolicyError`** · exception · A chart's spec breaks one or more of the report's presentation rules.
+- **`RasterRefused`** · exception · vl-convert refused to convert a chart's spec: its runtime would not draw it.
+- **`SpecPolicyError`** · exception · A chart's spec breaks one or more of the report's presentation rules: the renderer refuses that chart.
 - **`TextMetricsError`** · exception · The font metrics artifact is missing or unusable.
 - **`VegaRenderer`** · dataclass · Draw chart intents as Vega-Lite, in one palette and one typeface.
 

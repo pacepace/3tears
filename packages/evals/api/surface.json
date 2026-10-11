@@ -4301,6 +4301,10 @@
       "kind": "model",
       "signature": "ChartReference(axis: str, value: float, label: str)"
     },
+    "threetears.evals.analysis.viz.ChartRefused": {
+      "kind": "exception",
+      "signature": ""
+    },
     "threetears.evals.analysis.viz.ChartRenderer": {
       "kind": "protocol",
       "signature": "ChartRenderer{draw(self, intent: ChartIntent) -> DrawingT; drawn_data(self, drawing: DrawingT) -> list[dict[str, ChartValue]]}"
@@ -5546,6 +5550,10 @@
       "signature": "packaged_palette(theme: Theme) -> ChartPalette"
     },
     "threetears.evals.vega.PaletteError": {
+      "kind": "exception",
+      "signature": ""
+    },
+    "threetears.evals.vega.RasterRefused": {
       "kind": "exception",
       "signature": ""
     },

@@ -39,7 +39,12 @@ from threetears.evals.analysis.viz.intent import (
 )
 from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.analysis.viz.policy import IntentPolicyError, check_intent, table_disagreements
-from threetears.evals.analysis.viz.renderer import ChartRenderer, assert_renderer_conforms, renderer_disagreements
+from threetears.evals.analysis.viz.renderer import (
+    ChartRefused,
+    ChartRenderer,
+    assert_renderer_conforms,
+    renderer_disagreements,
+)
 
 __all__ = [
     "INTENT_VERSION",
@@ -51,6 +56,7 @@ __all__ = [
     "ChartIdentity",
     "ChartIntent",
     "ChartReference",
+    "ChartRefused",
     "ChartRenderer",
     "ChartType",
     "EncodingRole",

@@ -140,6 +140,9 @@ class VegaRenderer:
 
         Returns:
             PNG bytes.
+
+        Raises:
+            RasterRefused: vl-convert refused to convert the chart's spec.
         """
         return render_png(chart.spec, palette=self.palette, scale=scale, font_dir=self.font_dir, font=self.font)
 
@@ -151,6 +154,9 @@ class VegaRenderer:
 
         Returns:
             The SVG document.
+
+        Raises:
+            RasterRefused: vl-convert refused to convert the chart's spec.
         """
         return render_svg(chart.spec, palette=self.palette, font_dir=self.font_dir, font=self.font)
 
