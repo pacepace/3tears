@@ -25,7 +25,7 @@ from enum import Enum
 from typing import Annotated, Any, Literal
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.kernel import EvalStorage, ValidationFailedError
 from threetears.evals.kernel.host import (
@@ -107,6 +107,32 @@ def test_a_field_the_engine_cannot_read_as_a_lever_is_refused_at_declaration_by_
         KindContract("probe", overlays=model)
 
     assert "probe.knob" in str(refused.value) and said in str(refused.value)
+
+
+class _RequiredKnob(BaseModel):
+    knob: int = Field(description="a knob with no default: no launch runs at one")
+
+
+class _DefaultItsFieldRefuses(BaseModel):
+    model_config = ConfigDict(validate_default=True)
+
+    knob: int = Field(-1, ge=0, description="a knob whose default its own constraint refuses")
+
+
+def test_an_overlay_model_with_a_required_field_has_no_default_to_compare_against():
+    contract = KindContract("probe", overlays=_RequiredKnob)
+
+    run = make_eval_run(candidate_kind="probe", overlays={"knob": 3})
+    (declared,) = [d for d in contract.sweepables if d.name == "probe.knob"]
+    assert declared.departs_production is not None and declared.departs_production(run, []) is None
+
+
+def test_an_overlay_model_refusing_its_own_defaults_is_refused_at_declaration():
+    """It read as a model with a required field: every run's departure from production went unchecked, unsaid."""
+    with pytest.raises(KindContractError, match="refuses its own defaults") as refused:
+        KindContract("probe", overlays=_DefaultItsFieldRefuses)
+
+    assert "greater than or equal to 0" in str(refused.value)
 
 
 class _Excluded(BaseModel):

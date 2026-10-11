@@ -35,6 +35,11 @@ packages (bumped in lock-step).
   whose import raised `ImportError` (an extra not installed, or a broken import), so "no public root exports it"
   could be said without asking that root. The finding now ends "not counting <root> (<error>), which could not be
   imported to check".
+- **A kind's overlay model that refuses its own defaults is refused at declaration (breaking for such a model).**
+  `KindContract` read any `ValidationError` from validating the overlay model's defaults as "the model has a required
+  field", so a default its own constraint refuses left every run of the kind with its departure from production
+  unchecked and nothing saying why. A required field still means no default; any other refusal of the defaults is
+  now a `KindContractError` naming the validation error.
 
 ### 3tears-evals: backlog while Discodon adopts .13
 

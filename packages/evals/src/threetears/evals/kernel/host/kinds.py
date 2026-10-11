@@ -306,14 +306,23 @@ class KindContract:
         Returns:
             The frozen record of the overlay model's defaults; ``None`` when the model has a required
             field, so no launch runs at a default the engine could compare against.
+
+        Raises:
+            KindContractError: The model's own defaults do not validate — a default its field refuses, or a
+                validator refusing the defaults together. That is a defect in the model, not a model with no
+                default: read as one, every run of the kind read its departure from production as unchecked.
         """
         if self.overlays is None:
             return {}
+        if any(info.is_required() for info in self.overlays.model_fields.values()):
+            return None
         try:
             return freeze(self.overlays.model_validate({}))
-        except ValidationError:
-            # NOSILENT: None IS the answer -- a required overlay field means no launch runs at a default
-            return None
+        except ValidationError as refused:
+            raise KindContractError(
+                f"kind {self.kind!r}'s overlay model refuses its own defaults, so a launch naming no overlay could "
+                f"not run: {refused}"
+            ) from refused
 
     @property
     def lever_prefix(self) -> str:
