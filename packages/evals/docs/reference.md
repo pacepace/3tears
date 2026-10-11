@@ -2007,9 +2007,10 @@ The action catalogue: every eval action, declared once, for any transport to mou
 
 - **`Action`** · dataclass · One action: what it is called, what it takes and returns, who may call it, and how it reads back.
 - **`ActionCatalogue`** · class · Every action a host offers: the engine's, and any the host contributes.
-- **`ActionOutcome`** · dataclass · What one call came to: the text an agent reads, the typed result as data, and whether it was refused.
+- **`ActionOutcome`** · dataclass · What one call came to: the text an agent reads, the typed result as data, and why it was refused.
 - **`Caller`** · dataclass · Who is calling, and the scope they act in — resolved by the host for every call.
 - **`MountedTool`** · dataclass · A tool cut from the catalogue: the actions its classes admit, and how a call to it is carried out.
+- **`Refusal`** · dataclass · Why a call was refused, as data: the kind of error and the status it carries.
 - **`ToolHints`** · dataclass · The MCP behaviour hints a mounted tool's actions earn.
 - **`ToolSpec`** · dataclass · One tool a transport mounts: its name, its short description and the classes of action it carries.
 
@@ -2019,6 +2020,8 @@ The action catalogue: every eval action, declared once, for any transport to mou
   <br>`Callable[[OpsHost, Caller, Any], Awaitable[BaseModel]]`
 - **`PermissionClass`** · literal · What an action does to the world, which decides the tools that may mount it.
   <br>`'read'` | `'spend'` | `'write'` | `'destructive'`
+- **`RefusalKind`** · literal · What refused a call: the public engine error it was, by kind.
+  <br>`'refused'` | `'not_found'` | `'conflict'` | `'validation_failed'` | `'storage_failed'` | `'provider_refused'` | `'admission_refused'`
 
 **Constants**
 
@@ -2029,6 +2032,7 @@ The action catalogue: every eval action, declared once, for any transport to mou
 - **`HELP_ACTION`** · constant (str) · The action every mounted tool answers, generated from the catalogue rather than declared in it.
   <br>`= 'help'`
 - **`PERMISSION_CLASSES`** · constant (tuple) · The classes, in the order help lists them.
+- **`REFUSAL_KINDS`** · constant (tuple) · Every refusal kind.
 - **`RESERVED_PARAMETERS`** · constant (frozenset) · Parameter names a tool reserves: `action` selects the action, `topic` is help's.
 - **`TOOL_NAME`** · constant (Pattern) · A tool's name: a lowercase identifier.
   <br>`= '^[a-z][a-z0-9_]*$'`

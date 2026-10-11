@@ -5,8 +5,9 @@ result, permission class and agent-facing rendering. :func:`eval_catalogue` is t
 any a host contributes; :meth:`ActionCatalogue.mount` cuts a tool from it by permission class —
 :func:`standard_tools` (``evals`` and ``evals_admin``) or :func:`read_only_tools` — and a mounted tool's
 :meth:`MountedTool.call` carries a call out: ``help`` generated from the catalogue, undeclared parameters
-refused, errors that teach, long work as a job to poll. A transport adapter is a thin binding of
-:class:`MountedTool` to its server's tool shape (:mod:`threetears.evals.transports.fastmcp`).
+refused, errors that teach and carry their :class:`Refusal` as data, long work as a job to poll. A
+transport adapter is a thin binding of :class:`MountedTool` to its server's tool shape
+(:mod:`threetears.evals.transports.fastmcp`).
 
 **This module is the package's public root.** A host imports from here and from no module below it,
 and only the names in ``__all__``.
@@ -19,6 +20,7 @@ from threetears.evals.actions.catalogue import (
     DEFAULT_PREFIX,
     HELP_ACTION,
     PERMISSION_CLASSES,
+    REFUSAL_KINDS,
     RESERVED_PARAMETERS,
     TOOL_NAME,
     Action,
@@ -28,6 +30,8 @@ from threetears.evals.actions.catalogue import (
     Caller,
     MountedTool,
     PermissionClass,
+    Refusal,
+    RefusalKind,
     ToolHints,
     ToolSpec,
     read_only_tools,
@@ -40,6 +44,7 @@ __all__ = [
     "DEFAULT_PREFIX",
     "HELP_ACTION",
     "PERMISSION_CLASSES",
+    "REFUSAL_KINDS",
     "RESERVED_PARAMETERS",
     "TOOL_NAME",
     "Action",
@@ -49,6 +54,8 @@ __all__ = [
     "Caller",
     "MountedTool",
     "PermissionClass",
+    "Refusal",
+    "RefusalKind",
     "ToolHints",
     "ToolSpec",
     "engine_actions",

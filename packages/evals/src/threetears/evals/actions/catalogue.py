@@ -19,7 +19,9 @@ naming the ones it accepts and an example, rather than ignored.
 
 **Errors teach.** Every refusal a call can meet — no action, an unknown one, one this tool does not
 mount, an undeclared parameter, a value that does not validate, a refusal from the engine — says what
-was wrong and what would be right: the valid actions, the accepted parameters, an example call.
+was wrong and what would be right: the valid actions, the accepted parameters, an example call. Each
+also carries a :class:`Refusal` — its kind and status — so a host's code branches on data, never on
+the teaching text.
 
 **Long work is a job.** An action whose work outlives a call (``long_running``) returns
 :class:`~threetears.evals.ops.JobsStarted`, and the caller polls with ``job_poll``.
@@ -39,7 +41,15 @@ from typing import Any, Literal, get_args
 from pydantic import BaseModel, ValidationError
 
 from threetears.evals.actions import render
-from threetears.evals.kernel.errors import EvalServiceError
+from threetears.evals.kernel.errors import (
+    AdmissionRefusedError,
+    ConflictError,
+    EvalServiceError,
+    NotFoundError,
+    ProviderRefusedError,
+    StorageError,
+    ValidationFailedError,
+)
 from threetears.evals.ops import JobsStarted, OpsHost
 
 #: What an action does to the world, which decides the tools that may mount it.
@@ -246,21 +256,114 @@ def read_only_tools(prefix: str = DEFAULT_PREFIX) -> tuple[ToolSpec]:
     )
 
 
+#: What refused a call: the public engine error it was, by kind. One kind per class in
+#: :mod:`threetears.evals.kernel.errors` — ``refused`` for :class:`~threetears.evals.kernel.EvalServiceError`
+#: itself, raised with a status of its own — so the set is closed: an error class a host derives maps to
+#: the kind of its nearest public ancestor, and adding a kind means adding a public error class.
+RefusalKind = Literal[
+    "refused",
+    "not_found",
+    "conflict",
+    "validation_failed",
+    "storage_failed",
+    "provider_refused",
+    "admission_refused",
+]
+
+#: Every refusal kind.
+REFUSAL_KINDS: tuple[RefusalKind, ...] = get_args(RefusalKind)
+
+#: The kind each public error class refuses as. ``tests/test_action_refusals.py`` holds every class
+#: :mod:`threetears.evals.kernel.errors` exports to a kind of its own, together covering :data:`REFUSAL_KINDS`.
+_KIND_OF_ERROR: Mapping[type[EvalServiceError], RefusalKind] = {
+    EvalServiceError: "refused",
+    NotFoundError: "not_found",
+    ConflictError: "conflict",
+    ValidationFailedError: "validation_failed",
+    StorageError: "storage_failed",
+    ProviderRefusedError: "provider_refused",
+    AdmissionRefusedError: "admission_refused",
+}
+
+
+@dataclass(frozen=True, kw_only=True)
+class Refusal:
+    """Why a call was refused, as data: the kind of error and the status it carries.
+
+    The outcome's text is the refusal an agent reads; this is the same refusal for a host's code — a
+    REST mapping's status, a metric's label, an audit row — which would otherwise parse that text, or
+    lose the difference between a run that does not exist and a launch the process has no room for.
+
+    Attributes:
+        kind: Which public error refused it (:data:`RefusalKind`).
+        status: The HTTP-style status the error carries (``status_code``), so every surface reports one
+            refusal with one status without owning a table of its own.
+    """
+
+    kind: RefusalKind
+    status: int
+
+    def __post_init__(self) -> None:
+        """Refuse a kind outside the closed set.
+
+        Raises:
+            ValueError: ``kind`` is not one of :data:`REFUSAL_KINDS`.
+        """
+        if self.kind not in REFUSAL_KINDS:
+            raise ValueError(f"refusal kind {self.kind!r} is none of {', '.join(REFUSAL_KINDS)}")
+
+    @classmethod
+    def of(cls, error: EvalServiceError) -> Refusal:
+        """The refusal an engine error makes: the kind of its nearest public class, and its own status.
+
+        Args:
+            error: The error a handler raised.
+
+        Returns:
+            The refusal. A host's own subclass of a public error takes that error's kind, and keeps the
+            status it was raised with.
+        """
+        kind = next(_KIND_OF_ERROR[base] for base in type(error).__mro__ if base in _KIND_OF_ERROR)
+        return cls(kind=kind, status=error.status_code)
+
+
+#: The refusal of a call the catalogue itself turns away — no action, one the tool lacks, an undeclared
+#: parameter, a value that does not validate, a help topic that is no action. Each is the call failing
+#: the tool's own declared input (``action``'s enum, the action's parameters), which is what
+#: :class:`~threetears.evals.kernel.ValidationFailedError` means; derived from that class rather than
+#: spelled here, so the two cannot disagree on the status.
+_CALL_REFUSAL = Refusal.of(ValidationFailedError("the call does not validate against the tool's input"))
+
+
 @dataclass(frozen=True)
 class ActionOutcome:
-    """What one call came to: the text an agent reads, the typed result as data, and whether it was refused.
+    """What one call came to: the text an agent reads, the typed result as data, and why it was refused.
 
     Attributes:
         text: The rendering — the result's, a help page's, or a refusal that teaches.
         structured: The result model's JSON form; ``None`` for help and for a refusal.
-        is_error: Whether the call was refused.
+        refusal: Why the call was refused, as data; ``None`` for a call that was not.
         action: The action called, when the call named one the tool has.
     """
 
     text: str
     structured: dict[str, Any] | None = None
-    is_error: bool = False
+    refusal: Refusal | None = None
     action: str | None = None
+
+    def __post_init__(self) -> None:
+        """Refuse an outcome that is both a result and a refusal.
+
+        Raises:
+            ValueError: ``structured`` and ``refusal`` are both set.
+        """
+        if self.structured is not None and self.refusal is not None:
+            raise ValueError("an outcome carries a result or a refusal, never both")
+
+    @property
+    def is_error(self) -> bool:
+        """Whether the call was refused."""
+        return self.refusal is not None
 
 
 @dataclass(frozen=True)
@@ -366,7 +469,8 @@ class MountedTool:
         """Carry out one call: select the action, hold it to its parameters, run it, render what it returns.
 
         A refusal the engine raises (:class:`~threetears.evals.kernel.EvalServiceError`) is a refused
-        call, rendered with its reason. Anything else the handler raises propagates: it is a defect, and
+        call, rendered with its reason and carrying its kind and status (:meth:`Refusal.of`); a call the
+        catalogue turns away is ``validation_failed`` (422). Anything else the handler raises propagates: it is a defect, and
         the transport's error path is where a defect belongs.
 
         Args:
@@ -380,34 +484,40 @@ class MountedTool:
         given = dict(arguments)
         name = given.pop("action", None)
         if not isinstance(name, str) or not name:
-            return ActionOutcome(render.refuse_no_action(self), is_error=True)
+            return ActionOutcome(render.refuse_no_action(self), refusal=_CALL_REFUSAL)
         if name == HELP_ACTION:
             return self._help(given)
         action = self.action(name)
         if action is None:
-            return ActionOutcome(render.refuse_unknown_action(self, name), is_error=True)
+            return ActionOutcome(render.refuse_unknown_action(self, name), refusal=_CALL_REFUSAL)
         undeclared = sorted(set(given) - set(action.params.model_fields))
         if undeclared:
-            return ActionOutcome(render.refuse_undeclared(self, action, undeclared), is_error=True, action=name)
+            return ActionOutcome(render.refuse_undeclared(self, action, undeclared), refusal=_CALL_REFUSAL, action=name)
         try:
             params = action.params.model_validate(given)
         except ValidationError as invalid:
-            return ActionOutcome(render.refuse_invalid(self, action, invalid), is_error=True, action=name)
+            return ActionOutcome(render.refuse_invalid(self, action, invalid), refusal=_CALL_REFUSAL, action=name)
         try:
             result = await action.handler(host, caller, params)
         except EvalServiceError as refused:
-            return ActionOutcome(render.refuse_by_engine(self, action, refused), is_error=True, action=name)
+            return ActionOutcome(
+                render.refuse_by_engine(self, action, refused), refusal=Refusal.of(refused), action=name
+            )
         return ActionOutcome(action.render(result), structured=result.model_dump(mode="json"), action=name)
 
     def _help(self, given: Mapping[str, Any]) -> ActionOutcome:
         undeclared = sorted(set(given) - {"topic"})
         if undeclared:
-            return ActionOutcome(render.refuse_help_parameters(self, undeclared), is_error=True, action=HELP_ACTION)
+            return ActionOutcome(
+                render.refuse_help_parameters(self, undeclared), refusal=_CALL_REFUSAL, action=HELP_ACTION
+            )
         topic = given.get("topic")
         if topic is None:
             return ActionOutcome(self.help_index(), action=HELP_ACTION)
         if not isinstance(topic, str) or self.action(topic) is None:
-            return ActionOutcome(render.refuse_unknown_action(self, str(topic)), is_error=True, action=HELP_ACTION)
+            return ActionOutcome(
+                render.refuse_unknown_action(self, str(topic)), refusal=_CALL_REFUSAL, action=HELP_ACTION
+            )
         return ActionOutcome(self.help_page(topic), action=HELP_ACTION)
 
 
@@ -516,6 +626,7 @@ __all__ = [
     "DEFAULT_PREFIX",
     "HELP_ACTION",
     "PERMISSION_CLASSES",
+    "REFUSAL_KINDS",
     "RESERVED_PARAMETERS",
     "TOOL_NAME",
     "Action",
@@ -525,6 +636,8 @@ __all__ = [
     "Caller",
     "MountedTool",
     "PermissionClass",
+    "Refusal",
+    "RefusalKind",
     "ToolHints",
     "ToolSpec",
     "read_only_tools",
