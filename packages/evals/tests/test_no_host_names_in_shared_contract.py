@@ -360,6 +360,9 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # `CandidateTelemetry` and into engine vocabulary (`AsyncDelivery`) beside the kind's opaque
     # `kind_payload`.
     "kernel/candidate_kind.py",
+    # The completion client a cell's calls are held to the run's cost cap through — the engine's own and a
+    # host's kind's alike, so it is shared contract and names no host.
+    "kernel/capped_completion.py",
     # The cassette seams a kind implements and the cell handle ``prepare`` is handed. Split out of
     # `run/cassette_proxy.py` so the protocol that declares ``prepare`` could name its argument: it
     # is what every host's kind is written against, so a host noun here would be one host's

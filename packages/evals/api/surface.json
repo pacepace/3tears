@@ -765,6 +765,10 @@
       "kind": "constant (int)",
       "signature": ""
     },
+    "threetears.evals.kernel.call_ceiling": {
+      "kind": "function",
+      "signature": "call_ceiling(client: object, *, system: str, user: str, response_format: dict[str, Any] | None = None, attempts: int = 1) -> float | None"
+    },
     "threetears.evals.kernel.CallUsage": {
       "kind": "dataclass",
       "signature": "CallUsage(model: str | None = None, served_model: str | None = None, input_tokens: int | None = None, output_tokens: int | None = None, reasoning_tokens: int | None = None, cost_usd: float | None = None, price_source: str | None = None, calls: int = 1)"
@@ -791,7 +795,7 @@
     },
     "threetears.evals.kernel.CandidateKind": {
       "kind": "protocol",
-      "signature": "CandidateKind{invoke(self, instance: Any, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput; judged_artifact: JudgedArtifact; prepare(self, *, subject_snapshot: SubjectSnapshot | None, variant_config: VariantConfig, world_seed: WorldSeed, span_window: CellSpanWindow, cassettes: CellCassettes | None, world: WorldSession | None) -> Any}"
+      "signature": "CandidateKind{invoke(self, instance: Any, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput; judged_artifact: JudgedArtifact; max_concurrent_cells: int | None; prepare(self, *, subject_snapshot: SubjectSnapshot | None, variant_config: VariantConfig, world_seed: WorldSeed, span_window: CellSpanWindow, cassettes: CellCassettes | None, world: WorldSession | None) -> Any}"
     },
     "threetears.evals.kernel.CandidateKindDefect": {
       "kind": "exception",
@@ -808,6 +812,10 @@
     "threetears.evals.kernel.CandidateTelemetry": {
       "kind": "model",
       "signature": "CandidateTelemetry(usage: list[RoleUsage] = [], metered_calls_refused: int | None = None, untimed_reason: str | None = None, phase_timings: dict[str, float] = {}, async_wait_ms: float | None = None, concurrent_eval_jobs: int | None = None, turns_delivered: int | None = None, turns_ended_by_budget: int | None = None)"
+    },
+    "threetears.evals.kernel.CappedCompletion": {
+      "kind": "class",
+      "signature": "CappedCompletion(inner: CompletionGenerator, *, sink: CellSink, source: CellPending) -> None"
     },
     "threetears.evals.kernel.CaseSetStore": {
       "kind": "protocol",
@@ -853,9 +861,13 @@
       "kind": "literal",
       "signature": "'apparatus'` | `'candidate'` | `'background_work'` | `'simulator'` | `'judge'"
     },
+    "threetears.evals.kernel.CellReservation": {
+      "kind": "protocol",
+      "signature": "CellReservation{release(self) -> None; settle(self, cost_usd: float | None) -> None}"
+    },
     "threetears.evals.kernel.CellSink": {
       "kind": "protocol",
-      "signature": "CellSink{cost_cap_reached(self, spent_usd: float | None) -> bool; report_progress(self, read: Callable[[], CandidateOutput]) -> None; waiting_on(self, pending: CellPending) -> None}"
+      "signature": "CellSink{add_spend(self, source: CellPending, cost_usd: float | None) -> None; cost_cap_reached(self) -> bool; report_progress(self, read: Callable[[], CandidateOutput]) -> None; reserve(self, source: CellPending, ceiling_usd: float | None) -> CellReservation; waiting_on(self, pending: CellPending) -> None}"
     },
     "threetears.evals.kernel.CellSpanWindow": {
       "kind": "protocol",
@@ -928,6 +940,10 @@
     "threetears.evals.kernel.ControlDeclaration": {
       "kind": "model",
       "signature": "ControlDeclaration(stimulus: Literal['controlled', 'uncontrolled'], stimulus_reason: str = '', apparatus: ApparatusProvenance)"
+    },
+    "threetears.evals.kernel.CostCapReached": {
+      "kind": "exception",
+      "signature": "CostCapReached(detail: str = \"the run's cost cap has no room for another paid call\") -> None"
     },
     "threetears.evals.kernel.count_substituted": {
       "kind": "function",
@@ -2199,7 +2215,7 @@
     },
     "threetears.evals.run.CapBreach": {
       "kind": "dataclass",
-      "signature": "CapBreach(max_cost_usd: float, accumulated_usd: float, unpriced_results: int)"
+      "signature": "CapBreach(max_cost_usd: float, accumulated_usd: float, unpriced_results: int, refused_call_usd: float | None = None)"
     },
     "threetears.evals.run.CeilingRaisedError": {
       "kind": "exception",
@@ -2503,7 +2519,7 @@
     },
     "threetears.evals.run.KindWiring": {
       "kind": "dataclass",
-      "signature": "KindWiring(kind_factory: KindFactory, subject: SubjectSnapshot, test_cases: Sequence[EvalTestCase], default_candidate_model: str | None = None, judge: RunJudge | None = None, simulator_model: str | None = None, payload: Mapping[str, Any] = dict(), variation_counts: VariationCounts | None = None, turn_budget_s: float | None = None, cell_timeout_s: float | None = None, external_rates: ExternalRateTable | None = None, teardown: contextlib.AsyncExitStack | None = None)"
+      "signature": "KindWiring(kind_factory: KindFactory, subject: SubjectSnapshot, test_cases: Sequence[EvalTestCase], default_candidate_model: str | None = None, judge: RunJudge | None = None, simulator_model: str | None = None, payload: Mapping[str, Any] = dict(), variation_counts: VariationCounts | None = None, turn_budget_s: float | None = None, cell_timeout_s: float | None = None, external_rates: ExternalRateTable | None = None, teardown: contextlib.AsyncExitStack | None = None, max_concurrent_cells: int | None = 1)"
     },
     "threetears.evals.run.launch_as_group": {
       "kind": "async function",

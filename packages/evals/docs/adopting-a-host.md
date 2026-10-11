@@ -340,6 +340,28 @@ engine resolves every run's level of them — with its `candidate_model` and its
 variant key. Your profile's `host_sweepables` (the shared core extended with your own levers) and its
 `variant_levers` reader cover only the levers you declare beyond those; a host with none wires no reader.
 
+**How many cells your kind runs at once is yours to declare.** A run not measuring latency executes its cells
+side by side, and one kind instance may then be driving several of them: whether that is safe — the clients it
+shares across cells, a pool, a world it does not bind per cell — only your kind's code knows. So the kind
+declares it, as `max_concurrent_cells` beside `judged_artifact`: `1` is serial, a larger int is that many, and
+`None` is no limit of its own. **A kind that declares nothing runs one cell at a time.** Its launcher hands the
+same value to the launch (`KindWiring(max_concurrent_cells=kind.max_concurrent_cells)`), which runs the run at
+the narrowest of that, the host's `LaunchSettings.max_concurrent_cells` (a ceiling, 4 by default) and the matrix.
+The runner holds every cell's kind to it, refusing a kind that declares less than the run executes at before
+anything is spent.
+
+**Your kind's paid calls answer to the run's cost cap as they are made.** The cell's sink keeps the cell's spend
+by source and holds each priced call against the cap while it is in flight, so cells running side by side cannot
+together pass it. Before a call whose worst case your client can price, reserve it — `held =
+sink.reserve("candidate", ceiling)`, then `held.settle(cost)` when it returns and `held.release()` if it raises —
+or wrap the client in `CappedCompletion(client, sink=sink, source="candidate")`, which does both for every call,
+pricing each by the client's `price_ceiling`. A call that cannot be priced is reserved with no ceiling, which
+only asks whether the cap is already reached. Spend you learn of any other way, report as it lands
+(`sink.add_spend(source, cost)`); it adds, and never replaces what another source reported. A reservation the
+cap refuses raises `CostCapReached`: a one-shot kind catches it and returns what it has, and inside
+`drive_conversation` it simply propagates out of your candidate turn. The full rule is in [Cost and budgets:
+caps](cost-and-budgets.md#caps).
+
 A run is one arm with one `candidate_model`; a launch naming several models starts one run per model, and
 runs of different kinds are always different variants. A reader of yours that answers for a run its lever
 does not apply to (a run of another kind) returns `SweepableValue.not_this_kind(kind)` — the level a kind
@@ -581,10 +603,13 @@ stored on the cell's `EvalTrace`, and a re-judge sends exactly what the first ju
 **Conversations.** A conversing kind's template carries a `ConversationSpec`: its simulated actors, who
 speaks next, and the turn limit. A document or classifier template carries none. The kind runs it with
 `drive_conversation(driver, candidate_turn, post_user_turn, llm=..., sink=sink)`, handing over its cell's
-sink: before every paid call the loop asks the run's cost cap whether the simulator's spend so far
-reaches it (`CellSink.cost_cap_reached`), and stops `budget_stopped` when it does — the runner excludes
-that cell and ends the run `budget_stopped`, so one conversation (thousands of simulator calls at the
-schema's maxima) cannot run far past the cap. Fold the driver's calls with `fold_usage`: the stored
+sink: every simulator call is reserved against the run's cost cap at the client's own ceiling before it is
+made (a client with no `price_ceiling` has the cap asked instead), and the loop asks before every decision
+whether the cap is reached (`CellSink.cost_cap_reached`), stopping `budget_stopped` when it is — the runner
+excludes that cell and ends the run `budget_stopped`, so one conversation (thousands of simulator calls at the
+schema's maxima) cannot run past the cap. Your `candidate_turn` holds the candidate's own calls the same way;
+when the cap has no room it raises `CostCapReached` (a refused `sink.reserve` raises it for you), and the
+conversation ends `budget_stopped` — not `candidate_error` — with the rounds already answered kept. Fold the driver's calls with `fold_usage`: the stored
 `simulator` rows are one per actor and purpose (`RoleUsage.actor_id`, `RoleUsage.purpose`).
 
 **A round can be the world's.** `ConversationSpec.world_rounds` names rounds whose stimulus is a triggered

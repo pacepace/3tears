@@ -368,6 +368,7 @@ class ToyExtractorKind:
         judged: bool = False,
         graded_fields: tuple[str, ...] = INVOICE_FIELDS,
         goal_checks: tuple[str, ...],
+        max_concurrent_cells: int | None = None,
     ) -> None:
         """Wire the extractor's collaborators.
 
@@ -391,12 +392,16 @@ class ToyExtractorKind:
                 engine's :func:`~threetears.evals.run.grade_goal_checks`, the one evaluation every kind
                 uses. Required, with no default: a kind that grades none of them completes cells the
                 runner refuses, so the template's checks are a construction decision, never an omission.
+            max_concurrent_cells: The most cells this kind declares it drives at once; ``None`` (the default)
+                declares no limit of its own — a cell's state is its prepared instance and the world it binds
+                for itself, the scripted client is safe beside itself, and ``measures`` is keyed by the cell.
         """
         self._client = client
         #: The extraction is a document, judged against the invoice it was read from — or, unjudged,
         #: graded by code alone. The one fact the evidence below is rendered from, so the kind
         #: cannot declare one thing and hand the runner another.
         self.judged_artifact = JudgedArtifact.DOCUMENT if judged else JudgedArtifact.UNJUDGED
+        self.max_concurrent_cells = max_concurrent_cells
         self._world = world
         self._documents = {document.document_id: document for document in documents}
         self.graded_fields = graded_fields

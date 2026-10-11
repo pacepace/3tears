@@ -258,6 +258,8 @@ class RoutePlannerKind:
     """A route planner, as the engine's candidate-kind seam sees one. Scripted: no model is called."""
 
     judged_artifact = JudgedArtifact.UNJUDGED
+    #: Serial: the courier's world is one table it does not bind per cell, so two cells would plan over one map.
+    max_concurrent_cells: int | None = 1
     #: The carriers this kind attaches; a seed reaches the world only through these.
     CARRIERS: tuple[str, ...] = ("dispatch",)
 

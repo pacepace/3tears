@@ -33,8 +33,33 @@ The sections below state each rule exactly.
 **The per-run cap.** A launch's runs are held to the host's per-run ceiling, which a launch's
 `max_cost_usd` may only lower — one above it is refused on every surface. A run the cap stops
 mid-flight ends `budget_stopped`, with the results it already delivered kept: an honest outcome, not
-an infrastructure failure. A conversing kind's loop checks the cap before every paid simulator call (see
-[conversations](adopting-a-host.md#what-the-judge-reads-and-conversations)).
+an infrastructure failure.
+
+**What the per-run cap counts while a cell runs.** Each cell's sink keeps one running total per source —
+the candidate, its background work, the simulator, the judge — each only ever added to, plus the ceilings of
+the priced calls in flight. Every question of the cap, in a cell or between cells, counts the sum over every
+running cell beside what the run has already recorded. So no part of a cell reporting its spend can hide
+another part's, and a sibling cell sees all of it.
+
+- **A priced call is reserved before it is made.** Its ceiling (the client's `price_ceiling` times every attempt
+  the engine makes for it) is held against the cap while it is in flight, and settled to what it actually cost
+  when it returns, or released if it raised. A call whose ceiling would take the run past its cap is refused
+  before it is made. **A run whose paid calls are all reserved never spends past its cap**, however many cells
+  run at once. The engine reserves its own calls this way: every simulator call (a conversation's
+  `drive_conversation`), every judge call in a cell's judge phase, the judge kind's call and the reporter kind's
+  generator calls. A host's kind reserves its candidate's calls through `CellSink.reserve`, or wraps the client
+  in `CappedCompletion`.
+- **A call nobody can price** (a client with no `price_ceiling`, or one answering `None`) holds nothing; it is
+  made only while the cap is not yet reached. Such calls can pass the cap by about one call per running cell.
+- **Spend nothing reported** is counted only once the cell's result lands, so a kind that neither reserves its
+  calls nor reports them (`CellSink.add_spend`) can pass the cap by up to one whole cell per running cell.
+
+A call the cap refuses stops the cell: a conversation ends `budget_stopped` — a kind's candidate turn raises
+`CostCapReached` to end it the same way — and a one-shot kind returns what it has. The cell is excluded, no cell
+starts after it, and the run ends `budget_stopped` once the cells running are saved. A judge call the cap refuses
+leaves its dim unscored with an error naming the cap, which a re-judge can repair; the candidate's work is kept.
+When a refused reservation is what stopped the run, the stop says so: the call's ceiling, and what the run would
+have spent with it.
 
 **An uncapped run** (the host's cost enforcement off) records `max_cost_usd` as null and
 `max_cost_usd_origin` as `uncapped`. When an analysis or a bisection compares spend ceilings, it reads that
@@ -43,8 +68,10 @@ one. Only a run that recorded no ceiling and no origin is undecided.
 
 **The quick path's cap.** `run_eval` and `compare` run uncapped unless given `max_cost_usd=`, and the summary
 says which. The cap is the per-run cap above, counting each result's reported spend (the candidate's `Answer`
-and the judge's); `compare` splits it equally across arms. It is checked between cases, so a run can overshoot
-by one case's spend. A candidate that returns no `Answer` is invisible to it, and the summary says so.
+and the judge's); `compare` splits it equally across arms. The candidate cannot be priced before it is called, so
+the cap is asked before each call, and what its `Answer` reports is counted as soon as it returns; the judge's
+calls are reserved. A run can overshoot by the candidate calls in flight when the cap is reached — one per case
+running. A candidate that returns no `Answer` is invisible to it, and the summary says so.
 
 **The wall-clock budget.** Each run's job also runs under a time budget sized to its matrix (cases × k ×
 the cell timeout, plus a margin, clamped between a floor and an 8-hour cap). When it binds, the run ends
@@ -61,15 +88,16 @@ declares no ceiling lets a launch only lower the kind's deadline. The job's wall
 the deadline in force. The run records it as `cell_timeout_s`, with `cell_timeout_s_origin` (`launch`, `kind`
 or `default`). A run stored before 0.66.0 records neither, and its deadline reads as unknown.
 
-**Wall time.** A run executes its cells (case × repeat) in a shuffled order, up to
-`LaunchSettings.max_concurrent_cells` (4 by default) at once, and a cell's judge calls run up to
-`judge_concurrency` at once. The arms of one launch run side by side in one concurrency slot. Estimate a
+**Wall time.** A run executes its cells (case × repeat) in a shuffled order, several at once: as many as its
+kind declares it is safe at (`CandidateKind.max_concurrent_cells`, handed to the launch as
+`KindWiring.max_concurrent_cells`; a kind that declares nothing runs one at a time), never more than the host's
+ceiling `LaunchSettings.max_concurrent_cells` (4 by default). A cell's judge calls run up to `judge_concurrency`
+at once. The arms of one launch run side by side in one concurrency slot. Estimate a
 run's wall time as cases × k × the time one cell takes, divided by the width: 30 cases at k=3 and 6 s a cell
 is a little over 2 minutes at a width of 4. A launch that declares latency under test (`measure_latency=True`)
 runs its cells one at a time and its arms one after another, with no other run beside them: the same run
 then takes about 9 minutes, times the number of arms. The cost cap and the metered-call ceiling hold at any
-width; the cap can be overshot by at most the work in flight when it is reached (one call per running cell
-for a kind that asks the cap before each call, one cell per running cell otherwise). A host with its own
+width: reserved calls never pass the cap, and what can (above) is bounded per running cell. A host with its own
 pool or queue supplies a `CellExecutor` on `LaunchHost.cell_executor`.
 
 **The out-of-run cap** is `LaunchSettings.max_out_of_run_cost_usd`. It bounds every call the engine makes

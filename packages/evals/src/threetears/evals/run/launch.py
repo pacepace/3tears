@@ -133,9 +133,11 @@ class LaunchSettings(BaseModel):
         max_admitted_runs: How many runs may be admitted and unfinished at once across every launch
             — the ceiling admission refuses past rather than queueing behind.
         judge_concurrency: How many judge calls one cell makes at once.
-        max_concurrent_cells: How many of a run's cells execute at once when its launch does not declare
-            latency under test (``measure_latency``). A launch that declares it runs its cells one at a time
-            whatever this says. Defaults to
+        max_concurrent_cells: The most of a run's cells that execute at once when its launch does not declare
+            latency under test (``measure_latency``) — a ceiling, never a width a kind is pushed to: a run executes
+            at the narrower of this and what its kind declares it is safe at
+            (:attr:`KindWiring.max_concurrent_cells`), and a kind that declares nothing runs serially. A launch
+            that declares latency runs its cells one at a time whatever either says. Defaults to
             :data:`~threetears.evals.run.executor.DEFAULT_MAX_CONCURRENT_CELLS`; ``1`` runs every run serially.
         enforcement_enabled: Whether the cost and metered-call ceilings are enforced at all.
         max_cost_usd: The run cost ceiling a run inherits when its launch names none.
@@ -440,8 +442,8 @@ class LaunchHost:
             under test takes all of them while its runs execute, one run at a time, so nothing executes
             beside a latency it measures.
         cell_executor: What runs each run's cells (:class:`~threetears.evals.run.executor.CellExecutor`) — a
-            host's own pool or queue — or ``None`` for the in-process default, which runs them serially or up
-            to :attr:`LaunchSettings.max_concurrent_cells` at once, as each run's launch decided.
+            host's own pool or queue — or ``None`` for the in-process default, which runs them serially or at
+            the width each run's launch decided.
         on_job_progress: Called with ``(run id, progress)`` on every progress write — typically a
             broadcast to an operator's view — or ``None``.
         on_run_end: Told each run's recorded terminal status
@@ -844,8 +846,9 @@ class LaunchRequest:
             refusals were made under, and what :func:`launch_run` records and enforces the run's ceilings
             and judge concurrency from. A launcher reads the host's settings from here, never afresh.
         measure_latency: Whether the launch declared latency under test: its run executes its cells one at a time
-            and records it, and its group holds every job slot. ``False``: the cells run up to
-            :attr:`LaunchSettings.max_concurrent_cells` at once, and their latency is stamped read under concurrency.
+            and records it, and its group holds every job slot. ``False``: the cells run up to the narrower of
+            :attr:`LaunchSettings.max_concurrent_cells` and what the kind declares (:attr:`KindWiring.max_concurrent_cells`)
+            at once, and their latency is stamped read under concurrency.
         refused_goal_checks: Each of the stored template's goal checks the current grammar refuses, with why
             (:func:`~threetears.evals.schema.models.refused_goal_checks`). ``template`` already leaves them
             out (:func:`~threetears.evals.run.runner.template_as_graded`), so every launcher and every cell
@@ -1110,6 +1113,13 @@ class KindWiring:
             them counted and unpriced.
         teardown: What the run owns and must release when it ends, or ``None`` for nothing. Owned by
             the launch tail from the moment it is handed over.
+        max_concurrent_cells: The most cells the kind declares it can drive at once — the kind's own
+            :attr:`~threetears.evals.kernel.candidate_kind.CandidateKind.max_concurrent_cells`, handed here
+            because the launch sizes the run before any cell builds a kind. ``None`` declares no limit of the
+            kind's own. A run not measuring latency executes at the smallest of this, the host's
+            :attr:`LaunchSettings.max_concurrent_cells` and its matrix; the runner refuses a kind whose own
+            declaration is narrower than the run, so stating more here than the kind does fails the run before
+            anything is spent. Defaults to ``1``, the safe width: a launcher that says nothing runs serially.
     """
 
     kind_factory: KindFactory
@@ -1124,6 +1134,20 @@ class KindWiring:
     cell_timeout_s: float | None = None
     external_rates: ExternalRateTable | None = None
     teardown: contextlib.AsyncExitStack | None = None
+    max_concurrent_cells: int | None = 1
+
+    def __post_init__(self) -> None:
+        """Refuse a width no run can execute at.
+
+        Raises:
+            ValueError: ``max_concurrent_cells`` is neither ``None`` nor an int of at least 1.
+        """
+        width = self.max_concurrent_cells
+        if width is not None and (isinstance(width, bool) or not isinstance(width, int) or width < 1):
+            raise ValueError(
+                f"a kind declares the most cells it can drive at once as an int of at least 1, or None for no limit "
+                f"of its own; got max_concurrent_cells={width!r}"
+            )
 
 
 def no_launcher_for(template_id: str, candidate_kind: str, launchable: Mapping[str, Any]) -> ValidationFailedError:
@@ -1625,8 +1649,9 @@ async def start_run(
             every run of the campaign declares it alike.
         measure_latency: Declare latency under test. Each run then executes its cells one at a time, and the
             launch's runs execute one at a time with nothing else beside them, so the latency they record is
-            read clean. ``False`` (the default) runs each run's cells up to the host's
-            :attr:`LaunchSettings.max_concurrent_cells` at once: far faster, and the latency still recorded is
+            read clean. ``False`` (the default) runs each run's cells up to the narrower of the host's
+            :attr:`LaunchSettings.max_concurrent_cells` and what its kind declares it is safe at
+            (:attr:`KindWiring.max_concurrent_cells`) at once: far faster, and the latency still recorded is
             stamped read under concurrency and kept out of every comparison, bar and ranking. Every run
             records the declaration (``EvalRun.measure_latency``) and the width it ran at
             (``EvalRun.cell_concurrency``).
@@ -3399,12 +3424,20 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 cassette_mode=request.cassette_mode,
                 cassette_corpus_id=request.cassette_corpus_id,
                 # Whether latency is under test, and the width the cells execute at, which follows from it: one
-                # at a time when it is, up to the host's width (never more than the matrix) when it is not.
+                # at a time when it is; when it is not, the narrowest of what the kind declares it is safe at, the
+                # host's width (a ceiling) and the matrix.
                 measure_latency=request.measure_latency,
                 cell_concurrency=(
                     1
                     if request.measure_latency
-                    else max(1, min(settings.max_concurrent_cells, len(test_cases) * request.k_runs))
+                    else max(
+                        1,
+                        min(
+                            settings.max_concurrent_cells,
+                            wiring.max_concurrent_cells or settings.max_concurrent_cells,
+                            len(test_cases) * request.k_runs,
+                        ),
+                    )
                 ),
                 simulator_model=wiring.simulator_model,
                 turn_budget_s=wiring.turn_budget_s,

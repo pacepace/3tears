@@ -62,6 +62,26 @@ import, so `def f(run): run._x` is not reported, while a nested function that do
 - **Breaking:** every host table written before this release is format 1 and is refused on load; re-measure it.
   `write_font_metrics` takes a required `font_files`. Measuring a face other than the embedded Liberation Sans
   now needs `--font-dir`, and is refused when no file in the directory declares the family.
+### 3tears-evals: a kind declares how many cells it runs at once, and the cost cap counts every source of a cell's spend (breaking)
+
+- **The width is the kind's to declare.** `CandidateKind.max_concurrent_cells` (`1`, an int, or `None` for no limit
+  of the kind's own) states how many cells one kind may drive at once; a kind that declares nothing runs serially.
+  Its launcher hands the value to `KindWiring.max_concurrent_cells` (default `1`), and a run not measuring latency
+  executes at the narrowest of that, the host's `LaunchSettings.max_concurrent_cells` (now a ceiling) and its
+  matrix. The runner refuses a kind declaring less than the run executes at, before anything is spent. A host whose
+  kinds declare nothing, and whose runs used to execute four cells at once, now runs them serially until it declares
+  a width. The package's own kinds declare theirs (the callable, judge and reporter kinds: no limit of their own).
+- **Spend by source, never overwritten.** A cell's sink keeps one running total per source, each only ever added to
+  (`CellSink.add_spend`), and every question of the cap reads their sum over every running cell.
+  `CellSink.cost_cap_reached()` takes no argument now: a kind reports its spend rather than passing it in.
+- **Reservation.** `CellSink.reserve(source, ceiling_usd)` holds a priced call's ceiling against the cap while it is
+  in flight and is settled to what it cost (`CellReservation`), and a call the cap has no room for is refused with
+  `CostCapReached` before it is made. `CappedCompletion` wraps a client so every call is held this way, priced by its
+  `price_ceiling`. The engine reserves the simulator's calls, every judge call of a cell's judge phase, and the judge
+  and reporter kinds' calls, so a run whose paid calls are all reserved never spends past its cap. A refused
+  reservation's stop names the call's ceiling (`CapBreach.refused_call_usd`).
+- **The cap signal.** `CostCapReached` out of a `drive_conversation` callback ends the conversation `budget_stopped`,
+  never `candidate_error`, keeping its rounds.
 
 ### 3tears-evals: the context bundle and the reporting projection are split by concern (#612)
 

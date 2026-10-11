@@ -3,7 +3,10 @@
 A run executes its cells serially when its launch declares latency under test
 (``measure_latency=True``): a cell's wall-clock is then read with nothing else of its run beside it. When
 latency is not under test, serial execution is pure cost, so the cells run several at a time, up to the
-run's width (:attr:`~threetears.evals.run.launch.LaunchSettings.max_concurrent_cells`). The latency such a
+run's width: the narrowest of what the run's kind declares it is safe at
+(:attr:`~threetears.evals.kernel.candidate_kind.CandidateKind.max_concurrent_cells`, which a kind that declares
+nothing leaves at 1), the host's ceiling (:attr:`~threetears.evals.run.launch.LaunchSettings.max_concurrent_cells`)
+and the run's matrix. The latency such a
 run still records is stamped measured under concurrency (the ``execution_mode`` covariate), and the
 analysis keeps it out of every comparison.
 
@@ -37,9 +40,10 @@ import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Protocol
 
-#: The width a run executes its cells at when latency is not under test and the host's settings name
-#: none: enough to turn hours of a slow candidate into a fraction of that, few enough that a provider's
-#: rate limit is not the first thing a default launch meets.
+#: The host's ceiling on a run's width when latency is not under test and its settings name none: enough to
+#: turn hours of a slow candidate into a fraction of that, few enough that a provider's rate limit is not the
+#: first thing a default launch meets. A ceiling only — a run is never wider than its kind declares it is safe
+#: at, so a host that never thought about concurrency, with kinds that declare nothing, runs serially.
 DEFAULT_MAX_CONCURRENT_CELLS = 4
 
 #: One cell of a run, as the runner hands it to an executor: it runs the cell, records it and reports it.

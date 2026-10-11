@@ -41,8 +41,10 @@ from threetears.evals.kernel.candidate_kind import (
     CandidateTelemetry,
     CellSink,
     CellSpanWindow,
+    CostCapReached,
     VariantConfig,
 )
+from threetears.evals.kernel.capped_completion import call_ceiling
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.judge_cases import (
     JUDGE_CASE_KEY,
@@ -422,6 +424,19 @@ class _CellClient:
         self.completions.append(completion)
         return completion
 
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
+        """The ceiling of one request on the client this forwards to, or ``None`` when it cannot say.
+
+        Args:
+            system: The system prompt.
+            user: The user message.
+            response_format: The provider directive.
+
+        Returns:
+            The kind's client's own ceiling for the pair.
+        """
+        return call_ceiling(self.inner, system=system, user=user, response_format=response_format)
+
     async def aclose(self) -> None:
         """Release nothing: the client this forwards to is the kind's."""
 
@@ -445,6 +460,11 @@ class JudgeKind:
 
     #: Graded by code against what the case froze: no judge phase runs over a judge kind's cells.
     judged_artifact = JudgedArtifact.UNJUDGED
+    #: No limit of the kind's own: a cell's state is its :class:`PreparedJudge` and the per-cell client view
+    #: :meth:`invoke` builds, and the judge clients it shares across cells are completion clients, which the
+    #: port requires to be safe to call from several cells at once
+    #: (:class:`~threetears.evals.schema.completion.CompletionClient`); building one on first ask awaits nothing.
+    max_concurrent_cells: int | None = None
 
     def __init__(
         self,
@@ -572,7 +592,9 @@ class JudgeKind:
     async def invoke(self, instance: PreparedJudge, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         """Ask the judge under test the case's criterion over the frozen evidence, and grade its answer.
 
-        Never raises. A case that cannot be read is the harness's (``infra_errors``, the cell excluded). The judge's
+        Never raises. A case that cannot be read is the harness's (``infra_errors``, the cell excluded). A call the
+        run's cost cap has no room for is not sent, and the cell returns empty — the runner excludes it for the cap
+        and stops the run. The judge's
         own call failing is the candidate's (``candidate_errors``) — unless the host's describer says the call was
         refused for the calling account, which excludes the cell and stops the run (``account_refused``). A reply
         that came back is a measurement whatever it says: a score, a "can't tell", or a reply that broke the
@@ -581,7 +603,8 @@ class JudgeKind:
         Args:
             instance: What :meth:`prepare` bound.
             test_case: The cell's case, carrying the judge case in its ``host_payload``.
-            sink: Unused — one call, whose spend there is nothing to report until it returns.
+            sink: This cell's sink, which holds the one call against the run's cost cap: reserved at its
+                ceiling before it is sent, settled to what it cost when it returns.
 
         Returns:
             The answer, its code grade on ``host_measures``, the trial on ``kind_payload``, and the call's spend as
@@ -620,8 +643,18 @@ class JudgeKind:
                 request = self._request(service, case, context)
             except ValueError as exc:
                 return CandidateOutput(infra_errors=[f"apparatus: test case {test_case.id}'s judge case: {exc}"])
-            with scopes.collecting():
-                outcome = await service.score_request(request, case_id=test_case.id)
+            try:
+                held = sink.reserve("candidate", service.price_ceiling(request))
+            except CostCapReached:
+                # The sink recorded the breach: the runner excludes this cell for the cap, with nothing spent.
+                return CandidateOutput()
+            try:
+                with scopes.collecting():
+                    outcome = await service.score_request(request, case_id=test_case.id)
+            except BaseException:
+                held.release()
+                raise
+            held.settle(outcome.usage.cost_usd if outcome.usage is not None else 0.0)
         return self._graded(case, test_case, request, outcome, cell)
 
     def _graded(
@@ -816,6 +849,7 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
                 subject=SubjectSnapshot(subject_id=request.subject_id, subject_label=request.subject_id, state={}),
                 test_cases=cases,
                 teardown=teardown,
+                max_concurrent_cells=kind.max_concurrent_cells,
             ),
         )
 

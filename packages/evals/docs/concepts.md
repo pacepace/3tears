@@ -233,7 +233,9 @@ code your host supplies: it receives a `LaunchRequest` and returns `launch_run(h
 The one declaration that latency is being measured, on a launch (`start_run`, `run_eval`, `compare`, CLI
 `--measure-latency`) and on a campaign's design. Declared, a run executes its cells one at a time and a
 launch's arms one after another, so their latency is read clean; not declared (the default), cells run
-several at once, and any latency recorded is marked read under concurrency (`execution_mode`
+several at once — as many as the kind declares it is safe at (`CandidateKind.max_concurrent_cells`; a kind that
+declares nothing runs serially), never more than the host's ceiling — and any latency recorded is marked read
+under concurrency (`execution_mode`
 `concurrent`) and left out of every comparison, bar and ranking. A design that asks about latency (a
 bar, a question or a ranking on it) without declaring it is refused. Each run records both
 (`measure_latency`, `cell_concurrency`).
