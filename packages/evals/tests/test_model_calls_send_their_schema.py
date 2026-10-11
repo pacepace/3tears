@@ -21,7 +21,10 @@ from threetears.evals import kernel
 from threetears.evals.gen import plan_draft
 from threetears.evals.kernel import plan_variation_calls
 from threetears.evals.kernel.provider import withhold_failure_detail
+from threetears.evals.kernel.authored import response_format as authored_response_format
+from threetears.evals.kernel.authored import strict_schema as authored_strict_schema
 from threetears.evals.run.judge import judge_reply_format
+from threetears.evals.run.simulator import SIMULATED_USER_RESPONSE_FORMAT, next_speaker_response_format
 from threetears.evals.run.judge_service import JudgeContext, JudgeService
 from threetears.evals.schema.models import (
     SCALE_LEVELS,
@@ -162,3 +165,69 @@ def test_no_package_call_sends_the_unshaped_json_object_directive() -> None:
             if isinstance(node, ast.Name) and node.id == "JSON_OBJECT_RESPONSE_FORMAT":
                 naming.append(f"{path.relative_to(source)}:{node.lineno}")
     assert naming == []
+
+
+# =============================================================================
+# What is sent is the portable strict subset; what is left out is enforced on return
+# =============================================================================
+
+
+def _keywords(node: Any, found: set[str]) -> set[str]:
+    """Every keyword a schema's nodes carry — a property's or a definition's name is a name, not a keyword."""
+    if isinstance(node, list):
+        for item in node:
+            _keywords(item, found)
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            found.add(key)
+            if key in ("properties", "$defs"):
+                for child in value.values():
+                    _keywords(child, found)
+            elif key not in ("enum", "required", "description"):
+                _keywords(value, found)
+    return found
+
+
+def _every_directive() -> dict[str, dict[str, Any] | None]:
+    """Every strict directive the package sends, by the call that sends it."""
+    template = EvalTemplate(
+        scope_id="s",
+        name="t",
+        intent="i",
+        candidate_kind="k",
+        variation_axes=[VariationAxis(name="x", generator="llm")],
+    )
+    (variation,) = plan_variation_calls(template, 2, []).values()
+    return {
+        "proposal": plan_draft(system_prompt="S", subject_feed="F", catalog_feed="C").response_format,
+        "variation": variation.response_format,
+        "judge (ordinal)": _judge_request("ordinal").response_format,
+        "judge (pass_fail)": _judge_request("pass_fail").response_format,
+        "simulated user": SIMULATED_USER_RESPONSE_FORMAT,
+        "next speaker": next_speaker_response_format(["alice", "bob"]),
+        "analysis": authored_response_format(["scope"], ["delta_table"]),
+    }
+
+
+@pytest.mark.parametrize("call", list(_every_directive()))
+def test_every_directive_sends_only_keywords_both_providers_strict_modes_accept(call: str) -> None:
+    """``minLength``, ``minimum`` and ``maximum`` rode in the proposal's schema, which a strict mode refuses or demotes."""
+    schema = _strict(_every_directive()[call])
+    assert _keywords(schema, set()) <= kernel.PORTABLE_STRICT_KEYWORDS, sorted(
+        _keywords(schema, set()) - kernel.PORTABLE_STRICT_KEYWORDS
+    )
+
+
+def test_a_constraint_left_out_of_the_schema_is_still_enforced_on_return() -> None:
+    """The sent schema no longer says a dimension's description is non-empty; the reply's validation still does."""
+    schema = _strict(plan_draft(system_prompt="S", subject_feed="F", catalog_feed="C").response_format)
+    empty = _draft(scale="pass_fail") | {"description": ""}
+    jsonschema.validate(empty, {"$ref": "#/$defs/RubricDim", "$defs": schema["$defs"]})
+    with pytest.raises(ValueError, match="description"):
+        RubricDim.model_validate(empty)
+
+
+def test_a_const_is_sent_as_its_one_value_enum_and_a_structural_keyword_is_refused() -> None:
+    assert authored_strict_schema({"type": "string", "const": "x", "minLength": 1}) == {"type": "string", "enum": ["x"]}
+    with pytest.raises(kernel.UnportableSchema, match="'allOf'"):
+        authored_strict_schema({"type": "object", "properties": {"a": {"allOf": [{"type": "string"}]}}})

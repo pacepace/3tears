@@ -167,15 +167,69 @@ class MapFieldInSchema(TypeError):
     """An object admits arbitrary keys, which no strict structured-output mode accepts."""
 
 
+class UnportableSchema(TypeError):
+    """A schema keyword no strict structured-output mode is known to accept, and none that a reply's validation
+    stands in for: a structural keyword (``allOf``, ``not``, ``if``), which dropping would change the shape sent."""
+
+
 class OffVocabulary(ValueError):
     """A caveat kind or chart type the host did not offer."""
 
 
-def strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Project a pydantic JSON schema onto the strict subset every eligible provider accepts.
+#: The JSON Schema keywords a strict ``json_schema`` sent to a provider carries: the portable strict subset, which
+#: both major providers' strict structured-output modes accept.
+#:
+#: Read from the providers' own SDKs in this workspace. Anthropic's (``anthropic`` 0.116, ``lib/_parse/_transform.py``,
+#: ``transform_schema``) keeps ``type``, ``properties``, ``required``, ``additionalProperties`` (false), ``items``,
+#: ``enum``, ``anyOf`` (``oneOf`` read as it), ``allOf``, ``$ref``/``$defs``, ``description``, ``title``, a string
+#: ``format`` from a short list and ``minItems`` of 0 or 1, and moves every other keyword — ``minLength``,
+#: ``maxLength``, ``minimum``, ``maximum``, ``pattern``, ``const`` — into the description as a hint the model may
+#: ignore. OpenAI's (``openai`` 2.45, ``lib/_pydantic.py``, ``_ensure_strict_json_schema``) closes objects, requires
+#: every property and inlines a ``$ref`` with siblings, and encodes no keyword list; its documented strict mode adds
+#: number bounds, ``pattern``, ``format`` and item counts to the structural set, and not string lengths or ``allOf``.
+#: The intersection is the structural set below. Everything else a model's schema states is enforced where it always
+#: was: the reply is validated against the model on return.
+PORTABLE_STRICT_KEYWORDS: frozenset[str] = frozenset(
+    {"type", "properties", "required", "additionalProperties", "items", "enum", "anyOf", "$ref", "$defs", "description"}
+)
 
-    Every object closed and fully required; ``oneOf`` as ``anyOf``; a ``$ref`` with nothing beside it
-    (OpenAI refuses a sibling keyword); and no ``default``, ``discriminator`` or ``title``.
+#: Keywords a strict schema leaves out because the reply's validation on return enforces them (a bound, a length, a
+#: pattern, a format, an item count) or because they say nothing about the shape (a title, a default, an example).
+_VALIDATED_ON_RETURN: frozenset[str] = frozenset(
+    {
+        "minLength",
+        "maxLength",
+        "pattern",
+        "format",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+        "minProperties",
+        "maxProperties",
+        "default",
+        "title",
+        "examples",
+        "discriminator",
+        "readOnly",
+        "writeOnly",
+        "deprecated",
+    }
+)
+
+
+def strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Project a pydantic JSON schema onto the portable strict subset (:data:`PORTABLE_STRICT_KEYWORDS`).
+
+    Every object closed and fully required; ``oneOf`` as ``anyOf``; a ``const`` as the one-value ``enum`` it is; a
+    ``$ref`` with nothing beside it (OpenAI refuses a sibling keyword); and every keyword a reply's validation on
+    return enforces (a bound, a length, a pattern) or that says nothing about the shape (a title, a default) left
+    out — sent, a provider's strict mode refuses the schema or quietly demotes the keyword to a hint. A keyword that
+    is neither is refused rather than dropped: dropping a structural one would send another shape.
 
     Args:
         schema: A pydantic-generated JSON schema.
@@ -185,6 +239,7 @@ def strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
 
     Raises:
         MapFieldInSchema: An object carries an open ``additionalProperties``.
+        UnportableSchema: A node carries a keyword outside the portable subset that validation does not stand in for.
     """
 
     def walk(node: Any, path: str) -> Any:
@@ -199,9 +254,17 @@ def strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
             raise MapFieldInSchema(f"{path or '/'} admits arbitrary keys")
         out: dict[str, Any] = {}
         for key, value in node.items():
-            if key in ("default", "discriminator", "title"):
+            if key in _VALIDATED_ON_RETURN:
+                continue
+            if key == "const":
+                out["enum"] = [value]
                 continue
             target = "anyOf" if key == "oneOf" else key
+            if target not in PORTABLE_STRICT_KEYWORDS:
+                raise UnportableSchema(
+                    f"{path or '/'} carries {key!r}, which no strict structured-output mode is known to accept "
+                    "and which no validation on return stands in for; state the shape with the portable keywords"
+                )
             if key in ("properties", "$defs"):
                 out[target] = {name: walk(child, f"{path}/{key}/{name}") for name, child in value.items()}
             else:

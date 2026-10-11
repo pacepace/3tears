@@ -558,6 +558,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`ToolLike`** · protocol · The three members the cassette layer calls on a synchronous tool it wraps.
 - **`UndeclarableAxisError`** · exception · A declared axis this host will not accept: neither a registered lever nor a recognised open-family member.
 - **`UnknownCandidateKind`** · exception · A template names a kind this host did not wire.
+- **`UnportableSchema`** · exception · A schema keyword no strict structured-output mode is known to accept, and none that a reply's validation stands in for: a structural keyword (`allOf`, `not`, `if`), which dropping would change the shape sent.
 - **`UnreadableBarName`** · dataclass · A bar name no verdict can be given on, and why — the text an author or a reader is shown.
 - **`ValidationFailedError`** · exception · Validation failed (status 422).
 - **`VariantConfig`** · model · The A/B'd stack one cell runs, as every kind alike receives it.
@@ -710,6 +711,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`= 2`
 - **`NOT_ESTABLISHED`** · constant (str) · The prefix of every detail recording a check that rested on a value the world did not hold.
   <br>`= 'not established'`
+- **`PORTABLE_STRICT_KEYWORDS`** · constant (frozenset) · The JSON Schema keywords a strict `json_schema` sent to a provider carries: the portable strict subset, which both major providers' strict structured-output modes accept.
 - **`PROPOSER_PROMPT`** · constant (str) · The capability-rubric proposer's prompt — a sectioned template, seeded into a template registry.
   <br>`= 'eval_proposer'`
 - **`REASONING_RATIO_KEY`** · constant (str) · Covariate key: the share of the candidate's generated tokens that were reasoning — candidate `reasoning_tokens` over candidate `completion_tokens`, summed across the candidate's usage rows.

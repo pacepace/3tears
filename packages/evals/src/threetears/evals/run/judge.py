@@ -43,6 +43,7 @@ from threetears.evals.kernel.provider import (
     extract_json,
     sum_optional_tokens,
 )
+from threetears.evals.kernel.authored import strict_response_format
 from threetears.evals.kernel.usage_capture import CallUsage
 from threetears.observe import get_logger
 
@@ -221,27 +222,17 @@ def judge_reply_format(criteria: Sequence[Mapping[str, Any]], *, cannot_tell_off
         str(criterion["name"]): _scale_answers(str(criterion.get("scale", "ordinal")), cannot_tell_offered)
         for criterion in criteria
     }
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "judge_reply",
-            "strict": True,
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "reasoning": {"type": "string"},
-                    "criteria_scores": {
-                        "type": "object",
-                        "properties": answers,
-                        "required": list(answers),
-                        "additionalProperties": False,
-                    },
-                },
-                "required": ["reasoning", "criteria_scores"],
-                "additionalProperties": False,
+    # Through the one projection every package directive takes, so the judge's sends only the portable strict subset.
+    return strict_response_format(
+        "judge_reply",
+        {
+            "type": "object",
+            "properties": {
+                "reasoning": {"type": "string"},
+                "criteria_scores": {"type": "object", "properties": answers},
             },
         },
-    }
+    )
 
 
 def _scale_answers(scale: str, cannot_tell_offered: bool) -> dict[str, Any]:

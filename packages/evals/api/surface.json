@@ -1489,6 +1489,10 @@
       "kind": "dataclass",
       "signature": "PlannedCall(system: str, user: str, response_format: dict[str, Any] | None = None)"
     },
+    "threetears.evals.kernel.PORTABLE_STRICT_KEYWORDS": {
+      "kind": "constant (frozenset)",
+      "signature": ""
+    },
     "threetears.evals.kernel.PredictionPoweredReading": {
       "kind": "model",
       "signature": "PredictionPoweredReading(n_labelled: int, n_labelled_cases: int, min_labelled: int, mean: float | None = None, rectifier: float | None = None, sem: float | None = None, ci_low: float | None = None, ci_high: float | None = None, unavailable_reason: str | None = None)"
@@ -1812,6 +1816,10 @@
     "threetears.evals.kernel.UnknownCandidateKind": {
       "kind": "exception",
       "signature": "UnknownCandidateKind(name: str, *, known: list[str]) -> None"
+    },
+    "threetears.evals.kernel.UnportableSchema": {
+      "kind": "exception",
+      "signature": ""
     },
     "threetears.evals.kernel.UnreadableBarName": {
       "kind": "dataclass",
