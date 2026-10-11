@@ -17,6 +17,18 @@ packages (bumped in lock-step).
   copy as `stale` until it is reseeded, and every generation sent the new text records a new
   `prompt_content_version`. Scoring the test is the host's: the engine ships no reporter rubric, so a host adds the
   criterion (or anchors its decision-usefulness dimension on it) in its own seeded reporter rubric.
+- **The reporter judge reads the prose code prints with a chart (#683).** `render_memo_as_written` now prints, under a
+  drawn chart's caption and labelled "Printed with the chart:", the chart's footnote and then its disclosures, the
+  same lines the Markdown and HTML reports list beneath it. Before, the judge saw only the model's caption, so no
+  eval scored the compiler's words though every reader reads them; now a host's voice and readability criteria
+  score them with the model's. A chart this build cannot draw prints none. **The judged artifact changed** for
+  every memo with such a chart: a newly generated memo, and a case frozen from now on, read differently from one
+  frozen before, so compare reporter scores across this change with that in mind.
+- **Compiler prose has a voice contract (#683).** `viz/intent.py` states that `footnote`, `disclosures` and
+  `intervals` keep the voice the writer prompt asks of the model (rule 9's STYLE, and the pruning test), and that
+  it is measured by the reporter judge, never checked over the words.
+- **The HTML report caps prose line length (#683).** Headings that carry a sentence, paragraphs, list items, chart
+  captions, disclosures and caveats are capped at `max-width: 70ch`; tables and figures keep the page's 920px.
 ### 3tears-evals: what adopting .12 found (gaps 49–50)
 
 - **A host resolver's refusal reaches both hooks as the error it raised (gap 49).** `ToolCall.refused` is the very

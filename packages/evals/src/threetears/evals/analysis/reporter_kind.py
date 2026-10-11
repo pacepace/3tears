@@ -49,6 +49,9 @@ from threetears.evals.analysis.generator import (
     user_message_digest,
 )
 from threetears.evals.analysis.report.serialize_md import markdown_table
+from threetears.evals.analysis.viz.intent import chart_intent
+from threetears.evals.analysis.viz.payloads import PayloadError
+from threetears.evals.analysis.viz.policy import IntentPolicyError
 from threetears.evals.analysis.report.words import (
     CONFIDENCE_WORDS,
     EVIDENCE_COLUMNS,
@@ -59,7 +62,7 @@ from threetears.evals.analysis.report.words import (
 )
 from threetears.evals.kernel.authored import NO_CHART
 from threetears.evals.schema.base import EvalDocumentModel
-from threetears.evals.kernel.campaign import ConfidenceTier, EvalAnalysis, FindingResolution
+from threetears.evals.kernel.campaign import ConfidenceTier, EvalAnalysis, FindingResolution, Viz
 from threetears.evals.kernel.candidate_kind import (
     CandidateOutput,
     CandidatePreparationFailed,
@@ -979,6 +982,30 @@ class ReporterKind:
 REPLAY_NOTES_HEADING = "# NOTES ON THIS EVIDENCE — not seen by the memo's author"
 
 
+#: The label over the lines code prints with a chart, in the memo the judge reads.
+_CHART_NOTES_LABEL = "Printed with the chart:"
+
+
+def _chart_notes(viz: Viz) -> list[str]:
+    """The prose code writes beside a chart, in the order the report prints it: its footnote, then its disclosures.
+
+    The report prints these under every drawn chart (``serialize_md``, ``serialize_html``), so they reach
+    every reader as surely as the model's caption does; the memo the judge reads carries them for the same
+    reason. A chart this build cannot draw prints none: the report shows why it was not drawn instead.
+
+    Args:
+        viz: A finding's compiled chart.
+
+    Returns:
+        Each line, footnote first; empty when code wrote none or the chart cannot be drawn.
+    """
+    try:
+        intent = chart_intent(viz.type, viz.payload)
+    except PayloadError, IntentPolicyError:
+        return []
+    return [line for line in (intent.footnote, *intent.disclosures) if line.strip()]
+
+
 def render_memo_as_written(analysis: EvalAnalysis) -> str:
     """The memo as authored: the model's words, code's figures, in one canonical layout a reader follows.
 
@@ -990,7 +1017,10 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
 
     The numbers code resolved from the model's own readings are printed beside them, because they are
     what the model's claims are about; a chart is its type and its caption, never the figures it
-    draws; a chart dropped as undrawable says so. Deterministic: one analysis renders to one string.
+    draws; a chart dropped as undrawable says so. Beneath a drawn chart's caption go the lines code
+    prints with it in the report — its footnote and disclosures — because every
+    reader of the report reads them, so the judge's voice and readability criteria score them as they
+    score the model's words (#683). Deterministic: one analysis renders to one string.
 
     Args:
         analysis: The analysis to render.
@@ -1059,6 +1089,9 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
                     caption = f": {_one_line(finding.chart.caption)}" if finding.chart.caption.strip() else ""
                     note = f" — {_one_line(finding.chart.note)}" if finding.chart.note.strip() else ""
                     findings += ["", f"Chart ({finding.chart.type}){caption}{note}"]
+                    printed = _chart_notes(resolution.chart) if resolution is not None and resolution.chart else []
+                    if printed:
+                        findings += ["", _CHART_NOTES_LABEL, *(f"- {_one_line(line)}" for line in printed)]
             if finding.caveats:
                 findings += ["", "Caveats:", *(f"- {caveat.kind}: {caveat.text}" for caveat in finding.caveats)]
             if finding.durable.strip():

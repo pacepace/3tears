@@ -24,6 +24,17 @@ the chart claims.
 
 **The policy rules read this, not a renderer's output** (:mod:`threetears.evals.analysis.viz.policy`),
 so they hold whatever draws the chart.
+
+**Code's own words keep the writer's voice.** ``footnote``, ``disclosures`` and ``intervals`` are prose the
+compiler writes, and the report prints them beside the model's caption to every reader. So they keep the
+voice the analysis prompt asks of the model (``EVAL_ANALYSIS_GEN_DEFAULT``, rule 9's STYLE): written for a
+smart person who does not work on this system; a reader's names for things, never a field, measure or
+setting name, and none of the apparatus's words (arm, cell, lever, rig, n, CI, sem); short sentences, one
+idea a line; and only what the chart cannot say itself, which passes the prompt's pruning test (does it
+change what the reader does or believes?). An intent builder adding a sentence writes it to that contract.
+It is measured, never checked: the memo the reporter judge reads prints a drawn chart's footnote and
+disclosures under its caption (:func:`~threetears.evals.analysis.reporter_kind.render_memo_as_written`), so
+the host's voice and readability criteria score them with the model's words. No test reads their words.
 """
 
 from __future__ import annotations
