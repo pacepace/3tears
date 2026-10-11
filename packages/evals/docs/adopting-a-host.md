@@ -360,6 +360,14 @@ more arms (differing in, say, the model) can show the surface moving on its own.
 sweep still folds, but every comparison that does carries an `unverified_fold:llm_parameters` confound, which the
 analysis generator and the code-only report both state.
 
+A residual reader checks that sweep. `ResolvesInto("llm_parameters", read_residual=reader)` takes a
+`reader(run, results, removed)` that returns the surface with the knob's contribution taken out (`removed` is the
+knob's lever name), as JSON-safe content, or `None` where the run cannot say: the model parameters without their
+`reasoning_effort` entry, say. Where every knob level was run by one arm, the engine compares the residuals across
+the runs. Equal, the fold is checked and carries no mark; unequal, something else wrote into the surface and it
+stays a lever and a confound; any `None` leaves it `unverified_fold`. A host's own fixed lever takes the same reader
+as `Sweepable(resolves_into=..., read_residual=...)`. With no reader, nothing changes.
+
 The lever named must be a fixed `lever` your host declares, not an open family, and not one another knob already
 names (`RegistrationError`); a field marked twice is refused (`KindContractError`). The marker moves no variant key.
 A host's own fixed lever declares the same thing as `Sweepable(resolves_into=...)`. One surface takes one knob: if

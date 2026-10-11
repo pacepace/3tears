@@ -415,7 +415,8 @@ declaration enters no variant key. A lever naming no mechanism reads `unchecked`
 A knob your host also records resolved as a lever of its own (`ResolvesInto`) is reported as one lever where
 the runs show the resolved lever moved only with the knob: it then has no coverage row, names no confound, and
 is listed in the arm's `folded`. Where it moved on its own it stays a lever and a confound, and a fold no two arms
-at one knob level could have refuted carries an `unverified_fold` confound. The rule in full is in
+at one knob level could have refuted, and no host residual reader checked, carries an `unverified_fold` confound.
+The rule in full is in
 [Adopting the engine](adopting-a-host.md#the-kind-what-you-are-evaluating).
 
 A comparison across candidate models can also differ in what the models did while no setting differed. A

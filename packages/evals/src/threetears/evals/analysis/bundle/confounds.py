@@ -52,7 +52,8 @@ _UNVERIFIED_FOLD_CONFOUNDS = (
     "here — but every level of {knob} in these runs was run by one arm only, so nothing in them could have "
     "shown {surface} moving apart from {knob}. It is reported as the same change as {knob} without having been "
     "checked, and part of the movement may belong to anything else written into it; two arms at one level of "
-    "{knob} would test it. What {surface} is: {prose}"
+    "{knob}, or a host reader of {surface} with {knob} taken out (ResolvesInto's read_residual), would test it. "
+    "What {surface} is: {prose}"
 )
 
 # The same, for a surface a FIXED lever is written into (a kind's overlay marked ``ResolvesInto``).

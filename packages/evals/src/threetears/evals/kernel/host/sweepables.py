@@ -264,12 +264,14 @@ class Sweepable:
     * **An open family** has members to take back out, so it asks :attr:`read_residual` for the
       surface with the swept members removed, and only where those residuals AGREE across a cohort
       is the surface's movement the members' movement seen again.
-    * **A fixed lever** has no members, and the surface with the knob removed is not something the
-      engine could ask for, so the runs answer instead: the surface folds into the knob where it is
-      constant within each of the knob's levels across the cohort — it moved only where the knob
+    * **A fixed lever** has no members, so the runs answer first: the surface folds into the knob where
+      it is constant within each of the knob's levels across the cohort — it moved only where the knob
       did. Where it differs between runs that held the knob at one level, something else wrote into
       it. Only two or more arms at one of the knob's levels can show that (every run of an arm resolves
-      the arm's surface), so a fold no such level tested is applied and marked ``unverified_fold``. A kind contract's overlay field declares this with the
+      the arm's surface), so where every level was run by one arm the engine asks :attr:`read_residual`,
+      when the host declares it, for the surface with the knob's contribution taken out: equal across the
+      cohort, the fold is checked; unequal, the surface moved on its own. With no reader, or a run whose
+      reader cannot say, the fold is applied and marked ``unverified_fold``. A kind contract's overlay field declares this with the
       :class:`~threetears.evals.kernel.host.kinds.ResolvesInto` marker, and a map field's marker
       rides on the map's own lever, whose level is the members a launch set.
 
@@ -289,9 +291,11 @@ class Sweepable:
     read_residual: ResidualReader | None = None
     """Read :attr:`resolves_into`'s surface off a run with the given member names removed.
 
-    On an :attr:`open_family` declaration, required exactly when :attr:`resolves_into` is set; on a
-    fixed lever, refused — it has no members to remove, and its surface is folded by what the runs
-    show instead (see :attr:`resolves_into`). The engine compares what this returns
+    On an :attr:`open_family` declaration, required exactly when :attr:`resolves_into` is set. On a
+    fixed lever, optional and valid only with :attr:`resolves_into`: it is called with the lever's own
+    name as the one removed member, and returns the surface with the knob's contribution taken out,
+    which is what lets a cohort with one arm per level of the knob check the fold rather than leave it
+    ``unverified_fold`` (see :attr:`resolves_into`). The engine compares what this returns
     across a cohort and never inspects it, so any JSON-safe content will do provided two runs
     whose surfaces differ only in the removed members return equal values. ``None`` means the run
     does not carry the surface at all — a run older than the host's capture of it — and is read as
@@ -793,11 +797,10 @@ class SweepableRegistry(HostAttributed):
                     f"{declared.name!r} declares owns_member and is not an open family — a fixed declaration's "
                     "only member is its own name, so nothing would ever ask the test"
                 )
-            if declared.read_residual is not None:
+            if declared.read_residual is not None and declared.resolves_into is None:
                 defects.append(
-                    f"{declared.name!r} declares read_residual and is not an open family — only a family has "
-                    "members to take back out of a surface, so the residual would be the surface itself; a fixed "
-                    "lever's surface is folded by what the runs show instead"
+                    f"{declared.name!r} declares read_residual and no resolves_into — a residual is the surface the "
+                    "lever is written into with the lever taken out, and it names no surface"
                 )
             if declared.resolves_into is not None and declared.role != "lever":
                 defects.append(
@@ -906,23 +909,24 @@ class SweepableRegistry(HostAttributed):
         """Read ``surface`` off one run with the ``removed`` member names taken out.
 
         Args:
-            surface: A name in :attr:`resolution_surfaces` that an open family resolves into.
+            surface: A name in :attr:`resolution_surfaces` whose claimant declares a residual reader.
             run: The run to read.
             results: That run's results.
-            removed: Member names of the family that resolves into ``surface``.
+            removed: Member names of the family that resolves into ``surface``; for a fixed lever, the lever's
+                own name.
 
         Returns:
-            Whatever the family's :attr:`Sweepable.read_residual` returns — comparable content, or
+            Whatever the claimant's :attr:`Sweepable.read_residual` returns — comparable content, or
             ``None`` when this run does not carry the surface.
 
         Raises:
-            KeyError: No open family resolves into ``surface`` — including a surface a fixed lever
-                resolves into, which has no members to take out and so no residual.
+            KeyError: Nothing that resolves into ``surface`` declares a residual reader — including a fixed
+                lever that declares none, whose fold the runs alone decide.
         """
-        family = self.resolution_surfaces.get(surface)
-        if family is None or family.read_residual is None:
-            raise KeyError(f"{self._host}no open family resolves into {surface!r}")
-        return family.read_residual(run, results, removed)
+        claimant = self.resolution_surfaces.get(surface)
+        if claimant is None or claimant.read_residual is None:
+            raise KeyError(f"{self._host}nothing that resolves into {surface!r} declares a residual reader")
+        return claimant.read_residual(run, results, removed)
 
     def family_owning(self, name: str) -> Sweepable | None:
         """The open family whose own membership test claims ``name``, or None when none does.

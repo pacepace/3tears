@@ -21,6 +21,15 @@ packages (bumped in lock-step).
   "Contrasts against the control" table shows it as "Pairing r", and `analysis.stats.pairing_correlation` computes
   it. The bundle shape is version 48 (was 47), so an analysis assembled at 47 reads its bundle as moved by the
   package (`package_shape`). The open-problems entry is removed.
+- **A fold with one arm per knob level can be checked (#605).** `ResolvesInto(lever, read_residual=reader)`, and
+  `Sweepable(resolves_into=..., read_residual=...)` on a host's own fixed lever, take an optional reader of the
+  surface with the knob's contribution taken out (called with the knob's lever name as the one removed member).
+  Where every level of the knob was run by one arm, the fold is decided by those residuals: equal across the
+  cohort, it is checked and carries no `unverified_fold` mark; unequal, the surface stays a lever and a confound of
+  its own; a `None` from any run leaves it `unverified_fold`. A host that declares no reader is read as before. A
+  fixed lever's `read_residual` used to be refused at registration; it is now refused only without
+  `resolves_into`. The `unverified_fold` sentence names the reader as a second way to test the fold. The
+  open-problems entry is removed.
 
 ### 3tears-evals: what adopting .12 found (gaps 49–50)
 

@@ -2163,7 +2163,7 @@
     },
     "threetears.evals.kernel.host.ResolvesInto": {
       "kind": "dataclass",
-      "signature": "ResolvesInto(lever: str)"
+      "signature": "ResolvesInto(lever: str, read_residual: ResidualReader | None = None)"
     },
     "threetears.evals.kernel.host.RolePins": {
       "kind": "dataclass",
