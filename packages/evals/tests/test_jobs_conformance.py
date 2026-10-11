@@ -19,9 +19,11 @@ from threetears.evals.ops import JobsStarted, OpsHost, job_poll, start_action_jo
 from pydantic import Field
 
 from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.storage import DocTypeRoute, InMemoryDocumentStore, RoutedDocumentStore
 from threetears.evals.testing import (
     CompletionGuard,
     JobsConformanceCase,
+    JobsConformanceHost,
     JobsConformanceFailure,
     jobs_conformance_cases,
 )
@@ -173,3 +175,35 @@ def test_a_spend_action_without_a_happy_path_is_refused_where_it_is_declared() -
             example={},
             long_running=True,
         )
+
+
+async def test_the_kit_passes_the_whole_catalogue_over_a_two_store_router() -> None:
+    """Every case again, each host over a router keeping what runs read in one store and what happened in another.
+
+    A job's record, its runs and its results land in the record store, its template and cases in the other, and an
+    analysis wherever derived documents go: job_poll, a lease's renewal, a cancel's merge and a settle's conditional
+    write each reach the record they name through the route.
+    """
+    route = DocTypeRoute(
+        by="origin", to={"input": "given", "record": "happened", "derived": "given"}, unregistered="given"
+    )
+
+    def routed(guard: CompletionGuard) -> JobsConformanceHost:
+        stores = {"given": InMemoryDocumentStore(), "happened": InMemoryDocumentStore()}
+        RoutedDocumentStore.relocate(stores, route, scope_ids=[])
+        built = conformance_host(guard, store=RoutedDocumentStore(stores, route))
+        held.append(stores)
+        return built
+
+    held: list[dict[str, InMemoryDocumentStore]] = []
+    for case in jobs_conformance_cases(eval_catalogue((_host_action(_draft_in_job),)), job_timeout_s=30.0):
+        await case.check(routed)
+    job_records = {"eval_launch", "eval_sweep", "eval_second_judge_pass", "eval_judge_temperature_check"}
+    written = {
+        doc_type
+        for stores in held
+        for doc_type in job_records | {"eval_action_job"}
+        if stores["happened"].by_doc_type(doc_type, CONFORMANCE_SCOPE)
+    }
+    assert written == job_records | {"eval_action_job"}, "every job record was written to, and read from, its store"
+    assert not any(stores["given"].by_doc_type("eval_launch", CONFORMANCE_SCOPE) for stores in held)

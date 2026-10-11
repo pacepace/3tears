@@ -30,7 +30,14 @@ from threetears.evals.run import (
     default_job_timeout,
     launch_run,
 )
-from threetears.evals.schema import EvalRun, EvalTemplate, EvalTestCase, JudgedArtifact, SubjectSnapshot
+from threetears.evals.schema import (
+    DocumentStore,
+    EvalRun,
+    EvalTemplate,
+    EvalTestCase,
+    JudgedArtifact,
+    SubjectSnapshot,
+)
 from threetears.evals.testing import CompletionGuard, JobsConformanceHost
 
 __all__ = ["CONFORMANCE_SCOPE", "ScriptedClients", "conformance_host"]
@@ -102,18 +109,21 @@ async def _candidate(case: Mapping[str, Any]) -> str:
     return f"the answer to {case['n']}"
 
 
-def conformance_host(guard: CompletionGuard, clients: CompletionClients | None = None) -> JobsConformanceHost:
+def conformance_host(
+    guard: CompletionGuard, clients: CompletionClients | None = None, *, store: DocumentStore | None = None
+) -> JobsConformanceHost:
     """A fresh judged host for one conformance case, its client factory wrapped by ``guard``.
 
     Args:
         guard: The case's guard.
         clients: The factory to wrap; ``None`` for a fresh :class:`ScriptedClients`.
+        store: The document store under the host; ``None`` for a fresh in-memory one.
 
     Returns:
         The host, the caller and the sample launch every engine happy path builds on.
     """
     factory = guard.wrap(clients if clients is not None else ScriptedClients())
-    eval_host = callable_host(clients=factory)
+    eval_host = callable_host(clients=factory, store=store)
     judge = Judge(client=_ScriptedClient("judge", _JUDGE), model=_JUDGE, rubric=_RUBRIC)
     template = EvalTemplate(
         id=_TEMPLATE,
