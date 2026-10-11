@@ -247,6 +247,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "transports/__init__.py": {},
     "transports/fastmcp/__init__.py": {},
     "storage/__init__.py": {},
+    "storage/routed.py": {},
     "storage/memory.py": {},
     "testing/__init__.py": {},
     "testing/completion_conformance.py": {},

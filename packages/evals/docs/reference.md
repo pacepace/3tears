@@ -1635,11 +1635,17 @@ Storage adapters the engine ships: implementations of the one port a host stores
 
 **Classes**
 
+- **`DocTypeRoute`** · dataclass · Which store each document type is kept in, decided by one of its facts.
 - **`InMemoryDocumentStore`** · class · A `DocumentStore` over one dict.
+- **`MisplacedDocument`** · exception · One id is held by two stores, or by a store its type is not placed in; the router never picks one.
+- **`RouteChanged`** · exception · The router was started under placements its stores were not written under; `relocate` first.
+- **`RoutedDocumentStore`** · class · One `DocumentStore` over several, each `doc_type` kept where its facts say.
 - **`SqliteDocumentStore`** · class · A `DocumentStore` over one SQLite file.
 
 **Constants**
 
+- **`ROUTING_SCOPE`** · constant (str) · The scope each store's placement record lives in, reserved: a host never uses it as a scope of its own.
+  <br>`= 'threetears.evals.routing'`
 - **`SQLITE_STORE_LAYOUT`** · constant (int) · The file layout this store writes and reads, stamped as the file's `user_version`.
   <br>`= 1`
 
