@@ -26,7 +26,7 @@ tell an import to move from a test that patches the engine:
   ``__import__`` is read like a ``from`` import).
 * ``attribute_reach`` — an attribute chain through a bound root (``from threetears.evals import run;
   run.metering``; ``import threetears.evals.kernel as k; k.helper``; ``threetears.evals.schema.models``
-  after ``import threetears.evals``), and ``getattr``/``hasattr`` with a literal name on one, each
+  after ``import threetears.evals``; ``evals.run.metering`` after ``from threetears import evals``), and ``getattr``/``hasattr`` with a literal name on one, each
   checked against that root's ``__all__``.
 * ``private_reach`` — a ``_name`` attribute on a chain rooted at a name bound from a ``threetears.evals``
   import, or ``getattr``/``hasattr`` with a literal ``"_..."`` name on one. Dunders (``__name__``,
@@ -153,8 +153,15 @@ def nonpublic_evals_imports(*sources: Path | str) -> tuple[BoundaryFinding, ...]
     Raises:
         FileNotFoundError: A source does not exist — a check over a path that is not there would pass
             by reading nothing.
+        ValueError: No source is named, or a directory named holds no ``.py`` file: a check over nothing
+            passes by reading nothing, which is the failure the check exists to prevent.
         SyntaxError: A file does not parse.
     """
+    if not sources:
+        raise ValueError(
+            "nonpublic_evals_imports names no file or directory, so it would pass having read nothing; name the "
+            "host's source and test trees"
+        )
     exported: dict[str, frozenset[str]] = {}
     findings: list[BoundaryFinding] = []
     for path in _python_files(sources):
@@ -329,9 +336,14 @@ class _ScopeBuilder(ast.NodeVisitor):
             if alias.name == "*":
                 continue
             bound: _Bound | None = None
-            if module is not None and _in_package(module):
+            if module is not None:
                 dotted = f"{module}.{alias.name}"
-                bound = _Bound(dotted, "root") if dotted in PUBLIC_ROOTS else _Bound(dotted, "object")
+                if _in_package(module):
+                    bound = _Bound(dotted, "root") if dotted in PUBLIC_ROOTS else _Bound(dotted, "object")
+                else:
+                    # ``from threetears import evals`` binds the package as ``import threetears.evals as evals``
+                    # does: a module named off a namespace above it is that module.
+                    bound = _bound_module(dotted)
             self._bind(alias.asname or alias.name, _end(node), bound)
         self.generic_visit(node)
 
@@ -608,8 +620,12 @@ class _FileCheck:
         for alias in node.names:
             if (reason := _module_import_defect(alias.name)) is not None:
                 self._find(node, "static_import", alias.name, reason)
-            if alias.name == "importlib":
-                self.importlib_names.add(alias.asname or "importlib")
+            if alias.name == "importlib" and alias.asname is not None:
+                self.importlib_names.add(alias.asname)
+            elif alias.name.split(".")[0] == "importlib" and alias.asname is None:
+                # ``import importlib.util`` binds ``importlib`` itself, as ``import importlib`` does; an alias of a
+                # submodule (``import importlib.util as u``) binds that submodule, which has no import_module.
+                self.importlib_names.add("importlib")
 
     def _import_from(self, node: ast.ImportFrom, module: str) -> None:
         for alias in node.names:
@@ -876,12 +892,19 @@ def _python_files(sources: tuple[Path | str, ...]) -> Iterator[Path]:
 
     Raises:
         FileNotFoundError: A source does not exist.
+        ValueError: A directory holds no ``.py`` file.
     """
     seen: set[Path] = set()
     for source in map(Path, sources):
         if not source.exists():
             raise FileNotFoundError(f"{source} does not exist, so nothing under it could be checked")
-        for path in sorted(source.rglob("*.py")) if source.is_dir() else [source]:
+        files = sorted(source.rglob("*.py")) if source.is_dir() else [source]
+        if not files:
+            raise ValueError(
+                f"{source} holds no .py file, so the check would pass having read nothing under it; name a directory "
+                "holding the host's Python source, or the files themselves"
+            )
+        for path in files:
             if path not in seen:
                 seen.add(path)
                 yield path

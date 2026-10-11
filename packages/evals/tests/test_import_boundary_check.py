@@ -152,6 +152,20 @@ def test_a_source_that_does_not_exist_is_refused(tmp_path: Path) -> None:
         nonpublic_evals_imports(tmp_path / "missing")
 
 
+def test_a_check_that_reads_no_file_is_refused(tmp_path: Path) -> None:
+    """No source, or a directory with no Python in it, is a check over nothing that would pass by reading nothing."""
+    with pytest.raises(ValueError, match="names no file or directory"):
+        nonpublic_evals_imports()
+    (tmp_path / "notes.txt").write_text("not python")
+    with pytest.raises(ValueError, match="holds no .py file"):
+        nonpublic_evals_imports(tmp_path)
+    _write(tmp_path / "src", "ok.py", "import json\n")
+    (tmp_path / "empty").mkdir()
+    with pytest.raises(ValueError, match="holds no .py file"):
+        nonpublic_evals_imports(tmp_path / "src", tmp_path / "empty")
+    assert nonpublic_evals_imports(tmp_path / "src") == ()
+
+
 def _rules(tmp_path: Path, source: str) -> list[tuple[int, str, str]]:
     """The findings over one file holding ``source``, as ``(line, rule, target)``."""
     _write(tmp_path, "reach.py", source)
@@ -180,6 +194,18 @@ def test_a_literal_dynamic_import_below_a_root_is_refused(tmp_path: Path) -> Non
         (7, "dynamic_import", "threetears.evals.kernel.spend"),
         (8, "dynamic_import", "threetears.evals.schema.models"),
     ]
+
+
+def test_importing_a_submodule_of_importlib_binds_importlib_for_a_dynamic_import(tmp_path: Path) -> None:
+    """``import importlib.util`` binds ``importlib`` itself, so ``importlib.import_module`` through it is read."""
+    source = (
+        "import importlib.util\n"
+        "import importlib.machinery as machinery\n"
+        "importlib.import_module('threetears.evals.kernel.spend')\n"
+        "machinery.import_module('threetears.evals.schema.models')\n"
+    )
+
+    assert _rules(tmp_path, source) == [(3, "dynamic_import", "threetears.evals.kernel.spend")]
 
 
 def test_a_dynamic_import_of_a_root_a_computed_name_or_another_package_passes(tmp_path: Path) -> None:
@@ -510,4 +536,22 @@ def test_a_signature_is_read_in_the_scope_that_defines_it(tmp_path: Path) -> Non
         (3, "private_reach", "threetears.evals.kernel._Annotation"),
         (3, "private_reach", "threetears.evals.kernel._Returned"),
         (3, "private_reach", "threetears.evals.kernel._default"),
+    ]
+
+
+def test_the_package_bound_from_its_namespace_is_read_as_the_package(tmp_path: Path) -> None:
+    """``from threetears import evals`` binds the package, as ``import threetears.evals as evals`` does."""
+    source = (
+        "from threetears import evals\n"
+        "evals.run._private_thing\n"
+        "evals.run.metering\n"
+        "evals.kernel.helper = 1\n"
+        "evals.run.EvalRunCostCap\n"
+        "evals.PUBLIC_ROOTS\n"
+    )
+
+    assert _rules(tmp_path, source) == [
+        (2, "private_reach", "threetears.evals.run._private_thing"),
+        (3, "attribute_reach", "threetears.evals.run.metering"),
+        (4, "patch", "threetears.evals.kernel.helper"),
     ]
