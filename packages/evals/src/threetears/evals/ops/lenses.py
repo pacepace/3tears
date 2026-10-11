@@ -480,6 +480,10 @@ class ArmEstimate(EvalBaseModel):
         outcome: What the launch's one pricing rule makes of it (:data:`~threetears.evals.run.ArmOutcome`).
         refusal: The refusal the launch would make of it, word for word; ``None`` unless refused.
         remedy: What brings it under its cap, or names one; set exactly when ``refusal`` is.
+        call_ceiling_usd: The largest reservation one of its calls will hold against its run's cap, as its kind
+            priced it (:class:`~threetears.evals.run.CallCeiling`) — an arm whose largest call is above its cap is
+            refused, since its run could never make that call; ``None`` when its kind does not price its calls
+            before launch.
     """
 
     described: str
@@ -495,6 +499,7 @@ class ArmEstimate(EvalBaseModel):
     outcome: ArmOutcome
     refusal: str | None
     remedy: str | None = None
+    call_ceiling_usd: float | None = None
 
 
 class DetectableEffect(EvalBaseModel):
@@ -893,6 +898,7 @@ def _arm_estimate(arm: ArmVerdict, k_runs: int, n_variations: int) -> ArmEstimat
         outcome=arm.outcome,
         refusal=arm.refusal,
         remedy=arm.remedy,
+        call_ceiling_usd=plan.call_ceiling.usd if plan is not None and plan.call_ceiling is not None else None,
     )
 
 

@@ -49,6 +49,13 @@ another part's, and a sibling cell sees all of it.
   `drive_conversation`), every judge call in a cell's judge phase, the judge kind's call and the reporter kind's
   generator calls. A host's kind reserves its candidate's calls through `CellSink.reserve`, or wraps the client
   in `CappedCompletion`.
+- **A call whose ceiling is above the whole cap can never be made.** Its reservation is refused at any spend, so the
+  run stops `budget_stopped` on reaching it and its case is excluded, after the cases before it were paid for. A
+  launch therefore refuses such an arm before anything is spent (step 3 below), when its kind prices its calls
+  before launch. The judge kind's call reserves the client's `price_ceiling` for the case's prompt times 2 (the
+  judge's parse retry, `JUDGE_CALL_ATTEMPTS`), and the judge asks up to `JUDGE_MAX_TOKENS` (10,240) output
+  tokens, so a judge-role `price_ceiling` well above what 10,240 output tokens plus the prompt cost at the model's
+  rates is pricing a larger output cap than the judge sends.
 - **A call nobody can price** (a client with no `price_ceiling`, or one answering `None`) holds nothing; it is
   made only while the cap is not yet reached. Such calls can pass the cap by about one call per running cell.
 - **Spend nothing reported** is counted only once the cell's result lands, so a kind that neither reserves its
@@ -122,9 +129,20 @@ ceiling of `0` with origin `none_declared`, and a metered call that happens anyw
    With three past results it is wide on the high side (three costs of $0.10, $0.20 and $0.30 put a
    15-observation arm's upper end near $59), so a capped launch on thin history can be refused. It treats
    each observation as independent, which repeats of one case are not, and says so (`band_basis`).
-3. **Refuse.** It refuses an arm predicted above its run's cap, or one nothing can predict — no pricer, no
-   plan, or no history to bound — whose cap the run would merely inherit. An unpriceable arm under a cap
-   the launch named runs under it.
+3. **Refuse.** First, it refuses an arm whose largest call is reserved above its run's cap on its own
+   (`ArmPlan.call_ceiling`): the run could never make that call, whatever the arm is predicted to cost in
+   all. The kind prices it right after planning (`LaunchableKind.price_largest_call`), on the clients the
+   cells will call through, exactly as a cell reserves it. The judge kind prices every case's call and keeps
+   the largest. The refusal names the call, its ceiling and the cap one such call needs (rounded up to the
+   cent, plus the arm's predicted spend for room around it, or the host's operator when that is above the
+   host's ceiling), and what lowers the ceiling: a cheaper judge model, shorter frozen evidence on the largest
+   case, or a judge-role client priced at the output cap the judge asks for. A kind that does not price its
+   calls before launch (`price_largest_call=None`; today every kind but the judge kind, since a subject kind's
+   judge and simulator prompts are built from transcripts that do not exist yet) is not checked here: such a
+   call is refused only when the run reaches it. Then it refuses an arm predicted above its run's cap, or one
+   nothing can predict — no pricer, no plan, or no history to bound — whose cap the run would merely inherit.
+   An unpriceable arm under a cap the launch named runs under it. The estimate reports each arm's largest
+   call as `call_ceiling_usd`.
 
 Every arm is planned before any is priced, so `plan_arm` is where a kind makes its request-level refusals
 (no model and no default — `require_candidate_model`, the tail's own refusal — a judge or simulator it

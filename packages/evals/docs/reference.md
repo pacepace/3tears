@@ -1117,6 +1117,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`ArmQuote`** · dataclass · One arm of a launch, as the engine asks the host's pricer to price it — stored-case arms and generating ones alike.
 - **`ArmVerdict`** · dataclass · One arm of a launch as the engine's one pricing rule judged it: its plan, its price, its cap and the outcome.
 - **`BudgetStoppedError`** · exception · Raised by `execute_run` when the cap trips mid-run.
+- **`CallCeiling`** · dataclass · The largest reservation one call of an arm's cells will hold against its run's cap, priced before launch.
 - **`CandidateTurn`** · dataclass · One candidate-side response captured by the kind and fed back into the simulator.
 - **`CapBreach`** · dataclass · The numbers that justify a graceful budget stop.
 - **`CeilingRaisedError`** · exception · A launch named a per-run ceiling ABOVE the host's configured one.
