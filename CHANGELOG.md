@@ -6,6 +6,34 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a boundary's error is recorded where an operator reads it
+
+- **A run's completeness record that is not written says why on the run.** `record_completeness` contains every
+  failure of its own write, so a run that executed its matrix is never stamped `failed`; the cause reached only the
+  log, and the run's completeness read unknown with nothing beside it. A record that raised, or whose conditional
+  write no attempt completed, now adds an `EvalRun.error_details` entry naming where it happened and the error.
+- **A capture recording the store refused, and a concurrency probe that raised, are written on the run.** A refused
+  recording left the corpus incomplete, found only when a replay stopped on the miss; a raising
+  `RunnerOptions.concurrent_eval_jobs_probe` left its cells' `execution_mode` unmeasured with nothing saying why.
+  `execute_run` now appends each to the run's `error_details` as its loop ends, however it ends (a probe failure
+  once per distinct error, with how many samples it cost). The probe's log line is now ERROR.
+- **A holder whose lease renewals fail for a whole lease says why on the run.** The last renewal's error is written
+  on a run's `error_details` before the loss, without moving the lease, so the run no longer reads lost as though
+  its process had simply gone away. A sweep's, launch's or analysis attempt's record has no field for an error beside
+  its ending, so for those it stays in the log (an ERROR line naming both errors when a write fails).
+- **A background task that raises past its own ending has its record written lost with what it raised.** It used to
+  read `running` until its lease lapsed and then lost with a cause saying its process went away; the job manager now
+  writes it lost at once (`JobLeases.end_lost`), its cause the task's error. A record the work did end keeps its
+  ending.
+- **Boundaries with no record to write to keep logging, at ERROR, and say why.** The fastmcp hooks, the run-end
+  hook, the progress broadcast, the regression sink, the judge service's teardown, a launch group's abandon, a
+  discarded task's release, `describe_failure`, and the two handlers whose failed write is the record's own
+  (`_settle_unstarted`, an analysis attempt's ending). The progress broadcast and the judge service teardown logged
+  at WARNING; both now log at ERROR with the traceback.
+- Every write above goes through the store's conditional writes, so it re-reads a concurrent writer's document
+  rather than overwriting it; a write that fails is logged at ERROR with both errors, and nothing changes what the
+  caller receives.
+
 ### 3tears-evals: what adopting .12 found, continued (gap 51)
 
 - **A bisection no longer logs a false seat contradiction for every lever and label (breaking for a host asking the

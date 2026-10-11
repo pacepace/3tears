@@ -31,6 +31,18 @@
 # callers.
 
 [[release]]
+version = "unreleased"
+since = "v0.66.0-evaladopt.15"
+summary = """
+A boundary's error is recorded where an operator reads it: where a handler contains an error so it cannot change an
+outcome, and a run or job record exists, the error is also written on that record, not only logged.
+"""
+notes = [
+    "A run can carry `EvalRun.error_details` entries it did not before, each naming where its error happened: a completeness record that was not written, a capture recording the store refused (its corpus incomplete), a `concurrent_eval_jobs_probe` that raised (once per distinct error, with its sample count), or its holder's lease renewals failing for a whole lease. A run that ended `completed` can now carry one. A reader that counted `error_details` as the run's terminal failures, or read a non-empty list on a completed run as impossible, reads these as the faults they are; `job_poll`'s detail for a completed run now joins them.",
+    "A background task (a sweep, a launch, an analysis generation) whose work raises past its own ending has its record written lost at once, its `lost.cause` the task's error (`its task raised past its own ending: <type>: <message>`), where it read `running` until its lease lapsed and then lost with a cause naming the lapse. A poll reads it lost, with that cause, a lease interval earlier.",
+]
+
+[[release]]
 version = "0.66.0-evaladopt.15"
 since = "v0.66.0-evaladopt.14"
 summary = """
