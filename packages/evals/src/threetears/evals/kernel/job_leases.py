@@ -38,6 +38,7 @@ the engine runs.
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from collections.abc import Callable
 from concurrent.futures import Executor
@@ -346,6 +347,10 @@ class _Held:
     cancel: Callable[[str | None], object]
     stop: Callable[[], object]
     cancel_delivered: bool = field(default=False)
+    #: When the lease was last known extended, on this process's monotonic clock: as it was held (just after the
+    #: write carrying its grant), then as each successful renewal's write was issued — before it, so the reckoning
+    #: never credits the lease with more life than the store gave it.
+    renewed_at: float = field(default_factory=time.monotonic)
 
 
 class JobLeases:
@@ -359,7 +364,10 @@ class JobLeases:
     Every :attr:`renew_every_s` (a third of :attr:`lease_s`) each held record is re-read and its lease extended with
     a conditional write. What the read finds is acted on there: a cancel asked of the job is handed to the job's
     ``cancel`` (once), and a record ended by someone else, or a lease that lapsed before it was renewed, stops the
-    job through its ``stop`` and releases it — the holder writes nothing more.
+    job through its ``stop`` and releases it — the holder writes nothing more. **A holder whose renewals keep
+    failing fences itself**: once its last successful renewal is a whole :attr:`lease_s` old on its own clock, its
+    lease has lapsed whatever the store can say, so the job is stopped the same way (and written lost, when the
+    store takes the write) rather than left spending past an expiry no reader honours.
     """
 
     def __init__(
@@ -455,6 +463,9 @@ class JobLeases:
         while self._held:
             await asyncio.sleep(self.renew_every_s)
             for record_id, held in list(self._held.items()):
+                issued = time.monotonic()
+                verdict: RenewalVerdict | None = None
+                reason: str | None = None
                 try:
                     verdict, reason = await run_blocking(self._executor, self._renew, held)
                 # prawduct:ok-broad-except — a failed renewal is retried next interval; the lease outlives two failures
@@ -466,10 +477,44 @@ class JobLeases:
                         held.scope_id,
                         self.renew_every_s,
                     )
-                    continue
                 if self._held.get(record_id) is not held:
                     continue  # released while the renewal ran: its job wrote its own ending
-                self._act_on(held, verdict, reason)
+                if verdict in ("renewed", "cancel"):
+                    held.renewed_at = issued
+                elif verdict in (None, "contended") and time.monotonic() - held.renewed_at >= self._lease_s:
+                    # Not renewed — failed, or every write lost its race — for a whole lease.
+                    await self._expire(held)
+                    continue
+                if verdict is not None:
+                    self._act_on(held, verdict, reason)
+
+    async def _expire(self, held: _Held) -> None:
+        """Stop a job whose renewals have failed for a whole lease: its lease has lapsed by this process's own count.
+
+        Every reader may already read it lost, and the next one to look writes so — so the holder stops at once
+        rather than spend past an expiry it cannot extend. It writes the loss itself when it can (the store may be
+        what failed), so its job's own ending is refused by the record as any fenced job's is.
+        """
+        self.release(held.record_id)
+        log.error(
+            "eval.job_lease %s=%s scope=%s could not be renewed for %.0fs, its whole lease — stopping it as lost",
+            held.kind.name,
+            held.record_id,
+            held.scope_id,
+            self._lease_s,
+        )
+        try:
+            await run_blocking(self._executor, settle_job_record, self._store, held.kind, held.record_id, held.scope_id)
+        # prawduct:ok-broad-except — the store may be what failed; the record reads lost to the next reader regardless
+        except Exception:
+            log.warning(
+                "eval.job_lease %s=%s scope=%s: the loss could not be written here; the next reader writes it",
+                held.kind.name,
+                held.record_id,
+                held.scope_id,
+                exc_info=True,
+            )
+        held.stop()
 
     def _act_on(self, held: _Held, verdict: RenewalVerdict, reason: str | None) -> None:
         """Do what a renewal found: deliver a cancel once, or release and stop a job fenced off its record."""

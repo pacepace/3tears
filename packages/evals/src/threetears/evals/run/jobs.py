@@ -573,6 +573,10 @@ class EvalJobManager:
         # Releases of what a task's work was handed, for a task that ended before its work began (start_task's
         # ``discard``): held so none is collected while it runs.
         self._discarding: set[asyncio.Future[None]] = set()
+        # Runs this process no longer holds: its lease renewal found the record ended by another writer, or the
+        # lease lapsed by this process's own count while every renewal failed. Each is cancelled at once, and
+        # nothing more of it is written, broadcast or heard — its record answers how it ended (see _fence).
+        self._fenced: set[str] = set()
 
     def _safe_broadcast(self, job_id: str, payload: dict[str, Any]) -> None:
         """Invoke ``self._on_progress`` defensively.
@@ -1016,7 +1020,7 @@ class EvalJobManager:
                     run.id,
                     run.scope_id,
                     cancel=functools.partial(self.cancel_job, run.id),
-                    stop=functools.partial(self.cancel_job, run.id),
+                    stop=functools.partial(self._fence, run.id),
                 )
             task = asyncio.create_task(
                 self._run_job(run.id, run.scope_id, work, job_timeout_s, slot=slot),
@@ -1027,6 +1031,22 @@ class EvalJobManager:
             task.add_done_callback(lambda _task: slot.leave())
             self._tasks[run.id] = task
         return [run.id for run, _, _ in members]
+
+    def _fence(self, run_id: str) -> None:
+        """Stop a run this process no longer holds: cancel it, and write, broadcast and tell nothing more of it.
+
+        Its lease's renewal found the record ended by another writer — written lost, most often — or the lease
+        lapsed by this process's own count while every renewal failed. In the first case the record already
+        refuses the run's writes; in the second it may not yet (no reader has written the loss, or the store's
+        clock has not reached the expiry), so the refusal is made here too, by the process that knows it let go.
+        The record reads ``running`` until a reader finds the lease lapsed and writes it lost, which is the answer
+        every process gives.
+
+        Args:
+            run_id: The run.
+        """
+        self._fenced.add(run_id)
+        self.cancel_job(run_id)
 
     def _save_group(self, runs: list[EvalRun]) -> None:
         """Save every run of a group, or settle the ones already saved and re-raise.
@@ -1189,6 +1209,7 @@ class EvalJobManager:
             self._tasks.pop(run_id, None)
             self._cancel_reasons.pop(run_id, None)
             self._work_ran.pop(run_id, None)
+            self._fenced.discard(run_id)
 
     async def _tell_run_end(self, run_id: str, scope_id: str, status: str) -> None:
         """Hand the recorded terminal status to the run-end hook, if any; never let it change the run.
@@ -1267,6 +1288,14 @@ class EvalJobManager:
         used to come free from being synchronous; it is now stated and tested
         rather than inherited.
         """
+        if run_id in self._fenced:
+            log.warning(
+                "Job %s: status=%s not written — this process no longer holds the run's lease; its record answers "
+                "how it ended",
+                run_id,
+                status,
+            )
+            return
         # ``is False`` rather than ``not ...``: an untracked run reads as None, and
         # only a tracked run that never started its work function earns the stamp.
         record_empty_matrix = status in TERMINAL_RUN_STATUSES and self._work_ran.get(run_id) is False
@@ -1391,7 +1420,7 @@ class EvalJobManager:
             # process shut down — so this job no longer holds it: stop at once and write nothing more. Its
             # terminal write is refused by the record, which has ended.
             log.warning("Job %s: its record reads lost — stopping it; nothing more is written", run_id)
-            self.cancel_job(run_id)
+            self._fence(run_id)
             return
         if outcome == "declined":
             # The store already refused to reopen the run; broadcasting `running` here

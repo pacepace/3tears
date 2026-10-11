@@ -323,6 +323,68 @@ async def test_a_lost_run_cancelled_by_its_old_holder_keeps_the_loss(monkeypatch
     assert heard.ends == [] and heard.broadcasts == []
 
 
+class RenewalRefusingStore(ClockedStore):
+    """A clocked store that refuses, once told to, every write moving a record's lease — the renewals — and no other.
+
+    A store a holder cannot renew through while the store's clock has not reached the lease's expiry: no reader
+    writes the loss yet, so only the holder's own count can tell it its lease is gone.
+    """
+
+    def __init__(self) -> None:
+        """Start accepting every write."""
+        super().__init__()
+        self.refusing = False
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Refuse a write that moves a stored record's lease while refusing; write anything else."""
+        if self.refusing and document.get("lease") is not None:
+            stored = self.get(str(document["id"]), str(document["scope_id"]))
+            if stored is not None and stored.get("lease") != document["lease"]:
+                raise RuntimeError("the store refused the renewal")
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+async def test_a_run_whose_renewals_fail_for_a_whole_lease_is_stopped_and_writes_nothing_more(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = _held_extraction(monkeypatch)
+    store = RenewalRefusingStore()
+    holder, heard = _heard(ops_fixture(store=store, job_lease_s=0.3).host)
+    elsewhere = _other_process(holder)
+    run_id = await _running_run(holder)
+    store.at = T0 + timedelta(seconds=0.1)  # inside the lease by the store's clock, for the whole test
+    store.refusing = True
+    heard.broadcasts.clear()
+
+    await _until(lambda: not holder.launch.job_manager.is_active(run_id), timeout=5)
+
+    assert not gate.is_set(), "the holder stopped spending, rather than running on past its lease"
+    run = _run(holder, run_id)
+    assert (run.status, run.lost) == ("running", None), "it wrote no ending of its own: it no longer held the run"
+    assert heard.ends == [] and heard.broadcasts == []
+    store.refusing = False
+    store.at = T0 + timedelta(seconds=1)
+    lost = await job_poll(elsewhere, run_job_id(run_id), TOYHOST_SCOPE)
+    assert (lost.state, lost.status) == ("lost", "cancelled"), "the next reader writes the loss, as for any lapse"
+
+
+async def test_a_generation_whose_renewals_fail_for_a_whole_lease_is_stopped_before_its_paid_call() -> None:
+    gate = asyncio.Event()
+    store = RenewalRefusingStore()
+    fixture = ops_fixture(gate=gate, store=store, job_lease_s=0.3)
+    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    attempt_id = job.job_id.rsplit(":", 1)[1]
+    await asyncio.sleep(0)
+    store.at = T0 + timedelta(seconds=0.1)
+    store.refusing = True
+
+    await _until(lambda: not fixture.host.launch.job_manager.is_task_active(attempt_id), timeout=5)
+
+    assert not gate.is_set() and all(not writer.calls for writer in fixture.writers), "no call was paid for"
+    assert _attempt(fixture.host, job.job_id).outcome != "stored"
+    assert analyses_list(fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses == []
+
+
 # =============================================================================
 # Graceful shutdown
 # =============================================================================
