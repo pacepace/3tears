@@ -33,7 +33,7 @@ from that root, unless the root needs it and api/reexports.toml says why (`ops` 
 action catalogue names, since `actions` may reach `analysis` only through `ops`).
 """
 notes = [
-    "Every model-calling action runs as a job: `run_launch` returns one `launch:<id>` job whose `JobStatus.run_ids` names its runs; `judge_second`, `judge_drift_check` and `judge_temperature` return `JobsStarted`, and their read is `job_poll(...).result`. Poll with `job_poll`; a transport call never waits on a model.",
+    "Every model-calling action runs as a job: `run_launch` returns one `launch:<id>` job whose `JobStatus.run_ids` names its runs; `judge_second`, `judge_drift_check` and `judge_temperature` return `JobsStarted`, and their read is `job_poll(...).result`. So does the host-facing `ops.judge_repeat`: one `action:<id>` job (target `judge_repeat`) whose result is the `JudgeRepeatReport`. Poll with `job_poll`; a transport call never waits on a model.",
     "A host action that calls a model must run as a job (`ops.start_action_job`, recorded as `EvalActionJob`), and every `spend` action declares a `happy_path`; `threetears.evals.testing.jobs_conformance_cases` proves both over a host's catalogue.",
     "`DocumentStore.upsert` takes `create_only`: a host's own store adapter must implement it (write only when nothing is stored under the id) and pass the conformance kit's `create.*` cases.",
     "A job's liveness is its record's lease, the same in every process. `EvalRun`, `EvalSweep` and `EvalAnalysisAttempt` carry `lease`, `cancel_requested_at`, `cancel_request_reason` and `lost`; a non-terminal record with no lease reads as lost. `LaunchHost.job_lease_s` sets the lease (default 60s).",
@@ -76,6 +76,12 @@ names = [
     "CaseResult", "CostEstimate", "DimensionSummary", "JudgeGrade", "OutOfRunSpendTotals", "ReportFormat",
     "RunMeasureSummary", "serialize_report", "summarize_run",
 ]
+
+[[release.change]]
+from = "threetears.evals.run"
+to = "removed"
+why = """A judge repeat runs as a job, as every other judge operation does. `repeat_judge_scores` is replaced by `judge_repeat_work`, run with `run_job_work` (foreground) or `ops.start_job`; its record is an `EvalActionJob` under `judge_repeat` whose result is the `JudgeRepeatReport`. `ops.judge_repeat` returns `JobsStarted`."""
+names = ["repeat_judge_scores"]
 
 [[release.change]]
 from = "threetears.evals.run"

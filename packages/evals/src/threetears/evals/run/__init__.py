@@ -123,7 +123,9 @@ from threetears.evals.run.judge_repeat import (
     JudgeRepeatReport,
     JudgeRepeatSkip,
     estimate_judge_repeat,
-    repeat_judge_scores,
+    JUDGE_REPEAT_ACTION,
+    JUDGE_REPEAT_BUDGET_S,
+    judge_repeat_work,
 )
 from threetears.evals.run.judge_temperature import (
     JUDGE_TEMPERATURE_JOB,
@@ -364,7 +366,9 @@ __all__ = [
     "stamp_witnessed_judge",
     "refuse_stale_presumptions",
     "rejudge_result",
-    "repeat_judge_scores",
+    "JUDGE_REPEAT_ACTION",
+    "JUDGE_REPEAT_BUDGET_S",
+    "judge_repeat_work",
     "reproducible_judge_inputs",
     "require_delete_confirmation",
     "refuse_raised_ceiling",

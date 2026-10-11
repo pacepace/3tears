@@ -274,14 +274,22 @@ beside the score it repeats without changing it. On the quick path, lend the jud
 ```python
 import dataclasses
 
-from threetears.evals.run import estimate_judge_repeat, repeat_judge_scores
+from threetears.evals.kernel import JobLeases
+from threetears.evals.run import JudgeRepeatReport, estimate_judge_repeat, judge_repeat_work, run_job_work
 
 judging_host = dataclasses.replace(host, clients=judge.clients())
 estimate = await estimate_judge_repeat(judging_host, summary.run_id, summary.scope_id, out_of_run_cap_usd=None)
 print(estimate.max_calls, estimate.would_start)
-report = await repeat_judge_scores(judging_host, summary.run_id, summary.scope_id, out_of_run_cap_usd=None)
+work = await judge_repeat_work(judging_host, summary.run_id, summary.scope_id, out_of_run_cap_usd=None)
+leases = JobLeases(judging_host.storage)
+ended = await run_job_work(work, store=judging_host.storage, executor=None, leases=leases)
+report = JudgeRepeatReport.model_validate(ended.result)
 self_agreement = judge_self_agreement(list_results(host.storage, summary.run_id, summary.scope_id))
 ```
+
+A repeat runs as a job, as every model-calling operation does: `judge_repeat_work` makes the refusals and admits
+the calls, and `run_job_work` runs it in the foreground (a transport starts it with `ops.judge_repeat` and polls it;
+the job's result is the report).
 
 Every call is priced and admitted against `out_of_run_cap_usd` before the first is sent. `None` enforces no cap.
 Under a cap, a client that cannot price its calls (`price_ceiling` returns `None`, as a lent quick-path client

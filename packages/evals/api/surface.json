@@ -2409,6 +2409,18 @@
       "kind": "constant (int)",
       "signature": ""
     },
+    "threetears.evals.run.JUDGE_REPEAT_ACTION": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
+    "threetears.evals.run.JUDGE_REPEAT_BUDGET_S": {
+      "kind": "constant (float)",
+      "signature": ""
+    },
+    "threetears.evals.run.judge_repeat_work": {
+      "kind": "async function",
+      "signature": "judge_repeat_work(host: EvalHost, run_id: str, scope_id: str, *, out_of_run_cap_usd: float | None, result_ids: Sequence[str] | None = None) -> JobWork[EvalActionJob]"
+    },
     "threetears.evals.run.JUDGE_REQUEST_SETTINGS": {
       "kind": "constant (ClientRequestSettings)",
       "signature": ""
@@ -2664,10 +2676,6 @@
     "threetears.evals.run.rejudge_result": {
       "kind": "async function",
       "signature": "rejudge_result(host: EvalHost, result_id: str, scope_id: str) -> EvalResult"
-    },
-    "threetears.evals.run.repeat_judge_scores": {
-      "kind": "async function",
-      "signature": "repeat_judge_scores(host: EvalHost, run_id: str, scope_id: str, *, out_of_run_cap_usd: float | None, result_ids: Sequence[str] | None = None) -> JudgeRepeatReport"
     },
     "threetears.evals.run.reproducible_judge_inputs": {
       "kind": "function",
@@ -4799,7 +4807,7 @@
     },
     "threetears.evals.ops.judge_repeat": {
       "kind": "async function",
-      "signature": "judge_repeat(host: OpsHost, run_id: str, scope_id: str, *, result_ids: list[str] | None = None) -> JudgeRepeatReport"
+      "signature": "judge_repeat(host: OpsHost, run_id: str, scope_id: str, *, result_ids: list[str] | None = None) -> JobsStarted"
     },
     "threetears.evals.ops.judge_repeat_estimate": {
       "kind": "async function",
