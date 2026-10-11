@@ -4,7 +4,7 @@ The chunk's Done-when, end to end through a real client and server: an agent **l
 what the scope holds, **launches** a run on the toy host, **polls** its job to completion, starts an
 analysis generation and polls that, and **reads the report** — and an **undeclared parameter is refused
 with the valid set**. Then what the transport adds over the catalogue: each tool's hints, schema and
-description as a client sees them, a refusal as an MCP error result, a host's own tool cut (read-only,
+description as a client sees them, a refusal as an MCP error result carrying its kind and status, a host's own tool cut (read-only,
 own prefix), and the caller resolved per call — sync or async.
 """
 
@@ -88,11 +88,18 @@ async def test_an_undeclared_parameter_is_refused_with_the_valid_set() -> None:
         text, structured, is_error = await _text(
             client, "evals", {"action": "job_poll", "job_id": "run:r", "analysis_id": "a"}
         )
-    assert is_error and structured is None
+    assert is_error and structured == {"refusal": {"kind": "validation_failed", "status": 422}}
     assert text.startswith(
         "refused: job_poll does not take analysis_id.\njob_poll accepts:\n- job_id (string, required)"
     )
     assert 'Example: {"action": "job_poll", "job_id": "run:' in text
+
+
+async def test_an_engine_refusal_reaches_the_client_with_its_kind_and_status() -> None:
+    async with Client(_served(ops_fixture())) as client:
+        text, structured, is_error = await _text(client, "evals", {"action": "run_get", "run_id": "no-such-run"})
+    assert is_error and structured == {"refusal": {"kind": "not_found", "status": 404}}
+    assert text.startswith("refused: run_get:") and "no-such-run" in text, "the teaching text is unchanged"
 
 
 async def test_each_tool_shows_a_client_its_hints_schema_and_help() -> None:
@@ -173,3 +180,13 @@ async def test_every_call_is_held_to_the_one_fixed_call_timeout() -> None:
 def test_a_call_timeout_that_is_not_positive_is_refused_at_mount() -> None:
     with pytest.raises(ValueError, match="call_timeout_s must be positive"):
         _served(ops_fixture(), call_timeout_s=0)
+
+
+async def test_a_model_calling_actions_refusal_in_the_call_reaches_the_client_as_data() -> None:
+    """A spend action that runs as a job is still admitted in the call; refused there, its kind and status are data."""
+    async with Client(_served(ops_fixture())) as client:
+        text, structured, is_error = await _text(
+            client, "evals", {"action": "judge_second", "run_id": "no-such-run", "second_judge_model": "judge/other"}
+        )
+    assert is_error and structured == {"refusal": {"kind": "not_found", "status": 404}}
+    assert "no-such-run" in text

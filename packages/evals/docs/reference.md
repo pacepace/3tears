@@ -2126,11 +2126,12 @@ The action catalogue: every eval action, declared once, for any transport to mou
 
 - **`Action`** · dataclass · One action: what it is called, what it takes and returns, who may call it, and how it reads back.
 - **`ActionCatalogue`** · class · Every action a host offers: the engine's, and any the host contributes.
-- **`ActionOutcome`** · dataclass · What one call came to: the text an agent reads, the typed result as data, and whether it was refused.
+- **`ActionOutcome`** · dataclass · What one call came to: the text an agent reads, the typed result as data, and why it was refused.
 - **`Caller`** · dataclass · Who is calling, and the scope they act in — resolved by the host for every call.
 - **`ConformanceSample`** · dataclass · One launch a host can run end to end, which the engine's spend actions' happy paths build on.
 - **`ConformanceStage`** · dataclass · What a `HappyPath` is handed: the host the kit built, the caller, and the host's sample launch.
 - **`MountedTool`** · dataclass · A tool cut from the catalogue: the actions its classes admit, and how a call to it is carried out.
+- **`Refusal`** · dataclass · Why a call was refused, as data: the kind of error and the status it carries.
 - **`ToolHints`** · dataclass · The MCP behaviour hints a mounted tool's actions earn.
 - **`ToolSpec`** · dataclass · One tool a transport mounts: its name, its short description and the classes of action it carries.
 
@@ -2142,6 +2143,8 @@ The action catalogue: every eval action, declared once, for any transport to mou
   <br>`Callable[[ConformanceStage], Awaitable[Mapping[str, Any]]]`
 - **`PermissionClass`** · literal · What an action does to the world, which decides the tools that may mount it.
   <br>`'read'` | `'spend'` | `'write'` | `'destructive'`
+- **`RefusalKind`** · literal · What refused a call: the public engine error it was, by kind.
+  <br>`'refused'` | `'not_found'` | `'conflict'` | `'validation_failed'` | `'storage_failed'` | `'provider_refused'` | `'admission_refused'`
 
 **Constants**
 
@@ -2152,6 +2155,7 @@ The action catalogue: every eval action, declared once, for any transport to mou
 - **`HELP_ACTION`** · constant (str) · The action every mounted tool answers, generated from the catalogue rather than declared in it.
   <br>`= 'help'`
 - **`PERMISSION_CLASSES`** · constant (tuple) · The classes, in the order help lists them.
+- **`REFUSAL_KINDS`** · constant (tuple) · Every refusal kind.
 - **`RESERVED_PARAMETERS`** · constant (frozenset) · Parameter names a tool reserves: `action` selects the action, `topic` is help's.
 - **`TOOL_NAME`** · constant (Pattern) · A tool's name: a lowercase identifier.
   <br>`= '^[a-z][a-z0-9_]*$'`
@@ -2164,17 +2168,22 @@ The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
 **Functions**
 
 - **`mount_fastmcp`** · function · Add the catalogue's tools to a FastMCP server.
-  <br>`mount_fastmcp(server: FastMCP, catalogue: ActionCatalogue, *, host: OpsHost, caller: CallerResolver, tools: Sequence[ToolSpec] | None = None, call_timeout_s: float = 60.0) -> tuple[str, ...]`
+  <br>`mount_fastmcp(server: FastMCP, catalogue: ActionCatalogue, *, host: OpsHost | None = None, host_resolver: HostResolver | None = None, caller: CallerResolver, around: CallHook | None = None, tools: Sequence[ToolSpec] | None = None, call_timeout_s: float = 60.0) -> tuple[str, ...]`
 
 **Classes**
 
 - **`CatalogueTool`** · model · One mounted tool, as FastMCP serves it: every call handed to the catalogue.
-- **`ToolBinding`** · class · What a `CatalogueTool` hands each call to: the mounted tool, the host and the caller resolver.
+- **`ToolBinding`** · class · What a `CatalogueTool` hands each call to: the mounted tool, the host, the caller resolver and the hook.
+- **`ToolCall`** · dataclass · One call, as an `around` hook sees it before the catalogue carries it out.
 
 **Types**
 
 - **`CallerResolver`** · type alias · Resolves who is calling, and their scope, for one call — sync or async. The host reads its own request context (an access token, a session) to answer it.
   <br>`Callable[[], Caller | Awaitable[Caller]]`
+- **`CallHook`** · type alias · Wraps every call for a host's tracing, metrics or audit log, seeing the call and its outcome and changing neither.
+  <br>`Callable[[ToolCall], AsyncGenerator[None, ActionOutcome]]`
+- **`HostResolver`** · type alias · Resolves the host one call works in — sync or async — for a server that serves more than one: a tenant's storage, job manager and settings, read from the same request context as the caller.
+  <br>`Callable[[], OpsHost | Awaitable[OpsHost]]`
 
 **Constants**
 

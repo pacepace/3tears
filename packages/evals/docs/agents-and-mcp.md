@@ -130,6 +130,30 @@ ones it accepts. `read_only_tools(prefix)` mounts a tool an agent can only read 
 A run or a result outside the caller's scope is not found, and so is an id of another type, such as a run's
 id passed to `result_get`. A listing never comes back empty in place of not found.
 
+## Refusals as data
+
+Every refused call has two forms. The text teaches an agent what was wrong and what would be right. The
+`refusal` on the `ActionOutcome` is the same refusal for your code: a `Refusal` with a `kind` and a `status`.
+Branch on the kind, never on the text.
+
+| `kind` | Raised as | `status` |
+|---|---|---|
+| `not_found` | `NotFoundError` | 404 |
+| `conflict` | `ConflictError` | 409 |
+| `validation_failed` | `ValidationFailedError`, and every call the catalogue turns away itself | 422 |
+| `admission_refused` | `AdmissionRefusedError` | 429 |
+| `provider_refused` | `ProviderRefusedError` | 502 |
+| `storage_failed` | `StorageError` | 503 |
+| `refused` | `EvalServiceError` itself | whatever it was raised with (400 by default) |
+
+The set is closed: one kind per public error class in `threetears.evals.kernel`, listed in
+`REFUSAL_KINDS`. An error class your own actions derive refuses as its nearest public ancestor's kind, and
+keeps the status it was raised with. The catalogue's own refusals (no action, an unknown one, an undeclared
+parameter, a value that does not validate, a help topic that is no action) are the call failing the tool's
+declared input, so they are `validation_failed`. A call that succeeded, and help, carry no refusal.
+
+A handler that raises anything else has a bug. It is not a refusal, and it propagates to the transport.
+
 ## FastMCP
 
 The FastMCP transport (`threetears.evals.transports.fastmcp`) needs the extra; the core does not:
@@ -137,6 +161,61 @@ The FastMCP transport (`threetears.evals.transports.fastmcp`) needs the extra; t
 ```bash
 pip install "3tears-evals[fastmcp]"
 ```
+
+A result carries its text and the result model's JSON as structured content. A refused call is an MCP
+error result (`isError`) carrying the teaching text, with the refusal as structured content:
+
+```json
+{"refusal": {"kind": "not_found", "status": 404}}
+```
+
+### Serving several tenants
+
+`mount_fastmcp` (and `CatalogueTool.over`, for one tool) takes the hooks a multi-tenant server needs, so you
+never rebuild the tool yourself:
+
+```python
+from collections.abc import AsyncGenerator
+from threetears.evals.actions import ActionOutcome, Caller, eval_catalogue
+from threetears.evals.transports.fastmcp import ToolCall, mount_fastmcp
+
+async def around(call: ToolCall) -> AsyncGenerator[None, ActionOutcome]:
+    with tracer.start_as_current_span(f"{call.tool}.{call.action}"):
+        outcome = yield                       # the call runs here
+        calls.add(1, {"action": outcome.action, "refusal": outcome.refusal.kind if outcome.refusal else "none"})
+
+mount_fastmcp(
+    server,
+    eval_catalogue(my_actions),
+    host_resolver=lambda: tenant_hosts[current_tenant()],   # in place of host=
+    caller=lambda: Caller(scope_id=current_tenant(), identity=current_user()),
+    around=around,
+)
+```
+
+- **`host_resolver`** answers which `OpsHost` this call works in, per call, from the same request context as
+  the caller. It may be sync or async, and is asked after the caller. Pass `host` for a server with one host,
+  or `host_resolver`: exactly one of the two, or the mount is refused before any tool is added.
+- **A resolver that raises fails the call before anything runs.** No action runs and the hook is not
+  entered. The client sees the transport's error result, not a refusal. A resolver that answers with
+  something other than a `Caller` or an `OpsHost` fails the same way, with a `TypeError` naming what it
+  answered.
+- **`around`** wraps every call to every tool, for tracing, metrics or an audit log. It is an async generator
+  function. It receives a `ToolCall` (the tool, the `action` argument as given, and the caller), yields once,
+  and receives the `ActionOutcome` at the yield. Anything it opens before the yield is current while the
+  action runs, so a span it starts is the parent of the action's own. A call that raises a defect, rather
+  than refusing, is thrown in at the yield, so a `with` or `finally` closes. The defect still propagates,
+  whatever the hook does.
+
+**The hook cannot change the outcome.** What it yields is discarded, the outcome is frozen, and the client
+gets exactly what the catalogue returned.
+
+**A hook that raises is logged and otherwise ignored.** If it fails before its yield, the call runs
+unobserved. If it fails after, or yields a second time, the outcome stands. This is deliberate. A hook
+observes. If its failure could fail the call, an exporter outage would refuse every eval call. Worse, a
+failure after the action ran would report an error for work that was done (a launch that spent, a write
+that landed), and an agent would repeat it. An audit that must hold *before* an action runs belongs in the
+host or the action, which can refuse. A hook is not a gate.
 
 ## Reporter runs: evaluating the analysis writer itself
 

@@ -5155,7 +5155,7 @@
     },
     "threetears.evals.actions.ActionOutcome": {
       "kind": "dataclass",
-      "signature": "ActionOutcome(text: str, structured: dict[str, Any] | None = None, is_error: bool = False, action: str | None = None)"
+      "signature": "ActionOutcome(text: str, structured: dict[str, Any] | None = None, refusal: Refusal | None = None, action: str | None = None)"
     },
     "threetears.evals.actions.Caller": {
       "kind": "dataclass",
@@ -5205,6 +5205,18 @@
       "kind": "function",
       "signature": "read_only_tools(prefix: str = 'evals') -> tuple[ToolSpec]"
     },
+    "threetears.evals.actions.Refusal": {
+      "kind": "dataclass",
+      "signature": "Refusal(kind: RefusalKind, status: int)"
+    },
+    "threetears.evals.actions.REFUSAL_KINDS": {
+      "kind": "constant (tuple)",
+      "signature": ""
+    },
+    "threetears.evals.actions.RefusalKind": {
+      "kind": "literal",
+      "signature": "'refused'` | `'not_found'` | `'conflict'` | `'validation_failed'` | `'storage_failed'` | `'provider_refused'` | `'admission_refused'"
+    },
     "threetears.evals.actions.RESERVED_PARAMETERS": {
       "kind": "constant (frozenset)",
       "signature": ""
@@ -5229,6 +5241,10 @@
       "kind": "type alias",
       "signature": "Callable[[], Caller | Awaitable[Caller]]"
     },
+    "threetears.evals.transports.fastmcp.CallHook": {
+      "kind": "type alias",
+      "signature": "Callable[[ToolCall], AsyncGenerator[None, ActionOutcome]]"
+    },
     "threetears.evals.transports.fastmcp.CatalogueTool": {
       "kind": "model",
       "signature": "CatalogueTool(name: str, version: str | None = None, title: str | None = None, description: str | None = None, icons: list[mcp.types.Icon] | None = None, tags: set[str] = set(), meta: dict[str, Any] | None = None, task_config: fastmcp.utilities.tasks.TaskConfig = <lambda>(), parameters: dict[str, typing.Any], output_schema: dict[str, Any] | None = None, annotations: mcp.types.ToolAnnotations | None = None, execution: mcp.types.ToolExecution | None = None, serializer: collections.abc.Callable[[Any], str] | None = None, auth: collections.abc.Callable[[fastmcp.utilities.authorization.AuthContext], bool] | collections.abc.Callable[[fastmcp.utilities.authorization.AuthContext], collections.abc.Awaitable[bool]] | list[collections.abc.Callable[[fastmcp.utilities.authorization.AuthContext], bool] | collections.abc.Callable[[fastmcp.utilities.authorization.AuthContext], collections.abc.Awaitable[bool]]] | None = None, timeout: float | None = None, binding: ToolBinding)"
@@ -5237,13 +5253,21 @@
       "kind": "constant (float)",
       "signature": ""
     },
+    "threetears.evals.transports.fastmcp.HostResolver": {
+      "kind": "type alias",
+      "signature": "Callable[[], OpsHost | Awaitable[OpsHost]]"
+    },
     "threetears.evals.transports.fastmcp.mount_fastmcp": {
       "kind": "function",
-      "signature": "mount_fastmcp(server: FastMCP, catalogue: ActionCatalogue, *, host: OpsHost, caller: CallerResolver, tools: Sequence[ToolSpec] | None = None, call_timeout_s: float = 60.0) -> tuple[str, ...]"
+      "signature": "mount_fastmcp(server: FastMCP, catalogue: ActionCatalogue, *, host: OpsHost | None = None, host_resolver: HostResolver | None = None, caller: CallerResolver, around: CallHook | None = None, tools: Sequence[ToolSpec] | None = None, call_timeout_s: float = 60.0) -> tuple[str, ...]"
     },
     "threetears.evals.transports.fastmcp.ToolBinding": {
       "kind": "class",
-      "signature": "ToolBinding(mounted: MountedTool, host: OpsHost, caller: CallerResolver, call_timeout_s: float = 60.0) -> None"
+      "signature": "ToolBinding(mounted: MountedTool, *, host: OpsHost | None = None, host_resolver: HostResolver | None = None, caller: CallerResolver, around: CallHook | None = None, call_timeout_s: float = 60.0) -> None"
+    },
+    "threetears.evals.transports.fastmcp.ToolCall": {
+      "kind": "dataclass",
+      "signature": "ToolCall(tool: str, action: str | None, caller: Caller)"
     },
     "threetears.evals.vega.check_spec": {
       "kind": "function",

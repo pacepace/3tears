@@ -39,6 +39,8 @@ notes = [
     "A job's liveness is its record's lease, the same in every process. `EvalRun`, `EvalSweep` and `EvalAnalysisAttempt` carry `lease`, `cancel_requested_at`, `cancel_request_reason` and `lost`; a non-terminal record with no lease reads as lost. `LaunchHost.job_lease_s` sets the lease (default 60s).",
     "Core schema v10. `eval_campaign`, `eval_sweep`, `eval_analysis_attempt`, `eval_generation_slot`, `eval_launch`, `eval_second_judge_pass`, `eval_judge_temperature_check` and `eval_action_job` are kept (core) documents and upgrade on read; nothing a host stored is refused.",
     "`EVAL_DOC_TYPES` and `CORE_DOC_TYPES` are derived from `schema.DOC_TYPE_FACTS`; a host partitioning storage reads the facts (origin, lifecycle, suppresses), or uses `storage.RoutedDocumentStore`.",
+    "`actions.ActionOutcome` takes `refusal: Refusal | None` in place of `is_error: bool`; `is_error` is now a property (`refusal is not None`). A host constructing an outcome passes `refusal=Refusal(kind=..., status=...)`, or `Refusal.of(error)` for an engine error.",
+    "`transports.fastmcp.ToolBinding` takes everything after `mounted` by keyword, and exactly one of `host` and `host_resolver`; `around` and `call_timeout_s` are keyword too. A refused call's structured content is `{\"refusal\": {\"kind\": ..., \"status\": ...}}`.",
 ]
 
 [[release.change]]
