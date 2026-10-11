@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: what adopting .7 found (gaps 29–34)
+
+- **`MIGRATIONS.toml` names v0.66.0-evaladopt.7's section for its tag**, which shipped still called "unreleased",
+  and .8's records sit in a new unreleased section since that tag. `release_notes.py v0.66.0-evaladopt.7` prints
+  what .7 shipped. `tests/test_api_surface.py` now fails once HEAD is past a tag with no section of its own, or
+  while the unreleased section starts at an older tag, and `docs/releasing.md` names the rename as a release step.
+
 ### 3tears-evals: what a consumer's end-to-end test of .6 found (gaps 16–27)
 
 - **A run's summary states every role's spend and a total equal to its results' cost (breaking).** `EvalSummary.spend`

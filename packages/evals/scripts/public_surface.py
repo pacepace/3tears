@@ -889,6 +889,7 @@ def all_findings(
         *record_findings(installed, newest),
         *snapshot_findings(installed, recorded, newest),
         *(f for release in migrations.releases if release.since for f in history_findings(release)),
+        *labelling_findings(migrations, newest_tag()),
     ]
 
 
@@ -997,4 +998,54 @@ def history_findings(release: Release) -> list[Finding]:
                     False,
                 )
             )
+    return findings
+
+
+# --- labelling: a tagged release has its own section -------------------------------------------------------------
+
+
+def newest_tag() -> str | None:
+    """The release tag nearest behind HEAD (``v<version>``), or ``None`` in a checkout without the tags."""
+    described = _git("describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", "HEAD")
+    return described.stdout.strip() if described.returncode == 0 else None
+
+
+def labelling_findings(migrations: Migrations, tag: str | None) -> list[Finding]:
+    """Where the sections disagree with the newest release tag behind HEAD.
+
+    A release is tagged with its section already named for it, and the next release's work goes in a new
+    ``unreleased`` section ``since`` that tag. A tag cut with its section still called ``unreleased`` leaves that
+    section open: the next release's records pile into it, are checked against the working tree from the tag
+    before, and ``release_notes.py v<tag>`` finds nothing. v0.66.0-evaladopt.7 shipped that way. So once HEAD is
+    past a tag, that tag must have a section of its own, and an ``unreleased`` section must start at it.
+    """
+    if tag is None:
+        return [
+            Finding(
+                "MIGRATIONS.toml's sections are checked against the newest release tag behind HEAD, and this "
+                "checkout has none: fetch the tags (git fetch --tags, or fetch-depth: 0 in CI).",
+                False,
+            )
+        ]
+    version = tag.removeprefix("v")
+    findings: list[Finding] = []
+    if migrations.release(version) is None:
+        findings.append(
+            Finding(
+                f"{tag} is tagged, and MIGRATIONS.toml has no section for it: the section it shipped is still "
+                f'called "unreleased". Rename that section to version = "{version}" holding exactly what it held at '
+                f"the tag (git show {tag}:packages/evals/MIGRATIONS.toml), and record what came after it in a new "
+                f'section version = "unreleased", since = "{tag}". Name the section for its version before tagging.',
+                False,
+            )
+        )
+    newest = migrations.releases[0]
+    if newest.version == "unreleased" and newest.since != tag:
+        findings.append(
+            Finding(
+                f"the unreleased section is since {newest.since}, but {tag} is the newest tag behind HEAD: "
+                f'set since = "{tag}", and give {tag} its own section if it has none.',
+                False,
+            )
+        )
     return findings
