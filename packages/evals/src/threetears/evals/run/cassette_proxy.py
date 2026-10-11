@@ -65,7 +65,7 @@ import hashlib
 import json
 from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -86,6 +86,7 @@ from threetears.evals.kernel.cassettes import (
 from threetears.evals.kernel.errors import StorageError
 from threetears.evals.schema.models import AsyncDelivery, CassetteKey, CassetteSeam, EvalCassette
 from threetears.evals.kernel.storage import CassetteStore
+from threetears.evals.run.run_document import fault_entry
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
@@ -191,6 +192,7 @@ class CassetteCell:
         template_id: str,
         test_case_id: str,
         model: str,
+        holes: list[str] | None = None,
     ) -> None:
         """Bind the cell to its run's corpus and its own coordinates.
 
@@ -202,6 +204,8 @@ class CassetteCell:
             template_id: The template the cell runs.
             test_case_id: The cell's case.
             model: The cell's candidate model — capture provenance.
+            holes: Where a recording the capture failed to write is named, one ``error_details`` entry each, for
+                the runner to write on the capture run (:attr:`CassetteLane.holes`); ``None`` keeps none.
         """
         self._mode: Literal["capture", "replay"] = mode
         self._store = store
@@ -210,6 +214,7 @@ class CassetteCell:
         self._template_id = template_id
         self._test_case_id = test_case_id
         self._model = model
+        self._holes = holes
         self._occurrences: Counter[tuple[str, str, str]] = Counter()
         self._open: dict[CassetteKey, None] = {}
         self._served: Counter[str] = Counter()
@@ -266,19 +271,29 @@ class CassetteCell:
         return recorded
 
     def _write(self, cassette: EvalCassette) -> None:
-        """Save one recording; a failure is logged and leaves a hole a replay reports by its key."""
+        """Save one recording; a failure is logged, named among the lane's holes, and leaves a hole a replay reports."""
         try:
             self._store.save_cassette(cassette)
         except StorageError as exc:
             # Loud but not fatal: the live answer still reaches the candidate, so a transient write
             # failure costs one recording rather than the turn. The key is explicit, so a replay
             # reports the hole as a miss naming it rather than pairing a neighbour into its place.
+            # The corpus is the capture run's, so the hole is also kept for the runner to write on that run
+            # (``error_details``), where an operator deciding whether to replay it reads it.
             log.error(
                 "Cassette capture: failed to record %s (%s). This corpus is INCOMPLETE — a replay asking this "
                 "will stop the cell; re-capture before replaying it.",
                 cassette.id,
                 exc,
             )
+            if self._holes is not None:
+                self._holes.append(
+                    fault_entry(
+                        f"cassette capture: recording {cassette.id} not written, so this run's corpus is incomplete "
+                        "and a replay asking it stops its cell; re-capture before replaying it",
+                        exc,
+                    )
+                )
 
     # -- wiring -----------------------------------------------------------------------------------
 
@@ -721,12 +736,15 @@ class CassetteLane:
         store: Where cassettes are read and written.
         scope_id: The scope every record this lane touches lives in.
         corpus_id: The corpus: a capture run's own id, or the capture run a replay names.
+        holes: Every recording a capture failed to write, one ``error_details`` entry each, appended by the lane's
+            cells as they fail; the runner writes them on the capture run, which is this lane's run.
     """
 
     mode: Literal["capture", "replay"]
     store: CassetteStore
     scope_id: str
     corpus_id: str
+    holes: list[str] = field(default_factory=list, compare=False)
 
     def __post_init__(self) -> None:
         """Refuse a lane in a mode that records and replays nothing.
@@ -779,6 +797,7 @@ class CassetteLane:
             template_id=template_id,
             test_case_id=test_case_id,
             model=model,
+            holes=self.holes,
         )
 
 

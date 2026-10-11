@@ -136,6 +136,7 @@ from threetears.evals.run.judge_service import (
     fold_judge_outcomes,
 )
 from threetears.evals.run.metering import MeteredCallLedger, MeteredCallTally
+from threetears.evals.run.run_document import fault_entry, record_run_faults
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
 from threetears.observe import get_logger
 
@@ -2593,7 +2594,8 @@ def sample_concurrent_eval_jobs(options: RunnerOptions, previous: int | None = N
     to unmeasured rather than taking the cell down. That matters most at the cell-timeout
     call site, whose entire purpose is preserving a degraded observation — losing the
     result to a telemetry probe would destroy the very evidence the timeout path exists to
-    keep. The failure is logged, never swallowed silently.
+    keep. The failure is logged, never swallowed silently, and :func:`execute_run` writes each distinct one on
+    its run's ``error_details`` as its loop ends, with how many samples it cost.
     """
     # The run's own width is known, not sampled: a concurrent run is concurrent for every cell it records.
     own = options.max_concurrent_cells if options.max_concurrent_cells > 1 else None
@@ -2602,9 +2604,63 @@ def sample_concurrent_eval_jobs(options: RunnerOptions, previous: int | None = N
     try:
         observed = options.concurrent_eval_jobs_probe()
     except Exception:  # prawduct:ok-broad-except — caller-supplied probe; a telemetry read must not fail a cell
-        log.warning("Concurrent-eval-job probe raised; recording execution_mode as unmeasured", exc_info=True)
+        log.exception("Concurrent-eval-job probe raised; recording execution_mode as unmeasured")
         return _busiest(previous, own)
     return _busiest(_busiest(previous, observed), own)
+
+
+#: Where an ``error_details`` entry for a raising concurrency probe says its error happened.
+_PROBE_FAILED = (
+    "concurrency probe (RunnerOptions.concurrent_eval_jobs_probe) raised, so the cells it was sampled for read "
+    "execution_mode as unmeasured"
+)
+
+
+def _counting_failures(probe: Callable[[], int], failures: Counter[str]) -> Callable[[], int]:
+    """``probe``, each failure counted in ``failures`` by its :func:`fault_entry` before it is re-raised."""
+
+    def counted() -> int:
+        try:
+            return probe()
+        except Exception as raised:
+            failures[fault_entry(_PROBE_FAILED, raised)] += 1
+            raise
+
+    return counted
+
+
+def _probe_fault_entries(failures: Counter[str]) -> list[str]:
+    """One ``error_details`` entry per distinct probe failure, saying how many samples it cost."""
+    return [f"{entry} ({count} sample{'s' if count != 1 else ''})" for entry, count in failures.items()]
+
+
+async def _record_contained_faults(host: EvalHost, run: EvalRun, faults: list[str]) -> None:
+    """Write the errors the loop contained on the run's ``error_details``; a write that fails is logged, never raised.
+
+    Run as the loop ends, however it ends, so it must not replace what ended it: a failed write is logged at ERROR
+    with every entry it was carrying, which are the errors themselves.
+    """
+    try:
+        outcome = await run_blocking(
+            host.blocking_executor, record_run_faults, host.storage, run.id, run.scope_id, faults
+        )
+    # prawduct:ok-broad-except — the loop's own ending is what the caller must see; this is logged with every entry
+    except Exception:
+        log.exception(
+            "eval.run run=%s scope=%s: the errors its loop contained could not be written on the run: %s",
+            run.id,
+            run.scope_id,
+            faults,
+        )
+        return
+    if outcome in ("missing", "refused"):
+        log.error(
+            "eval.run run=%s scope=%s: the errors its loop contained could not be written on the run (%s): %s",
+            run.id,
+            run.scope_id,
+            outcome,
+            faults,
+        )
 
 
 def _busiest(a: int | None, b: int | None) -> int | None:
@@ -3178,7 +3234,11 @@ async def execute_run(
 
     Produces one :class:`EvalResult` per ``(test_case × model × k_iteration)``.
     Persists each via ``host.storage.save_eval_result``; the run document is
-    *not* mutated here — the job manager owns status transitions. Each cell runs
+    *not* mutated here — the job manager owns status transitions — save for one
+    append: an error this loop contained so it could not fail a cell (a capture
+    recording that could not be written, a concurrency probe that raised) is
+    written on the run's ``error_details`` as the loop ends, however it ends,
+    where an operator reads it rather than only in the log. Each cell runs
     under ``host.cell_timeout``, its spans go to ``host.trace_sink``, and its
     write runs on ``host.blocking_executor``.
 
@@ -3302,6 +3362,11 @@ async def execute_run(
     # One lane for the whole run, so every cell records into — or replays — the one corpus the run
     # names: its own id for a capture, the capture it names for a replay. ``None`` with cassettes off.
     cassettes = CassetteLane.for_run(run, host.storage)
+    # A caller-supplied probe that raises degrades its covariate to unmeasured (``sample_concurrent_eval_jobs``),
+    # logged there; each distinct failure is also counted here, to be written on the run as the loop ends.
+    probe_failures: Counter[str] = Counter()
+    if (probe := options.concurrent_eval_jobs_probe) is not None:
+        options = replace(options, concurrent_eval_jobs_probe=_counting_failures(probe, probe_failures))
 
     # The variant is the resolved contestant stack, which a run holds fixed — it is one
     # arm — so resolve it once rather than per cell. Every result the loop produces carries it, timeouts and stubs
@@ -3604,7 +3669,12 @@ async def execute_run(
             )
             stop.budget(sink.budget_breach)
 
-    await executor.execute([partial(run_cell, k, tc) for k, tc in order], width=width)
+    try:
+        await executor.execute([partial(run_cell, k, tc) for k, tc in order], width=width)
+    finally:
+        faults = [*(cassettes.holes if cassettes is not None else []), *_probe_fault_entries(probe_failures)]
+        if faults:
+            await _record_contained_faults(host, run, faults)
 
     if stop.refusal is not None:
         priced = [summary.cost_usd for summary in summaries if summary.cost_usd is not None]
