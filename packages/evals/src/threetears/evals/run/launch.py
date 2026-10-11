@@ -99,7 +99,7 @@ from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_RUN, FIND_T
 if TYPE_CHECKING:
     from threetears.evals.schema.subject import SubjectSnapshot
     from threetears.evals.kernel.host.sweepables import SweepableRegistry
-    from threetears.evals.schema.models import EvalTemplate, JudgeConfig, VariationCounts
+    from threetears.evals.schema.models import JudgeConfig, VariationCounts
     from threetears.evals.schema.completion import BoundCompletionClient, PricedCompletion
     from threetears.evals.kernel.scoring import CellSummary
     from threetears.evals.kernel.storage import DefinitionStore

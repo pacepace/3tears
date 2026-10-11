@@ -221,7 +221,15 @@ target-version = "py314"
 #
 # Turned on only once every finding was cleared. A gate that fails on a clean checkout is a gate
 # people learn to skip.
-select = ["SLF", "F", "N"]
+#
+# TC004 alone, added 2026-10-11 after a name imported only under `if TYPE_CHECKING:` was read at
+# RUNTIME: 3tears-evals' job_poll render called `JudgeTemperatureComparison.model_validate(...)`, so
+# every poll of a completed judge temperature job raised NameError while the job and its record were
+# fine. mypy cannot see it (the name IS defined for the checker) and F821 cannot either (the import
+# exists); TC004 is the rule for exactly that. The rest of TC is not selected: it moves imports INTO
+# type-checking blocks, the opposite direction, and is style rather than a fault. On adoption it found
+# that one site and one redundant re-import of a name the module already imported at runtime.
+select = ["SLF", "F", "N", "TC004"]
 
 # N (pep8-naming) enabled 2026-07-27 on Pace's instruction, after measuring whether the naming
 # conventions actually drift across the family. They do not: functions, classes, variables and

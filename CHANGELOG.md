@@ -23,6 +23,9 @@ packages (bumped in lock-step).
   and refuses in its call. `generate_variations` takes an `AdmittedGeneration` and admits nothing; a launch admits
   its generation in its call, on the writer it hands the launcher (`LaunchRequest.generation`). A test holds that
   no package function both admits a call and makes it, and lists every out-of-run caller's planner and executor.
+- **`job_poll` reads back a completed judge temperature comparison** — its render raised `NameError` on a name
+  imported only for type checking. A test completes a job of every `JobKind` and renders it through the catalogue,
+  and the workspace's ruff now selects TC004, which catches a type-checking import read at runtime.
 
 ### 3tears-evals: what a consumer's end-to-end test of .6 found (gaps 16–27)
 
