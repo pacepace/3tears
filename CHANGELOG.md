@@ -48,6 +48,10 @@ packages (bumped in lock-step).
   an entry that was not a number or was negative, were logged and left out, so the phase read as one the tool never
   measured. The fold now returns one sentence per entry left out (empty when all folded), for the kind to record
   where the cell's reader sees it; it still never folds a malformed value, and still logs.
+- **The memo the reporter judge reads says when a finding's chart cannot be drawn.** `render_memo_as_written`
+  caught the chart's `PayloadError`/`IntentPolicyError` and printed nothing under its caption, so the judge read an
+  undrawable chart as a drawn one while the report printed why it was not. The memo now prints the report's own line,
+  "A <type> chart is stored for this finding and cannot be drawn: <reason>".
 
 ### 3tears-evals: backlog while Discodon adopts .13
 
