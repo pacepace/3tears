@@ -26,6 +26,11 @@ packages (bumped in lock-step).
 - **`job_poll` reads back a completed judge temperature comparison** — its render raised `NameError` on a name
   imported only for type checking. A test completes a job of every `JobKind` and renders it through the catalogue,
   and the workspace's ruff now selects TC004, which catches a type-checking import read at runtime.
+- **Every typed model call sends its reply's shape as a strict schema.** The proposer, the variation writer and the
+  judge sent `{"type": "json_object"}`, so a stale stored proposer prompt got drafts with no `scale`, every one a
+  paid refusal. Each now sends a strict `json_schema` derived from what its reply is read into
+  (`kernel.strict_response_format`, `run.judge.judge_reply_format`), and a test holds that no package call sends
+  the unshaped directive.
 
 ### 3tears-evals: what a consumer's end-to-end test of .6 found (gaps 16–27)
 

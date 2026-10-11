@@ -30,10 +30,10 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from pydantic import ValidationError
 
 from threetears.evals.kernel.errors import ValidationFailedError
-from threetears.evals.schema.models import RubricAxis, RubricProposal
+from threetears.evals.schema.models import SCALE_LEVELS, RubricAxis, RubricProposal
 from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
 from threetears.evals.kernel.out_of_run import AdmittedCall, PlannedCall
-from threetears.evals.schema.completion import JSON_OBJECT_RESPONSE_FORMAT
+from threetears.evals.kernel.authored import strict_response_format
 from threetears.evals.kernel.provider import extract_json
 from threetears.observe import get_logger
 
@@ -58,6 +58,33 @@ _REFUSAL_SUBJECT: dict[str, str] = {
 #: The judge's cap is its own, derived in ``threetears.evals.run.judge`` from its
 #: reasoning budget plus its answer budget.
 PROPOSER_MAX_TOKENS = 16384
+
+#: Every level any scale answers: what a drafted dimension's scoring guide may describe.
+_GUIDE_LEVELS: tuple[str, ...] = tuple(dict.fromkeys(level for levels in SCALE_LEVELS.values() for level in levels))
+
+
+def _proposal_schema() -> dict[str, Any]:
+    """:class:`~threetears.evals.schema.models.RubricProposal`'s JSON schema, its one map field closed.
+
+    A strict schema admits no object with arbitrary keys, and ``RubricDim.scoring_guide`` maps a scale's levels to
+    descriptors. Which levels depends on the dimension's own ``scale``, which a strict schema cannot condition on,
+    so the guide is sent as an object holding every level any scale has, each a descriptor or ``null``: the
+    unwritten levels are dropped before the draft is validated (:func:`_drop_unwritten_levels`), and the model
+    still refuses a guide describing a level its dimension's scale does not have.
+    """
+    schema = RubricProposal.model_json_schema()
+    schema["$defs"]["RubricDim"]["properties"]["scoring_guide"] = {
+        "type": "object",
+        "description": "Each level of the dimension's scale mapped to what earns it; null for a level not described "
+        "and for every level its scale does not have.",
+        "properties": {level: {"anyOf": [{"type": "string"}, {"type": "null"}]} for level in _GUIDE_LEVELS},
+    }
+    return schema
+
+
+#: What a proposal asks for: the draft model as a strict schema, so a provider that enforces it cannot write a
+#: draft the model refuses — a dimension with no ``scale``, say — whatever the stored prompt says.
+_PROPOSAL_RESPONSE_FORMAT: dict[str, Any] = strict_response_format("rubric_proposal", _proposal_schema())
 
 
 class ProposedDraft(NamedTuple):
@@ -89,7 +116,7 @@ def plan_draft(*, system_prompt: str, subject_feed: str, catalog_feed: str) -> P
     return PlannedCall(
         system=system_prompt,
         user=f"{subject_feed}\n{catalog_feed}".rstrip() + "\n",
-        response_format=JSON_OBJECT_RESPONSE_FORMAT,
+        response_format=_PROPOSAL_RESPONSE_FORMAT,
     )
 
 
@@ -166,6 +193,7 @@ async def propose_draft(
             f"{refused} LLM output was not valid JSON ({cost}): {e}", remedy="propose again, or with another model"
         ) from e
 
+    _drop_unwritten_levels(payload)
     _coerce_new_dim_axis(payload, axis)
     try:
         proposal = RubricProposal(**payload)
@@ -197,6 +225,19 @@ async def propose_draft(
 def _spent(spend: OutOfRunSpend) -> str:
     """What the refused draft's call cost, for the refusal to say — it was paid either way."""
     return "the call cost an unreported amount" if spend.cost_usd is None else f"the call cost ${spend.cost_usd:.4f}"
+
+
+def _drop_unwritten_levels(payload: Any) -> None:
+    """Drop every ``null`` level from every scoring guide in ``payload``: the levels the schema made it name."""
+    if isinstance(payload, list):
+        for item in payload:
+            _drop_unwritten_levels(item)
+    elif isinstance(payload, dict):
+        guide = payload.get("scoring_guide")
+        if isinstance(guide, dict):
+            payload["scoring_guide"] = {level: text for level, text in guide.items() if text is not None}
+        for value in payload.values():
+            _drop_unwritten_levels(value)
 
 
 def _coerce_new_dim_axis(payload: Any, axis: RubricAxis) -> None:

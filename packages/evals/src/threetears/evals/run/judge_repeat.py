@@ -47,7 +47,6 @@ from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES, EvalResult
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
 from threetears.evals.schema.out_of_run_spend import OutOfRunPurpose
-from threetears.evals.schema.completion import JSON_OBJECT_RESPONSE_FORMAT
 from threetears.evals.run.job_work import EvalActionJob, JobWork, action_job_work
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
@@ -391,9 +390,7 @@ async def _prepare(
 
 def planned_judge_call(request: JudgeRequest) -> PlannedCall:
     """The call a judge request sends — what an admission prices — as :func:`~threetears.evals.run.judge.run_judge_llm` sends it."""
-    return PlannedCall(
-        system=request.system_prompt, user=request.user_prompt, response_format=JSON_OBJECT_RESPONSE_FORMAT
-    )
+    return PlannedCall(system=request.system_prompt, user=request.user_prompt, response_format=request.response_format)
 
 
 async def estimate_judge_repeat(

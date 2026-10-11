@@ -265,7 +265,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 3`
 - **`DOC_TYPE_FACTS`** · constant (mappingproxy) · Every `doc_type` the engine stores, and its facts.
 - **`EVAL_DOC_TYPES`** · constant (tuple) · Every `doc_type` the engine writes — the set the operator wipe sweeps.
-- **`JSON_OBJECT_RESPONSE_FORMAT`** · constant (dict) · `response_format` directive forcing JSON-object output, passed to `CompletionClient.generate` by callers that parse a structured JSON *object* (the judge, the analysis generator, the proposer/boundary-proposer).
+- **`JSON_OBJECT_RESPONSE_FORMAT`** · constant (dict) · `response_format` directive asking for any JSON object, with no shape.
 - **`MODEL_DEFAULT_TEMPERATURE`** · constant (str) · A judge call SENT with no temperature, because its model refuses one (some reasoning models do): the model's own default applied.
   <br>`= 'model_default'`
 - **`NON_TERMINAL_RUN_STATUSES`** · constant (frozenset) · Statuses a run can still leave under its own power — it is either queued or executing, and something in-process is expected to write its terminal status.
@@ -395,6 +395,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`separation_criterion(n: int, results: int, agreement: float | None, interval: tuple[float, float] | None = None) -> TierCriterion`
 - **`settle_job_record`** · function · Read a job record as every process reads it: written lost first, when it has not ended and its lease has lapsed.
   <br>`settle_job_record(store: LeaseStore, kind: LeasedJobKind[R], record_id: str, scope_id: str) -> tuple[R | None, bool]`
+- **`strict_response_format`** · function · The strict `json_schema` directive that asks a provider for exactly `schema`'s shape.
+  <br>`strict_response_format(name: str, schema: Mapping[str, Any]) -> dict[str, Any]`
 - **`summarize_completeness`** · function · Count what a finished run loop delivered against the matrix the run promised.
   <br>`summarize_completeness(run: EvalRun, cells: Sequence[CellSummary]) -> RunCompleteness`
 - **`tier_of`** · function · The tier two criteria decide.
@@ -502,6 +504,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`LeaseStore`** · protocol · A job record's read-modify-write, a cancel asked of it, and the store's time: what job leases are kept through.
 - **`LeverCoordinateError`** · exception · A host's per-observation lever map disagrees with its own registry, in either direction.
 - **`LeverCoverage`** · model · Per-lever coverage summary — a point estimate is invalid without n + dispersion.
+- **`MapFieldInSchema`** · exception · An object admits arbitrary keys, which no strict structured-output mode accepts.
 - **`MeasureCollection`** · model · Every measure a set of results carries, with the scopes that carry none named.
 - **`MeasureFacts`** · model · What one measure IS, frozen beside its values — the catalogue entry a reader needs to read them.
 - **`MeasureFamily`** · model · One family of measures and who produces its numbers — the engine's six, or one a host declares.

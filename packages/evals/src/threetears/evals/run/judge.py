@@ -26,7 +26,7 @@ single-dim rubric/dual-score judge lives in
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from threetears.evals.schema.models import (
@@ -36,11 +36,7 @@ from threetears.evals.schema.models import (
     ClientRequestSettings,
     JudgeTemperature,
 )
-from threetears.evals.schema.completion import (
-    JSON_OBJECT_RESPONSE_FORMAT,
-    CompletionResult,
-    ProviderFailureDescriber,
-)
+from threetears.evals.schema.completion import CompletionResult, ProviderFailureDescriber
 from threetears.evals.kernel.provider import (
     describe_and_log_failure,
     describe_incomplete_completion,
@@ -202,6 +198,61 @@ def _pass_fail_score(name: str, value: Any) -> int:
 #: How each scale's answer is read into its stored score. Keyed like :data:`~threetears.evals.schema.models.SCALES`,
 #: so a scale this module has not learned is a KeyError, not another scale's reader.
 SCALE_READERS: dict[str, Callable[[str, Any], int]] = {"ordinal": _ordinal_score, "pass_fail": _pass_fail_score}
+
+
+def judge_reply_format(criteria: Sequence[Mapping[str, Any]], *, cannot_tell_offered: bool) -> dict[str, Any]:
+    """The strict ``json_schema`` directive a judge call sends: its reply, exactly as :func:`run_judge_llm` reads it.
+
+    ``{"reasoning": ..., "criteria_scores": {...}}`` with every criterion a key and nothing else, each answered
+    on its scale (``ordinal`` when the criterion names none) or with :data:`CANNOT_TELL` when it was offered.
+    Derived from the criteria the call scores, as the parse is, so a provider that enforces it cannot write a reply
+    the parse refuses, and a judge's parse retry spends nothing on one. The reply is still read and refused as
+    before, for a provider that cannot enforce a strict schema.
+
+    Args:
+        criteria: The criteria, as :func:`run_judge_llm` takes them: each with its ``name`` and, optionally, its
+            ``scale`` (a key of :data:`SCALE_READERS`).
+        cannot_tell_offered: Whether the prompt offered :data:`CANNOT_TELL`.
+
+    Returns:
+        The directive.
+    """
+    answers = {
+        str(criterion["name"]): _scale_answers(str(criterion.get("scale", "ordinal")), cannot_tell_offered)
+        for criterion in criteria
+    }
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "judge_reply",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "reasoning": {"type": "string"},
+                    "criteria_scores": {
+                        "type": "object",
+                        "properties": answers,
+                        "required": list(answers),
+                        "additionalProperties": False,
+                    },
+                },
+                "required": ["reasoning", "criteria_scores"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _scale_answers(scale: str, cannot_tell_offered: bool) -> dict[str, Any]:
+    """One criterion's answers as a strict schema admits them: those :data:`SCALE_READERS` reads, and the offered one."""
+    offered = [CANNOT_TELL] if cannot_tell_offered else []
+    if scale == "pass_fail":
+        return {"type": "string", "enum": [*PASS_FAIL_SCORES, *offered]}
+    if scale != "ordinal":
+        raise KeyError(f"no reader for scale {scale!r}")
+    on_scale = {"type": "integer", "enum": list(range(JUDGE_SCORE_MIN, JUDGE_SCORE_MAX + 1))}
+    return {"anyOf": [on_scale, {"type": "string", "enum": offered}]} if offered else on_scale
 
 
 def _parse_criteria_response(
@@ -409,11 +460,11 @@ async def run_judge_llm(
             calls=attempts_made,
         )
 
+    # Every attempt sends the reply's shape, derived from the criteria the parse reads it by.
+    response_format = judge_reply_format(criteria_dicts, cannot_tell_offered=cannot_tell_offered)
     for attempt in range(max_attempts):
         try:
-            result = await client.generate(
-                system=system_prompt, user=user_prompt, response_format=JSON_OBJECT_RESPONSE_FORMAT
-            )
+            result = await client.generate(system=system_prompt, user=user_prompt, response_format=response_format)
         except Exception as e:  # prawduct:ok-broad-except — LLM/network boundary; SDK can raise many types
             # Earlier attempts in this loop may already have spent tokens before this one
             # raised; report that spend rather than losing it to the error path.

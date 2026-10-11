@@ -44,7 +44,7 @@ class _FakeLLM:
     """Returns a sequence of canned responses; records each call's args.
 
     ``generate`` accepts ``response_format`` to match the real generator client
-    (the axis generator routes through json_object mode); the value is
+    (the axis generator sends its values schema); the value is
     recorded so a test can assert the caller opted in.
     """
 
@@ -217,10 +217,8 @@ async def test_llm_axis_parses_json_object_response():
     assert sorted(pairs) == ["kitchen + garden", "tools + linen", "toys + stationery"]
 
 
-async def test_llm_axis_uses_json_object_mode():
-    """The axis generator opts into json_object structured output like its siblings."""
-    from threetears.evals.schema.completion import JSON_OBJECT_RESPONSE_FORMAT
-
+async def test_llm_axis_sends_the_values_schema_it_was_planned_with():
+    """The axis generator sends its envelope as a strict schema, as planned and priced."""
     template = _template(VariationAxis(name="x", generator="llm"))
     storage = _FakeStorage()
     llm = _FakeLLM(['{"values": ["a"]}'])
@@ -232,7 +230,9 @@ async def test_llm_axis_uses_json_object_mode():
         generation=_admitted(template, 1, llm, storage=storage),
         blocking_executor=None,
     )
-    assert llm.response_formats[0] == JSON_OBJECT_RESPONSE_FORMAT
+    (planned,) = plan_variation_calls(template, 1, []).values()
+    assert llm.response_formats[0] == planned.response_format
+    assert planned.response_format is not None and planned.response_format["type"] == "json_schema"
 
 
 async def test_llm_axis_strips_code_fences_and_commentary():

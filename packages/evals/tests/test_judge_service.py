@@ -26,7 +26,7 @@ from threetears.evals.schema.models import (
     RubricDim,
 )
 from threetears.evals.kernel.provider import INCOMPLETE_STOP_REASONS, withhold_failure_detail
-from threetears.evals.run.judge import CANNOT_TELL, run_judge_llm
+from threetears.evals.run.judge import CANNOT_TELL, judge_reply_format, run_judge_llm
 from threetears.evals.run.judge_service import JudgeContext, JudgeOutcome, JudgeService, fold_judge_outcomes
 from packages.evals.tests.llm_client_fakes import ReleasableClientMixin
 
@@ -152,8 +152,10 @@ async def test_score_dimension_returns_single_rubric_score():
     assert outcome.usage is not None and outcome.usage.cost_usd == 0.002
     # Exactly one LLM call — single-dim discipline.
     assert len(client.systems) == 1
-    # The judge requests JSON mode so scores parse deterministically.
-    assert client.response_formats == [{"type": "json_object"}]
+    # The judge sends its reply's shape, so a provider enforcing it writes a reply the parse reads.
+    assert client.response_formats == [
+        judge_reply_format([{"name": "conversation.tone", "scale": "ordinal"}], cannot_tell_offered=True)
+    ]
 
 
 @pytest.mark.parametrize("off_scale", [9, 0, -1, 3.5, "4", None, True])

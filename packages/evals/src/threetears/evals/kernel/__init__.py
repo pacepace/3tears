@@ -34,8 +34,10 @@ from threetears.evals.kernel.authored import (
     Finding,
     MeasureRef,
     NextStep,
+    MapFieldInSchema,
     QuestionAnswer,
     Reading,
+    strict_response_format,
 )
 from threetears.evals.kernel.campaign import (
     CONFIDENCE_TIERS,
@@ -361,6 +363,7 @@ __all__ = [
     "request_job_cancel",
     "require_held",
     "settle_job_record",
+    "strict_response_format",
     "write_held_record",
     "running_job",
     "JobFenced",
@@ -503,6 +506,7 @@ __all__ = [
     "MeasureFacts",
     "MeasurePopulation",
     "MeasureScale",
+    "MapFieldInSchema",
     "MeasureRef",
     "MeasureSummary",
     "MeritAxis",

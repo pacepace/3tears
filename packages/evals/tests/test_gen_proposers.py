@@ -139,7 +139,7 @@ async def test_the_feeds_are_sent_verbatim_subject_first_in_json_mode(axis):
         {
             "system": "SYSTEM TEXT",
             "user": "# Subject\n\nName: S\n\n# Catalog\n\n(empty)\n",
-            "response_format": {"type": "json_object"},
+            "response_format": plan_draft(system_prompt="", subject_feed="", catalog_feed="").response_format,
         }
     ]
     assert client.aclose_calls == 1
@@ -362,3 +362,30 @@ async def test_an_admission_another_budget_made_is_refused_and_nothing_is_called
         await propose_draft(client, admitted, budget=making, axis="capability", subject_id="s")
 
     assert client.calls == [] and storage.query_out_of_run_spend(_SCOPE) == [] and client.aclose_calls == 1
+
+
+async def test_a_draft_in_the_strict_shape_keeps_only_the_guide_levels_it_wrote():
+    """The schema makes every level a key, null where not written; the draft keeps the written ones."""
+    levels = {"1": None, "2": None, "3": None, "4": None, "5": None, "pass": "declines and redirects", "fail": None}
+    dim = {"name": "boundary.decline", "description": "declines", "scale": "pass_fail", "scoring_guide": levels}
+    reply = json.dumps(
+        {
+            "template": {"name": "T", "intent": "i", "rubric": [{**dim, "axis": "boundary"}], "variation_axes": []},
+            "reused_dim_keys": [],
+            "new_dim_suggestions": [{"key": "decline", "dim": {**dim, "axis": "boundary"}, "axis": "boundary"}],
+        }
+    )
+    budget, _storage = _budget()
+
+    proposal, _spend = await _proposed(
+        _RecordingClient(reply),
+        budget=budget,
+        axis="boundary",
+        subject_id="s",
+        system_prompt="",
+        subject_feed="F",
+        catalog_feed="C",
+    )
+
+    assert proposal.template.rubric[0].scoring_guide == {"pass": "declines and redirects"}
+    assert proposal.new_dim_suggestions[0].dim.scoring_guide == {"pass": "declines and redirects"}

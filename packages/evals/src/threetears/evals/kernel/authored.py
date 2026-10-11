@@ -215,6 +215,30 @@ def strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
     return projected
 
 
+def strict_response_format(name: str, schema: Mapping[str, Any]) -> dict[str, Any]:
+    """The strict ``json_schema`` directive that asks a provider for exactly ``schema``'s shape.
+
+    Every package call whose reply is read into a typed model sends this, derived from that model, so a provider
+    that enforces it cannot write a reply the model refuses — whatever the prompt, stored or not, says. Projected
+    through :func:`strict_schema`; the schema's own top-level description is dropped, because it is written for
+    the next developer and the prompt is what tells the model what the fields mean. A provider that cannot
+    enforce a strict schema is the host client's to handle — it sends the nearest mode its provider has (JSON
+    mode, a tool's input schema) — and the reply is validated against the model on return either way.
+
+    Args:
+        name: The schema's name, as the directive carries it.
+        schema: A pydantic-generated JSON schema (``Model.model_json_schema()``), or one shaped like it.
+
+    Returns:
+        The OpenAI-shaped directive.
+
+    Raises:
+        MapFieldInSchema: An object in it admits arbitrary keys, which no strict mode accepts.
+    """
+    projected = {key: value for key, value in strict_schema(dict(schema)).items() if key != "description"}
+    return {"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": projected}}
+
+
 def count_slots(schema: dict[str, Any]) -> int:
     """The free-text and list slots a schema holds, counting each definition once.
 

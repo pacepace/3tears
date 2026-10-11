@@ -46,7 +46,8 @@ from pydantic import TypeAdapter, ValidationError
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.schema.models import EvalTemplate, EvalTestCase, VariationAxis
 from threetears.evals.kernel.offload import run_blocking
-from threetears.evals.schema.completion import JSON_OBJECT_RESPONSE_FORMAT
+from threetears.evals.kernel.authored import strict_response_format
+from threetears.evals.schema.base import EvalBaseModel
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
@@ -127,9 +128,9 @@ def plan_variation_calls(
 ) -> dict[str, PlannedCall]:
     """The one call each of ``template``'s ``llm`` axes makes to generate ``n_variations`` values, built before any is made.
 
-    Each call runs in JSON-object mode and asks for ``{"values": [...]}`` — the object envelope is required
-    because ``json_object`` mode forbids a bare top-level array — naming the values the template's stored
-    cases already give the axis, so the model avoids them.
+    Each call asks for ``{"values": [...]}`` as a strict schema — an object envelope, since no structured mode
+    takes a bare top-level array — naming the values the template's stored cases already give the axis, so the
+    model avoids them.
 
     Args:
         template: The template whose ``llm`` axes are written.
@@ -144,6 +145,19 @@ def plan_variation_calls(
         for axis in template.variation_axes
         if axis.generator == "llm"
     }
+
+
+class _VariationValues(EvalBaseModel):
+    """What a variation axis's writer answers: the new values, under one key."""
+
+    values: list[str]
+
+
+#: What every variation call asks for: its envelope as a strict schema, so a provider enforcing it answers an object
+#: holding a list of strings and nothing else.
+_VARIATION_RESPONSE_FORMAT: dict[str, Any] = strict_response_format(
+    "variation_values", _VariationValues.model_json_schema()
+)
 
 
 def _llm_axis_call(axis: VariationAxis, n_variations: int, existing_values: set[str]) -> PlannedCall:
@@ -165,7 +179,7 @@ def _llm_axis_call(axis: VariationAxis, n_variations: int, existing_values: set[
         f"Existing values to exclude:\n{existing_block}\n\n"
         f'Produce {n_variations} new distinct values as a JSON object: {{"values": [...]}}.'
     )
-    return PlannedCall(system=system_prompt, user=user_prompt, response_format=JSON_OBJECT_RESPONSE_FORMAT)
+    return PlannedCall(system=system_prompt, user=user_prompt, response_format=_VARIATION_RESPONSE_FORMAT)
 
 
 class RecordedCompletion(NamedTuple):

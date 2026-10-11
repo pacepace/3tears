@@ -8,6 +8,9 @@ ratings that takes, and how the ratings correct the judge's mean. Grade with cod
 
 The snippets run top to bottom as one script. `client` is any `CompletionClient` (an async
 `generate(system=, user=, response_format=)` and an `aclose()`); `examples/llm_judge.py` has a Claude adapter.
+Every judge call sends its reply's shape as `response_format`, a strict `json_schema` directive (the criterion's
+answers, "can't tell" among them); pass it to a provider that enforces structured output, or send the nearest mode
+yours has. The reply is read and refused on return either way.
 
 ## Step 1: choose a scale, and prefer pass/fail
 

@@ -1377,6 +1377,10 @@
       "kind": "function",
       "signature": "list_metrics(measures: MeasureRegistry, family: MetricFamily | None = None, attribution_scope: AttributionScope | None = None) -> list[MetricDescriptor]"
     },
+    "threetears.evals.kernel.MapFieldInSchema": {
+      "kind": "exception",
+      "signature": ""
+    },
     "threetears.evals.kernel.MATCH_MEASURE": {
       "kind": "constant (str)",
       "signature": ""
@@ -1676,6 +1680,10 @@
     "threetears.evals.kernel.StratumFacts": {
       "kind": "model",
       "signature": "StratumFacts(stratum: str | None, n_observations: int, n_cases: int, n_infra_excluded: int = 0, n_candidate_failed: int | None = None, n_no_turn: int | None = None, measures: MeasureCollection = MeasureCollection(), judged: list[JudgedReading] = list())"
+    },
+    "threetears.evals.kernel.strict_response_format": {
+      "kind": "function",
+      "signature": "strict_response_format(name: str, schema: Mapping[str, Any]) -> dict[str, Any]"
     },
     "threetears.evals.kernel.summarize_completeness": {
       "kind": "function",
@@ -2535,7 +2543,7 @@
     },
     "threetears.evals.run.JudgeRequest": {
       "kind": "class",
-      "signature": "JudgeRequest(dim_id: str, config: JudgeConfig | None, system_prompt: str, user_prompt: str, scale: RubricScale, label: str, include_goal_outcomes: bool, axis: RubricAxis = 'capability', label_key: LabelKey | None = None)"
+      "signature": "JudgeRequest(dim_id: str, config: JudgeConfig | None, system_prompt: str, user_prompt: str, scale: RubricScale, label: str, include_goal_outcomes: bool, response_format: dict[str, Any], axis: RubricAxis = 'capability', label_key: LabelKey | None = None)"
     },
     "threetears.evals.run.JudgeService": {
       "kind": "class",
