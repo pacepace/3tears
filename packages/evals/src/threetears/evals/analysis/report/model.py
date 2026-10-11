@@ -9,7 +9,8 @@ a published JSON Schema (``schema.json`` beside this module), so a host generate
 the schema rather than mirroring them by hand. **The schema checks the shape and every cross-field rule JSON
 Schema can state** — a code-only report names no analysis or model and holds no headline, finding or text
 block; a report with no findings links no block to one; a finding's own words name their finding; a chart
-block carries exactly one of an intent and an error, the intent of its own type. Three rules compare a value
+block carries exactly one of an intent and an error, the intent of its own type; a table cell's unit qualifies
+only a number. Three rules compare a value
 with a sibling's, which JSON Schema cannot: a block's finding positions are below ``finding_count`` on a
 report that has findings, a table's ``total_rows`` is at least the rows it shows, and a row keys exactly its
 table's columns. Those the model's validators hold, so a document is a report when the model accepts it, and
@@ -384,6 +385,15 @@ class TableCell(EvalDocumentModel):
     number rule (:func:`~threetears.evals.analysis.viz.quantities.render_cell`: an absent value is a dash, never a
     zero; a boolean is yes or no), so a client never formats a number of its own.
     """
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            # A unit qualifies only a number (``_a_unit_qualifies_a_number``), stated in the schema too: JSON
+            # Schema's `number` holds no boolean, as the model's check holds none.
+            "if": {"properties": {"unit": {"minLength": 1}}, "required": ["unit"]},
+            "then": {"properties": {"value": {"type": "number"}}},
+        }
+    )
 
     value: ChartValue = Field(description="The cell's value: a number, words, a boolean, or null where there is none.")
     unit: str = Field(

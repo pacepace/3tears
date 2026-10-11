@@ -357,7 +357,8 @@ word as required, and every cross-field rule JSON Schema can state:
 - an analysis report names both;
 - a report with no findings links no block to one;
 - a finding's own words name their finding;
-- a chart block carries exactly one of an intent and an error, the intent of its own type.
+- a chart block carries exactly one of an intent and an error, the intent of its own type;
+- a table cell's unit qualifies only a number (never words, a boolean or an absent value).
 
 Three rules compare a value with a sibling's, which JSON Schema cannot: a block's finding positions are
 below `finding_count`, a table's `total_rows` is at least the rows it shows, and a row keys exactly its

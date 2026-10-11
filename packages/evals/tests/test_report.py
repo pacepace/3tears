@@ -554,6 +554,15 @@ class TestTheSchemaHoldsTheCrossFieldRulesItCanState:
             _with(_analysis_document(), lambda d: d["blocks"][0].update(finding=None)),
             _with(_code_only_document(), lambda d: d["blocks"].append(_chart_block(intent=None, error=""))),
             _with(_code_only_document(), lambda d: d["blocks"].append(_chart_block(intent=None, error="   "))),
+            *(
+                _with(
+                    _code_only_document(),
+                    lambda d, value=value: d["blocks"].append(
+                        _TABLE | {"rows": [{"arm": {"value": value, "unit": "s", "text": "x"}}], "total_rows": 1}
+                    ),
+                )
+                for value in ("words", True, None)
+            ),
         ],
         ids=[
             "code-only-names-an-analysis",
@@ -568,11 +577,23 @@ class TestTheSchemaHoldsTheCrossFieldRulesItCanState:
             "a-findings-title-names-no-finding",
             "a-chart-with-neither-intent-nor-error",
             "a-chart-whose-error-is-blank",
+            "a-unit-on-words",
+            "a-unit-on-a-boolean",
+            "a-unit-on-no-value",
         ],
     )
     def test_each_rule_the_schema_can_state_refuses_in_the_schema_and_the_model(self, document: dict[str, Any]) -> None:
         assert _model_refuses(document), "the case must be one the model refuses"
         assert _schema_refuses(document)
+
+    def test_a_unit_on_a_number_passes_both(self) -> None:
+        document = _with(
+            _code_only_document(),
+            lambda d: d["blocks"].append(
+                _TABLE | {"rows": [{"arm": {"value": 1.5, "unit": "s", "text": "1.5 s"}}], "total_rows": 1}
+            ),
+        )
+        assert not _schema_refuses(document) and not _model_refuses(document)
 
     async def test_a_chart_with_both_an_intent_and_an_error_or_another_types_intent_is_refused(
         self, toy: tuple[Any, Any, Report]

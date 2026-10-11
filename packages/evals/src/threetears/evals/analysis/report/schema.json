@@ -1213,6 +1213,16 @@
     "TableCell": {
       "additionalProperties": false,
       "description": "One cell of a report table: its value, and the text a reader is shown for it.\n\nThe value is what a client sorts by and draws from; the text is what it prints, spelled here by the one\nnumber rule (:func:`~threetears.evals.analysis.viz.quantities.render_cell`: an absent value is a dash, never a\nzero; a boolean is yes or no), so a client never formats a number of its own.",
+      "if": {
+        "properties": {
+          "unit": {
+            "minLength": 1
+          }
+        },
+        "required": [
+          "unit"
+        ]
+      },
       "properties": {
         "text": {
           "description": "The value as a reader is shown it: a number spelled by the number rule and joined to its unit, null as `\u2014`, a boolean as yes or no.",
@@ -1253,6 +1263,13 @@
         "unit",
         "text"
       ],
+      "then": {
+        "properties": {
+          "value": {
+            "type": "number"
+          }
+        }
+      },
       "title": "TableCell",
       "type": "object"
     },
