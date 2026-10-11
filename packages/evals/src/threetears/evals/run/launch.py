@@ -4069,7 +4069,7 @@ async def start_universal_battery(
                     "a replay serves the corpus of one capture run, which recorded one template, and a battery "
                     "launches every universal template"
                 ),
-                remedy="replay each template with start_run and its own corpus",
+                remedy="replay each template with a run_launch of its own, over the corpus its own capture recorded",
             )
         # A variation model reaches only the templates with an llm axis, so per template it is honoured
         # or absent — and one no template could use is refused here, since no template's launch would.

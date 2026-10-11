@@ -119,7 +119,7 @@ def judge_template_create(host: OpsHost, create: JudgeTemplateCreate, scope_id: 
             f"host {host.eval_host.profile.host_id!r} launches no {JUDGE_KIND!r} kind, so a judge template could never "
             "run here",
             remedy=(
-                f"register launchable_judge_kind under {JUDGE_KIND!r} in the LaunchHost's kinds and declare "
+                f"register run.launchable_judge_kind under {JUDGE_KIND!r} in the LaunchHost's kinds and declare "
                 "JUDGE_KIND_CONTRACT on its profile"
             ),
         )

@@ -492,7 +492,8 @@ def update_campaign(
             f"campaign fields not updatable here: {', '.join(unknown)}",
             remedy=(
                 f"update only {', '.join(_CAMPAIGN_UPDATABLE_FIELDS)}; membership and the control designation have "
-                "their own write paths (add_runs_to_campaign / remove_runs_from_campaign / set_campaign_control)"
+                "their own write paths (analysis.add_runs_to_campaign, analysis.remove_runs_from_campaign and "
+                "analysis.set_campaign_control)"
             ),
         )
 
@@ -835,7 +836,7 @@ def set_campaign_control(
         raise ValidationFailedError(
             f"campaign '{campaign_id}' declares no design, and the control lives on the declaration. A control is "
             "the reference point of a comparison, so there is nothing for it to reference yet",
-            remedy="declare one first (update_campaign with `declared_design`)",
+            remedy="declare one first (analysis.update_campaign with `declared_design`)",
         )
     control = None if run_id is None else _resolve_control_variant(storage, campaign, run_id, profile=profile)
 
@@ -881,7 +882,7 @@ def _resolve_control_variant(
     if run_id not in campaign.run_ids:
         raise ValidationFailedError(
             f"run '{run_id}' is not attached to campaign '{campaign.id}'",
-            remedy="attach it (add_runs_to_campaign) before designating its variant the control",
+            remedy="include the run in the campaign's run_ids before designating its variant the control",
         )
     scope_id = campaign.scope_id
     run = storage.load_eval_run(run_id, scope_id)

@@ -1203,7 +1203,7 @@ def refuse_an_undeclarable_design(
         raise UndeclarableAxisError(
             f"host '{profile.host_id}' cannot vary every axis this campaign declares — {reasons}",
             remedy=(
-                "declare only axes declarable_axes() lists — the host's levers and the open families whose members "
+                "declare only axes analysis.declarable_axes() lists — the host's levers and the open families whose members "
                 "it recognises — read from the registry this gate decides with"
             ),
         )
@@ -1385,8 +1385,8 @@ def refuse_an_undeclarable_design(
                 "a run launched without it executes its cells concurrently, and the latency it records is never "
                 "compared",
                 remedy=(
-                    "set measure_latency=True on its design and launch its runs with measure_latency=True (start_run, "
-                    "run_eval or compare), so their cells run one at a time and their latency is read clean"
+                    "set measure_latency=True on its design and launch its runs with measure_latency=True (run_launch, "
+                    "or sweep_launch for a sweep), so their cells run one at a time and their latency is read clean"
                 ),
             )
 
