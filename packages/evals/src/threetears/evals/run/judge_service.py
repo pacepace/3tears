@@ -466,7 +466,9 @@ class JudgeService:
         try:
             await self.aclose()
         except Exception:  # prawduct:allow prawduct/broad-except -- teardown must never displace the body's exception
-            log.warning("releasing the judge clients failed; a pool may leak", exc_info=True)
+            # Log only: the service holds no run id, and a client pool that will not close is this process's leak,
+            # not something the run measured — an error_details entry would count it as one of the run's faults.
+            log.exception("releasing the judge clients failed; a pool may leak")
 
     async def score_transcript(self, context: JudgeContext) -> JudgeOutcome:
         """Score the transcript (decision-quality) axis — excludes goal outcomes."""

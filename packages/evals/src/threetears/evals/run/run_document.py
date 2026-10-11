@@ -143,6 +143,50 @@ def update_eval_run(
     return "refused"
 
 
+def fault_entry(where: str, error: BaseException) -> str:
+    """One ``EvalRun.error_details`` entry for an error a boundary contained: where it happened, its kind, its message.
+
+    Args:
+        where: What was being done, in an operator's words: the step whose failure this is.
+        error: What it raised.
+
+    Returns:
+        ``"<where>: <ErrorType>: <message>"``.
+    """
+    return f"{where}: {type(error).__name__}: {error}"
+
+
+def record_run_faults(store: JobStore, run_id: str, scope_id: str, entries: Sequence[str]) -> RunUpdateOutcome:
+    """Append ``entries`` to a run's ``error_details``, where an operator triaging the run's faults reads them.
+
+    For an error a boundary contains so that it cannot change the run's outcome — a completeness record that could
+    not be written, a corpus recording that was lost, a probe that raised — and that would otherwise reach only the
+    log. Through :func:`update_eval_run`, so a concurrent writer's document is re-read and the entries re-applied
+    over it, never written over it. A run written lost is declined: its process no longer holds it, and writes
+    nothing more on it.
+
+    Args:
+        store: Where the run lives.
+        run_id: The run.
+        scope_id: Its scope.
+        entries: The entries, each as :func:`fault_entry` words one.
+
+    Returns:
+        :func:`update_eval_run`'s outcome. Never raises for a failed write: the caller is a boundary protecting
+        the run's own outcome, and logs both its error and this one when the entries were not written.
+    """
+    added = list(entries)
+
+    def _append(current: EvalRun) -> dict[str, Any] | None:
+        if current.lost is not None:
+            return None
+        data = current.to_dict()
+        data["error_details"] = [*current.error_details, *added]
+        return data
+
+    return update_eval_run(store, run_id, scope_id, _append)
+
+
 def normalized_run_labels(labels: Sequence[str]) -> list[str]:
     """The labels a run is stored with: each stripped, each once, sorted.
 
@@ -218,7 +262,9 @@ def set_run_labels(store: JobStore, run_id: str, scope_id: str, *, labels: Seque
 __all__ = [
     "RUN_DOCUMENT_WRITE_ATTEMPTS",
     "RunUpdateOutcome",
+    "fault_entry",
     "normalized_run_labels",
+    "record_run_faults",
     "set_run_labels",
     "update_eval_run",
 ]

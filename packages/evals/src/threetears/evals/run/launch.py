@@ -871,6 +871,8 @@ class LaunchGroup:
                 await teardown.aclose()
             # prawduct:allow prawduct/broad-except -- one member's failed release must not leak the others' or mask the launch refusal
             except Exception:
+                # Log only: the group never started, so no member ran; what failed is releasing this process's clients,
+                # which nothing a member's record measures, and an error_details entry would count as a run's fault.
                 log.exception("eval.launch_group group=%s a member's teardown failed while abandoning", self.id)
         self.members.clear()
         self._teardowns.clear()

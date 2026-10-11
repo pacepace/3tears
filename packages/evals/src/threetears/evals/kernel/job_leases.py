@@ -18,7 +18,8 @@ did not start a job read a live one as lost, and a cancel there was refused. Her
   work makes of its own record goes through :func:`write_held_record`, which refuses a record already ended and
   raises :class:`~threetears.evals.kernel.JobFenced`. A run's own writes are refused the same way: its status
   write takes nothing over a record carrying ``lost``, its own ending included, and the process that lost it
-  neither broadcasts that ending nor tells the run-end hook.
+  neither broadcasts that ending nor tells the run-end hook. The one thing a holder whose renewals failed for a whole
+  lease still writes is why, as an ``error_details`` entry on a run, never its status or its ending.
 - **A cancel is a field on the record** (``cancel_requested_at``), written by whichever process was asked
   (:func:`request_job_cancel`); the holder reads it at its next renewal and ends the job ``cancelled``, so a cancel
   lands within one renewal interval from anywhere.
@@ -471,6 +472,33 @@ def write_held_record[R: EvalDocumentModel](
     )
 
 
+def _note_on_run_record(store: LeaseStore, kind: LeasedJobKind[Any], record_id: str, scope_id: str, entry: str) -> bool:
+    """Append ``entry`` to a run record's ``error_details``, conditionally and keeping its lease; whether it was.
+
+    ``False`` for a record that is not a run — no other job record has a field for an error beside its ending — or
+    that is gone. A lost race re-reads and re-applies.
+
+    Raises:
+        ConflictError: Every attempt lost its race.
+        StorageError: A read or write failed.
+    """
+    for _ in range(LEASE_WRITE_ATTEMPTS):
+        record, etag = store.load_job_record(kind.model, record_id, scope_id)
+        if not isinstance(record, EvalRun):
+            return False
+        noted = record.model_copy(update={"error_details": [*record.error_details, entry]})
+        try:
+            store.save_job_record(_document(noted), if_match=etag)
+        except ConflictError:
+            # NOSILENT: a lost race re-reads and re-applies; exhausting the attempts raises below
+            continue
+        return True
+    raise ConflictError(
+        f"{kind.name} job '{record_id}' kept changing while an error was being written on it",
+        remedy="read it again with job_poll",
+    )
+
+
 #: What one renewal of one held record found: renewed (and nothing asked of it), a cancel asked of it, the job
 #: ended by its own writes, the holder fenced off (its record ended by another, or its lease lapsed), or the
 #: write lost every race (tried again next interval).
@@ -487,6 +515,9 @@ class _Held:
     cancel: Callable[[str | None], object]
     stop: Callable[[], object]
     cancel_delivered: bool = field(default=False)
+    #: Why the last renewal failed, as ``<error type>: <message>``, until one succeeds: what the record is told when
+    #: the failures cost the lease (:meth:`JobLeases._expire`).
+    last_failure: str | None = field(default=None)
     #: When the lease was last known extended, on this process's monotonic clock: as it was held (just after the
     #: write carrying its grant), then as each successful renewal's write was issued — before it, so the reckoning
     #: never credits the lease with more life than the store gave it.
@@ -635,7 +666,11 @@ class JobLeases:
                 try:
                     verdict, reason = await run_blocking(self._executor, self._renew, held)
                 # prawduct:ok-broad-except — a failed renewal is retried next interval; the lease outlives two failures
-                except Exception:
+                except Exception as failed:
+                    # Not written on the record here: the renewal IS this process's write of the record, and the
+                    # store just failed it. Kept on the hold instead, and written on the record if the failures go
+                    # on to cost the lease (_expire); one a later renewal recovers from cost the job nothing.
+                    held.last_failure = f"{type(failed).__name__}: {failed}"
                     log.exception(
                         "eval.job_lease renewal failed %s=%s scope=%s — retried in %.0fs",
                         held.kind.name,
@@ -647,6 +682,7 @@ class JobLeases:
                     continue  # released while the renewal ran: its job wrote its own ending
                 if verdict in ("renewed", "cancel"):
                     held.renewed_at = issued
+                    held.last_failure = None
                 elif verdict in (None, "contended") and time.monotonic() - held.renewed_at >= self._lease_s:
                     # Not renewed — failed, or every write lost its race — for a whole lease.
                     await self._expire(held)
@@ -661,27 +697,84 @@ class JobLeases:
         rather than spend past an expiry it cannot extend. It writes the loss itself when it can (the store may be
         what failed); either way the job's own writes are refused from here on (:meth:`let_go`), even once the
         store recovers.
+
+        **Why it stopped is written on the record** when the record has a field for it: a run takes an
+        ``error_details`` entry naming the last renewal's error (or that every renewal lost its race), so the
+        loss a reader writes later reads with its cause beside it, rather than as a process that simply went away.
+        Written before the loss, without moving the lease, so a store refusing only renewals takes it. A sweep's,
+        a launch's or an analysis attempt's record has no such field (its ``detail`` or ``error`` is its ending,
+        which the loss writes over), so for those this is logged only. A write that fails is logged with both
+        errors.
         """
         self.let_go(held.record_id)
+        why = (
+            f"the last renewal failed: {held.last_failure}"
+            if held.last_failure is not None
+            else f"every renewal lost its race to another writer, {LEASE_WRITE_ATTEMPTS} times each"
+        )
         log.error(
-            "eval.job_lease %s=%s scope=%s could not be renewed for %.0fs, its whole lease — stopping it as lost",
+            "eval.job_lease %s=%s scope=%s could not be renewed for %.0fs, its whole lease — stopping it as lost (%s)",
             held.kind.name,
             held.record_id,
             held.scope_id,
             self._lease_s,
+            why,
         )
+        entry = (
+            f"job lease: its holder, process {self._holder_id}, could not renew it for {self._lease_s:g}s, its "
+            f"whole lease, and stopped the job — {why}"
+        )
+        try:
+            await run_blocking(
+                self._executor, _note_on_run_record, self._store, held.kind, held.record_id, held.scope_id, entry
+            )
+        # prawduct:ok-broad-except — the store may be what failed; logged with the renewal failure it was to record
+        except Exception:
+            log.exception(
+                "eval.job_lease %s=%s scope=%s: why it was stopped could not be written on its record either; the "
+                "renewal failure: %s",
+                held.kind.name,
+                held.record_id,
+                held.scope_id,
+                why,
+            )
         try:
             await run_blocking(self._executor, settle_job_record, self._store, held.kind, held.record_id, held.scope_id)
         # prawduct:ok-broad-except — the store may be what failed; the record reads lost to the next reader regardless
         except Exception:
-            log.warning(
-                "eval.job_lease %s=%s scope=%s: the loss could not be written here; the next reader writes it",
+            log.exception(
+                "eval.job_lease %s=%s scope=%s: the loss could not be written here; the next reader writes it. The "
+                "renewal failure: %s",
                 held.kind.name,
                 held.record_id,
                 held.scope_id,
-                exc_info=True,
+                why,
             )
         held.stop()
+
+    async def end_lost(self, record_id: str, cause: str) -> bool:
+        """Stop renewing a held record and write it lost with ``cause``, unless it has already ended.
+
+        For the job manager's task boundary: a task whose work raised past its own ending leaves its record
+        unended, and released, it would read lost only once its lease lapsed — with a cause saying its process went
+        away, when the process knows exactly why. Written as a shutdown writes it (the record's own lost ending,
+        no lease, conditionally), so a record the work did end keeps that ending.
+
+        Args:
+            record_id: The record — the job's id in the manager.
+            cause: The loss's cause, in a poll's words.
+
+        Returns:
+            Whether it was written; ``False`` for a record this process does not hold, or one already ended.
+
+        Raises:
+            ConflictError: The record kept changing while it was being written.
+            StorageError: A read or write failed.
+        """
+        held = self._held.pop(record_id, None)
+        if held is None:
+            return False
+        return await run_blocking(self._executor, self._end_lost, held, cause)
 
     def _act_on(self, held: _Held, verdict: RenewalVerdict, reason: str | None) -> None:
         """Do what a renewal found: deliver a cancel once, or release and stop a job fenced off its record."""
@@ -775,6 +868,8 @@ class JobLeases:
                     ended.append(one.record_id)
             # prawduct:ok-broad-except — one record's failed write must not keep the rest of a shutdown from ending theirs
             except Exception:
+                # Log only: the failed write IS the write of this record, so there is nothing left to write the error
+                # on; the record reads lost once its lease lapses.
                 log.exception(
                     "eval.job_lease shutdown could not write %s=%s scope=%s lost — it reads lost once its lease lapses",
                     one.kind.name,
