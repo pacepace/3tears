@@ -244,15 +244,27 @@ mount_fastmcp(
   line, and `{"refusal": {"kind": ..., "status": ...}}` with the error flag. No action runs. A host resolver's
   refusal still enters the `around` hook, because the caller is known: the hook runs to its yield and is handed the
   refusal as its outcome, so your audit log records "no host could serve this call" from the same hook as every
-  other call. Its `ToolCall` has `host` and `context` both `None`. A caller resolver's refusal enters no hook, since
-  there is no `ToolCall` without a caller.
+  other call. Its `ToolCall` has `host` and `context` both `None`, and `call.refused` is the very `EvalServiceError`
+  the resolver raised, so both `around` and `annotate` can read your subclass's own attributes. The outcome carries
+  only the kind and status, which two cases of one error class share; `call.refused` tells them apart with no
+  context variable set before the raise:
+
+  ```python
+  async def around(call: ToolCall) -> AsyncGenerator[None, ActionOutcome]:
+      outcome = yield
+      if isinstance(call.refused, HostUnavailable):
+          log.log(logging.INFO if call.refused.booting else logging.ERROR, "no host: %s", call.refused)
+  ```
+
+  `call.refused` is `None` in every other case: a call that ran, a mount with `host=`, and a resolver that answered.
+  A caller resolver's refusal enters no hook, since there is no `ToolCall` without a caller.
 - **A resolver that raises anything else fails the call before anything runs.** No action runs and the hook is
   not entered. The client sees the transport's error result, not a refusal. A resolver that answers with
   something other than a `Caller`, or an `OpsHost` or a `HostResolution` holding one, fails the same way, with a `TypeError` naming what it
   answered.
 - **`around`** wraps every call to every tool, for tracing, metrics or an audit log. It is an async generator
   function. It receives a `ToolCall` (the tool, the `action` argument as given, the caller, the resolved host, the
-  timeout the call read and the host resolver's `context`), yields once,
+  timeout the call read, the host resolver's `context`, and the error it raised if it refused), yields once,
   and receives the `ActionOutcome` at the yield. Anything it opens before the yield is current while the
   action runs, so a span it starts is the parent of the action's own; a `ContextVar` it sets, or a `with` it
   enters, before the yield is what the action sees, and its code after the yield undoes it in the call's own

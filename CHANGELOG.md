@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: what adopting .12 found (gaps 49–50)
+
+- **A host resolver's refusal reaches both hooks as the error it raised (gap 49).** `ToolCall.refused` is the very
+  `EvalServiceError` instance the host resolver raised when it refused the call, so `around` and `annotate` read a
+  host's own subclass's attributes: one 503 class covering a host still booting and one that failed to boot is told
+  apart without a context variable set before the raise. It is `None` in every other case, and defaults to `None`,
+  so code constructing a `ToolCall` is unaffected.
+
 ### 3tears-evals: what adopting .11 found (gap 48)
 
 - **The router's placement record is named by a public constant** (`storage.ROUTING_RECORD_DOC_TYPE`), so a host

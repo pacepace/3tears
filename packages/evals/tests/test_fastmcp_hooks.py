@@ -25,7 +25,8 @@ What a host gets without rebuilding :meth:`CatalogueTool.over`:
   raises, answers no string or overruns is logged, and the call returns as if there were no hook.
 - **The host resolver hands per-call state to both hooks**: answering a ``HostResolution`` puts its ``context`` on
   the ``ToolCall`` beside the resolved ``host``; a bare host still works, with no context; a host resolver's refusal
-  shows both as ``None``.
+  shows both as ``None``, and hands both hooks the very error it raised as ``ToolCall.refused`` — ``None`` for any
+  call the host resolver did not refuse.
 """
 
 from __future__ import annotations
@@ -922,6 +923,57 @@ async def test_a_host_resolver_s_refusal_shows_the_hooks_no_host_and_no_context(
     ]
 
 
+class _Unavailable(EvalServiceError):
+    """A host's one 503 for two cases its hooks log at different levels: booting ends on its own, failed needs a restart."""
+
+    def __init__(self, phase: str) -> None:
+        super().__init__(f"this host is {phase}", status_code=503, remedy="call again in a minute")
+        self.phase = phase
+
+
+async def test_the_hooks_see_the_exact_error_a_host_resolver_refused_with() -> None:
+    """Discodon smuggled this through a ContextVar set just before raising, since kind and status are identical."""
+    raised = iter([_Unavailable("booting"), _Unavailable("failed")])
+    thrown: list[_Unavailable] = []
+
+    def host_resolver() -> OpsHost:
+        error = next(raised)
+        thrown.append(error)
+        raise error
+
+    seen = _Seen()
+    server = _served(_Host(), host_resolver=host_resolver, around=seen.around, annotate=seen.annotate)
+    for _ in range(2):
+        _, structured, _ = await _call(server, {"action": "note_take", "note": "ok"})
+        assert structured == {"refusal": {"kind": "refused", "status": 503}}, "the outcome cannot tell them apart"
+    assert [hook for hook, _ in seen.calls] == ["around", "annotate", "around", "annotate"]
+    for (_, call), error in zip(seen.calls, [thrown[0], thrown[0], thrown[1], thrown[1]], strict=True):
+        assert call.refused is error, "each hook holds the very instance the resolver raised"
+        assert (call.host, call.context) == (None, None)
+    assert [call.refused.phase for _, call in seen.calls] == ["booting", "booting", "failed", "failed"]  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("given", ["host", "resolver"])
+async def test_a_call_the_host_resolver_did_not_refuse_carries_no_refused_error(given: str) -> None:
+    tenant = ops_fixture().host
+    mount: dict[str, Any] = {"host": {"host": tenant}, "resolver": {"host_resolver": lambda: tenant}}[given]
+    seen = _Seen()
+    _, _, is_error = await _call(
+        _served(_Host(), around=seen.around, annotate=seen.annotate, **mount), {"action": "note_take", "note": "ok"}
+    )
+    assert not is_error
+    assert [(hook, call.refused) for hook, call in seen.calls] == [("around", None), ("annotate", None)]
+
+
+async def test_a_caller_resolver_s_refusal_enters_no_hook_and_refuses_with_nothing_to_see() -> None:
+    seen = _Seen()
+    _, structured, _ = await _call(
+        _served(_Host(), caller=_booting, around=seen.around, annotate=seen.annotate), {"action": "note_take"}
+    )
+    assert structured == {"refusal": {"kind": "refused", "status": 503}}
+    assert seen.calls == [], "with no caller there is no ToolCall, so no hook sees a refused error"
+
+
 async def test_a_host_resolution_holding_no_host_is_named() -> None:
     binding = ToolBinding(
         _Host().catalogue().mount(_TOOLS[0]),
@@ -936,8 +988,11 @@ def test_a_host_resolution_and_a_tool_call_are_frozen() -> None:
     resolution = HostResolution(ops_fixture().host, context="ctx")
     call = ToolCall(tool="host", action=None, caller=CALLER, host=None, timeout_s=1.0)
     assert call.context is None
+    assert call.refused is None, "a ToolCall built without one carries no refused error"
     with pytest.raises(dataclasses.FrozenInstanceError):
         resolution.context = "changed"  # type: ignore[misc]
     with pytest.raises(dataclasses.FrozenInstanceError):
         call.context = "changed"  # type: ignore[misc]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        call.refused = _Booting()  # type: ignore[misc]
     assert "HostResolution" in fastmcp_transport.__all__

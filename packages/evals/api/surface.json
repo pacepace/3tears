@@ -5631,7 +5631,7 @@
     },
     "threetears.evals.transports.fastmcp.ToolCall": {
       "kind": "dataclass",
-      "signature": "ToolCall(tool: str, action: str | None, caller: Caller, host: OpsHost | None, timeout_s: float, context: Any = None)"
+      "signature": "ToolCall(tool: str, action: str | None, caller: Caller, host: OpsHost | None, timeout_s: float, context: Any = None, refused: EvalServiceError | None = None)"
     },
     "threetears.evals.vega.check_font_files": {
       "kind": "function",
