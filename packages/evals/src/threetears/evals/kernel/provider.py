@@ -92,6 +92,9 @@ def describe_failure(
         return describer(exc)
     # prawduct:ok-broad-except — a broken describer must not replace the failure being recorded
     except Exception as describer_exc:
+        # Log only: this answers a description and holds no record. The caller writes what it returns on its own
+        # record, and that answer is the withheld one the describer's failure calls for; the describer's own text
+        # stays out of it and out of this line, since it may carry the provider envelope.
         logger.error(
             "%s failure describer raised %s describing %s — keeping the class only",
             where,

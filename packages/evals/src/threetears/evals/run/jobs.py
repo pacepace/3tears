@@ -473,7 +473,9 @@ class EvalJobManager:
         try:
             self._on_progress(job_id, payload)
         except Exception:  # prawduct:ok-broad-except — best-effort broadcast must not corrupt job state
-            log.warning("on_progress broadcast failed for job %s", job_id, exc_info=True)
+            # Log only: the broadcast tells live readers what the record already says, and its failure is the
+            # host's channel breaking, not the job — an error_details entry would count it as one of the run's faults.
+            log.exception("on_progress broadcast failed for job %s payload=%s", job_id, payload)
 
     @property
     def leases(self) -> JobLeases | None:
@@ -769,6 +771,8 @@ class EvalJobManager:
                 await discard()
             # prawduct:ok-broad-except — a release that fails is logged; the task it belonged to has already ended
             except Exception:
+                # Log only: the task never began, so its work wrote no record; what failed is releasing what its
+                # admission held, which is this process's resources, not the job's.
                 log.exception("eval.task %s ended before its work began, and releasing what it held failed", job_id)
 
         releasing = asyncio.ensure_future(release())
@@ -1024,7 +1028,10 @@ class EvalJobManager:
             try:
                 self._storage.save_eval_run(run)
             except ConflictError, StorageError:
-                log.exception("eval.start_group run=%s left pending: its cancellation could not be saved", run.id)
+                # Log only: the failed write IS the run record's own; nothing is left to carry the error.
+                log.exception(
+                    "eval.start_group run=%s left pending: its cancellation (%s) could not be saved", run.id, reason
+                )
 
     async def _run_job(
         self,
@@ -1161,6 +1168,8 @@ class EvalJobManager:
         try:
             await self._on_run_end(run_id, scope_id, status)
         except Exception:  # prawduct:ok-broad-except — a hook's failure must not corrupt the run's ending
+            # Log only: the run's ending is stored and final before the hook is told; the hook's failure is the host's
+            # follow-up breaking, and an error_details entry would count it as one of the run's faults.
             log.exception("eval.run_end hook failed for run=%s status=%s; the run's status stands", run_id, status)
 
     async def _set_status(
