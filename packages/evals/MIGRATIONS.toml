@@ -31,10 +31,13 @@
 # callers.
 
 [[release]]
-version = "unreleased"
+version = "0.66.0-evaladopt.14"
 since = "v0.66.0-evaladopt.13"
 summary = """
-Backlog while Discodon adopts .13: a run can be labelled (core schema v12).
+Backlog while Discodon adopts .13: a run can be labelled (core schema v12); paired comparisons report the
+between-arm correlation (bundle shape 48); a subject kind's judge and simulator calls get a plan-time floor;
+run_eval and compare take a stratum key; the analysis prompt states its pruning test and the judge sees each chart's
+compiler prose; a fold with one arm per knob level can be checked by the host's residual reader.
 """
 notes = [
     "Core schema v12: a run carries the labels an operator gave it — `EvalRun.labels`, a sorted list of short names, empty by default and in no identity key — set and cleared by `ops.run_label` (the `run_label` action, whose parameter is `run_labels`) and listed by with `runs_list(label=...)`. The v11 step is the identity, and a v11 run reads with none. A build before this one refuses a v12 record as newer: stop every process sharing a store, then upgrade them together.",
