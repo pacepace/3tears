@@ -142,6 +142,10 @@ ALLOWED: dict[tuple[str, str], str] = {
         "resets it on leaving, and the value names the ledger it meters for, so a call decided under one "
         "run's ledger is never counted by another host's cell"
     ),
+    ("threetears/evals/kernel/job_context.py", "_RUNNING_JOB"): (
+        "a ContextVar, so its value is per task, never per process: the job manager sets it around one job's work, "
+        "for that task and the tasks it creates, and resets it on leaving; it names a job's record, never a host"
+    ),
     ("threetears/evals/kernel/host/sweepables.py", "SHARED_CORE"): (
         "the engine's own core declarations every host extends — engine vocabulary, built once from "
         "constants and never mutated (extend returns a new registry)"

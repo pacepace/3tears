@@ -57,13 +57,14 @@ then never name the host::
   ``--subject`` narrows it to one subject, and ``--json`` prints the frontier as JSON.
 - ``judge-temperature`` re-judges a finished run's borderline cases ``--repeats`` times at the pinned judge
   temperature and as many times at the provider's default, and prints each dimension's score variance and
-  self-agreement at the two side by side (:func:`~threetears.evals.run.judge_at_two_temperatures` read by
-  :func:`~threetears.evals.analysis.read_judge_temperatures`, the
-  ``judge_temperature`` action's operation, #633). It SPENDS: the calls are priced against the out-of-run cap the
+  self-agreement at the two side by side (:func:`~threetears.evals.run.judge_temperature_work`, awaited in the
+  foreground, read by :func:`~threetears.evals.analysis.read_judge_temperatures` — the ``judge_temperature`` action's
+  work, which the action runs as a job, #633). It SPENDS: the calls are priced against the out-of-run cap the
   command names, ``--max-cost-usd`` (or ``--no-cap``, said out loud), before the first is sent, and ledgered under
   purpose ``judge``. ``--estimate`` prices it and calls nothing. ``--all`` re-judges every scored dim instead of the
   borderline ones, ``--result`` (repeatable) narrows it to those results, and ``--json`` prints the comparison as
-  JSON — the record to keep, since nothing is written to the results.
+  JSON. Nothing is written to the results; every answer is kept on the comparison's own record
+  (:class:`~threetears.evals.run.EvalJudgeTemperatureCheck`) in the host's store.
 
 A product mounting the commands may add its own beside them — ``run_cli(..., commands=[HostCommand(...)])``
 — each parsed like the engine's (``--scope``, and ``--host`` when the host is named on the command line)
@@ -116,14 +117,15 @@ from threetears.evals.analysis import (
     serialize_report,
 )
 from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, OutOfRunPurpose
-from threetears.evals.kernel import DEFAULT_TEMPERATURE_REPEATS, EvalServiceError
+from threetears.evals.kernel import DEFAULT_TEMPERATURE_REPEATS, EvalServiceError, JobLeases
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.analysis.summary import summarize_run
 from threetears.evals.run import (
     LaunchHost,
     estimate_judge_temperature_comparison,
-    judge_at_two_temperatures,
+    judge_temperature_work,
     list_runs,
+    run_job_work,
     list_templates,
     start_run,
 )
@@ -581,7 +583,17 @@ async def _judge_temperature(host: EvalHost, args: argparse.Namespace) -> None:
         estimate = await estimate_judge_temperature_comparison(host, args.run_id, args.scope, **common)
         _say(estimate.model_dump_json(indent=2) if args.json else estimate.render())
         return
-    comparison = read_judge_temperatures(await judge_at_two_temperatures(host, args.run_id, args.scope, **common))
+    # The comparison's own work, awaited here in the foreground: its record is written and held as a job's is, so
+    # it is kept in the store beside the run, and the comparison is read off the answers it recorded.
+    work = await judge_temperature_work(host, args.run_id, args.scope, **common)
+    leases = JobLeases(host.storage, blocking_executor=host.blocking_executor)
+    try:
+        check = await run_job_work(work, store=host.storage, executor=host.blocking_executor, leases=leases)
+    finally:
+        await leases.shut_down()
+    if check.answers is None:
+        raise _Refused(f"the comparison {check.id} ended {check.outcome}: {check.detail}")
+    comparison = read_judge_temperatures(check.answers)
     _say(comparison.model_dump_json(indent=2) if args.json else comparison.render())
 
 

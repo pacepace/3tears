@@ -1,17 +1,21 @@
 """Which stored documents are kept across releases, which are regenerated, and how a kept one is read when it is old.
 
 **The evidence core is kept.** A document the engine cannot regenerate, and that an audit needs, is in the
-core (:data:`CORE_DOC_TYPES`): the evidence a run produced (its test cases, the run, its results and traces,
-human calibration ratings, the out-of-run spend ledger) and the launch inputs those documents name by id (the
-template, the judge config, the rubric dim, their tombstones, and the case set). A core document is read
+core (:data:`CORE_DOC_TYPES`, the ``kept`` entries of :data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`):
+the evidence a run produced (its test cases, the run, its results and traces, human calibration ratings, the
+out-of-run spend ledger), the launch inputs those documents name by id (the template, the judge config, the
+rubric dim, their tombstones, and the case set), the campaign a person declared and gathered runs into, and
+the records of what a sweep and each analysis generation came to, which attempt holds a campaign's
+generation slot, and the records of every other job — a launch, a second judge's pass, a judge temperature
+comparison, a host action. A core document is read
 forever from :data:`CORE_BASELINE_VERSION` on: a read of an older core document upgrades it in memory, one
 version at a time, through :data:`CORE_UPGRADERS`, and the result is validated as strictly as a document
 written today. The stored bytes are not touched; the next write of that document (a rescore, an archive
 toggle's read-modify-write) writes the current version, so migration is lazy and a scope may hold documents
 at several core versions at once.
 
-**Everything else is regenerable.** Campaigns, analyses and their attempts, insights, sweeps, judge profiles and
-cassettes are derived from the core (or, for a cassette, re-captured), so they keep the strict rule they always had: a
+**Everything else is regenerable.** Analyses, insights and judge profiles are derived from the core, and a cassette
+is re-captured, so they keep the strict rule they always had: a
 document written under any :data:`REGENERABLE_SCHEMA_VERSION` but this build's is refused on read, and the
 operator regenerates it. The bundle (``schema_version``), the report (``REPORT_VERSION``), the cell model and
 the identity keys (``IDENTITY_VERSION``) are separate version spaces with their own pins; an upgrader never
@@ -41,6 +45,8 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Final
 
+from threetears.evals.schema.doc_types import DOC_TYPE_FACTS
+
 #: The first core version a public release wrote, and the oldest this and every later build reads. Below
 #: it a document is pre-release (``v0.66.0-evaladopt.*`` wrote v8, so nothing a released build wrote is).
 CORE_BASELINE_VERSION: Final[int] = 8
@@ -54,7 +60,15 @@ CORE_BASELINE_VERSION: Final[int] = 8
 #:   ``RubricScore.output_fingerprint`` / ``criterion_fingerprint`` (stamped by the judge) and the same pair on
 #:   ``CalibrationRating`` (copied from the rated score), both OPTIONAL. Additive: the v8 step is the identity,
 #:   and a v8 document reads with neither — a score judged before the stamp, and a rating read by its result alone.
-CORE_SCHEMA_VERSION: int = 9
+#: - **v10** — a run carries its job's lease (:mod:`~threetears.evals.schema.job_lease`): ``EvalRun.lease``,
+#:   ``cancel_requested_at``, ``cancel_request_reason`` and ``lost``, all OPTIONAL. Additive: the v9 step is the
+#:   identity, and a v9 run reads with none of them — no lease, so one that has not ended reads lost (nothing can
+#:   be renewing it: the build that started it kept liveness in its own process), which is how a restart left it.
+#:   ``EvalCampaign``, ``EvalSweep`` and ``EvalAnalysisAttempt`` join the core at v10 (see below), the sweep and
+#:   the attempt with the same four lease fields; the v8 step reads a v8 campaign without what v8 retired.
+#:   ``EvalGenerationSlot``, new at v10, is core from the start, and so are the four job records new at v10:
+#:   ``EvalLaunch``, ``EvalSecondJudgePass``, ``EvalJudgeTemperatureCheck`` and ``EvalActionJob``.
+CORE_SCHEMA_VERSION: int = 10
 """The core version this build writes, and the newest a read of a core document accepts.
 
 How each value a core document stored at v8 predates reads — a field v8 gained after the document was
@@ -131,6 +145,29 @@ round is the actors'.
 — the per-cell deadline the run's cells ran under and whether the launch, the kind or the engine's default set it.
 A run stored before them carries None for both and reads as "deadline not recorded", never as today's default:
 the kind's wiring may have set another.
+
+**Joined at v10**: ``EvalCampaign``, ``EvalSweep`` and ``EvalAnalysisAttempt`` moved from the regenerable documents
+into the core. Each records what nothing stored can make again — what a person set out to learn and which runs they
+gathered, how a sweep ended, what an analysis generation spent and why it stopped — so refusing one after a
+regenerable bump lost it. No build wrote one at core v9 or v10 before they joined: one stored under v8, when both
+spaces were one version, is a core v8 document and reads through the v8 and v9 steps. A v8 campaign loses ``status``
+and reads its design's ``controls`` as ``held_fixed`` at the v8 step (both retired within v8, see
+:data:`REGENERABLE_SCHEMA_VERSION`), and every optional field v8 gained reads as those notes say: a design stored
+before ``measure_latency``, ``guardrail_margins``, ``crossing`` or ``skipped_cells`` declares nothing about them, and a
+sweep or attempt stored before the job lease carries none (read as the lease note there says). A store written
+before the sweep existed holds none.
+
+``EvalGenerationSlot`` is new at v10 and core from the start: which attempt holds a campaign's one generation. A
+build that could not read one would block every generation of its campaign, and one that read it as free would start
+a second beside a live one held by an older process mid upgrade, so it is kept. It has no corpus before v10, and a
+store written before it holds none: no generation was claimed through a slot.
+
+``EvalLaunch``, ``EvalSecondJudgePass``, ``EvalJudgeTemperatureCheck`` and ``EvalActionJob`` are new at v10 and core
+from the start, each carrying the job lease: the records of a launch run as one job (the runs it started), of a second
+judge's pass (what it asked and spent), of a judge temperature comparison (every answer, recorded nowhere else) and
+of a host action's job (the result it produced). Each records what nothing stored can make again, so it is kept. None
+has a corpus before v10, and a store written before them holds none: a launch, a pass and a comparison were made
+inside the call that asked for them, and left no record of their own.
 """
 
 #: The version every regenerable document is written under, and the only one a read of one accepts.
@@ -230,31 +267,29 @@ stored before it carries None and reads as not recorded: its judged readings sta
 did when frozen.
 
 **Within v8, not a bump**: ``EvalSweep`` joined as a new stored type (#632) — the record of a multi-arm launch
-run arm after arm. A store written before it holds none, which reads as "no sweep was started".
+run arm after arm. A store written before it holds none, which reads as "no sweep was started". (The sweep, the
+campaign and the analysis attempt are core from v10: see :data:`CORE_SCHEMA_VERSION`.)
 
 **Within v8, not a bump**: ``EvalJudgeProfile`` joined as a new stored type (#628) — what a judge campaign measured
 one judge to be on one criterion, which other campaigns' evidence tiers read. Regenerable, since it is recorded from
 the judge campaign's stored runs and results. A store written before it holds none, which reads as "no judge was
 profiled": every campaign's tiers are its own evidence alone, as they were.
+
+**Within v8, not a bump**: ``EvalSweep`` and ``EvalAnalysisAttempt`` joined the job lease as OPTIONAL fields
+(:mod:`~threetears.evals.schema.job_lease`): ``lease``, ``cancel_requested_at``, ``cancel_request_reason`` and
+``lost``. A record stored before them carries none of them: a sweep reading ``running`` then has no lease, and reads
+lost — which is what it was, its liveness having lived only in the process that ran it — and an attempt, which was
+written only as it ended, has ended and reads as it says. ``AttemptOutcome`` gained ``running``, the attempt a
+background generation now writes as it starts; no stored attempt carries it, so none reads differently.
 """
 
-#: The kept documents, by ``doc_type``. Embedded shapes (a result's rubric scores, usage rows and goal-state
-#: outcomes, a run's context components and subject snapshot, a ledger's calls) are core through their parent.
+#: The kept documents, by ``doc_type``: the ``kept`` entries of
+#: :data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`, derived so the registry is the one place a type's
+#: lifecycle is decided. Embedded shapes (a result's rubric scores, usage rows and goal-state outcomes, a run's
+#: context components and subject snapshot, a ledger's calls, a campaign's declared design, a sweep's arms) are
+#: core through their parent.
 CORE_DOC_TYPES: Final[frozenset[str]] = frozenset(
-    {
-        "eval_test_case",
-        "eval_run",
-        "eval_result",
-        "eval_trace",
-        "calibration_rating",
-        "eval_out_of_run_spend",
-        "eval_template",
-        "judge_config",
-        "rubric_dim",
-        "rubric_dim_tombstone",
-        "judge_config_tombstone",
-        "case_set",
-    }
+    doc_type for doc_type, facts in DOC_TYPE_FACTS.items() if facts.lifecycle == "kept"
 )
 
 #: The fields every core document is addressed by in the store.
@@ -266,7 +301,8 @@ _ADDRESSED_EVERYWHERE = frozenset({"id", "doc_type", "schema_version", "scope_id
 CORE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
     {
         "eval_test_case": _ADDRESSED_EVERYWHERE | {"template_id", "stratum"},
-        "eval_run": _ADDRESSED_EVERYWHERE | {"status", "archived", "created_at"},
+        "eval_run": _ADDRESSED_EVERYWHERE
+        | {"status", "archived", "created_at", "cancel_requested_at", "cancel_request_reason"},
         "eval_result": _ADDRESSED_EVERYWHERE | {"eval_run_id", "test_case_id", "model"},
         "eval_trace": _ADDRESSED_EVERYWHERE,
         "calibration_rating": _ADDRESSED_EVERYWHERE
@@ -278,6 +314,18 @@ CORE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
         "rubric_dim_tombstone": _ADDRESSED_EVERYWHERE | {"deleted_at"},
         "judge_config_tombstone": _ADDRESSED_EVERYWHERE | {"deleted_at"},
         "case_set": _ADDRESSED_EVERYWHERE | {"name", "version"},
+        "eval_campaign": _ADDRESSED_EVERYWHERE | {"subject_id", "behavior", "archived", "created_at"},
+        "eval_sweep": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
+        "eval_analysis_attempt": _ADDRESSED_EVERYWHERE
+        | {"campaign_id", "created_at", "cancel_requested_at", "cancel_request_reason"},
+        # The store reads a slot by id alone, and the id is generation_slot_id(campaign_id); the claim is
+        # attempt_id. A step that moved either would move or reassign a live claim, so neither is a step's to touch.
+        "eval_generation_slot": _ADDRESSED_EVERYWHERE | {"campaign_id", "attempt_id"},
+        # The four job records are read by id alone; a cancel request is merged into them in place.
+        "eval_launch": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
+        "eval_second_judge_pass": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
+        "eval_judge_temperature_check": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
+        "eval_action_job": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
     }
 )
 
@@ -301,15 +349,52 @@ class CoreUpgrader:
     upgrade: Callable[[dict[str, Any]], dict[str, Any]]
 
 
+def _from_v8(document: dict[str, Any]) -> dict[str, Any]:
+    """The v8 step: a judge score's and a rating's label key is additive, and a v8 campaign drops what v8 retired.
+
+    A campaign was regenerable while v8 was written, and v8 retired two of its fields in place
+    (``__retired_fields__``, the regenerable path): ``status`` was removed, and its declared design's
+    ``controls`` renamed ``held_fixed``. A core type changes only by a step, so this step does what the
+    retirement did, for a campaign stored either side of it: ``status`` is discarded (it froze nothing, so its
+    value changes no membership and no analysis), and ``controls`` is read as ``held_fixed``, value unchanged.
+    A design carrying both cannot say which it meant, and is left as stored so its read refuses it.
+
+    Args:
+        document: A v8 core document of one of the step's types.
+
+    Returns:
+        The document as v9 reads it.
+    """
+    if document.get("doc_type") != "eval_campaign":
+        return document
+    document.pop("status", None)
+    design = document.get("declared_design")
+    if isinstance(design, dict) and "controls" in design and "held_fixed" not in design:
+        design = dict(design)
+        design["held_fixed"] = design.pop("controls")
+        document["declared_design"] = design
+    return document
+
+
 #: The registered steps, oldest first: ``[s.from_version for s in CORE_UPGRADERS]`` is
 #: ``range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION)``. A constant, so no import registers a step.
 CORE_UPGRADERS: tuple[CoreUpgrader, ...] = (
     CoreUpgrader(
         from_version=8,
-        doc_types=frozenset({"eval_result", "calibration_rating"}),
+        doc_types=frozenset({"eval_result", "calibration_rating", "eval_campaign"}),
         reason=(
             "v9 adds the optional label key (output_fingerprint, criterion_fingerprint) to a judge score and a "
-            "calibration rating; a v8 document has neither, which v9 reads as not stamped"
+            "calibration rating, which a v8 document has neither of and v9 reads as not stamped; a v8 campaign "
+            "loses the status v8 retired and reads its design's retired controls as held_fixed"
+        ),
+        upgrade=_from_v8,
+    ),
+    CoreUpgrader(
+        from_version=9,
+        doc_types=frozenset({"eval_run", "eval_sweep", "eval_analysis_attempt"}),
+        reason=(
+            "v10 adds the optional job lease (lease, cancel_requested_at, cancel_request_reason, lost) to a run, a "
+            "sweep and an analysis attempt; a v9 one has none, which v10 reads as a record no process holds"
         ),
         upgrade=lambda document: document,
     ),

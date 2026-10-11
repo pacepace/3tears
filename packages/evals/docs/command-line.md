@@ -70,7 +70,9 @@ prints each dimension's score variance, unstable cases and self-agreement at the
 here besides `run` that spends: name the out-of-run cap with `--max-cost-usd`, or waive it with `--no-cap`. Every
 call is priced against it before the first is sent and ledgered under purpose `judge`. `--estimate` prices it and
 calls nothing. `--all` re-judges every scored dimension, `--result` narrows it to those results, and `--json` prints
-the `JudgeTemperatureComparison` (or estimate). Keep that output: nothing is written to the results. A comparison
+the `JudgeTemperatureComparison` (or estimate). Nothing is written to the results; every answer is kept on the
+comparison's own record (`EvalJudgeTemperatureCheck`) in the host's store, which the command writes and holds as the
+`judge_temperature` action's job does, awaiting it in the foreground. A comparison
 whose client did not send the temperature a side names prints `NOT COMPARABLE` with the reason and still exits `0`.
 
 ### `gate`

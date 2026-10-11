@@ -11,11 +11,11 @@ from collections.abc import Sequence
 
 import pytest
 
+from threetears.evals.kernel import default_job_timeout
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.schema import RubricScore
 from threetears.evals.schema.models import TRANSCRIPT_DIM_ID, EvalResult, EvalRun
 from threetears.evals.ops import RegressionAlert, RegressionSink, RegressionWatch
-from threetears.evals.run import default_job_timeout
 from threetears.evals.run.launch import LaunchHost
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_calibration_rating, make_eval_result, make_eval_run

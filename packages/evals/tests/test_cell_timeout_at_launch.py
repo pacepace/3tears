@@ -25,6 +25,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_
 from packages.evals.tests.fixtures.toyhost.kind import TOY_SCRIPTS, ScriptedExtractionClient
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
+from packages.evals.tests.ops_support import launched_runs
 
 #: The kind's own deadline in these tests, and how long the slow extractor takes over each cell.
 KIND_DEADLINE_S = 0.05
@@ -125,11 +126,9 @@ async def test_the_operation_and_its_estimate_carry_the_deadline():
     with pytest.raises(ValidationFailedError, match="above the host's ceiling"):
         await run_launch(ops, arguments, TOYHOST_SCOPE)
     started = await run_launch(ops, arguments.model_copy(update={"cell_timeout_s": 2.0}), TOYHOST_SCOPE)
-    (job,) = started.jobs
     async with asyncio.timeout(20):
-        while host.job_manager.is_active(job.target_id):
-            await asyncio.sleep(0.01)
-    stored = storage.load_eval_run(job.target_id, TOYHOST_SCOPE)
+        (run_id,) = await launched_runs(ops, started)
+    stored = storage.load_eval_run(run_id, TOYHOST_SCOPE)
     assert stored is not None and (stored.cell_timeout_s, stored.cell_timeout_s_origin) == (2.0, "launch")
 
 

@@ -35,7 +35,7 @@ from threetears.evals.analysis.report.model import (
     report_title,
 )
 from threetears.evals.analysis.report.words import positions
-from threetears.evals.analysis.viz.intent import Cell
+from threetears.evals.analysis.viz.intent import ChartValue
 from threetears.evals.analysis.viz.quantities import render_cell
 
 #: The page's whole stylesheet: system fonts, a readable measure, light and dark from the reader's setting.
@@ -183,7 +183,7 @@ def _table(block: TableBlock) -> str:
     return grid
 
 
-def _grid(headers: Sequence[str], rows: Sequence[Sequence[Cell]]) -> str:
+def _grid(headers: Sequence[str], rows: Sequence[Sequence[ChartValue]]) -> str:
     """A table, scrolling inside its own box rather than widening the page."""
     head = "".join(f'<th scope="col">{_escape(header)}</th>' for header in headers)
     body = "".join(

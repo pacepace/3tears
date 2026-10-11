@@ -16,16 +16,18 @@ interprets. The host chooses what a scope is and passes it through.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import ValidationError
 
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
-from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES, EvalRun, utc_now_iso
+from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES, EvalRun
 from threetears.evals.kernel.result_condition import ResultOutcome, classify_result
-from threetears.evals.kernel.scoring import reconstruct_completeness, summarize_completeness
+from threetears.evals.kernel.scoring import summarize_completeness
+from threetears.evals.kernel.storage import LeaseStore, NonTerminalRunScan
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
+from threetears.evals.kernel.job_leases import RUN_JOB, request_job_cancel, settle_job_record
 from threetears.evals.run.rejudge import apply_rejudge, failed_judge_dims, reproducible_judge_inputs
 from threetears.evals.run.run_document import update_eval_run
 from threetears.evals.run.runner import build_judge_context, judge_dims
@@ -37,20 +39,21 @@ if TYPE_CHECKING:
     from threetears.evals.kernel.scoring import CellSummary
     from threetears.evals.run.jobs import EvalJobManager
     from threetears.evals.run.metering import MeteredCallTally
-    from threetears.evals.kernel.storage import JobStore, RunRecordStore, RunStore
+    from threetears.evals.kernel.storage import JobStore, RunStore
 
 log = get_logger(__name__)
 
-#: Recorded on every run the startup reclaim settles, so the record says why the
-#: run ended rather than implying an operator chose to stop it. That distinction
-#: does not survive in ``status`` — a reboot cancels in-flight runs and there is
-#: deliberately no separate status for it — so this line is the only place an
-#: analysis can tell infrastructure loss from a deliberate stop.
-_ABANDONED_RUN_REASON = "abandoned by a process restart while in flight"
+
+class ReclaimStore(LeaseStore, Protocol):
+    """What :func:`sweep_abandoned_runs` reads and writes: the boot scan of runs not ended, and the job records."""
+
+    def query_non_terminal_eval_runs(self, scope_id: str, /) -> NonTerminalRunScan:
+        """See :meth:`~threetears.evals.kernel.EvalStorage.query_non_terminal_eval_runs`."""
+        ...
 
 
 class AbandonedRunSweepReport(EvalBaseModel):
-    """Outcome of one startup reclaim of runs left non-terminal by a dead process."""
+    """Outcome of one reclaim of runs left non-terminal by a process that has gone (:func:`sweep_abandoned_runs`)."""
 
     scanned: int = 0
     """Non-terminal rows the scan MATCHED, summed over every scope it was told to sweep.
@@ -63,9 +66,9 @@ class AbandonedRunSweepReport(EvalBaseModel):
     ``unreadable``) sum to this."""
 
     cancelled_run_ids: list[str] = []
-    """Runs this sweep settled to ``cancelled``.
+    """Runs this sweep wrote lost — status ``cancelled``, the loss recorded on ``lost``.
 
-    Named rather than counted: a boot that cancels a run an operator was
+    Named rather than counted: a sweep that ends a run an operator was
     watching has to be able to say which one."""
 
     already_settled: int = 0
@@ -75,10 +78,7 @@ class AbandonedRunSweepReport(EvalBaseModel):
     sweep wanted them in."""
 
     skipped_live: int = 0
-    """Scanned runs this process is actually executing, and so left alone.
-
-    Zero on the boot path the sweep is built for (the job manager is empty
-    then); non-zero means it was invoked with work in flight."""
+    """Scanned runs whose lease is live — some process, this one or another, is running them — and so left alone."""
 
     unreadable: int = 0
     """Scanned rows the sweep could not settle because something would not read.
@@ -119,72 +119,63 @@ def get_run(storage: RunStore, run_id: str, scope_id: str) -> EvalRun:
 
 
 def cancel_run(
-    storage: RunRecordStore,
+    storage: LeaseStore,
     run_id: str,
     scope_id: str,
     *,
     job_manager: EvalJobManager | None,
     reason: str | None = None,
 ) -> EvalRun:
-    """Cancel a pending/running eval run so it stops burning cost and quota.
+    """Ask a pending/running eval run to stop so it stops burning cost and quota — from any process.
 
-    Two paths, selected by whether the run has a live background task:
+    The run is read as every process reads it (:func:`~threetears.evals.kernel.job_leases.settle_job_record`): one whose
+    lease has lapsed is written lost first, and has then ended. A run that has not ended gets the cancel written on
+    its record (:func:`~threetears.evals.kernel.job_leases.request_job_cancel`), which the process holding it reads at its
+    next lease renewal; when that process is this one, ``job_manager`` cancels it at once as well. Either way the
+    job's own ``CancelledError`` boundary writes ``cancelled`` (plus ``reason`` into ``cancellation_reason``) as
+    the task unwinds. Request-then-converge: the run returned here may still read ``running`` for up to one
+    renewal interval — confirm via :func:`get_run`.
 
-    - **Live task** — cancellation is requested through the job manager;
-      the job's own ``CancelledError`` boundary writes ``cancelled`` (plus
-      ``reason`` into ``cancellation_reason``) as the task unwinds, typically
-      at its next await point. Request-then-converge: the run returned here
-      may still read ``running`` for a moment — confirm via :func:`get_run`.
-    - **No live task** (abandoned, e.g. by a web-process restart while the
-      run was in flight) — the run document is repaired directly to
-      ``cancelled`` with an explanatory reason, and its completeness is
-      reconstructed from stored results since the process that held the
-      loop's own tally is gone. Deliberately not "orphaned": an orphaned run
-      is a curation concept — a run no campaign holds — and a run can be
-      either, neither, or both.
-
-    Both paths write the reason to ``cancellation_reason`` and never to
-    ``error_details``: a cancel is a distinct terminal outcome, so an
-    operator's decision to stop is readable apart from the things that broke.
-
-    Results already persisted by the run remain valid and readable.
+    The reason goes to ``cancellation_reason`` and never to ``error_details``: a cancel is a distinct terminal
+    outcome, so an operator's decision to stop is readable apart from the things that broke. Results already
+    persisted by the run remain valid and readable.
 
     Args:
         storage: The run's store.
         run_id: Run to cancel.
         scope_id: The partition the run lives in.
-        job_manager: The job manager that owns this process's live tasks, the only thing that can
-            see whether the run has one; ``None`` when the caller was built without one.
+        job_manager: This process's job manager, to cancel a run it runs without waiting for a renewal; ``None``
+            when the caller has none, and the cancel lands through the record alone.
         reason: Optional operator-facing reason recorded on the run.
 
     Returns:
-        The run as persisted after the cancel request (see convergence
-        note above).
+        The run as persisted after the cancel request (see convergence note above).
 
     Raises:
         NotFoundError: No run with that id in the scope.
-        ValidationFailedError: The run is already terminal
-            (``completed`` / ``failed`` / ``cancelled`` / ``budget_stopped`` / ``exhausted``).
-        ConflictError: The no-live-task repair's conditional write lost its
-            race — the document changed between the read and the write, so
-            nothing was repaired and the caller must re-read before retrying.
-        RuntimeError: ``job_manager`` is ``None`` — cancellation must go through
-            the canonical wiring, which is the only place that can see live tasks.
+        ValidationFailedError: The run has already ended (``completed`` / ``failed`` / ``cancelled`` /
+            ``budget_stopped`` / ``exhausted``) — lost included, which this read may have just written.
+        ConflictError: The run kept changing while its lapsed lease was being written lost; nothing was decided.
+        StorageError: A read or the request's write failed.
     """
-    run = get_run(storage, run_id, scope_id)
+    run, _ = settle_job_record(storage, RUN_JOB, run_id, scope_id)
+    if run is None:
+        raise NotFoundError("run", run_id)
     require_cancellable(run)
-    if job_manager is None:
-        raise RuntimeError("cancel_run requires job_manager — without one, whether a run is live is unanswerable")
-
-    if job_manager.cancel_job(run_id, reason=reason):
+    request_job_cancel(storage, run_id, scope_id, reason=reason)
+    if job_manager is not None and job_manager.cancel_job(run_id, reason=reason):
+        log.info("eval.cancel_run requested run=%s scope=%s reason=%s", run_id, scope_id, reason or "(none)")
+    else:
         log.info(
-            "eval.cancel_run requested run=%s scope=%s reason=%s",
+            "eval.cancel_run asked run=%s scope=%s reason=%s on its record — its holder reads it at its next renewal",
             run_id,
             scope_id,
             reason or "(none)",
         )
-        return get_run(storage, run_id, scope_id)
-    return repair_abandoned_run(storage, run_id, scope_id, reason=reason)
+    current, _ = storage.load_job_record(EvalRun, run_id, scope_id)
+    if current is None:
+        raise NotFoundError("run", run_id)
+    return current
 
 
 def require_cancellable(run: EvalRun) -> None:
@@ -194,211 +185,96 @@ def require_cancellable(run: EvalRun) -> None:
         run: The run as read.
 
     Raises:
-        ValidationFailedError: The run is already terminal.
+        ValidationFailedError: The run is already terminal; a lost run says so, with its cause.
     """
     if run.status not in NON_TERMINAL_RUN_STATUSES:
-        raise ValidationFailedError(f"run '{run.id}' is {run.status} — only pending/running runs can be cancelled")
+        lost = f"; it was lost: {run.lost.cause}" if run.lost is not None else ""
+        raise ValidationFailedError(
+            f"run '{run.id}' is {run.status} — only pending/running runs can be cancelled{lost}"
+        )
 
 
-def repair_abandoned_run(storage: RunRecordStore, run_id: str, scope_id: str, *, reason: str | None) -> EvalRun:
-    """Repair a non-terminal run no live task is running to ``cancelled`` — :func:`cancel_run`'s no-live-task half.
+def sweep_abandoned_runs(storage: ReclaimStore, scopes: Iterable[str]) -> AbandonedRunSweepReport:
+    """Write lost every run left not ended by a process that has gone, in the scopes the host names.
 
-    Every store call :func:`cancel_run` makes beyond its first read is here, so a caller serving an event
-    loop can ask the job manager on the loop and run this on its blocking executor
-    (:func:`~threetears.evals.ops.job_cancel` does).
+    Cell and job timeouts both live *in the process* executing the run, so a hard kill (OOM, SIGKILL, node
+    eviction) writes no terminal status: the document reads ``running`` and its pass^k sits on a partial
+    denominator. Its lease is how anyone can tell: a run whose lease has lapsed (or that carries none, written by
+    a build before leases) is lost, and this writes it so — the same read every process makes
+    (:func:`~threetears.evals.kernel.job_leases.settle_job_record`), here over every run a scan finds not ended, rather
+    than waiting for someone to poll each. A run whose lease is live is running in SOME process, this one or
+    another, and is left alone; so this may run at any time, on every process sharing a store, at once.
 
-    Args:
-        storage: The run's store.
-        run_id: The run.
-        scope_id: The partition it lives in.
-        reason: The operator-facing reason, recorded on the run.
+    The write sets the run ``cancelled`` with the loss as its ``cancellation_reason``, records the loss
+    (``lost``), stamps ``completed_at``, and reconstructs its completeness from stored results unless its loop
+    recorded its own. Results already persisted by the run stay valid and readable — this settles the run's
+    status, it does not discard its work.
 
-    Returns:
-        The run as persisted after the repair.
+    A run that ends (or is deleted) between the scan and its write is counted as ``already_settled``, not an
+    error: something else finished the job, which is the outcome this wanted. A storage failure is deliberately
+    *not* caught here — swallowing it would leave the operator with runs that read ``running`` and a log line
+    claiming they were swept. **That does not make it fatal to the caller**: a host's boot path catches its
+    storage-unavailable error from this call, logs at ERROR and continues, since a database that cannot be reached
+    at boot must not take the admin surface down with it. This function refuses to lie about what it swept; its
+    caller decides whether an unswept database is worth refusing to start over.
 
-    Raises:
-        NotFoundError: No run with that id in the scope.
-        ValidationFailedError: The run is terminal on the authoritative re-read.
-        ConflictError: The conditional write lost its race; nothing was repaired.
-    """
-    # No live task for a non-terminal run: the eval process restarted (or
-    # crashed) while it was in flight, leaving the document stuck. Repair
-    # it directly — the truthful terminal state is "cancelled by operator".
-    detail = (reason or "cancelled by operator") + " (no live job — abandoned run repaired directly)"
-    current, etag = storage.load_eval_run_with_etag(run_id, scope_id)
-    if current is None:
-        raise NotFoundError("run", run_id)
-    # Self-defense, not just the earlier gate: the ETag reload is the
-    # authoritative read for this write, so the invariant is enforced on it
-    # rather than assumed from whatever window separated the first read from this one.
-    require_cancellable(current)
-    data = current.to_dict()
-    data["status"] = "cancelled"
-    data["cancellation_reason"] = detail
-    data["completed_at"] = utc_now_iso()
-    # The process that ran this died with its cell tally, so nothing recorded
-    # how much of the matrix it delivered — and its scores would otherwise sit
-    # on a short denominator with nothing saying so, which is exactly what the
-    # kill that opened this cycle did to a sweep at 14 of 15. Reconstructed
-    # from what reached storage, in the same write as the status so the repair
-    # stays one conditional write. Never overwritten: a run whose own loop
-    # recorded a tally before the process died has the better observation.
-    if current.completeness is None:
-        # The counts need each result's outcome and nothing it recorded, and a plain
-        # by-run read now costs exactly that: the stored ``eval_result`` holds no
-        # turn-by-turn record and no OTel spans — both live in sibling ``eval_trace``
-        # documents this never fetches — so the read scales with how many cells there
-        # were, not with what they observed. The condition-only projection this used to
-        # call was deleted with the payloads it existed to leave behind.
-        stored = storage.query_eval_results_by_run(run_id, scope_id)
-        data["completeness"] = reconstruct_completeness(current, stored).to_dict()
-    try:
-        storage.save_eval_run(EvalRun.from_dict(data), if_match=etag)
-    except ConflictError as e:
-        # The conditional write lost its race, so nothing was repaired. Returning
-        # normally here would report a repair that did not happen — and the startup
-        # sweep, this function's other caller, would name the run in its "cancelled at
-        # startup" log while the document still reads ``running``.
-        raise ConflictError(f"run '{run_id}' changed while being cancelled — re-read it and retry") from e
-    log.info("eval.cancel_run repaired abandoned run=%s scope=%s", run_id, scope_id)
-    return get_run(storage, run_id, scope_id)
-
-
-def sweep_abandoned_runs(
-    storage: RunRecordStore, scopes: Iterable[str], *, job_manager: EvalJobManager | None
-) -> AbandonedRunSweepReport:
-    """Cancel runs this process cannot own, left non-terminal by a previous one.
-
-    Cell and job timeouts both live *in the process* executing the run, so a
-    hard kill (OOM, SIGKILL, node eviction) writes no terminal status: the
-    document reads ``running`` forever and its pass^k silently sits on a
-    partial denominator. This reclaims those documents.
-
-    Intended to run **once at process start, before any run can be
-    launched**: the job manager is empty at boot, so every non-terminal run
-    this can see is abandoned by construction. Runs holding a live job here
-    are skipped anyway rather than trusting that timing — the check costs
-    nothing and keeps a healthy run safe from a mistimed second call.
-
-    What that check cannot do is see *another process's* runs, because the
-    job manager is process-local. So this must not run on more than one
-    process against shared storage: the second one booting would find the
-    first's healthy runs non-terminal, see no live job for them, and cancel
-    them. The caller owns that gating.
-
-    The repair itself is :func:`cancel_run`'s no-live-job branch, invoked
-    rather than reimplemented: it re-reads under an ETag, re-checks the
-    non-terminal invariant on that authoritative read, records the reason on
-    ``cancellation_reason``, reconstructs the run's completeness from stored
-    results, and stamps ``completed_at``. Results already persisted by the
-    run stay valid and readable — this settles the run's status, it does not
-    discard its work.
-
-    A run that turns terminal (or is deleted) between the scan and its
-    repair is counted as ``already_settled``, not an error: something else
-    finished the job, which is the outcome this wanted. A storage failure is
-    deliberately *not* caught here — swallowing it would leave the operator
-    with runs that read ``running`` and a log line claiming they were swept.
-    **That does not make it fatal to the caller**, and the boot path
-    deliberately does not treat it that way: the web process binds and
-    serves its health check independently of the database, so a database that
-    cannot be reached at boot must not take the admin surface down with it.
-    A host's boot path therefore catches its storage-unavailable error from
-    this call, logs at ERROR and continues. The division is the point —
-    this function refuses to lie about what it swept; its caller decides
-    whether an unswept database is worth refusing to start over.
-
-    A row that cannot be *reconstructed* is a third case, and it is not a
-    storage failure: the database answered, and the answer is a document
-    this build's model cannot express (a bare rename taken on the decision
-    that the corpus is dropped). Tolerated per row in two places rather than
-    raising for the list — the scan itself, and this loop, because settling a
-    run reads more than the run and the completeness read still raises for a
-    whole list. Both come back as ``unreadable``: counted, logged with their
-    ids, and inside ``scanned``. The sweep can do nothing about them, and
-    catching the second one is what keeps the first sentence of this
-    docstring true — uncaught, a repair that cannot read aborts the sweep
-    after earlier runs were already settled, and the caller then reports a
-    sweep that never happened.
+    A row that cannot be *reconstructed* is a third case, and it is not a storage failure: the database answered,
+    and the answer is a document this build's model cannot express. Tolerated per row in two places rather than
+    raising for the list — the scan itself, and this loop, because settling a run reads more than the run and the
+    completeness read still raises for a whole list. Both come back as ``unreadable``: counted, logged with their
+    ids, and inside ``scanned``.
 
     Args:
         storage: The runs' store.
-        scopes: The scopes to sweep, which the host names — the engine cannot enumerate the
-            scopes a store holds and does not assume the store can. Each is scanned in turn.
-        job_manager: The job manager that owns this process's live tasks; ``None`` when the
-            caller was built without one.
+        scopes: The scopes to sweep, which the host names — the engine cannot enumerate the scopes a store holds
+            and does not assume the store can. Each is scanned in turn.
 
     Returns:
-        Counts plus the ids cancelled. All five reach the boot log: the two
-        ids-and-scanned figures say what was reclaimed, and
-        ``already_settled`` / ``skipped_live`` / ``unreadable`` say why a
-        scan reclaimed less than it saw — a non-zero ``skipped_live`` in
-        particular means this was invoked with work in flight, which the
-        boot path never is, and a non-zero ``unreadable`` means the corpus
-        has outlived the model that wrote it.
-
-    Raises:
-        RuntimeError: ``job_manager`` is ``None``: without one the liveness check is unanswerable,
-            so sweeping would be guessing with cancellations.
+        Counts plus the ids written lost. ``already_settled`` / ``skipped_live`` / ``unreadable`` say why a scan
+        wrote less than it saw — ``skipped_live`` counts runs some process holds a live lease on, and a non-zero
+        ``unreadable`` means the corpus has outlived the model that wrote it.
     """
-    if job_manager is None:
-        raise RuntimeError(
-            "sweep_abandoned_runs requires job_manager — without one, whether a run is live is unanswerable"
-        )
-
     runs: list[EvalRun] = []
     unreadable_rows = 0
     for scope_id in scopes:
         scan = storage.query_non_terminal_eval_runs(scope_id)
         runs.extend(scan.runs)
         unreadable_rows += scan.unreadable
-    cancelled: list[str] = []
+    lost: list[str] = []
     already_settled = 0
     skipped_live = 0
     unreadable = unreadable_rows
     for run in runs:
-        if job_manager.is_active(run.id):
-            skipped_live += 1
-            continue
         try:
-            cancel_run(storage, run.id, run.scope_id, job_manager=job_manager, reason=_ABANDONED_RUN_REASON)
-        except NotFoundError, ValidationFailedError, ConflictError:
-            # All three mean the same thing to this sweep: the run is no longer
-            # ours to settle. ConflictError is the narrowest — the conditional
-            # write lost its race, so something else wrote the document between
-            # the scan and the repair. Counting it here rather than reporting a
-            # cancellation keeps the boot log from naming a run it did not settle.
+            settled, wrote_lost = settle_job_record(storage, RUN_JOB, run.id, run.scope_id)
+        except ConflictError:
+            # NOSILENT: the run kept changing under the write, so something else is writing it — not ours to settle
             already_settled += 1
             continue
         except ValidationError:
-            # The run's OWN document read fine — the scan proved that — but the
-            # repair reads more than the run: ``cancel_run`` reconstructs the
-            # run's completeness from its stored results, and that read still
-            # raises for a whole list. Caught per row for the reason the scan
-            # isolates a refused row, and it is the sharper case: uncaught, this
-            # propagates out of the sweep AFTER earlier runs were already
-            # cancelled, and the boot log then reports a sweep that was skipped
-            # — naming as unswept the very runs it settled. This function's own
-            # contract is that it refuses to lie about what it swept.
+            # The run's OWN document read fine — the scan proved that — but writing it lost reads more than the
+            # run: its completeness is reconstructed from its stored results, and that read still raises for a
+            # whole list. Caught per row, so the runs already settled by this sweep are still reported.
             unreadable += 1
             log.exception(
-                "Eval run %s (scope %s) was readable but its repair was not: a model "
-                "rejected a value while settling it, so it stays stamped %s. The traceback "
-                "is not raised here because the runs already settled by this sweep must "
-                "still be reported.",
+                "Eval run %s (scope %s) was readable but writing it lost was not: a model rejected a value while "
+                "settling it, so it stays stamped %s.",
                 run.id,
                 run.scope_id,
                 run.status,
             )
             continue
-        cancelled.append(run.id)
+        if wrote_lost:
+            lost.append(run.id)
+        elif settled is not None and not RUN_JOB.ended(settled):
+            skipped_live += 1
+        else:
+            already_settled += 1
     return AbandonedRunSweepReport(
-        # Rows the scan MATCHED, not rows it could read — the unreadable ones
-        # are the whole reason this figure and ``len(runs)`` are not the same
-        # number, and leaving them out would make a boot that reclaimed
-        # nothing report a scan that found nothing.
+        # Rows the scan MATCHED, not rows it could read — the unreadable ones are the whole reason this figure and
+        # ``len(runs)`` are not the same number.
         scanned=len(runs) + unreadable_rows,
-        cancelled_run_ids=cancelled,
+        cancelled_run_ids=lost,
         already_settled=already_settled,
         skipped_live=skipped_live,
         unreadable=unreadable,
@@ -629,7 +505,12 @@ def record_completeness(
     """
     record: RunCompleteness | None = None
 
-    def _stamp(current: EvalRun) -> dict[str, Any]:
+    def _stamp(current: EvalRun) -> dict[str, Any] | None:
+        if current.lost is not None:
+            # The run was written lost — its lease lapsed and a reader in some process recorded it, or this
+            # process shut down — so this loop no longer holds it and writes nothing more; the loss's write
+            # reconstructed the record from what reached storage.
+            return None
         # Recomputed per attempt, against whichever document won the race:
         # the denominator is read from the run, so a re-apply that reused the
         # first read's counts would write a record describing a document that
@@ -660,6 +541,14 @@ def record_completeness(
     if outcome == "missing":
         log.error("eval.completeness run=%s scope=%s vanished before its record could be written", run_id, scope_id)
         return
+    if outcome == "declined":
+        log.warning(
+            "eval.completeness run=%s scope=%s not recorded by its loop: the run was written lost, and its "
+            "completeness is the one reconstructed then",
+            run_id,
+            scope_id,
+        )
+        return
     if outcome == "refused":
         log.error(
             "eval.completeness run=%s scope=%s NOT recorded (no attempt completed — a refused write "
@@ -684,11 +573,11 @@ def record_completeness(
 
 __all__ = [
     "AbandonedRunSweepReport",
+    "ReclaimStore",
     "cancel_run",
     "get_run",
     "record_completeness",
     "rejudge_result",
-    "repair_abandoned_run",
     "require_cancellable",
     "sweep_abandoned_runs",
 ]

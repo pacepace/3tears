@@ -1,5 +1,8 @@
 """Fields retired within schema v8 read on a stored read and nowhere else.
 
+The campaign was regenerable when its two retirements were made and is core from v10, so for a campaign the
+core's v8 step does what the retirement did, and a campaign written after v8 carrying either old key is refused.
+
 A field that carried nothing, or a confusable name, is retired without dropping every stored document
 (``__retired_fields__``, :mod:`threetears.evals.schema.base`). These pin, per retirement, that a document
 stored before it still loads through storage, reading as the same document minus what it never meant, and
@@ -23,11 +26,12 @@ from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle, toyho
 
 @pytest.mark.parametrize("status", ["open", "closed"])
 def test_a_stored_campaign_carrying_a_status_still_loads(status: str) -> None:
-    """``status`` had no writer and nothing enforced it; a stored campaign reads with it discarded."""
+    """``status`` had no writer and nothing enforced it; a v8 campaign reads with it discarded by the core's v8 step."""
     storage, store = memory_storage()
     campaign = make_campaign(run_ids=["run-1"])
     stored = campaign.to_dict()
     stored["status"] = status
+    stored["schema_version"] = 8
     store.upsert(stored)
 
     loaded = storage.load_campaign(campaign.id, campaign.scope_id)
@@ -37,9 +41,18 @@ def test_a_stored_campaign_carrying_a_status_still_loads(status: str) -> None:
     assert "status" not in loaded.to_dict()
 
 
+def test_a_campaign_written_after_the_retirement_carrying_a_status_is_refused() -> None:
+    """The campaign is core from v10 and changes only by a step: no campaign after v8 had a status to discard."""
+    stored = make_campaign().to_dict()
+    stored["status"] = "open"
+
+    with pytest.raises(ValidationError, match="status"):
+        EvalCampaign.from_dict(stored)
+
+
 def test_a_campaign_has_no_status_to_set() -> None:
     assert "status" not in EvalCampaign.model_fields
-    with pytest.raises(ValidationError, match="`status` is not a field of EvalCampaign: it was removed"):
+    with pytest.raises(ValidationError, match="status"):
         make_campaign(status="closed")
 
 
@@ -54,10 +67,12 @@ def _with_old_names(design: dict[str, Any]) -> dict[str, Any]:
 
 
 def test_a_stored_campaign_declaring_controls_reads_them_as_held_fixed() -> None:
+    """A v8 campaign's design reads ``controls`` as ``held_fixed``, through the core's v8 step."""
     storage, store = memory_storage()
     campaign = make_campaign(declared_design=toyhost_design())
     stored = campaign.to_dict()
     stored["declared_design"] = _with_old_names(stored["declared_design"])
+    stored["schema_version"] = 8
     store.upsert(stored)
 
     loaded = storage.load_campaign(campaign.id, campaign.scope_id)
@@ -66,6 +81,25 @@ def test_a_stored_campaign_declaring_controls_reads_them_as_held_fixed() -> None
     assert loaded.declared_design is not None
     assert loaded.declared_design.held_fixed == toyhost_design().held_fixed
     assert "controls" not in loaded.to_dict()["declared_design"], "the old name is never written back"
+
+
+def test_a_campaign_written_after_the_rename_declaring_controls_is_refused() -> None:
+    """The design's retirement serves the analysis's snapshot; inside a core campaign only the v8 step reads it."""
+    stored = make_campaign(declared_design=toyhost_design()).to_dict()
+    stored["declared_design"] = _with_old_names(stored["declared_design"])
+
+    with pytest.raises(ValidationError, match="`controls` is not a field of CampaignDesign"):
+        EvalCampaign.from_dict(stored)
+
+
+def test_a_v8_campaign_whose_design_carries_both_names_is_refused() -> None:
+    """The step renames only what it can read one way; a design naming both cannot say which it meant."""
+    stored = make_campaign(declared_design=toyhost_design()).to_dict()
+    stored["declared_design"]["controls"] = stored["declared_design"]["held_fixed"]
+    stored["schema_version"] = 8
+
+    with pytest.raises(ValidationError, match="controls"):
+        EvalCampaign.from_dict(stored)
 
 
 def test_a_stored_analysis_whose_design_snapshot_declares_controls_still_loads() -> None:

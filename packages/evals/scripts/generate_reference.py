@@ -17,7 +17,9 @@ descriptions, the goal-check language's module docstring and builtins, the actio
 argparse definition and ``METRIC_DESCRIPTORS``. Nothing on it is written here except headings and the intro, so a
 change to the package moves the page and ``tests/test_reference_doc.py`` fails until it is regenerated.
 
-The output is deterministic: stable ordering, no timestamps, no object addresses, sets sorted.
+The walk over the public roots is ``public_surface.py``'s, shared with the API snapshot
+(``generate_api_snapshot.py``), so the page and the snapshot never disagree about a name's kind or signature. The
+output is deterministic: stable ordering, no timestamps, no object addresses, sets sorted.
 """
 
 from __future__ import annotations
@@ -25,27 +27,32 @@ from __future__ import annotations
 import argparse
 import ast
 import contextlib
-import dataclasses
-import enum
 import importlib
 import inspect
 import io
 import os
 import re
 import sys
-import textwrap
 import types
 import typing
 from collections.abc import Callable, Iterable, Iterator
-from functools import cache
-from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
+from public_surface import (
+    PACKAGE_ROOT,
+    Item,
+    assigned_names,
+    describe,
+    factory_name,
+    field_rows,
+    first_sentence,
+    one_line,
+    own_doc,
+    paragraphs,
+    public_names,
+    stable_repr,
+)
 from pydantic import BaseModel
-from pydantic_core import PydanticUndefined
-
-#: The package directory: what a path in a rendered default is written relative to.
-PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 #: The page this script writes.
 REFERENCE_PATH = PACKAGE_ROOT / "docs" / "reference.md"
@@ -55,9 +62,6 @@ REGENERATE = "uv run python packages/evals/scripts/generate_reference.py"
 
 #: What a public item with no description reads as, so a gap is visible rather than papered over.
 NO_DESCRIPTION = "*(no description)*"
-
-#: A first paragraph longer than this is cut to its first sentence for a one-line description.
-ONE_LINE_LIMIT = 160
 
 #: The width ``--help`` output is wrapped at on the page.
 HELP_WIDTH = 100
@@ -94,299 +98,6 @@ def cell(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", " ")
 
 
-def paragraphs(doc: str | None) -> list[str]:
-    """A docstring's paragraphs, each joined onto one line."""
-    if not doc:
-        return []
-    return [" ".join(line.strip() for line in p.splitlines()) for p in inspect.cleandoc(doc).split("\n\n") if p.strip()]
-
-
-_SENTENCE_END = re.compile(r"(?<!\be\.g)(?<!\bi\.e)(?<!\bvs)(?<!\betc)\.(?=\s+[A-Z`*(])")
-
-
-def first_sentence(text: str) -> str:
-    """The first sentence of ``text``, or all of it when it is one."""
-    match = _SENTENCE_END.search(text)
-    return text[: match.end()] if match else text
-
-
-def one_line(doc: str | None) -> str:
-    """A one-line description: the first paragraph, or its first sentence when that paragraph runs long."""
-    paras = paragraphs(doc)
-    if not paras:
-        return ""
-    first = paras[0]
-    return first if len(first) <= ONE_LINE_LIMIT else first_sentence(first)
-
-
-def stable_repr(value: Any) -> str:
-    """A ``repr`` that is the same on every run and checkout: sets sorted, object addresses dropped, and a path
-    inside the package written relative to it, since an absolute one names the checkout the page was made in and
-    fails the staleness test in every other."""
-    if isinstance(value, Path) and value.is_absolute() and value.is_relative_to(PACKAGE_ROOT):
-        return f"Path('<package>/{value.relative_to(PACKAGE_ROOT).as_posix()}')"
-    if isinstance(value, (set, frozenset)):
-        if not value:
-            return f"{type(value).__name__}()"
-        return "{" + ", ".join(sorted(stable_repr(v) for v in value)) + "}"
-    if isinstance(value, enum.Enum):
-        return f"{type(value).__name__}.{value.name}"
-    text = repr(value)
-    return "…" if re.search(r" at 0x[0-9a-fA-F]+", text) else text
-
-
-# --- source ------------------------------------------------------------------------------------------------------
-
-
-@cache
-def _module_ast(module_name: str) -> tuple[ast.Module, list[str]] | None:
-    module = importlib.import_module(module_name)
-    try:
-        source = inspect.getsource(module)
-    except OSError, TypeError:
-        return None
-    return ast.parse(source), source.splitlines()
-
-
-def _assigned_names(node: ast.stmt) -> list[str]:
-    if isinstance(node, ast.Assign):
-        return [t.id for t in node.targets if isinstance(t, ast.Name)]
-    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-        return [node.target.id]
-    if isinstance(node, ast.TypeAlias) and isinstance(node.name, ast.Name):
-        return [node.name.id]
-    return []
-
-
-def _comment_doc(lines: list[str], lineno: int) -> str:
-    """The ``#:`` comment block directly above line ``lineno`` (1-based), as a docstring."""
-    found: list[str] = []
-    i = lineno - 2
-    while i >= 0 and lines[i].strip().startswith("#:"):
-        found.append(lines[i].strip()[2:].removeprefix(" "))
-        i -= 1
-    return "\n".join(reversed(found))
-
-
-def _statement_docs(body: list[ast.stmt], lines: list[str]) -> dict[str, tuple[str, ast.stmt]]:
-    """Each name a statement list assigns → (its ``#:`` comment or attribute docstring, the statement)."""
-    docs: dict[str, tuple[str, ast.stmt]] = {}
-    for i, node in enumerate(body):
-        for name in _assigned_names(node):
-            doc = _comment_doc(lines, node.lineno)
-            if not doc and i + 1 < len(body):
-                nxt = body[i + 1]
-                if (
-                    isinstance(nxt, ast.Expr)
-                    and isinstance(nxt.value, ast.Constant)
-                    and isinstance(nxt.value.value, str)
-                ):
-                    doc = nxt.value.value
-            docs[name] = (doc, node)
-    return docs
-
-
-def _resolve_relative(module_name: str, node: ast.ImportFrom) -> str:
-    if not node.level:
-        return node.module or ""
-    package = importlib.import_module(module_name)
-    base = module_name if hasattr(package, "__path__") else module_name.rsplit(".", 1)[0]
-    for _ in range(node.level - 1):
-        base = base.rsplit(".", 1)[0]
-    return f"{base}.{node.module}" if node.module else base
-
-
-def defining_module(module_name: str, name: str, depth: int = 0) -> tuple[str, str] | None:
-    """The module that assigns ``name`` and the name it is assigned under, following ``from … import`` re-exports."""
-    parsed = _module_ast(module_name)
-    if parsed is None or depth > 10:
-        return None
-    tree, lines = parsed
-    if name in _statement_docs(tree.body, lines):
-        return module_name, name
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            for alias in node.names:
-                if (alias.asname or alias.name) == name:
-                    return defining_module(_resolve_relative(module_name, node), alias.name, depth + 1)
-    return None
-
-
-def assignment(module_name: str, name: str) -> tuple[str, ast.stmt | None, list[str]]:
-    """A module-level name's docstring, its assigning statement and its module's lines."""
-    found = defining_module(module_name, name)
-    if found is None:
-        return "", None, []
-    where, real = found
-    parsed = _module_ast(where)
-    assert parsed is not None
-    tree, lines = parsed
-    doc, node = _statement_docs(tree.body, lines)[real]
-    return doc, node, lines
-
-
-def _source_of(node: ast.expr | None) -> str:
-    return " ".join(ast.unparse(node).split()) if node is not None else ""
-
-
-def class_field_sources(cls: type) -> dict[str, tuple[str, str]]:
-    """Each annotated class attribute → (its annotation as written, its docstring), across the class's own MRO."""
-    found: dict[str, tuple[str, str]] = {}
-    for klass in reversed(cls.__mro__):
-        if klass.__module__.split(".")[0] != "threetears":
-            continue
-        try:
-            source = inspect.getsource(klass)
-        except OSError, TypeError:
-            continue
-        tree = ast.parse(textwrap.dedent(source))
-        node = tree.body[0]
-        assert isinstance(node, ast.ClassDef)
-        docs = _statement_docs(node.body, textwrap.dedent(source).splitlines())
-        for stmt in node.body:
-            if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
-                found[stmt.target.id] = (_source_of(stmt.annotation), docs.get(stmt.target.id, ("", stmt))[0])
-    return found
-
-
-def attributes_section(doc: str | None) -> dict[str, str]:
-    """The ``Attributes:`` section of a Google-style docstring: name → its description, joined onto one line."""
-    if not doc:
-        return {}
-    lines = inspect.cleandoc(doc).splitlines()
-    out: dict[str, str] = {}
-    inside = False
-    current: str | None = None
-    for line in lines:
-        if line.strip() == "Attributes:":
-            inside = True
-            continue
-        if not inside:
-            continue
-        if line and not line.startswith(" "):
-            break
-        match = re.match(r"^ {4}(\w+)(?: \([^)]*\))?: ?(.*)$", line)
-        if match:
-            current = match.group(1)
-            out[current] = match.group(2).strip()
-        elif current and line.strip():
-            out[current] += " " + line.strip()
-    return out
-
-
-# --- objects -----------------------------------------------------------------------------------------------------
-
-
-def own_doc(obj: Any) -> str | None:
-    """The docstring an object declares itself, never one it inherits or a dataclass invents."""
-    if isinstance(obj, type):
-        doc = obj.__dict__.get("__doc__")
-        if not doc or doc.startswith(f"{obj.__name__}(") or doc == "An enumeration.":
-            return None
-        return typing.cast(str, doc)
-    if inspect.isroutine(obj):
-        return typing.cast("str | None", getattr(obj, "__doc__", None))
-    return None
-
-
-def is_alias(obj: Any) -> bool:
-    """Whether ``obj`` is a type alias (a ``Literal``, a union, an ``Annotated`` or a parametrised generic)."""
-    return typing.get_origin(obj) is not None or isinstance(obj, (types.UnionType, typing.TypeAliasType))
-
-
-def class_kind(cls: type) -> str:
-    if issubclass(cls, BaseException):
-        return "exception"
-    if issubclass(cls, enum.Enum):
-        return "enum"
-    if issubclass(cls, BaseModel):
-        return "model"
-    if typing.is_protocol(cls):
-        return "protocol"
-    if typing.is_typeddict(cls):
-        return "typed dict"
-    if dataclasses.is_dataclass(cls):
-        return "dataclass"
-    return "class"
-
-
-def _format_annotation(annotation: Any) -> str:
-    if isinstance(annotation, str):
-        return annotation
-    return inspect.formatannotation(annotation)
-
-
-def signature(obj: Callable[..., Any]) -> str:
-    """``name(params) -> return``, annotations as written, defaults rendered deterministically."""
-    try:
-        sig = inspect.signature(obj)
-    except TypeError, ValueError:
-        return ""
-    parts: list[str] = []
-    seen_kw_marker = False
-    for param in sig.parameters.values():
-        if param.kind is param.KEYWORD_ONLY and not seen_kw_marker:
-            parts.append("*")
-            seen_kw_marker = True
-        prefix = {param.VAR_POSITIONAL: "*", param.VAR_KEYWORD: "**"}.get(param.kind, "")
-        if param.kind is param.VAR_POSITIONAL:
-            seen_kw_marker = True
-        text = prefix + param.name
-        if param.annotation is not param.empty:
-            text += f": {_format_annotation(param.annotation)}"
-        if param.default is not param.empty:
-            text += (
-                f" = {stable_repr(param.default)}"
-                if param.annotation is not param.empty
-                else f"={stable_repr(param.default)}"
-            )
-        parts.append(text)
-    positional_only = [p for p in sig.parameters.values() if p.kind is p.POSITIONAL_ONLY]
-    if positional_only:
-        parts.insert(len(positional_only), "/")
-    out = f"{obj.__name__}({', '.join(parts)})"
-    if sig.return_annotation is not sig.empty:
-        out += f" -> {_format_annotation(sig.return_annotation)}"
-    return out
-
-
-@dataclasses.dataclass(frozen=True)
-class Item:
-    """One public name, as the API section lists it."""
-
-    name: str
-    group: Literal["Functions", "Classes", "Types", "Constants"]
-    kind: str
-    description: str
-    detail: str
-
-
-def describe(root: str, name: str, obj: Any) -> Item:
-    """How one public name reads on the page."""
-    if isinstance(obj, type) and not is_alias(obj) and obj.__module__.startswith("threetears."):
-        doc = own_doc(obj)
-        detail = ""
-        if issubclass(obj, enum.Enum):
-            detail = "values: " + ", ".join(f"`{m.value!r}`" for m in obj)
-        return Item(name, "Classes", class_kind(obj), one_line(doc), detail)
-    if inspect.isroutine(obj):
-        kind = "async function" if inspect.iscoroutinefunction(obj) else "function"
-        return Item(name, "Functions", kind, one_line(own_doc(obj)), signature(obj))
-    doc, node, _ = assignment(root, name)
-    if is_alias(obj) or isinstance(obj, type):
-        if typing.get_origin(obj) is Literal:
-            detail = " | ".join(f"`{stable_repr(v)}`" for v in typing.get_args(obj))
-            return Item(name, "Types", "literal", one_line(doc), detail)
-        value = node.value if isinstance(node, (ast.Assign, ast.AnnAssign, ast.TypeAlias)) else None
-        return Item(name, "Types", "type alias", one_line(doc), f"`{_source_of(value)}`" if value is not None else "")
-    if isinstance(obj, typing.TypeVar):
-        return Item(name, "Types", "type variable", one_line(doc), "")
-    simple = isinstance(obj, (str, int, float, bool, type(None), re.Pattern))
-    text = stable_repr(obj.pattern if isinstance(obj, re.Pattern) else obj) if simple else ""
-    detail = f"`= {text}`" if simple and len(text) <= 80 else ""
-    return Item(name, "Constants", f"constant ({type(obj).__name__})", one_line(doc), detail)
-
-
 # --- sections ----------------------------------------------------------------------------------------------------
 
 
@@ -414,6 +125,7 @@ def api_section() -> Iterator[str]:
         yield f"- [`{root}`](#{root_slug(root)})"
     yield ""
     first_root: dict[int, str] = {}
+    names = list(public_names())
     for root in PUBLIC_ROOTS:
         module = importlib.import_module(root)
         yield anchor(root_slug(root))
@@ -425,8 +137,7 @@ def api_section() -> Iterator[str]:
             yield ""
         items: dict[str, list[Item]] = {}
         again: list[tuple[str, str]] = []
-        for name in sorted(module.__all__, key=lambda n: (n.casefold(), n)):
-            obj = getattr(module, name)
+        for name, obj in ((n, o) for r, n, o in names if r == root):
             if isinstance(obj, (type, types.FunctionType)) and id(obj) in first_root:
                 again.append((name, first_root[id(obj)]))
                 continue
@@ -456,38 +167,17 @@ def api_section() -> Iterator[str]:
 
 
 def _field_rows(model: type, *, full: bool) -> Iterator[tuple[str, str, str, str]]:
-    """(name, type, default, description) for each field of a Pydantic model or a dataclass, in declaration order."""
-    sources = class_field_sources(model)
-    from_attributes = attributes_section(model.__doc__)
+    """(name, type, default, description) for each field of a Pydantic model or a dataclass, in declaration order.
+
+    A Pydantic field's default factory is called and its value shown, which is what a reader of a settings table
+    wants to see; a dataclass's is named.
+    """
     describe_text = (lambda d: paragraphs(d)[0] if paragraphs(d) else "") if full else one_line
-    if issubclass(model, BaseModel):
-        schema = model.model_json_schema(mode="serialization").get("properties", {})
-        for name, info in model.model_fields.items():
-            key = info.serialization_alias or info.alias or name
-            text = info.description or schema.get(key, {}).get("description") or from_attributes.get(name, "")
-            text = text or sources.get(name, ("", ""))[1]
-            if info.is_required():
-                default = "required"
-            elif info.default_factory is not None:
-                default = stable_repr(info.default_factory())  # type: ignore[call-arg]
-            else:
-                default = stable_repr(info.default) if info.default is not PydanticUndefined else "required"
-            yield name, sources.get(name, (_format_annotation(info.annotation), ""))[0], default, describe_text(text)
-        return
-    assert dataclasses.is_dataclass(model)
-    for f in dataclasses.fields(model):
-        annotation, attr_doc = sources.get(f.name, (str(f.type), ""))
-        text = attr_doc or from_attributes.get(f.name, "")
-        if not f.init:
-            default = "derived"
-        elif f.default is not dataclasses.MISSING:
-            default = stable_repr(f.default)
-        elif f.default_factory is not dataclasses.MISSING:
-            factory = f.default_factory
-            default = f"{getattr(factory, '__name__', 'factory')}()"
-        else:
-            default = "required"
-        yield f.name, annotation, default, describe_text(text)
+    for row in field_rows(model):
+        default = row.default
+        if row.factory is not None:
+            default = stable_repr(row.factory()) if issubclass(model, BaseModel) else factory_name(row.factory)
+        yield row.name, row.annotation, default, describe_text(row.description)
 
 
 def field_table(model: type, *, full: bool) -> Iterator[str]:
@@ -638,7 +328,7 @@ def goal_functions(grammar_source: str, evaluator_source: str) -> list[tuple[str
         if isinstance(node, ast.FunctionDef):
             handlers[node.name] = node
     for node in ast.parse(grammar_source).body:
-        if "_BUILTINS" in _assigned_names(node) and isinstance(node, ast.Assign):
+        if "_BUILTINS" in assigned_names(node) and isinstance(node, ast.Assign):
             names = sorted(ast.literal_eval(node.value.args[0]))  # type: ignore[attr-defined]
     if not names:
         raise SystemExit("the goal-check language's function set (_BUILTINS in schema/goal_grammar.py) was not found")

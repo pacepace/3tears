@@ -32,9 +32,10 @@ from threetears.evals.kernel.declaration import CampaignDesign
 from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier, JudgedTierRule, weakest_judged_tier
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
-from threetears.evals.schema.base import EvalDocumentModel
-from threetears.evals.schema.models import SchemaVersion, utc_now_iso
-from threetears.evals.schema.versioning import REGENERABLE_SCHEMA_VERSION
+from threetears.evals.schema.base import CoreDocumentModel, EvalDocumentModel
+from threetears.evals.schema.job_lease import CancelRequestReasonField, CancelRequestedAtField, LeaseField, LostField
+from threetears.evals.schema.models import CoreSchemaVersion, SchemaVersion, utc_now_iso
+from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION, REGENERABLE_SCHEMA_VERSION
 from threetears.evals.schema.prose import ModelProse
 from threetears.evals.kernel.surface import DecisionSurface
 from threetears.observe import get_logger
@@ -159,13 +160,17 @@ class CampaignWindow(EvalDocumentModel):
     end: str = Field(description="Latest member-run created_at (ISO-8601).")
 
 
-class EvalCampaign(EvalDocumentModel):
+class EvalCampaign(CoreDocumentModel):
     """A curated set of eval runs under one subject×behavior — the analysis hub.
+
+    **Kept** (:mod:`threetears.evals.schema.versioning`): a campaign is what a person set out to learn and
+    which runs they gathered to learn it, and nothing stored can make that again, so a later release reads it
+    and upgrades it rather than refusing it.
 
     A campaign has no open/closed status. ``status`` was retired within schema v8: nothing could
     change it after creation and nothing enforced it — runs were added to, and analyses generated
     over, a ``closed`` campaign alike — so it was a label that read as frozen membership while
-    freezing nothing. A stored campaign carrying it loads with it discarded. ``archived`` is the
+    freezing nothing. The core's v8 step discards it from a stored campaign. ``archived`` is the
     lifecycle a campaign has.
 
     Lives in one ``scope_id``, and so do its member runs: a run in another scope is
@@ -199,11 +204,9 @@ class EvalCampaign(EvalDocumentModel):
     a pointer at a run whose deletion could dangle it.
     """
 
-    __retired_fields__: ClassVar[dict[str, str | None]] = {"status": None}
-
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_campaign"] = "eval_campaign"
-    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     name: str = Field(min_length=1, description="Operator-facing campaign name.")
@@ -973,15 +976,18 @@ class EvalAnalysis(EvalDocumentModel):
         return self
 
 
-#: How one generation attempt ended. ``stored``: an analysis was produced and persisted.
+#: Where one generation attempt stands. ``running``: started and not yet ended — the record a background
+#: generation writes as it starts, so its job is answerable from the store. How one ended: ``stored``: an
+#: analysis was produced and persisted.
 #: ``refused``: the generator finished and its output was refused, and so was the repair's.
 #: ``failed``: anything else that ended the attempt with an error — a call the provider cut short,
 #: a precondition refused before any call, a provider call that raised, a failed write.
-#: ``cancelled``: the attempt was cancelled mid-flight, by a caller's budget or disconnect, or by a shutdown.
-AttemptOutcome = Literal["stored", "refused", "failed", "cancelled"]
+#: ``cancelled``: the attempt was cancelled mid-flight, by a caller's budget or disconnect, or by a shutdown —
+#: or it was lost (its ``lost`` says so: the process running it ended or shut down).
+AttemptOutcome = Literal["running", "stored", "refused", "failed", "cancelled", "timed_out"]
 
 
-class EvalAnalysisAttempt(EvalDocumentModel):
+class EvalAnalysisAttempt(CoreDocumentModel):
     """One run of the analysis generator for a campaign, whatever it came to.
 
     A stored :class:`EvalAnalysis` records only a SUCCESS, so a generation that was refused, cut
@@ -994,11 +1000,19 @@ class EvalAnalysisAttempt(EvalDocumentModel):
     Its own record rather than a field of :class:`EvalAnalysis`, because a failure has no analysis to
     hang a field on, and rather than a failed-only record, because a failure rate needs the
     successes counted in the same list.
+
+    A generation started as a background job writes its attempt as it starts (``running``, carrying the
+    job's lease) and again as it ends, so the job is answered from this record in any process; one run
+    inline writes it once, as it ends.
+
+    **Kept** (:mod:`threetears.evals.schema.versioning`): an attempt records what a generation spent and why it
+    ended, and no later generation can say what an earlier one did, so a later release reads it rather than
+    refusing it. The analysis a stored attempt points at is regenerable; the attempt outlives it.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_analysis_attempt"] = "eval_analysis_attempt"
-    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     campaign_id: str = Field(
@@ -1006,14 +1020,19 @@ class EvalAnalysisAttempt(EvalDocumentModel):
     )
     outcome: AttemptOutcome = Field(
         description=(
-            "How the attempt ended: stored (an analysis was persisted), refused (the output was refused and so was "
-            "the repair's), failed (a call cut short, a precondition, a provider error or a failed write), or "
-            "cancelled (a caller's budget or disconnect, or a shutdown, ended it mid-flight)."
+            "Where the attempt stands: running (started, not ended), or how it ended: stored (an analysis was "
+            "persisted), refused (the output was refused and so was the repair's), failed (a call cut short, a "
+            "precondition, a provider error or a failed write), cancelled (a caller's disconnect or a shutdown ended "
+            "it mid-flight; or it was lost, which `lost` records), or timed_out (its own wall-clock budget ran out "
+            "mid-flight)."
         ),
     )
     analysis_id: str | None = Field(
-        default=None,
-        description="The analysis this attempt stored — set exactly when the outcome is `stored`.",
+        description=(
+            "The analysis this attempt stored — set exactly when the outcome is `stored`. Required though nullable: "
+            "its absence is not 'not recorded' but a disagreement with the outcome, so a stored attempt always "
+            "carries it."
+        ),
     )
     generator_model: str = Field(
         min_length=1,
@@ -1066,13 +1085,20 @@ class EvalAnalysisAttempt(EvalDocumentModel):
         ),
     )
     error: str | None = Field(
-        default=None,
-        description="What the caller was told ended the attempt — set exactly when the outcome is not `stored`.",
+        description=(
+            "What the caller was told ended the attempt — set exactly when it has ended other than `stored`. "
+            "Required though nullable, for the reason `analysis_id` is."
+        ),
     )
     started_at: str = Field(description="When the generation was started (ISO-8601).")
     created_at: str = Field(
-        default_factory=utc_now_iso, description="When the attempt ended and was recorded (ISO-8601)."
+        default_factory=utc_now_iso,
+        description="When the attempt was last recorded (ISO-8601): as it started while running, as it ended after.",
     )
+    lease: LeaseField = None
+    cancel_requested_at: CancelRequestedAtField = None
+    cancel_request_reason: CancelRequestReasonField = None
+    lost: LostField = None
 
     @field_validator("doc_type")
     @classmethod
@@ -1090,9 +1116,13 @@ class EvalAnalysisAttempt(EvalDocumentModel):
             This attempt, unchanged.
 
         Raises:
-            ValueError: A stored attempt names no analysis or carries an error, or an unstored one names an
-                analysis or carries no error, or a refused one records no refusal.
+            ValueError: A stored attempt names no analysis or carries an error, an ended unstored one names an
+                analysis or carries no error, a running one names either, or a refused one records no refusal.
         """
+        if self.outcome == "running":
+            if self.analysis_id is not None or self.error is not None:
+                raise ValueError("a running attempt names no analysis and carries no error: it has not ended")
+            return self
         stored = self.outcome == "stored"
         if stored != (self.analysis_id is not None):
             raise ValueError(f"analysis_id is set exactly when the outcome is 'stored'; outcome={self.outcome!r}")
@@ -1103,10 +1133,62 @@ class EvalAnalysisAttempt(EvalDocumentModel):
         return self
 
 
+def generation_slot_id(campaign_id: str) -> str:
+    """The id of a campaign's generation slot: one per campaign, so every process racing a start names one document."""
+    return f"generation-slot:{campaign_id}"
+
+
+class EvalGenerationSlot(CoreDocumentModel):
+    """Which analysis attempt holds a campaign's one generation: the document two starts race to claim.
+
+    One per campaign and scope, at :func:`generation_slot_id`, so a start in any process writes the same document:
+    created with a create-only write when the campaign has none, and taken over with ``if_match`` from an attempt
+    that has ended. Of two processes racing a start exactly one write lands; the other re-reads, finds the winner's
+    attempt live, and is refused naming it. Never released — the attempt's own record says whether it still runs
+    (its lease), so a process that dies holding the slot frees it when its lease lapses.
+
+    **Kept** (:mod:`threetears.evals.schema.versioning`): every build must read the slot. One a later build
+    refused would block every generation of its campaign, and one it read as free would let a second generation
+    start while an older process, mid rolling upgrade, still holds it live. So it is upgraded, never dropped.
+    """
+
+    id: str = Field(min_length=1, description="generation_slot_id(campaign_id): one slot per campaign.")
+    doc_type: Literal["eval_generation_slot"] = "eval_generation_slot"
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
+    scope_id: str = Field(min_length=1)
+
+    campaign_id: str = Field(min_length=1, description="The campaign whose generations the slot admits one at a time.")
+    attempt_id: str = Field(
+        min_length=1, description="The attempt that last claimed the slot (EvalAnalysisAttempt.id)."
+    )
+    claimed_at: str = Field(default_factory=utc_now_iso, description="When it claimed it (ISO-8601).")
+
+    @field_validator("doc_type")
+    @classmethod
+    def check_doc_type(cls, v: str) -> str:
+        """Reject documents loaded into the wrong model class."""
+        if v != "eval_generation_slot":
+            raise ValueError(f"doc_type must be 'eval_generation_slot', got '{v}'")
+        return v
+
+    @model_validator(mode="after")
+    def check_slot_id(self) -> EvalGenerationSlot:
+        """Refuse a slot stored anywhere but its campaign's one id.
+
+        Raises:
+            ValueError: ``id`` is not ``generation_slot_id(campaign_id)``.
+        """
+        if self.id != generation_slot_id(self.campaign_id):
+            raise ValueError(f"a generation slot's id is {generation_slot_id(self.campaign_id)!r}; got {self.id!r}")
+        return self
+
+
 #: Where a sweep stands: ``running`` while its arms are being launched and run; ``completed`` — every arm ran;
 #: ``failed`` — an arm was refused at launch, or its run ended ``failed``, so no further arm was launched;
-#: ``cancelled`` — a cancel stopped it, cancelling the arms in flight and launching none after.
-SweepOutcome = Literal["running", "completed", "failed", "cancelled"]
+#: ``cancelled`` — a cancel stopped it, cancelling the arms in flight and launching none after; or it was lost
+#: (its ``lost`` says so), its process gone with no further arm launched; ``timed_out`` — its own wall-clock budget
+#: ran out, stopping the arms in flight and launching none after, as every job kind's budget reads.
+SweepOutcome = Literal["running", "completed", "failed", "cancelled", "timed_out"]
 
 
 class SweepArmRecord(EvalDocumentModel):
@@ -1117,18 +1199,22 @@ class SweepArmRecord(EvalDocumentModel):
     run_id: str | None = Field(default=None, description="The arm's run, once launched; None before, or never.")
 
 
-class EvalSweep(EvalDocumentModel):
+class EvalSweep(CoreDocumentModel):
     """A multi-arm launch run arm after arm: its arms, its campaign, and how it ended — the record its job reads.
 
     Written when the sweep starts, again as each arm's run is created (the run is a member of :attr:`campaign_id`
-    from then), and when it ends. One writer, the sweep's own task, so a write never races another. A sweep
-    whose record reads ``running`` while no task runs it was ended by a restart, which its job reports as lost;
-    its launched runs are campaign members either way.
+    from then), and when it ends — by the sweep's own task, conditionally, so a record another process has
+    written lost or asked to cancel is never overwritten. It carries the job's lease: a sweep whose record reads
+    ``running`` after its lease lapsed was ended by its process going away, and reads lost; its launched runs are
+    campaign members either way.
+
+    **Kept** (:mod:`threetears.evals.schema.versioning`): how a sweep ended — which arm failed, what cancelled
+    it — is recorded nowhere else, so a later release reads it rather than refusing it.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_sweep"] = "eval_sweep"
-    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     campaign_id: str = Field(min_length=1, description="The campaign every arm's run joins as it is created.")
@@ -1140,6 +1226,10 @@ class EvalSweep(EvalDocumentModel):
     detail: str | None = Field(default=None, description="Why it ended other than completed.")
     created_at: str = Field(default_factory=utc_now_iso)
     ended_at: str | None = None
+    lease: LeaseField = None
+    cancel_requested_at: CancelRequestedAtField = None
+    cancel_request_reason: CancelRequestReasonField = None
+    lost: LostField = None
 
     @field_validator("doc_type")
     @classmethod

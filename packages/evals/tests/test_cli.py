@@ -20,6 +20,7 @@ from typing import Any
 import jsonschema
 import pytest
 
+from threetears.evals.kernel import default_job_timeout
 from threetears.evals.analysis import NO_ANALYSIS, published_report_schema
 from threetears.evals.kernel import CandidateOutput
 from threetears.evals.schema import EvalRun, EvalTestCase, JudgedArtifact
@@ -39,7 +40,6 @@ from threetears.evals.run import (
     LaunchableKind,
     LaunchHost,
     LaunchRequest,
-    default_job_timeout,
     launch_run,
     start_run,
 )

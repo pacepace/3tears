@@ -12,12 +12,13 @@ storage round-trip never stalls the loop a transport serves calls on.
 from __future__ import annotations
 
 from functools import partial
+from collections.abc import Mapping
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, ValidationError
 
 from threetears.evals.actions import render
-from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller
+from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller, ConformanceStage
 from threetears.evals.schema import EvalRunStatus
 from threetears.evals.kernel import ResultOutcome, ValidationFailedError
 from threetears.evals.schema.base import EvalBaseModel
@@ -70,8 +71,6 @@ from threetears.evals.ops import (
     RunsBisected,
     RunsCompared,
     ScoreExport,
-    SecondJudgeRead,
-    JudgeTemperatureComparison,
     TemplateListing,
     UndescribableArmsListing,
     analyses_list,
@@ -446,7 +445,7 @@ class ScopePivotParams(EvalBaseModel):
     launched_run_ids: Annotated[
         list[str] | None,
         Field(
-            description="The runs the estimated launch made (the run ids its jobs name), with predicted_cost: each "
+            description="The runs the estimated launch made (the run ids its launch job names, as run_ids), with predicted_cost: each "
             "predicted cell then says how many of its observations came from other runs."
         ),
     ] = None
@@ -998,7 +997,7 @@ async def _result_rate(host: OpsHost, caller: Caller, params: ResultRateParams) 
     )
 
 
-async def _judge_second(host: OpsHost, caller: Caller, params: JudgeSecondParams) -> SecondJudgeRead:
+async def _judge_second(host: OpsHost, caller: Caller, params: JudgeSecondParams) -> JobsStarted:
     return await judge_second(
         host,
         params.run_id,
@@ -1022,15 +1021,13 @@ async def _judge_second_estimate(host: OpsHost, caller: Caller, params: JudgeSec
     )
 
 
-async def _judge_drift_check(host: OpsHost, caller: Caller, params: JudgeDriftParams) -> SecondJudgeRead:
+async def _judge_drift_check(host: OpsHost, caller: Caller, params: JudgeDriftParams) -> JobsStarted:
     return await judge_drift_check(
         host, params.run_id, caller.scope_id, judge=params.judge(), result_ids=params.result_ids
     )
 
 
-async def _judge_temperature(
-    host: OpsHost, caller: Caller, params: JudgeTemperatureParams
-) -> JudgeTemperatureComparison:
+async def _judge_temperature(host: OpsHost, caller: Caller, params: JudgeTemperatureParams) -> JobsStarted:
     return await judge_temperature(
         host,
         params.run_id,
@@ -1099,6 +1096,58 @@ async def _analysis_delete(host: OpsHost, caller: Caller, params: AnalysisDelete
     )
 
 
+# --- the happy paths: what reaches each spend action's work, for the jobs conformance kit ---------------
+
+
+async def _run_launch_path(stage: ConformanceStage) -> Mapping[str, Any]:
+    return {
+        "template_id": stage.sample.template_id,
+        "subject_id": stage.sample.subject_id,
+        "models": list(stage.sample.models),
+        "k_runs": 1,
+    }
+
+
+async def _sweep_launch_path(stage: ConformanceStage) -> Mapping[str, Any]:
+    return {
+        "template_id": stage.sample.template_id,
+        "subject_id": stage.sample.subject_id,
+        "campaign_name": "jobs conformance sweep",
+        "campaign_behavior": "conformance",
+        "k_runs": 1,
+        "arms": [{"model": stage.sample.models[0]}],
+    }
+
+
+async def _analysis_generate_path(stage: ConformanceStage) -> Mapping[str, Any]:
+    run_id = await stage.finished_run()
+    eval_host = stage.host.eval_host
+    campaign = await run_blocking(
+        eval_host.blocking_executor,
+        partial(
+            campaign_create,
+            eval_host,
+            CampaignDefinition(
+                name="jobs conformance campaign",
+                subject_id=stage.sample.subject_id,
+                behavior="conformance",
+                run_ids=[run_id],
+            ),
+            stage.caller.scope_id,
+            created_by=stage.caller.identity,
+        ),
+    )
+    return {"campaign_id": campaign.id}
+
+
+async def _second_judge_path(stage: ConformanceStage) -> Mapping[str, Any]:
+    return {"run_id": await stage.finished_run(), "second_judge_model": stage.sample.second_judge_model}
+
+
+async def _judge_temperature_path(stage: ConformanceStage) -> Mapping[str, Any]:
+    return {"run_id": await stage.finished_run(), "selection": "all", "repeats": 2}
+
+
 # --- the catalogue -----------------------------------------------------------------------------------
 
 #: The help index's groups, in the order a piece of work meets them.
@@ -1149,6 +1198,7 @@ def engine_actions() -> tuple[Action, ...]:
             result=JobsStarted,
             handler=_sweep_launch,
             render=render.render_jobs_started,
+            happy_path=_sweep_launch_path,
             example={
                 "template_id": "tmpl-1",
                 "subject_id": "subject-1",
@@ -1209,22 +1259,26 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="run_launch",
-            summary="Launch a template's runs, one per model, each as a job to poll.",
+            summary="Launch a template's runs, one per model, as one job to poll: its arms prepared, its runs run.",
             workflow=RUN,
             permission="spend",
             params=RunLaunchParams,
             result=JobsStarted,
             handler=_run_launch,
             render=render.render_jobs_started,
+            happy_path=_run_launch_path,
             example={"template_id": "tmpl-1", "subject_id": "subject-1", "models": ["model-a", "model-b"]},
             long_running=True,
             detail=(
                 "Every run spends against its cost cap: the host's, or max_cost_usd, which may only lower it — a "
                 "max_cost_usd above the host's ceiling is refused. A launch the "
                 "process cannot admit, or the template's kind cannot honour, is refused before anything starts. "
-                "n_variations generates that many new cases first, shared by every arm; a template's llm axis is "
-                "written by variation_model, whose calls run before the runs start and are outside every run's "
-                "cost cap."
+                "Every arm is priced in the call; the job then prepares the arms and runs them. n_variations "
+                "generates that many new cases first, in the job, shared by every arm; a template's llm axis is "
+                "written by variation_model, whose calls run before the runs start, are priced against the host's "
+                "out-of-run cap and are outside every run's cost cap. job_poll on the launch's job names its runs "
+                "once they start (run_ids) and counts them finished; the job ends when every run has, and one "
+                "job_cancel stops them all."
             ),
         ),
         Action(
@@ -1252,7 +1306,7 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="job_poll",
-            summary="Read where a job stands — a launched run or an analysis generation.",
+            summary="Read where a job stands — a launch, a run, a sweep, a generation, a judge pass — and its result.",
             workflow=RUN,
             permission="read",
             params=JobParams,
@@ -1368,6 +1422,7 @@ def engine_actions() -> tuple[Action, ...]:
             result=JobsStarted,
             handler=_analysis_generate,
             render=render.render_jobs_started,
+            happy_path=_analysis_generate_path,
             example={"campaign_id": campaign_id},
             long_running=True,
             detail=(
@@ -1396,21 +1451,24 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="judge_second",
-            summary="Ask a second judge to score a seeded share of a finished run's judged results; read agreement.",
+            summary="Ask a second judge to score a seeded share of a finished run's judged results, as a job; read agreement.",
             workflow=ANALYSE,
             permission="spend",
             params=JudgeSecondParams,
-            result=SecondJudgeRead,
+            result=JobsStarted,
             handler=_judge_second,
-            render=render.render_second_judge,
+            render=render.render_jobs_started,
+            long_running=True,
+            happy_path=_second_judge_path,
             example={"run_id": run_id, "second_judge_model": "judge/other", "sample_fraction": 0.5},
             detail=(
                 "The evidence each result's judge read, sent to the second judge: the run's scores are never changed, "
                 "and each second score is recorded beside the first it pairs with. Every call is priced and admitted "
                 "against the host's out-of-run cap before the first is sent, and ledgered under purpose second_judge "
                 "— measurement cost, never the candidate's. Returns per-dimension n, exact agreement and kappa "
-                "(quadratic on 1-5, unweighted on pass/fail; undefined says why), and the drift between the judges. "
-                "judge_second_estimate prices it first without spending."
+                "(quadratic on 1-5, unweighted on pass/fail; undefined says why), and the drift between the judges — "
+                "job_poll's result once the job completes. Refused in the call, with nothing spent, when the run "
+                "cannot be asked about or the cap refuses. judge_second_estimate prices it first without spending."
             ),
         ),
         Action(
@@ -1427,30 +1485,35 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="judge_drift_check",
-            summary="Re-score every judged result of a run under a changed judge; read how far each dimension moved.",
+            summary="Re-score every judged result of a run under a changed judge, as a job; read how far each moved.",
             workflow=ANALYSE,
             permission="spend",
             params=JudgeDriftParams,
-            result=SecondJudgeRead,
+            result=JobsStarted,
             handler=_judge_drift_check,
-            render=render.render_second_judge,
+            render=render.render_jobs_started,
+            long_running=True,
+            happy_path=_second_judge_path,
             example={"run_id": run_id, "second_judge_model": "judge/new"},
             detail=(
                 "judge_second over the whole set. The run's judge, as it recorded it, is the first configuration; "
                 "the second names the changed one. Each dimension's movement is read over cases with an interval, "
                 "Holm-adjusted over the dimensions: separated, not separated or untested. It detects movement "
-                "between the judges, never which is right. The stored scores are never changed."
+                "between the judges, never which is right. The stored scores are never changed. job_poll returns the "
+                "read once the job completes."
             ),
         ),
         Action(
             name="judge_temperature",
-            summary="Re-judge a run's borderline cases at temperature 0 and at the provider default; compare spread.",
+            summary="Re-judge a run's borderline cases at temperature 0 and at the provider default, as a job; compare.",
             workflow=ANALYSE,
             permission="spend",
             params=JudgeTemperatureParams,
-            result=JudgeTemperatureComparison,
+            result=JobsStarted,
             handler=_judge_temperature,
-            render=render.render_judge_temperature,
+            render=render.render_jobs_started,
+            long_running=True,
+            happy_path=_judge_temperature_path,
             example={"run_id": run_id, "repeats": 5},
             detail=(
                 "The measurement the judge temperature policy rests on (#633). Each borderline dim (stored score "
@@ -1461,7 +1524,8 @@ def engine_actions() -> tuple[Action, ...]:
                 "unstable cases, and exact agreement and kappa read by judge_self_agreement; comparable=false says "
                 "when the judge's client did not send the temperature a side names. Every call is priced and "
                 "admitted against the host's out-of-run cap before the first is sent, and ledgered under purpose "
-                "judge. Nothing is written to the results. judge_temperature_estimate prices it first."
+                "judge, in the job. Nothing is written to the results: the job's record keeps every answer, and "
+                "job_poll returns the comparison once it completes. judge_temperature_estimate prices it first."
             ),
         ),
         Action(

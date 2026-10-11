@@ -14,10 +14,11 @@ from typing import Any
 
 from threetears.evals.actions import Caller
 from threetears.evals.analysis import assemble_context_bundle
-from threetears.evals.kernel import EvalCampaign, EvalStorage
+from threetears.evals.kernel import DEFAULT_JOB_LEASE_S, EvalCampaign, EvalStorage
 from threetears.evals.kernel.host import EvalHost, HostProfile
-from threetears.evals.ops import AnalysisGeneration, JobStatus, OpsHost, job_poll
+from threetears.evals.ops import AnalysisGeneration, JobsStarted, JobStatus, OpsHost, await_job, job_poll
 from threetears.evals.run import LaunchSettings
+from threetears.evals.schema import DocumentStore
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT
@@ -33,6 +34,7 @@ from packages.evals.tests.toyhost_memo import (
 
 __all__ = [
     "CALLER",
+    "launched_runs",
     "RUN_MODELS",
     "TOYHOST_SCOPE",
     "TOYHOST_SUBJECT",
@@ -95,6 +97,8 @@ def ops_fixture(
     first_output: str | None = None,
     settings: LaunchSettings = TOYHOST_LAUNCH_SETTINGS,
     profile: HostProfile | None = None,
+    store: DocumentStore | None = None,
+    job_lease_s: float = DEFAULT_JOB_LEASE_S,
 ) -> OpsFixture:
     """The toy host as an operations host: its template saved, its corpus campaign stored.
 
@@ -105,11 +109,13 @@ def ops_fixture(
         first_output: What each writer's first call returns in place of the memo, when set.
         settings: The launch settings — the run and out-of-run caps, and whether they are enforced.
         profile: The host's vocabulary; ``None`` is the toy host's own.
+        store: The document store under the host's storage; ``None`` is a fresh in-memory one.
+        job_lease_s: How long the host's job leases last unless renewed.
 
     Returns:
         The fixture.
     """
-    storage = EvalStorage(InMemoryDocumentStore())
+    storage = EvalStorage(store if store is not None else InMemoryDocumentStore())
     storage.save_template(toyhost_template())
     campaign, corpus = toyhost_campaign()
     for run in corpus.load_eval_runs(campaign.run_ids, campaign.scope_id):
@@ -128,7 +134,9 @@ def ops_fixture(
         writers.append(writer)
         return writer
 
-    launch, _client = toyhost_launch_host(profile=profile, storage=storage, clients=clients, settings=lambda: settings)
+    launch, _client = toyhost_launch_host(
+        profile=profile, storage=storage, clients=clients, settings=lambda: settings, job_lease_s=job_lease_s
+    )
     hosts.append(launch.eval_host)
 
     async def prompt() -> str:
@@ -146,3 +154,9 @@ async def settled(host: OpsHost, job_id: str, scope_id: str = TOYHOST_SCOPE) -> 
         while not (status := await job_poll(host, job_id, scope_id)).done:
             await asyncio.sleep(0.01)
     return status
+
+
+async def launched_runs(host: OpsHost, started: JobsStarted, scope_id: str = TOYHOST_SCOPE) -> list[str]:
+    """A launch's runs, once its job has ended: awaited in the foreground, and read off its final status."""
+    (status,) = await await_job(host, started, scope_id)
+    return list(status.run_ids)

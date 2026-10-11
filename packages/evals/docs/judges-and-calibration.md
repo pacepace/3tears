@@ -274,14 +274,22 @@ beside the score it repeats without changing it. On the quick path, lend the jud
 ```python
 import dataclasses
 
-from threetears.evals.run import estimate_judge_repeat, repeat_judge_scores
+from threetears.evals.kernel import JobLeases
+from threetears.evals.run import JudgeRepeatReport, estimate_judge_repeat, judge_repeat_work, run_job_work
 
 judging_host = dataclasses.replace(host, clients=judge.clients())
 estimate = await estimate_judge_repeat(judging_host, summary.run_id, summary.scope_id, out_of_run_cap_usd=None)
 print(estimate.max_calls, estimate.would_start)
-report = await repeat_judge_scores(judging_host, summary.run_id, summary.scope_id, out_of_run_cap_usd=None)
+work = await judge_repeat_work(judging_host, summary.run_id, summary.scope_id, out_of_run_cap_usd=None)
+leases = JobLeases(judging_host.storage)
+ended = await run_job_work(work, store=judging_host.storage, executor=None, leases=leases)
+report = JudgeRepeatReport.model_validate(ended.result)
 self_agreement = judge_self_agreement(list_results(host.storage, summary.run_id, summary.scope_id))
 ```
+
+A repeat runs as a job, as every model-calling operation does: `judge_repeat_work` makes the refusals and admits
+the calls, and `run_job_work` runs it in the foreground (a transport starts it with `ops.judge_repeat` and polls it;
+the job's result is the report).
 
 Every call is priced and admitted against `out_of_run_cap_usd` before the first is sent. `None` enforces no cap.
 Under a cap, a client that cannot price its calls (`price_ceiling` returns `None`, as a lent quick-path client
@@ -296,19 +304,26 @@ another judge agrees, or about all of them after a judge change to see how far t
 
 ```python
 from threetears.evals.analysis import inter_judge_agreement, judge_drift
+from threetears.evals.kernel import JobLeases
+from threetears.evals.run import run_job_work, second_judge_work
 from threetears.evals.schema import SecondJudge
 
-report = await ask_second_judge(
+work = await second_judge_work(       # every call priced and admitted here; none made
     judging_host, summary.run_id, summary.scope_id,
     judge=SecondJudge(model="other-judge-model"), out_of_run_cap_usd=None, sample_fraction=0.5, seed=1,
 )
+leases = JobLeases(judging_host.storage)
+passed = await run_job_work(work, store=judging_host.storage, executor=None, leases=leases)  # the calls
+await leases.shut_down()
 results = list_results(host.storage, summary.run_id, summary.scope_id)
-agreement = inter_judge_agreement(results, pass_id=report.pass_id)
-drift = judge_drift(results, pass_id=report.pass_id)
+agreement = inter_judge_agreement(results, pass_id=passed.id)
+drift = judge_drift(results, pass_id=passed.id)
 ```
 
-`ask_second_judge` comes from `threetears.evals.run`. The actions are `judge_second`, `judge_second_estimate` and
-`judge_drift_check`, which re-scores every result. Agreement is n, exact agreement, and kappa, quadratic-weighted
+The pass is a record of its own (`EvalSecondJudgePass`, its id the `pass_id` every paired score names), written as
+it starts and as it ends with its report. The actions are `judge_second`, `judge_second_estimate` and
+`judge_drift_check`, which re-scores every result; `judge_second` and `judge_drift_check` start the pass as a job
+and `job_poll` returns its report, agreement and drift once it completes. Agreement is n, exact agreement, and kappa, quadratic-weighted
 on 1–5 and unweighted on pass/fail, computed as agreement with people is. A kappa with nothing to measure is
 reported as undefined, with the reason, never as 0. `run_get` shows each second judge beside the dimension it
 scored.
@@ -338,18 +353,24 @@ python -m threetears.evals judge-temperature RUN --host myapp.evals:build_host -
 python -m threetears.evals judge-temperature RUN --host myapp.evals:build_host --scope dev --max-cost-usd 5 --json > temperature.json
 ```
 
-In code it is two steps: `judge_at_two_temperatures` (priced first by `estimate_judge_temperature_comparison`) from
-`threetears.evals.run` spends and returns every answer, and `read_judge_temperatures` from `threetears.evals.analysis`
-reads them, spending nothing. The actions are `judge_temperature`, which does both, and `judge_temperature_estimate`:
+In code it is two steps: `judge_temperature_work` (priced first by `estimate_judge_temperature_comparison`) from
+`threetears.evals.run` admits the comparison and returns its work, which spends and records every answer on the
+comparison's own record (`EvalJudgeTemperatureCheck`); `read_judge_temperatures` from `threetears.evals.analysis`
+reads them, spending nothing. The actions are `judge_temperature`, which starts the work as a job whose `job_poll`
+returns the comparison, and `judge_temperature_estimate`:
 
 ```python
 from threetears.evals.analysis import read_judge_temperatures
-from threetears.evals.run import judge_at_two_temperatures
+from threetears.evals.kernel import JobLeases
+from threetears.evals.run import judge_temperature_work, run_job_work
 
-answers = await judge_at_two_temperatures(
+work = await judge_temperature_work(
     judging_host, summary.run_id, summary.scope_id, out_of_run_cap_usd=5.0, repeats=5,
 )
-comparison = read_judge_temperatures(answers)
+leases = JobLeases(judging_host.storage)
+check = await run_job_work(work, store=judging_host.storage, executor=None, leases=leases)
+await leases.shut_down()
+comparison = read_judge_temperatures(check.answers)
 print(comparison.render())
 ```
 

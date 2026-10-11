@@ -17,7 +17,7 @@ The rules, numbered as the report standards number them:
    intent declares, and an axis with a unit states it in the quantity a reader is told.
 3. **A fixed-order palette that never refuses to draw.** A categorical scheme's domain is explicit and
    distinct — each value has one slot — and a domain wider than
-   :data:`~threetears.evals.analysis.viz.payloads.SERIES_SLOTS` recycles with a warning rather than a
+   :data:`~threetears.evals.kernel.host.SERIES_SLOTS` recycles with a warning rather than a
    refusal: the number of series is a property of the data.
 5. **A named variability span.** An interval end says what the interval varies over.
 7. **Identity never rides on colour.** The field a row is named by is never coloured, and a categorical
@@ -51,7 +51,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, TypeIs
 
 from threetears.evals.analysis.viz.intent import INTERVAL_ROLES, LENGTH_ROLES, MEASURED_ROLES
-from threetears.evals.analysis.viz.payloads import SERIES_SLOTS, VALIDATED_SLOTS
+from threetears.evals.kernel.host.style import SERIES_SLOTS, VALIDATED_SLOTS
 from threetears.evals.analysis.viz.quantities import table_spellings
 from threetears.observe import get_logger
 

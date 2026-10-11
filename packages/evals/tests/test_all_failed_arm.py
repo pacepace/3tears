@@ -71,7 +71,8 @@ from threetears.evals.kernel.covariates import TRUNCATED_ROUNDS_KEY, TURN_BUDGET
 from threetears.evals.kernel.declaration import BarOverride
 from threetears.evals.kernel.host import SHARED_CORE, HostProfile, MeasureRegistry
 from threetears.evals.kernel.metrics import MetricDescriptor, goal_check_measure
-from threetears.evals.quick import Comparison, callable_host, compare, summarize_run
+from threetears.evals.quick import Comparison, callable_host, compare
+from threetears.evals.analysis import summarize_run
 from threetears.evals.quick.one_call import UNUSABLE_ANSWER
 from threetears.evals.run import list_results
 from threetears.evals.storage import InMemoryDocumentStore

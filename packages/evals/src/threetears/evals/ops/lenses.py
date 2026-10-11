@@ -10,7 +10,7 @@ arguments, by the launch's own rule: each arm planned by its kind and priced thr
 ``launch_pricer`` (:func:`~threetears.evals.run.quote_launch`).
 
 Each result's text is here too (:func:`pivot_text`, :func:`history_text`, :func:`estimate_text`,
-:func:`export_text`, :func:`runs_compared_text`, :func:`runs_bisected_text`), for the reason :meth:`~threetears.evals.ops.EvalSummary.render` sits with the
+:func:`export_text`, :func:`runs_compared_text`, :func:`runs_bisected_text`), for the reason :meth:`~threetears.evals.analysis.EvalSummary.render` sits with the
 summary: every surface — an action, a command line — shows one rendering, and each carries the
 caveats its model carries (what was left out, which runs came up short) rather than the numbers alone.
 """
@@ -616,7 +616,7 @@ class LaunchEstimate(EvalBaseModel):
         """Each priced arm as a cost pivot's plan: its model, its template, its observations and its prediction.
 
         Args:
-            run_ids: The runs the launch made, once it has (the run ids its jobs name); empty before, when the
+            run_ids: The runs the launch made, once it has (the run ids its launch job names, as run_ids); empty before, when the
                 cost a pivot sets beside each prediction is history the launch did not make.
 
         Returns:

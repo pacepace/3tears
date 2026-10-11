@@ -21,8 +21,13 @@ naming the ones it accepts and an example, rather than ignored.
 mount, an undeclared parameter, a value that does not validate, a refusal from the engine — says what
 was wrong and what would be right: the valid actions, the accepted parameters, an example call.
 
-**Long work is a job.** An action whose work outlives a call (``long_running``) returns
-:class:`~threetears.evals.ops.JobsStarted`, and the caller polls with ``job_poll``.
+**Long work is a job, and no call waits on a model.** An action whose work outlives a call (``long_running``)
+returns :class:`~threetears.evals.ops.JobsStarted`, and the caller polls with ``job_poll``. A ``spend`` action is
+either long-running or makes no completion request during its call: pricing, the cap check and admission stay in
+the call, and the work that spends runs as the job. Every ``spend`` action, the engine's and a host's, declares a
+:data:`HappyPath` — the parameters that reach its work — and one without is refused when it is declared, so the jobs
+conformance kit (:func:`~threetears.evals.testing.jobs_conformance_cases`) can show each one makes no request in its
+call and some in its job.
 
 **Destructive actions keep their confirm strings.** A ``destructive`` action must declare a required
 ``confirm`` parameter, which the operation checks echoes the id it destroys.
@@ -41,15 +46,16 @@ from pydantic import BaseModel, ValidationError
 from threetears.evals.actions import render
 from threetears.evals.kernel.errors import EvalServiceError
 from threetears.evals.ops import JobsStarted, OpsHost
+from threetears.evals.run import start_run
 
 #: What an action does to the world, which decides the tools that may mount it.
 #:
 #: ``spend`` says an action may cost money; it is a label a tool cut splits on, not a promise that
-#: the engine meters it. The engine's own spend actions are priced and capped before they spend
-#: (``run_launch`` against each run's cost cap, which a launch may only lower; ``analysis_generate``
-#: against the host's out-of-run cap). :class:`Action` places no such obligation on a host-contributed
-#: ``spend`` action — as it does require a ``confirm`` of a destructive one and a job of long work — so a
-#: host action is metered exactly as far as the host's own handler meters it.
+#: the engine meters it. The engine's own spend actions are priced and capped in the call, before they spend
+#: (``run_launch`` against each run's cost cap, which a launch may only lower; ``analysis_generate`` and the judge
+#: actions against the host's out-of-run cap), and spend only in their job. :class:`Action` requires of a
+#: host-contributed ``spend`` action a :data:`HappyPath`, so the jobs conformance kit can hold it to making no
+#: completion request in its call; how far it meters what its job spends is the host's own handler's.
 PermissionClass = Literal["read", "spend", "write", "destructive"]
 
 #: The classes, in the order help lists them.
@@ -100,6 +106,77 @@ ActionHandler = Callable[[OpsHost, Caller, Any], Awaitable[BaseModel]]
 
 
 @dataclass(frozen=True, kw_only=True)
+class ConformanceSample:
+    """One launch a host can run end to end, which the engine's spend actions' happy paths build on.
+
+    The jobs conformance kit needs each spend action to reach its work; the engine's own reach theirs through a
+    run, a judged and finished one, and only the host knows a template its kinds launch. So the host names one: its
+    runs must finish in a few seconds under the host the kit builds and be judged — through the host's completion
+    clients — on at least one dimension, so a second judge and a temperature comparison have scores to read.
+
+    Attributes:
+        template_id: A template in the caller's scope whose kind the host launches.
+        subject_id: The subject its runs measure.
+        models: The candidate models, one arm each; at least one, since a sweep's arm names its model.
+        second_judge_model: A judge model other than the run's own, for a second judge's pass and a drift check.
+    """
+
+    template_id: str
+    subject_id: str
+    models: tuple[str, ...]
+    second_judge_model: str
+
+    def __post_init__(self) -> None:
+        """Refuse a sample naming no model.
+
+        Raises:
+            ValueError: ``models`` is empty.
+        """
+        if not self.models:
+            raise ValueError("a conformance sample names at least one candidate model; a sweep's arm needs one")
+
+
+@dataclass(frozen=True, kw_only=True)
+class ConformanceStage:
+    """What a :data:`HappyPath` is handed: the host the kit built, the caller, and the host's sample launch.
+
+    Attributes:
+        host: The host the action's handler will run in, its completion clients guarded by the kit.
+        caller: Who the kit calls as.
+        sample: The host's sample launch (:class:`ConformanceSample`).
+    """
+
+    host: OpsHost
+    caller: Caller
+    sample: ConformanceSample
+
+    async def finished_run(self) -> str:
+        """Launch the sample and wait for its runs to end, as a script would; the first run's id.
+
+        The runs execute as jobs, so their judges' requests are a job's. Arranged before the call under test.
+
+        Returns:
+            The first run's id; it finished, and was judged when the host's judge answered.
+        """
+        launch = self.host.launch
+        runs = await start_run(
+            launch,
+            template_id=self.sample.template_id,
+            subject_id=self.sample.subject_id,
+            models=list(self.sample.models),
+            k_runs=1,
+            scope_id=self.caller.scope_id,
+        )
+        await launch.job_manager.wait_for([run.id for run in runs])
+        return runs[0].id
+
+
+#: A spend action's happy path: arranges what its work needs in the stage's host — a finished run, a campaign —
+#: and returns the parameters (without ``action``) of a call that reaches that work.
+HappyPath = Callable[[ConformanceStage], Awaitable[Mapping[str, Any]]]
+
+
+@dataclass(frozen=True, kw_only=True)
 class Action:
     """One action: what it is called, what it takes and returns, who may call it, and how it reads back.
 
@@ -118,6 +195,8 @@ class Action:
         long_running: Whether its work outlives the call; such an action returns
             :class:`~threetears.evals.ops.JobsStarted`, and no other may.
         detail: More help, shown on the action's own page.
+        happy_path: For a ``spend`` action, required: what reaches its work, for the jobs conformance kit.
+            ``None`` for every other class.
     """
 
     name: str
@@ -131,6 +210,7 @@ class Action:
     example: Mapping[str, Any]
     long_running: bool = False
     detail: str = ""
+    happy_path: HappyPath | None = None
 
     def __post_init__(self) -> None:
         """Refuse an action no transport could mount honestly.
@@ -139,7 +219,8 @@ class Action:
             ValueError: The name is not ``noun_verb``; the summary is blank or more than one line; the
                 class is not one of :data:`PERMISSION_CLASSES`; a parameter is reserved, undescribed or a
                 nested model; a destructive action declares no required ``confirm``; ``long_running``
-                disagrees with whether the result is ``JobsStarted``; or the example does not validate.
+                disagrees with whether the result is ``JobsStarted``; a spend action declares no
+                ``happy_path``; or the example does not validate.
         """
         where = f"action {self.name!r}"
         if not ACTION_NAME.fullmatch(self.name):
@@ -166,6 +247,11 @@ class Action:
             raise ValueError(
                 f"{where}: long work returns JobsStarted for the caller to poll, and only long work does; "
                 f"long_running={self.long_running} with result {self.result.__name__}"
+            )
+        if self.permission == "spend" and self.happy_path is None:
+            raise ValueError(
+                f"{where}: a spend action declares a happy_path — the parameters that reach its work — so the jobs "
+                "conformance kit can show its call makes no completion request and its job makes some"
             )
         try:
             self.params.model_validate(dict(self.example))
@@ -523,6 +609,9 @@ __all__ = [
     "ActionHandler",
     "ActionOutcome",
     "Caller",
+    "ConformanceSample",
+    "ConformanceStage",
+    "HappyPath",
     "MountedTool",
     "PermissionClass",
     "ToolHints",

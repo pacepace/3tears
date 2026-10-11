@@ -4,8 +4,8 @@ Five engine calls have no run around them: a launch's case generation (an ``llm`
 writer, :func:`~threetears.evals.gen.generate_variations`), the rubric proposer
 (:func:`~threetears.evals.gen.propose_draft`), an analysis generation
 (:func:`~threetears.evals.analysis.run_analysis_generation`), a judge repeat
-(:func:`~threetears.evals.run.repeat_judge_scores`) and a second judge
-(:func:`~threetears.evals.run.ask_second_judge`). A run's own calls are bounded by its cost
+(:func:`~threetears.evals.run.judge_repeat_work`) and a second judge
+(:func:`~threetears.evals.run.second_judge_work`). A run's own calls are bounded by its cost
 cap as their spend arrives (``EvalRunCostCap``); these happen before any run exists, with none coming, or
 after the runs have ended, so nothing would bound or record them. This module is what does:
 

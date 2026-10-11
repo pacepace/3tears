@@ -1,8 +1,9 @@
 """What a judge temperature comparison asked and was answered (#633): the record the run layer hands the reading.
 
-The comparison is two steps, on either side of the package matrix. :func:`~threetears.evals.run.judge_at_two_temperatures`
-spends — it re-judges a finished run's borderline cases at the pinned temperature and at the provider's default —
-and returns every answer as a :class:`JudgeTemperatureAnswers`; :func:`~threetears.evals.analysis.read_judge_temperatures`
+The comparison is two steps, on either side of the package matrix. The work
+:func:`~threetears.evals.run.judge_temperature_work` admits spends — it re-judges a finished run's borderline cases at
+the pinned temperature and at the provider's default — and records every answer as a :class:`JudgeTemperatureAnswers`
+on the comparison's record; :func:`~threetears.evals.analysis.read_judge_temperatures`
 reads those answers into per-dimension variance and self-agreement, side by side. This module is the contract
 between the two: the settings compared, what was selected, and each answer as it came back.
 """

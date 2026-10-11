@@ -18,10 +18,44 @@ the terms in [Concepts](concepts.md).
 The operations (`threetears.evals.ops`) run over an `OpsHost`: the `LaunchHost`, plus `AnalysisGeneration`
 (the prompt, output cap and budget a background generation runs under). Each returns a typed model.
 
-Long work is a **job**: `run_launch`, `sweep_launch` and `analysis_generate` return `JobsStarted`, and
-`job_poll` / `job_cancel` take any job id they returned. A job id names the durable record its work writes, so
-it is still answerable after a restart. A job is answered only in the caller's scope: another scope's
-generation or sweep reads `lost` on poll and is refused on cancel.
+**No transport call waits on a model.** Every operation whose work calls one is a **job**: `run_launch`,
+`sweep_launch`, `analysis_generate`, `judge_second`, `judge_drift_check` and `judge_temperature` return
+`JobsStarted`, and `job_poll` / `job_cancel` take any job id they returned. The call does everything that can
+refuse before money is spent — the refusals, the pricing against the cap the work is held to, and the admission
+ceiling — and refuses there with nothing spent; the job does the spending. So a call is a few store round-trips,
+and a transport holds every call to one fixed timeout (`mount_fastmcp(..., call_timeout_s=...)`, 60s by default)
+rather than one sized to what a call might spend.
+
+Each job writes its own record, and polling reads it:
+
+| Job id | Started by | Its record | What `job_poll` returns once it completes |
+|---|---|---|---|
+| `launch:<id>` | `run_launch` | `EvalLaunch`: the case generation and every arm's preparation, then the runs to their end | `run_ids`, in arm order (from the moment they start), and each run's status in `progress` |
+| `run:<id>` | one run of a launch | the `EvalRun` | the run's status; read it with `run_get` |
+| `sweep:<id>` | `sweep_launch` | `EvalSweep` | the arms launched and finished |
+| `analysis:<campaign>:<attempt>` | `analysis_generate` | `EvalAnalysisAttempt` | the stored analysis's id; read it with `report_read` |
+| `second-judge:<id>` | `judge_second`, `judge_drift_check` | `EvalSecondJudgePass`, its id the pass id every paired score names | `result`: the pass's report, agreement and drift |
+| `judge-temperature:<id>` | `judge_temperature` | `EvalJudgeTemperatureCheck`, every answer kept | `result`: the comparison |
+| `action:<id>` | a host action ([Adopting the engine](adopting-a-host.md)) | `EvalActionJob` | `result`: the action's typed result |
+
+A launch is one job now, not one per arm: its arms are prepared inside it — where a generating launch
+(`n_variations`) calls its variation writer — and its record names its runs once they start, so an agent polls
+the launch and reads each run with `run_get`. One `job_cancel` of a launch stops every run it started.
+
+A job id names the durable record its work writes, so
+every process sharing the store answers it alike, and it is still answerable after a restart. Whether a job is
+still running is its record's answer: the process running it holds a **lease** on the record and renews it
+(every third of `LaunchHost.job_lease_s`, 60s by default). A job whose record has not ended and whose lease has
+lapsed reads `lost`, and the first poll to see that writes it on the record. A cancel is written on the record
+too, so `job_cancel` works from any process: the job ends `cancelled` within one renewal interval. A graceful
+shutdown writes every job its process holds `lost` at once. A job is answered only in the caller's scope:
+another scope's job reads not found, on poll and on cancel.
+
+**In the foreground.** A caller that is not a transport — a script, a test, a host's own batch — may await
+what it started instead of polling: `await_job(host, started, scope_id)` waits for the jobs to end and returns
+each one's final `JobStatus`, result included (cancelling the wait cancels the jobs). Below the operations,
+`run_eval` and the command line await the same work directly (`start_run`, and
+`run_job_work(judge_temperature_work(...))` for `judge-temperature`), so a short-lived consumer loses nothing.
 
 **A sweep** (`sweep_launch`) is for arms that differ in more than the model: each arm names its own model,
 overlays and apparatus settings, and every arm shares the template, subject, `k` and the other settings.
@@ -34,9 +68,9 @@ the sweep `failed`. The judge and simulator are the sweep's. Where it names none
 ones hold for the rest, so a role default that moves mid-sweep cannot split the arms.
 
 On a host that enforces its ceilings (`LaunchSettings.enforcement_enabled`), every spend operation is bounded
-in dollars before it spends: a launch by the per-run ceiling, an analysis generation and a judge repeat by the
-host's out-of-run cap. With enforcement off, none is capped. The full rules, including that a host's own
-`spend` actions carry no such obligation, are in [Cost and budgets](cost-and-budgets.md).
+in dollars before it spends: a launch by the per-run ceiling and its case generation by the host's out-of-run
+cap, an analysis generation and the judge actions by the host's out-of-run cap. With enforcement off, none is
+capped. The full rules are in [Cost and budgets](cost-and-budgets.md).
 
 ## The action catalogue
 
@@ -58,6 +92,12 @@ mount_fastmcp(
     tools=standard_tools("evals"),            # `evals` (read, spend, write) and `evals_admin` (destructive)
 )
 ```
+
+Every `spend` action — the engine's and a host's — declares a `happy_path`: the parameters (and what it arranges
+first) that reach its work. One without is refused when it is declared. The jobs conformance kit
+(`threetears.evals.testing.jobs_conformance_cases`) runs every action of a catalogue under a guarded client
+factory: each call must make no completion request, and each spend action's happy path must return
+`JobsStarted` and its job make at least one. See [Adopting the engine](adopting-a-host.md).
 
 An agent calls `action='help'` for the actions grouped by workflow and `action='help', topic=<action>` for
 one action's parameters and an example. A parameter the action does not declare is refused, naming the

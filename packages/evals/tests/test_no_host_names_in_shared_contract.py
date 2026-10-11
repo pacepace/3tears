@@ -335,7 +335,9 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # so with it gone they are scanned like the rest.
     "run/curation.py",
     "gen/variation_gen.py",
+    "run/job_work.py",
     "run/jobs.py",
+    "run/launch_job.py",
     # A person's score for a judged dimension, written after the run: the write reads the result
     # and stores a rating, in the engine's own words. Shared contract from the day it existed, and
     # scanned because the noun that would most plausibly arrive here is a host's name for its people.
@@ -411,6 +413,9 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # names are the host's words carried as data, never declared here. A host noun in this module
     # would be one host's tool written into the record every kind keeps.
     "schema/call_ledger.py",
+    # The registry of stored document types and their facts, which a host partitions its storage by: the
+    # engine's own types only, so a host noun here would be one host's document written into every host's list.
+    "schema/doc_types.py",
     # The re-check that re-grades a stored run from the ledgers its cells stored, through the run's
     # own grading function. It reads no kind's trace shape, so a host noun here would be one kind's
     # replay written back into the engine.
@@ -425,6 +430,13 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # model's to validate, so a host noun arriving here would be one host's taxonomy written into
     # the store every host reads through.
     "kernel/storage.py",
+    # Job leases: which process runs a job, written on its record. Engine vocabulary only — a lease, a holder,
+    # a cancel request, a loss — over the engine's own job records, so a host noun here would be one host's
+    # process model written into every host's liveness answer.
+    "kernel/job_context.py",
+    "kernel/job_leases.py",
+    "kernel/job_timeout.py",
+    "schema/job_lease.py",
     # The generic trial loop and the per-result covariate derivation, both importing nothing of the
     # host. Moved off _HOST_COUPLED_MODULES when a host tool's delivery record became
     # `AsyncDelivery` and its conclusion-path covariate was deleted: the runner stores a kind's

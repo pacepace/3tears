@@ -462,6 +462,7 @@ def make_analysis_attempt(**overrides: Any) -> EvalAnalysisAttempt:
         campaign_id="campaign-1",
         outcome="stored",
         analysis_id="analysis-1",
+        error=None,
         generator_model="writer-a",
         prompt_id="eval_analysis_gen",
         bundle_fingerprint="sha256:abc",

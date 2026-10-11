@@ -52,29 +52,49 @@ from threetears.evals.schema.versioning import (
 )
 
 #: The ``CORE_SCHEMA_VERSION`` every digest below was taken under.
-PINNED_CORE_SCHEMA_VERSION = 9
+PINNED_CORE_SCHEMA_VERSION = 10
 
 #: Each core type's validation JSON schema, normalised (:func:`core_shape_digest`), by ``doc_type``.
 CORE_SHAPE_DIGESTS: dict[str, str] = {
-    "calibration_rating": "e70e3c10f46df11140177f0844a95bc010c5da318f7cf8a80d6b210bf80e3022",
-    "case_set": "b5d301eca9176761e6f30b6f3c7a9bef14a805e5f307b0886b455f92437783a8",
-    "eval_out_of_run_spend": "d0f5c7476f307bc8b24919e382555e3abf12dfc2a0a061e61910b7c755eb897e",
-    "eval_result": "131e8c2d57e3d2634a0637c9d44f2dfc7cde67f9812f397f12f520eba0261029",
-    "eval_run": "f05c9de504ee7d92bc5656bffc0b4dce79674c1301fc6f1e0167ab5b26cccabf",
-    "eval_template": "a4fddfef594700c713b42e6d290f83cdd6ad99a5e903c00987a96fd7b299d50c",
-    "eval_test_case": "d6b89f0a8c7f70a80ac87808a30db426daf574bacad30777e01b59767c839562",
-    "eval_trace": "fc8edfb628126f84fd3030bd825617800d8bd9759533c11ebc19c94295d2b41e",
-    "judge_config": "229800da7158eb36c22a8751782085a4a84351c7eb7fa5c8b3c92b4c4c33ec21",
-    "judge_config_tombstone": "0767d1b84c31299671fc575cba6399cdcf4aea0a44a7a089f8ef9e6de869d924",
-    "rubric_dim": "1aa58f0d75226abc50c90475c5c9e5454870d1c4c04958b9e5f60724c10947c2",
-    "rubric_dim_tombstone": "e8e044c64d7822f906460d8629c8ab59ee6cdc7f027ff52fd97fd8be40b0fd0d",
+    "calibration_rating": "a543edb034dbeb7a7956d697939f665cc5c9f6c380419dbcf70e95e27f343772",
+    "case_set": "67cd75fe2dcb16a85fe8ecbda3ee0890addf6913d64ac1b95a93a64b06625d52",
+    "eval_analysis_attempt": "0ac4b69aa9996db713175d921d85036a357f93847bcd14ac813898c260b4104d",
+    "eval_campaign": "c33c6dc1d6c9fba98d9887bc20c395eac5ca6245302eb0fb32d696b155fab8d5",
+    "eval_generation_slot": "ad3f47db82a197b3a28ee46b348f8af6d6e372b5ee6fa49afa2401acaeb6d335",
+    "eval_launch": "16c9ce9100c8d7b8ca84fef1cf6859a60f9018d3b01198229b3fc0faa95e563b",
+    "eval_second_judge_pass": "632992b0ce0b3b6173fd0880ed257529c05dc05397c7711b1eb598ba8739fb6c",
+    "eval_judge_temperature_check": "2d3d1690437a378f4c1b9db37f5693b96058b5306b5ca32f0d9c5ed3a2d14c67",
+    "eval_action_job": "52548c2e78da08c30434dedf3451143233d22bf85d690d6c456f00cc2cb03bcc",
+    "eval_out_of_run_spend": "f1d51ffd4cb2447bc1ca32c67ac20a184a6fa17665c3f22bae7ba73bb0f46f43",
+    "eval_result": "84be2b0ee738171611a7173793061d06a7297d952b5a0aba41ecdb3207487cb5",
+    "eval_run": "32fdaebc9f3eaca01c2ead896dede4cd9a2a9283980b9338961578e77c3bf1c5",
+    "eval_sweep": "bcb495338809f5a29ee1166387c560c2257c52b37b370cd2048c16e792e79c06",
+    "eval_template": "8f9ae4cc32fe1a11fcf08007b7c6ef96767c475e3d7f220222f92b7cd9763231",
+    "eval_test_case": "1e928fb0d3d646aa8c7451385d04417d0f42b70239da88ae4929d23f0f8de87f",
+    "eval_trace": "fb24fe2a75c0ebe5586510326023406c98ee0a0fb701fc9db4988020b4a7b084",
+    "judge_config": "77088727ea463a92164453b579715d057c8622c6dc22e757c3e42584c3760af2",
+    "judge_config_tombstone": "c933c26a6b232648508cfdc75b806ab176d262d758e3a814956d7a6639d0672c",
+    "rubric_dim": "6b96268625583c6b89e252223496da9e61fe13c3e840c0da5ca21919d0078fc5",
+    "rubric_dim_tombstone": "5baef0da563d3d2943f0b254d13d3796d391e0f5b5dd0baf40564738966a9ae0",
 }
 
 #: The fields the store addresses each core type by, pinned: a step may never touch one, so the set moving
 #: is a decision about the store, never a side effect.
 PINNED_ADDRESSING_FIELDS: dict[str, frozenset[str]] = {
     "eval_test_case": frozenset({"id", "doc_type", "schema_version", "scope_id", "template_id", "stratum"}),
-    "eval_run": frozenset({"id", "doc_type", "schema_version", "scope_id", "status", "archived", "created_at"}),
+    "eval_run": frozenset(
+        {
+            "id",
+            "doc_type",
+            "schema_version",
+            "scope_id",
+            "status",
+            "archived",
+            "created_at",
+            "cancel_requested_at",
+            "cancel_request_reason",
+        }
+    ),
     "eval_result": frozenset({"id", "doc_type", "schema_version", "scope_id", "eval_run_id", "test_case_id", "model"}),
     "eval_trace": frozenset({"id", "doc_type", "schema_version", "scope_id"}),
     "calibration_rating": frozenset(
@@ -101,6 +121,31 @@ PINNED_ADDRESSING_FIELDS: dict[str, frozenset[str]] = {
     "rubric_dim_tombstone": frozenset({"id", "doc_type", "schema_version", "scope_id", "deleted_at"}),
     "judge_config_tombstone": frozenset({"id", "doc_type", "schema_version", "scope_id", "deleted_at"}),
     "case_set": frozenset({"id", "doc_type", "schema_version", "scope_id", "name", "version"}),
+    "eval_campaign": frozenset(
+        {"id", "doc_type", "schema_version", "scope_id", "subject_id", "behavior", "archived", "created_at"}
+    ),
+    "eval_sweep": frozenset(
+        {"id", "doc_type", "schema_version", "scope_id", "cancel_requested_at", "cancel_request_reason"}
+    ),
+    "eval_generation_slot": frozenset({"id", "doc_type", "schema_version", "scope_id", "campaign_id", "attempt_id"}),
+    **{
+        job_record: frozenset(
+            {"id", "doc_type", "schema_version", "scope_id", "cancel_requested_at", "cancel_request_reason"}
+        )
+        for job_record in ("eval_launch", "eval_second_judge_pass", "eval_judge_temperature_check", "eval_action_job")
+    },
+    "eval_analysis_attempt": frozenset(
+        {
+            "id",
+            "doc_type",
+            "schema_version",
+            "scope_id",
+            "campaign_id",
+            "created_at",
+            "cancel_requested_at",
+            "cancel_request_reason",
+        }
+    ),
 }
 
 #: What a step may never touch beyond the addressing fields: the host's and the kind's opaque payloads, and
@@ -120,13 +165,27 @@ UNTOUCHABLE_FIELDS = frozenset(
 #: The frozen corpus: one directory per core version, one stored document per core type.
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "core_documents"
 
+#: A core type that did not exist before some version, by the version it was first stored at: no store holds one
+#: from before it, so its frozen corpus starts there. A type that existed and joined the core later is not here —
+#: an older store holds it, and its corpus starts at the baseline.
+FIRST_STORED_AT: dict[str, int] = {
+    "eval_generation_slot": 10,
+    "eval_launch": 10,
+    "eval_second_judge_pass": 10,
+    "eval_judge_temperature_check": 10,
+    "eval_action_job": 10,
+}
+
 #: Each frozen fixture's sha256, so a stored document of the past is never edited.
 FIXTURE_DIGESTS: dict[str, str] = {
     "v8/calibration_rating.json": "ae0d27591a4335b1e22fcf023dd69cd5c25a5079febfcf85f65daf4e85b27214",
     "v8/case_set.json": "8dbf4dc88ffc44d95e4dc9d13a344d1479321893b635812c415defadd67c8fb4",
+    "v8/eval_analysis_attempt.json": "f68876fc90a3a3a9374d949460d81eaa107f4035461a19781770c0d26a31da1e",
+    "v8/eval_campaign.json": "7b240be0794eb3621310f399e90288c84717af0caec4c993fd88f26a9127f084",
     "v8/eval_out_of_run_spend.json": "234922bc7364b5c390728a54b0c37f80ded81c913ffd068bd30a21642cbb61f7",
     "v8/eval_result.json": "0ec4c7bc2001e3923c26ee79c728aaf80ce4212c7d0403c0e528c6d25ac582f8",
     "v8/eval_run.json": "859ff20570f63d78963c51471decf76218f4ef2312e8de8e889f9776513fa56d",
+    "v8/eval_sweep.json": "ffe9e179d8493b8162a4bd04f867d2ed3ac130801ace6b7179bf7d6e58062f5a",
     "v8/eval_template.json": "8b9174fbcee49a61f7e0b863399e34af37644da5cc074e5e18a9e1a6c3062e3c",
     "v8/eval_test_case.json": "3a15ab6414bb2de1de0df80f8841fbbc631ecb3c7d85fccf84a3053a7e219de0",
     "v8/eval_trace.json": "1d0b69fad9e25b56764fda5c3885994e9587a89f48a01e30c728af7f11883358",
@@ -136,9 +195,12 @@ FIXTURE_DIGESTS: dict[str, str] = {
     "v8/rubric_dim_tombstone.json": "4198ff3163fc2cc1b2de7b67fb0dddb4a87d370551725e4e20f19af40ade3529",
     "v9/calibration_rating.json": "41b8f8a8c87b832148090ea42e5a215980810fab4a30716f0111656b3a1c6c9f",
     "v9/case_set.json": "883b7aece975b2727571ce8cb931204112b44da58adc2dbc94eb933514585ae5",
+    "v9/eval_analysis_attempt.json": "d9e693bc468d85e5dbf9cd4e5b94b88b9eb527305d17d89500f610c7f607f035",
+    "v9/eval_campaign.json": "47fdd75fc22140e30d3746944f8f78305a694199a98519df2888880e8ea98bc5",
     "v9/eval_out_of_run_spend.json": "a5bb8d170690525b99b8a89d50551cf6a13e85cc35927f9ca0ce86cbbcde966f",
     "v9/eval_result.json": "add5bcd7b841d0abbd285f11390b7078abc32178aeacf48de9110c47025771ca",
     "v9/eval_run.json": "b7d71bf1aac26afb13d405046127f82e10ce5340e21da03cf766cb560ca02582",
+    "v9/eval_sweep.json": "68c3fcb2b9c64837b46befb3c366ae5e46b5988a74f9edd1b0e905e07565c01b",
     "v9/eval_template.json": "c766828c84b560109267571c35987ce6d50ee30d9b0251d8bf9d8054e7180155",
     "v9/eval_test_case.json": "6e5f26208443cfd966a5bc977bbd4a4a52ba8c745fb9bd0b981fb1ea99a2ba7e",
     "v9/eval_trace.json": "eb8ffa40da641f26b0f75d86aa4f697b03e6ad895c3e15d37d8f6fabe5624e85",
@@ -146,6 +208,26 @@ FIXTURE_DIGESTS: dict[str, str] = {
     "v9/judge_config_tombstone.json": "d2c5be28efc12f564ec604374f148021b15e67bb4b5ea935e171b79dae9a28a6",
     "v9/rubric_dim.json": "e81b15e51c39604bd295d3d7f49e2efb3b20e6969eefe4a4cd09e7a1cefbe09b",
     "v9/rubric_dim_tombstone.json": "3c8058911dd4cfa1a87bf3ea0e5ba7b62b4ed11ce94dca8c63b44860d242e7bd",
+    "v10/calibration_rating.json": "bd29da501e7cb6a2e2c54f14783c90f3c3e5f2fa6313ad3b70e5de27fda532fe",
+    "v10/case_set.json": "d5d2c352b4effea075cf6f05a7b4ece0789120c48bae5faf371d25c7117635ad",
+    "v10/eval_analysis_attempt.json": "d8254f8c6a09b5e5a653b98a89db576ace68c82fc32fe4da6a162cfe7ac27bf4",
+    "v10/eval_campaign.json": "ce49d7fa609312692d79d5fdb7c3661becb056d9c7bd8cb60828d97a46b3c4e2",
+    "v10/eval_generation_slot.json": "7de32af29779e8be2afe49db69959ff3a03017aefc843555bfab69fbe80f923b",
+    "v10/eval_launch.json": "09e109cea826386249b47e9d62c5a0ac7258f965f377827db19483a8e13fc435",
+    "v10/eval_second_judge_pass.json": "dcc1965334813457a0c97d23760bcd143322e1fc25b4097ee4af6a7f0b13a74d",
+    "v10/eval_judge_temperature_check.json": "1e018414a97497027c6506513a466c0a48f26eda9b15658e9d4f1aa0ac38f5ab",
+    "v10/eval_action_job.json": "93991981cfd6b6ee924b881666a85fb10dcad29867bcdad96ff566b202d28919",
+    "v10/eval_out_of_run_spend.json": "09d29852a0078c3750de7f0443e37927a685978a064098d3a398118184b7250b",
+    "v10/eval_result.json": "072ab69a839032ca0395c91adc93aa6d0a5913cf62c138f4b7ba0df5a034e27d",
+    "v10/eval_run.json": "56b1cdd79e8754004d0658d5ed926a7f0acf609bdeff4e07724ccf7d2f9f158f",
+    "v10/eval_sweep.json": "ad6f534d12f194819e9a4bb9f56dde8d0ae00cfb4ac33975863131de70aaa3d5",
+    "v10/eval_template.json": "5f2ebd9cfb97b037141adcfd51597a0a4cc01d33243a117320fe609bacc13e61",
+    "v10/eval_test_case.json": "30c4e9297c56ab3791c98802459f83b7ad6f8246b9e885fecb561f164fe8e8c9",
+    "v10/eval_trace.json": "3d99d43d31546bfdfbbd53381b660c59346d52b1c464e4c4738b3b6bcbcb6884",
+    "v10/judge_config.json": "018fb9a4b3d9d7058306b0de6f11d94fef4d687fd376fcbef4afc3fa08d5ea31",
+    "v10/judge_config_tombstone.json": "8a81a65775ba7e0dd4e571a2ed7bc50d80fa77a60ab4cb719a45edf1304b665e",
+    "v10/rubric_dim.json": "4bb70cede631382f55912d1a2d7e31b53adcc9728b785baa09dd4558c52f04b7",
+    "v10/rubric_dim_tombstone.json": "12174bd3c3ac1de46b5e45a8a72f4602fb2c8edb1e3662623ceefc15f86cfece",
 }
 
 #: Keys whose dict values are maps of names to schemas, not schema nodes: their own keys are field or
@@ -277,10 +359,16 @@ def test_every_core_version_has_a_ledger_entry_and_an_upgrader() -> None:
 
 
 def test_every_core_version_has_a_whole_frozen_corpus() -> None:
-    """One stored document per core type, for every version from the baseline: what an old store holds."""
+    """One stored document per core type, for every version from the baseline (or from the version a type was
+    first stored at): what an old store holds."""
+    assert all(
+        doc_type in CORE_DOC_TYPES and CORE_BASELINE_VERSION < version <= CORE_SCHEMA_VERSION
+        for doc_type, version in FIRST_STORED_AT.items()
+    )
     for version in range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION + 1):
         held = {path.stem for path in (FIXTURES / f"v{version}").glob("*.json")}
-        assert held == CORE_DOC_TYPES, f"v{version}'s frozen corpus holds {sorted(held)}"
+        stored_then = {doc_type for doc_type in CORE_DOC_TYPES if FIRST_STORED_AT.get(doc_type, 0) <= version}
+        assert held == stored_then, f"v{version}'s frozen corpus holds {sorted(held)}"
 
 
 def test_no_frozen_fixture_was_edited() -> None:

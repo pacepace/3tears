@@ -24,6 +24,7 @@ What is pinned:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ import pytest
 
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink, CellSpanWindow, VariantConfig
 from threetears.evals.kernel.cassettes import CellCassettes
+from threetears.evals.kernel import JobLeases
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.identity import resolve_variant_identity
@@ -42,8 +44,10 @@ from threetears.evals.analysis import JudgeTemperatureComparison, read_judge_tem
 from threetears.evals.run import (
     borderline_dims,
     estimate_judge_repeat,
+    EvalJudgeTemperatureCheck,
     estimate_judge_temperature_comparison,
-    judge_at_two_temperatures,
+    judge_temperature_work,
+    run_job_work,
 )
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService
@@ -161,6 +165,29 @@ class _Client:
         """Nothing to release."""
 
 
+@dataclass
+class _StallingJudge(_Judge):
+    """A judge that stops answering once it has answered :attr:`stall_after` calls — ``None`` never stops."""
+
+    stall_after: int | None = None
+
+    def client(self, temperature: float | None) -> _Client:
+        self.requested.append(temperature)
+        return _StallingClient(self, temperature)
+
+
+@dataclass
+class _StallingClient(_Client):
+    """A judge client whose call never returns once its judge has stalled."""
+
+    async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
+        judge = self.judge
+        assert isinstance(judge, _StallingJudge)
+        if judge.stall_after is not None and len(judge.calls) >= judge.stall_after:
+            await asyncio.Event().wait()
+        return await super().generate(system=system, user=user, response_format=response_format)
+
+
 class _Kind:
     """A kind rendering :data:`_EVIDENCE` for its one output, as a document."""
 
@@ -240,8 +267,21 @@ async def _judged_run(judge: _Judge, *, cases: int = 4, **run_fields: Any) -> tu
 async def compare_judge_temperatures(
     host: EvalHost, run_id: str, scope_id: str, **options: Any
 ) -> JudgeTemperatureComparison:
-    """Ask at the two temperatures and read the answers — what the ``judge_temperature`` operation does."""
-    return read_judge_temperatures(await judge_at_two_temperatures(host, run_id, scope_id, **options))
+    """Ask at the two temperatures in the foreground and read the answers off the comparison's own record.
+
+    What the ``judge_temperature`` operation's job does, awaited here as a script awaits it; the record is also
+    checked to hold what was read, so every comparison these tests make shows it was kept.
+    """
+    leases = JobLeases(host.storage, blocking_executor=host.blocking_executor)
+    try:
+        work = await judge_temperature_work(host, run_id, scope_id, **options)
+        ended = await run_job_work(work, store=host.storage, executor=host.blocking_executor, leases=leases)
+    finally:
+        await leases.shut_down()
+    stored, _ = host.storage.load_job_record(EvalJudgeTemperatureCheck, ended.id, scope_id)
+    assert stored is not None and stored.outcome == "completed" and stored.answers is not None, ended.detail
+    assert stored.answers == ended.answers
+    return read_judge_temperatures(stored.answers)
 
 
 def _results(host: EvalHost, run_id: str) -> list[EvalResult]:
@@ -301,6 +341,36 @@ class TestTheComparisonShowsWhatTemperatureDoes:
         await compare_judge_temperatures(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)
 
         assert _results(host, run_id) == before
+
+
+class TestEveryAnswerPaidForIsKept:
+    async def test_a_comparison_cancelled_part_way_keeps_every_answer_it_had(self):
+        """The answers were kept only in the final write, so a cancel or a failure lost every paid answer."""
+        judge = _StallingJudge()
+        host, run_id = await _judged_run(judge)
+        judge.stall_after = 3
+        leases = JobLeases(host.storage, blocking_executor=host.blocking_executor)
+        work = await judge_temperature_work(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)
+        running = asyncio.create_task(
+            run_job_work(work, store=host.storage, executor=host.blocking_executor, leases=leases)
+        )
+
+        def kept() -> int:
+            stored, _ = host.storage.load_job_record(EvalJudgeTemperatureCheck, work.record_id, _SCOPE)
+            answers = None if stored is None else stored.answers
+            return 0 if answers is None else sum(len(case.answers) for case in answers.answers)
+
+        async with asyncio.timeout(5):
+            while kept() < 3:
+                await asyncio.sleep(0.01)
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+        await leases.shut_down()
+
+        stored, _ = host.storage.load_job_record(EvalJudgeTemperatureCheck, work.record_id, _SCOPE)
+        assert stored is not None and stored.outcome == "cancelled" and stored.answers is not None
+        assert kept() == 3 and stored.answers.calls_made == 3, "every answer paid for before the cancel is kept"
 
 
 class TestWhichCasesAreReJudged:

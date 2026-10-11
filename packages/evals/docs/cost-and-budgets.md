@@ -127,9 +127,19 @@ second pricing of the same arm.
 
 ## Spend outside any run
 
-Four engine calls have no run around them: a launch's case generation (an `llm` variation axis's writer),
-the rubric proposer (`propose_draft`), an analysis generation, and a judge repeat. Under enforcement, each is
-bounded in dollars before it spends; every one is ledgered either way.
+These engine calls have no run around them: a launch's case generation (an `llm` variation axis's writer),
+the rubric proposer (`propose_draft`), an analysis generation, a judge repeat, a second judge and a judge
+temperature comparison. Under enforcement, each is bounded in dollars before it spends; every one is ledgered
+either way.
+
+**Priced in the call, spent in the job.** No transport call waits on a model, so every one of these that an
+action starts is split where its spending starts. The action's call makes the refusals, prices every call against
+the cap and admits them — a launch also prices every arm and takes its room under the admission ceiling — and
+refuses there, with nothing spent. The work that spends runs as a job (see
+[Driving it from an agent](agents-and-mcp.md#operations-and-jobs)): a launch's case generation runs in the
+launch's job, before its runs start; a second judge's and a temperature comparison's calls in theirs. A job refused
+part-way — a kind's launcher refusing an arm, a provider refusing the account — ends `failed` on its record, and
+what it had spent is in the ledger as it went.
 
 **Case generation.** Generation runs before any run exists, so its calls are outside every run's cost cap
 and metered-call ceiling. Every `llm` axis's call is priced on the writer's client (`price_ceiling`) against
@@ -156,10 +166,16 @@ id. (What a judge repeat is for is in
 **Second judges.** A second judge (`judge_second`, `judge_drift_check`) is held to the same cap, priced and
 admitted the same way, and ledgered under purpose `second_judge` with the run's id. It is measurement cost on its
 own line: never in a result's `cost_usd`, never in the run's judge spend. `run_get` shows it as
-`second_judge_cost_usd`.
+`second_judge_cost_usd`. The pass's own report — what it called and what that cost — is on its record
+(`EvalSecondJudgePass`), which `job_poll` reads.
 
-**A host's own `spend` actions.** A host's own `spend` action carries no such obligation: the class is a
-label a tool cut splits on, metered only as far as the host's handler meters it.
+**Judge temperature comparisons.** `judge_temperature` is held to the same cap the same way and ledgered under
+purpose `judge`; its record (`EvalJudgeTemperatureCheck`) keeps every answer and its spend.
+
+**A host's own `spend` actions.** A host's own `spend` action is held to one rule the engine checks: its call
+makes no completion request, so it prices and refuses in the call and spends in a job (`start_action_job`). How
+far it meters what that job spends is the host's handler's; the jobs conformance kit
+(`jobs_conformance_cases`) shows the call spends nothing and the job reaches the work.
 
 **Reading it back.** What was spent out of run is read back by `scope_out_of_run_spend` — the
 `scope_out_of_run_spend` action, and the CLI's `spend` — narrowed by purpose, launch group or template.

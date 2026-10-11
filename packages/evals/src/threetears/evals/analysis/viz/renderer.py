@@ -39,7 +39,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Protocol, TypeVar
 
-from threetears.evals.analysis.viz.intent import Cell, ChartIntent
+from threetears.evals.analysis.viz.intent import ChartIntent, ChartValue
 from threetears.evals.analysis.viz.policy import table_disagreements
 
 #: A renderer's own form of a drawn chart — a Vega-Lite spec, an SVG, a component's props.
@@ -71,7 +71,7 @@ class ChartRenderer(Protocol[DrawingT]):
         """
         ...
 
-    def drawn_data(self, drawing: DrawingT) -> list[dict[str, Cell]]:
+    def drawn_data(self, drawing: DrawingT) -> list[dict[str, ChartValue]]:
         """Every datum ``drawing`` places, read back out of the drawing itself.
 
         Each datum that belongs to a row of the chart carries that row's identity under the intent's
@@ -87,7 +87,7 @@ class ChartRenderer(Protocol[DrawingT]):
         ...
 
 
-def _comparable(value: Cell) -> tuple[str, object] | None:
+def _comparable(value: ChartValue) -> tuple[str, object] | None:
     """A cell as a comparison key: numbers at :data:`_SIGNIFICANT_DIGITS`, bools apart from 0 and 1."""
     if value is None:
         return None
@@ -101,7 +101,7 @@ def _comparable(value: Cell) -> tuple[str, object] | None:
     return ("text", value)
 
 
-def _identity_of(datum: Mapping[str, Cell], field: str | None) -> str | None:
+def _identity_of(datum: Mapping[str, ChartValue], field: str | None) -> str | None:
     """The identity a datum is drawn under, or None for one that names none (or a chart with no identity)."""
     if field is None:
         return ""

@@ -1,6 +1,6 @@
 """What the engine ships for an adopter's own test suite: conformance kits a host runs against itself.
 
-It holds two kits and two checks. The store conformance kit: every rule of the
+It holds three kits and two checks. The store conformance kit: every rule of the
 :class:`~threetears.evals.schema.DocumentStore` port as a :class:`StoreConformanceCase`, collected
 in :data:`STORE_CONFORMANCE_CASES`. An adapter's test suite hands each case a fresh, empty store and
 parametrises over the tuple; a broken rule raises :class:`StoreConformanceFailure` naming the case and
@@ -12,7 +12,11 @@ own source tree and reports every ``threetears.evals`` import that reaches below
 :class:`NonPublicImport`. The completion check: :func:`check_completion_conformance` takes an instance of a
 host's completion type and raises :class:`CompletionConformanceFailure` naming every attribute eval reads off a
 completion that it lacks — the usage ledger reads its own defensively, so a rename there is otherwise
-silent. All four are plain Python and import no test runner. See
+silent. The jobs conformance kit: every action in a catalogue, the host's included, as a :class:`JobsConformanceCase`
+from :func:`jobs_conformance_cases` — each action's call makes no completion request, and each spend action's happy
+path returns ``JobsStarted`` and its job makes at least one — watched through a :class:`CompletionGuard` the host
+wraps its client factory in (:mod:`threetears.evals.testing.jobs_conformance`). All five are plain Python and import
+no test runner. See
 :mod:`threetears.evals.testing.store_conformance` and :mod:`threetears.evals.testing.reader_conformance` for
 an example under pytest.
 
@@ -27,6 +31,18 @@ from threetears.evals.testing.completion_conformance import (
     check_completion_conformance,
 )
 from threetears.evals.testing.import_boundary import NonPublicImport, nonpublic_evals_imports
+from threetears.evals.testing.jobs_conformance import (
+    DEFAULT_CALL_RETURN_TIMEOUT_S,
+    DEFAULT_JOB_CONFORMANCE_TIMEOUT_S,
+    BuildConformanceHost,
+    CompletionGuard,
+    CompletionOutsideJob,
+    JobAwaitedByItsCall,
+    JobsConformanceCase,
+    JobsConformanceFailure,
+    JobsConformanceHost,
+    jobs_conformance_cases,
+)
 from threetears.evals.testing.reader_conformance import (
     READER_CONFORMANCE_CASES,
     ReaderConformanceCase,
@@ -40,6 +56,16 @@ from threetears.evals.testing.store_conformance import (
 )
 
 __all__ = [
+    "DEFAULT_CALL_RETURN_TIMEOUT_S",
+    "DEFAULT_JOB_CONFORMANCE_TIMEOUT_S",
+    "BuildConformanceHost",
+    "CompletionGuard",
+    "CompletionOutsideJob",
+    "JobAwaitedByItsCall",
+    "JobsConformanceCase",
+    "JobsConformanceFailure",
+    "JobsConformanceHost",
+    "jobs_conformance_cases",
     "READER_CONFORMANCE_CASES",
     "STORE_CONFORMANCE_CASES",
     "CompletionConformanceFailure",

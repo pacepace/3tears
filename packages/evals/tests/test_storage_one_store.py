@@ -16,7 +16,6 @@ from typing import Any
 import pytest
 
 from threetears.evals.schema.base import EvalBaseModel
-from threetears.evals.run.jobs import EvalJobManager
 from threetears.evals.run.lifecycle import sweep_abandoned_runs
 from threetears.evals.schema.models import EVAL_DOC_TYPES
 from threetears.evals.kernel.storage import EvalStorage
@@ -143,10 +142,11 @@ def test_the_reclaim_settles_runs_only_in_the_scopes_it_is_named() -> None:
     storage.save_eval_run(here)
     storage.save_eval_run(there)
 
-    report = sweep_abandoned_runs(storage, [_HOME], job_manager=EvalJobManager(storage))
+    report = sweep_abandoned_runs(storage, [_HOME])
 
     assert report.scanned == 1 and report.cancelled_run_ids == ["run-here"]
-    assert storage.load_eval_run("run-here", _HOME).status == "cancelled"
+    settled = storage.load_eval_run("run-here", _HOME)
+    assert settled is not None and settled.status == "cancelled" and settled.lost is not None
     assert storage.load_eval_run("run-there", _ELSEWHERE).status == "running"
 
 

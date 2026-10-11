@@ -108,9 +108,14 @@ because every stored model reads strictly.
 
 **Prove your store with the conformance kit.** `threetears.evals.testing.STORE_CONFORMANCE_CASES`
 states every rule of the port — scoping, the strip on read, `exclude`/`keep` projection, ordering,
-etag conflicts and the re-read that recovers one, merge and delete — as a case you hand a fresh,
-empty store. Every case is mandatory: in particular a store must implement conditional writes,
-because several writers share a run document as it finishes. Parametrise your test runner over it:
+etag conflicts and the re-read that recovers one, create-only writes, merge and delete — as a case you
+hand a fresh, empty store. Every case is mandatory: in particular a store must implement both write
+preconditions — `if_match` (the stored document still carries this etag), because several writers share a
+run document as it finishes, and `create_only` (nothing is stored under this scope and id, of any type),
+because two processes racing to start one campaign's analysis generation both create its one generation
+slot and exactly one may land. A store that forwards writes to a backend passes both through. A store
+may also offer `StoreClock` (`now()`, the store's own time), which job leases are then stamped in; offer it
+only when the time is the store's, not the calling process's. Parametrise your test runner over it:
 
 ```python
 @pytest.mark.parametrize("case", STORE_CONFORMANCE_CASES, ids=lambda case: case.name)
@@ -141,10 +146,30 @@ before a page is slow, and you can alert on `elapsed_ms` instead.
 
 ## Stored data: what is kept
 
+**Every stored type has facts.** `DOC_TYPE_FACTS` (in `threetears.evals.schema`) is the one list of the
+types the engine stores, and says three things about each:
+
+- **origin**: `input` (what runs read as given, whoever wrote it: templates, judge configs, rubric dims, case
+  sets, test cases, campaigns), `record` (what happened: runs, results, traces, calibration ratings, the
+  out-of-run spend ledger, sweeps, analysis attempts, cassettes, generation slots, launches, second judge passes,
+  judge temperature comparisons, host action jobs) or `derived` (computed from other stored
+  documents: analyses, insights, judge profiles).
+- **lifecycle**: `kept` (read by every later release, below) or `regenerable` (refused after a format change,
+  and made again).
+- **suppresses**: for a tombstone, the type it suppresses (`rubric_dim_tombstone` holds a `rubric_dim`'s
+  slot, `judge_config_tombstone` a `judge_config`'s).
+
+`EVAL_DOC_TYPES` (what the operator wipe sweeps) and `CORE_DOC_TYPES` (what is kept) are derived from it.
+
 **The evidence core is kept.** Every later release reads it, from core v8 (the first release) on. The core is
 what the engine cannot regenerate and an audit needs: test cases, runs, results, traces, calibration ratings,
 the out-of-run spend ledger, case sets, and the templates, judge configs and rubric dims (with their
-tombstones) those documents name by id. `CORE_DOC_TYPES` (in `threetears.evals.schema`) lists them.
+tombstones) those documents name by id; and the campaigns people declared and gathered runs into, and the
+records of how each sweep ended, what each analysis generation spent, and which generation holds a campaign's
+slot (a later build that could not read a slot would block the campaign's generations, or start a second beside
+a live one), and the records of every other job: a launch (the runs it started), a second judge's pass (its report),
+a judge temperature comparison (every answer, stored nowhere else) and a host action's job (its result).
+`CORE_DOC_TYPES` lists them.
 
 **A release that changes a core shape ships an upgrader, and your store needs no migration.** Every change
 to a core shape bumps `CORE_SCHEMA_VERSION`, an added optional field included. Each bump comes with one
@@ -154,10 +179,10 @@ next writes that document, at the current version. So one scope can hold documen
 A step never changes a field the store filters, sorts or projects on (`CORE_ADDRESSING_FIELDS`), so an index
 your adapter keeps on those fields stays valid.
 
-**Everything else is regenerated.** Campaigns, analyses, insights and sweeps are built over the core, and
-a cassette is re-captured. When one of their shapes changes, `REGENERABLE_SCHEMA_VERSION` is bumped and a
-document written under another version is refused: make it again over the kept runs (create the campaign,
-generate the analysis), or re-capture the cassette. After a bump, `analyses_undescribable` (operation and action) lists the scope's analyses holding
+**Everything else is regenerated.** Analyses, insights and judge profiles are built over the core, and a
+cassette is re-captured. When one of their shapes changes, `REGENERABLE_SCHEMA_VERSION` is bumped and a
+document written under another version is refused: make it again over the kept runs (generate the analysis,
+profile the judge), or re-capture the cassette (a new capture run, so a new corpus). After a bump, `analyses_undescribable` (operation and action) lists the scope's analyses holding
 an arm this build can no longer describe.
 
 **Each version space moves on its own.** Core documents, regenerable documents, the bundle, the report
@@ -167,6 +192,100 @@ recomputes an identity key, so keys from different predicates never silently poo
 **Reads stay strict.** Every stored model refuses an unknown field and a missing required one. A core
 document written by a newer release is refused, never guessed at, so when two builds share one store,
 upgrade the older one. A core document from before the first release (below core v8) is refused too.
+
+### Partition by facts: one store per kind of document
+
+You can keep each kind of document in a store suited to it, such as the evidence in your database and
+everything the engine can remake in a cheaper store. `RoutedDocumentStore` (in `threetears.evals.storage`) is
+one `DocumentStore` over several. A `DocTypeRoute` keys on one fact, `origin` or `lifecycle`, and names a store
+for every value of it, plus one store for the types the registry does not hold (your own documents):
+
+```python
+from threetears.evals.kernel import EvalStorage
+from threetears.evals.storage import DocTypeRoute, RoutedDocumentStore, SqliteDocumentStore
+
+stores = {"evidence": MyPostgresStore(dsn), "scratch": SqliteDocumentStore("regenerable.sqlite")}
+route = DocTypeRoute(by="lifecycle", to={"kept": "evidence", "regenerable": "scratch"}, unregistered="evidence")
+
+# Once, with the engine stopped: move what the stores already hold to where the route puts it.
+RoutedDocumentStore.relocate(stores, route, scope_ids=["acme", "globex"], host_doc_types=["host_note"])
+
+storage = EvalStorage(RoutedDocumentStore(stores, route), host_doc_types=["host_note"])
+```
+
+A route keys on facts, never on type names, so a type a later release adds is placed by what it is. Every
+mistake a route can hold is refused when the router is built: a fact value left unmapped, a store that is
+not among `stores`, one store passed under two names, a tombstone kept apart from the type it suppresses.
+
+**Typed calls go to one store; id-only calls ask every store.** A write, `get_many`, `by_doc_type` and
+`iter_by_doc_type` go to the store the type is kept in, and a conditional write's `if_match` or `create_only` reaches that store
+unchanged. `get`, `get_with_etag`, `merge_fields` and `delete` carry only an id, so they ask every store. A store
+that does not hold the id answers "not here", as the port says. One id lives in one store: a read that finds an
+id in two stores, or in a store its type is not kept in, raises `MisplacedDocument` rather than picking one. A
+`create_only` write asks every other store for the id first and is refused with `StoreConflict` if one holds
+it, as a single store would refuse it. Only the owning store's create is atomic, so a write racing that check
+can leave the id in two stores, and the next id-only read reports it as `MisplacedDocument`.
+
+**Changing the route is an operation.** Each store records the placements it was written under, in a scope of
+its own (`ROUTING_SCOPE`: never use it as a scope of your own, and your adapter must be able to hold it).
+The router refuses to start (`RouteChanged`) when a type would be read from a store it was not written to, when
+two stores are passed under each other's names, and when no store has a record yet. `RoutedDocumentStore.relocate`
+moves every document of the scopes and host types you name to its new store, then writes the records. Run it
+once when you adopt the router and again whenever you change the route, with the engine stopped. If it is
+interrupted, run it again. A release that adds a type needs no relocation unless your route places the new type
+somewhere other than your `unregistered` store.
+
+**A store's clock passes through when every store has one.** When each of your stores offers `StoreClock`
+(its own `now()`), so does the router, answering from the store your runs are kept in, so every process stamps
+job leases on one clock. If any store has none, neither has the router, and each process reads its own clock.
+
+Prove the router as you prove any store: the conformance kit runs over a `RoutedDocumentStore` of your stores.
+
+## Upgrading: names that move
+
+**Every name that leaves a public root is written down, and nothing is kept for compatibility.** When a release
+moves a public name to another root, renames it, or removes it, `packages/evals/MIGRATIONS.toml` records it under
+that release: the old name, its new home or `removed`, and why. There is no shim at the old name. The release
+notes are printed from that record, so they hold the full old-to-new map:
+
+```bash
+uv run python packages/evals/scripts/release_notes.py v0.66.0-evaladopt.6
+```
+
+Each line reads `old → new`, grouped under the reason for the move. Changes that are not a public name, such as
+a renamed field, a moved submodule or a new report version, are listed after the map. To port, find each old name
+you import in that list and import it from its new root.
+
+**A name has one home.** It is exported from the root that holds its defining module. A second root exports it
+only when that root needs it, and `packages/evals/api/reexports.toml` says why. For example, `ops` re-exports the
+analysis results the action catalogue names, because `actions` may reach `analysis` only through `ops`. Import a
+name from its home, which is the root the reference lists it under first.
+
+**How the package holds this (for contributors).** `packages/evals/api/surface.json` is a checked-in snapshot of
+every public root's `__all__`, one entry per `root.name` with its kind and signature. The same walk that renders
+the [reference](reference.md) writes it. `tests/test_api_surface.py` compares the installed package with the
+snapshot:
+
+- **A name added, or a kind or signature changed.** The test fails until you regenerate the snapshot, so the
+  change shows up as a diff in review. A signature change needs no record in `MIGRATIONS.toml`. When it breaks
+  callers, add it to the newest section's `notes`.
+- **A name moved, renamed or removed.** The test fails until `MIGRATIONS.toml`'s first section (the release being
+  prepared) records it. The generator refuses to write a snapshot that drops an unrecorded name.
+- **A section that names the tag before it (`since`).** The test reads both surfaces from git and holds the
+  section to exactly the names that left a root between that tag and this version's. Before the version is
+  tagged, it compares against the working tree. A checkout without the tags fails this check rather than passing
+  it.
+- **A name exported from two roots.** The test fails unless it is one object and `api/reexports.toml` declares
+  it. Two different objects under one name always fail: rename one.
+
+```bash
+uv run python packages/evals/scripts/generate_api_snapshot.py          # regenerate (refused while a removal is unrecorded)
+uv run python packages/evals/scripts/generate_api_snapshot.py --check  # report every finding, write nothing
+```
+
+**When a version is tagged**, rename the `unreleased` section of `MIGRATIONS.toml` to the version, without the
+leading `v`. Then paste the output of `release_notes.py v<version>` into the release description. The next change
+that moves a name starts a new `unreleased` section at the top, with `since` set to the tag just cut.
 
 ## The kind: what you are evaluating
 
@@ -237,6 +356,56 @@ prices it. `plan_arm` is therefore where a kind makes its request-level refusals
 `require_candidate_model` — a judge or simulator it needs), and the launch tail then holds each launcher to
 its plan. The full rule is in [Cost and budgets: every arm is priced before any launcher
 runs](cost-and-budgets.md#every-arm-is-priced-before-any-launcher-runs).
+
+**A transport launches in two halves.** `run_launch` admits the launch in its call (`admit_launch`: every refusal
+above, every arm planned and priced, the runs' room reserved) and runs the rest as one job
+(`launch_job_work`): each arm's launcher — where your launcher builds its rig and generates cases — then the runs,
+waited for to their end. So your launcher runs inside a job and may call a model; `plan_arm` and your pricer run
+in the call and must not. A script awaits both halves in a row through `start_run`.
+
+### Your own actions are jobs too
+
+A host adds its own actions to the catalogue (`eval_catalogue(my_actions)`). One whose work calls a model — a
+rubric proposer, a drafter of a classifier's cases — is a `spend` action and keeps the engine's rule: **its call
+makes no completion request.** It prices and refuses in the call, then starts the work as a job with
+`start_action_job`, which writes an `EvalActionJob` record carrying the job's lease and, once the work returns,
+its typed result as JSON — what `job_poll` returns. Declare it `long_running=True` with result `JobsStarted`:
+
+```python
+async def _propose(host: OpsHost, caller: Caller, params: ProposeParams) -> JobsStarted:
+    budget = my_budget(host, caller.scope_id)            # price and refuse here, spending nothing
+    async def draft() -> RubricDraft:                    # the job's work: the model calls
+        return await my_proposer(host, params, budget)
+    return await start_action_job(host, caller.scope_id, action="rubric_propose", run=draft, label=params.topic)
+
+async def _propose_happy_path(stage: ConformanceStage) -> Mapping[str, Any]:
+    return {"topic": "tone"}                             # what reaches the work, with anything it must arrange
+
+Action(name="rubric_propose", permission="spend", result=JobsStarted, long_running=True,
+       handler=_propose, happy_path=_propose_happy_path, ...)
+```
+
+Every `spend` action declares a `happy_path`, and one without is refused where it is declared. **Prove it with the
+jobs conformance kit**: build your `OpsHost` over a fresh store with your client factory wrapped by the kit's
+guard, name a sample launch your host runs end to end and judges through that factory, and parametrise over
+the cases. Every action's call must make no completion request; every spend action's happy path must return
+`JobsStarted`, and its job, polled to its end, must make at least one — a happy path that never reaches the work
+is refused as vacuous. Route every client your actions use through the factory you hand the guard; a client
+built outside it is not watched.
+
+```python
+from threetears.evals.testing import CompletionGuard, JobsConformanceHost, jobs_conformance_cases
+
+def build(guard: CompletionGuard) -> JobsConformanceHost:
+    host = my_ops_host(store=InMemoryDocumentStore(), clients=guard.wrap(my_clients))
+    return JobsConformanceHost(host=host, caller=Caller(scope_id="dev", identity="kit"),
+                               sample=ConformanceSample(template_id="t", subject_id="s", models=("m",),
+                                                        second_judge_model="judge/other"))
+
+@pytest.mark.parametrize("case", jobs_conformance_cases(eval_catalogue(my_actions)), ids=lambda case: case.name)
+async def test_no_call_waits_on_a_model(case: JobsConformanceCase) -> None:
+    await case.check(build)
+```
 
 ### Hearing about a regression when a run completes
 

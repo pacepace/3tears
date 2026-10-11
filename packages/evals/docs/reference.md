@@ -97,6 +97,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>values: `'max_turns'`, `'user_done'`, `'participants_ended'`, `'simulator_error'`, `'apparatus_error'`, `'candidate_error'`, `'budget_stopped'`
 - **`CoreDocumentModel`** · model · A stored document in the evidence core: kept across releases, and upgraded when read at an older version.
 - **`CoreUpgrader`** · dataclass · One step of the core's upgrade chain: a document at `from_version` rewritten to `from_version + 1`.
+- **`DocTypeFacts`** · dataclass · The facts of one stored document type.
 - **`DocumentStore`** · protocol · A narrow document store over one `(scope_id, doc_type, id)`-keyed collection.
 - **`DSLError`** · exception · Raised when a DSL expression is malformed or disallowed.
 - **`EvalBaseModel`** · model · Base model for the eval engine's own Pydantic models.
@@ -116,6 +117,8 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`GoalCheckControls`** · model · Proof, at authoring, that each of a template's goal checks can tell its outcomes apart.
 - **`GoalStateOutcome`** · model · One judge-free fact a candidate's execution established, and whether it held.
 - **`IntervalScale`** · model · A real number with real spacing — `0.4`, `15`, `2000ms`.
+- **`JobLease`** · model · Which process holds a job, and until when: renewed while the work runs, and lost once it lapses.
+- **`JobLoss`** · model · How a job was found lost: when, and why — written once, by whoever found it.
 - **`JudgeConfig`** · model · Versioned judge configuration for one rubric dimension.
 - **`JudgeConfigTombstone`** · model · The record that a judge config slot was deleted, so a seed never writes it back.
 - **`JudgedArtifact`** · enum · What a judge reads of a kind's output — the kind's declaration, which picks the judged axes.
@@ -125,6 +128,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`JudgeRescore`** · model · One re-judge of a result's failed judge dimensions, recorded on the result it changed.
 - **`LabelKey`** · class · What a judged score was given on, and so what a person's label of it holds for: an output and a criterion.
 - **`LatencyMetrics`** · model · Per-result latency decomposition: harvested OTel spans, plus what they miss.
+- **`LeasedRecord`** · protocol · What the lease machinery reads off a job record: its identity and the four lease fields.
 - **`MeasureDeclaration`** · model · How the launching host declared one of its own measures to be read, frozen onto the run it launched.
 - **`NestedSchema`** · class · One schema written inside another, and where it sits.
 - **`NominalScale`** · model · Unordered categories. Two levels are different, and neither is larger.
@@ -153,6 +157,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`SecondJudgeScore`** · model · One dimension's stored judge score beside a second judge's answer to the same question.
 - **`SecondJudging`** · model · A second judge's scores of one result's stored evidence, recorded beside the scores the run's judge gave.
 - **`SimulatorLLM`** · protocol · The one-shot text-generation port the simulator role and the variation generator call.
+- **`StoreClock`** · protocol · A store's own clock: the optional capability a `DocumentStore` may offer beside its methods.
 - **`StoreConflict`** · exception · A conditional write lost its race: the stored document no longer carries `if_match`.
 - **`SubjectSnapshot`** · model · The subject a set of observations was taken against, frozen at capture.
 - **`SweepableValue`** · model · One level of one swept input: what it *is*, what to call it, and what kind of axis it is on.
@@ -172,6 +177,10 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`Annotated[StrictStr | StrictBool | StrictInt | StrictFloat, AfterValidator(_finite_setting)]`
 - **`AsyncDeliveryStatus`** · literal · Where one piece of background work stood when the cell ended.
   <br>`'delivered'` | `'failed'` | `'undelivered'`
+- **`CancelRequestedAtField`** · type alias · When a cancel was asked of a job, by any process; the holder reads it at its next renewal.
+  <br>`Annotated[str | None, Field(description='When a cancel was asked of this job (ISO-8601). Written by whichever process was asked, and read by the process running the work at its next lease renewal, which ends it cancelled. None: never asked.')]`
+- **`CancelRequestReasonField`** · type alias · Why a cancel was asked, when the asker said.
+  <br>`Annotated[str | None, Field(description='Why the cancel was asked, when the asker said; None otherwise.')]`
 - **`CassetteSeam`** · literal · Which interception point a cassette was recorded at. See `EvalCassette` for what each seam implies about `response`'s shape.
   <br>`'action'` | `'delivery'`
 - **`CellTermination`** · literal · How a cell's execution ended — the branch the runner took, recorded because the record cannot recover it.
@@ -184,6 +193,10 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`'chosen'` | `'inherited'` | `'uncapped'`
 - **`DimName`** · type alias · A rubric dimension's name as every model holds it: `<context>.<dim>`, or a reserved dual-score axis id.
   <br>`Annotated[str, AfterValidator(_namespaced_dim_name)]`
+- **`DocLifecycle`** · literal · Whether a later release reads a stored document: `kept` — in the core, read from the core baseline on and upgraded across core versions; `regenerable` — refused on read after a regenerable schema bump, and made again.
+  <br>`'kept'` | `'regenerable'`
+- **`DocOrigin`** · literal · Where a stored document comes from: `input` — what runs read as given, whoever wrote it; `record` — what happened; `derived` — computed from other stored documents.
+  <br>`'input'` | `'record'` | `'derived'`
 - **`EvalRunStatus`** · literal · `budget_stopped` is a budget the run was launched under binding — its cost cap or its wall-clock budget, `EvalRun.budget_stop_reason` says which: a designed stop that keeps what the run delivered, never `failed`.
   <br>`'pending'` | `'running'` | `'completed'` | `'failed'` | `'cancelled'` | `'budget_stopped'` | `'exhausted'`
 - **`GoalCheckIntent`** · literal · What a goal check says about the behaviour it grades, and so which verdict "the candidate did nothing" must get.
@@ -196,13 +209,17 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`'recorded'` | `'derived'` | `'absent'`
 - **`JudgeTemperature`** · type alias · The temperature a judge call was actually sent at: a number, or `MODEL_DEFAULT_TEMPERATURE`.
   <br>`float | Literal['model_default']`
+- **`LeaseField`** · type alias · A job record's lease: who is running its work and until when; None once released, and on a record written before leases (which reads lost while it has not ended — nothing can be renewing it).
+  <br>`Annotated[JobLease | None, Field(description="The lease of the process running this job's work; None on a record written before leases, or released at a shutdown. A record that has not ended reads lost once this lapses or is None.")]`
+- **`LostField`** · type alias · How a job was lost, when it was: the record's own ending is written beside it.
+  <br>`Annotated[JobLoss | None, Field(description="Set when the job was found lost — its lease lapsed, or its process shut down — by whoever found it. The record's own status says how it reads beside that; None on a job that was not lost.")]`
 - **`MeteredCallOrigin`** · literal · Which tier supplied a run's metered-call ceiling (`EvalRun.max_metered_calls_origin`): the three `CostCapOrigin` tiers, read with the currency swapped, and one more — `none_declared`, a host declaring it has no metered tools (`LaunchSettings.max_metered_calls` of `None`).
   <br>`'chosen'` | `'inherited'` | `'uncapped'` | `'none_declared'`
 - **`ModelRoleOrigin`** · literal · How a run arrived at one of its resolved role models.
   <br>`'chosen'` | `'inherited'`
 - **`OutOfRunOutcome`** · literal · How an out-of-run call ended: it returned a completion, or it raised.
   <br>`'completed'` | `'raised'`
-- **`OutOfRunPurpose`** · literal · What an out-of-run call was for: `variation` writes a launch's generated cases (an `llm` variation axis's values), `proposer` drafts a rubric for operator review, `analysis` writes a campaign's analysis memo (its first call and the one repair round-trip a refused output buys), `judge` repeats a finished run's judge scores to measure the judge's agreement with itself (`repeat_judge_scores`), or at two temperatures to measure what temperature does to it (`judge_at_two_temperatures`), `second_judge` asks a judge other than the run's to score a finished run's evidence (`ask_second_judge`) — measurement cost on its own line, never the candidate's.
+- **`OutOfRunPurpose`** · literal · What an out-of-run call was for: `variation` writes a launch's generated cases (an `llm` variation axis's values), `proposer` drafts a rubric for operator review, `analysis` writes a campaign's analysis memo (its first call and the one repair round-trip a refused output buys), `judge` repeats a finished run's judge scores to measure the judge's agreement with itself (`judge_repeat_work`), or at two temperatures to measure what temperature does to it (`judge_temperature_work`), `second_judge` asks a judge other than the run's to score a finished run's evidence (`second_judge_work`) — measurement cost on its own line, never the candidate's.
   <br>`'variation'` | `'proposer'` | `'analysis'` | `'judge'` | `'second_judge'`
 - **`RaterKind`** · literal · Who wrote a calibration rating: a `person`, whose rating is the human side of judge calibration, or an `agent` (a model acting through a tool), whose rating is not.
   <br>`'person'` | `'agent'`
@@ -238,14 +255,15 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`CORE_ADDRESSING_FIELDS`** · constant (mappingproxy) · Per core type, every field the store reads on the stored bytes, before any upgrade: what a query filters or orders on, what a projection keeps, and what a partial write merges.
 - **`CORE_BASELINE_VERSION`** · constant (int) · The first core version a public release wrote, and the oldest this and every later build reads.
   <br>`= 8`
-- **`CORE_DOC_TYPES`** · constant (frozenset) · The kept documents, by `doc_type`.
+- **`CORE_DOC_TYPES`** · constant (frozenset) · The kept documents, by `doc_type`: the `kept` entries of `DOC_TYPE_FACTS`, derived so the registry is the one place a type's lifecycle is decided.
 - **`CORE_SCHEMA_VERSION`** · constant (int) · The core version this build writes. Every bump appends one line here and one `CoreUpgrader`.
-  <br>`= 9`
+  <br>`= 10`
 - **`CORE_UPGRADERS`** · constant (tuple) · The registered steps, oldest first: `[s.from_version for s in CORE_UPGRADERS]` is `range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION)`.
 - **`DEFAULT_JUDGE_TEMPERATURE`** · constant (float) · The temperature every judge call is requested at unless a `JudgeConfig` for its dimension says otherwise, and that config's own default (#633).
   <br>`= 0.0`
 - **`DEFAULT_LAUNCH_K_RUNS`** · constant (int) · Repeats per (case, model) a launch uses when the caller names none: one observation per case cannot tell a setting from the model's own variance.
   <br>`= 3`
+- **`DOC_TYPE_FACTS`** · constant (mappingproxy) · Every `doc_type` the engine stores, and its facts.
 - **`EVAL_DOC_TYPES`** · constant (tuple) · Every `doc_type` the engine writes — the set the operator wipe sweeps.
 - **`JSON_OBJECT_RESPONSE_FORMAT`** · constant (dict) · `response_format` directive forcing JSON-object output, passed to `CompletionClient.generate` by callers that parse a structured JSON *object* (the judge, the analysis generator, the proposer/boundary-proposer).
 - **`MODEL_DEFAULT_TEMPERATURE`** · constant (str) · A judge call SENT with no temperature, because its model refuses one (some reasoning models do): the model's own default applied.
@@ -305,6 +323,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`counted_score(result: EvalResult, score: RubricScore) -> int | None`
 - **`criterion_state`** · function · How one criterion reads, decided on the agreement's interval and never on its point estimate.
   <br>`criterion_state(results: int, agreement: float | None, interval: tuple[float, float] | None, *, threshold: float, min_results: int) -> CriterionState`
+- **`default_job_timeout`** · function · Enforce a job budget with `asyncio.timeout` and nothing else.
+  <br>`default_job_timeout(budget_s: float) -> AsyncIterator[float]`
 - **`delivered_a_turn`** · function · Whether `result` is a turn the candidate took — the one population a cost or latency reading is over.
   <br>`delivered_a_turn(result: EvalResult) -> bool`
 - **`derive_variant_identity`** · function · Derive a run's variant key through the host's profile, writing nothing.
@@ -319,6 +339,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`extract_json_array(text: str) -> list[dict[str, Any]]`
 - **`fold_phase_timings`** · function · Fold one delivery's carried phase timings into a result's accumulator.
   <br>`fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> None`
+- **`generation_slot_id`** · function · The id of a campaign's generation slot: one per campaign, so every process racing a start names one document.
+  <br>`generation_slot_id(campaign_id: str) -> str`
 - **`goal_check_of`** · function · The check a measure name was minted for by `goal_check_measure`, or None.
   <br>`goal_check_of(name: str) -> str | None`
 - **`judge_case_of`** · function · The judge case a test case carries, or `None` when it carries none.
@@ -331,6 +353,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`judge_profile_id(rubric_dim: str, scale: str, judge_model: str, judge_config_id: str | None, judge_temperature: JudgeTemperature, criterion_digest: str) -> str`
 - **`judge_trial_of`** · function · The judge trial a result's `kind_payload` carries, or `None` when it carries none this build can read.
   <br>`judge_trial_of(kind_payload: object) -> JudgeTrial | None`
+- **`lease_lapsed`** · function · Whether a record's lease has lapsed at `now` — or it has none, which no process can be renewing.
+  <br>`lease_lapsed(record: LeasedRecord, now: datetime) -> bool`
 - **`list_metrics`** · function · List every measure a host can describe, optionally filtered by family and/or scope.
   <br>`list_metrics(measures: MeasureRegistry, family: MetricFamily | None = None, attribution_scope: AttributionScope | None = None) -> list[MetricDescriptor]`
 - **`materiality`** · function · Whether a difference of `delta` in a measure is large enough to act on.
@@ -345,6 +369,10 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`program_cost(usage: list[RoleUsage]) -> float | None`
 - **`refuse_an_undeclarable_design`** · function · Refuse a declaration this host cannot honour — at authoring time, not at analysis time.
   <br>`refuse_an_undeclarable_design(design: CampaignDesign, *, behavior: str, template: EvalTemplate | None, profile: HostProfile) -> None`
+- **`request_job_cancel`** · function · Ask a job to stop by writing the request on its record, from any process.
+  <br>`request_job_cancel(store: LeaseStore, record_id: str, scope_id: str, *, reason: str | None) -> bool`
+- **`require_held`** · function · Refuse to go on with a job whose record has ended under it: the check a job makes before it spends again.
+  <br>`require_held(store: LeaseStore, kind: LeasedJobKind[R], record_id: str, scope_id: str, *, leases: JobLeases | None = None) -> None`
 - **`resolve_bar_name`** · function · Say what a bar names and where a result carries it, or why no result can.
   <br>`resolve_bar_name(name: str, *, rubric_dimensions: Mapping[str, RubricScale], goal_state_checks: Collection[str], measures: MeasureRegistry) -> BarName | UnreadableBarName`
 - **`resolve_context_identity`** · function · Return the identity a read surface should show for `run`.
@@ -357,18 +385,26 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`resolve_variant_identity(*, run: EvalRun, profile: HostProfile) -> DerivedVariantIdentity`
 - **`run_margin_refusal`** · function · Why a launch cannot declare `margin` on core measure `name` for its runs, or None when it can.
   <br>`run_margin_refusal(name: str, margin: object) -> str | None`
+- **`running_job`** · function · The id of the job whose work is running in this context, or `None` outside every job.
+  <br>`running_job() -> str | None`
 - **`save_document`** · function · Upsert `document` through `repo`, raising on any failure.
-  <br>`save_document(repo: DocumentStore, document: dict[str, Any], *, if_match: str | None = None) -> None`
+  <br>`save_document(repo: DocumentStore, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None`
 - **`separation_criterion`** · function · The separation criterion over `n` first-score/repeat pairs covering `results` results, at `agreement`.
   <br>`separation_criterion(n: int, results: int, agreement: float | None, interval: tuple[float, float] | None = None) -> TierCriterion`
+- **`settle_job_record`** · function · Read a job record as every process reads it: written lost first, when it has not ended and its lease has lapsed.
+  <br>`settle_job_record(store: LeaseStore, kind: LeasedJobKind[R], record_id: str, scope_id: str) -> tuple[R | None, bool]`
 - **`summarize_completeness`** · function · Count what a finished run loop delivered against the matrix the run promised.
   <br>`summarize_completeness(run: EvalRun, cells: Sequence[CellSummary]) -> RunCompleteness`
 - **`tier_of`** · function · The tier two criteria decide.
   <br>`tier_of(calibration: TierCriterion, separation: TierCriterion) -> JudgedEvidenceTier`
+- **`timed_out_detail`** · function · Why a job's work was stopped by its time budget, in a poll's words — one wording for every job kind.
+  <br>`timed_out_detail(timed_out: EvalJobTimeout) -> str`
 - **`weakest_judged_tier`** · function · What several judged readings can bear together: the weakest of them (see `JUDGED_TIERS_WEAKEST_FIRST`).
   <br>`weakest_judged_tier(tiers: list[JudgedEvidenceTier]) -> JudgedEvidenceTier`
 - **`withhold_failure_detail`** · function · Describe a failure by its class and nothing else — the safe default.
   <br>`withhold_failure_detail(exc: BaseException) -> ProviderFailure`
+- **`write_held_record`** · function · The job's own write of its record: lands only while the stored record has not ended, keeping its lease fields.
+  <br>`write_held_record(store: JobRecordStore, kind: LeasedJobKind[R], record: R, *, leases: JobLeases | None = None) -> R`
 
 **Classes**
 
@@ -419,7 +455,9 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`EvalAnalysis`** · model · A generated, stored analysis of one campaign — the productized "Analysis" lens.
 - **`EvalAnalysisAttempt`** · model · One run of the analysis generator for a campaign, whatever it came to.
 - **`EvalCampaign`** · model · A curated set of eval runs under one subject×behavior — the analysis hub.
+- **`EvalGenerationSlot`** · model · Which analysis attempt holds a campaign's one generation: the document two starts race to claim.
 - **`EvalInsight`** · model · A durable, subject-scoped insight extracted from an analysis.
+- **`EvalJobTimeout`** · exception · A job outlived the wall-clock budget its timeout context was enforcing.
 - **`EvalJudgeProfile`** · model · What one judge was measured to be on one criterion, over frozen cases, by a judge campaign — stored for reuse.
 - **`EvalServiceError`** · exception · Structured error from the eval service layer.
 - **`EvalStorage`** · class · Storage for v1-shape eval documents over one document store.
@@ -434,7 +472,11 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`GuardrailCheck`** · model · One guardrail, one arm against the control under one rig: held, breached or undecided.
 - **`GuardrailMargin`** · model · How much worse than the control an arm may be on one judged guardrail, and still hold it.
 - **`GuardrailReadings`** · model · Every guardrail, decided for each arm against the control — the pillar kept apart from capability.
+- **`JobFenced`** · exception · A job's own write found its record ended by someone else — written lost — so the job writes nothing more.
+- **`JobLeases`** · class · The leases one process holds on its jobs' records, and the task that renews them.
+- **`JobRecordStore`** · protocol · A job record's read-modify-write: what a job's own guarded write of its record goes through.
 - **`JobStore`** · protocol · The run document's read-modify-write: what the job manager persists a run's status through.
+- **`JobTimeoutFactory`** · protocol · Builds the context manager a single job runs inside.
 - **`JudgeCase`** · model · One output and the criterion it is judged on, frozen from a stored result — and what people said about it.
 - **`JudgeCaseLabel`** · model · One person's rating of the frozen output on the case's criterion, as it stood when the case was frozen.
 - **`JudgeCaseSource`** · model · Where a judge case's output came from: the stored result, and what its own judge answered.
@@ -447,6 +489,9 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`JudgeTemperatureAnswers`** · model · What a judge temperature comparison asked, was answered and spent — before anything is read off it.
 - **`JudgeTierFromProfile`** · model · Where a tier read from a stored judge profile came from: the profile, when and on what it was measured (#628).
 - **`JudgeTrial`** · model · What one judge trial recorded: the case it asked about, the judge that answered, and the answer.
+- **`LeaseClock`** · protocol · The time job leases are stamped and compared in — one store-wide clock, so it names no scope.
+- **`LeasedJobKind`** · dataclass · One type of job record, as the lease machinery reads and ends it.
+- **`LeaseStore`** · protocol · A job record's read-modify-write, a cancel asked of it, and the store's time: what job leases are kept through.
 - **`LeverCoordinateError`** · exception · A host's per-observation lever map disagrees with its own registry, in either direction.
 - **`LeverCoverage`** · model · Per-lever coverage summary — a point estimate is invalid without n + dispersion.
 - **`MeasureCollection`** · model · Every measure a set of results carries, with the scopes that carry none named.
@@ -506,8 +551,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 
 **Types**
 
-- **`AttemptOutcome`** · literal · How one generation attempt ended.
-  <br>`'stored'` | `'refused'` | `'failed'` | `'cancelled'`
+- **`AttemptOutcome`** · literal · Where one generation attempt stands.
+  <br>`'running'` | `'stored'` | `'refused'` | `'failed'` | `'cancelled'` | `'timed_out'`
 - **`AttributionScope`** · literal · Whether a measure isolates one `subsystem` or reflects the whole `end_to_end` run.
   <br>`'subsystem'` | `'end_to_end'`
 - **`BarDecision`** · literal · What a bar's verdict on one cell came to — see `BarVerdict.decision`.
@@ -560,8 +605,10 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`str`
 - **`Reading`** · literal · What a piece of evidence reads: a `measure`, or a `judged` dimension.
   <br>`'measure'` | `'judged'`
-- **`SweepOutcome`** · literal · Where a sweep stands: `running` while its arms are being launched and run; `completed` — every arm ran; `failed` — an arm was refused at launch, or its run ended `failed`, so no further arm was launched; `cancelled` — a cancel stopped it, cancelling the arms in flight and launching none after.
-  <br>`'running'` | `'completed'` | `'failed'` | `'cancelled'`
+- **`RenewalVerdict`** · literal · What one renewal of one held record found: renewed (and nothing asked of it), a cancel asked of it, the job ended by its own writes, the holder fenced off (its record ended by another, or its lease lapsed), or the write lost every race (tried again next interval).
+  <br>`'renewed'` | `'cancel'` | `'ended'` | `'fenced'` | `'contended'`
+- **`SweepOutcome`** · literal · Where a sweep stands: `running` while its arms are being launched and run; `completed` — every arm ran; `failed` — an arm was refused at launch, or its run ended `failed`, so no further arm was launched; `cancelled` — a cancel stopped it, cancelling the arms in flight and launching none after; or it was lost (its `lost` says so), its process gone with no further arm launched; `timed_out` — its own wall-clock budget ran out, stopping the arms in flight and launching none after, as every job kind's budget reads.
+  <br>`'running'` | `'completed'` | `'failed'` | `'cancelled'` | `'timed_out'`
 - **`SyncToolWrap`** · type alias · What the synchronous action seam is handed: `ToolWrap` over `SyncToolLike` tools.
   <br>`Callable[[Mapping[str, SyncToolLike]], dict[str, SyncToolLike]]`
 - **`TemperatureSelection`** · literal · Which scored dims are re-judged: `borderline` (stored score inside its scale, or a recorded repeat or second judge disagreed on it — `borderline_dims`) or `all`.
@@ -581,6 +628,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 
 - **`ACCURACY_MEASURE`** · constant (str) · The classifier family's quality measure: 1.0 or 0.0 per observation, DERIVED by the engine from `MATCH_MEASURE` and never landed by a kind.
   <br>`= 'accuracy'`
+- **`ANALYSIS_JOB`** · constant (LeasedJobKind) · An analysis generation's record: its attempt.
 - **`CALIBRATION_MIN_AGREEMENT`** · constant (float) · The least judge–human agreement (weighted kappa; kappa on pass/fail) a dimension's judge must reach to be `calibrated` on it. Owner ruling, 2026-10-06.
   <br>`= 0.6`
 - **`CALIBRATION_MIN_RESULTS`** · constant (int) · The fewest distinct results a calibration must cover before it can decide anything: below it the calibration is `insufficient`, whatever its kappa.
@@ -592,6 +640,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`CONFIDENCE_TIERS`** · constant (tuple) · The tiers, strongest first — the order a surface ranks by.
 - **`CONFUSION_CELL_MEASURE`** · constant (str) · The core measure a classification's confusion-matrix cell is reported under.
   <br>`= 'confusion_cell'`
+- **`DEFAULT_JOB_LEASE_S`** · constant (float) · How long a lease lasts unless renewed, in seconds: the engine's default.
+  <br>`= 60.0`
 - **`DEFAULT_TEMPERATURE_REPEATS`** · constant (int) · How many times each dim is judged at each setting when the caller names no number.
   <br>`= 5`
 - **`DROPPED_TOOL_CALLS_KEY`** · constant (str) · Covariate key: how many tool calls the candidate emitted that the LLM client dropped before dispatch (a `dropped_tool_calls` list on each turn record the kind dumps into the trace).
@@ -626,6 +676,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`= 'template'`
 - **`KIND_TEXT`** · constant (str) · A seed whose constant is a single string, registered with a shared-prompt registry.
   <br>`= 'text'`
+- **`LEASE_WRITE_ATTEMPTS`** · constant (int) · How many times a lease write (a renewal, a lost write, a holder's own write) re-reads and re-applies after losing its conditional write to another writer, before it gives up for now.
+  <br>`= 3`
 - **`MATCH_MEASURE`** · constant (str) · The core measure one classification's verdict is reported under — the one a classifier kind lands on `host_measures`, a bool.
   <br>`= 'match'`
 - **`MECHANICAL_FAMILY`** · constant (str) · Measured the same way everywhere by code: wall-clock, tokens, spend, counts.
@@ -641,13 +693,17 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`= 'refused_tool_attaches'`
 - **`RUBRIC_FAMILY`** · constant (str) · A judge's score on an authored rubric dimension.
   <br>`= 'rubric'`
+- **`RUN_JOB`** · constant (LeasedJobKind) · A launched run's record.
 - **`RUN_MARGIN_MEASURES`** · constant (frozenset) · The core rate measures a run may declare a margin on (`EvalRun.declared_margins`, `run_margin_refusal`): numeric, on 0 to 1, with a better end and a merit axis (so a comparison tests them), no guardrail, and no margin of their own.
 - **`SEPARATION_MIN_AGREEMENT`** · constant (float) · The least agreement a judge must reach with its own repeated scores (the same statistic as calibration) to earn `separation`. Owner ruling, 2026-10-06.
   <br>`= 0.8`
 - **`SEPARATION_MIN_RESULTS`** · constant (int) · The fewest distinct results a self-agreement must cover before it can decide anything.
   <br>`= 120`
+- **`SHUTDOWN_CAUSE`** · constant (str) · The lost cause a graceful shutdown writes on every job its process holds.
+  <br>`= 'process shut down'`
 - **`STRATUM_MIN_CASES`** · constant (int) · The fewest distinct cases a stratum holds before its figures are read on their own.
   <br>`= 10`
+- **`SWEEP_JOB`** · constant (LeasedJobKind) · A sweep's record.
 - **`TEMPERATURE_SETTINGS`** · constant (tuple) · The settings, in the order a call round makes them.
 - **`TRUNCATED_ROUNDS_KEY`** · constant (str) · Covariate key: how many of the candidate's LLM rounds the provider cut off at the output cap — rounds whose `stop_reason` was `max_tokens` (the output reached the cap, or the provider reported `finish_reason=length`; providers do not always say so).
   <br>`= 'truncated_rounds'`
@@ -797,8 +853,12 @@ The engine's run package: launching and executing a run, judging it, metering it
 
 **Functions**
 
-- **`ask_second_judge`** · async function · Ask a second judge to score a seeded share of a finished run's judged results, and record each beside its scores.
-  <br>`ask_second_judge(host: EvalHost, run_id: str, scope_id: str, *, judge: SecondJudge, out_of_run_cap_usd: float | None, sample_fraction: float = 1.0, seed: int = 0, result_ids: Sequence[str] | None = None) -> SecondJudgeReport`
+- **`action_job_work`** · function · A host action's work as a job: `run` awaited to its end, its result written on an `EvalActionJob`.
+  <br>`action_job_work(scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], label: str = '', budget_s: float = 3600.0, discard: Callable[[], Awaitable[None]] | None = None) -> JobWork[EvalActionJob]`
+- **`admit_group`** · async function · Admit one group of runs: refuse what cannot start, reserve its room and form it — preparing and spending nothing.
+  <br>`admit_group(host: LaunchHost, n_runs: int, *, settings: LaunchSettings, form: Callable[[], Awaitable[tuple[LaunchGroup, _Formed]]], prepare: Callable[[LaunchGroup, _Formed], Awaitable[list[EvalRun]]], event: str, admission: AdmissionTicket | None = None, attach: Callable[[list[EvalRun]], Awaitable[None]] | None = None, detach: Callable[[list[EvalRun]], Awaitable[None]] | None = None) -> AdmittedLaunch`
+- **`admit_launch`** · async function · The first half of `start_run`: every refusal it makes and every arm priced — no launcher run, nothing spent.
+  <br>`admit_launch(host: LaunchHost, *, template_id: str, subject_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, judge_config_ids: dict[str, str] | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', cassette_corpus_id: str | None = None, overlays: Mapping[str, Any] | None = None, apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, max_metered_calls: int | None = None, scope_id: str, launch_group: LaunchGroup | None = None, admission: AdmissionTicket | None = None, cell_timeout_s: float | None = None, case_set: CaseSetRef | None = None, margins: Mapping[str, float] | None = None, measure_latency: bool = False) -> AdmittedLaunch`
 - **`assert_preconditions`** · function · Assert at t=0 that the world this template presumes actually holds.
   <br>`assert_preconditions(template: EvalTemplate, test_case: EvalTestCase, seeded: Mapping[str, Any], *, world: WorldRegistry | None) -> list[PreconditionOutcome]`
 - **`borderline_dims`** · function · The scored dims of `result` that are borderline: the cases temperature is expected to move.
@@ -809,16 +869,14 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`build_judge_service(host: EvalHost, template: EvalTemplate, judge_model: str, selection: dict[str, str] | None = None, *, judged_artifact: JudgedArtifact) -> RunJudge`
 - **`callers_missing_the_constructor`** · function · Name the declared callers whose source no longer reaches the constructor.
   <br>`callers_missing_the_constructor(contract: FidelityContract) -> list[str]`
-- **`cancel_run`** · function · Cancel a pending/running eval run so it stops burning cost and quota.
-  <br>`cancel_run(storage: RunRecordStore, run_id: str, scope_id: str, *, job_manager: EvalJobManager | None, reason: str | None = None) -> EvalRun`
+- **`cancel_run`** · function · Ask a pending/running eval run to stop so it stops burning cost and quota — from any process.
+  <br>`cancel_run(storage: LeaseStore, run_id: str, scope_id: str, *, job_manager: EvalJobManager | None, reason: str | None = None) -> EvalRun`
 - **`create_judge_config`** · function · Create and persist a judge config from an authoring definition.
   <br>`create_judge_config(storage: DefinitionStore, definition: dict[str, Any], *, scope_id: str) -> JudgeConfig`
 - **`create_rubric_dim`** · function · Create and persist a catalog rubric dim from an authoring definition.
   <br>`create_rubric_dim(storage: DefinitionStore, definition: dict[str, Any], *, scope_id: str) -> CatalogRubricDim`
 - **`create_template`** · function · Create and persist a template from an authoring definition.
   <br>`create_template(host: EvalHost, definition: dict[str, Any], *, scope_id: str, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None]) -> EvalTemplate`
-- **`default_job_timeout`** · function · Enforce a job budget with `asyncio.timeout` and nothing else.
-  <br>`default_job_timeout(budget_s: float) -> AsyncIterator[float]`
 - **`delete_analysis`** · function · Delete a stored analysis, leaving the insights it minted in place.
   <br>`delete_analysis(storage: CurationStore, analysis: EvalAnalysis, *, confirm: str | None = None) -> dict[str, Any]`
 - **`delete_insight`** · function · Delete a single insight from the ledger.
@@ -833,6 +891,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`delete_run(storage: CurationStore, run: EvalRun, scope_id: str, *, confirm: str | None = None) -> dict[str, Any]`
 - **`drive_conversation`** · async function · Run `driver`'s conversation from its first turn until it stops on a structural signal.
   <br>`drive_conversation(driver: TurnDriver, candidate_turn: Callable[[Sequence[SimulatorTurn]], Awaitable[CandidateTurn]], post_user_turn: Callable[[SimulatorTurn], Awaitable[None]], *, llm: SimulatorLLM, sink: CellSink, world: WorldSession | None = None) -> ConversationStopCause`
+- **`end_record`** · function · `record` as it ends: its outcome, why (unless it completed), when — and any other field the ending sets.
+  <br>`end_record(record: R, outcome: JobOutcome, detail: str | None = None, **fields: Any) -> R`
 - **`estimate_judge_repeat`** · async function · Price repeating a run's judge scores against the cap it would be held to, and make no call.
   <br>`estimate_judge_repeat(host: EvalHost, run_id: str, scope_id: str, *, out_of_run_cap_usd: float | None, result_ids: Sequence[str] | None = None) -> JudgeRepeatEstimate`
 - **`estimate_judge_temperature_comparison`** · async function · Price comparing a run's judge at the two temperatures against the cap it would be held to, and make no call.
@@ -861,18 +921,24 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`get_template(host: EvalHost, template_id: str, scope_id: str) -> EvalTemplate`
 - **`grade_goal_checks`** · function · Grade goal checks against a call ledger, an end state and what fired: the one evaluation every caller uses.
   <br>`grade_goal_checks(expressions: Sequence[str], *, ledger: CallLedger, end_state: Mapping[str, Any], fired: Firings | None, variation: Mapping[str, Any], world: WorldRegistry | None) -> list[GoalStateOutcome]`
-- **`judge_at_two_temperatures`** · async function · Re-judge a finished run's borderline cases `repeats` times at each temperature, and return every answer.
-  <br>`judge_at_two_temperatures(host: EvalHost, run_id: str, scope_id: str, *, out_of_run_cap_usd: float | None, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: Sequence[str] | None = None) -> JudgeTemperatureAnswers`
 - **`judge_case_labels`** · function · The person ratings a judge case frozen from `result` on `dim` carries as its labels.
   <br>`judge_case_labels(storage: EvalStorage, scope_id: str, result: EvalResult, dim: str, *, scale: str, label_key: LabelKey | None = None) -> list[CalibrationRating]`
 - **`judge_kind`** · function · The judge kind for one arm, its configs loaded from the store: what a launcher builds per arm.
   <br>`judge_kind(storage: EvalStorage, clients: CompletionClients, *, model: str, scope_id: str, failure_describer: ProviderFailureDescriber, overlays: JudgeKindOverlays | None = None) -> JudgeKind`
+- **`judge_repeat_work`** · async function · Admit asking a finished run's judge to score its results' scored dims again — every call priced, none made.
+  <br>`judge_repeat_work(host: EvalHost, run_id: str, scope_id: str, *, out_of_run_cap_usd: float | None, result_ids: Sequence[str] | None = None) -> JobWork[EvalActionJob]`
+- **`judge_temperature_work`** · async function · Admit re-judging a finished run's borderline cases at each temperature — every call priced, none made — as work.
+  <br>`judge_temperature_work(host: EvalHost, run_id: str, scope_id: str, *, out_of_run_cap_usd: float | None, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: Sequence[str] | None = None) -> JobWork[EvalJudgeTemperatureCheck]`
 - **`launch_as_group`** · async function · Launch one group of runs: admit it, prepare every arm, and start them together — or start none.
   <br>`launch_as_group(host: LaunchHost, n_runs: int, *, settings: LaunchSettings, form: Callable[[], Awaitable[tuple[LaunchGroup, _Formed]]], prepare: Callable[[LaunchGroup, _Formed], Awaitable[list[EvalRun]]], event: str, admission: AdmissionTicket | None = None, attach: Callable[[list[EvalRun]], Awaitable[None]] | None = None, detach: Callable[[list[EvalRun]], Awaitable[None]] | None = None) -> list[EvalRun]`
+- **`launch_job_work`** · function · An admitted launch as work: its launchers run, its runs started together and waited for to their end.
+  <br>`launch_job_work(host: LaunchHost, admitted: AdmittedLaunch, *, template_id: str, subject_id: str, models: list[str], k_runs: int, n_variations: int, scope_id: str) -> JobWork[EvalLaunch]`
 - **`launch_run`** · async function · Assemble, stamp, bound and hand over a run — the launch tail every candidate kind shares.
   <br>`launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWiring) -> EvalRun`
 - **`launchable_judge_kind`** · function · The judge kind's entry in a host's launch registry: each arm one judge over the template's frozen cases.
   <br>`launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKind`
+- **`leased_job_kind`** · function · The lease machinery's reading of a record of this module's shape: ended once its outcome is not `running`.
+  <br>`leased_job_kind(name: str, model: type[R]) -> LeasedJobKind[R]`
 - **`list_judge_configs`** · function · List judge configs in a scope.
   <br>`list_judge_configs(storage: DefinitionStore, scope_id: str, *, rubric_dim_id: str | None = None, archived: bool = False) -> list[JudgeConfig]`
 - **`list_results`** · function · List every result for one eval run within its scope.
@@ -915,8 +981,6 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`refuse_stale_presumptions(template: EvalTemplate, *, profile: HostProfile) -> None`
 - **`rejudge_result`** · async function · Re-score a finished result's failed judge dimensions from the evidence its judge read.
   <br>`rejudge_result(host: EvalHost, result_id: str, scope_id: str) -> EvalResult`
-- **`repeat_judge_scores`** · async function · Ask a finished run's judge to score its results' scored dims again, and record each repeat on its result.
-  <br>`repeat_judge_scores(host: EvalHost, run_id: str, scope_id: str, *, out_of_run_cap_usd: float | None, result_ids: Sequence[str] | None = None) -> JudgeRepeatReport`
 - **`reproducible_judge_inputs`** · function · Load what a result's judge calls read, refusing any input its run did not record.
   <br>`reproducible_judge_inputs(storage: JudgeInputStore, result: EvalResult, run: EvalRun, scope_id: str, *, request_settings: RequestSettingsPolicy, config_dims: Collection[str] | None = None) -> ReproducibleJudgeInputs`
 - **`require_candidate_model`** · function · The model `request`'s arm runs on — the one it named, or the kind's role default — or the refusal.
@@ -935,10 +999,14 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`resolve_judge_pin(request: LaunchRequest, role_default: str, *, candidate_model: str) -> str`
 - **`run_blocking`** · async function · Run `fn(*args, **kwargs)` on `executor` and await its result.
   <br>`run_blocking(executor: Executor | None, fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T`
+- **`run_job_work`** · async function · Write the work's record, leased, and run the work to its end in the caller's own frame.
+  <br>`run_job_work(work: JobWork[R], *, store: JobRecordStore, executor: Executor | None, leases: JobLeases) -> R`
 - **`run_judge_llm`** · async function · Run an LLM judge call against a set of criteria and parse the response.
   <br>`run_judge_llm(client: Any, system_prompt: str, user_prompt: str, criteria_dicts: list[dict[str, Any]], label: str, case_id: str, *, cannot_tell_offered: bool = False, failure_describer: ProviderFailureDescriber | None = None) -> dict[str, Any] | None`
 - **`sample_concurrent_eval_jobs`** · function · Sample how much eval work is executing beside this cell, keeping the busiest observation so far (R4).
   <br>`sample_concurrent_eval_jobs(options: RunnerOptions, previous: int | None = None) -> int | None`
+- **`second_judge_work`** · async function · Admit a second judge's pass over a finished run — every call priced and admitted, none made — as work to run.
+  <br>`second_judge_work(host: EvalHost, run_id: str, scope_id: str, *, judge: SecondJudge, out_of_run_cap_usd: float | None, asked_by: SecondJudgeAskedBy = 'judge_second', sample_fraction: float = 1.0, seed: int = 0, result_ids: Sequence[str] | None = None) -> JobWork[EvalSecondJudgePass]`
 - **`seed_eval_definitions`** · function · Create any corpus definition whose natural key is absent from the corpus's scope.
   <br>`seed_eval_definitions(host: EvalHost, corpus: SeedCorpus, *, require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None]) -> SeedOutcome`
 - **`set_analysis_archived`** · function · Archive or un-archive a stored analysis — the alternative to destroying it.
@@ -951,12 +1019,14 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`settable_apparatus(registry: SweepableRegistry) -> frozenset[str]`
 - **`stamp_witnessed_judge`** · function · A witnessed run that names the template its cells are judged against, the judge apparatus that scores them, and the ceiling it is held to.
   <br>`stamp_witnessed_judge(host: EvalHost, run: EvalRun, template: EvalTemplate, *, judge_model: str, judged_artifact: JudgedArtifact, selection: dict[str, str] | None = None, configured_max_cost_usd: float, enforcement_enabled: bool, max_cost_usd: float | None = None) -> EvalRun`
+- **`start_job_work`** · async function · Write the work's record, leased, and run the work as a background job the manager tracks.
+  <br>`start_job_work(manager: EvalJobManager, work: JobWork[R], *, store: JobRecordStore, executor: Executor | None, key: str | None = None) -> R`
 - **`start_run`** · async function · Refuse what no kind can run, admit the launch, and dispatch each arm to its kind's launcher.
   <br>`start_run(host: LaunchHost, *, template_id: str, subject_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, judge_config_ids: dict[str, str] | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', cassette_corpus_id: str | None = None, overlays: Mapping[str, Any] | None = None, apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, max_metered_calls: int | None = None, scope_id: str, launch_group: LaunchGroup | None = None, admission: AdmissionTicket | None = None, cell_timeout_s: float | None = None, case_set: CaseSetRef | None = None, margins: Mapping[str, float] | None = None, measure_latency: bool = False) -> list[EvalRun]`
 - **`start_universal_battery`** · async function · Launch the operator-curated boundary battery against one subject.
   <br>`start_universal_battery(host: LaunchHost, subject_id: str, *, scope_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, preflight: BatteryPreflight, measure_latency: bool = False) -> list[str]`
-- **`sweep_abandoned_runs`** · function · Cancel runs this process cannot own, left non-terminal by a previous one.
-  <br>`sweep_abandoned_runs(storage: RunRecordStore, scopes: Iterable[str], *, job_manager: EvalJobManager | None) -> AbandonedRunSweepReport`
+- **`sweep_abandoned_runs`** · function · Write lost every run left not ended by a process that has gone, in the scopes the host names.
+  <br>`sweep_abandoned_runs(storage: ReclaimStore, scopes: Iterable[str]) -> AbandonedRunSweepReport`
 - **`update_judge_config`** · function · Re-author a judge config via archive-and-recreate (immutable versioning).
   <br>`update_judge_config(storage: DefinitionStore, config_id: str, scope_id: str, fields: dict[str, Any]) -> JudgeConfig`
 - **`update_rubric_dim`** · function · Apply a partial update to a catalog rubric dim and persist it.
@@ -968,9 +1038,10 @@ The engine's run package: launching and executing a run, judging it, metering it
 
 **Classes**
 
-- **`AbandonedRunSweepReport`** · model · Outcome of one startup reclaim of runs left non-terminal by a dead process.
+- **`AbandonedRunSweepReport`** · model · Outcome of one reclaim of runs left non-terminal by a process that has gone (`sweep_abandoned_runs`).
 - **`AccountExhaustedError`** · exception · Raised by `execute_run` when the run's paying account refuses a call.
 - **`AdmissionTicket`** · class · Room a launch has reserved for runs it has not yet handed to the manager.
+- **`AdmittedLaunch`** · class · A launch admitted, refused where it would be and priced — every arm's launcher not yet run, nothing spent.
 - **`ArmPlan`** · dataclass · What one arm of a launch will run, as its kind says before its launcher runs.
 - **`ArmPrice`** · dataclass · What the host's pricer predicts one arm will cost, and how it knows.
 - **`ArmQuote`** · dataclass · One arm of a launch, as the engine asks the host's pricer to price it — stored-case arms and generating ones alike.
@@ -985,15 +1056,19 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`CheckFlip`** · model · One goal check whose verdict a re-grade changes.
 - **`CurationStore`** · protocol · Everything the curation family reads, writes and destroys — and nothing else.
 - **`ErrorLedger`** · dataclass · Accumulates a cell's errors, categorized candidate-vs-infra at the source.
+- **`EvalActionJob`** · model · A job whose work has no domain record of its own: what it was, how it ended, and the result it produced.
 - **`EvalJobManager`** · class · Manages background async eval jobs.
-- **`EvalJobTimeout`** · exception · A job outlived the wall-clock budget its timeout context was enforcing.
+- **`EvalJudgeTemperatureCheck`** · model · One judge temperature comparison over a finished run: what was asked, how it ended, and every answer.
+- **`EvalLaunch`** · model · One launch of a template's arms, run as a job: what it named, the runs it started, and how it ended.
 - **`EvalRunCostCap`** · class · In-memory per-run cost cap for a single eval run.
+- **`EvalSecondJudgePass`** · model · One second judge's pass over a finished run: what was asked, how it ended, and its report — the record its job writes.
 - **`EveryCellApparatusFailedError`** · exception · Raised by `execute_run` when an apparatus fault excluded every cell of the run.
 - **`FidelityContract`** · dataclass · One shared construction path and the callers required to reach it.
 - **`FrozenJudgeCase`** · model · One case a freeze produced: the test case, the output and criterion it replays, and how many labels it has.
 - **`GoalCheckUnevaluable`** · exception · A goal check raised while being evaluated — a fault of the rig, not a verdict on the candidate.
 - **`InProcessCellExecutor`** · class · The default executor: `width` workers on this event loop, each taking the next cell in order.
-- **`JobTimeoutFactory`** · protocol · Builds the context manager a single job runs inside.
+- **`JobRecorder`** · class · A job's own writes of its record while its work runs: each one guarded, and the latest one kept.
+- **`JobWork`** · dataclass · One operation admitted and not yet run: its record as it starts, and the awaitable that runs it to its end.
 - **`JudgeCaseFreezeReport`** · model · What a freeze froze, the case set listing it, and what it could not freeze.
 - **`JudgeCaseSkip`** · model · A stored result the freeze could not make a case of, and why.
 - **`JudgeContext`** · dataclass · Everything a single-dim judge call needs about the result under review.
@@ -1022,6 +1097,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`PreparedJudge`** · dataclass · One cell's judge: the model it binds, and the cell's tracing windows.
 - **`RatingStore`** · protocol · The two calls a rating makes: read the rated result, write the rating.
 - **`RecheckStore`** · protocol · The reads and the one rewrite a re-check makes, and no more.
+- **`ReclaimStore`** · protocol · What `sweep_abandoned_runs` reads and writes: the boot scan of runs not ended, and the job records.
 - **`ReproducibleJudgeInputs`** · class · The stored records a result's judge calls are rebuilt from, each the one its run recorded.
 - **`ResultRecheck`** · model · What a re-check found for one stored result.
 - **`RunCallbacks`** · dataclass · Optional progress / persistence hooks for the run loop.
@@ -1048,6 +1124,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`Callable[[str, Sequence[str]], Awaitable[TemplatePreflight]]`
 - **`CellWork`** · type alias · One cell of a run, as the runner hands it to an executor: it runs the cell, records it and reports it.
   <br>`Callable[[], Awaitable[None]]`
+- **`JobOutcome`** · literal · Where a job's record stands: `running` (started, not ended), or how it ended — `completed` (its work ran to its end), `failed` (refused or broken part-way; `detail` says which), `cancelled` (asked to stop, shut down, or lost — which the record's `lost` says) or `timed_out` (its own wall-clock budget ran out; `detail` names it).
+  <br>`'running'` | `'completed'` | `'failed'` | `'cancelled'` | `'timed_out'`
 - **`JudgeClientFactory`** · type alias · Builds a judge LLM client for a `(model, temperature)` pair.
   <br>`Callable[[str | None, float | None], Any]`
 - **`KindLauncher`** · type alias · One kind's launcher: builds that kind's collaborators for one arm and hands `launch_run` its run.
@@ -1056,6 +1134,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`'n_variations'` | `'judge_model'` | `'judge_config_ids'` | `'simulator_model'` | `'cassette_mode'`
 - **`RequestSettingsPolicy`** · literal · How a caller treats the run's recorded judge request settings.
   <br>`'today'` | `'as_recorded'`
+- **`SecondJudgeAskedBy`** · literal · Which operation asked for a second judge's pass: a seeded share's agreement (`judge_second`) or every judged result's drift under a changed judge (`judge_drift_check`).
+  <br>`'judge_second'` | `'judge_drift_check'`
 - **`TemplatePreflight`** · type alias · Checks one of a battery's templates the way its launch would, before any template launches.
   <br>`Callable[['EvalTemplate', str], Awaitable[None]]`
 - **`WorkFn`** · type alias · A job's work: an async function handed its progress callback.
@@ -1063,16 +1143,30 @@ The engine's run package: launching and executing a run, judging it, metering it
 
 **Constants**
 
+- **`ACTION_JOB`** · constant (LeasedJobKind) · An action job's record.
+- **`DEFAULT_ACTION_JOB_BUDGET_S`** · constant (float) · An action job's wall-clock ceiling unless its host names another: an hour, the job manager's own default.
+  <br>`= 3600.0`
 - **`DEFAULT_MAX_CONCURRENT_CELLS`** · constant (int) · The width a run executes its cells at when latency is not under test and the host's settings name none: enough to turn hours of a slow candidate into a fraction of that, few enough that a provider's rate limit is not the first thing a default launch meets.
   <br>`= 4`
 - **`JUDGE_CALL_ATTEMPTS`** · constant (int) · Calls one judge dimension can make: the first, plus its parse retries.
   <br>`= 2`
 - **`JUDGE_MAX_TOKENS`** · constant (int) · The eval judge's output cap: the reasoning budget plus the answer budget, DERIVED rather than chosen, so it always sits above the ceiling it wraps.
   <br>`= 10240`
+- **`JUDGE_REPEAT_ACTION`** · constant (str) · The name a repeat's job record (`EvalActionJob`) carries as its `action`.
+  <br>`= 'judge_repeat'`
+- **`JUDGE_REPEAT_BUDGET_S`** · constant (float) · A repeat's wall-clock ceiling as a job: generous, since every call is bounded by its client and the repeat stops on an account refusal; it exists so one whose provider hangs is ended rather than held forever.
+  <br>`= 21600.0`
 - **`JUDGE_REQUEST_SETTINGS`** · constant (ClientRequestSettings) · The judge role's request settings as ONE value: what the host's client builder applies to every eval judge client, and what a run launched with a judge records as `judge_request_settings`.
+- **`JUDGE_TEMPERATURE_JOB`** · constant (LeasedJobKind) · A judge temperature comparison's record.
+- **`LAUNCH_CANCEL_REASON`** · constant (str) · The reason recorded on a run its launch's cancel stopped.
+  <br>`= 'its launch was cancelled'`
+- **`LAUNCH_JOB`** · constant (LeasedJobKind) · A launch's record.
+- **`LAUNCH_PREPARATION_BUDGET_S`** · constant (float) · A launch's wall-clock ceiling on its preparation — its launchers, a generating launch's calls among them — in seconds: the engine's cap on one run's job, a backstop against a launcher or a provider that hangs.
+  <br>`= 28800.0`
 - **`RUBRIC_DIM_SERVER_FIELDS`** · constant (tuple) · Identity/lifecycle fields the rubric-dim family owns — never taken from caller input.
 - **`SCHEDULER_CALL_ATTEMPTS`** · constant (int) · How many calls one `llm_decided` scheduling decision may make: the first, and one repair that names what was wrong with it.
   <br>`= 2`
+- **`SECOND_JUDGE_JOB`** · constant (LeasedJobKind) · A second judge's pass record.
 - **`SIMULATOR_ANSWER_BUDGET_TOKENS`** · constant (int) · Output room kept for the simulated user's visible reply: the strict-schema JSON object holding one utterance or one scheduling pick.
   <br>`= 4096`
 - **`SIMULATOR_MAX_TOKENS`** · constant (int) · The simulator's output cap: the reasoning allowance plus the answer budget, derived rather than chosen. It is the only bound in tokens a simulator call has.
@@ -1242,9 +1336,11 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`reporter_cell_timeout_s`** · function · The wall-clock ceiling of one reporter cell, derived from the ceilings it wraps.
   <br>`reporter_cell_timeout_s(*, judge_dims: int, judge_concurrency: int, generator_max_tokens: int, judge_call_attempts: int, judge_max_tokens: int, request_s: RequestCeiling) -> float`
 - **`run_analysis_generation`** · async function · Make the paid generator call(s) for a prepared generation, then store and record the result.
-  <br>`run_analysis_generation(host: EvalHost, prepared: PreparedGeneration, *, prompt_id: str, max_output_tokens: int) -> tuple[EvalAnalysis, list[EvalInsight]]`
+  <br>`run_analysis_generation(host: EvalHost, prepared: PreparedGeneration, *, prompt_id: str, max_output_tokens: int, deadline: AbstractAsyncContextManager[Any] | None = None, leases: JobLeases | None = None) -> tuple[EvalAnalysis, list[EvalInsight]]`
 - **`run_summary`** · function · Compose a run's verdict numbers — pass^k, latency, cost — per model.
   <br>`run_summary(storage: LensStore, run_id: str, scope_id: str, *, load_run_listed: Callable[[str, str], EvalRun], row_columns: RowColumns, profile: HostProfile, rubric_threshold: int = 3) -> dict[str, Any]`
+- **`running_analysis_attempt`** · function · The attempt a background generation writes as it starts: `running`, nothing sent yet.
+  <br>`running_analysis_attempt(prepared: PreparedGeneration, *, prompt_id: str, started_at: str | None = None) -> EvalAnalysisAttempt`
 - **`scope_out_of_run_spend`** · function · What the engine spent outside any run in a scope, call by call and summed, optionally narrowed.
   <br>`scope_out_of_run_spend(host: EvalHost, scope_id: str, *, purpose: OutOfRunPurpose | None = None, launch_group_id: str | None = None, template_id: str | None = None) -> OutOfRunSpendReport`
 - **`serialize_report`** · function · A report in one of its three forms.
@@ -1579,10 +1675,10 @@ Finding charts — eval's own chart intent, and the seam a renderer sits behind.
 
 **Types**
 
-- **`Cell`** · type alias · A values-table or data cell: a JSON scalar.
-  <br>`str | int | float | bool | None`
 - **`ChartType`** · literal · The chart types — eval's own, and the only ones an intent can carry.
   <br>`'delta_table'` | `'frontier'` | `'timeseries'` | `'distribution'` | `'null_result'` | `'breakdown'` | `'attribution'` | `'sweep_ranking'`
+- **`ChartValue`** · type alias · One value in a chart's data or its values table: a JSON scalar.
+  <br>`str | int | float | bool | None`
 - **`EncodingRole`** · literal · What a field encodes.
   <br>`'identity'` | `'length'` | `'position'` | `'interval_low'` | `'interval_high'` | `'level'` | `'class'` | `'ordinal'` | `'count'` | `'label'`
 
@@ -1590,10 +1686,6 @@ Finding charts — eval's own chart intent, and the seam a renderer sits behind.
 
 - **`INTENT_VERSION`** · constant (int) · The chart-intent shape's version.
   <br>`= 1`
-- **`SERIES_SLOTS`** · constant (int) · How many categorical colour slots a palette supplies before it recycles — the width of the vocabulary, and so exactly how many `ChartPalette.series` colours a palette declares.
-  <br>`= 8`
-- **`VALIDATED_SLOTS`** · constant (int) · How many categorical colour slots a chart may assign with validated separation.
-  <br>`= 4`
 
 <a id="api-gen"></a>
 ### `threetears.evals.gen`
@@ -1629,11 +1721,17 @@ Storage adapters the engine ships: implementations of the one port a host stores
 
 **Classes**
 
+- **`DocTypeRoute`** · dataclass · Which store each document type is kept in, decided by one of its facts.
 - **`InMemoryDocumentStore`** · class · A `DocumentStore` over one dict.
+- **`MisplacedDocument`** · exception · One id is held by two stores, or by a store its type is not placed in; the router never picks one.
+- **`RouteChanged`** · exception · The router was started under placements its stores were not written under; `relocate` first.
+- **`RoutedDocumentStore`** · class · One `DocumentStore` over several, each `doc_type` kept where its facts say.
 - **`SqliteDocumentStore`** · class · A `DocumentStore` over one SQLite file.
 
 **Constants**
 
+- **`ROUTING_SCOPE`** · constant (str) · The scope each store's placement record lives in, reserved: a host never uses it as a scope of its own.
+  <br>`= 'threetears.evals.routing'`
 - **`SQLITE_STORE_LAYOUT`** · constant (int) · The file layout this store writes and reads, stamped as the file's `user_version`.
   <br>`= 1`
 
@@ -1646,12 +1744,20 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 
 - **`check_completion_conformance`** · function · Fail, naming the attribute, when a host's completion does not carry what eval reads off it.
   <br>`check_completion_conformance(completion: object) -> None`
+- **`jobs_conformance_cases`** · function · Every case the catalogue's actions are held to: each action's call, and each spend action's happy path.
+  <br>`jobs_conformance_cases(catalogue: ActionCatalogue, *, job_timeout_s: float = 60.0, call_return_timeout_s: float = 10.0) -> tuple[JobsConformanceCase, ...]`
 - **`nonpublic_evals_imports`** · function · Every `threetears.evals` import under `sources` that reaches below a public root.
   <br>`nonpublic_evals_imports(*sources: Path | str) -> tuple[NonPublicImport, ...]`
 
 **Classes**
 
 - **`CompletionConformanceFailure`** · exception · A host's completion lacks an attribute eval reads, or reports a stop reason outside eval's vocabulary.
+- **`CompletionGuard`** · dataclass · The kit's watch on a host's completion clients: what was asked outside a job, and how often inside one.
+- **`CompletionOutsideJob`** · exception · A completion request made outside any job's work, refused by the kit's guarded client before it was sent.
+- **`JobAwaitedByItsCall`** · exception · A job's completion request that waited for the call that started the job, and found it still waiting on it.
+- **`JobsConformanceCase`** · dataclass · One action held to one rule.
+- **`JobsConformanceFailure`** · exception · An action broke the job rule, or its happy path proved nothing. The message names the action and the rule.
+- **`JobsConformanceHost`** · dataclass · What a host hands the kit for one case: its operations host, who calls, and its sample launch.
 - **`NonPublicImport`** · dataclass · One import of a `threetears.evals` name that does not come from a public root.
 - **`ReaderConformanceCase`** · dataclass · One promise a reader makes, as a check over a sample.
 - **`ReaderConformanceFailure`** · exception · A host's reader broke a promise the engine relies on; the message names the case, the reader and the run.
@@ -1659,8 +1765,17 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 - **`StoreConformanceCase`** · dataclass · One rule of the port, as a check over a store.
 - **`StoreConformanceFailure`** · exception · A store broke a rule of the `DocumentStore` port; the message names the case and the rule.
 
+**Types**
+
+- **`BuildConformanceHost`** · type alias · Builds a fresh host for one case, its completion clients wrapped by the guard it is handed.
+  <br>`Callable[[CompletionGuard], JobsConformanceHost]`
+
 **Constants**
 
+- **`DEFAULT_CALL_RETURN_TIMEOUT_S`** · constant (float) · How long a job's request waits, while the call that started its job runs, for that call to return, in seconds.
+  <br>`= 10.0`
+- **`DEFAULT_JOB_CONFORMANCE_TIMEOUT_S`** · constant (float) · How long a happy path's jobs are polled for before the case gives up on them, in seconds.
+  <br>`= 60.0`
 - **`READER_CONFORMANCE_CASES`** · constant (tuple) · Every promise, as a case. Parametrise over this tuple.
 - **`STORE_CONFORMANCE_CASES`** · constant (tuple) · Every case, in the order the port states its rules: scoping, the strip on read, projection, querying, optimistic concurrency (with the re-read that recovers a lost race), merge, delete — and last, that every `doc_type` the engine writes is one the store stores.
 
@@ -1712,8 +1827,6 @@ Batteries: run an eval in one call, and drive the engine from a command line.
   <br>`Mapping[str, Callable[..., Awaitable[Any]]]`
 - **`CaseMaterial`** · type alias · Renders the material one case's answer is judged against: takes the case, returns non-blank text.
   <br>`Callable[[Mapping[str, Any]], str]`
-- **`CaseOutcome`** · literal · How one result came out, as `classify_result` classifies it: graded normally, failed by the candidate (it counts against the candidate), or excluded as a fault of the rig (it counts for nothing).
-  <br>`'scored'` | `'failed'` | `'excluded'`
 - **`CaseSeed`** · type alias · A case's starting state: takes the case, returns dimension name to value.
   <br>`Callable[[Mapping[str, Any]], Mapping[str, Any]]`
 - **`ExpectedLabel`** · type alias · A classifier's expected label for one case: takes the case, returns the label a correct answer gives.
@@ -1763,10 +1876,6 @@ Batteries: run an eval in one call, and drive the engine from a command line.
 - **`UNUSABLE_ANSWER`** · constant (str) · The predicted label a classifier's answer is counted under when it is not a usable label: not a string, or a blank one.
   <br>`= '(unusable answer)'`
 
-**Also exported here**
-
-`CaseResult` ([`threetears.evals.analysis`](#api-analysis)), `ConfusionCount` ([`threetears.evals.analysis`](#api-analysis)), `DimensionSummary` ([`threetears.evals.analysis`](#api-analysis)), `EvalSummary` ([`threetears.evals.analysis`](#api-analysis)), `GoalCheckSummary` ([`threetears.evals.analysis`](#api-analysis)), `JudgeGrade` ([`threetears.evals.analysis`](#api-analysis)), `LabelStatistics` ([`threetears.evals.analysis`](#api-analysis)), `RunMeasureSummary` ([`threetears.evals.analysis`](#api-analysis)), `summarize_run` ([`threetears.evals.analysis`](#api-analysis))
-
 <a id="api-ops"></a>
 ### `threetears.evals.ops`
 
@@ -1774,6 +1883,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Functions**
 
+- **`action_job_id`** · function · The job id of a host action's job.
+  <br>`action_job_id(record_id: str) -> str`
 - **`analyses_list`** · function · A campaign's stored analyses.
   <br>`analyses_list(host: EvalHost, campaign_id: str, scope_id: str) -> AnalysisListing`
 - **`analyses_undescribable`** · function · The scope's analyses holding an arm whose levels this build cannot describe, with each one's count and reasons.
@@ -1788,6 +1899,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, model: str | None = None) -> JobsStarted`
 - **`analysis_job_id`** · function · The job id of an analysis generation: its campaign, then its attempt.
   <br>`analysis_job_id(campaign_id: str, attempt_id: str) -> str`
+- **`await_job`** · async function · Await started jobs to their end in the foreground, and return how each ended — its result included.
+  <br>`await_job(host: OpsHost, started: JobsStarted, scope_id: str) -> list[JobStatus]`
 - **`bar_proposals_text`** · function · Proposals as a person reads them: each bar with its seed and any vacuity, then what was not proposed.
   <br>`bar_proposals_text(proposals: BarProposals) -> str`
 - **`bars_propose`** · function · Propose a bar on every measure a single-cell baseline campaign measured its incumbent on.
@@ -1806,7 +1919,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`estimate_text(estimate: LaunchEstimate) -> str`
 - **`export_text`** · function · An export as text: a line of its row count and what it left out, then the body itself.
   <br>`export_text(export: ScoreExport) -> str`
-- **`generation_key`** · function · The exclusivity key one campaign's generations share: one runs at a time, and only its scope sees it.
+- **`generation_key`** · function · The exclusivity key one campaign's generations share in this process: one starts at a time per scope.
   <br>`generation_key(campaign_id: str, scope_id: str) -> str`
 - **`history_launch_pricer`** · function · The engine's launch pricer: an arm bounded from the scope's usage history of runs launched as it will be.
   <br>`history_launch_pricer(host: EvalHost) -> LaunchPricer`
@@ -1818,32 +1931,38 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`insight_get(host: EvalHost, insight_id: str, scope_id: str) -> InsightDetail`
 - **`insights_list`** · function · The scope's insight ledger, newest observation first, each with where it stands.
   <br>`insights_list(host: EvalHost, scope_id: str, *, subject_id: str | None = None, source_campaign_id: str | None = None) -> InsightListing`
-- **`job_cancel`** · async function · Ask a running job to stop, then report where it stands.
+- **`job_cancel`** · async function · Ask a running job to stop — from any process — then report where it stands.
   <br>`job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str | None = None) -> JobStatus`
-- **`job_poll`** · async function · Where a job stands, read from the record its work writes.
+- **`job_poll`** · async function · Where a job stands, read from the record its work writes — the same answer in every process.
   <br>`job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus`
 - **`judge_cases_freeze`** · function · Freeze stored judged outputs, their criteria and their labels into cases of a judge template.
   <br>`judge_cases_freeze(host: EvalHost, freeze: JudgeCasesFreeze, scope_id: str) -> JudgeCaseFreezeReport`
-- **`judge_drift_check`** · async function · Re-score every judged result of a finished run under a changed judge, and read how far each dimension moved.
-  <br>`judge_drift_check(host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, result_ids: list[str] | None = None) -> SecondJudgeRead`
+- **`judge_drift_check`** · async function · Admit re-scoring every judged result of a finished run under a changed judge, as a job; poll it for the drift.
+  <br>`judge_drift_check(host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, result_ids: list[str] | None = None) -> JobsStarted`
 - **`judge_profiles_list`** · function · The stored judge profiles of a scope, each with the tier it decides.
   <br>`judge_profiles_list(host: EvalHost, scope_id: str, *, rubric_dim: str | None = None) -> JudgeProfileListing`
 - **`judge_profiles_record`** · function · Record the profile of every judge and criterion a judge campaign's runs measured.
   <br>`judge_profiles_record(host: EvalHost, record: JudgeProfilesRecord, scope_id: str) -> JudgeProfileRecording`
-- **`judge_repeat`** · async function · Repeat a finished run's judge scores — the measurement the `separation` evidence tier reads.
-  <br>`judge_repeat(host: OpsHost, run_id: str, scope_id: str, *, result_ids: list[str] | None = None) -> JudgeRepeatReport`
+- **`judge_repeat`** · async function · Price and admit repeating a finished run's judge scores, then start it as a job — the `separation` tier's read.
+  <br>`judge_repeat(host: OpsHost, run_id: str, scope_id: str, *, result_ids: list[str] | None = None) -> JobsStarted`
 - **`judge_repeat_estimate`** · async function · What repeating a finished run's judge scores would be priced at, against the host's out-of-run cap — no call made.
   <br>`judge_repeat_estimate(host: OpsHost, run_id: str, scope_id: str, *, result_ids: list[str] | None = None) -> JudgeRepeatEstimate`
-- **`judge_second`** · async function · Ask a second judge to score a seeded share of a finished run's judged results, and read agreement and drift.
-  <br>`judge_second(host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, sample_fraction: float = 1.0, seed: int = 0, result_ids: list[str] | None = None) -> SecondJudgeRead`
+- **`judge_second`** · async function · Admit asking a second judge to score a seeded share of a finished run's judged results, as a job.
+  <br>`judge_second(host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, sample_fraction: float = 1.0, seed: int = 0, result_ids: list[str] | None = None, asked_by: SecondJudgeAskedBy = 'judge_second') -> JobsStarted`
 - **`judge_second_estimate`** · async function · What asking a second judge about a finished run would be priced at, against the host's out-of-run cap — no call.
   <br>`judge_second_estimate(host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, sample_fraction: float = 1.0, seed: int = 0, result_ids: list[str] | None = None) -> SecondJudgeEstimate`
-- **`judge_temperature`** · async function · Re-judge a finished run's borderline cases at the pinned temperature and at the provider default (#633).
-  <br>`judge_temperature(host: OpsHost, run_id: str, scope_id: str, *, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: list[str] | None = None) -> JudgeTemperatureComparison`
+- **`judge_temperature`** · async function · Admit re-judging a finished run's borderline cases at the pinned temperature and the provider default (#633), as a job.
+  <br>`judge_temperature(host: OpsHost, run_id: str, scope_id: str, *, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: list[str] | None = None) -> JobsStarted`
 - **`judge_temperature_estimate`** · async function · What comparing a finished run's judge at the pinned temperature and the provider default would cost — no call.
   <br>`judge_temperature_estimate(host: OpsHost, run_id: str, scope_id: str, *, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: list[str] | None = None) -> JudgeTemperatureEstimate`
+- **`judge_temperature_job_id`** · function · The job id of a judge temperature comparison.
+  <br>`judge_temperature_job_id(check_id: str) -> str`
 - **`launch_estimate`** · async function · What `run_launch` with `arguments` would cost, priced by the launch's own rule.
   <br>`launch_estimate(host: OpsHost, arguments: LaunchArguments, scope_id: str, *, n_test_cases: int | None = None) -> LaunchEstimate`
+- **`launch_job_id`** · function · The job id of a launch.
+  <br>`launch_job_id(launch_id: str) -> str`
+- **`launch_progress`** · function · A launch's progress: its runs started and finished, and each started run's status by its arm.
+  <br>`launch_progress(launch: EvalLaunch, runs: dict[str, EvalRun]) -> dict[str, Any]`
 - **`parse_job_id`** · function · Read a job id back into what it names.
   <br>`parse_job_id(job_id: str) -> tuple[JobKind, str, str | None]`
 - **`pivot_text`** · function · A pivot as text: what was computed, each cell with its denominators, and every caveat the table carries.
@@ -1870,7 +1989,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`run_get(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary`
 - **`run_job_id`** · function · The job id of a launched run.
   <br>`run_job_id(run_id: str) -> str`
-- **`run_launch`** · async function · Launch a template's runs, one per model, and return a job per run.
+- **`run_launch`** · async function · Admit a template's launch — one run per model — and start its arms and runs as one job.
   <br>`run_launch(host: OpsHost, arguments: LaunchArguments, scope_id: str) -> JobsStarted`
 - **`runs_bisect`** · function · Split two runs' versioned inputs into those that differ, agree and cannot be decided, with each disclosure.
   <br>`runs_bisect(host: EvalHost, baseline_run_id: str, candidate_run_id: str, scope_id: str) -> RunsBisected`
@@ -1890,6 +2009,12 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`scope_history(host: EvalHost, scope_id: str, *, metric: str | None = None, min_absolute_change: float = 0.0, min_relative_change: float = 0.0, subject_id: str | None = None, status: str | None = 'completed') -> HistoryResult`
 - **`scope_pivot`** · function · One measure over the scope's observations, aggregated over two coordinates.
   <br>`scope_pivot(host: EvalHost, scope_id: str, *, row_factor: str, column_factor: str, metric: str | None = None, weighting: str | None = None, subject_id: str | None = None, status: str | None = 'completed', predicted_cost: CostEstimate | LaunchEstimate | Mapping[str, Any] | None = None, launched_run_ids: Sequence[str] = ()) -> PivotTable`
+- **`second_judge_job_id`** · function · The job id of a second judge's pass.
+  <br>`second_judge_job_id(pass_id: str) -> str`
+- **`start_action_job`** · async function · Start a host action's work as a job whose record (`EvalActionJob`) holds its result.
+  <br>`start_action_job(host: OpsHost, scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], label: str = '', budget_s: float = 3600.0, discard: Callable[[], Awaitable[None]] | None = None) -> JobsStarted`
+- **`start_job`** · async function · Start admitted work as a job: its record written, leased, and the work run in the background.
+  <br>`start_job(host: OpsHost, admitted: AdmittedJob) -> JobsStarted`
 - **`sweep_job_id`** · function · The job id of a sweep.
   <br>`sweep_job_id(sweep_id: str) -> str`
 - **`sweep_launch`** · async function · Create the sweep's campaign and start the job that launches its arms in order.
@@ -1899,6 +2024,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Classes**
 
+- **`AdmittedJob`** · dataclass · An operation admitted — priced, capped and refused where it would be — with the job it starts as.
 - **`AmbiguousReporterPair`** · model · A (campaign, recorded memo) pair holding more than one live case — which every launch of the template refuses.
 - **`AnalysisDeleted`** · model · What deleting an analysis removed: the analysis, never the insights it minted.
 - **`AnalysisGeneration`** · dataclass · How this host generates an analysis as a background job.
@@ -1962,12 +2088,10 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 - **`InsightStandingName`** · literal · Where an insight stands, read from the analysis that minted it at every read and never stamped on the insight (`insight_standing`): `live` — fed to later generations as prior context; `retracted` — its analysis is archived, so no generation reads it; `orphaned` — its analysis was deleted, so it is still read but its provenance cannot be followed.
   <br>`'live'` | `'retracted'` | `'orphaned'`
-- **`JobKind`** · literal · What a job's work is: a launched run, an analysis generation, or a sweep launching its arms in order.
-  <br>`'run'` | `'analysis'` | `'sweep'`
+- **`JobKind`** · literal · What a job's work is: a launch (its arms prepared and its runs run), one launched run, an analysis generation, a sweep launching its arms in order, a second judge's pass, a judge temperature comparison, or a host action's work.
+  <br>`'launch'` | `'run'` | `'analysis'` | `'sweep'` | `'second_judge'` | `'judge_temperature'` | `'action'`
 - **`JobState`** · literal · Where a job stands.
   <br>`'running'` | `'completed'` | `'stopped'` | `'failed'` | `'cancelled'` | `'lost'`
-- **`ReportFormat`** · literal · The forms a report is read in: Markdown (the memo, and what an agent reads), its canonical JSON (what the published schema validates) and HTML that reads without any script.
-  <br>`'markdown'` | `'json'` | `'html'`
 - **`ResultPart`** · literal · Which part of a stored result `result_get` returns.
   <br>`'record'` | `'judge'` | `'spans'`
 - **`TraceState`** · literal · Whether a result's trace can be read: `stored`; `none` — the cell wrote none (its record says so); or `missing` — the record says one was written and no document backs it, which is a fault, never an ordinary absence (`get_result_trace` logs it).
@@ -1975,17 +2099,25 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Constants**
 
+- **`ACTION_JOB_PREFIX`** · constant (str) · The prefix of a host action's job id.
+  <br>`= 'action:'`
 - **`ANALYSIS_JOB_PREFIX`** · constant (str) · The prefix of an analysis generation's job id.
   <br>`= 'analysis:'`
+- **`JUDGE_TEMPERATURE_JOB_PREFIX`** · constant (str) · The prefix of a judge temperature comparison's job id.
+  <br>`= 'judge-temperature:'`
+- **`LAUNCH_JOB_PREFIX`** · constant (str) · The prefix of a launch's job id.
+  <br>`= 'launch:'`
 - **`RUN_JOB_PREFIX`** · constant (str) · The prefix of a launched run's job id.
   <br>`= 'run:'`
+- **`SECOND_JUDGE_JOB_PREFIX`** · constant (str) · The prefix of a second judge's pass's job id — a drift check's too.
+  <br>`= 'second-judge:'`
 - **`SWEEP_JOB_PREFIX`** · constant (str) · The prefix of a sweep's job id.
   <br>`= 'sweep:'`
 - **`TERMINAL_JOB_STATES`** · constant (frozenset) · The states a job does not leave.
 
 **Also exported here**
 
-`AnalysisGenerationEstimate` ([`threetears.evals.analysis`](#api-analysis)), `CaseResult` ([`threetears.evals.analysis`](#api-analysis)), `CostEstimate` ([`threetears.evals.analysis`](#api-analysis)), `DimensionSummary` ([`threetears.evals.analysis`](#api-analysis)), `dollars_text` ([`threetears.evals.analysis`](#api-analysis)), `EvalSummary` ([`threetears.evals.analysis`](#api-analysis)), `format_number` ([`threetears.evals.analysis`](#api-analysis)), `frontier_text` ([`threetears.evals.analysis`](#api-analysis)), `FrontierResult` ([`threetears.evals.analysis`](#api-analysis)), `FrozenReporterCase` ([`threetears.evals.analysis`](#api-analysis)), `HistoryResult` ([`threetears.evals.analysis`](#api-analysis)), `JudgeGrade` ([`threetears.evals.analysis`](#api-analysis)), `JudgeTemperatureComparison` ([`threetears.evals.analysis`](#api-analysis)), `out_of_run_spend_text` ([`threetears.evals.analysis`](#api-analysis)), `OutOfRunSpendReport` ([`threetears.evals.analysis`](#api-analysis)), `OutOfRunSpendTotals` ([`threetears.evals.analysis`](#api-analysis)), `PivotTable` ([`threetears.evals.analysis`](#api-analysis)), `RunMeasureSummary` ([`threetears.evals.analysis`](#api-analysis)), `scope_out_of_run_spend` ([`threetears.evals.analysis`](#api-analysis)), `ScoreExport` ([`threetears.evals.analysis`](#api-analysis)), `serialize_report` ([`threetears.evals.analysis`](#api-analysis)), `summarize_run` ([`threetears.evals.analysis`](#api-analysis))
+`AnalysisGenerationEstimate` ([`threetears.evals.analysis`](#api-analysis)), `dollars_text` ([`threetears.evals.analysis`](#api-analysis)), `EvalSummary` ([`threetears.evals.analysis`](#api-analysis)), `format_number` ([`threetears.evals.analysis`](#api-analysis)), `frontier_text` ([`threetears.evals.analysis`](#api-analysis)), `FrontierResult` ([`threetears.evals.analysis`](#api-analysis)), `FrozenReporterCase` ([`threetears.evals.analysis`](#api-analysis)), `HistoryResult` ([`threetears.evals.analysis`](#api-analysis)), `JudgeTemperatureComparison` ([`threetears.evals.analysis`](#api-analysis)), `out_of_run_spend_text` ([`threetears.evals.analysis`](#api-analysis)), `OutOfRunSpendReport` ([`threetears.evals.analysis`](#api-analysis)), `PivotTable` ([`threetears.evals.analysis`](#api-analysis)), `scope_out_of_run_spend` ([`threetears.evals.analysis`](#api-analysis)), `ScoreExport` ([`threetears.evals.analysis`](#api-analysis))
 
 <a id="api-actions"></a>
 ### `threetears.evals.actions`
@@ -2009,6 +2141,8 @@ The action catalogue: every eval action, declared once, for any transport to mou
 - **`ActionCatalogue`** · class · Every action a host offers: the engine's, and any the host contributes.
 - **`ActionOutcome`** · dataclass · What one call came to: the text an agent reads, the typed result as data, and whether it was refused.
 - **`Caller`** · dataclass · Who is calling, and the scope they act in — resolved by the host for every call.
+- **`ConformanceSample`** · dataclass · One launch a host can run end to end, which the engine's spend actions' happy paths build on.
+- **`ConformanceStage`** · dataclass · What a `HappyPath` is handed: the host the kit built, the caller, and the host's sample launch.
 - **`MountedTool`** · dataclass · A tool cut from the catalogue: the actions its classes admit, and how a call to it is carried out.
 - **`ToolHints`** · dataclass · The MCP behaviour hints a mounted tool's actions earn.
 - **`ToolSpec`** · dataclass · One tool a transport mounts: its name, its short description and the classes of action it carries.
@@ -2017,6 +2151,8 @@ The action catalogue: every eval action, declared once, for any transport to mou
 
 - **`ActionHandler`** · type alias · Carries an action out: handed the host, the caller and the validated parameters, it returns the action's result model.
   <br>`Callable[[OpsHost, Caller, Any], Awaitable[BaseModel]]`
+- **`HappyPath`** · type alias · A spend action's happy path: arranges what its work needs in the stage's host — a finished run, a campaign — and returns the parameters (without `action`) of a call that reaches that work.
+  <br>`Callable[[ConformanceStage], Awaitable[Mapping[str, Any]]]`
 - **`PermissionClass`** · literal · What an action does to the world, which decides the tools that may mount it.
   <br>`'read'` | `'spend'` | `'write'` | `'destructive'`
 
@@ -2041,7 +2177,7 @@ The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
 **Functions**
 
 - **`mount_fastmcp`** · function · Add the catalogue's tools to a FastMCP server.
-  <br>`mount_fastmcp(server: FastMCP, catalogue: ActionCatalogue, *, host: OpsHost, caller: CallerResolver, tools: Sequence[ToolSpec] | None = None) -> tuple[str, ...]`
+  <br>`mount_fastmcp(server: FastMCP, catalogue: ActionCatalogue, *, host: OpsHost, caller: CallerResolver, tools: Sequence[ToolSpec] | None = None, call_timeout_s: float = 60.0) -> tuple[str, ...]`
 
 **Classes**
 
@@ -2052,6 +2188,11 @@ The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
 
 - **`CallerResolver`** · type alias · Resolves who is calling, and their scope, for one call — sync or async. The host reads its own request context (an access token, a session) to answer it.
   <br>`Callable[[], Caller | Awaitable[Caller]]`
+
+**Constants**
+
+- **`DEFAULT_CALL_TIMEOUT_S`** · constant (float) · How long one call may take, in seconds, unless a host mounts with another: every call, whatever its action.
+  <br>`= 60.0`
 
 <a id="api-vega"></a>
 ### `threetears.evals.vega`
@@ -2207,7 +2348,7 @@ A table code laid out — its columns, its rows in their stated order, and how m
 | `name` | `str` | required | Which table this is: `evidence`, `arms`, `surface`, `unadjudicated_bars`, `comparisons` (the contrasts against the control, as code tested them), `questions` (the declared questions, on a code-only report), `strata` (each arm's figures per stratum of its cases, beside its pooled figure, when its cases declare strata), `labels` (a classifier's per-label precision, recall and F1, a row per label and arm, on a code-only report) or `coverage` (each lever of an analysis's coverage map, the findings naming it and the next steps that would measure it). |
 | `title` | `str` | required | The table's heading. |
 | `columns` | `list[TableColumn]` | required | The columns, in display order. |
-| `rows` | `list[dict[str, Cell]]` | required | The rows shown, in the stated order, keyed by column key. |
+| `rows` | `list[dict[str, ChartValue]]` | required | The rows shown, in the stated order, keyed by column key. |
 | `order` | `str` | required | The order the rows are in, in words. |
 | `total_rows` | `int` | required | How many rows the table has; more than are shown when it is truncated. |
 
@@ -2551,9 +2692,9 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 |---|---|---|---|
 | `sweep_launch` | `spend`, job | `template_id`, `subject_id`, `campaign_name`, `campaign_behavior`, `campaign_description?`, `k_runs?`, `max_concurrent_arms?`, `judge_model?`, `simulator_model?`, `max_cost_usd?`, `cell_timeout_s?`, `case_set_name?`, `case_set_version?`, `measure_latency?`, `arms` | Launch arms that differ beyond the model, one after another, into one campaign, as one job. |
 | `case_set_mint` | `write` | `case_set`, `template_id`, `test_case_ids`, `tracked?` | Store the next version of a named case set: a template's cases, frozen in order. |
-| `run_launch` | `spend`, job | `template_id`, `subject_id`, `models?`, `k_runs?`, `n_variations?`, `variation_model?`, `overlays?`, `apparatus_settings?`, `max_cost_usd?`, `judge_model?`, `simulator_model?`, `cell_timeout_s?`, `case_set_name?`, `case_set_version?`, `measure_latency?` | Launch a template's runs, one per model, each as a job to poll. |
+| `run_launch` | `spend`, job | `template_id`, `subject_id`, `models?`, `k_runs?`, `n_variations?`, `variation_model?`, `overlays?`, `apparatus_settings?`, `max_cost_usd?`, `judge_model?`, `simulator_model?`, `cell_timeout_s?`, `case_set_name?`, `case_set_version?`, `measure_latency?` | Launch a template's runs, one per model, as one job to poll: its arms prepared, its runs run. |
 | `launch_estimate` | `read` | `template_id`, `subject_id`, `models?`, `k_runs?`, `n_variations?`, `variation_model?`, `overlays?`, `apparatus_settings?`, `max_cost_usd?`, `judge_model?`, `simulator_model?`, `cell_timeout_s?`, `case_set_name?`, `case_set_version?`, `measure_latency?`, `n_test_cases?` | Estimate what a run_launch would cost, from what the scope's runs have spent. |
-| `job_poll` | `read` | `job_id` | Read where a job stands — a launched run or an analysis generation. |
+| `job_poll` | `read` | `job_id` | Read where a job stands — a launch, a run, a sweep, a generation, a judge pass — and its result. |
 | `job_cancel` | `write` | `job_id`, `reason?` | Ask a running job to stop; poll to see it land as cancelled. |
 | `run_get` | `read` | `run_id` | Summarise one run: how it ended, how its results came out, each measure's mean. |
 | `results_list` | `read` | `run_id`, `condition_filter?`, `offset?`, `limit?` | List one run's results, a light row each — case, repeat, condition, headline measures — paged. |
@@ -2566,10 +2707,10 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `campaign_create` | `write` | `name`, `subject_id`, `behavior`, `description?`, `run_ids?`, `declared_design?`, `control_from_run_id?` | Create a campaign over runs in the scope, for an analysis to read. |
 | `analysis_generate` | `spend`, job | `campaign_id`, `model?` | Generate a campaign's analysis with a paid model call, as a job to poll. |
 | `analysis_estimate` | `read` | `campaign_id`, `model?` | Price a campaign's analysis generation against the host's out-of-run cap, without spending. |
-| `judge_second` | `spend` | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?`, `sample_fraction?`, `sample_seed?` | Ask a second judge to score a seeded share of a finished run's judged results; read agreement. |
+| `judge_second` | `spend`, job | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?`, `sample_fraction?`, `sample_seed?` | Ask a second judge to score a seeded share of a finished run's judged results, as a job; read agreement. |
 | `judge_second_estimate` | `read` | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?`, `sample_fraction?`, `sample_seed?` | Price a second judge's pass over a run against the host's out-of-run cap, without spending. |
-| `judge_drift_check` | `spend` | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?` | Re-score every judged result of a run under a changed judge; read how far each dimension moved. |
-| `judge_temperature` | `spend` | `run_id`, `selection?`, `repeats?`, `result_ids?` | Re-judge a run's borderline cases at temperature 0 and at the provider default; compare spread. |
+| `judge_drift_check` | `spend`, job | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?` | Re-score every judged result of a run under a changed judge, as a job; read how far each moved. |
+| `judge_temperature` | `spend`, job | `run_id`, `selection?`, `repeats?`, `result_ids?` | Re-judge a run's borderline cases at temperature 0 and at the provider default, as a job; compare. |
 | `judge_temperature_estimate` | `read` | `run_id`, `selection?`, `repeats?`, `result_ids?` | Price a judge temperature comparison against the host's out-of-run cap, without spending. |
 | `analyses_list` | `read` | `campaign_id` | List a campaign's stored analyses. |
 | `insights_list` | `read` | `subject_filter?`, `campaign_filter?` | List the scope's insights — the durable claims analyses minted — newest first. |
@@ -2649,7 +2790,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `k_runs` | `integer` | Repeats of every case, for pass^k. |
 | `labels` | array of `object` | Reader verdicts on the recorded memo, each {dimension, direction, quote, note?}: a dimension the template scores, a direction of low\|low_mid\|mid\|mid_high\|high, and the reader's words verbatim. They need recorded_analysis_id; the freeze stamps each with the template's criterion for its dimension. |
 | `launch_group_filter` | `string` or `null` | Only the calls one launch's case generation made; its runs carry this id. |
-| `launched_run_ids` | array of `string` or `null` | The runs the estimated launch made (the run ids its jobs name), with predicted_cost: each predicted cell then says how many of its observations came from other runs. |
+| `launched_run_ids` | array of `string` or `null` | The runs the estimated launch made (the run ids its launch job names, as run_ids), with predicted_cost: each predicted cell then says how many of its observations came from other runs. |
 | `limit` | `integer` | The most rows to return, up to 200. |
 | `max_concurrent_arms` | `integer` | How many of a sweep's arms run at once. 1 (the default) runs them one after another, so no arm shares another's provider load. To compare latency, also declare measure_latency. |
 | `max_cost_usd` | `number` or `null` | A per-run cost cap in dollars, at or below the host's ceiling; it can only lower that ceiling, and a value above it is refused. |

@@ -3,7 +3,7 @@
 A judge is a model, the prompt per dimension and a temperature, and a change to any of them can move the scores it
 gives without the subject changing at all. A before/after that spans a judge change cannot tell a fix that worked
 from a judge that scores differently. The check is to re-score the SAME stored evidence under the new judge
-(:func:`~threetears.evals.run.ask_second_judge`, which records each new score beside the first) and read, per dimension,
+(:func:`~threetears.evals.run.second_judge_work`, which records each new score beside the first) and read, per dimension,
 how far the scores moved:
 
 - **The unit is the case.** A result's first and second scores are a pair; a case judged ``k`` times is one draw,

@@ -14,6 +14,7 @@ from dataclasses import fields, replace
 import pytest
 from pydantic import ValidationError
 
+from threetears.evals.kernel import default_job_timeout
 from threetears.evals.schema import EvalRun, EvalTestCase
 from threetears.evals.kernel import EvalStorage, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.errors import AdmissionRefusedError
@@ -29,7 +30,6 @@ from threetears.evals.run import (
     LaunchHost,
     LaunchRequest,
     LaunchSettings,
-    default_job_timeout,
     launch_run,
     start_run,
     start_universal_battery,

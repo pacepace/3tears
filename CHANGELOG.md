@@ -6,6 +6,67 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a lost job writes nothing more, a timed-out job says so, and no call waits on its own job (breaking)
+
+An independent review of the job leases and the jobs contract found holders that kept writing and spending after
+they had lost their lease, endings that misreported or lost what a job did, and a conformance kit that passed a
+call waiting on its own job. Each is fixed with a test that failed before it; `MIGRATIONS.toml` records what a host
+must change.
+
+- **A lost job writes nothing more.** A run another process wrote lost refuses its old holder's own `cancelled`
+  ending, which used to overwrite the loss's `completed_at` and reason and then broadcast and call `on_run_end`. A
+  shutdown records only the loss, in store time, and tells nobody. A holder whose renewals fail for a whole lease
+  stops its work as lost instead of spending past its expiry, and one rule (`JobLeases.let_go` / `fenced`) then
+  refuses every own write of every job kind from that process, even once the store recovers. A sweep asks whether it still holds its record before
+  each arm (`kernel.require_held`), so a lost sweep launches no arm nothing records.
+- **A lost generation keeps no analysis.** The attempt's conditional ending is the commit: when it finds the
+  attempt already written lost, the analysis and insights just stored are withdrawn (`AnalysisStore` gains
+  `delete_analysis` and `delete_insight`). A start whose slot claim fails ends its attempt and releases its client.
+- **A store is upgraded with no job running.** A lease-less running record is lost, with no grace: a grace cannot
+  tell a live older-build job from a dead one, and the older build's reclaim cancels the newer build's jobs.
+- **A job stopped by its time budget reads `timed_out`** (state `stopped`), never `cancelled` — every kind alike:
+  runs' work, launches, judge passes, actions, sweeps and analysis generations, worded by `kernel.timed_out_detail`.
+  The budget's types move to `kernel` (`EvalJobTimeout`, `JobTimeoutFactory`, `default_job_timeout`). A launch's budget
+  covers its preparation only (`run.LAUNCH_PREPARATION_BUDGET_S`); its runs bound their own wait, so time queued for a
+  slot no longer cancels healthy runs.
+- **A generating launch prices its generation in the call**, as the battery does, so `run_launch` refuses one the
+  out-of-run cap cannot pay for before it returns.
+- **Nothing paid for is lost to an ending.** A temperature comparison writes its answers as each call returns. A
+  failed ending write is retried, then logged whole. Admitted work runs once, and its first write is create-only.
+- **`ops.judge_repeat` runs as a job**; `run.repeat_judge_scores` is replaced by `run.judge_repeat_work`.
+- **The jobs conformance kit fails a call that waits on its own job**: while a call runs, a job's request waits for
+  it to return, and is refused (`JobAwaitedByItsCall`) when it does not.
+- **The FastMCP transport answers only its own deadline as the call timeout**; a `TimeoutError` the action raised
+  propagates as itself.
+
+### 3tears-evals: the public surface is snapshotted, and every name that leaves it is recorded (breaking)
+
+A name could leave a public root with nothing failing, and a porter learned the new home from an `ImportError`.
+Now the package's own tests hold the surface. Nothing is kept for compatibility: the release notes carry the
+old-to-new map instead.
+
+- **The snapshot.** `packages/evals/api/surface.json` lists each `root.name` in `threetears.evals.PUBLIC_ROOTS`
+  with its kind and signature. It is written by `scripts/generate_api_snapshot.py` over the walk that renders the
+  reference. `tests/test_api_surface.py` fails on any difference. An addition or a signature change is fixed by
+  regenerating the snapshot. A name that moved, was renamed or was removed is fixed only by recording it in
+  `packages/evals/MIGRATIONS.toml` (its new home or `removed`, and why). The generator refuses to write until that
+  record exists.
+- **Release notes.** `scripts/release_notes.py <tag>` prints a release's section of `MIGRATIONS.toml`. The
+  section for `v0.66.0-evaladopt.6` records all 403 names that left a root in the `contracts` split, with
+  the renames and removals beside it. A section that names the tag before it (`since`) is checked against the two
+  surfaces as git holds them, so it records exactly what left.
+- **One home per name.** A name exported from two roots fails unless `api/reexports.toml` declares it a
+  re-export. Two different objects under one name always fail. Resolving the duplicates already on the surface:
+  - `analysis.viz` no longer exports `VALIDATED_SLOTS` or `SERIES_SLOTS`; import them from `kernel.host`.
+  - `analysis.viz.Cell`, the chart vocabulary's JSON scalar, is `ChartValue`, so it no longer shares a name with
+    `analysis.Cell`.
+  - `quick` no longer re-exports the run summary. Import `EvalSummary`, `summarize_run`, `CaseResult`,
+    `CaseOutcome`, `DimensionSummary`, `GoalCheckSummary`, `JudgeGrade`, `RunMeasureSummary`, `ConfusionCount` and
+    `LabelStatistics` from `analysis`.
+  - `ops` keeps only the fourteen analysis names the action catalogue imports, because `actions` may reach
+    `analysis` only through `ops`. It drops `CaseResult`, `CostEstimate`, `DimensionSummary`, `JudgeGrade`,
+    `OutOfRunSpendTotals`, `ReportFormat`, `RunMeasureSummary`, `serialize_report` and `summarize_run`.
+
 ### 3tears-evals: the context bundle and the reporting projection are split by concern (#612)
 
 `analysis/bundle.py` (about 10,400 lines) and `analysis/reporting.py` (about 8,000) each held a dozen concerns
