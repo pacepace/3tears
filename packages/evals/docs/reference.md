@@ -1826,6 +1826,8 @@ Storage adapters the engine ships: implementations of the one port a host stores
 
 **Constants**
 
+- **`ROUTING_RECORD_DOC_TYPE`** · constant (str) · The `doc_type` of the placement record the router writes into every store, inside the routing scope its host names.
+  <br>`= 'eval_routing_record'`
 - **`SQLITE_STORE_LAYOUT`** · constant (int) · The file layout this store writes and reads, stamped as the file's `user_version`.
   <br>`= 1`
 

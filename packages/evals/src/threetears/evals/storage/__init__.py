@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from threetears.evals.storage.memory import InMemoryDocumentStore
 from threetears.evals.storage.routed import (
+    ROUTING_RECORD_DOC_TYPE,
     DocTypeRoute,
     MisplacedDocument,
     RouteChanged,
@@ -30,6 +31,7 @@ from threetears.evals.storage.routed import (
 from threetears.evals.storage.sqlite import SQLITE_STORE_LAYOUT, SqliteDocumentStore
 
 __all__ = [
+    "ROUTING_RECORD_DOC_TYPE",
     "SQLITE_STORE_LAYOUT",
     "DocTypeRoute",
     "InMemoryDocumentStore",

@@ -4505,6 +4505,10 @@
       "kind": "class",
       "signature": "RoutedDocumentStore(children: Mapping[str, DocumentStore], route: DocTypeRoute, *, routing_scope: str) -> RoutedDocumentStore"
     },
+    "threetears.evals.storage.ROUTING_RECORD_DOC_TYPE": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
     "threetears.evals.storage.SQLITE_STORE_LAYOUT": {
       "kind": "constant (int)",
       "signature": ""

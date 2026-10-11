@@ -19,6 +19,7 @@ import pytest
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.schema import DOC_TYPE_FACTS, DocTypeFacts, StoreClock, StoreConflict
 from threetears.evals.storage import (
+    ROUTING_RECORD_DOC_TYPE,
     DocTypeRoute,
     InMemoryDocumentStore,
     MisplacedDocument,
@@ -234,6 +235,14 @@ def test_the_routing_record_is_invisible_to_typed_reads_of_its_scope() -> None:
 
     assert router.by_doc_type("eval_run", _ROUTING) == []
     assert list(router.iter_by_doc_type("host_note", _ROUTING)) == []
+
+
+def test_the_record_is_written_under_the_doc_type_the_package_exports() -> None:
+    """A host auditing what its tables hold names the router's record by the exported constant, not a copy of it."""
+    _, stores = _router()
+
+    for name, store in stores.items():
+        assert list(store.iter_by_doc_type(ROUTING_RECORD_DOC_TYPE, _ROUTING)), f"{name} holds no record under it"
 
 
 # --- the rule ----------------------------------------------------------------------------------
@@ -479,7 +488,7 @@ def test_stores_holding_only_a_placement_record_hold_no_documents() -> None:
     _, stores = _router()
 
     assert RoutedDocumentStore.holds_documents(stores, [_SCOPE]) is False
-    assert RoutedDocumentStore.holds_documents(stores, [_ROUTING], host_doc_types=["eval_routing_record"]) is False
+    assert RoutedDocumentStore.holds_documents(stores, [_ROUTING], host_doc_types=[ROUTING_RECORD_DOC_TYPE]) is False
 
 
 @pytest.mark.parametrize("store", ["evidence", "scratch"])

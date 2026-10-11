@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: what adopting .11 found (gap 48)
+
+- **The router's placement record is named by a public constant** (`storage.ROUTING_RECORD_DOC_TYPE`), so a host
+  that registers or audits what its tables hold names the router's own record rather than keeping a copy of the
+  string. `adopting-a-host.md` also says a provenance stamp does the same job as a recorded seed digest for
+  `prompt_drift`.
+
 ### 3tears-evals: what adopting .10 found (gaps 40–47)
 
 - **A host resolver's refusal enters the `around` hook (gap 40).** The caller is known, so the `ToolCall` exists: the

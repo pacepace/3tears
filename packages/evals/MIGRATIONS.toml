@@ -31,6 +31,14 @@
 # callers.
 
 [[release]]
+version = "0.66.0-evaladopt.12"
+since = "v0.66.0-evaladopt.11"
+summary = """
+What adopting .11 found (gap 48): the router's placement record is named by a public constant.
+"""
+notes = []
+
+[[release]]
 version = "0.66.0-evaladopt.11"
 since = "v0.66.0-evaladopt.10"
 summary = """
