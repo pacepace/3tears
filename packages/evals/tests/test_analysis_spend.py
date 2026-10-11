@@ -28,6 +28,7 @@ import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.kernel import ValidationFailedError
+from threetears.evals.schema import JobLease
 from threetears.evals.ops import (
     analysis_estimate,
     analysis_generate,
@@ -208,6 +209,8 @@ async def test_a_generation_makes_no_store_call_on_the_event_loop(monkeypatch: p
         "query_insights",
         "save_analysis",
         "save_analysis_attempt",
+        "load_job_record",
+        "save_job_record",
         "save_insight",
         "save_out_of_run_spend",
     )
@@ -232,19 +235,21 @@ async def test_a_generation_makes_no_store_call_on_the_event_loop(monkeypatch: p
     assert [name for name, thread in seen if thread == loop_thread] == []
 
 
-async def test_cancelling_an_abandoned_run_makes_no_store_call_on_the_event_loop(
+async def test_cancelling_a_run_another_process_holds_makes_no_store_call_on_the_event_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fixture = ops_fixture()
     storage = fixture.host.eval_host.storage
     run = storage.load_eval_run(fixture.campaign.run_ids[0], TOYHOST_SCOPE)
     assert run is not None
-    storage.save_eval_run(run.model_copy(update={"status": "running", "completed_at": None}))
-    seen = _record_threads(storage, monkeypatch, ("load_eval_run", "load_eval_run_with_etag", "save_eval_run"))
+    held = JobLease(holder="another-process", expires_at="2999-01-01T00:00:00+00:00")
+    storage.save_eval_run(run.model_copy(update={"status": "running", "completed_at": None, "lease": held}))
+    names = ("load_job_record", "merge_job_record_fields", "store_time")
+    seen = _record_threads(storage, monkeypatch, names)
     loop_thread = threading.get_ident()
 
-    cancelled = await job_cancel(fixture.host, run_job_id(run.id), TOYHOST_SCOPE, reason="stale")
+    asked = await job_cancel(fixture.host, run_job_id(run.id), TOYHOST_SCOPE, reason="stale")
 
-    assert cancelled.state == "cancelled"
-    assert {name for name, _ in seen} == {"load_eval_run", "load_eval_run_with_etag", "save_eval_run"}
+    assert asked.state == "running", "the holder, elsewhere, ends it at its next renewal"
+    assert {name for name, _ in seen} == set(names)
     assert [name for name, thread in seen if thread == loop_thread] == []

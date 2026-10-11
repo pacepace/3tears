@@ -64,6 +64,7 @@ from threetears.evals.schema.values import SweepableValue
 from threetears.evals.schema.judge_attribution import JudgeAttributionSource, JudgeAttributionState, attribution_state
 from threetears.evals.schema.prose import ModelProse
 from threetears.evals.schema.world_events import WorldEvent
+from threetears.evals.schema.job_lease import CancelRequestReasonField, CancelRequestedAtField, LeaseField, LostField
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -3290,6 +3291,12 @@ class EvalRun(CoreDocumentModel):
             "this says whether an operator still wants it counted, and only an operator writes it."
         ),
     )
+
+    # The run's job: which process runs it, a cancel asked of it, and how it was lost (core v10).
+    lease: LeaseField = None
+    cancel_requested_at: CancelRequestedAtField = None
+    cancel_request_reason: CancelRequestReasonField = None
+    lost: LostField = None
 
     @property
     def expected_cells(self) -> int:

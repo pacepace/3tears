@@ -44,6 +44,13 @@ A lost conditional write is the one failure the port names: an implementation ra
 :class:`StoreConflict` for it, because a lost race has a remedy the core owns (re-read
 and re-apply) and every other failure does not.
 
+**An optional clock.** A store that keeps a clock of its own may also offer :class:`StoreClock` — its
+``now()``. Job leases (:mod:`~threetears.evals.schema.job_lease`) are stamped and compared in that time when it
+is offered, so processes whose clocks disagree still agree on whether a lease has lapsed; a store that does not
+offer it is read on each process's own clock, and the processes sharing it must keep their clocks in step. It
+is a separate protocol rather than a method of :class:`DocumentStore`, because a store that cannot tell its own
+time honestly must not be made to pretend: the engine asks ``isinstance(store, StoreClock)``.
+
 **Proving an adapter.** Every rule above is a case in the store conformance kit,
 ``threetears.evals.testing.STORE_CONFORMANCE_CASES``: an adapter's own test suite hands each case
 a fresh, empty store, and a case that fails names the rule it broke. The engine's in-memory
@@ -54,7 +61,8 @@ compare a real adapter against.
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
-from typing import Any, Protocol
+from datetime import datetime
+from typing import Any, Protocol, runtime_checkable
 
 
 class StoreConflict(Exception):
@@ -322,4 +330,23 @@ class DocumentStore(Protocol):
         ...
 
 
-__all__ = ["DocumentStore", "StoreConflict", "keep_fields", "omit_paths"]
+@runtime_checkable
+class StoreClock(Protocol):
+    """A store's own clock: the optional capability a :class:`DocumentStore` may offer beside its methods.
+
+    Offered only by a store whose time is the store's — a database server's clock, which every process
+    writing to it reads alike. A store whose ``now`` would be the calling process's own clock (an
+    in-process store, or a file opened by each process on its own machine) does not offer it: the engine
+    reads that clock itself, and a store pretending otherwise would promise an agreement it cannot keep.
+    """
+
+    def now(self) -> datetime:
+        """The store's current time.
+
+        Returns:
+            A timezone-aware datetime.
+        """
+        ...
+
+
+__all__ = ["DocumentStore", "StoreClock", "StoreConflict", "keep_fields", "omit_paths"]

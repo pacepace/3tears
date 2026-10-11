@@ -185,6 +185,24 @@ def test_every_non_test_eval_job_manager_site_wires_a_timeout_factory():
     )
 
 
+def test_every_non_test_eval_job_manager_site_holds_its_jobs_under_leases():
+    """A manager built with no leases saves runs every reader of the job contract reads as lost.
+
+    ``EvalJobManager``'s ``leases`` defaults to ``None``, which is right for a harness that reads its runs
+    through the manager alone and wrong for any host serving ``job_poll``: its runs are saved carrying no
+    lease, so every poll — in this process or another — writes them lost while they run. Nothing raises
+    where the manager is built, so it is held here, by the same walk as the timeout factory.
+    """
+    exempt: dict[str, str] = {}
+
+    unwired = _unwired_construction_sites("EvalJobManager", "leases", exempt)
+
+    assert not unwired, (
+        f"EvalJobManager built with no leases at: {unwired}. Its runs are saved with no lease, which every "
+        "reader of the job contract reads as lost. Pass leases=<the process's JobLeases>."
+    )
+
+
 @pytest.mark.parametrize("symbol", ["EvalJobManager", "EvalService"])
 def test_every_non_test_site_names_where_its_blocking_storage_calls_run(symbol):
     """The engine's executor default is the loop's default executor — correct for a bare host, wrong in web.

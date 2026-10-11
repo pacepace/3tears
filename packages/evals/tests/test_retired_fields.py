@@ -1,7 +1,7 @@
 """Fields retired within schema v8 read on a stored read and nowhere else.
 
-The campaign was regenerable when its two retirements were made and is core from v9, so for a campaign the
-core's v8 step does what the retirement did, and a campaign written at v9 carrying either old key is refused.
+The campaign was regenerable when its two retirements were made and is core from v10, so for a campaign the
+core's v8 step does what the retirement did, and a campaign written after v8 carrying either old key is refused.
 
 A field that carried nothing, or a confusable name, is retired without dropping every stored document
 (``__retired_fields__``, :mod:`threetears.evals.schema.base`). These pin, per retirement, that a document
@@ -42,7 +42,7 @@ def test_a_stored_campaign_carrying_a_status_still_loads(status: str) -> None:
 
 
 def test_a_campaign_written_after_the_retirement_carrying_a_status_is_refused() -> None:
-    """The campaign is core from v9, and changes only by a step: no v9 campaign ever had a status to discard."""
+    """The campaign is core from v10 and changes only by a step: no campaign after v8 had a status to discard."""
     stored = make_campaign().to_dict()
     stored["status"] = "open"
 

@@ -144,7 +144,16 @@ from threetears.evals.schema.models import (
 from threetears.evals.schema.out_of_run_spend import OutOfRunOutcome, OutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
 from threetears.evals.schema.prose import PROSE_SCHEMA_KEY
 from threetears.evals.schema.schema_nesting import NestedSchema, nested_schemas
-from threetears.evals.schema.store_port import DocumentStore, StoreConflict, keep_fields, omit_paths
+from threetears.evals.schema.store_port import DocumentStore, StoreClock, StoreConflict, keep_fields, omit_paths
+from threetears.evals.schema.job_lease import (
+    CancelRequestedAtField,
+    CancelRequestReasonField,
+    JobLease,
+    JobLoss,
+    LeaseField,
+    LeasedRecord,
+    LostField,
+)
 from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.schema.traces import CellIdentity, CellTrace, TraceSink
 from threetears.evals.schema.values import (
@@ -168,6 +177,14 @@ from threetears.evals.schema.versioning import (
 )
 
 __all__ = [
+    "StoreClock",
+    "CancelRequestedAtField",
+    "CancelRequestReasonField",
+    "JobLease",
+    "JobLoss",
+    "LeaseField",
+    "LeasedRecord",
+    "LostField",
     "CANDIDATE_SPEAKER",
     "DEFAULT_JUDGE_TEMPERATURE",
     "DEFAULT_LAUNCH_K_RUNS",

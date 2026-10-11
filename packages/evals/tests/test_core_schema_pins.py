@@ -52,32 +52,44 @@ from threetears.evals.schema.versioning import (
 )
 
 #: The ``CORE_SCHEMA_VERSION`` every digest below was taken under.
-PINNED_CORE_SCHEMA_VERSION = 9
+PINNED_CORE_SCHEMA_VERSION = 10
 
 #: Each core type's validation JSON schema, normalised (:func:`core_shape_digest`), by ``doc_type``.
 CORE_SHAPE_DIGESTS: dict[str, str] = {
-    "calibration_rating": "e70e3c10f46df11140177f0844a95bc010c5da318f7cf8a80d6b210bf80e3022",
-    "case_set": "b5d301eca9176761e6f30b6f3c7a9bef14a805e5f307b0886b455f92437783a8",
-    "eval_analysis_attempt": "ce57e05517ad542d220bca051a8a977d5d74a2139e5b8c07bae5f8ffcbf2131d",
-    "eval_campaign": "f2c3e56ff1d4d9f01f212a59127bb8e26c687028c1c29e38a733479e8d116dc2",
-    "eval_out_of_run_spend": "d0f5c7476f307bc8b24919e382555e3abf12dfc2a0a061e61910b7c755eb897e",
-    "eval_result": "131e8c2d57e3d2634a0637c9d44f2dfc7cde67f9812f397f12f520eba0261029",
-    "eval_run": "f05c9de504ee7d92bc5656bffc0b4dce79674c1301fc6f1e0167ab5b26cccabf",
-    "eval_sweep": "6537797e10bfa43e1d43db11803623efc814fad492635001ec3b59e722681747",
-    "eval_template": "a4fddfef594700c713b42e6d290f83cdd6ad99a5e903c00987a96fd7b299d50c",
-    "eval_test_case": "d6b89f0a8c7f70a80ac87808a30db426daf574bacad30777e01b59767c839562",
-    "eval_trace": "fc8edfb628126f84fd3030bd825617800d8bd9759533c11ebc19c94295d2b41e",
-    "judge_config": "229800da7158eb36c22a8751782085a4a84351c7eb7fa5c8b3c92b4c4c33ec21",
-    "judge_config_tombstone": "0767d1b84c31299671fc575cba6399cdcf4aea0a44a7a089f8ef9e6de869d924",
-    "rubric_dim": "1aa58f0d75226abc50c90475c5c9e5454870d1c4c04958b9e5f60724c10947c2",
-    "rubric_dim_tombstone": "e8e044c64d7822f906460d8629c8ab59ee6cdc7f027ff52fd97fd8be40b0fd0d",
+    "calibration_rating": "a543edb034dbeb7a7956d697939f665cc5c9f6c380419dbcf70e95e27f343772",
+    "case_set": "67cd75fe2dcb16a85fe8ecbda3ee0890addf6913d64ac1b95a93a64b06625d52",
+    "eval_analysis_attempt": "5fcf17735d8a4791fa8b1cb9eed7a59458c67cc0c787f39d210ebf5b343085e8",
+    "eval_campaign": "c33c6dc1d6c9fba98d9887bc20c395eac5ca6245302eb0fb32d696b155fab8d5",
+    "eval_out_of_run_spend": "f1d51ffd4cb2447bc1ca32c67ac20a184a6fa17665c3f22bae7ba73bb0f46f43",
+    "eval_result": "84be2b0ee738171611a7173793061d06a7297d952b5a0aba41ecdb3207487cb5",
+    "eval_run": "32fdaebc9f3eaca01c2ead896dede4cd9a2a9283980b9338961578e77c3bf1c5",
+    "eval_sweep": "17f38b8fb24fb416695a5ed2c4ef7f6a4702a18e0a0a1e470dd0f15769640c90",
+    "eval_template": "8f9ae4cc32fe1a11fcf08007b7c6ef96767c475e3d7f220222f92b7cd9763231",
+    "eval_test_case": "1e928fb0d3d646aa8c7451385d04417d0f42b70239da88ae4929d23f0f8de87f",
+    "eval_trace": "fb24fe2a75c0ebe5586510326023406c98ee0a0fb701fc9db4988020b4a7b084",
+    "judge_config": "77088727ea463a92164453b579715d057c8622c6dc22e757c3e42584c3760af2",
+    "judge_config_tombstone": "c933c26a6b232648508cfdc75b806ab176d262d758e3a814956d7a6639d0672c",
+    "rubric_dim": "6b96268625583c6b89e252223496da9e61fe13c3e840c0da5ca21919d0078fc5",
+    "rubric_dim_tombstone": "5baef0da563d3d2943f0b254d13d3796d391e0f5b5dd0baf40564738966a9ae0",
 }
 
 #: The fields the store addresses each core type by, pinned: a step may never touch one, so the set moving
 #: is a decision about the store, never a side effect.
 PINNED_ADDRESSING_FIELDS: dict[str, frozenset[str]] = {
     "eval_test_case": frozenset({"id", "doc_type", "schema_version", "scope_id", "template_id", "stratum"}),
-    "eval_run": frozenset({"id", "doc_type", "schema_version", "scope_id", "status", "archived", "created_at"}),
+    "eval_run": frozenset(
+        {
+            "id",
+            "doc_type",
+            "schema_version",
+            "scope_id",
+            "status",
+            "archived",
+            "created_at",
+            "cancel_requested_at",
+            "cancel_request_reason",
+        }
+    ),
     "eval_result": frozenset({"id", "doc_type", "schema_version", "scope_id", "eval_run_id", "test_case_id", "model"}),
     "eval_trace": frozenset({"id", "doc_type", "schema_version", "scope_id"}),
     "calibration_rating": frozenset(
@@ -107,8 +119,21 @@ PINNED_ADDRESSING_FIELDS: dict[str, frozenset[str]] = {
     "eval_campaign": frozenset(
         {"id", "doc_type", "schema_version", "scope_id", "subject_id", "behavior", "archived", "created_at"}
     ),
-    "eval_sweep": frozenset({"id", "doc_type", "schema_version", "scope_id"}),
-    "eval_analysis_attempt": frozenset({"id", "doc_type", "schema_version", "scope_id", "campaign_id", "created_at"}),
+    "eval_sweep": frozenset(
+        {"id", "doc_type", "schema_version", "scope_id", "cancel_requested_at", "cancel_request_reason"}
+    ),
+    "eval_analysis_attempt": frozenset(
+        {
+            "id",
+            "doc_type",
+            "schema_version",
+            "scope_id",
+            "campaign_id",
+            "created_at",
+            "cancel_requested_at",
+            "cancel_request_reason",
+        }
+    ),
 }
 
 #: What a step may never touch beyond the addressing fields: the host's and the kind's opaque payloads, and
@@ -160,6 +185,21 @@ FIXTURE_DIGESTS: dict[str, str] = {
     "v9/judge_config_tombstone.json": "d2c5be28efc12f564ec604374f148021b15e67bb4b5ea935e171b79dae9a28a6",
     "v9/rubric_dim.json": "e81b15e51c39604bd295d3d7f49e2efb3b20e6969eefe4a4cd09e7a1cefbe09b",
     "v9/rubric_dim_tombstone.json": "3c8058911dd4cfa1a87bf3ea0e5ba7b62b4ed11ce94dca8c63b44860d242e7bd",
+    "v10/calibration_rating.json": "bd29da501e7cb6a2e2c54f14783c90f3c3e5f2fa6313ad3b70e5de27fda532fe",
+    "v10/case_set.json": "d5d2c352b4effea075cf6f05a7b4ece0789120c48bae5faf371d25c7117635ad",
+    "v10/eval_analysis_attempt.json": "d8254f8c6a09b5e5a653b98a89db576ace68c82fc32fe4da6a162cfe7ac27bf4",
+    "v10/eval_campaign.json": "ce49d7fa609312692d79d5fdb7c3661becb056d9c7bd8cb60828d97a46b3c4e2",
+    "v10/eval_out_of_run_spend.json": "09d29852a0078c3750de7f0443e37927a685978a064098d3a398118184b7250b",
+    "v10/eval_result.json": "072ab69a839032ca0395c91adc93aa6d0a5913cf62c138f4b7ba0df5a034e27d",
+    "v10/eval_run.json": "56b1cdd79e8754004d0658d5ed926a7f0acf609bdeff4e07724ccf7d2f9f158f",
+    "v10/eval_sweep.json": "ad6f534d12f194819e9a4bb9f56dde8d0ae00cfb4ac33975863131de70aaa3d5",
+    "v10/eval_template.json": "5f2ebd9cfb97b037141adcfd51597a0a4cc01d33243a117320fe609bacc13e61",
+    "v10/eval_test_case.json": "30c4e9297c56ab3791c98802459f83b7ad6f8246b9e885fecb561f164fe8e8c9",
+    "v10/eval_trace.json": "3d99d43d31546bfdfbbd53381b660c59346d52b1c464e4c4738b3b6bcbcb6884",
+    "v10/judge_config.json": "018fb9a4b3d9d7058306b0de6f11d94fef4d687fd376fcbef4afc3fa08d5ea31",
+    "v10/judge_config_tombstone.json": "8a81a65775ba7e0dd4e571a2ed7bc50d80fa77a60ab4cb719a45edf1304b665e",
+    "v10/rubric_dim.json": "4bb70cede631382f55912d1a2d7e31b53adcc9728b785baa09dd4558c52f04b7",
+    "v10/rubric_dim_tombstone.json": "12174bd3c3ac1de46b5e45a8a72f4602fb2c8edb1e3662623ceefc15f86cfece",
 }
 
 #: Keys whose dict values are maps of names to schemas, not schema nodes: their own keys are field or

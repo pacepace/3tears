@@ -20,8 +20,13 @@ The operations (`threetears.evals.ops`) run over an `OpsHost`: the `LaunchHost`,
 
 Long work is a **job**: `run_launch`, `sweep_launch` and `analysis_generate` return `JobsStarted`, and
 `job_poll` / `job_cancel` take any job id they returned. A job id names the durable record its work writes, so
-it is still answerable after a restart. A job is answered only in the caller's scope: another scope's
-generation or sweep reads `lost` on poll and is refused on cancel.
+every process sharing the store answers it alike, and it is still answerable after a restart. Whether a job is
+still running is its record's answer: the process running it holds a **lease** on the record and renews it
+(every third of `LaunchHost.job_lease_s`, 60s by default). A job whose record has not ended and whose lease has
+lapsed reads `lost`, and the first poll to see that writes it on the record. A cancel is written on the record
+too, so `job_cancel` works from any process: the job ends `cancelled` within one renewal interval. A graceful
+shutdown writes every job its process holds `lost` at once. A job is answered only in the caller's scope:
+another scope's run, sweep or generation reads not found, on poll and on cancel.
 
 **A sweep** (`sweep_launch`) is for arms that differ in more than the model: each arm names its own model,
 overlays and apparatus settings, and every arm shares the template, subject, `k` and the other settings.

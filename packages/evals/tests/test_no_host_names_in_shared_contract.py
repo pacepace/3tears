@@ -428,6 +428,11 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # model's to validate, so a host noun arriving here would be one host's taxonomy written into
     # the store every host reads through.
     "kernel/storage.py",
+    # Job leases: which process runs a job, written on its record. Engine vocabulary only — a lease, a holder,
+    # a cancel request, a loss — over the engine's own job records, so a host noun here would be one host's
+    # process model written into every host's liveness answer.
+    "kernel/job_leases.py",
+    "schema/job_lease.py",
     # The generic trial loop and the per-result covariate derivation, both importing nothing of the
     # host. Moved off _HOST_COUPLED_MODULES when a host tool's delivery record became
     # `AsyncDelivery` and its conclusion-path covariate was deleted: the runner stores a kind's
