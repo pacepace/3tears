@@ -394,6 +394,9 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "kernel/judge_profiles.py",
     "run/judge_kind.py",
     "run/judge_temperature.py",
+    # The floor under a subject arm's largest judge or simulator call, priced before launch through the engine's
+    # own judge service and simulator prompts. Shared contract from the day it existed: it names no host.
+    "run/call_floor.py",
     # How a run's cells are executed, serially or several at once: the runner's own seam, which a host may fill
     # with its own pool. It names no host and reads nothing a host owns.
     "run/executor.py",

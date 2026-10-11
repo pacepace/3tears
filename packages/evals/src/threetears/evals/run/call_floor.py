@@ -67,8 +67,8 @@ async def price_subject_call_floor(
 ) -> CallCeiling | None:
     """A floor under a subject arm's largest judge or simulator call, for its ``LaunchableKind.price_largest_call``.
 
-    What a host composes into the launch entry of each of its own subject kinds — a persona, a classifier, any
-    conversational or single-shot kind its launcher builds a judge for with
+    What a host composes into the launch entry of each of its own subject kinds — any conversational or
+    single-shot kind its launcher builds a judge for with
     :func:`~threetears.evals.run.build_judge_service`:
     ``price_largest_call=lambda request: price_subject_call_floor(eval_host, request, judged_artifact=...)``.
     The estimate and the launch then refuse an arm whose cap cannot afford even the smallest call its cells are
