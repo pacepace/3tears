@@ -23,7 +23,8 @@ capture ran. A ``derived`` document is computed from other stored documents, and
 reading.
 
 **Lifecycle follows from whether the document can be made again**, not from its origin. A ``derived`` document is
-always regenerable. An input or a record is kept unless the engine can make it again without loss (see
+always regenerable. An input or a record is kept unless the engine can make it again without loss: the one record
+that is regenerable is the cassette, whose replacement is a fresh capture under a new corpus (see
 :mod:`threetears.evals.schema.versioning`).
 """
 
@@ -88,15 +89,15 @@ DOC_TYPE_FACTS: Final[Mapping[str, DocTypeFacts]] = MappingProxyType(
         "judge_config_tombstone": DocTypeFacts(origin="input", lifecycle="kept", suppresses="judge_config"),
         "case_set": DocTypeFacts(origin="input", lifecycle="kept"),
         "eval_test_case": DocTypeFacts(origin="input", lifecycle="kept"),
-        "eval_campaign": DocTypeFacts(origin="input", lifecycle="regenerable"),
+        "eval_campaign": DocTypeFacts(origin="input", lifecycle="kept"),
         # What happened.
         "eval_run": DocTypeFacts(origin="record", lifecycle="kept"),
         "eval_result": DocTypeFacts(origin="record", lifecycle="kept"),
         "eval_trace": DocTypeFacts(origin="record", lifecycle="kept"),
         "calibration_rating": DocTypeFacts(origin="record", lifecycle="kept"),
         "eval_out_of_run_spend": DocTypeFacts(origin="record", lifecycle="kept"),
-        "eval_sweep": DocTypeFacts(origin="record", lifecycle="regenerable"),
-        "eval_analysis_attempt": DocTypeFacts(origin="record", lifecycle="regenerable"),
+        "eval_sweep": DocTypeFacts(origin="record", lifecycle="kept"),
+        "eval_analysis_attempt": DocTypeFacts(origin="record", lifecycle="kept"),
         "eval_cassette": DocTypeFacts(origin="record", lifecycle="regenerable"),
         # Computed from the documents above.
         "eval_analysis": DocTypeFacts(origin="derived", lifecycle="regenerable"),

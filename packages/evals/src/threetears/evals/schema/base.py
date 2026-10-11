@@ -32,7 +32,11 @@ spell yesterday's; and a document carrying both the old and the new name is refu
 say which it meant. A rename loses nothing. A removal is allowed only where discarding the value
 changes what no stored document means; a field that carried evidence still needs a version bump.
 Each retirement is listed in :data:`~threetears.evals.schema.models.REGENERABLE_SCHEMA_VERSION`'s notes. A core
-type never retires a field this way: every change to a core shape is a version bump with an upgrader.
+type never retires a field this way: every change to a core shape is a version bump with an upgrader. That holds
+for the shapes a core document embeds too — a campaign's declared design is also an analysis's design snapshot,
+and retires a name for the analysis's sake — because a core document's stored read is not a stored read in this
+sense: it upgrades, then validates without the context, so a retired key inside a core document is read by the
+core's upgrader at the version that retired it, and refused at any later one.
 
 **The JSON pair is a transport API.** Every eval store path goes through :meth:`to_dict`, so
 :meth:`to_json` / :meth:`from_json` serve a consumer that moves these models over a wire.
@@ -351,6 +355,10 @@ class CoreDocumentModel(EvalDocumentModel):
 
     Every other path is strict as before: constructing a core document, or validating a payload,
     at any version but the current one is refused by the ``schema_version`` field itself.
+
+    The upgraded document is validated without the stored-read context, so no ``__retired_fields__`` — the
+    regenerable documents' path, which a shape a core document embeds may carry for a regenerable one's sake —
+    is read inside a core document: the core's upgraders read every old key, at the version that retired it.
     """
 
     @classmethod
@@ -382,7 +390,7 @@ class CoreDocumentModel(EvalDocumentModel):
                         }
                     ],
                 ) from refused
-        return super().from_dict(data)
+        return cls.model_validate(data)
 
 
 __all__ = [

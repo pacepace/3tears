@@ -12,10 +12,11 @@ Four managed shapes carry an evaluation:
 
 Schema rule: every stored entity carries ``schema_version``, and a read is strict — an unknown field
 or a missing required one is refused, never coerced. The evidence core (the template, test case, run,
-result, trace, calibration rating, case set and the definitions with their tombstones) is kept: a stored
-read of an older core version upgrades it through registered upgraders, and a newer or pre-release
-version is refused. A regenerable document (the cassette here; the campaign, analysis and insight
-documents in the kernel) written under another version is refused and regenerated.
+result, trace, calibration rating, case set and the definitions with their tombstones here; the campaign,
+sweep and analysis attempt in the kernel) is kept: a stored read of an older core version upgrades it
+through registered upgraders, and a newer or pre-release version is refused. A regenerable document (the
+cassette here; the analysis, insight and judge profile in the kernel) written under another version is
+refused and regenerated. Which is which is :data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`.
 :mod:`~threetears.evals.schema.versioning` holds both versions, their ledgers, and the rules.
 """
 

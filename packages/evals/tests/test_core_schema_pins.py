@@ -58,9 +58,12 @@ PINNED_CORE_SCHEMA_VERSION = 9
 CORE_SHAPE_DIGESTS: dict[str, str] = {
     "calibration_rating": "e70e3c10f46df11140177f0844a95bc010c5da318f7cf8a80d6b210bf80e3022",
     "case_set": "b5d301eca9176761e6f30b6f3c7a9bef14a805e5f307b0886b455f92437783a8",
+    "eval_analysis_attempt": "ce57e05517ad542d220bca051a8a977d5d74a2139e5b8c07bae5f8ffcbf2131d",
+    "eval_campaign": "f2c3e56ff1d4d9f01f212a59127bb8e26c687028c1c29e38a733479e8d116dc2",
     "eval_out_of_run_spend": "d0f5c7476f307bc8b24919e382555e3abf12dfc2a0a061e61910b7c755eb897e",
     "eval_result": "131e8c2d57e3d2634a0637c9d44f2dfc7cde67f9812f397f12f520eba0261029",
     "eval_run": "f05c9de504ee7d92bc5656bffc0b4dce79674c1301fc6f1e0167ab5b26cccabf",
+    "eval_sweep": "6537797e10bfa43e1d43db11803623efc814fad492635001ec3b59e722681747",
     "eval_template": "a4fddfef594700c713b42e6d290f83cdd6ad99a5e903c00987a96fd7b299d50c",
     "eval_test_case": "d6b89f0a8c7f70a80ac87808a30db426daf574bacad30777e01b59767c839562",
     "eval_trace": "fc8edfb628126f84fd3030bd825617800d8bd9759533c11ebc19c94295d2b41e",
@@ -101,6 +104,11 @@ PINNED_ADDRESSING_FIELDS: dict[str, frozenset[str]] = {
     "rubric_dim_tombstone": frozenset({"id", "doc_type", "schema_version", "scope_id", "deleted_at"}),
     "judge_config_tombstone": frozenset({"id", "doc_type", "schema_version", "scope_id", "deleted_at"}),
     "case_set": frozenset({"id", "doc_type", "schema_version", "scope_id", "name", "version"}),
+    "eval_campaign": frozenset(
+        {"id", "doc_type", "schema_version", "scope_id", "subject_id", "behavior", "archived", "created_at"}
+    ),
+    "eval_sweep": frozenset({"id", "doc_type", "schema_version", "scope_id"}),
+    "eval_analysis_attempt": frozenset({"id", "doc_type", "schema_version", "scope_id", "campaign_id", "created_at"}),
 }
 
 #: What a step may never touch beyond the addressing fields: the host's and the kind's opaque payloads, and
@@ -124,9 +132,12 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures" / "core_documents"
 FIXTURE_DIGESTS: dict[str, str] = {
     "v8/calibration_rating.json": "ae0d27591a4335b1e22fcf023dd69cd5c25a5079febfcf85f65daf4e85b27214",
     "v8/case_set.json": "8dbf4dc88ffc44d95e4dc9d13a344d1479321893b635812c415defadd67c8fb4",
+    "v8/eval_analysis_attempt.json": "f68876fc90a3a3a9374d949460d81eaa107f4035461a19781770c0d26a31da1e",
+    "v8/eval_campaign.json": "7b240be0794eb3621310f399e90288c84717af0caec4c993fd88f26a9127f084",
     "v8/eval_out_of_run_spend.json": "234922bc7364b5c390728a54b0c37f80ded81c913ffd068bd30a21642cbb61f7",
     "v8/eval_result.json": "0ec4c7bc2001e3923c26ee79c728aaf80ce4212c7d0403c0e528c6d25ac582f8",
     "v8/eval_run.json": "859ff20570f63d78963c51471decf76218f4ef2312e8de8e889f9776513fa56d",
+    "v8/eval_sweep.json": "ffe9e179d8493b8162a4bd04f867d2ed3ac130801ace6b7179bf7d6e58062f5a",
     "v8/eval_template.json": "8b9174fbcee49a61f7e0b863399e34af37644da5cc074e5e18a9e1a6c3062e3c",
     "v8/eval_test_case.json": "3a15ab6414bb2de1de0df80f8841fbbc631ecb3c7d85fccf84a3053a7e219de0",
     "v8/eval_trace.json": "1d0b69fad9e25b56764fda5c3885994e9587a89f48a01e30c728af7f11883358",
@@ -136,9 +147,12 @@ FIXTURE_DIGESTS: dict[str, str] = {
     "v8/rubric_dim_tombstone.json": "4198ff3163fc2cc1b2de7b67fb0dddb4a87d370551725e4e20f19af40ade3529",
     "v9/calibration_rating.json": "41b8f8a8c87b832148090ea42e5a215980810fab4a30716f0111656b3a1c6c9f",
     "v9/case_set.json": "883b7aece975b2727571ce8cb931204112b44da58adc2dbc94eb933514585ae5",
+    "v9/eval_analysis_attempt.json": "d9e693bc468d85e5dbf9cd4e5b94b88b9eb527305d17d89500f610c7f607f035",
+    "v9/eval_campaign.json": "47fdd75fc22140e30d3746944f8f78305a694199a98519df2888880e8ea98bc5",
     "v9/eval_out_of_run_spend.json": "a5bb8d170690525b99b8a89d50551cf6a13e85cc35927f9ca0ce86cbbcde966f",
     "v9/eval_result.json": "add5bcd7b841d0abbd285f11390b7078abc32178aeacf48de9110c47025771ca",
     "v9/eval_run.json": "b7d71bf1aac26afb13d405046127f82e10ce5340e21da03cf766cb560ca02582",
+    "v9/eval_sweep.json": "68c3fcb2b9c64837b46befb3c366ae5e46b5988a74f9edd1b0e905e07565c01b",
     "v9/eval_template.json": "c766828c84b560109267571c35987ce6d50ee30d9b0251d8bf9d8054e7180155",
     "v9/eval_test_case.json": "6e5f26208443cfd966a5bc977bbd4a4a52ba8c745fb9bd0b981fb1ea99a2ba7e",
     "v9/eval_trace.json": "eb8ffa40da641f26b0f75d86aa4f697b03e6ad895c3e15d37d8f6fabe5624e85",

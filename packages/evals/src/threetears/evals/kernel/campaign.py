@@ -32,9 +32,9 @@ from threetears.evals.kernel.declaration import CampaignDesign
 from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier, JudgedTierRule, weakest_judged_tier
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
-from threetears.evals.schema.base import EvalDocumentModel
-from threetears.evals.schema.models import SchemaVersion, utc_now_iso
-from threetears.evals.schema.versioning import REGENERABLE_SCHEMA_VERSION
+from threetears.evals.schema.base import CoreDocumentModel, EvalDocumentModel
+from threetears.evals.schema.models import CoreSchemaVersion, SchemaVersion, utc_now_iso
+from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION, REGENERABLE_SCHEMA_VERSION
 from threetears.evals.schema.prose import ModelProse
 from threetears.evals.kernel.surface import DecisionSurface
 from threetears.observe import get_logger
@@ -159,13 +159,17 @@ class CampaignWindow(EvalDocumentModel):
     end: str = Field(description="Latest member-run created_at (ISO-8601).")
 
 
-class EvalCampaign(EvalDocumentModel):
+class EvalCampaign(CoreDocumentModel):
     """A curated set of eval runs under one subject×behavior — the analysis hub.
+
+    **Kept** (:mod:`threetears.evals.schema.versioning`): a campaign is what a person set out to learn and
+    which runs they gathered to learn it, and nothing stored can make that again, so a later release reads it
+    and upgrades it rather than refusing it.
 
     A campaign has no open/closed status. ``status`` was retired within schema v8: nothing could
     change it after creation and nothing enforced it — runs were added to, and analyses generated
     over, a ``closed`` campaign alike — so it was a label that read as frozen membership while
-    freezing nothing. A stored campaign carrying it loads with it discarded. ``archived`` is the
+    freezing nothing. The core's v8 step discards it from a stored campaign. ``archived`` is the
     lifecycle a campaign has.
 
     Lives in one ``scope_id``, and so do its member runs: a run in another scope is
@@ -199,11 +203,9 @@ class EvalCampaign(EvalDocumentModel):
     a pointer at a run whose deletion could dangle it.
     """
 
-    __retired_fields__: ClassVar[dict[str, str | None]] = {"status": None}
-
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_campaign"] = "eval_campaign"
-    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     name: str = Field(min_length=1, description="Operator-facing campaign name.")
@@ -981,7 +983,7 @@ class EvalAnalysis(EvalDocumentModel):
 AttemptOutcome = Literal["stored", "refused", "failed", "cancelled"]
 
 
-class EvalAnalysisAttempt(EvalDocumentModel):
+class EvalAnalysisAttempt(CoreDocumentModel):
     """One run of the analysis generator for a campaign, whatever it came to.
 
     A stored :class:`EvalAnalysis` records only a SUCCESS, so a generation that was refused, cut
@@ -994,11 +996,15 @@ class EvalAnalysisAttempt(EvalDocumentModel):
     Its own record rather than a field of :class:`EvalAnalysis`, because a failure has no analysis to
     hang a field on, and rather than a failed-only record, because a failure rate needs the
     successes counted in the same list.
+
+    **Kept** (:mod:`threetears.evals.schema.versioning`): an attempt records what a generation spent and why it
+    ended, and no later generation can say what an earlier one did, so a later release reads it rather than
+    refusing it. The analysis a stored attempt points at is regenerable; the attempt outlives it.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_analysis_attempt"] = "eval_analysis_attempt"
-    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     campaign_id: str = Field(
@@ -1012,8 +1018,11 @@ class EvalAnalysisAttempt(EvalDocumentModel):
         ),
     )
     analysis_id: str | None = Field(
-        default=None,
-        description="The analysis this attempt stored — set exactly when the outcome is `stored`.",
+        description=(
+            "The analysis this attempt stored — set exactly when the outcome is `stored`. Required though nullable: "
+            "its absence is not 'not recorded' but a disagreement with the outcome, so a stored attempt always "
+            "carries it."
+        ),
     )
     generator_model: str = Field(
         min_length=1,
@@ -1066,8 +1075,10 @@ class EvalAnalysisAttempt(EvalDocumentModel):
         ),
     )
     error: str | None = Field(
-        default=None,
-        description="What the caller was told ended the attempt — set exactly when the outcome is not `stored`.",
+        description=(
+            "What the caller was told ended the attempt — set exactly when the outcome is not `stored`. Required "
+            "though nullable, for the reason `analysis_id` is."
+        ),
     )
     started_at: str = Field(description="When the generation was started (ISO-8601).")
     created_at: str = Field(
@@ -1117,18 +1128,21 @@ class SweepArmRecord(EvalDocumentModel):
     run_id: str | None = Field(default=None, description="The arm's run, once launched; None before, or never.")
 
 
-class EvalSweep(EvalDocumentModel):
+class EvalSweep(CoreDocumentModel):
     """A multi-arm launch run arm after arm: its arms, its campaign, and how it ended — the record its job reads.
 
     Written when the sweep starts, again as each arm's run is created (the run is a member of :attr:`campaign_id`
     from then), and when it ends. One writer, the sweep's own task, so a write never races another. A sweep
     whose record reads ``running`` while no task runs it was ended by a restart, which its job reports as lost;
     its launched runs are campaign members either way.
+
+    **Kept** (:mod:`threetears.evals.schema.versioning`): how a sweep ended — which arm failed, what cancelled
+    it — is recorded nowhere else, so a later release reads it rather than refusing it.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_sweep"] = "eval_sweep"
-    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     campaign_id: str = Field(min_length=1, description="The campaign every arm's run joins as it is created.")
