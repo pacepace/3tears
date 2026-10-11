@@ -2769,7 +2769,7 @@ class TestPivotDescribesWhatACellHolds:
         assert table.measure.unit == "usd"
         assert table.measure.higher_is_better is False
 
-    def test_a_projected_measure_with_no_registered_aggregate_falls_back_honestly(self, monkeypatch):
+    def test_a_projected_measure_with_no_registered_aggregate_falls_back_honestly(self):
         """The forgetting case: a projected metric whose aggregate the registry does not describe.
 
         The unclassified arm holds the strictest transferability class, so a
@@ -2792,9 +2792,16 @@ class TestPivotDescribesWhatACellHolds:
         # the registry is made to forget it, which is the state an unmapped aggregate reaches.
         aggregate = pivot().measure.name
         assert aggregate != METRIC_COST_USD, "the cell must be described by its aggregate for this to mean anything"
-        monkeypatch.delitem(METRIC_DESCRIPTORS, aggregate)
-
-        table = pivot()
+        # Restored whole, in order, rather than by ``monkeypatch.delitem``: that re-inserts the key at the END of the
+        # registry, and the registry's order is the order the engine declares its measures in, which the reference
+        # page renders, so every test after this one read a reordered catalogue.
+        declared = dict(METRIC_DESCRIPTORS)
+        del METRIC_DESCRIPTORS[aggregate]
+        try:
+            table = pivot()
+        finally:
+            METRIC_DESCRIPTORS.clear()
+            METRIC_DESCRIPTORS.update(declared)
 
         assert table.measure.family is None
         assert table.measure.transferability_class == "scenario_bound"
