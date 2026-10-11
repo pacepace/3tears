@@ -3,7 +3,9 @@
 An app that brings its own database implements :class:`~threetears.evals.schema.DocumentStore`
 over it, and every eval document then lives or dies by that adapter. The port's rules — scoping,
 the strip on read, projection, ordering, optimistic concurrency, delete — are stated in prose on the
-port; this module states them again as checks, so an adapter is proved rather than read.
+port; this module states them again as checks, so an adapter is proved rather than read. That includes
+both write preconditions: ``if_match`` (the etag cases) and ``create_only`` (the create cases), which a
+store forwarding writes to a backend must pass through, never drop.
 
 **The kit is plain Python, and the adopter's test runner parametrises it.** Each
 :class:`StoreConformanceCase` takes a fresh, empty store and either returns or raises
@@ -458,6 +460,58 @@ def _merge_fields_moves_the_etag(store: DocumentStore) -> None:
     _expect_equal(store.get("d1", _SCOPE), _doc("d1", flag=True), "the document after the refused write")
 
 
+def _a_create_only_write_lands_only_on_absence(store: DocumentStore) -> None:
+    store.upsert(_doc("d1", v=1), create_only=True)
+    _expect_equal(store.get("d1", _SCOPE), _doc("d1", v=1), "the document a create-only write created")
+    _etag(store, "d1")
+    _expect_conflict(lambda: store.upsert(_doc("d1", v=2), create_only=True), "a create-only write over a stored one")
+    _expect_equal(store.get("d1", _SCOPE), _doc("d1", v=1), "the stored document after the refused create")
+    _expect_conflict(
+        lambda: store.upsert(_doc("d1", doc_type=_OTHER_TYPE, v=3), create_only=True),
+        "a create-only write over a stored document of another doc_type",
+    )
+    store.upsert(_doc("d1", scope=_OTHER_SCOPE, v=4), create_only=True)
+    _expect_equal(store.get("d1", _OTHER_SCOPE), _doc("d1", scope=_OTHER_SCOPE, v=4), "the same id in another scope")
+    store.delete("d1", _SCOPE)
+    store.upsert(_doc("d1", v=5), create_only=True)
+    _expect_equal(store.get("d1", _SCOPE), _doc("d1", v=5), "a create-only write after the document was deleted")
+    _expect_value_error(
+        lambda: store.upsert(_doc("d1", v=6), if_match=_etag(store, "d1"), create_only=True),
+        "a write conditional on both an etag and absence",
+    )
+
+
+def _one_of_many_racing_creates_lands(store: DocumentStore) -> None:
+    for round_number in range(_RACE_ROUNDS):
+        doc_id = f"created-{round_number}"
+        barrier = threading.Barrier(_RACING_WRITERS)
+        landed: list[int] = []
+        failed: list[BaseException] = []
+
+        def create(writer: int, target: str = doc_id) -> None:
+            barrier.wait()
+            try:
+                store.upsert(_doc(target, v=writer), create_only=True)
+            except StoreConflict:
+                # NOSILENT: every losing creator must be refused; the winners are counted below
+                return
+            except Exception as error:
+                # NOSILENT: carried to the checking thread, which re-raises it as itself
+                failed.append(error)
+            else:
+                landed.append(writer)
+
+        threads = [threading.Thread(target=create, args=(writer,)) for writer in range(_RACING_WRITERS)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        if failed:
+            raise failed[0]
+        _expect_equal(len(landed), 1, f"create-only writes that landed in round {round_number}")
+        _expect_equal(store.get(doc_id, _SCOPE), _doc(doc_id, v=landed[0]), "the document the one winner created")
+
+
 def _a_lost_race_is_recovered_by_rereading(store: DocumentStore) -> None:
     store.upsert(_doc("d1", counter=0, tags=[]))
     mine = _etag(store, "d1")
@@ -713,6 +767,18 @@ STORE_CONFORMANCE_CASES: tuple[StoreConformanceCase, ...] = (
         "of writers on several threads presenting one etag at once, exactly one lands and every other raises "
         "StoreConflict — probabilistic: a two-step compare-then-write can pass by luck, never fail by it",
         _one_of_many_racing_writers_lands,
+    ),
+    StoreConformanceCase(
+        "create.only_on_absence",
+        "a create_only write lands only where nothing (of any doc_type) is stored under its scope and id, else "
+        "raises StoreConflict and leaves the stored document; with if_match as well it raises ValueError",
+        _a_create_only_write_lands_only_on_absence,
+    ),
+    StoreConformanceCase(
+        "create.racing_creates_one_lands",
+        "of create_only writes on several threads to one absent id at once, exactly one lands and every other "
+        "raises StoreConflict — probabilistic, as etag.racing_writers_one_lands is",
+        _one_of_many_racing_creates_lands,
     ),
     StoreConformanceCase(
         "retry.reread_recovers_a_lost_race",

@@ -38,7 +38,9 @@ class _RecordingRepo:
         self._fail_doc_types = fail_doc_types
         self._fail_delete_ids = fail_delete_ids
 
-    def upsert(self, document: dict[str, Any], *, if_match: str | None = None) -> dict[str, Any]:
+    def upsert(
+        self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False
+    ) -> dict[str, Any]:
         if document.get("doc_type") in self._fail_doc_types:
             raise RuntimeError("storage refused this write")
         self.written.append(document)

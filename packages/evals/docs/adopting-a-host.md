@@ -108,9 +108,14 @@ because every stored model reads strictly.
 
 **Prove your store with the conformance kit.** `threetears.evals.testing.STORE_CONFORMANCE_CASES`
 states every rule of the port — scoping, the strip on read, `exclude`/`keep` projection, ordering,
-etag conflicts and the re-read that recovers one, merge and delete — as a case you hand a fresh,
-empty store. Every case is mandatory: in particular a store must implement conditional writes,
-because several writers share a run document as it finishes. Parametrise your test runner over it:
+etag conflicts and the re-read that recovers one, create-only writes, merge and delete — as a case you
+hand a fresh, empty store. Every case is mandatory: in particular a store must implement both write
+preconditions — `if_match` (the stored document still carries this etag), because several writers share a
+run document as it finishes, and `create_only` (nothing is stored under this scope and id, of any type),
+because two processes racing to start one campaign's analysis generation both create its one generation
+slot and exactly one may land. A store that forwards writes to a backend passes both through. A store
+may also offer `StoreClock` (`now()`, the store's own time), which job leases are then stamped in; offer it
+only when the time is the store's, not the calling process's. Parametrise your test runner over it:
 
 ```python
 @pytest.mark.parametrize("case", STORE_CONFORMANCE_CASES, ids=lambda case: case.name)
