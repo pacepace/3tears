@@ -27,6 +27,7 @@ from typing import Any, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from threetears.evals.analysis.remainder import RemainderState, remainder_state
 from threetears.evals.analysis.reporting import NULL_LEVEL
 from threetears.evals.kernel.host.style import VALIDATED_SLOTS
 from threetears.evals.schema.prose import ModelProse
@@ -808,21 +809,23 @@ class AttributionPayload(_VizPayload):
             )
         return self
 
+    @property
+    def remainder(self) -> RemainderState:
+        """Which of its two states the remainder is in: ``"stated"`` (a number) or ``"withheld"`` (a sentence).
+
+        Every reader of the pair branches on this rather than testing either field, so a blank sentence
+        means the same thing here as in :class:`~threetears.evals.analysis.bundle.schema.ScopeDivergence`.
+        """
+        return remainder_state(self.unattributed_delta, self.unattributed_withheld)
+
     @model_validator(mode="after")
     def _the_remainder_is_stated_or_explained(self) -> AttributionPayload:
-        """Reject a payload that neither states a remainder nor says why it cannot."""
-        stated = self.unattributed_delta is not None
-        explained = bool(self.unattributed_withheld)
-        if stated and explained:
-            raise ValueError(
-                "unattributed_delta and unattributed_withheld are both set — a remainder is either "
-                "quotable or it is not, and stating a number beside the reason it cannot be stated is neither"
-            )
-        if not stated and not explained:
-            raise ValueError(
-                "neither unattributed_delta nor unattributed_withheld is set — two movements drawn with no "
-                "word about their difference invite the subtraction this type exists to refuse"
-            )
+        """Reject a payload that neither states a remainder nor says why it cannot.
+
+        Two movements drawn with no word about their difference invite the subtraction this type exists
+        to refuse; a number beside the reason it cannot be stated is neither quotable nor refused.
+        """
+        remainder_state(self.unattributed_delta, self.unattributed_withheld)
         return self
 
     @model_validator(mode="after")
@@ -836,7 +839,7 @@ class AttributionPayload(_VizPayload):
         reasons applies, so there is nothing this layer could substitute for it
         that would not be invented.
         """
-        if self.unattributed_delta is None:
+        if self.remainder != "stated":
             return self
         if self.contained_by != self.end_to_end.measure:
             declared = (
@@ -859,9 +862,11 @@ class AttributionPayload(_VizPayload):
         whose length contradicts the two beside it — and the reader's only way out
         is to assume the picture is wrong.
         """
-        if self.unattributed_delta is None:
+        if self.remainder != "stated":
             return self
-        if not math.isfinite(self.unattributed_delta):
+        delta = self.unattributed_delta
+        assert delta is not None, "a stated remainder carries its number"
+        if not math.isfinite(delta):
             # NaN specifically slips the comparison below — every comparison against
             # it is False, so `abs(nan - expected) > slack` reports the arithmetic as
             # sound. Infinity is caught there, which is exactly why the gap was quiet:
@@ -873,9 +878,9 @@ class AttributionPayload(_VizPayload):
             raise ValueError("unattributed_delta must be a finite number")
         expected = self.end_to_end.delta - self.subsystem.delta
         slack = max(abs(self.end_to_end.delta), abs(self.subsystem.delta)) * _REMAINDER_TOLERANCE
-        if abs(self.unattributed_delta - expected) > slack:
+        if abs(delta - expected) > slack:
             raise ValueError(
-                f"unattributed_delta {self.unattributed_delta:g} is not {self.end_to_end.measure} minus "
+                f"unattributed_delta {delta:g} is not {self.end_to_end.measure} minus "
                 f"{self.subsystem.measure}, which is {expected:g} (tolerance ±{slack:g})"
             )
         return self

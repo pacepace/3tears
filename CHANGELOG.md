@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: backlog while Discodon adopts .13
+
+- **An attribution remainder's two states are named once (#615).** `analysis.remainder.remainder_state` names a
+  remainder `"stated"` (a number in `unattributed_delta`) or `"withheld"` (a sentence in `unattributed_withheld`),
+  refusing neither and both, and `AttributionPayload` and `ScopeDivergence` each enforce the invariant through it and
+  expose the answer as a `remainder` property (typed `RemainderState`, exported from `threetears.evals.analysis`).
+  The attribution chart's intent reads the property rather than either field. A blank sentence now explains nothing
+  in both: the bundle used to accept an empty `unattributed_withheld` beside no number, which the chart refused.
+
 ### 3tears-evals: what adopting .12 found (gaps 49–50)
 
 - **A host resolver's refusal reaches both hooks as the error it raised (gap 49).** `ToolCall.refused` is the very

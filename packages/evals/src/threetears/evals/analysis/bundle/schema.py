@@ -38,6 +38,7 @@ from threetears.evals.analysis.cells import (
     SubjectKeyInstability,
 )
 from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.remainder import RemainderState, remainder_state
 from threetears.evals.analysis.reporting import served_model_state
 from threetears.evals.analysis.measurement_windows import MeasurementWindow
 from threetears.evals.analysis.lenses.comparison_sets import ComparisonSetsResult
@@ -763,15 +764,19 @@ class ScopeDivergence(EvalDocumentModel):
         Enforced on the model because the pair travels to the generator as data — the single
         construction site keeping them in step is not something the JSON can be trusted on.
 
+        A blank sentence counts as no sentence, here and in the chart's payload alike: both ask
+        :func:`~threetears.evals.analysis.remainder.remainder_state`.
+
         Raises:
             ValueError: If both are set, or neither is.
         """
-        if (self.unattributed_delta is None) == (self.unattributed_withheld is None):
-            raise ValueError(
-                "exactly one of unattributed_delta / unattributed_withheld must be set — "
-                f"got delta={self.unattributed_delta!r}, withheld={self.unattributed_withheld!r}"
-            )
+        remainder_state(self.unattributed_delta, self.unattributed_withheld)
         return self
+
+    @property
+    def remainder(self) -> RemainderState:
+        """Which of its two states the remainder is in: ``"stated"`` (a number) or ``"withheld"`` (a sentence)."""
+        return remainder_state(self.unattributed_delta, self.unattributed_withheld)
 
 
 #: Why a judged dimension sits beside the ranking surface rather than on it. One sentence for every

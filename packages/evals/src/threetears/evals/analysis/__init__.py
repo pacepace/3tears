@@ -157,6 +157,7 @@ from threetears.evals.analysis.reporter_kind import (
     render_memo_as_written,
     reporter_cell_timeout_s,
 )
+from threetears.evals.analysis.remainder import RemainderState
 from threetears.evals.analysis.reporting import (
     METRIC_COMPOSITE,
     METRIC_OUTCOME,
@@ -570,6 +571,7 @@ __all__ = [
     "RowColumns",
     "RunLister",
     "RunSummary",
+    "RemainderState",
     "ScopeDivergence",
     "ShortCell",
     "SoundnessRefusal",

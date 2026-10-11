@@ -3989,6 +3989,10 @@
       "kind": "model",
       "signature": "RegressionFlag(label: ChangeLabel, delta: float | None = None, relative_delta: float | None = None, significant: bool | None = None, exceeds_threshold: bool | None = None, hedges_g: float | None = None, p: float | None = None, equivalence_p: float | None = None, equivalence_margin: float | None = None, equivalence_untested_reason: str | None = None, not_separated_reason: str | None = None, n_pairs: int = 0, crosses_epoch: bool = False, crosses_cassette_mode: bool = False, attribution_withheld: bool = False, test: str, min_absolute_change: float, min_relative_change: float)"
     },
+    "threetears.evals.analysis.RemainderState": {
+      "kind": "literal",
+      "signature": "'stated'` | `'withheld'"
+    },
     "threetears.evals.analysis.remove_runs_from_campaign": {
       "kind": "function",
       "signature": "remove_runs_from_campaign(storage: CampaignStore, campaign_id: str, scope_id: str, run_ids: list[str]) -> EvalCampaign"
