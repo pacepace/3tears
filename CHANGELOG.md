@@ -27,6 +27,10 @@ packages (bumped in lock-step).
   copy of the measured face went unnoticed. `font_families` now raises `ValueError`; `resolving_files` raises
   `TextMetricsError` naming every such file, which `check_font_files` (and so a renderer built over the directory)
   and the measurer's `--font-dir` (as `FontMeasureError`) report.
+- **A measurement-window gap that cannot be computed says why.** `WindowGap` gains `uncomputable`, the reason its
+  `seconds` is `None` — a stamp that is not an ISO-8601 instant, a naive stamp beside an aware one, or a parsed
+  order that contradicts the recorded one — and the disclosure prints it after "gap not computable from the recorded
+  stamps". The three read alike, with the parse error dropped.
 
 ### 3tears-evals: backlog while Discodon adopts .13
 

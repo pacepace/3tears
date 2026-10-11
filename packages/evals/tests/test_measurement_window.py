@@ -568,6 +568,33 @@ def test_a_naive_stamp_beside_an_aware_one_yields_no_duration_rather_than_a_wron
     assert measurement_windows.UNCOMPUTABLE_GAP_CLAUSE in disclosure
 
 
+@pytest.mark.parametrize(
+    ("first", "second", "why"),
+    [
+        (("2026-08-04T09:00:00+00:00", "2026-08-04T10:00:00 UTC"), None, "is not an ISO-8601 instant"),
+        (("2026-08-04T09:00:00", "2026-08-04T10:00:00"), None, "mix a stamp with a UTC offset and one without"),
+        (
+            ("2026-08-04T09:00:00+05:00", "2026-08-04T10:00:00+05:00"),
+            ("2026-08-04T10:30:00+09:00", "2026-08-04T11:00:00+09:00"),
+            "parses as earlier than",
+        ),
+    ],
+)
+def test_an_uncomputable_gap_says_why_it_could_not_be_computed(first, second, why):
+    """The three failures read alike: the reason each stamp pair yielded no duration was swallowed."""
+    windows = [
+        _window("earlier", *first),
+        _window("later", *(second or ("2026-08-04T21:00:00+00:00", "2026-08-04T22:00:00+00:00"))),
+    ]
+
+    (gap,) = measurement_windows.disjoint_window_pairs(windows)
+    disclosure = measurement_window_disclosure(windows)
+
+    assert gap.seconds is None and gap.uncomputable is not None and why in gap.uncomputable
+    assert disclosure is not None and f"{measurement_windows.UNCOMPUTABLE_GAP_CLAUSE} (" in disclosure
+    assert why in disclosure
+
+
 def test_the_summary_form_names_the_widest_gap_and_counts_the_rest():
     """Above the inline cap the pair list collapses the way the span list does.
 
