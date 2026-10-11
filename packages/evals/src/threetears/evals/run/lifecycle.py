@@ -29,7 +29,7 @@ from threetears.evals.kernel.storage import LeaseStore, NonTerminalRunScan
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
 from threetears.evals.kernel.job_leases import RUN_JOB, request_job_cancel, settle_job_record
 from threetears.evals.run.rejudge import apply_rejudge, failed_judge_dims, reproducible_judge_inputs
-from threetears.evals.run.run_document import update_eval_run
+from threetears.evals.run.run_document import fault_entry, record_run_faults, update_eval_run
 from threetears.evals.run.runner import build_judge_context, judge_dims
 from threetears.observe import get_logger
 from threetears.evals.kernel.remedies import FIND_RESULT, FIND_RUN
@@ -456,6 +456,40 @@ def _recount_rejudged_exclusion(
     )
 
 
+#: Where an ``error_details`` entry :func:`record_completeness` writes says its error happened.
+_COMPLETENESS_NOT_RECORDED = "completeness record not written, so the run's completeness reads unknown"
+
+
+def _record_unrecorded_completeness(storage: JobStore, run_id: str, scope_id: str, entry: str) -> None:
+    """Write why a run's completeness record was not written onto the run; never raise.
+
+    The second write of the run :func:`record_completeness` makes, and as guarded as the first: it runs inside the
+    run's work function, where anything raised would reach the job's boundary and stamp ``failed`` on a run that
+    executed its matrix. A failure here is logged naming both errors.
+    """
+    try:
+        outcome = record_run_faults(storage, run_id, scope_id, [entry])
+    # prawduct:ok-broad-except — any storage fault here would mislabel a run that succeeded; logged with both errors
+    except Exception:
+        log.exception(
+            "eval.completeness run=%s scope=%s: why its completeness was not recorded could not be written on the "
+            "run either; the first error: %s",
+            run_id,
+            scope_id,
+            entry,
+        )
+        return
+    if outcome in ("missing", "refused"):
+        log.error(
+            "eval.completeness run=%s scope=%s: why its completeness was not recorded could not be written on the "
+            "run either (%s); the first error: %s",
+            run_id,
+            scope_id,
+            outcome,
+            entry,
+        )
+
+
 def record_completeness(
     storage: JobStore,
     run_id: str,
@@ -490,7 +524,11 @@ def record_completeness(
     :meth:`~threetears.evals.run.jobs.EvalJobManager._run_job`'s top-level boundary
     and stamps ``failed`` on a run that executed and persisted its entire
     matrix. Losing a disclosure line is strictly better than mislabelling
-    the run it describes.
+    the run it describes. **What did not get written is still written down on
+    the run**: a record that raised, or whose write no attempt completed, adds
+    an ``error_details`` entry saying so (:func:`record_run_faults`), so the
+    run's unknown completeness reads with its cause beside it rather than only
+    in the log; that write failing too is logged with both errors.
 
     Args:
         storage: The run's store.
@@ -535,13 +573,14 @@ def record_completeness(
     try:
         outcome = update_eval_run(storage, run_id, scope_id, _stamp)
     # prawduct:ok-broad-except — any storage fault here would mislabel a run that succeeded
-    except Exception:
+    except Exception as broke:
         log.exception(
             "eval.completeness run=%s scope=%s NOT recorded — the run keeps its real status "
             "and its completeness reads as unknown",
             run_id,
             scope_id,
         )
+        _record_unrecorded_completeness(storage, run_id, scope_id, fault_entry(_COMPLETENESS_NOT_RECORDED, broke))
         return
 
     if outcome == "missing":
@@ -562,6 +601,13 @@ def record_completeness(
             "its completeness will read as unknown",
             run_id,
             scope_id,
+        )
+        _record_unrecorded_completeness(
+            storage,
+            run_id,
+            scope_id,
+            f"{_COMPLETENESS_NOT_RECORDED}: no attempt of its conditional write completed — a write another writer "
+            "refused each time, or a read that failed each time",
         )
         return
 
