@@ -2319,7 +2319,7 @@
     },
     "threetears.evals.run.ArmPlan": {
       "kind": "dataclass",
-      "signature": "ArmPlan(case_count: int, candidate_model: str, judge: PlannedJudge | None, simulator_model: str | None)"
+      "signature": "ArmPlan(case_count: int, candidate_model: str, judge: PlannedJudge | None, simulator_model: str | None, call_ceiling: CallCeiling | None = None)"
     },
     "threetears.evals.run.ArmPrice": {
       "kind": "dataclass",
@@ -2356,6 +2356,10 @@
     "threetears.evals.run.build_judge_service": {
       "kind": "function",
       "signature": "build_judge_service(host: EvalHost, template: EvalTemplate, judge_model: str, selection: dict[str, str] | None = None, *, judged_artifact: JudgedArtifact) -> RunJudge"
+    },
+    "threetears.evals.run.CallCeiling": {
+      "kind": "dataclass",
+      "signature": "CallCeiling(usd: float, call: str, lowered_by: str)"
     },
     "threetears.evals.run.callers_missing_the_constructor": {
       "kind": "function",
@@ -2707,7 +2711,7 @@
     },
     "threetears.evals.run.LaunchableKind": {
       "kind": "dataclass",
-      "signature": "LaunchableKind(launch: KindLauncher, resolve_subject: SubjectResolver, unhonoured_launch_arguments: frozenset[LaunchArgument] = frozenset(), ignored_template_fields: frozenset[TemplateField] = frozenset(), plan_arm: Callable[[LaunchRequest], ArmPlan] | None = None, apparatus_settings: Mapping[str, ApparatusSettingValue] = <lambda>())"
+      "signature": "LaunchableKind(launch: KindLauncher, resolve_subject: SubjectResolver, unhonoured_launch_arguments: frozenset[LaunchArgument] = frozenset(), ignored_template_fields: frozenset[TemplateField] = frozenset(), plan_arm: Callable[[LaunchRequest], ArmPlan] | None = None, apparatus_settings: Mapping[str, ApparatusSettingValue] = <lambda>(), price_largest_call: Callable[[LaunchRequest], Awaitable[CallCeiling | None]] | None = None)"
     },
     "threetears.evals.run.LaunchArgument": {
       "kind": "literal",
@@ -4867,7 +4871,7 @@
     },
     "threetears.evals.ops.ArmEstimate": {
       "kind": "model",
-      "signature": "ArmEstimate(described: str, candidate_model: str | None, case_count: int | None, case_source: Literal['stored', 'generated'], n_observations: int | None, predicted_usd: float | None, central_usd: float | None, low_usd: float | None, method_id: str | None, basis: str, outcome: ArmOutcome, refusal: str | None, remedy: str | None = None)"
+      "signature": "ArmEstimate(described: str, candidate_model: str | None, case_count: int | None, case_source: Literal['stored', 'generated'], n_observations: int | None, predicted_usd: float | None, central_usd: float | None, low_usd: float | None, method_id: str | None, basis: str, outcome: ArmOutcome, refusal: str | None, remedy: str | None = None, call_ceiling_usd: float | None = None)"
     },
     "threetears.evals.ops.await_job": {
       "kind": "async function",

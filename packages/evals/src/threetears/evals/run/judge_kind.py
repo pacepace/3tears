@@ -63,11 +63,13 @@ from threetears.evals.kernel.judge_cases import (
 )
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
 from threetears.evals.run.case_sets import mint_case_set
-from threetears.evals.run.judge import sent_temperature
+from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_MAX_TOKENS, sent_temperature
 from threetears.evals.run.judge_service import JudgeContext, JudgeRequest, JudgeService
 from threetears.evals.run.launch import (
     TEMPLATE_FIELDS,
     ArmPlan,
+    CallCeiling,
     KindWiring,
     LaunchableKind,
     UnknownSubject,
@@ -598,6 +600,40 @@ class JudgeKind:
             )
         return PreparedJudge(model=self._model, span_window=span_window)
 
+    def price_case(self, test_case: EvalTestCase) -> float | None:
+        """The ceiling :meth:`invoke` reserves for ``test_case``'s call, built and priced as it builds and prices it.
+
+        What a launch prices an arm's largest call by before anything is spent
+        (:attr:`~threetears.evals.run.LaunchableKind.price_largest_call`): a call whose ceiling is above the run's
+        cap on its own is one the run could never make.
+
+        Args:
+            test_case: The cell's case, carrying the judge case in its ``host_payload``.
+
+        Returns:
+            The ceiling in dollars, every attempt included; ``None`` for a case :meth:`invoke` makes no call for
+            (it carries no readable judge case) or one whose client cannot price the call.
+
+        Raises:
+            ValueError: The client priced the call at an amount no reservation could hold.
+        """
+        try:
+            case = judge_case_of(test_case)
+        except ValueError:
+            return None
+        if case is None:
+            return None
+        service = JudgeService(
+            client_factory=lambda _model, temperature: self._client(temperature),
+            configs=self._configs,
+            failure_describer=self._failure_describer,
+        )
+        try:
+            request = self._request(service, case, _context_of(test_case, case))
+        except ValueError:
+            return None
+        return service.price_ceiling(request)
+
     def _request(self, service: JudgeService, case: JudgeCase, context: JudgeContext) -> JudgeRequest:
         """The call the case's criterion is asked in, built by the judge service exactly as a run's judge builds it."""
         if case.dim == TRANSCRIPT_DIM_ID:
@@ -651,15 +687,7 @@ class JudgeKind:
                 client_factory=client_for, configs=self._configs, failure_describer=self._failure_describer
             )
             try:
-                context = JudgeContext(
-                    case_id=test_case.id,
-                    intent=case.intent,
-                    variation=dict(case.variation),
-                    goal_outcomes=list(case.goal_outcomes),
-                    judged_artifact=case.judged_artifact,
-                    judge_evidence=case.evidence,
-                )
-                request = self._request(service, case, context)
+                request = self._request(service, case, _context_of(test_case, case))
             except ValueError as exc:
                 return CandidateOutput(infra_errors=[f"apparatus: test case {test_case.id}'s judge case: {exc}"])
             try:
@@ -753,6 +781,18 @@ class JudgeKind:
             telemetry=telemetry,
             kind_payload=payload,
         )
+
+
+def _context_of(test_case: EvalTestCase, case: JudgeCase) -> JudgeContext:
+    """What the judge reads of ``case``: the frozen evidence, under the stored case's id."""
+    return JudgeContext(
+        case_id=test_case.id,
+        intent=case.intent,
+        variation=dict(case.variation),
+        goal_outcomes=list(case.goal_outcomes),
+        judged_artifact=case.judged_artifact,
+        judge_evidence=case.evidence,
+    )
 
 
 def judge_kind(
@@ -871,6 +911,43 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
             simulator_model=None,
         )
 
+    def built(request: LaunchRequest) -> tuple[JudgeKind, list[EvalTestCase]]:
+        host = launch_host().eval_host
+        overlays = request.overlays_as(JudgeKindOverlays) if request.overlays is not None else JudgeKindOverlays()
+        kind = judge_kind(
+            host.storage,
+            host.completion_clients("a judge campaign"),
+            model=require_candidate_model(request, None),
+            scope_id=request.scope_id,
+            failure_describer=host.failure_describer,
+            overlays=overlays,
+        )
+        return kind, request.cases_or(_template_cases(host.storage, request.template, request.scope_id))
+
+    async def price_largest_call(request: LaunchRequest) -> CallCeiling | None:
+        # Every case's call is priced as invoke reserves it — the prompt is the case's frozen evidence, so the
+        # largest call is the case with the most of it — on the clients the run's cells would call through.
+        kind, cases = await run_blocking(launch_host().eval_host.blocking_executor, built, request)
+        try:
+            priced = [(ceiling, case.id) for case in cases if (ceiling := kind.price_case(case)) is not None]
+        finally:
+            await kind.aclose()
+        if not priced:
+            return None
+        usd, case_id = max(priced)
+        return CallCeiling(
+            usd=usd,
+            call=(
+                f"the judge call on case {case_id!r} ({JUDGE_CALL_ATTEMPTS} request(s): the first and its parse "
+                f"retry, each asking up to {JUDGE_MAX_TOKENS} output tokens) on {kind.model!r}"
+            ),
+            lowered_by=(
+                "a cheaper judge model; shorter frozen evidence on the largest case (re-freeze it, or launch a case "
+                "set without it); or, on the host, a judge-role client whose price_ceiling prices the "
+                f"{JUDGE_MAX_TOKENS}-token output cap the judge asks for rather than a larger one"
+            ),
+        )
+
     async def launch(request: LaunchRequest) -> Any:
         launching = launch_host()
         host = launching.eval_host
@@ -909,4 +986,5 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
         # goal check or a rubric on it would be stated and never acted on.
         ignored_template_fields=frozenset(TEMPLATE_FIELDS),
         plan_arm=plan,
+        price_largest_call=price_largest_call,
     )

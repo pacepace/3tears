@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: what adopting .10 found (gaps 40–47)
+
+- **An arm whose largest call is reserved above its cap is refused before anything is spent.** A judge campaign on
+  a flash model was estimated at $0.023 and admitted under a $0.50 cap, then stopped `budget_stopped` after one
+  result: one case's call was reserved at $0.58, and a run refuses every call whose reservation would pass its cap,
+  so that call could never be made. The judge kind now prices every case's call before launch, as its cell
+  reserves it (`LaunchableKind.price_largest_call`, carried as `ArmPlan.call_ceiling`), and the estimate and the
+  launch refuse such an arm with one `ValidationFailedError`, naming the call, the cap one call needs and what
+  lowers the ceiling. The estimate reports the figure as `ArmEstimate.call_ceiling_usd`. Kinds that do not price
+  their calls before launch are not checked (`cost-and-budgets.md`).
+
 ### 3tears-evals: the judge temperature measurement and the prompt-comparison test set (#633)
 
 - **The first judge temperature measurement is void.** The 2026-10-10 run on `openai/gpt-6-luna` compared the

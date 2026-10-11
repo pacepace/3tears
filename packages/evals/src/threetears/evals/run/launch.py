@@ -251,6 +251,42 @@ class PlannedJudge:
 
 
 @dataclass(frozen=True, kw_only=True)
+class CallCeiling:
+    """The largest reservation one call of an arm's cells will hold against its run's cap, priced before launch.
+
+    A run reserves a priced call's ceiling before it is made, and refuses the call when the ceiling would take the
+    run past its cap (:meth:`~threetears.evals.kernel.candidate_kind.CellSink.reserve`). A call whose ceiling is
+    above the cap on its own can therefore never be made, at any spend: the run reaches that call, stops
+    ``budget_stopped`` and excludes its case. So an arm is refused before launch when its largest call's ceiling
+    is above its cap (:func:`price_arms`, and :func:`quote_launch` with it), and this is what that refusal reads.
+
+    Attributes:
+        usd: The ceiling in dollars: the client's ``price_ceiling`` for the call, times every attempt the engine
+            makes of it — exactly what the run will reserve.
+        call: Which call it is, in words a refusal quotes ("the judge call on case 'c-3' (2 requests: the
+            first and its parse retry) on 'google/gemini-3.8-flash'").
+        lowered_by: What lowers the ceiling, in words a remedy quotes — the levers besides a larger cap.
+    """
+
+    usd: float
+    call: str
+    lowered_by: str
+
+    def __post_init__(self) -> None:
+        """Refuse an amount no reservation could hold, and blank words.
+
+        Raises:
+            ValueError: ``usd`` is negative or not finite, or ``call`` or ``lowered_by`` is blank.
+        """
+        if isinstance(self.usd, bool) or not math.isfinite(self.usd) or self.usd < 0:
+            raise ValueError(f"a call's ceiling is a finite amount, 0 or more; got usd={self.usd!r}")
+        if not self.call.strip():
+            raise ValueError("a call's ceiling names the call it bounds; call is blank")
+        if not self.lowered_by.strip():
+            raise ValueError("a call's ceiling says what lowers it; lowered_by is blank")
+
+
+@dataclass(frozen=True, kw_only=True)
 class ArmPlan:
     """What one arm of a launch will run, as its kind says before its launcher runs.
 
@@ -272,12 +308,17 @@ class ArmPlan:
             grade is mechanical. Required, so a judged kind cannot be priced from unjudged history by omission.
         simulator_model: The model that will drive the arm's simulated user, resolved — the launch's pin, or
             the role's default; ``None`` for a kind that runs no simulator.
+        call_ceiling: The largest reservation one call of the arm's cells will hold, as its kind priced it
+            (:attr:`LaunchableKind.price_largest_call`), which the engine sets once the plan is made; ``None`` for
+            a kind that does not price its calls before launch, whose calls are bounded only as the run reserves
+            them.
     """
 
     case_count: int
     candidate_model: str
     judge: PlannedJudge | None
     simulator_model: str | None
+    call_ceiling: CallCeiling | None = None
 
     def __post_init__(self) -> None:
         """Refuse a plan of no cases, or one naming no model.
@@ -1095,6 +1136,15 @@ class LaunchableKind:
             context key hashes — the rig as it was set up: a launch naming a default and one leaving it out
             are one condition, as a ``kind_spec`` stating a default and one omitting it are. Empty for a kind
             whose rig a launch cannot set.
+        price_largest_call: The largest reservation one call of a planned arm's cells will hold
+            (:class:`CallCeiling`), priced on the clients the cells will call through, or ``None`` when no call of
+            the arm can be priced. Asked of every planned arm — the request carries its plan — right after
+            :attr:`plan_arm`, by the estimate and the launch alike, and awaited on the event loop, so it may build
+            and release clients. An arm whose largest call is above its cap is refused before anything is spent
+            (:func:`price_arms`): its run could never make that call. ``None`` for a kind that does not price its
+            calls before launch — the engine then checks nothing here, and a call whose ceiling is above the cap is
+            refused only when the run reaches it, which stops the run ``budget_stopped`` with that case excluded.
+            Ignored for a kind that plans nothing.
     """
 
     launch: KindLauncher
@@ -1103,6 +1153,7 @@ class LaunchableKind:
     ignored_template_fields: frozenset[TemplateField] = frozenset()
     plan_arm: Callable[[LaunchRequest], ArmPlan] | None = None
     apparatus_settings: Mapping[str, ApparatusSettingValue] = field(default_factory=lambda: MappingProxyType({}))
+    price_largest_call: Callable[[LaunchRequest], Awaitable[CallCeiling | None]] | None = None
 
     def __post_init__(self) -> None:
         """Refuse a name that is not a launch argument, and a default no run could store.
@@ -2486,12 +2537,14 @@ async def _planned(host: LaunchHost, launchable: LaunchableKind, request: Launch
         request: The arm.
 
     Returns:
-        The plan, or ``None`` for a kind that plans nothing (:attr:`LaunchableKind.plan_arm`).
+        The plan, or ``None`` for a kind that plans nothing (:attr:`LaunchableKind.plan_arm`). For a kind that
+        prices its calls (:attr:`LaunchableKind.price_largest_call`), it carries its largest call's ceiling.
 
     Raises:
         ValidationFailedError: The kind cannot plan the arm (its own refusal).
         ValueError: The plan contradicts what the arm named — another model, another judge pin, a config
-            selection it did not plan, or another simulator — a kind defect.
+            selection it did not plan, or another simulator — a kind defect; or a client priced a call at an
+            amount no reservation could hold.
     """
     plan_arm = launchable.plan_arm
     if plan_arm is None:
@@ -2521,7 +2574,10 @@ async def _planned(host: LaunchHost, launchable: LaunchableKind, request: Launch
             f"kind {kind!r} planned an arm the launch pinned to simulator {request.simulator_model!r} on "
             f"{plan.simulator_model!r}; a pinned simulator is the simulator"
         )
-    return plan
+    price_largest_call = launchable.price_largest_call
+    if price_largest_call is None:
+        return plan
+    return replace(plan, call_ceiling=await price_largest_call(replace(request, arm_plan=plan)))
 
 
 def _arm_described(request: LaunchRequest) -> str:
@@ -2649,10 +2705,59 @@ def _cap_of(request: LaunchRequest) -> tuple[float | None, Literal["chosen", "in
     return cap, origin
 
 
+def _cents_up(usd: float) -> float:
+    """``usd`` rounded up to the next whole cent, so a cap named at it is never below it."""
+    return math.ceil(usd * 100 - 1e-9) / 100
+
+
+def _largest_call_over_cap(
+    request: LaunchRequest, ceiling: CallCeiling, cap: float, price: ArmPrice, *, what: str, refused: str
+) -> tuple[str, str]:
+    """The refusal of an arm whose largest call's ceiling is above its cap, and its remedy.
+
+    Args:
+        request: The arm.
+        ceiling: Its largest call's ceiling.
+        cap: The cap its run would be held to.
+        price: Its price, whose prediction (when there is one) sizes the room the rest of the run needs.
+        what: The arm, as a refusal names it.
+        refused: When the refusal is made, in words.
+
+    Returns:
+        The refusal and the remedy.
+    """
+    needed = _cents_up(ceiling.usd)
+    host_ceiling = request.settings.max_cost_usd
+    refusal = (
+        f"{what} cannot make its largest call under its ${cap:.2f} cap: {ceiling.call} is reserved at up to "
+        f"${ceiling.usd:.4f} before it is sent, more than the whole cap, and a run refuses every call whose "
+        "reservation would take it past its cap. The run would stop budget_stopped on reaching that call, with "
+        f"its case excluded and whatever the cases before it spent lost to the measurement. {refused}"
+    )
+    room = (
+        f" (${_cents_up(ceiling.usd + price.predicted_usd):.2f} also leaves room for the "
+        f"${price.predicted_usd:.2f} the arm is predicted to spend around it)"
+        if price.predicted_usd is not None
+        else ""
+    )
+    if needed <= host_ceiling:
+        raise_it = f"name max_cost_usd of at least ${needed:.2f}, the cap one such call needs to be admitted{room}"
+    else:
+        raise_it = (
+            f"one such call needs a cap of at least ${needed:.2f}, above the host's ${host_ceiling:.2f} ceiling, "
+            f"which a launch cannot raise — only the host's operator can, through "
+            f"{request.settings.name_of('max_cost_usd')}"
+        )
+    return refusal, f"{raise_it}; or lower the call's ceiling: {ceiling.lowered_by}"
+
+
 def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
     """The one pricing rule, over one planned arm and its price.
 
-    An arm is refused when its predicted cost is above the cap its run will be held to, or when nothing
+    First, an arm is refused when its largest call's ceiling (:attr:`ArmPlan.call_ceiling`) is above its cap on
+    its own: its run reserves that ceiling before making the call and refuses the call, so the run could never
+    complete it, whatever the arm is predicted to cost in all. Then an arm is refused when its predicted cost is
+    above the cap its run will be held to, or when nothing
     predicts it and that cap is one the run would merely inherit (the host's configured ceiling, which nobody
     chose for this run): unknown is not $0. An arm with a cap the launch named and no prediction goes ahead —
     the named cap is the most the operator chose to risk on a run nobody could price, and the run's own cost
@@ -2688,6 +2793,10 @@ def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
     refused = (
         "Refused before the generation was paid for" if request.n_variations > 0 else "Refused before any launcher ran"
     )
+    if plan is not None and plan.call_ceiling is not None and plan.call_ceiling.usd > cap:
+        return verdict(
+            "refused", *_largest_call_over_cap(request, plan.call_ceiling, cap, price, what=what, refused=refused)
+        )
     if price.predicted_usd is None:
         if origin == "chosen":
             return verdict("unpriced-under-chosen-cap")
@@ -2772,8 +2881,8 @@ async def price_arms(
         cap, its price.
 
     Raises:
-        ValidationFailedError: The kind cannot plan an arm; an arm predicted above its cap, or one
-            unpriceable under an inherited cap.
+        ValidationFailedError: The kind cannot plan an arm; an arm whose largest call's ceiling is above its cap,
+            one predicted above its cap, or one unpriceable under an inherited cap.
         ValueError: The kind planned an arm contradicting what it named, or ``requests`` is empty.
     """
     if not requests:
