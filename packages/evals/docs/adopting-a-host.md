@@ -531,6 +531,24 @@ Key the slots by the exported constants rather than by the strings. Declare your
 same `SeedPrompt` type and seed from both lists. The engine's ids start with `eval_`, so your own can use
 any other name. A `SeedPrompt` refuses an unknown `kind` or a blank field when it is constructed.
 
+**See a stored copy the package has moved past, before you pay for it.** A slot seeded from an older default
+keeps being sent after an upgrade changes the default, and if the change is one the package's own validation
+depends on, every call it steers can fail. Record `seed_digest(default)` when you seed a slot, and on start-up
+read each slot with `prompt_drift`:
+
+```python
+drift = prompt_drift(entry, shipped=default, stored=stored_copy, seeded_digest=recorded_digest,
+                     customized=operator_owns_it)
+if drift.stale:
+    log.warning("%s: %s", drift.prompt_type, drift.remedy)
+```
+
+A stored copy reads `current` when it is the shipped default, `customized` when it changed since you seeded it
+or you say it is deliberately yours (`customized=True`), and `stale` otherwise: untouched since seeding, or with
+no record of its seeding, and not the default. Pass a template's stored copy as
+`SeedTemplate.from_dict(payload)` and a text prompt's as its string. The digest names content, not the revision
+number. A copy you tune is never reported stale.
+
 ### Launching the analysis reporter
 
 The analysis reporter (`REPORTER_KIND`) evaluates the analysis writer itself. Its cases are frozen campaign

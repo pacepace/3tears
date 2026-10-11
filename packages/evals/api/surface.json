@@ -1045,6 +1045,10 @@
       "kind": "exception",
       "signature": "DesignRefused(fault: str, *, remedy: str) -> None"
     },
+    "threetears.evals.kernel.DriftState": {
+      "kind": "literal",
+      "signature": "'current'` | `'stale'` | `'customized'"
+    },
     "threetears.evals.kernel.DROPPED_TOOL_CALLS_KEY": {
       "kind": "constant (str)",
       "signature": ""
@@ -1497,6 +1501,14 @@
       "kind": "function",
       "signature": "program_cost(usage: list[RoleUsage]) -> float | None"
     },
+    "threetears.evals.kernel.prompt_drift": {
+      "kind": "function",
+      "signature": "prompt_drift(entry: SeedPrompt, *, shipped: SeedTemplate | str, stored: SeedTemplate | str, seeded_digest: str | None, customized: bool = False) -> PromptDrift"
+    },
+    "threetears.evals.kernel.PromptDrift": {
+      "kind": "dataclass",
+      "signature": "PromptDrift(prompt_type: str, state: DriftState, shipped_digest: str, stored_digest: str, remedy: str = '')"
+    },
     "threetears.evals.kernel.PROPOSER_PROMPT": {
       "kind": "constant (str)",
       "signature": ""
@@ -1632,6 +1644,10 @@
     "threetears.evals.kernel.save_document": {
       "kind": "function",
       "signature": "save_document(repo: DocumentStore, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None"
+    },
+    "threetears.evals.kernel.seed_digest": {
+      "kind": "function",
+      "signature": "seed_digest(seed: SeedTemplate | str) -> str"
     },
     "threetears.evals.kernel.SEED_PROMPTS": {
       "kind": "constant (tuple)",

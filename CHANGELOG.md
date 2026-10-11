@@ -31,6 +31,9 @@ packages (bumped in lock-step).
   paid refusal. Each now sends a strict `json_schema` derived from what its reply is read into
   (`kernel.strict_response_format`, `run.judge.judge_reply_format`), and a test holds that no package call sends
   the unshaped directive.
+- **A host can see that a stored prompt predates the package's.** `seed_digest` names a catalogue default's content
+  and `prompt_drift` reads a stored copy as `current`, `stale` (with its remedy) or `customized` — changed since it
+  was seeded, or declared the host's own — so a tuned prompt is never reported.
 
 ### 3tears-evals: what a consumer's end-to-end test of .6 found (gaps 16–27)
 

@@ -273,6 +273,7 @@ from threetears.evals.kernel.prompts.catalogue import (
     PROPOSER_PROMPT,
     SEED_PROMPTS,
 )
+from threetears.evals.kernel.prompts.drift import DriftState, PromptDrift, prompt_drift, seed_digest
 from threetears.evals.kernel.prompts.seed import KIND_TEMPLATE, KIND_TEXT, SeedPrompt, SeedSection, SeedTemplate
 from threetears.evals.kernel.provider import (
     describe_and_log_failure,
@@ -408,6 +409,10 @@ __all__ = [
     "KIND_TEXT",
     "PROPOSER_PROMPT",
     "SEED_PROMPTS",
+    "DriftState",
+    "PromptDrift",
+    "prompt_drift",
+    "seed_digest",
     "METRIC_DESCRIPTORS",
     "DROPPED_TOOL_CALLS_KEY",
     "REASONING_RATIO_KEY",

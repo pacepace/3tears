@@ -369,6 +369,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`production_replicating_cost(usage: list[RoleUsage], *, substituted_deliveries: int) -> float | None`
 - **`program_cost`** · function · Cost of every role, i.e. what the eval program spent to produce this result.
   <br>`program_cost(usage: list[RoleUsage]) -> float | None`
+- **`prompt_drift`** · function · Read a stored copy of a catalogue prompt against the package's shipped default.
+  <br>`prompt_drift(entry: SeedPrompt, *, shipped: SeedTemplate | str, stored: SeedTemplate | str, seeded_digest: str | None, customized: bool = False) -> PromptDrift`
 - **`refuse_an_undeclarable_design`** · function · Refuse a declaration this host cannot honour — at authoring time, not at analysis time.
   <br>`refuse_an_undeclarable_design(design: CampaignDesign, *, behavior: str, template: EvalTemplate | None, profile: HostProfile) -> None`
 - **`request_job_cancel`** · function · Ask a job to stop by writing the request on its record, from any process.
@@ -391,6 +393,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`running_job() -> str | None`
 - **`save_document`** · function · Upsert `document` through `repo`, raising on any failure.
   <br>`save_document(repo: DocumentStore, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None`
+- **`seed_digest`** · function · The canonical digest of a seed's content: what a host records when it seeds a slot from it.
+  <br>`seed_digest(seed: SeedTemplate | str) -> str`
 - **`separation_criterion`** · function · The separation criterion over `n` first-score/repeat pairs covering `results` results, at `agreement`.
   <br>`separation_criterion(n: int, results: int, agreement: float | None, interval: tuple[float, float] | None = None) -> TierCriterion`
 - **`settle_job_record`** · function · Read a job record as every process reads it: written lost first, when it has not ended and its lease has lapsed.
@@ -518,6 +522,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`PassHatPoint`** · typed dict · One point of the pass^k curve: the estimate at one depth, and how many cases it rests on.
 - **`PlannedCall`** · dataclass · One call an out-of-run unit of work means to make: the prompt pair and the directive it sends.
 - **`PredictionPoweredReading`** · model · A judged dimension's mean in one cell re-estimated with people's labels (#598) — beside the judge's, never for it.
+- **`PromptDrift`** · dataclass · How one stored prompt reads against the package's shipped default.
 - **`ProviderRefusedError`** · exception · A paid provider call made on the caller's behalf raised (status 502).
 - **`Question`** · model · Something this campaign is trying to find out.
 - **`QuestionAnswer`** · model · Where one declared question stands on this evidence.
@@ -589,6 +594,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`'met'` | `'not_met'` | `'undecided'` | `'insufficient'`
 - **`DeliveryOutcome`** · literal · How a recorded piece of background work ended when its capture cell did: it delivered a payload, it failed, or the cell ended with it still in flight.
   <br>`'delivered'` | `'failed'` | `'undelivered'`
+- **`DriftState`** · literal · How a stored copy reads against the shipped default: the default itself, a default the package has moved past, or the host's own.
+  <br>`'current'` | `'stale'` | `'customized'`
 - **`EvidenceTier`** · literal · What a finding's verdict stands on, as code reads it off the finding's resolved evidence rows — never chosen by the report writer: code assigns the tier.
   <br>`'mechanical'` | `'calibrated'` | `'separation'` | `'undetermined'` | `'incidental'` | `'none'`
 - **`GradedBy`** · literal · Who produced a family's numbers.
