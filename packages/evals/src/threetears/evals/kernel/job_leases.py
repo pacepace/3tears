@@ -19,7 +19,7 @@ did not start a job read a live one as lost, and a cancel there was refused. Her
   raises :class:`~threetears.evals.kernel.JobFenced`. A run's own writes are refused the same way: its status
   write takes nothing over a record carrying ``lost``, its own ending included, and the process that lost it
   neither broadcasts that ending nor tells the run-end hook. The one thing a holder whose renewals failed for a whole
-  lease still writes is why, as an ``error_details`` entry on a run, never its status or its ending.
+  lease still writes is why, as a fault on its record (``faults``, every kind alike), never its status or its ending.
 - **A cancel is a field on the record** (``cancel_requested_at``), written by whichever process was asked
   (:func:`request_job_cancel`); the holder reads it at its next renewal and ends the job ``cancelled``, so a cancel
   lands within one renewal interval from anywhere.
@@ -30,7 +30,7 @@ did not start a job read a live one as lost, and a cancel there was refused. Her
 own (:meth:`~threetears.evals.kernel.EvalStorage.store_time`); processes sharing a store without a clock must keep
 their clocks in step to well inside a lease.
 
-**One piece for every job record.** A record type takes the four lease fields
+**One piece for every job record.** A record type takes the five lease fields
 (:mod:`~threetears.evals.schema.job_lease`) and a :class:`LeasedJobKind` saying when it has ended and how it reads
 lost; everything here is generic over it. :data:`RUN_JOB`, :data:`SWEEP_JOB` and :data:`ANALYSIS_JOB` are the three
 the engine runs.
@@ -55,7 +55,7 @@ from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.scoring import reconstruct_completeness
 from threetears.evals.kernel.storage import RUN_LOST_STATUS, JobRecordStore, LeaseStore
 from threetears.evals.schema.base import EvalDocumentModel
-from threetears.evals.schema.job_lease import JobLease, JobLoss, LeasedRecord
+from threetears.evals.schema.job_lease import JobLease, JobLoss, LeasedRecord, with_fault
 from threetears.evals.schema.models import TERMINAL_RUN_STATUSES, EvalRun
 from threetears.observe import get_logger
 
@@ -80,7 +80,7 @@ class LeasedJobKind[R: EvalDocumentModel]:
 
     Attributes:
         name: The job kind's name, for a message.
-        model: The record's model; it declares the four lease fields (:class:`~threetears.evals.schema.LeasedRecord`).
+        model: The record's model; it declares the five lease fields (:class:`~threetears.evals.schema.LeasedRecord`).
         ended: Whether the record says, by its own status, that the job has ended.
         end_lost: The record as it is written lost: its own ending set and ``loss`` recorded on it. Given the store
             because a run's ending reconstructs its completeness from its stored results.
@@ -421,7 +421,8 @@ def write_held_record[R: EvalDocumentModel](
     """The job's own write of its record: lands only while the stored record has not ended, keeping its lease fields.
 
     Reads the stored record and writes ``record`` over it with ``if_match``, carrying the stored lease, cancel
-    request and loss rather than this copy's (the holder's copy is older than a renewal or a request); a lost race
+    request, loss and faults rather than this copy's (the holder's copy is older than a renewal, a request or a
+    fault written on the record); a lost race
     re-reads and re-applies. A stored record that has ended — written lost by a reader that found the lease lapsed,
     or by a shutdown — refuses the write: the job writes nothing more. A record never stored (a generation run
     inline, which records its attempt only as it ends) is written as it is.
@@ -458,6 +459,7 @@ def write_held_record[R: EvalDocumentModel](
                     "cancel_requested_at": held.cancel_requested_at,
                     "cancel_request_reason": held.cancel_request_reason,
                     "lost": held.lost,
+                    "faults": held.faults,
                 }
             )
         try:
@@ -472,11 +474,12 @@ def write_held_record[R: EvalDocumentModel](
     )
 
 
-def _note_on_run_record(store: LeaseStore, kind: LeasedJobKind[Any], record_id: str, scope_id: str, entry: str) -> bool:
-    """Append ``entry`` to a run record's ``error_details``, conditionally and keeping its lease; whether it was.
+def _note_fault(store: LeaseStore, kind: LeasedJobKind[Any], record_id: str, scope_id: str, entry: str) -> bool:
+    """Append ``entry`` to a job record's ``faults``, conditionally and touching nothing else; whether it was.
 
-    ``False`` for a record that is not a run — no other job record has a field for an error beside its ending — or
-    that is gone. A lost race re-reads and re-applies.
+    Every kind alike: the faults sit beside the record's ending, so a loss written after this keeps them. The lease
+    is not moved, so a store refusing only renewals takes it. ``False`` for a record that is gone. A lost race
+    re-reads and re-applies.
 
     Raises:
         ConflictError: Every attempt lost its race.
@@ -484,9 +487,9 @@ def _note_on_run_record(store: LeaseStore, kind: LeasedJobKind[Any], record_id: 
     """
     for _ in range(LEASE_WRITE_ATTEMPTS):
         record, etag = store.load_job_record(kind.model, record_id, scope_id)
-        if not isinstance(record, EvalRun):
+        if record is None:
             return False
-        noted = record.model_copy(update={"error_details": [*record.error_details, entry]})
+        noted = record.model_copy(update={"faults": with_fault(_leased(record).faults, entry)})
         try:
             store.save_job_record(_document(noted), if_match=etag)
         except ConflictError:
@@ -494,7 +497,7 @@ def _note_on_run_record(store: LeaseStore, kind: LeasedJobKind[Any], record_id: 
             continue
         return True
     raise ConflictError(
-        f"{kind.name} job '{record_id}' kept changing while an error was being written on it",
+        f"{kind.name} job '{record_id}' kept changing while a fault was being written on it",
         remedy="read it again with job_poll",
     )
 
@@ -515,8 +518,8 @@ class _Held:
     cancel: Callable[[str | None], object]
     stop: Callable[[], object]
     cancel_delivered: bool = field(default=False)
-    #: Why the last renewal failed, as ``<error type>: <message>``, until one succeeds: what the record is told when
-    #: the failures cost the lease (:meth:`JobLeases._expire`).
+    #: Why the last renewal failed, as ``<error type>: <message>``, until one succeeds: the fault the record is given
+    #: when the failures cost the lease (:meth:`JobLeases._expire`).
     last_failure: str | None = field(default=None)
     #: When the lease was last known extended, on this process's monotonic clock: as it was held (just after the
     #: write carrying its grant), then as each successful renewal's write was issued — before it, so the reckoning
@@ -698,13 +701,13 @@ class JobLeases:
         what failed); either way the job's own writes are refused from here on (:meth:`let_go`), even once the
         store recovers.
 
-        **Why it stopped is written on the record** when the record has a field for it: a run takes an
-        ``error_details`` entry naming the last renewal's error (or that every renewal lost its race), so the
-        loss a reader writes later reads with its cause beside it, rather than as a process that simply went away.
-        Written before the loss, without moving the lease, so a store refusing only renewals takes it. A sweep's,
-        a launch's or an analysis attempt's record has no such field (its ``detail`` or ``error`` is its ending,
-        which the loss writes over), so for those this is logged only. A write that fails is logged with both
-        errors.
+        **Why it stopped is written on the record**, whatever its kind: a ``faults`` entry naming the last renewal's
+        error (or that every renewal lost its race), so the loss a reader writes later reads with its cause beside
+        it, rather than as a process that simply went away. Written before the loss, conditionally and without
+        moving the lease, so a store refusing only renewals takes it — and in ``faults`` rather than the record's
+        ending (a run's ``error_details`` included), because the loss writes a sweep's ``detail`` or an attempt's
+        ``error`` over, and a run's own faults are its work's, not its lease's. A write that fails is logged with
+        both errors.
         """
         self.let_go(held.record_id)
         why = (
@@ -726,7 +729,7 @@ class JobLeases:
         )
         try:
             await run_blocking(
-                self._executor, _note_on_run_record, self._store, held.kind, held.record_id, held.scope_id, entry
+                self._executor, _note_fault, self._store, held.kind, held.record_id, held.scope_id, entry
             )
         # prawduct:ok-broad-except — the store may be what failed; logged with the renewal failure it was to record
         except Exception:

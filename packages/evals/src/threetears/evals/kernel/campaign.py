@@ -33,7 +33,13 @@ from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier, JudgedTie
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
 from threetears.evals.schema.base import CoreDocumentModel, EvalDocumentModel
-from threetears.evals.schema.job_lease import CancelRequestReasonField, CancelRequestedAtField, LeaseField, LostField
+from threetears.evals.schema.job_lease import (
+    CancelRequestReasonField,
+    CancelRequestedAtField,
+    FaultsField,
+    LeaseField,
+    LostField,
+)
 from threetears.evals.schema.refusal import RefusalField
 from threetears.evals.schema.models import CoreSchemaVersion, SchemaVersion, utc_now_iso
 from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION, REGENERABLE_SCHEMA_VERSION
@@ -1100,6 +1106,7 @@ class EvalAnalysisAttempt(CoreDocumentModel):
     cancel_requested_at: CancelRequestedAtField = None
     cancel_request_reason: CancelRequestReasonField = None
     lost: LostField = None
+    faults: FaultsField = Field(default_factory=list)
     refusal: RefusalField = None
 
     @field_validator("doc_type")
@@ -1232,6 +1239,7 @@ class EvalSweep(CoreDocumentModel):
     cancel_requested_at: CancelRequestedAtField = None
     cancel_request_reason: CancelRequestReasonField = None
     lost: LostField = None
+    faults: FaultsField = Field(default_factory=list)
     refusal: RefusalField = None
 
     @field_validator("doc_type")

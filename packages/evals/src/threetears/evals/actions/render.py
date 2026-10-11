@@ -483,6 +483,7 @@ def render_job_status(status: JobStatus) -> str:
         lines.append("progress: " + json.dumps(status.progress, sort_keys=True))
     if status.detail:
         lines.append(f"detail: {status.detail}")
+    lines += [f"fault: {fault}" for fault in status.faults]
     if status.refusal is not None:
         lines.append(f"refusal: {status.refusal.kind} ({status.refusal.status})")
     if status.run_ids:

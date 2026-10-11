@@ -76,7 +76,12 @@ CORE_BASELINE_VERSION: Final[int] = 8
 #: - **v12** — a run carries the labels an operator gave it (#648): ``EvalRun.labels``, a sorted list of short
 #:   names, empty by default and in no identity key. Additive: the v11 step is the identity, and a v11 run reads
 #:   with none — no one had labelled it.
-CORE_SCHEMA_VERSION: int = 12
+#: - **v13** — every job record keeps the faults at its lease's boundary before it ended
+#:   (:data:`~threetears.evals.schema.job_lease.FaultsField`): ``faults``, a list of at most 32 entries, empty by
+#:   default, on ``EvalRun``, ``EvalLaunch``, ``EvalSecondJudgePass``, ``EvalJudgeTemperatureCheck``,
+#:   ``EvalActionJob``, ``EvalSweep`` and ``EvalAnalysisAttempt`` — beside the record's ending, which a loss writes
+#:   over. Additive: the v12 step is the identity, and a v12 record reads with none.
+CORE_SCHEMA_VERSION: int = 13
 """The core version this build writes, and the newest a read of a core document accepts.
 
 How each value a core document stored at v8 predates reads — a field v8 gained after the document was
@@ -428,6 +433,25 @@ CORE_UPGRADERS: tuple[CoreUpgrader, ...] = (
         from_version=11,
         doc_types=frozenset({"eval_run"}),
         reason="v12 adds the labels an operator gave a run; a v11 run has none, which v12 reads as never labelled",
+        upgrade=lambda document: document,
+    ),
+    CoreUpgrader(
+        from_version=12,
+        doc_types=frozenset(
+            {
+                "eval_run",
+                "eval_launch",
+                "eval_second_judge_pass",
+                "eval_judge_temperature_check",
+                "eval_action_job",
+                "eval_sweep",
+                "eval_analysis_attempt",
+            }
+        ),
+        reason=(
+            "v13 adds the faults at a job's lease boundary to every job record; a v12 one has none, which v13 reads "
+            "as no fault recorded"
+        ),
         upgrade=lambda document: document,
     ),
 )

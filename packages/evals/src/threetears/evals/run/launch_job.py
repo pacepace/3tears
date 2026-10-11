@@ -32,7 +32,13 @@ from threetears.evals.run.job_work import JobOutcome, JobRecorder, JobWork, end_
 from threetears.evals.run.jobs import JOB_TIMEOUT_CAP_S
 from threetears.evals.run.launch import AdmittedLaunch, LaunchHost
 from threetears.evals.schema.base import CoreDocumentModel
-from threetears.evals.schema.job_lease import CancelRequestedAtField, CancelRequestReasonField, LeaseField, LostField
+from threetears.evals.schema.job_lease import (
+    CancelRequestedAtField,
+    CancelRequestReasonField,
+    FaultsField,
+    LeaseField,
+    LostField,
+)
 from threetears.evals.schema.refusal import RefusalField
 from threetears.evals.schema.models import CoreSchemaVersion, utc_now_iso
 from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION
@@ -79,6 +85,7 @@ class EvalLaunch(CoreDocumentModel):
     cancel_requested_at: CancelRequestedAtField = None
     cancel_request_reason: CancelRequestReasonField = None
     lost: LostField = None
+    faults: FaultsField = Field(default_factory=list)
     refusal: RefusalField = None
 
     @field_validator("doc_type")

@@ -71,6 +71,8 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`referenced_actions(expression: str) -> tuple[tuple[str, str], ...]`
 - **`utc_now_iso`** · function · Return the current UTC time in ISO-8601 format.
   <br>`utc_now_iso() -> str`
+- **`with_fault`** · function · `faults` with `entry` appended, kept inside `FaultsField`'s caps.
+  <br>`with_fault(faults: list[str], entry: str) -> list[str]`
 
 **Classes**
 
@@ -129,7 +131,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`JudgeRescore`** · model · One re-judge of a result's failed judge dimensions, recorded on the result it changed.
 - **`LabelKey`** · class · What a judged score was given on, and so what a person's label of it holds for: an output and a criterion.
 - **`LatencyMetrics`** · model · Per-result latency decomposition: harvested OTel spans, plus what they miss.
-- **`LeasedRecord`** · protocol · What the lease machinery reads off a job record: its identity and the four lease fields.
+- **`LeasedRecord`** · protocol · What the lease machinery reads off a job record: its identity and the five lease fields.
 - **`MeasureDeclaration`** · model · How the launching host declared one of its own measures to be read, frozen onto the run it launched.
 - **`NestedSchema`** · class · One schema written inside another, and where it sits.
 - **`NominalScale`** · model · Unordered categories. Two levels are different, and neither is larger.
@@ -200,6 +202,8 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`'input'` | `'record'` | `'derived'`
 - **`EvalRunStatus`** · literal · `budget_stopped` is a budget the run was launched under binding — its cost cap or its wall-clock budget, `EvalRun.budget_stop_reason` says which: a designed stop that keeps what the run delivered, never `failed`.
   <br>`'pending'` | `'running'` | `'completed'` | `'failed'` | `'cancelled'` | `'budget_stopped'` | `'exhausted'`
+- **`FaultsField`** · type alias · A job record's faults: what went wrong at its lease's boundary before it ended (core v13).
+  <br>`Annotated[list[Annotated[str, StringConstraints(min_length=1, max_length=JOB_FAULT_MAX_CHARS)]], Field(max_length=JOB_FAULTS_MAX, description="Faults at this job's lease boundary, written on the record before it ended, oldest first: each names where it happened, then the error (its type and message) — a holder whose renewals failed for a whole lease, which stopped the job, writes the last renewal's error here. Beside the record's own ending, which a loss writes over, so the loss never erases what explains it. Empty on a job with none, and on a record stored before core v13. At most 32, each at most 2000 characters.")]`
 - **`GoalCheckIntent`** · literal · What a goal check says about the behaviour it grades, and so which verdict "the candidate did nothing" must get.
   <br>`'act'` | `'hold'`
 - **`GoalCheckProof`** · literal · Whether a goal check was shown, when its run launched, to tell its outcomes apart (`threetears.evals.run.check_controls.goal_check_proofs`).
@@ -262,7 +266,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 8`
 - **`CORE_DOC_TYPES`** · constant (frozenset) · The kept documents, by `doc_type`: the `kept` entries of `DOC_TYPE_FACTS`, derived so the registry is the one place a type's lifecycle is decided.
 - **`CORE_SCHEMA_VERSION`** · constant (int) · The core version this build writes. Every bump appends one line here and one `CoreUpgrader`.
-  <br>`= 12`
+  <br>`= 13`
 - **`CORE_UPGRADERS`** · constant (tuple) · The registered steps, oldest first: `[s.from_version for s in CORE_UPGRADERS]` is `range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION)`.
 - **`DEFAULT_JUDGE_TEMPERATURE`** · constant (float) · The temperature every judge call is requested at unless a `JudgeConfig` for its dimension says otherwise, and that config's own default (#633).
   <br>`= 0.0`
@@ -270,6 +274,10 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 3`
 - **`DOC_TYPE_FACTS`** · constant (mappingproxy) · Every `doc_type` the engine stores, and its facts.
 - **`EVAL_DOC_TYPES`** · constant (tuple) · Every `doc_type` the engine writes — the set the operator wipe sweeps.
+- **`JOB_FAULT_MAX_CHARS`** · constant (int) · How long one fault may be, in characters; a longer one is cut to it (`with_fault`), marked as cut.
+  <br>`= 2000`
+- **`JOB_FAULTS_MAX`** · constant (int) · How many faults a job record keeps: a record whose lease machinery kept failing says so without growing without bound.
+  <br>`= 32`
 - **`JSON_OBJECT_RESPONSE_FORMAT`** · constant (dict) · `response_format` directive asking for any JSON object, with no shape.
 - **`MODEL_DEFAULT_TEMPERATURE`** · constant (str) · A judge call SENT with no temperature, because its model refuses one (some reasoning models do): the model's own default applied.
   <br>`= 'model_default'`

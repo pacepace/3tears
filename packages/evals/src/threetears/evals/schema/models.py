@@ -64,7 +64,13 @@ from threetears.evals.schema.values import SweepableValue
 from threetears.evals.schema.judge_attribution import JudgeAttributionSource, JudgeAttributionState, attribution_state
 from threetears.evals.schema.prose import ModelProse
 from threetears.evals.schema.world_events import WorldEvent
-from threetears.evals.schema.job_lease import CancelRequestReasonField, CancelRequestedAtField, LeaseField, LostField
+from threetears.evals.schema.job_lease import (
+    CancelRequestReasonField,
+    CancelRequestedAtField,
+    FaultsField,
+    LeaseField,
+    LostField,
+)
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -3302,8 +3308,10 @@ class EvalRun(CoreDocumentModel):
             "manager's failure branches (a harness exception, an exhausted provider account), by a "
             "run written lost while a result it stored cannot be read (its completeness unknown), and by "
             "a boundary that contained an error so it could not change the run's outcome: its completeness "
-            "record not written, a capture recording not written (the corpus incomplete), a concurrency probe "
-            "that raised, or the holder's renewals of its lease failing for a whole lease, which stopped it. Each such entry names where it happened, then the error (its type and message). The "
+            "record not written, a capture recording not written (the corpus incomplete), or a concurrency probe "
+            "that raised. Each such entry names where it happened, then the error (its type and message). A fault "
+            "at the run's job lease — its holder's renewals failing for a whole lease, which stopped it — is in "
+            "``faults``, where every job record keeps one, not here. The "
             "designed stops each have their own channel (``cancellation_reason`` for a cancel, "
             "``budget_stop_reason`` for the cost cap and the wall-clock budget), so a non-empty list "
             "means a fault, and its length is a count an operator can triage on."
@@ -3334,11 +3342,13 @@ class EvalRun(CoreDocumentModel):
         ),
     )
 
-    # The run's job: which process runs it, a cancel asked of it, and how it was lost (core v10).
+    # The run's job: which process runs it, a cancel asked of it, and how it was lost (core v10); the faults at its
+    # lease's boundary before it ended (core v13).
     lease: LeaseField = None
     cancel_requested_at: CancelRequestedAtField = None
     cancel_request_reason: CancelRequestReasonField = None
     lost: LostField = None
+    faults: FaultsField = Field(default_factory=list)
 
     @property
     def expected_cells(self) -> int:
