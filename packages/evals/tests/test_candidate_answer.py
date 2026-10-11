@@ -78,7 +78,7 @@ async def test_an_unpriced_answer_leaves_the_cost_unknown_never_zero() -> None:
     host = callable_host()
     summary = await run_eval(CASES, unpriced, expected=_expected, scope_id=SCOPE, host=host, k=1)
     assert summary.role_spend("candidate").calls == 3 and summary.role_spend("candidate").cost_usd is None
-    assert "candidate spend: unknown: a candidate call went unpriced over 3 call(s)" in summary.render()
+    assert "candidate spend: unpriced over 3 call(s): its client reported no price for them" in summary.render()
     assert all(result.cost_usd is None for result in list_results(host.storage, summary.run_id, SCOPE))
 
 

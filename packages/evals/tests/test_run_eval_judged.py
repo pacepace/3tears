@@ -222,7 +222,7 @@ async def test_the_judges_client_is_lent_never_closed_so_one_client_serves_two_r
 async def test_a_judge_that_prices_nothing_leaves_its_spend_unknown_never_zero() -> None:
     summary = await run_eval(CASES, answer, judge=_judge(_FakeJudgeClient(priced=False)), scope_id=SCOPE, k=1)
     assert summary.role_spend("judge").calls == 4 and summary.role_spend("judge").cost_usd is None
-    assert "  judge spend: unknown: a judge call went unpriced over 4 call(s)" in summary.render()
+    assert "  judge spend: unpriced over 4 call(s): its client reported no price for them" in summary.render()
 
 
 async def test_a_judge_reply_that_will_not_parse_excludes_the_cell_and_says_so() -> None:

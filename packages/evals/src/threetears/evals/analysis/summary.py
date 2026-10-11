@@ -84,7 +84,6 @@ from threetears.evals.schema.models import (
     stale_goal_check_proofs,
 )
 from threetears.evals.kernel.metrics import describe_measure, summary_population
-from threetears.evals.kernel.usage_capture import blended_cost
 from threetears.evals.kernel.remedies import FIND_RUN
 
 
@@ -508,14 +507,34 @@ class ProviderUnits(BaseModel):
     units: int
 
 
+#: Why a model-metered role's call carries no dollars: its client priced nothing for it (a local model, a client that
+#: prices nothing) — the one way such a row comes to hold none.
+MODEL_CALL_UNPRICED = "its client reported no price for them"
+
+#: Why an external call carries no dollars in a run that declared external rates: neither a charge its provider
+#: reported nor a rate the run declared for its provider and unit priced it (a call the candidate's own tools made is
+#: counted as volume and never priced).
+EXTERNAL_CALL_UNPRICED = "neither a charge their provider reported nor a rate the run declared priced them"
+
+#: Why an external call carries no dollars in a run that declared no external rate, whose total sums none.
+EXTERNAL_NOT_COUNTED = "the run declared no external rate, so its total sums no external dollars"
+
+
 class RoleSpend(BaseModel):
     """What one role spent over a run, summed from its results' usage rows.
+
+    **Priced and unpriced are stated side by side, never folded.** A role some of whose calls went unpriced spent the
+    priced calls' dollars AND something nobody can put a number on, so it states both: its priced dollars and a count
+    of its unpriced calls, with why they are unpriced. A role read as wholly unknown the moment one call went
+    unpriced dropped dollars the run's total still counted, so its lines no longer added up to it.
 
     Attributes:
         role: The role (:data:`~threetears.evals.schema.UsageRole`).
         calls: How many calls its rows count.
-        cost_usd: What they cost, as priced when they were made; ``None`` when any went unpriced — for the
-            ``external`` role, when no rate was declared for its calls, which is its ordinary state.
+        cost_usd: What its priced calls cost, summed as priced when they were made; ``None`` when none was priced.
+        unpriced_calls: How many of its calls carry no dollars.
+        counted: Whether the run's total (each result's blended cost) sums this role. Every model-metered role is;
+            the ``external`` role is only in a run that declared external rates.
         units: The ``external`` role's own metering, per provider and unit; empty for every other role.
     """
 
@@ -524,17 +543,38 @@ class RoleSpend(BaseModel):
     role: UsageRole
     calls: int
     cost_usd: float | None
+    unpriced_calls: int = 0
+    counted: bool = True
     units: list[ProviderUnits] = []
 
-    def line(self) -> str:
-        """The role's spend line: what it cost (or why that is unknown) and over how many calls."""
+    @property
+    def unpriced_because(self) -> str | None:
+        """Why its unpriced calls carry no dollars, as true for its run; ``None`` when every call was priced."""
+        if not self.unpriced_calls and self.cost_usd is not None:
+            return None
         if self.role != "external":
-            return f"{self.role} spend: {_spend(self.cost_usd, f'a {self.role} call went unpriced')} over {self.calls} call(s)"
+            return MODEL_CALL_UNPRICED
+        return EXTERNAL_CALL_UNPRICED if self.counted else EXTERNAL_NOT_COUNTED
+
+    def money_text(self) -> str:
+        """Its dollars over its calls: the priced calls' cost (or :data:`UNPRICED`), and how many are unpriced and why."""
+        money = UNPRICED if self.cost_usd is None else dollars_text(self.cost_usd)
+        text = f"{money} over {self.calls} call(s)"
+        if (because := self.unpriced_because) is None:
+            return text
+        if self.cost_usd is None:
+            return f"{text}: {because}"
+        return f"{text}, {self.unpriced_calls} of them {UNPRICED}: {because}"
+
+    def line(self) -> str:
+        """The role's spend line: its priced dollars and unpriced calls, and whether the run's total leaves it out."""
+        outside = "" if self.counted or self.unpriced_because == EXTERNAL_NOT_COUNTED else "; not in the total"
+        if self.role != "external":
+            return f"{self.role} spend: {self.money_text()}{outside}"
         metered = ", ".join(
             f"{units.units} {units.unit}" + (f" ({units.provider})" if units.provider else "") for units in self.units
         )
-        cost = dollars_text(self.cost_usd) if self.cost_usd is not None else "unpriced: no rate was declared for them"
-        return f"external spend: {metered or 'no units counted'} over {self.calls} call(s), {cost}"
+        return f"external spend: {metered or 'no units counted'}, {self.money_text()}{outside}"
 
 
 def _shown_value(value: Any) -> str:
@@ -582,9 +622,10 @@ class EvalSummary(BaseModel):
         second_judge_cost_usd: What those calls cost; ``None`` when any went unpriced, and when none was made.
         spend: What each role spent (:class:`RoleSpend`), in :data:`~threetears.evals.schema.UsageRole`'s order, for
             every role the results' usage rows name; empty for a run whose results reported none.
-        total_cost_usd: The results' cost summed (each result's blended ``cost_usd``) — the total the role lines
-            add up to, external units aside; ``None`` when any result's cost is unknown, and for a run whose
-            results reported no spend.
+        total_cost_usd: The results' cost summed (each result's blended ``cost_usd``) — what the counted roles'
+            dollars add up to, external units aside; ``None`` when any result's cost is unknown (its line then states
+            the counted roles' priced dollars and their unpriced calls), and for a run whose results reported no
+            spend.
         errors: Each failed or excluded result's error, prefixed by its case, then the run's own. A case is named
             as the caller that summarised the run named it (:func:`~threetears.evals.quick.run_eval`: its own
             ``id``, else its position), else by its stored test case id.
@@ -851,7 +892,15 @@ class EvalSummary(BaseModel):
         """The total-spend line, without indentation, or None."""
         if not self.spend:
             return None
-        return f"total spend: {_spend(self.total_cost_usd, 'a call went unpriced')}, the results' cost"
+        if self.total_cost_usd is not None:
+            return f"total spend: {dollars_text(self.total_cost_usd)}, the results' cost"
+        # Unknown in full: what the counted roles' priced calls cost, which their lines add up to, and how many of
+        # their calls are unpriced — never a bare "unknown" that drops the dollars the lines state.
+        counted = [spend for spend in self.spend if spend.counted]
+        priced = [spend.cost_usd for spend in counted if spend.cost_usd is not None]
+        unpriced = sum(spend.unpriced_calls for spend in counted)
+        stated = f"{dollars_text(math.fsum(priced))} over the priced calls" if priced else "no call priced"
+        return f"total spend: unknown in full: {stated}, plus {unpriced} call(s) {UNPRICED}"
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description="Each goal check's pass count and, unless proven, why it is not a measurement."
@@ -898,11 +947,6 @@ class EvalSummary(BaseModel):
         lines += [f"  {line}" for line in self.goal_check_lines]
         lines += [f"  error: {error}" for error in self.errors]
         return "\n".join(lines)
-
-
-def _spend(amount: float | None, unpriced: str) -> str:
-    """A spend as the summary states it: in dollars, or that it is unknown and why — never $0 for an unpriced call."""
-    return f"unknown: {unpriced}" if amount is None else dollars_text(amount)
 
 
 def self_judging_text(models: list[str], whose: str) -> str:
@@ -1142,31 +1186,32 @@ def summarize_run(
 def _role_spend(results: list[EvalResult]) -> list[RoleSpend]:
     """What each role the results' usage rows name spent, in :data:`~threetears.evals.schema.UsageRole`'s order.
 
-    A model-metered role's cost is :func:`~threetears.evals.kernel.usage_capture.blended_cost` over its rows —
-    unknown when any went unpriced. The ``external`` role's rows carry dollars only where the run declared a rate
-    for them, so its cost is the sum when every row is priced and unknown otherwise, and its units are summed per
-    provider and unit, never across two.
+    A role's dollars are its priced rows' costs summed, and its unpriced calls are counted beside them, so a role
+    partly priced states what was priced rather than reading wholly unknown: the run's total
+    (:func:`~threetears.evals.kernel.usage_capture.blended_cost`, per result) sums exactly the counted roles' priced
+    rows, and the role lines add up to it. Whether a role is counted is the results' own composition
+    (``cost_roles``): the ``external`` role is in it only where the run declared external rates. Its units are summed
+    per provider and unit, never across two.
     """
     spent: list[RoleSpend] = []
     for role in get_args(UsageRole):
-        rows = [row for result in results for row in result.usage if row.role == role]
+        carrying = [result for result in results if any(row.role == role for row in result.usage)]
+        rows = [row for result in carrying for row in result.usage if row.role == role]
         if not rows:
             continue
-        calls = sum(row.call_count or 0 for row in rows)
-        if role != "external":
-            spent.append(RoleSpend(role=role, calls=calls, cost_usd=blended_cost(rows, (role,))))
-            continue
+        priced = [row.cost_usd for row in rows if row.cost_usd is not None]
         metered: dict[tuple[str | None, str], int] = {}
         for row in rows:
             if row.provider_unit is not None and row.provider_units is not None:
                 key = (row.provider, row.provider_unit)
                 metered[key] = metered.get(key, 0) + row.provider_units
-        costs = [row.cost_usd for row in rows]
         spent.append(
             RoleSpend(
                 role=role,
-                calls=calls,
-                cost_usd=None if None in costs else math.fsum(cost for cost in costs if cost is not None),
+                calls=sum(row.call_count or 0 for row in rows),
+                cost_usd=math.fsum(priced) if priced else None,
+                unpriced_calls=sum(row.call_count or 0 for row in rows if row.cost_usd is None),
+                counted=all(role in result.cost_roles for result in carrying),
                 units=[
                     ProviderUnits(provider=provider, unit=unit, units=units)
                     for (provider, unit), units in sorted(
