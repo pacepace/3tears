@@ -600,8 +600,18 @@ LaunchableKind(
     resolve_subject=your_reporter_subject,  # admits the one subject id your reporter launches label
     unhonoured_launch_arguments=REPORTER_UNHONOURED_LAUNCH_ARGUMENTS,
     plan_arm=lambda request: plan_reporter_arm(eval_host, request, prompts=load_prompts(), resolve_model=resolve),
+    price_largest_call=lambda request: price_largest_reporter_call(
+        eval_host, request, prompts=load_prompts(), resolve_model=resolve
+    ),
 )
 ```
+
+`price_largest_reporter_call` prices each case's first generator request before anything is spent, built as
+the cell builds it, on the client your factory builds in the `analysis` role for the arm's model. The
+estimate and the launch then refuse an arm whose largest generator call is reserved above its cap. Without
+it, that call is refused only when the run reaches it, after the cases before it were paid for. Pass the
+`eval_host` your launcher builds the generator client on, so the price is that client's. The memo's judge
+call stays unpriced, since the memo it judges does not exist yet.
 
 `plan_reporter_arm` and `admit_reporter_launch` make every refusal before the arm is priced, in this order:
 
