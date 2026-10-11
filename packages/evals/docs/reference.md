@@ -2045,17 +2045,22 @@ The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
 **Functions**
 
 - **`mount_fastmcp`** · function · Add the catalogue's tools to a FastMCP server.
-  <br>`mount_fastmcp(server: FastMCP, catalogue: ActionCatalogue, *, host: OpsHost, caller: CallerResolver, tools: Sequence[ToolSpec] | None = None) -> tuple[str, ...]`
+  <br>`mount_fastmcp(server: FastMCP, catalogue: ActionCatalogue, *, host: OpsHost | None = None, host_resolver: HostResolver | None = None, caller: CallerResolver, around: CallHook | None = None, tools: Sequence[ToolSpec] | None = None) -> tuple[str, ...]`
 
 **Classes**
 
 - **`CatalogueTool`** · model · One mounted tool, as FastMCP serves it: every call handed to the catalogue.
-- **`ToolBinding`** · class · What a `CatalogueTool` hands each call to: the mounted tool, the host and the caller resolver.
+- **`ToolBinding`** · class · What a `CatalogueTool` hands each call to: the mounted tool, the host, the caller resolver and the hook.
+- **`ToolCall`** · dataclass · One call, as an `around` hook sees it before the catalogue carries it out.
 
 **Types**
 
 - **`CallerResolver`** · type alias · Resolves who is calling, and their scope, for one call — sync or async. The host reads its own request context (an access token, a session) to answer it.
   <br>`Callable[[], Caller | Awaitable[Caller]]`
+- **`CallHook`** · type alias · Wraps every call for a host's tracing, metrics or audit log, seeing the call and its outcome and changing neither.
+  <br>`Callable[[ToolCall], AsyncGenerator[None, ActionOutcome]]`
+- **`HostResolver`** · type alias · Resolves the host one call works in — sync or async — for a server that serves more than one: a tenant's storage, job manager and settings, read from the same request context as the caller.
+  <br>`Callable[[], OpsHost | Awaitable[OpsHost]]`
 
 <a id="api-vega"></a>
 ### `threetears.evals.vega`
