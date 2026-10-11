@@ -234,6 +234,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # registry's self-contradiction check and the prose gate all walk.
     "schema/schema_nesting.py",
     "kernel/errors.py",
+    "kernel/refusals.py",
     "kernel/remedies.py",
     # The write-seam refusal of an undeclared authoring field, and the lock every writer of an
     # existing campaign holds. Each is shared by two packages that may not import each other —
@@ -441,6 +442,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "kernel/job_leases.py",
     "kernel/job_timeout.py",
     "schema/job_lease.py",
+    "schema/refusal.py",
     # The generic trial loop and the per-result covariate derivation, both importing nothing of the
     # host. Moved off _HOST_COUPLED_MODULES when a host tool's delivery record became
     # `AsyncDelivery` and its conclusion-path covariate was deleted: the runner stores a kind's
