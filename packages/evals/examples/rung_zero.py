@@ -9,7 +9,8 @@ It calls no model, so it is free.
 
 import asyncio
 
-from threetears.evals.quick import EvalSummary, run_eval
+from threetears.evals.quick import run_eval
+from threetears.evals.analysis import EvalSummary
 
 # 1. The cases: each review, and the sentiment a person gave it.
 CASES = [

@@ -25,7 +25,6 @@ from __future__ import annotations
 
 from threetears.evals.analysis.viz.intent import (
     INTENT_VERSION,
-    Cell,
     ChartAxis,
     ChartColours,
     ChartColumn,
@@ -34,18 +33,17 @@ from threetears.evals.analysis.viz.intent import (
     ChartIntent,
     ChartReference,
     ChartType,
+    ChartValue,
     EncodingRole,
     chart_intent,
 )
-from threetears.evals.analysis.viz.payloads import SERIES_SLOTS, VALIDATED_SLOTS, PayloadError
+from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.analysis.viz.policy import IntentPolicyError, check_intent, table_disagreements
 from threetears.evals.analysis.viz.renderer import ChartRenderer, assert_renderer_conforms, renderer_disagreements
 
 __all__ = [
     "INTENT_VERSION",
-    "SERIES_SLOTS",
-    "VALIDATED_SLOTS",
-    "Cell",
+    "ChartValue",
     "ChartAxis",
     "ChartColours",
     "ChartColumn",

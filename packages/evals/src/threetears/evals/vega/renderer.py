@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from threetears.evals.analysis.viz.intent import Cell, ChartIntent
+from threetears.evals.analysis.viz.intent import ChartIntent, ChartValue
 from threetears.evals.analysis.viz.quantities import strip_common_prefix
 from threetears.evals.kernel.host import ChartFont, ChartPalette, StyleError, StyleProfile
 from threetears.evals.vega.compiler import DISPLAY_FIELD, CompiledChart, draw_intent
@@ -146,7 +146,7 @@ class VegaRenderer:
         """
         return render_svg(chart.spec, palette=self.palette, font_dir=self.font_dir, font=self.font)
 
-    def drawn_data(self, drawing: CompiledChart) -> list[dict[str, Cell]]:
+    def drawn_data(self, drawing: CompiledChart) -> list[dict[str, ChartValue]]:
         """Every inline datum the spec draws, each drawn name resolved to the identity it stands for.
 
         A datum on the identity axis may carry only the name drawn beside its mark. The arms draw either
@@ -191,7 +191,7 @@ class VegaRenderer:
         ]
 
 
-def _inline_data(node: Any) -> Iterator[dict[str, Cell]]:
+def _inline_data(node: Any) -> Iterator[dict[str, ChartValue]]:
     """Every datum of every inline ``data.values`` list under ``node``, depth first."""
     if isinstance(node, dict):
         source = node.get("data")

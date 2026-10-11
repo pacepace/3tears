@@ -15,7 +15,7 @@ from typing import Any, Literal
 from threetears.evals.analysis.arms import ArmStatus, arm_label, arm_names
 from threetears.evals.analysis.bundle.schema import ComparisonVerdict
 from threetears.evals.analysis.cells import variant_of_cell_ref
-from threetears.evals.analysis.viz.intent import Cell
+from threetears.evals.analysis.viz.intent import ChartValue
 from threetears.evals.analysis.viz_refs import cell_arm_labels
 from threetears.evals.kernel.campaign import ConfidenceTier, EvalAnalysis, EvidenceRow, EvidenceTier
 from threetears.evals.kernel.analysis_measures import BarDecision
@@ -193,7 +193,7 @@ EVIDENCE_COLUMNS: tuple[tuple[str, str], ...] = (
 
 def evidence_rows(
     analysis: EvalAnalysis, evidence: Sequence[EvidenceRow], arm: Callable[[str], str]
-) -> list[dict[str, Cell]]:
+) -> list[dict[str, ChartValue]]:
     """A finding's evidence as table rows, keyed by :data:`EVIDENCE_COLUMNS` — each reading by what a reader calls it.
 
     The measure is headed as the decision surface heads it

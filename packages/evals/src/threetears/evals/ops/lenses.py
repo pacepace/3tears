@@ -10,7 +10,7 @@ arguments, by the launch's own rule: each arm planned by its kind and priced thr
 ``launch_pricer`` (:func:`~threetears.evals.run.quote_launch`).
 
 Each result's text is here too (:func:`pivot_text`, :func:`history_text`, :func:`estimate_text`,
-:func:`export_text`, :func:`runs_compared_text`, :func:`runs_bisected_text`), for the reason :meth:`~threetears.evals.ops.EvalSummary.render` sits with the
+:func:`export_text`, :func:`runs_compared_text`, :func:`runs_bisected_text`), for the reason :meth:`~threetears.evals.analysis.EvalSummary.render` sits with the
 summary: every surface — an action, a command line — shows one rendering, and each carries the
 caveats its model carries (what was left out, which runs came up short) rather than the numbers alone.
 """

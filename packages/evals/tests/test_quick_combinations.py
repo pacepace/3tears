@@ -11,17 +11,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from threetears.evals.quick import (
-    Answer,
-    CandidateTools,
-    Dimension,
-    EvalSummary,
-    World,
-    WorldTool,
-    WorldTools,
-    compare,
-    run_eval,
-)
+from threetears.evals.quick import Answer, CandidateTools, Dimension, World, WorldTool, WorldTools, compare, run_eval
+from threetears.evals.analysis import EvalSummary
 
 SCOPE = "quick-combinations-tests"
 CASES = [{"n": 1}, {"n": 2}, {"n": 3}]

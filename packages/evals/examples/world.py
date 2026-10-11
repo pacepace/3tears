@@ -14,7 +14,8 @@ deliberate mistake so that a check fails, and its numbers say nothing about Clau
 import asyncio
 import os
 
-from threetears.evals.quick import Dimension, EvalSummary, World, WorldTool, WorldTools, callable_host, run_eval
+from threetears.evals.quick import Dimension, World, WorldTool, WorldTools, callable_host, run_eval
+from threetears.evals.analysis import EvalSummary
 from threetears.evals.run import get_result_trace, list_results
 
 MODEL = "claude-haiku-5-5"

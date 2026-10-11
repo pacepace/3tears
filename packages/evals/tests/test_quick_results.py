@@ -15,7 +15,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.quick import UNUSABLE_ANSWER, callable_host, compare, run_eval, summarize_run
+from threetears.evals.quick import UNUSABLE_ANSWER, callable_host, compare, run_eval
+from threetears.evals.analysis import summarize_run
 
 SCOPE = "quick-results-tests"
 

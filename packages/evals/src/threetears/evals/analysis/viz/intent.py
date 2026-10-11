@@ -77,8 +77,9 @@ LENGTH_ROLES: frozenset[str] = frozenset({"length", "count"})
 #: Roles that are one end of an interval, and so owe a statement of what it varies over.
 INTERVAL_ROLES: frozenset[str] = frozenset({"interval_low", "interval_high"})
 
-#: A values-table or data cell: a JSON scalar.
-Cell = str | int | float | bool | None
+#: One value in a chart's data or its values table: a JSON scalar. Not ``Cell``, which on the analysis root is
+#: the observations sharing one variant and one apparatus class.
+ChartValue = str | int | float | bool | None
 
 
 class ChartAxis(EvalBaseModel):
@@ -182,7 +183,7 @@ class ChartIntent(EvalBaseModel):
     unit: str = Field(
         default="", description="The unit the chart's primary quantity is drawn in; empty when it has none."
     )
-    data: list[dict[str, Cell]] = Field(
+    data: list[dict[str, ChartValue]] = Field(
         description="The marks' values, one row per mark the chart places by value, in drawn order and drawn units."
     )
     encodings: list[ChartEncoding] = Field(description="What each field of `data` encodes.")
@@ -213,7 +214,9 @@ class ChartIntent(EvalBaseModel):
         description="A note the figure carries with it — what it could not draw, in one sentence; empty when none.",
     )
     columns: list[ChartColumn] = Field(description="The values-as-drawn table's columns, in display order.")
-    rows: list[dict[str, Cell]] = Field(description="The values-as-drawn rows, in drawn order, keyed by column key.")
+    rows: list[dict[str, ChartValue]] = Field(
+        description="The values-as-drawn rows, in drawn order, keyed by column key."
+    )
     caption: ModelProse = Field(
         default="", description="The analysis author's own line beside the chart, exactly as written; empty when none."
     )
@@ -304,7 +307,7 @@ __all__ = [
     "INTERVAL_ROLES",
     "LENGTH_ROLES",
     "MEASURED_ROLES",
-    "Cell",
+    "ChartValue",
     "ChartAxis",
     "ChartColours",
     "ChartColumn",

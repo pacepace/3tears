@@ -17,7 +17,8 @@ import re
 from types import SimpleNamespace
 
 from _live import Completion, claude, online
-from threetears.evals.quick import EvalSummary, Judge, run_eval
+from threetears.evals.quick import Judge, run_eval
+from threetears.evals.analysis import EvalSummary
 
 MODEL = "claude-haiku-5-5"
 

@@ -47,7 +47,7 @@ from typing import Annotated, Literal, Self, get_args
 
 from pydantic import ConfigDict, Field, model_validator
 
-from threetears.evals.analysis.viz.intent import Cell, ChartColumn, ChartIntent, ChartType
+from threetears.evals.analysis.viz.intent import ChartValue, ChartColumn, ChartIntent, ChartType
 from threetears.evals.analysis.viz.intents.distribution import SHAPE_UNKNOWN
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.prose import ModelProse
@@ -364,7 +364,7 @@ class TableBlock(_Block):
     )
     title: str = Field(min_length=1, description="The table's heading.")
     columns: list[TableColumn] = Field(min_length=1, description="The columns, in display order.")
-    rows: list[dict[str, Cell]] = Field(description="The rows shown, in the stated order, keyed by column key.")
+    rows: list[dict[str, ChartValue]] = Field(description="The rows shown, in the stated order, keyed by column key.")
     order: str = Field(min_length=1, description="The order the rows are in, in words.")
     total_rows: int = Field(ge=0, description="How many rows the table has; more than are shown when it is truncated.")
 
