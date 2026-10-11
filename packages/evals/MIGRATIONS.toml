@@ -31,6 +31,15 @@
 # callers.
 
 [[release]]
+version = "0.66.0-evaladopt.13"
+since = "v0.66.0-evaladopt.12"
+summary = """
+What adopting .12 found (gaps 49–50): the hooks see the error a host resolver raised, and a reporter arm's generator
+call is priced before launch.
+"""
+notes = []
+
+[[release]]
 version = "0.66.0-evaladopt.12"
 since = "v0.66.0-evaladopt.11"
 summary = """
