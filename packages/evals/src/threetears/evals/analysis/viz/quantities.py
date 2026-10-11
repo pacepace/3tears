@@ -15,7 +15,7 @@ import math
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.numbers import format_number, format_signed
 from threetears.evals.analysis.viz.payloads import ConfidenceInterval
 
 #: Restatement ladder for durations, largest unit first: ``(unit, in terms of, factor)``.
@@ -80,17 +80,24 @@ def with_unit(value: float | None, unit: str) -> str:
     ``42 ms`` takes a space and ``42%`` does not; getting it wrong is small but it
     is the kind of small that makes a generated report read as machine output.
     """
-    rendered = format_number(value)
-    if not unit or value is None:
-        return rendered
-    return f"{rendered}{unit}" if unit in UNSPACED_UNITS else f"{rendered} {unit}"
+    return _joined(format_number(value), value, unit)
 
 
 def signed_with_unit(value: float | None, unit: str) -> str:
-    """A delta in its own unit, carrying its sign — the direction is half the fact."""
-    if value is None:
-        return "—"
-    return f"{'+' if value > 0 else ''}{with_unit(value, unit)}"
+    """A delta in its own unit, carrying its sign — the direction is half the fact.
+
+    Signed by :func:`~threetears.evals.analysis.numbers.format_signed`, the one signed spelling, so a change below
+    :data:`~threetears.evals.analysis.numbers.WRITTEN_FROM` reads as its bound (``< 0.000001 ms``), which carries its
+    direction already, and never as a signed bound (``+< 0.000001 ms``).
+    """
+    return _joined(format_signed(value), value, unit)
+
+
+def _joined(text: str, value: float | None, unit: str) -> str:
+    """A number's spelled ``text`` joined to its unit; an absent or non-finite value (a dash) states none."""
+    if not unit or value is None or not math.isfinite(value):
+        return text
+    return f"{text}{unit}" if unit in UNSPACED_UNITS else f"{text} {unit}"
 
 
 def relative_change_text(change: float | None) -> str:

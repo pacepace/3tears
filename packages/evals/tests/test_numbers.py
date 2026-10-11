@@ -113,6 +113,32 @@ class TestTheSignedForm:
         assert format_signed(value) == text
 
 
+class TestTheSignedFormWithAUnit:
+    """A change joined to its unit carries its sign by the one signed spelling, bound and all."""
+
+    @pytest.mark.parametrize(
+        ("value", "unit", "text"),
+        [
+            (1.5, "ms", "+1.5 ms"),
+            (-1.5, "ms", "-1.5 ms"),
+            (0.0, "ms", "0 ms"),
+            (3.6e-7, "ms", "< 0.000001 ms"),
+            (-3.6e-7, "ms", "> -0.000001 ms"),
+            (3.6e-7, "%", "< 0.000001%"),
+            (None, "ms", "—"),
+        ],
+    )
+    def test_a_change_in_a_unit_reads_as_format_signed_joined_to_it(self, value, unit, text):
+        assert quantities.signed_with_unit(value, unit) == text
+
+    def test_no_table_spelling_signs_a_bound(self):
+        """``+< 0.000001 ms`` is no spelling: a bound already says which side of zero it is on."""
+        for value in (3.6e-7, -3.6e-7):
+            for unit in ("ms", "%", ""):
+                spellings = quantities.table_spellings(value, unit)
+                assert not any(re.search(r"[+-][<>]", text) for text in spellings), spellings
+
+
 class TestThereIsOneImplementation:
     def test_every_surface_that_spells_numbers_holds_the_same_function(self):
         """The chart quantities spell their values with it, as every chart arm does; nothing holds a copy.
