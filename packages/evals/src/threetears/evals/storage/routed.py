@@ -16,7 +16,7 @@ key back).
 
 **Typed calls route; id-only calls fan out.** ``upsert`` (by the document's ``doc_type``), ``get_many``,
 ``by_doc_type`` and ``iter_by_doc_type`` go to the one store their type is placed in, and a conditional write's
-``if_match`` (or ``create_only``) reaches that store unchanged, so each store's etags mean what they always meant. ``get``,
+``if_match`` (or ``create_only``, after the other stores are asked whether they hold the id) reaches that store unchanged, so each store's etags mean what they always meant. ``get``,
 ``get_with_etag``, ``merge_fields`` and ``delete`` carry only an id, so they ask every store. **One id, one
 store**: a read that finds the id in two stores, or in a store its type is not placed in, raises
 :class:`MisplacedDocument` rather than picking one, because whichever it picked, a typed read of the same type
@@ -59,7 +59,7 @@ from typing import Any, Final, Literal, get_args
 
 from threetears.evals.schema.doc_types import DOC_TYPE_FACTS, DocLifecycle, DocOrigin, DocTypeFacts
 from threetears.evals.schema.hashing import canonical_digest
-from threetears.evals.schema.store_port import DocumentStore, StoreClock
+from threetears.evals.schema.store_port import DocumentStore, StoreClock, StoreConflict
 
 __all__ = ["ROUTING_SCOPE", "DocTypeRoute", "MisplacedDocument", "RouteChanged", "RoutedDocumentStore"]
 
@@ -381,17 +381,35 @@ class RoutedDocumentStore:
     def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
         """Write a document to the store its ``doc_type`` is kept in, passing ``if_match`` and ``create_only`` through.
 
-        A create-only write is decided by the store the type is kept in, which is the one store that may hold the id:
-        a copy of it in another store is misplaced, and an id-only read reports it.
+        A create-only write lands only when nothing of any ``doc_type`` is stored under its scope and id, as the port
+        says, and the router holds itself to that across its stores: every other store is asked for the id first,
+        and one holding it refuses the write with :class:`~threetears.evals.schema.StoreConflict`, exactly as one
+        store holding it would. Then the owning store's own create-only write decides. Only that last write is
+        atomic: a document written to another store between the check and the create leaves the id in two stores,
+        which the next id-only read reports as :class:`MisplacedDocument`, loudly, rather than picking one.
 
         Raises:
             ValueError: The document carries no ``doc_type``, which is what places it.
-            StoreConflict: Raised by the store the type is kept in.
+            StoreConflict: A conditional write lost its race, or a create-only write found the id held — in the
+                store the type is kept in, or in any other.
         """
         doc_type = document.get("doc_type")
         if not isinstance(doc_type, str):
             raise ValueError("a routed store places a document by its doc_type, and this one carries none")
-        self._routed(doc_type).upsert(document, if_match=if_match, create_only=create_only)
+        owner = self._place(doc_type)
+        if create_only:
+            doc_id, scope_id = document["id"], document["scope_id"]
+            held = [
+                name
+                for name, store in self._children.items()
+                if name != owner and store.get(doc_id, scope_id) is not None
+            ]
+            if held:
+                raise StoreConflict(
+                    f"document {doc_id!r} in scope {scope_id!r} is already held by {held}; a create-only write lands "
+                    "only where nothing is stored under its id"
+                )
+        self._children[owner].upsert(document, if_match=if_match, create_only=create_only)
 
     def merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool:
         """Set top-level fields on the one document ``doc_id`` names, in whichever store holds it.

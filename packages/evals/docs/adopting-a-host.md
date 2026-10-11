@@ -218,7 +218,10 @@ not among `stores`, one store passed under two names, a tombstone kept apart fro
 `iter_by_doc_type` go to the store the type is kept in, and a conditional write's `if_match` or `create_only` reaches that store
 unchanged. `get`, `get_with_etag`, `merge_fields` and `delete` carry only an id, so they ask every store. A store
 that does not hold the id answers "not here", as the port says. One id lives in one store: a read that finds an
-id in two stores, or in a store its type is not kept in, raises `MisplacedDocument` rather than picking one.
+id in two stores, or in a store its type is not kept in, raises `MisplacedDocument` rather than picking one. A
+`create_only` write asks every other store for the id first and is refused with `StoreConflict` if one holds
+it, as a single store would refuse it. Only the owning store's create is atomic, so a write racing that check
+can leave the id in two stores, and the next id-only read reports it as `MisplacedDocument`.
 
 **Changing the route is an operation.** Each store records the placements it was written under, in a scope of
 its own (`ROUTING_SCOPE`: never use it as a scope of your own, and your adapter must be able to hold it).

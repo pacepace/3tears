@@ -209,6 +209,17 @@ def test_a_create_only_write_reaches_the_owning_store() -> None:
     assert router.get("a1", _SCOPE) == _doc("a1", "eval_analysis", v=1)
 
 
+def test_a_create_only_write_is_refused_when_another_store_holds_the_id() -> None:
+    """Nothing of any doc_type may be stored under the id, in any store; a StoreConflict, as one store would raise."""
+    router, stores = _router()
+    router.upsert(_doc("d1", "eval_run", v="run"))
+
+    with pytest.raises(StoreConflict, match=r"already held by \['evidence'\]"):
+        router.upsert(_doc("d1", "eval_analysis", v="analysis"), create_only=True)
+    assert _held(stores["scratch"]) == set(), "the owning store was never written"
+    assert router.get("d1", _SCOPE) == _doc("d1", "eval_run", v="run")
+
+
 def test_a_document_without_a_doc_type_cannot_be_placed() -> None:
     router, _ = _router()
     with pytest.raises(ValueError, match="by its doc_type"):
