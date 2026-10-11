@@ -66,11 +66,15 @@ class MemoWriter(FixturedClient):
         #: When set, what the FIRST call returns in place of the memo — an output the generator refuses,
         #: so the generation buys its repair round-trip.
         self.first_output: str | None = None
+        #: When set, what every call raises once the gate opens — a provider's failure, as its SDK raises one.
+        self.raises: Exception | None = None
 
     async def generate(self, *, system: str, user: str, response_format: Any = None, tools: Any = None) -> Any:
         """Write the memo over the campaign's bundle, then hand it back as the completion."""
         if self.gate is not None:
             await self.gate.wait()
+        if self.raises is not None:
+            raise self.raises
         if self.first_output is not None and not self.calls:
             self.completion.content = self.first_output
             return await super().generate(system=system, user=user, response_format=response_format, tools=tools)

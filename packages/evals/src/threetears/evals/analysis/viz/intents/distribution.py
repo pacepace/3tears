@@ -17,7 +17,7 @@ from threetears.evals.analysis.viz.intent import ChartAxis, ChartColumn, ChartEn
 from threetears.evals.analysis.viz.payloads import DistributionGroup, DistributionPayload
 from threetears.evals.analysis.viz.quantities import (
     axis_title,
-    display_scale,
+    ruled_scale,
     interval_disclosures,
     interval_sources,
     interval_statement,
@@ -52,7 +52,7 @@ def distribution_intent(payload: DistributionPayload) -> ChartIntent:
         The intent.
     """
     values = [value for group in payload.groups for value in _group_values(group)]
-    scale, unit = display_scale(values, payload.unit)
+    scale, unit = ruled_scale(values, payload.unit, payload.stated_unit)
     order = [group.label for group in payload.groups]
     identity = ChartIdentity(field="label", order=order, ordered_by="as the payload lists the groups")
     if not any(group.ci is not None or group.samples or _edged(group) for group in payload.groups):

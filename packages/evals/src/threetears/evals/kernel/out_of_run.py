@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import math
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Annotated, Any, NamedTuple
 
@@ -46,13 +46,14 @@ from pydantic import TypeAdapter, ValidationError
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.schema.models import EvalTemplate, EvalTestCase, VariationAxis
 from threetears.evals.kernel.offload import run_blocking
-from threetears.evals.schema.completion import JSON_OBJECT_RESPONSE_FORMAT
+from threetears.evals.kernel.authored import strict_response_format
+from threetears.evals.schema.base import EvalBaseModel
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from concurrent.futures import Executor
 
-    from threetears.evals.schema.completion import PricedCompletion
+    from threetears.evals.schema.completion import PricedCompletion, VariationLLM
 
 from threetears.evals.schema.out_of_run_spend import OutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
 
@@ -87,6 +88,28 @@ class AdmittedCall:
     token: str
 
 
+@dataclass(frozen=True)
+class AdmittedGeneration:
+    """A case generation's calls, admitted in the call that asked for it, for the job that makes them.
+
+    What :func:`~threetears.evals.gen.generate_variations` takes in place of admitting anything itself: the writer
+    the calls were priced on, the budget that admitted them and ledgers them as they are made, and each ``llm``
+    axis's admitted call, keyed by axis name as :func:`plan_variation_calls` keyed its plan. A launch builds one in
+    its call (:attr:`~threetears.evals.run.LaunchRequest.generation`), so a generation the cap cannot pay for is
+    refused before the launch returns, and its launcher only makes the calls. A host generating outside a launch
+    plans with :func:`plan_variation_calls`, admits with :meth:`OutOfRunBudget.admit`, and builds one the same way.
+
+    Attributes:
+        writer: The client every call was priced on and is made on — the very object.
+        budget: The budget that admitted the calls.
+        calls: Each ``llm`` axis's admitted call, by axis name.
+    """
+
+    writer: VariationLLM
+    budget: OutOfRunBudget
+    calls: Mapping[str, AdmittedCall]
+
+
 def existing_axis_values(axis: VariationAxis, existing: Sequence[EvalTestCase]) -> set[str]:
     """The values a template's stored cases already give ``axis`` — what its generation call asks the model to avoid.
 
@@ -105,9 +128,9 @@ def plan_variation_calls(
 ) -> dict[str, PlannedCall]:
     """The one call each of ``template``'s ``llm`` axes makes to generate ``n_variations`` values, built before any is made.
 
-    Each call runs in JSON-object mode and asks for ``{"values": [...]}`` — the object envelope is required
-    because ``json_object`` mode forbids a bare top-level array — naming the values the template's stored
-    cases already give the axis, so the model avoids them.
+    Each call asks for ``{"values": [...]}`` as a strict schema — an object envelope, since no structured mode
+    takes a bare top-level array — naming the values the template's stored cases already give the axis, so the
+    model avoids them.
 
     Args:
         template: The template whose ``llm`` axes are written.
@@ -122,6 +145,19 @@ def plan_variation_calls(
         for axis in template.variation_axes
         if axis.generator == "llm"
     }
+
+
+class _VariationValues(EvalBaseModel):
+    """What a variation axis's writer answers: the new values, under one key."""
+
+    values: list[str]
+
+
+#: What every variation call asks for: its envelope as a strict schema, so a provider enforcing it answers an object
+#: holding a list of strings and nothing else.
+_VARIATION_RESPONSE_FORMAT: dict[str, Any] = strict_response_format(
+    "variation_values", _VariationValues.model_json_schema()
+)
 
 
 def _llm_axis_call(axis: VariationAxis, n_variations: int, existing_values: set[str]) -> PlannedCall:
@@ -143,7 +179,7 @@ def _llm_axis_call(axis: VariationAxis, n_variations: int, existing_values: set[
         f"Existing values to exclude:\n{existing_block}\n\n"
         f'Produce {n_variations} new distinct values as a JSON object: {{"values": [...]}}.'
     )
-    return PlannedCall(system=system_prompt, user=user_prompt, response_format=JSON_OBJECT_RESPONSE_FORMAT)
+    return PlannedCall(system=system_prompt, user=user_prompt, response_format=_VARIATION_RESPONSE_FORMAT)
 
 
 class RecordedCompletion(NamedTuple):
@@ -160,7 +196,9 @@ class OutOfRunBudget:
     Built by whoever starts the work: the launch builds one per generating launch
     (``LaunchRequest.generation_budget``, capped at the host's ``max_out_of_run_cost_usd``), an analysis
     generation one per generation (:func:`~threetears.evals.ops.analysis_generate`, at the same cap), and a
-    host proposing a rubric builds one for the proposal. Admissions accumulate — a second admission is
+    host proposing a rubric builds one for the proposal. Whoever builds it admits the calls in its own call — a
+    planner's :class:`PlannedCall` in, an :class:`AdmittedCall` out — and the work that runs later makes only
+    what was admitted. Admissions accumulate — a second admission is
     refused when it and every earlier one together would pass the cap.
 
     Attributes:
@@ -252,16 +290,19 @@ class OutOfRunBudget:
             raise ValidationFailedError(
                 f"{what} cannot be priced before they are made: the client cannot bound what a call on "
                 f"{client.model_name!r} costs (price_ceiling returned None), and the out-of-run cap ${self.cap_usd:.2f} "
-                "is enforced, so an unpriced call is refused rather than made — unknown is not $0. Give the host's "
-                "client a rate for that model, or name a model it can price. Nothing was called"
+                "is enforced, so an unpriced call is refused rather than made — unknown is not $0. Nothing was called",
+                remedy="give the host's client a rate for that model, or name a model it can price",
             )
         priced = math.fsum(c for c in ceilings if c is not None)
         if self._committed_usd + priced > self.cap_usd:
             already = f" on top of ${self._committed_usd:.4f} already admitted" if self._committed_usd else ""
             raise ValidationFailedError(
                 f"{what} are priced at up to ${priced:.4f}{already}, above the out-of-run cap ${self.cap_usd:.2f}. "
-                "Fewer generated cases, a cheaper model or a smaller output cap brings them under; a larger cap raises "
-                "it. Nothing was called"
+                "Nothing was called",
+                remedy=(
+                    "fewer generated cases, a cheaper model or a smaller output cap brings them under; a larger cap "
+                    "raises it"
+                ),
             )
         return ceilings
 

@@ -87,9 +87,9 @@ class TestTheCodeOnlyReportFollowsTheRule:
         narrow, wide = (variant_of_cell_ref(cell_at(bundle, level)) for level in (TOYHOST_NARROW, TOYHOST_WIDE))
         table = _surface_table(bundle)
         assert table.order == SURFACE_ORDER
-        assert [row["arm"] for row in table.rows] == [f"{names[narrow]} {REFERENCE_MARK}", names[wide]]
+        assert [row["arm"] for row in table.values()] == [f"{names[narrow]} {REFERENCE_MARK}", names[wide]]
 
     def test_with_no_control_no_row_is_marked_and_the_rule_says_so(self) -> None:
         table = _surface_table(_bundle(control=None))
         assert table.order == SURFACE_ORDER_NO_CONTROL
-        assert not any(REFERENCE_MARK in str(row["arm"]) for row in table.rows)
+        assert not any(REFERENCE_MARK in str(row["arm"]) for row in table.values())

@@ -443,7 +443,7 @@ def test_a_uniform_shift_on_a_measure_with_no_range_is_not_separated_and_says_wh
 
     report = build_code_only_report(bundle, measures=profile.measures, assembled_at="2026-10-06T00:00:00Z")
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
-    (row,) = [row for row in table.rows if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
+    (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
     assert row["verdict"].startswith("not separated") and "declare value_range" in row["verdict"]
 
 
@@ -468,7 +468,7 @@ def test_the_report_and_the_writer_see_an_immaterial_verdict_labelled() -> None:
     bundle = _bundle([], accuracy=_ACCURACY, profile=profile)
     report = build_code_only_report(bundle, measures=profile.measures, assembled_at="2026-10-06T00:00:00Z")
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
-    (row,) = [row for row in table.rows if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
+    (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
 
     assert (
         row["verdict"].startswith("improved")
@@ -492,7 +492,7 @@ def test_an_equivalent_row_does_not_carry_the_caveat_that_contradicts_it() -> No
 
     report = build_code_only_report(bundle, measures=profile.measures, assembled_at="2026-10-06T00:00:00Z")
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
-    (row,) = [row for row in table.rows if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
+    (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
 
     assert row["verdict"].startswith("equivalent") and "(margin ±0.25)" in row["verdict"]
     assert "does not show" not in row["verdict"]
@@ -599,7 +599,7 @@ def test_the_report_states_each_contrast_s_means_cases_interval_and_effect_size(
     bundle = _bundle([], accuracy=accuracy, contrast_cases=range(9), profile=profile)
     report = build_code_only_report(bundle, measures=profile.measures, assembled_at="2026-10-06T00:00:00Z")
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
-    (row,) = [row for row in table.rows if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
+    (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
 
     assert row["control_mean"] == pytest.approx(0.5)
     assert row["cases"] == "9 paired; 3 of the control's left out, not run by the other side"

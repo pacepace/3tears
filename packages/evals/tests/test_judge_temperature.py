@@ -138,10 +138,14 @@ class TestTheTemperatureRecordedIsWhatWasSent:
         outcome = await service.score_dimension(_dim(), _context())
         assert outcome.score is not None and outcome.score.judge_temperature == MODEL_DEFAULT_TEMPERATURE
 
-    async def test_a_client_reporting_nothing_is_not_recorded_never_the_request(self) -> None:
+    async def test_a_client_reporting_nothing_is_a_defect_never_an_unrecorded_judge(self) -> None:
+        """Recorded as "not recorded", every judge of such a client was unrecordable as a profile and "unknown" in
+        every comparison, with no error anywhere; the temperature is the protocol's, so its absence is refused — as
+        the dimension's error, carrying what the billed call cost, never a score."""
         service, _asked = _service(reports=False)
         outcome = await service.score_dimension(_dim(), _context())
-        assert outcome.score is not None and outcome.score.judge_temperature is None
+        assert outcome.score is None and outcome.error is not None and "check_completion_conformance" in outcome.error
+        assert outcome.usage is not None and outcome.usage.calls == 1, "the refused call's spend is kept"
 
 
 def _scored(result_id: str, score: int, temperature: float | str | None) -> Any:

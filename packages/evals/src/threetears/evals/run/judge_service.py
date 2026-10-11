@@ -71,8 +71,9 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.kernel.host.eval_host import CompletionClients
 from threetears.evals.schema.completion import BoundCompletionClient, ProviderFailureDescriber
+from threetears.evals.kernel.capped_completion import call_ceiling
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger, blended_cost
-from threetears.evals.run.judge import CANNOT_TELL, run_judge_llm
+from threetears.evals.run.judge import CANNOT_TELL, JUDGE_CALL_ATTEMPTS, judge_reply_format, run_judge_llm
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -326,11 +327,19 @@ class JudgeRequest(NamedTuple):
     label: str
     #: Whether the evidence carries the goal-state outcomes (the transcript axis's does not).
     include_goal_outcomes: bool
+    #: The directive the call sends: its reply as a strict schema (:func:`~threetears.evals.run.judge.judge_reply_format`),
+    #: built from the same criterion and offer :func:`run_judge_llm` sends it from, so what is priced is what is sent.
+    response_format: dict[str, Any]
     #: The dimension's rubric axis, stamped onto its score: a boundary dimension is a guardrail.
     axis: RubricAxis = "capability"
     #: What the call reads — the evidence's fingerprint and the criterion's — stamped onto its score, so a
     #: person's label of the same output on the same criterion pairs with it on any result (#628).
     label_key: LabelKey | None = None
+
+
+def _criterion(dim_id: str, scale: RubricScale) -> dict[str, Any]:
+    """The one criterion a single-dimension call scores, as :func:`run_judge_llm` reads it and its schema is built."""
+    return {"name": dim_id, "weight": 1.0, "scale": scale}
 
 
 def _request(
@@ -373,6 +382,7 @@ def _request(
         scale=scale,
         label=label,
         include_goal_outcomes=include_goal_outcomes,
+        response_format=judge_reply_format([_criterion(dim_id, scale)], cannot_tell_offered=True),
         axis=axis,
         label_key=label_key,
     )
@@ -495,6 +505,28 @@ class JudgeService:
         """
         return self._client_for(request.config)
 
+    def price_ceiling(self, request: JudgeRequest) -> float | None:
+        """The most sending ``request`` can cost, every attempt included, or ``None`` when its client cannot say.
+
+        What a caller holding the call against a cost cap reserves before sending it (the cell's judge phase,
+        :func:`~threetears.evals.run.runner.judge_dims`, and the judge kind): the client's ceiling for the pair
+        as :func:`~threetears.evals.run.judge.run_judge_llm` sends it, times every attempt its parse retry can
+        make (:data:`~threetears.evals.run.judge.JUDGE_CALL_ATTEMPTS`).
+
+        Args:
+            request: The call, as built.
+
+        Returns:
+            The ceiling in dollars, or ``None`` when the client has no ``price_ceiling`` or answers ``None``.
+        """
+        return call_ceiling(
+            self.client_for(request),
+            system=request.system_prompt,
+            user=request.user_prompt,
+            response_format=request.response_format,
+            attempts=JUDGE_CALL_ATTEMPTS,
+        )
+
     # ------------------------------------------------------------------
     # Requests — what each call sends, built without calling anything
     # ------------------------------------------------------------------
@@ -558,7 +590,7 @@ class JudgeService:
             client=client,
             system_prompt=request.system_prompt,
             user_prompt=request.user_prompt,
-            criteria_dicts=[{"name": dim_id, "weight": 1.0, "scale": request.scale}],
+            criteria_dicts=[_criterion(dim_id, request.scale)],
             label=request.label,
             case_id=case_id,
             cannot_tell_offered=True,

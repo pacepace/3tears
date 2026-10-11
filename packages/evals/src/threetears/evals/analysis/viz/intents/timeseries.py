@@ -15,7 +15,7 @@ from threetears.evals.analysis.viz.intent import ChartAxis, ChartColumn, ChartEn
 from threetears.evals.analysis.viz.payloads import TimeseriesPayload
 from threetears.evals.analysis.viz.quantities import (
     axis_title,
-    display_scale,
+    ruled_scale,
     interval_disclosures,
     interval_sources,
     interval_statement,
@@ -64,7 +64,9 @@ def timeseries_intent(payload: TimeseriesPayload) -> ChartIntent:
         The intent.
     """
     intervals = [point.ci for line in payload.series for point in line.points]
-    scale, unit = display_scale([bound for ci in intervals for bound in (ci.low, ci.high)], payload.unit)
+    scale, unit = ruled_scale(
+        [bound for ci in intervals for bound in (ci.low, ci.high)], payload.unit, payload.stated_unit
+    )
     time_title = f"Build ({payload.release_label})" if payload.basis == "release" else "Day (UTC)"
     points: list[dict[str, Any]] = [
         {

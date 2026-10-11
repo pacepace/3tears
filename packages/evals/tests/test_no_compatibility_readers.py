@@ -47,7 +47,7 @@ from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.schema import SweepableValue
 from threetears.evals.schema.models import CalibrationRating, JudgeRescore, RubricScore, RunCompleteness
 from threetears.evals.kernel.surface import DecisionSurface, JudgedDimensionFacts, JudgedReading
-from threetears.evals.gen import propose_draft
+from threetears.evals.gen import plan_draft, propose_draft
 from threetears.evals.gen.prompts.boundary_gen import EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT
 from threetears.evals.gen.prompts.proposer import EVAL_PROPOSER_TEMPLATE_DEFAULT
 from threetears.evals.storage import InMemoryDocumentStore
@@ -242,6 +242,22 @@ def _budget() -> OutOfRunBudget:
     )
 
 
+async def _proposed(
+    client: Any,
+    *,
+    budget: OutOfRunBudget,
+    axis: Any,
+    subject_id: str,
+    system_prompt: str,
+    subject_feed: str,
+    catalog_feed: str,
+) -> Any:
+    """A host's proposal: planned and admitted in its call, then made, as the job makes it."""
+    call = plan_draft(system_prompt=system_prompt, subject_feed=subject_feed, catalog_feed=catalog_feed)
+    [admitted] = budget.admit(client, "proposer", [call])
+    return await propose_draft(client, admitted, budget=budget, axis=axis, subject_id=subject_id)
+
+
 def _draft(name: str, *, scale: str | None = "pass_fail") -> str:
     dim = {"name": name, "description": "declines without stonewalling"}
     if scale is not None:
@@ -259,7 +275,7 @@ def _draft(name: str, *, scale: str | None = "pass_fail") -> str:
 async def test_a_proposer_draft_naming_a_bare_dim_is_refused_naming_it(axis: str) -> None:
     """The draft is validated into the model, so a bare name the model wrote fails the whole draft."""
     with pytest.raises(ValidationFailedError, match="draft validation(.|\n)*'graceful_decline' must be namespaced"):
-        await propose_draft(
+        await _proposed(
             _ScriptedClient(_draft("graceful_decline")),
             budget=_budget(),
             axis=axis,
@@ -268,7 +284,7 @@ async def test_a_proposer_draft_naming_a_bare_dim_is_refused_naming_it(axis: str
             subject_feed="F",
             catalog_feed="C",
         )
-    proposal, _spend = await propose_draft(
+    proposal, _spend = await _proposed(
         _ScriptedClient(_draft("boundary.graceful_decline")),
         budget=_budget(),
         axis=axis,
@@ -284,7 +300,7 @@ async def test_a_proposer_draft_naming_a_bare_dim_is_refused_naming_it(axis: str
 async def test_a_proposer_draft_dimension_with_no_scale_is_refused(axis: str) -> None:
     """A criterion states its scale; a draft that leaves one out is not read as 1-5."""
     with pytest.raises(ValidationFailedError, match="draft validation(.|\n)*scale"):
-        await propose_draft(
+        await _proposed(
             _ScriptedClient(_draft("boundary.graceful_decline", scale=None)),
             budget=_budget(),
             axis=axis,

@@ -7,7 +7,7 @@ Driven over the toy host through :meth:`MountedTool.call`, the path every transp
 - **The control is addressed from a run**, and resolves to the same variant key ``set_campaign_control`` gives.
 - **Every refusal names what was wrong**: an axis the host does not declare (with its vocabulary), a control run
   with no design or outside the campaign, a typed control beside a control run, and the old ``controls`` name.
-- **An axis the host does not declare is refused naming ``declarable_axes()``**, the call listing what it does.
+- **An axis the host does not declare is refused naming what is declarable**, the refusal listing the host's axes.
 - **Without a design the campaign is exploratory** (#685): derived from ``declared_design is None``, never stored as a
   flag, and said once, at the top, by the bundle, the code-only report, the report of a generated analysis and the
   message the writer is sent; the writer's prompt calls the design it reads inferred from the runs, never declared.
@@ -115,7 +115,7 @@ async def test_the_control_is_resolved_from_a_run_as_set_campaign_control_resolv
                     axes=[{"axis_id": "no_such_lever", "values": [{"content": "x", "display": "x"}]}]
                 )
             },
-            "`declarable_axes()` lists every axis this host accepts",
+            "remedy: declare only the axes this refusal lists as declarable",
             id="an-axis-the-host-does-not-declare",
         ),
         pytest.param({"control_from_run_id": "{run}"}, "declare a design", id="a-control-run-with-no-design"),
@@ -157,7 +157,8 @@ async def test_an_undeclared_axis_is_named_beside_the_pointer(evals: MountedTool
 
     outcome = await _create(evals, fixture, declared_design=_design(axes=[lever]))
 
-    assert outcome.is_error and "no_such_lever" in outcome.text and "declarable_axes()" in outcome.text, outcome.text
+    assert outcome.is_error and "no_such_lever" in outcome.text and "Declarable axes:" in outcome.text, outcome.text
+    assert "remedy: declare only the axes this refusal lists as declarable" in outcome.text, outcome.text
 
 
 # --- with no design the campaign is exploratory (#685) --------------------------------------------------------------

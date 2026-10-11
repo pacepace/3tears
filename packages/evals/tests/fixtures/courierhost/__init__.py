@@ -52,7 +52,6 @@ from threetears.evals.kernel import (
     CellSpanWindow,
     EvalCampaign,
     EvalStorage,
-    NotFoundError,
     ValidationFailedError,
     MetricDescriptor,
     WorldSession,
@@ -82,6 +81,7 @@ from threetears.evals.kernel.host import (
 )
 from threetears.evals.schema import IntervalScale, SubjectSnapshot, SweepableValue
 from threetears.evals.run import (
+    UnknownSubject,
     KindWiring,
     LaunchableKind,
     LaunchHost,
@@ -258,6 +258,8 @@ class RoutePlannerKind:
     """A route planner, as the engine's candidate-kind seam sees one. Scripted: no model is called."""
 
     judged_artifact = JudgedArtifact.UNJUDGED
+    #: Serial: the courier's world is one table it does not bind per cell, so two cells would plan over one map.
+    max_concurrent_cells: int | None = 1
     #: The carriers this kind attaches; a seed reaches the world only through these.
     CARRIERS: tuple[str, ...] = ("dispatch",)
 
@@ -460,15 +462,14 @@ def courier_launch_host() -> LaunchHost:
     eval_host.storage.save_template(courier_template())
 
     async def launch(request: LaunchRequest) -> EvalRun:
-        if request.subject_id != COURIER_SUBJECT.subject_id:
-            raise NotFoundError("subject", request.subject_id)
         cases = courier_cases()
         for case in cases:
             eval_host.storage.save_test_case(case)
         feed = FEEDS.get(request.candidate_model or "")
         if feed is None:
             raise ValidationFailedError(
-                f"the courier plans with {', '.join(COURIER_MODELS)}; {request.candidate_model!r} is none of them"
+                f"the courier plans with {', '.join(COURIER_MODELS)}; {request.candidate_model!r} is none of them",
+                remedy=f"launch one of {', '.join(COURIER_MODELS)}",
             )
         payload = {"search_depth": 3, "traffic_feed": feed}
         return await launch_run(
@@ -482,8 +483,14 @@ def courier_launch_host() -> LaunchHost:
             ),
         )
 
+    def resolve_subject(subject_id: str, _scope_id: str) -> UnknownSubject | None:
+        if subject_id == COURIER_SUBJECT.subject_id:
+            return None
+        return UnknownSubject(remedy=f"the courier host holds one subject, {COURIER_SUBJECT.subject_id}")
+
     launch_host = LaunchHost(
         eval_host=eval_host,
+        resolve_subject=resolve_subject,
         kinds={
             COURIER_KIND: LaunchableKind(
                 launch=launch,

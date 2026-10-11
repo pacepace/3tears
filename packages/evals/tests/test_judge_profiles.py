@@ -351,6 +351,29 @@ def test_a_profile_whose_disagreement_decides_no_tier_is_not_read() -> None:
     assert _tier(_second_campaign(wanting)).tier == "undetermined"
 
 
+def test_a_profile_consulted_that_decides_no_tier_is_said_to_have_been_consulted() -> None:
+    """judge_profiles_record promises the tier line says when a profile was read; an undetermined one said nothing."""
+    thin = _recorded_profile(cases=CALIBRATION_MIN_RESULTS - 1)
+    bundle = _second_campaign(thin)
+    tier = _tier(bundle)
+    assert tier.tier == "undetermined" and tier.from_profile is None
+    assert tier.consulted_profile is not None and tier.consulted_profile.profile_id == thin.id
+    assert tier.consulted_profile.cases == thin.cases
+    report = build_code_only_report(bundle, measures=toyhost_profile().measures, assembled_at="2026-10-10T00:00:00Z")
+    (sentence,) = [
+        block.text
+        for block in report.blocks
+        if isinstance(block, DisclosureBlock) and block.text.startswith("Judged evidence tier:")
+    ]
+    assert f"consulted the judge's stored profile {thin.id}" in sentence and "undetermined too" in sentence
+
+
+def test_no_profile_is_said_to_be_consulted_where_none_was_read() -> None:
+    assert _tier(_second_campaign(None)).consulted_profile is None
+    # A tier the campaign's own evidence decided reads no profile at all.
+    assert _tier(_second_campaign(_recorded_profile(), rated=CALIBRATION_MIN_RESULTS)).consulted_profile is None
+
+
 def test_the_criterion_of_each_judge_is_read_off_the_template_its_runs_were_judged_against() -> None:
     campaign, toy = toyhost_campaign()
     runs = [

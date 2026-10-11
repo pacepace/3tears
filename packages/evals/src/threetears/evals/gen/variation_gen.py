@@ -13,12 +13,16 @@ Three axis generator types:
 * **llm** — LLM-driven; asks the supplied client for novel values,
   deduplicated against the test cases already persisted for this template.
   The counts record which model wrote them (``VariationCounts.variation_model``),
-  read off the client. A launch asks its host for that client in the
-  ``variation`` role, before any run starts: those calls are outside every
-  run's cost cap and metered-call ceiling, so they go through an
-  :class:`~threetears.evals.kernel.out_of_run.OutOfRunBudget` instead — every
-  ``llm`` axis's call is priced before the first is made, refused together when
-  the out-of-run cap cannot pay for them, and ledgered once made.
+  read off the client. Those calls are outside every run's cost cap and
+  metered-call ceiling, so they go through an
+  :class:`~threetears.evals.kernel.out_of_run.OutOfRunBudget` instead, and are
+  planned and admitted by the CALLER, not here: the plan is
+  :func:`~threetears.evals.kernel.out_of_run.plan_variation_calls`, the caller
+  admits every axis's call together (refused together when the out-of-run cap
+  cannot pay for them) and hands the admissions in as an
+  :class:`~threetears.evals.kernel.out_of_run.AdmittedGeneration`, which this
+  only makes and ledgers. A launch admits in its call, before any run starts,
+  so a generation it cannot pay for is refused before the launch returns.
 
 Cross-axis combination is the Cartesian product, truncated (or sampled
 without replacement) to ``n_variations``. Existing test cases are reused
@@ -51,7 +55,12 @@ from threetears.evals.schema.hashing import canonical_json
 from threetears.evals.kernel.identity import compute_content_hash
 from threetears.evals.schema.models import EvalTemplate, EvalTestCase, VariationAxis, VariationCounts
 from threetears.evals.kernel.offload import run_blocking
-from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, existing_axis_values, plan_variation_calls
+from threetears.evals.kernel.out_of_run import (
+    AdmittedGeneration,
+    OutOfRunBudget,
+    existing_axis_values,
+    plan_variation_calls,
+)
 from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
 from threetears.evals.kernel.provider import extract_json
 from threetears.observe import get_logger
@@ -125,8 +134,7 @@ async def generate_variations(
     storage: EvalTestCaseStore,
     scope_id: str,
     blocking_executor: Executor | None,
-    llm: VariationLLM | None = None,
-    budget: OutOfRunBudget | None = None,
+    generation: AdmittedGeneration | None = None,
     rng: random.Random | None = None,
     preview: bool = False,
 ) -> GeneratedVariations:
@@ -149,15 +157,11 @@ async def generate_variations(
             whole generation to a thread and this is how the store calls leave it. No default, as the
             host's own has none: the default executor is the one a host's liveness probes may share.
             The ``budget``'s ledger writes go where the budget's own ``blocking_executor`` says.
-        llm: The client that writes the values of the template's ``llm``
-            axes, naming the model it calls (:class:`VariationLLM` — a host's
-            client for the ``variation`` role). Required exactly when an axis
-            declares ``generator='llm'``, and refused otherwise: a client
-            nothing calls would be recorded as the model that wrote the cases.
-        budget: The out-of-run budget the ``llm`` axes' calls are priced against
-            and ledgered through — required exactly when ``llm`` is given, and
-            refused otherwise. Every axis's call is admitted together, before the
-            first is made, so a set the cap cannot pay for costs nothing.
+        generation: The ``llm`` axes' calls, admitted by the caller before this is called
+            (:class:`~threetears.evals.kernel.out_of_run.AdmittedGeneration`: the writer, the budget that admitted
+            them, each axis's admitted call). Required exactly when an axis declares ``generator='llm'``, and
+            refused otherwise: a writer nothing calls would be recorded as the model that wrote the cases. This
+            admits nothing; each call is made on the writer it was priced on and ledgered through its budget.
         rng: Optional :class:`random.Random` for deterministic sampling.
             Defaults to a fresh ``random.Random()``.
         preview: When True, returns generated variations *without*
@@ -174,30 +178,32 @@ async def generate_variations(
 
     Raises:
         ValueError: When an axis declares ``llm`` generator but no
-            ``llm`` client was supplied, an ``llm`` client was supplied for a
-            template with no ``llm`` axis, ``llm`` and ``budget`` were not
-            supplied together, or ``n_variations`` is non-positive.
+            ``generation`` was supplied, one was supplied for a template with
+            no ``llm`` axis, its admitted calls are not one per ``llm`` axis,
+            or ``n_variations`` is non-positive.
         ValidationFailedError: When an axis yields no values. The launch used
             to fall back to the template's stored cases here, which froze a case
             set nobody asked for under a run that reported generating one.
-            Also raised by the budget, before any call, when the ``llm`` axes'
-            calls cannot be priced under an enforced out-of-run cap or are priced
-            above it.
     """
     if n_variations <= 0:
         raise ValueError(f"n_variations must be positive; got {n_variations}.")
-    writes_with_a_model = any(axis.generator == "llm" for axis in template.variation_axes)
-    if llm is not None and not writes_with_a_model:
+    llm_axes = [axis.name for axis in template.variation_axes if axis.generator == "llm"]
+    if generation is not None and not llm_axes:
         raise ValueError(
-            f"template {template.id!r} has no llm-generated axis, so nothing would call the llm client supplied; "
-            "it would be recorded as the model that wrote cases it never wrote — pass llm=None"
+            f"template {template.id!r} has no llm-generated axis, so nothing would call the generation's writer; "
+            "it would be recorded as the model that wrote cases it never wrote — pass generation=None"
         )
-    if llm is None and writes_with_a_model:
-        llm_axes = ", ".join(repr(axis.name) for axis in template.variation_axes if axis.generator == "llm")
+    if generation is None and llm_axes:
         raise ValueError(
-            f"template {template.id!r} has its {llm_axes} axis values written by a model, and no llm client was supplied"
+            f"template {template.id!r} has its {', '.join(map(repr, llm_axes))} axis values written by a model, and "
+            "no admitted generation was supplied: plan the calls with plan_variation_calls, admit them under an "
+            "out-of-run budget, and pass generation=AdmittedGeneration(...) (a launch's is request.generation)"
         )
-    _refuse_a_writer_without_its_budget(llm, budget)
+    if generation is not None and sorted(generation.calls) != sorted(llm_axes):
+        raise ValueError(
+            f"the generation admitted calls for axes {sorted(generation.calls)} and template {template.id!r} writes "
+            f"{sorted(llm_axes)} with a model; admit exactly the calls plan_variation_calls plans for it"
+        )
     rng = rng or random.Random()
 
     # Load existing test cases for dedup unless previewing.
@@ -208,21 +214,15 @@ async def generate_variations(
         for tc in existing:
             seen_by_params[_canonical_key(tc.variation_params)] = tc
 
-    # Every llm axis's call, priced and admitted together BEFORE the first is made: admitting one axis
-    # at a time would pay for the first and then refuse the second.
-    admitted: dict[str, AdmittedCall] = {}
-    if llm is not None and budget is not None:
-        planned = plan_variation_calls(template, n_variations, existing)
-        admitted = dict(zip(planned, budget.admit(llm, "variation", list(planned.values())), strict=True))
     spend: list[OutOfRunSpend] = []
 
     # Per-axis value lists.
     per_axis_values: list[list[str]] = []
     for axis in template.variation_axes:
         if axis.generator == "llm":
-            # Present by construction: an llm axis was refused above without a client, and a client without a budget.
-            assert llm is not None and budget is not None
-            recorded = await budget.generate(llm, admitted[axis.name])
+            # Present by construction: an llm axis was refused above without an admitted generation.
+            assert generation is not None
+            recorded = await generation.budget.generate(generation.writer, generation.calls[axis.name])
             spend.append(recorded.spend)
             values = _parse_llm_axis_values(axis, recorded.result, n_variations, existing_axis_values(axis, existing))
         else:
@@ -230,8 +230,8 @@ async def generate_variations(
         if not values:
             raise ValidationFailedError(
                 f"variation axis {axis.name!r} ({axis.generator}) produced no values, so no case set can be "
-                "generated for it — give the axis values, or for an llm axis read the log line above for "
-                "what the model returned"
+                "generated for it",
+                remedy="give the axis values, or for an llm axis launch again with another variation_model",
             )
         per_axis_values.append(values)
 
@@ -272,7 +272,7 @@ async def generate_variations(
             requested=n_variations,
             kept=len(out),
             reused=reused,
-            variation_model=llm.model_name if llm is not None else None,
+            variation_model=generation.writer.model_name if generation is not None else None,
         ),
         tuple(spend),
     )
@@ -319,25 +319,6 @@ async def price_variations(
     if not planned:
         raise ValueError(f"template {template.id!r} has no llm-generated axis, so a generation of it makes no call")
     return budget.quote(llm, "variation", list(planned.values()))
-
-
-def _refuse_a_writer_without_its_budget(llm: VariationLLM | None, budget: OutOfRunBudget | None) -> None:
-    """Refuse an ``llm`` writer with no budget to price it, and a budget with no writer to price.
-
-    Raises:
-        ValueError: Exactly one of the two was supplied.
-    """
-    if llm is not None and budget is None:
-        raise ValueError(
-            "an llm writer's calls run outside every run, so they are priced and ledgered through an out-of-run "
-            "budget: pass budget=<the OutOfRunBudget they are admitted under> (a launch's is "
-            "request.generation_budget)"
-        )
-    if llm is None and budget is not None:
-        raise ValueError(
-            "a budget was supplied for a generation no model writes, so nothing would be priced or ledgered "
-            "through it — pass budget=None"
-        )
 
 
 # =============================================================================

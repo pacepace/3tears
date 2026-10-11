@@ -10,6 +10,8 @@ scopes their host names, and that a host cannot claim an engine type.
 
 from __future__ import annotations
 
+from threetears.evals.schema.models import EvalRun
+
 from collections.abc import Callable
 from typing import Any
 
@@ -147,7 +149,9 @@ def test_the_reclaim_settles_runs_only_in_the_scopes_it_is_named() -> None:
     assert report.scanned == 1 and report.cancelled_run_ids == ["run-here"]
     settled = storage.load_eval_run("run-here", _HOME)
     assert settled is not None and settled.status == "cancelled" and settled.lost is not None
-    assert storage.load_eval_run("run-there", _ELSEWHERE).status == "running"
+    # Read raw: a settled read would itself write a lease-less run lost; what is asserted is that the reclaim did not.
+    untouched, _ = storage.load_job_record(EvalRun, "run-there", _ELSEWHERE)
+    assert untouched is not None and untouched.status == "running" and untouched.lost is None
 
 
 @pytest.mark.parametrize("claimed", ["eval_run", "eval_template"])

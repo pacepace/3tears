@@ -52,6 +52,7 @@ from threetears.evals.analysis.lenses.aggregation import DEFAULT_WEIGHTING
 from threetears.evals.analysis.lenses.comparison_sets import compute_comparison_sets
 from threetears.evals.analysis.lenses.cost_estimate import CostEstimate, PlannedCost
 from threetears.evals.analysis.lenses.pivot import PivotError, PivotTable, compute_pivot
+from threetears.evals.analysis.judge_profiles import judges_tiers
 from threetears.evals.analysis.lenses.frontier import FrontierError, compute_frontier, normalize_bar
 from threetears.evals.analysis.lenses.history import HistoryError, HistoryResult, compute_history
 from threetears.evals.analysis.lenses.program_budget import compute_program_budget
@@ -62,8 +63,10 @@ from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, composite_significance, difference_interval
 from threetears.evals.kernel.arguments import normalize_blank
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.host.bars import PassCriterion
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.scoring import (
+    capability_scores,
     compute_composite_summary,
     compute_async_delivery_summary,
     compute_cost_summary,
@@ -75,11 +78,13 @@ from threetears.evals.kernel.scoring import (
 )
 from threetears.evals.kernel.status_filter import StatusFilterError, normalize_status_filter
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_RUN
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
     from threetears.evals.kernel.campaign import EvalCampaign
-    from threetears.evals.schema.models import EvalResult, EvalRun, EvalTemplate
+    from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
+    from threetears.evals.schema.models import CalibrationRating, EvalResult, EvalRun, EvalTemplate
 
 log = get_logger(__name__)
 
@@ -185,6 +190,18 @@ class LensStore(Protocol):
         """Load one campaign within a scope, or ``None`` when it does not resolve there."""
         ...
 
+    def query_calibration_ratings(self, scope_id: str, /, *, run_id: str | None = None) -> list[CalibrationRating]:
+        """Calibration ratings in a scope, optionally of one run's results — what a judge's tier is read from."""
+        ...
+
+    def query_judge_profiles(self, scope_id: str, /) -> list[EvalJudgeProfile]:
+        """Every stored judge profile in a scope."""
+        ...
+
+    def load_template(self, template_id: str, scope_id: str, /) -> EvalTemplate | None:
+        """One template, or None — whose criterion a judge's stored profile is keyed by."""
+        ...
+
     def load_eval_run(self, run_id: str, scope_id: str, /) -> EvalRun | None:
         """Load one run within a scope, whole, or ``None`` when it does not resolve there."""
         ...
@@ -198,7 +215,7 @@ def _load_campaign(storage: LensStore, campaign_id: str, scope_id: str) -> EvalC
     """
     campaign = storage.load_campaign(campaign_id, scope_id)
     if campaign is None:
-        raise NotFoundError("campaign", campaign_id)
+        raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
     return campaign
 
 
@@ -210,7 +227,7 @@ def _load_run(storage: LensStore, run_id: str, scope_id: str) -> EvalRun:
     """
     run = storage.load_eval_run(run_id, scope_id)
     if run is None:
-        raise NotFoundError("run", run_id)
+        raise NotFoundError("run", run_id, remedy=FIND_RUN)
     return run
 
 
@@ -261,7 +278,7 @@ def _status_filter(status: str | None) -> str | None:
     try:
         return normalize_status_filter(status)
     except StatusFilterError as e:
-        raise ValidationFailedError(str(e)) from e
+        raise ValidationFailedError(e.fault, remedy=e.remedy) from e
 
 
 def _corpus_and_cohort(list_runs: RunLister, scope_id: str) -> tuple[list[EvalRun], list[EvalRun], set[str]]:
@@ -386,8 +403,9 @@ def comparison_sets(
         # ambiguous question, and answering a narrower question than the one asked is
         # the whole failure class this surface exists to end.
         raise ValidationFailedError(
-            "comparison_sets takes campaign_id OR run_ids, not both — they are two different "
-            "scopes, and answering one would silently drop the other"
+            "comparison_sets was given campaign_id and run_ids — they are two different scopes, and answering one "
+            "would silently drop the other",
+            remedy="pass campaign_id or run_ids, not both",
         )
     # The campaign load raises NotFoundError before the scope-wide reads below, so an
     # unknown campaign costs one lookup rather than a full corpus scan answered empty.
@@ -475,7 +493,10 @@ def pivot(
         else:
             estimate = CostEstimate.model_validate(predicted_cost)
     except ValidationError as e:
-        raise ValidationFailedError(f"predicted_cost is not a cost estimate: {e}") from e
+        raise ValidationFailedError(
+            f"predicted_cost is not a cost estimate: {e}",
+            remedy="pass a launch_estimate answer, or a cost estimate of planned arms",
+        ) from e
     metric = normalize_blank(metric, METRIC_COMPOSITE)
     weighting = normalize_blank(weighting, DEFAULT_WEIGHTING)
     filters = {"subject_id": subject_id} if subject_id else None
@@ -523,7 +544,7 @@ def pivot(
         # so a 500 would misattribute it and an empty table would read as
         # "no data" — the one answer that is definitely wrong.
         _observe_read("pivot", scope_id, started, *observed, cells_out="refused")
-        raise ValidationFailedError(str(e)) from e
+        raise ValidationFailedError(e.fault, remedy=e.remedy) from e
     _observe_read("pivot", scope_id, started, *observed, cells_out=len(table.cells))
     return table
 
@@ -581,7 +602,7 @@ def frontier(
     try:
         parsed_bar = normalize_bar(bar)
     except FrontierError as e:
-        raise ValidationFailedError(str(e)) from e
+        raise ValidationFailedError(e.fault, remedy=e.remedy) from e
     subject = (subject_id or "").strip() or None
     status = _status_filter(status)
 
@@ -594,10 +615,15 @@ def frontier(
         # own setting, so a run whose footing is read is read whole (`run_summary` does the same).
         runs = [(storage.load_eval_run(run.id, scope_id) or run) if run.elided_payload_paths else run for run in runs]
     results = storage.query_eval_results(scope_id)
+    # The judges behind every result's scores, tiered as a campaign over these runs would tier them: a verdict made on
+    # a judged pass^k names the tier it stands on (#679), which a scope's frontier read nowhere before.
+    ranked = {run.id for run in runs}
+    tiers = judges_tiers(storage, scope_id, runs, [result for result in results if result.eval_run_id in ranked])
     try:
         result = compute_frontier(
             runs,
             results,
+            tiers=tiers,
             bar=parsed_bar,
             subject_id=subject,
             known_run_ids={run.id for run in all_runs},
@@ -606,7 +632,7 @@ def frontier(
             control_variant_key=(control_variant_key or "").strip() or None,
         )
     except FrontierError as e:
-        raise ValidationFailedError(str(e)) from e
+        raise ValidationFailedError(e.fault, remedy=e.remedy) from e
     return result.model_dump(mode="json")
 
 
@@ -677,7 +703,7 @@ def history(
             profile=profile,
         )
     except HistoryError as e:
-        raise ValidationFailedError(str(e)) from e
+        raise ValidationFailedError(e.fault, remedy=e.remedy) from e
     return result
 
 
@@ -849,7 +875,7 @@ def export_results(
         export = export_projection(projection, fmt=fmt)
     except ExportError as e:
         _observe_read("export_results", scope_id, started, *observed)
-        raise ValidationFailedError(str(e)) from e
+        raise ValidationFailedError(e.fault, remedy=e.remedy) from e
     _observe_read("export_results", scope_id, started, *observed)
     return export
 
@@ -1202,7 +1228,11 @@ def compare_two_runs(
         ``composite_{a,b,delta}``, ``composite_basis_{a,b}`` (what each composite was meaned over, ragged
         when its results carried different dimension sets), ``composite_bases_differ``,
         ``composite_interval`` (at ``interval_level``),
-        ``n_cases_{a,b}``, ``n_left_out_{a,b}``, ``count_{a,b}``, ``paired``, ``n_pairs``,
+        ``n_cases_{a,b}``, ``n_left_out_{a,b}``, ``count_{a,b}``, ``paired`` (True only over at least one
+        case both runs scored), ``n_pairs`` (how many; None when nothing was paired),
+        ``composite_untested_reason`` (why no composite test ran, None when one did), ``pass_hat_k_n_cases_{a,b}``
+        (the cases each pass^k averaged at ``k``), ``pass_criteria_{a,b}`` (what each run's attempts were held to,
+        as :data:`~threetears.evals.kernel.host.PassCriterion` names),
         ``hedges_g``, ``p``, ``significant`` (nulls where a run scored nothing,
         a test is undefined, or the composites are not comparable).
         ``composite_{a,b}`` and the delta are over the cases the test read —
@@ -1263,6 +1293,18 @@ def compare_two_runs(
         if entry_b is not None and common_k is not None
         else None
     )
+    # The cases each pass^k above averaged at that depth: its own count, never the composite's, which counts the
+    # cases a judge scored — none at all for a run graded only by goal checks.
+    pass_cases_a = (
+        pass_hat_k_at(entry_a["pass_hat_k_curve"], common_k)["n_cases"]
+        if entry_a is not None and common_k is not None
+        else 0
+    )
+    pass_cases_b = (
+        pass_hat_k_at(entry_b["pass_hat_k_curve"], common_k)["n_cases"]
+        if entry_b is not None and common_k is not None
+        else 0
+    )
     n_pairs: int | None = None
     if shared_cases:
         # Pair only cases scored in BOTH runs.
@@ -1271,8 +1313,10 @@ def compare_two_runs(
         ]
         sample_a = [per_case_a[(model_a, run_a_id, tc)] for tc in paired_cases]
         sample_b = [per_case_b[(model_b, run_b_id, tc)] for tc in paired_cases]
-        paired = True
-        n_pairs = len(paired_cases)
+        # Paired only over cases that exist: two runs sharing their cases but no composite pair nothing, and a
+        # test "paired over 0 cases" is no test at all.
+        paired = bool(paired_cases)
+        n_pairs = len(paired_cases) if paired_cases else None
     else:
         sample_a = [v for (_m, r, _tc), v in per_case_a.items() if r == run_a_id]
         sample_b = [v for (_m, r, _tc), v in per_case_b.items() if r == run_b_id]
@@ -1300,6 +1344,9 @@ def compare_two_runs(
     # still read as one model here. Never the requested id standing in for a response that named none.
     served_a = pooled_served_models(results_a)
     served_b = pooled_served_models(results_b)
+    untested = _composite_untested_reason(
+        scored_a=n_scored_a, scored_b=n_scored_b, tested=bool(sample_a and sample_b), shared=bool(shared_cases)
+    )
     interval: tuple[float, float] | None = None
     if composites_comparable:
         hedges_g, significant, p_value = composite_significance(sample_a, sample_b, paired=paired)
@@ -1320,6 +1367,12 @@ def compare_two_runs(
         "pass_hat_k_a": pass_hat_k_a,
         "pass_hat_k_b": pass_hat_k_b,
         "pass_hat_k_delta": _score_delta(pass_hat_k_a, pass_hat_k_b),
+        # The cases each pass^k was averaged over at that depth — its own denominator, not the composite's.
+        "pass_hat_k_n_cases_a": pass_cases_a,
+        "pass_hat_k_n_cases_b": pass_cases_b,
+        # What each run's attempts were held to (`PassCriterion`s): goal checks, a judge's criteria, or both.
+        "pass_criteria_a": _pass_criteria(results_a),
+        "pass_criteria_b": _pass_criteria(results_b),
         # Why a side has no pass^k when none of its attempts had a criterion to pass (#688); None otherwise.
         "pass_hat_k_unmeasured_reason_a": entry_a.get("pass_hat_k_unmeasured_reason") if entry_a else None,
         "pass_hat_k_unmeasured_reason_b": entry_b.get("pass_hat_k_unmeasured_reason") if entry_b else None,
@@ -1346,9 +1399,12 @@ def compare_two_runs(
         "count_a": count_a,
         "count_b": count_b,
         # How the samples line up, which is what the test that ran on them was:
-        # pairing needs cases scored in both runs, not merely one template id in both.
+        # pairing needs cases scored in both runs, not merely one template id in both. `paired` is True only over
+        # at least one such case, and `n_pairs` is how many — None whenever nothing was paired.
         "paired": paired,
         "n_pairs": n_pairs,
+        # Why no composite test ran — no paired cases, and why there are none; None when one ran.
+        "composite_untested_reason": untested,
         # Hedges' g (g_z when paired): Cohen's d with its small-sample bias removed. Renamed from
         # `cohens_d` when the estimator changed, so a reader of the old key cannot take the new number for it.
         "hedges_g": hedges_g,
@@ -1375,6 +1431,42 @@ def compare_two_runs(
         "subject_detail_a": subject_detail(run_a),
         "subject_detail_b": subject_detail(run_b),
     }
+
+
+def _pass_criteria(results: Sequence[EvalResult]) -> list[PassCriterion]:
+    """What a run's attempts were held to for pass^k: goal checks where any carried one, a judge's criteria where any
+    was judged on the capability axis (scored, or asked and unable to tell)."""
+    goal = any(result.goal_state_outcomes for result in results)
+    judged = any(
+        capability_scores(result)
+        or set(result.judge_cannot_tell) - set(result.judge_cannot_tell_boundary)
+        or result.judge_model is not None
+        for result in results
+    )
+    criteria: list[PassCriterion] = []
+    if goal:
+        criteria.append("goal_checks")
+    if judged:
+        criteria.append("rubric")
+    return criteria
+
+
+def _composite_untested_reason(*, scored_a: int, scored_b: int, tested: bool, shared: bool) -> str | None:
+    """Why no composite test ran between two runs — or None when one did.
+
+    Args:
+        scored_a: Cases run A carries a composite on.
+        scored_b: Cases run B carries a composite on.
+        tested: Whether both samples the test reads hold a case.
+        shared: Whether the runs share frozen cases to pair on.
+    """
+    if tested:
+        return None
+    if not scored_a and not scored_b:
+        return "neither run's results carry a judged composite"
+    if not scored_a or not scored_b:
+        return f"run {'A' if not scored_a else 'B'}'s results carry no judged composite"
+    return "no case carries a composite in both runs" if shared else None
 
 
 def _compare_per_template(

@@ -41,7 +41,7 @@ from threetears.evals.vega.palette import (
     PaletteError,
     check_palette_artifact,
     geometry,
-    load_palette,
+    packaged_artifact,
     packaged_palette,
     series_slots,
     vega_config,
@@ -558,11 +558,11 @@ class TestPaletteArtifact:
     def test_no_unrenderable_colour_notation_survives_into_the_artifact(self):
         """The defect one layer earlier than the pixels, named more clearly.
 
-        `load_palette` refuses an artifact holding OKLCH, so reaching this
+        `packaged_artifact` refuses an artifact holding OKLCH, so reaching this
         assertion at all is most of the check; the explicit scan states what is
         being guaranteed rather than leaving it to a loader's side effect.
         """
-        palette = load_palette()
+        palette = packaged_artifact()
         for mode in ("light", "dark"):
             for colour in [*palette[mode]["series"], palette[mode]["background"], palette[mode]["ink"]]:
                 assert colour.startswith("#") and len(colour) == 7, f"{mode}: {colour!r} is not resolved sRGB hex"
@@ -576,7 +576,7 @@ class TestPaletteArtifact:
         order is chosen so slots 1-4 separate as a set. Slot 1 blue, 2 green, 3 magenta,
         4 yellow; then the second tier, 5 aqua, 6 orange, 7 violet, 8 red.
         """
-        palette = load_palette()
+        palette = packaged_artifact()
         assert palette["light"]["series"] == [
             "#2a78d6",
             "#008300",
@@ -608,7 +608,7 @@ class TestPaletteArtifact:
         when a second channel names the category, which the values table does), dE 15 under
         normal vision (a hard floor no second channel excuses).
         """
-        palette = load_palette()
+        palette = packaged_artifact()
         for theme in ("light", "dark"):
             validated = palette[theme]["series"][: palette["validated_slots"]]
             for first, second in itertools.combinations(validated, 2):
@@ -626,7 +626,7 @@ class TestPaletteArtifact:
         clear the floors on EVERY pair — that is what makes it the second tier, and why a
         direct label becomes mandatory at five series.
         """
-        palette = load_palette()
+        palette = packaged_artifact()
         for theme in ("light", "dark"):
             series = palette[theme]["series"]
             for first, second in itertools.pairwise(series):
@@ -637,7 +637,7 @@ class TestPaletteArtifact:
 
     def test_text_clears_four_and_a_half_to_one_against_the_surface(self):
         """Every label, value and subtitle is text, and text takes the WCAG 4.5:1 bar."""
-        palette = load_palette()
+        palette = packaged_artifact()
         for theme in ("light", "dark"):
             mode = palette[theme]
             for role in ("ink", "muted"):
@@ -652,7 +652,7 @@ class TestPaletteArtifact:
         several fall below 3:1 on the light surface, which is why a categorical colour is
         never the only thing naming a level.
         """
-        palette = load_palette()
+        palette = packaged_artifact()
         for theme in ("light", "dark"):
             mode = palette[theme]
             for role, colour in (
@@ -670,7 +670,7 @@ class TestPaletteArtifact:
         Vega a 4-wide range would put it back to cycling, which repaints series 5 as
         series 1 — the failure the old cap was reaching for and did not actually prevent.
         """
-        palette = load_palette()
+        palette = packaged_artifact()
         for theme in ("light", "dark"):
             assert vega_config(packaged_palette(theme))["range"]["category"] == palette[theme]["series"]
             # Against the artifact's own counted width, not against a literal 8. A
@@ -721,7 +721,7 @@ class TestPaletteArtifact:
         `highlight` role: it was declared for a highlight-plus-context arm that was never
         built, so nothing drew with it, and it was withdrawn (#678).
         """
-        palette = load_palette()
+        palette = packaged_artifact()
         for theme in ("light", "dark"):
             mode = palette[theme]
             assert mode["context"].startswith("#")
@@ -737,7 +737,7 @@ class TestPaletteArtifact:
         value is written down, which is why it takes full chart ink rather than the muted
         level the page reserves for captions.
         """
-        palette = load_palette()
+        palette = packaged_artifact()
         assert palette["font_size"]["tick"] == 14
         assert palette["font_size"]["value"] > palette["font_size"]["tick"]
         for role, weight in palette["font_weight"].items():
@@ -772,7 +772,7 @@ class TestThePackagedFaceDrawsEverywhere:
     def test_the_default_face_draws_its_text_with_no_font_registered(self, spec):
         """Read off the pixels: the value ink is painted. Under the old default it was painted nowhere."""
         for theme in ("light", "dark"):
-            ink = _hex_to_rgb(load_palette()[theme]["ink"])
+            ink = _hex_to_rgb(packaged_artifact()[theme]["ink"])
             painted = sum(
                 pixel == ink for row in pixel_rows(render_png(spec, palette=packaged_palette(theme))) for pixel in row
             )
@@ -862,7 +862,7 @@ class TestThePackagedFaceDrawsEverywhere:
 
     def test_the_face_and_its_table_have_one_source(self):
         """The palette artifact names no typeface: the family travels with the table measured for it."""
-        assert "font" not in load_palette()
+        assert "font" not in packaged_artifact()
         for theme in ("light", "dark"):
             assert vega_config(packaged_palette(theme))["font"] == packaged_font().family
         assert packaged_font().measured_face == "Liberation Sans"
@@ -872,7 +872,7 @@ class TestSvgRender:
     def test_the_series_colour_reaches_the_svg_as_hex(self, spec):
         for theme in ("light", "dark"):
             svg = render_svg(spec, palette=packaged_palette(theme))
-            assert load_palette()[theme]["series"][0] in svg
+            assert packaged_artifact()[theme]["series"][0] in svg
 
     def test_no_unparseable_colour_notation_reaches_the_svg(self, spec):
         """The `fill` attribute is exactly where an OKLCH string would survive to."""
@@ -1017,7 +1017,7 @@ class TestADumbbellsValueIsNotStruckThroughByItsOwnMark:
             ``(ink, hue)``, each mapping a column to the set of rows it is drawn in.
         """
         png = render_png(compile_chart(viz_type, payload).spec, palette=packaged_palette(theme), scale=1)
-        mode = load_palette()[theme]
+        mode = packaged_artifact()[theme]
         value_ink, series_hue = _hex_to_rgb(mode["ink"]), _hex_to_rgb(mode["series"][0])
         ink: dict[int, set[int]] = defaultdict(set)
         hue: dict[int, set[int]] = defaultdict(set)
@@ -1085,7 +1085,7 @@ class TestPngPixels:
         """
         for theme in ("light", "dark"):
             colours = dominant_colours(render_png(spec, palette=packaged_palette(theme), scale=1))
-            expected = _hex_to_rgb(load_palette()[theme]["series"][0])
+            expected = _hex_to_rgb(packaged_artifact()[theme]["series"][0])
             drawn = {rgb: count for rgb, count in colours}
             assert expected in drawn, f"{theme}: expected bars in {expected}, got {colours}"
             assert drawn[expected] > 1000, f"{theme}: series colour present but barely drawn: {colours}"
@@ -1100,7 +1100,7 @@ class TestPngPixels:
         """Contrast was measured against this surface; drawing on another invalidates it."""
         for theme in ("light", "dark"):
             colours = dominant_colours(render_png(spec, palette=packaged_palette(theme), scale=1))
-            assert colours[0][0] == _hex_to_rgb(load_palette()[theme]["background"])
+            assert colours[0][0] == _hex_to_rgb(packaged_artifact()[theme]["background"])
 
     def test_every_compiled_type_is_drawn_here(self):
         """The coverage the type-keyed dict used to give for free.
@@ -1169,7 +1169,7 @@ class TestPngPixels:
             # while being painted perfectly.
             drawn = dict(counts)
             commonest = dict(counts[:12])
-            expected = _hex_to_rgb(load_palette()[theme]["series"][0])
+            expected = _hex_to_rgb(packaged_artifact()[theme]["series"][0])
             assert drawn.get(expected, 0) > 100, f"{shape}/{theme}: series colour barely drawn: {commonest}"
             if theme == "dark":
                 assert drawn.get((0, 0, 0), 0) < 500, (
@@ -1245,7 +1245,7 @@ class TestPngPixels:
         png = vlc.vegalite_to_png(json.dumps(spec), config=broken, scale=1)
         drawn = {rgb: count for rgb, count in dominant_colours(png)}
         assert drawn.get((0, 0, 0), 0) > 1000, "OKLCH no longer renders black — this suite's premise needs rechecking"
-        assert _hex_to_rgb(load_palette()["dark"]["series"][0]) not in drawn
+        assert _hex_to_rgb(packaged_artifact()["dark"]["series"][0]) not in drawn
 
 
 class TestALabelTooWideForTheColumnOverrunsRatherThanTruncating:
@@ -1292,7 +1292,7 @@ class TestThePackagedPaletteIsHeldByTheContractsColourCheck:
     """The packaged artifact and a host's palette pass one check, ``require_resolved_colour``."""
 
     def test_an_artifact_carrying_oklch_is_refused(self):
-        artifact = json.loads(json.dumps(load_palette()))
+        artifact = json.loads(json.dumps(packaged_artifact()))
         artifact["dark"]["context"] = "oklch(0.70 0.22 295)"
         with pytest.raises(PaletteError, match=r"dark\.context.*not resolved sRGB hex"):
             check_palette_artifact(artifact)
@@ -1300,5 +1300,5 @@ class TestThePackagedPaletteIsHeldByTheContractsColourCheck:
     def test_the_packaged_variants_are_palettes(self):
         for theme in ("light", "dark"):
             palette = packaged_palette(theme)
-            assert list(palette.series) == load_palette()[theme]["series"]
-            assert palette.background == load_palette()[theme]["background"]
+            assert list(palette.series) == packaged_artifact()[theme]["series"]
+            assert palette.background == packaged_artifact()[theme]["background"]

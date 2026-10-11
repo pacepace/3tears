@@ -63,6 +63,7 @@ from threetears.evals.schema.models import (
 from threetears.evals.run.check_controls import refuse_non_discriminating_checks
 from threetears.evals.run.curation import require_delete_confirmation
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_RUBRIC_DIM, FIND_TEMPLATE, SCHEMA_REMEDY
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import DefinitionStore
@@ -109,7 +110,9 @@ def validated_kind_spec(template: EvalTemplate, *, profile: HostProfile) -> Base
     try:
         return profile.kind_contract(template.candidate_kind).validate_spec(template.kind_spec)
     except ValidationFailedError as refused:
-        raise ValidationFailedError(f"template {template.name!r}: {refused.message}", refused.details) from refused
+        raise ValidationFailedError(
+            f"template {template.name!r}: {refused.message}", refused.details, remedy=refused.remedy
+        ) from refused
 
 
 def create_template(
@@ -169,7 +172,7 @@ def create_template(
     try:
         template = EvalTemplate(**clean, scope_id=scope_id)
     except ValidationError as e:
-        raise ValidationFailedError(f"invalid template definition: {e}") from e
+        raise ValidationFailedError(f"invalid template definition: {e}", remedy=SCHEMA_REMEDY) from e
 
     template = admit_template(
         template,
@@ -180,7 +183,10 @@ def create_template(
     )
 
     if host.storage.load_template_by_name(template.name, scope_id) is not None:
-        raise ConflictError(f"a template named '{template.name}' already exists")
+        raise ConflictError(
+            f"a template named '{template.name}' already exists",
+            remedy=f"name the new one something else, or use the existing one ({FIND_TEMPLATE})",
+        )
 
     host.storage.save_template(template)
     return template
@@ -252,7 +258,13 @@ def refuse_stale_presumptions(template: EvalTemplate, *, profile: HostProfile) -
     try:
         resolve_preconditions(template, profile.world)
     except ValueError as e:
-        raise ValidationFailedError(str(e)) from e
+        raise ValidationFailedError(
+            str(e),
+            remedy=(
+                "rewrite the precondition over a dimension this host's world declares, or move the expression to a "
+                "goal check"
+            ),
+        ) from e
 
 
 def refuse_unsupplied_world(
@@ -365,34 +377,39 @@ def refuse_unsupplied_world(
             f"template {template.name!r} names world events this host cannot produce: "
             + "; ".join(unfireable)
             + " — a check on a dimension that can never fire scores False on every trial, which reads as the"
-            " candidate's failure; name a triggered dimension the host declares, or drop the schedule"
+            " candidate's failure",
+            remedy="name a triggered dimension the host declares, or drop the schedule",
         )
     if undefined:
         raise ValidationFailedError(
             f"template {template.name!r} names calls this host does not define: "
             + "; ".join(undefined)
             + " — a check over a call that cannot happen scores False on every trial, which reads as the"
-            " candidate's failure; correct the name"
+            " candidate's failure",
+            remedy="correct the name to a call the host defines",
         )
     if prose_matches:
         raise ValidationFailedError(
             f"template {template.name!r} checks what a model wrote with a string match: "
             + "; ".join(prose_matches)
-            + " — code checks structure, never prose; judge the text with a rubric dimension instead,"
-            " test membership in a structured list, or test whether a parameter is set and its length"
+            + " — code checks structure, never prose",
+            remedy=(
+                "judge the text with a rubric dimension instead, test membership in a structured list, or test "
+                "whether a parameter is set and its length"
+            ),
         )
     if defects:
         raise ValidationFailedError(
-            f"template {template.name!r} names world state this host cannot supply: "
-            + "; ".join(defects)
-            # One tail for several causes, so it names the remedies rather than picking one:
+            f"template {template.name!r} names world state this host cannot supply: " + "; ".join(defects),
+            # One remedy for several causes, so it names the remedies rather than picking one:
             # `presumable` deliberately returns different reasons BECAUSE the remedies differ,
             # and stapling "register the dimension" onto all of them tells an author to
             # register something already registered — which is what a witnessed dimension is.
-            + " — a path naming no dimension wants the dimension declared or the expression"
-            " corrected; a dimension that cannot be presumed wants the scenario rewritten"
-            " rather than seeded, or the expression moved to a goal check, which reads what"
-            " the world ended up holding rather than claiming a run put it there"
+            remedy=(
+                "a path naming no dimension wants the dimension declared or the expression corrected; a dimension "
+                "that cannot be presumed wants the scenario rewritten rather than seeded, or the expression moved "
+                "to a goal check, which reads what the world ended up holding rather than claiming a run put it there"
+            ),
         )
 
 
@@ -415,7 +432,7 @@ def get_template(host: EvalHost, template_id: str, scope_id: str) -> EvalTemplat
     """
     template = host.storage.load_template(template_id, scope_id)
     if template is None:
-        raise NotFoundError("template", template_id)
+        raise NotFoundError("template", template_id, remedy=FIND_TEMPLATE)
     refuse_stale_presumptions(template, profile=host.profile)
     return template
 
@@ -479,9 +496,11 @@ def update_template(
     """
     existing = host.storage.load_template(template_id, scope_id)
     if existing is None:
-        raise NotFoundError("template", template_id)
+        raise NotFoundError("template", template_id, remedy=FIND_TEMPLATE)
     if not fields:
-        raise ValidationFailedError("update_template requires at least one field to change")
+        raise ValidationFailedError(
+            "update_template was given no field to change", remedy="name at least one template field to change"
+        )
     reject_unknown_authoring_fields("update_template", fields, EvalTemplate, TEMPLATE_SERVER_FIELDS)
 
     merged = existing.to_dict()
@@ -493,7 +512,7 @@ def update_template(
     try:
         template = EvalTemplate(**merged)
     except ValidationError as e:
-        raise ValidationFailedError(f"invalid template update: {e}") from e
+        raise ValidationFailedError(f"invalid template update: {e}", remedy=SCHEMA_REMEDY) from e
 
     # Scoped to the writes that touch it, like the guards below: the spec itself, or the kind whose
     # model reads it. A stored template whose spec the model has since outgrown stays editable in
@@ -591,10 +610,13 @@ def create_rubric_dim(storage: DefinitionStore, definition: dict[str, Any], *, s
     try:
         dim = CatalogRubricDim(**clean, scope_id=scope_id)
     except ValidationError as e:
-        raise ValidationFailedError(f"invalid rubric dim definition: {e}") from e
+        raise ValidationFailedError(f"invalid rubric dim definition: {e}", remedy=SCHEMA_REMEDY) from e
 
     if storage.load_active_rubric_dim(dim.key, scope_id) is not None:
-        raise ConflictError(f"an active rubric dim with key '{dim.key}' already exists")
+        raise ConflictError(
+            f"an active rubric dim with key '{dim.key}' already exists",
+            remedy=f"key the new one differently, or update the existing one ({FIND_RUBRIC_DIM})",
+        )
 
     storage.save_rubric_dim(dim)
     return dim
@@ -608,7 +630,7 @@ def get_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str) -> Cata
     """
     dim = storage.load_rubric_dim(dim_id, scope_id)
     if dim is None:
-        raise NotFoundError("rubric dim", dim_id)
+        raise NotFoundError("rubric dim", dim_id, remedy=FIND_RUBRIC_DIM)
     return dim
 
 
@@ -650,9 +672,11 @@ def update_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str, fiel
     """
     existing = storage.load_rubric_dim(dim_id, scope_id)
     if existing is None:
-        raise NotFoundError("rubric dim", dim_id)
+        raise NotFoundError("rubric dim", dim_id, remedy=FIND_RUBRIC_DIM)
     if not fields:
-        raise ValidationFailedError("update_rubric_dim requires at least one field to change")
+        raise ValidationFailedError(
+            "update_rubric_dim was given no field to change", remedy="name at least one rubric dim field to change"
+        )
     reject_unknown_authoring_fields("update_rubric_dim", fields, CatalogRubricDim, RUBRIC_DIM_SERVER_FIELDS)
 
     merged = existing.to_dict()
@@ -664,7 +688,7 @@ def update_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str, fiel
     try:
         dim = CatalogRubricDim(**merged)
     except ValidationError as e:
-        raise ValidationFailedError(f"invalid rubric dim update: {e}") from e
+        raise ValidationFailedError(f"invalid rubric dim update: {e}", remedy=SCHEMA_REMEDY) from e
 
     storage.save_rubric_dim(dim)
     return dim
@@ -719,7 +743,7 @@ def delete_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str, *, c
     """
     dim = storage.load_rubric_dim(dim_id, scope_id)
     if dim is None:
-        raise NotFoundError("rubric dim", dim_id)
+        raise NotFoundError("rubric dim", dim_id, remedy=FIND_RUBRIC_DIM)
     require_delete_confirmation(
         "rubric dim",
         dim_id,
@@ -778,10 +802,13 @@ def create_judge_config(storage: DefinitionStore, definition: dict[str, Any], *,
     try:
         config = JudgeConfig(**clean, scope_id=scope_id)
     except ValidationError as e:
-        raise ValidationFailedError(f"invalid judge config definition: {e}") from e
+        raise ValidationFailedError(f"invalid judge config definition: {e}", remedy=SCHEMA_REMEDY) from e
 
     if storage.load_active_judge_config(config.rubric_dim_id, scope_id) is not None:
-        raise ConflictError(f"an active judge config already exists for rubric dim '{config.rubric_dim_id}'")
+        raise ConflictError(
+            f"an active judge config already exists for rubric dim '{config.rubric_dim_id}'",
+            remedy=f"update the existing one instead ({FIND_JUDGE_CONFIG})",
+        )
 
     storage.save_judge_config(config)
     return config
@@ -795,7 +822,7 @@ def get_judge_config(storage: DefinitionStore, config_id: str, scope_id: str) ->
     """
     config = storage.load_judge_config(config_id, scope_id)
     if config is None:
-        raise NotFoundError("judge config", config_id)
+        raise NotFoundError("judge config", config_id, remedy=FIND_JUDGE_CONFIG)
     return config
 
 
@@ -849,9 +876,11 @@ def update_judge_config(storage: DefinitionStore, config_id: str, scope_id: str,
     """
     existing = storage.load_judge_config(config_id, scope_id)
     if existing is None:
-        raise NotFoundError("judge config", config_id)
+        raise NotFoundError("judge config", config_id, remedy=FIND_JUDGE_CONFIG)
     if not fields:
-        raise ValidationFailedError("update_judge_config requires at least one field to change")
+        raise ValidationFailedError(
+            "update_judge_config was given no field to change", remedy="name at least one judge config field to change"
+        )
     # BEFORE the archive-and-recreate below, which is the whole reason this one matters:
     # a refusal reached after the archive would leave the dim's active config replaced by
     # a new id differing in nothing.
@@ -873,7 +902,7 @@ def update_judge_config(storage: DefinitionStore, config_id: str, scope_id: str,
     try:
         new_config = JudgeConfig(**merged)
     except ValidationError as e:
-        raise ValidationFailedError(f"invalid judge config update: {e}") from e
+        raise ValidationFailedError(f"invalid judge config update: {e}", remedy=SCHEMA_REMEDY) from e
 
     # Archive the old record only after the new one is stored, so neither a bad
     # update nor a failed write can leave the dim with no active config.
@@ -935,7 +964,7 @@ def delete_judge_config(storage: DefinitionStore, config_id: str, scope_id: str,
     """
     config = storage.load_judge_config(config_id, scope_id)
     if config is None:
-        raise NotFoundError("judge config", config_id)
+        raise NotFoundError("judge config", config_id, remedy=FIND_JUDGE_CONFIG)
     require_delete_confirmation(
         "judge config",
         config_id,

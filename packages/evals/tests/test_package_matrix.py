@@ -33,8 +33,9 @@ name them:
   pydantic and threetears.observe.
 * ``actions`` -- the action catalogue -- may import schema, kernel, run, ops and itself; pydantic and
   threetears.observe. It reaches analysis only through ``ops``.
-* ``transports`` -- one adapter per server -- may import schema, kernel, ops, actions and itself; pydantic, and
-  each adapter its own server alone (``transports.fastmcp``: ``fastmcp``, the package's ``fastmcp`` extra).
+* ``transports`` -- one adapter per server -- may import schema, kernel, ops, actions and itself; pydantic,
+  threetears.observe (an adapter logs a host hook's failure rather than fail the call with it), and each
+  adapter its own server alone (``transports.fastmcp``: ``fastmcp``, the package's ``fastmcp`` extra).
 
 Nothing in the engine imports any of the three, ``quick`` included, but ``testing``, whose jobs conformance kit
 runs ``ops`` and ``actions`` from above them (see below): the run summary it prints, the
@@ -138,7 +139,7 @@ ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
     "vega": frozenset({"threetears.observe"}),
     "ops": frozenset({"pydantic", "threetears.observe"}),
     "actions": frozenset({"pydantic", "threetears.observe"}),
-    "transports": frozenset({"pydantic"}),
+    "transports": frozenset({"pydantic", "threetears.observe"}),
 }
 
 #: The module-level third-party exceptions, one per extra: the Vega renderer's rasteriser and nothing

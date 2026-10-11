@@ -12,7 +12,7 @@ from threetears.evals.analysis.viz.intent import ChartAxis, ChartColumn, ChartEn
 from threetears.evals.analysis.viz.payloads import NullResultPayload
 from threetears.evals.analysis.viz.quantities import (
     axis_title,
-    display_scale,
+    ruled_scale,
     interval_disclosures,
     interval_sources,
     interval_statement,
@@ -34,7 +34,7 @@ def null_result_intent(payload: NullResultPayload) -> ChartIntent:
         The intent.
     """
     bounds = [bound for arm in payload.groups for bound in (arm.ci.low, arm.ci.high)]
-    scale, unit = display_scale(bounds, payload.unit)
+    scale, unit = ruled_scale(bounds, payload.unit, payload.stated_unit)
     title = payload.metric or "Null result"
     rows: list[dict[str, Any]] = [
         {

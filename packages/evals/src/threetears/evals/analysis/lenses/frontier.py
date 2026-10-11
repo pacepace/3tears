@@ -12,6 +12,8 @@ from collections.abc import Hashable, Iterable, Mapping, Sequence
 from fractions import Fraction
 from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple
 
+from threetears.evals.kernel.errors import RefusedInput
+from threetears.evals.analysis.agreement import judge_key, tier_for_judges
 from threetears.evals.analysis.contention import (
     contended_latency_sentence,
     withheld_latency,
@@ -43,8 +45,10 @@ from threetears.evals.kernel.result_condition import (
     delivered_a_turn,
     harness_faulted,
 )
+from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier, JudgeEvidenceTier
 from threetears.evals.kernel.scoring import (
     CompositeBasis,
+    capability_scores,
     PassHatPoint,
     case_pass_hat_k,
     pass_hat_k_at,
@@ -110,7 +114,7 @@ if TYPE_CHECKING:
 # variant by money the operator would never spend in production, which is a defect.
 
 
-class FrontierError(ValueError):
+class FrontierError(RefusedInput):
     """A frontier was requested that cannot be answered honestly.
 
     Raised rather than returned, the way :class:`PivotError` is, so a bad request
@@ -149,7 +153,9 @@ def normalize_bar(value: float | str | None) -> float | None:
         try:
             return float(stripped)
         except ValueError as e:
-            raise FrontierError(f"bar {value!r} is not a number in [0, 1]") from e
+            raise FrontierError(
+                f"bar {value!r} is not a number", remedy="pass bar as a number in [0, 1], or omit it for no verdict"
+            ) from e
     return float(value)
 
 
@@ -599,6 +605,11 @@ class FrontierVerdict(EvalBaseModel):
     #: no control: the verdict then rests on the capability pillar alone, and says so here. Empty when every
     #: boundary dimension was checked, or the subject scores none.
     boundary_unchecked: list[str] = []
+    #: The evidence tier the pass^k the bar was read on stands on, where a judge scored the criteria it conjoins:
+    #: the weakest tier among the judges that served the pick's capability scores (the tier every judged reading
+    #: carries, #679). ``undetermined`` where nothing measured them; None where no judge scored any of the pick's
+    #: criteria — a pass^k over goal checks alone — and on a verdict stored before it was recorded.
+    judge_evidence_tier: JudgedEvidenceTier | None = None
 
 
 class SubjectFrontier(EvalBaseModel):
@@ -1309,6 +1320,7 @@ def compute_frontier(
     profile: HostProfile | None = None,
     control_variant_key: str | None = None,
     guardrail_margins: Mapping[str, float] | None = None,
+    tiers: Sequence[JudgeEvidenceTier] = (),
 ) -> FrontierResult:
     """Rank each subject's variants on quality x cost x latency and pick the cheapest above bar.
 
@@ -1405,6 +1417,9 @@ def compute_frontier(
             control arm. ``None`` checks none, and says so.
         guardrail_margins: The margin each boundary dimension is held to, by dimension name
             (``CampaignDesign.guardrail_margins``); a dimension absent is held at zero change.
+        tiers: The evidence tiers of the judges behind the results' scores
+            (:func:`~threetears.evals.analysis.judge_profiles.judges_tiers`), which a verdict made on a judged pass^k
+            names (:attr:`FrontierVerdict.judge_evidence_tier`); a judge with no tier here is ``undetermined``.
 
     Returns:
         A :class:`FrontierResult` — one :class:`SubjectFrontier` per subject,
@@ -1416,7 +1431,10 @@ def compute_frontier(
             surfaces refuse identically rather than one clamping it.
     """
     if bar is not None and not (0.0 <= bar <= 1.0):
-        raise FrontierError(f"bar {bar!r} is outside the pass^k range [0, 1] — pass^k is a probability")
+        raise FrontierError(
+            f"bar {bar!r} is outside the pass^k range — pass^k is a probability",
+            remedy="pass bar as a number in [0, 1], or omit it for no verdict",
+        )
 
     # Latency read under concurrency is never ranked: removed before any point is built, so the latency
     # axis, every dominance test and every "fastest" read only latency taken serially (#701).
@@ -1593,6 +1611,7 @@ def compute_frontier(
                     cost_decision=cost_decision,
                     tied_with=tied_with,
                     boundary_unchecked=boundary_dimensions if control_variant_key is None else [],
+                    judge_evidence_tier=_judged_pass_tier(built[costed[0]][2], tiers),
                 )
 
         subjects.append(
@@ -1633,6 +1652,23 @@ def compute_frontier(
             sum(1 for result in considered if result.id in contended), len(considered)
         ),
     )
+
+
+def _judged_pass_tier(members: Sequence[EvalResult], tiers: Sequence[JudgeEvidenceTier]) -> JudgedEvidenceTier | None:
+    """The tier a contestant's pass^k stands on where a judge scored its criteria, or None where none did.
+
+    The judges are those behind the capability scores pass^k conjoins (a boundary dimension is no part of it), on the
+    results it read — not those the rig excluded — and the tier is the weakest of theirs, as every judged reading's is
+    (:func:`~threetears.evals.analysis.agreement.tier_for_judges`).
+    """
+    judges = [
+        judge
+        for result in members
+        if classify_result(result) is not ResultOutcome.INFRA_EXCLUDE
+        for score in capability_scores(result)
+        if (judge := judge_key(result, score.dim)) is not None
+    ]
+    return tier_for_judges(tiers, judges) if judges else None
 
 
 __all__ = [

@@ -8,6 +8,9 @@ ratings that takes, and how the ratings correct the judge's mean. Grade with cod
 
 The snippets run top to bottom as one script. `client` is any `CompletionClient` (an async
 `generate(system=, user=, response_format=)` and an `aclose()`); `examples/llm_judge.py` has a Claude adapter.
+Every judge call sends its reply's shape as `response_format`, a strict `json_schema` directive (the criterion's
+answers, "can't tell" among them); pass it to a provider that enforces structured output, or send the nearest mode
+yours has. The reply is read and refused on return either way.
 
 ## Step 1: choose a scale, and prefer pass/fail
 
@@ -472,6 +475,10 @@ prompt, another temperature), make the judge the subject of a campaign of its ow
   candidate is re-run.
 - **The grade is code.** Each trial lands `judge_parse_valid` and, on a scored trial of a labelled case,
   `judge_label_agreement` on its `host_measures`. The whole answer goes on its `kind_payload`.
+
+A judge template is the package's, not the host's: the judge kind, a name and an intent
+(`ops.judge_template_create`, the `judge_template_create` action), on a host that registers `launchable_judge_kind`.
+Any other field on it is refused at the launch, since the judge kind never acts on one.
 
 Freeze cases from a judged run into a judge template, and mint the case set a launch targets:
 

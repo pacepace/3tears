@@ -114,7 +114,7 @@ async def test_the_control_resolves_to_the_variant_the_control_arm_ran() -> None
 
 async def test_every_other_arm_is_tested_against_the_control_and_the_better_one_separates() -> None:
     comparison = await _compare()
-    rows = _comparisons(comparison).rows
+    rows = _comparisons(comparison).values()
     by_reading = {row["reading"]: row for row in rows}
     accuracy = by_reading["Accuracy"]
     assert (accuracy["contrast"], accuracy["control"]) == ("candidate=careful", "candidate=hasty")
@@ -220,7 +220,7 @@ async def test_the_example_runs_offline_and_prints_the_verdict(
     out = capsys.readouterr().out
     assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE")
     assert "(offline)" in comparison.name
-    accuracy = {row["reading"]: row for row in _comparisons(comparison).rows}["Accuracy"]
+    accuracy = {row["reading"]: row for row in _comparisons(comparison).values()}["Accuracy"]
     assert (accuracy["contrast"], accuracy["verdict"]) == ("candidate=candidate", "improved on the control")
     assert re.search(
         r"\ncandidate vs baseline on Accuracy: 0\.58 -> 1\.00, delta \+0\.42, interval \[[\d.]+, [\d.]+\] at 95%, "

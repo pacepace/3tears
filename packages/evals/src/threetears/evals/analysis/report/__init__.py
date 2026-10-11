@@ -32,6 +32,7 @@ from threetears.evals.analysis.report.model import (
     ReportSection,
     ReportSource,
     TableBlock,
+    TableCell,
     TableColumn,
     TextBlock,
     TextRole,
@@ -55,16 +56,22 @@ SCHEMA_PATH = Path(__file__).resolve().parent / "schema.json"
 #: The JSON Schema dialect the published schema declares.
 _DIALECT = "https://json-schema.org/draft/2020-12/schema"
 
+#: The published schema's identifier: one per :data:`REPORT_VERSION`, so a client that cached the schema for one
+#: version knows by the id alone that a report of another is not what it validates — and the report's own
+#: ``report_version`` is held to the same number by the schema (a ``const``).
+SCHEMA_ID = f"urn:threetears-evals:report:v{REPORT_VERSION}"
+
 
 def report_json_schema() -> dict[str, Any]:
     """The report's JSON Schema, as generated from the model — what ``schema.json`` must equal.
 
-    Generated in serialization mode, because what it validates is a report's JSON dump.
+    Generated in serialization mode, because what it validates is a report's JSON dump — the served words
+    (each ``computed_field``) included, and required.
 
     Returns:
-        The schema.
+        The schema, identified as :data:`SCHEMA_ID`.
     """
-    return {"$schema": _DIALECT, **Report.model_json_schema(mode="serialization")}
+    return {"$schema": _DIALECT, "$id": SCHEMA_ID, **Report.model_json_schema(mode="serialization")}
 
 
 def published_report_schema() -> dict[str, Any]:
@@ -80,6 +87,7 @@ def published_report_schema() -> dict[str, Any]:
 __all__ = [
     "NO_ANALYSIS",
     "REPORT_VERSION",
+    "SCHEMA_ID",
     "SCHEMA_PATH",
     "SECTION_TITLES",
     "ChartBlock",
@@ -92,6 +100,7 @@ __all__ = [
     "ReportSection",
     "ReportSource",
     "TableBlock",
+    "TableCell",
     "TableColumn",
     "TextBlock",
     "TextRole",

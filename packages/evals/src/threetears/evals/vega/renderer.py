@@ -28,7 +28,7 @@ from threetears.evals.kernel.host import ChartFont, ChartPalette, StyleError, St
 from threetears.evals.vega.compiler import DISPLAY_FIELD, CompiledChart, draw_intent
 from threetears.evals.vega.palette import Theme, packaged_palette, vega_config
 from threetears.evals.vega.render import DEFAULT_SCALE, render_png, render_svg
-from threetears.evals.vega.text_metrics import packaged_font
+from threetears.evals.vega.text_metrics import MEASURE_COMMAND, check_font_files, packaged_font
 
 
 @dataclass(frozen=True)
@@ -43,6 +43,8 @@ class VegaRenderer:
         font_dir: The directory of font files a raster registers before drawing; ``None`` registers
             nothing. The packaged face needs none — the rasteriser embeds it — and a host face drawn
             without one is drawn only where the machine has it installed (warned about once per process).
+            When it is named, the font's recorded files must be in it with the bytes they were measured
+            from, or the renderer is refused when it is built.
         font: The typeface every drawing is laid out and set in, with its measured advances — the
             packaged face by default. A bare family name is refused: layout is computed from the font's
             advance table, and a face without one would be laid out against another face's widths.
@@ -53,17 +55,23 @@ class VegaRenderer:
     font: ChartFont = field(default_factory=packaged_font)
 
     def __post_init__(self) -> None:
-        """Refuse a typeface declared without its metrics.
+        """Refuse a typeface declared without its metrics, or measured from files its directory no longer holds.
+
+        The second refusal is the render path's own (:func:`~threetears.evals.vega.render.render_png`), taken
+        here too so a host built with a stale table fails where it builds its renderer, not at its first raster.
 
         Raises:
             StyleError: ``font`` is not a :class:`~threetears.evals.kernel.host.ChartFont`.
+            TextMetricsError: ``font_dir`` is named and ``font``'s recorded files are not in it as measured.
         """
         if not isinstance(self.font, ChartFont):
             raise StyleError(
                 f"chart font {self.font!r} is declared without metrics — the renderer lays chart text out from "
                 "a measured advance table, so a typeface reaches it only as a ChartFont carrying one. Measure the "
-                "face (packages/evals/scripts/measure_font_metrics.py) and load it with load_chart_font()"
+                f"face ({MEASURE_COMMAND}) and load it with load_chart_font()"
             )
+        if self.font_dir is not None:
+            check_font_files(self.font, [self.font_dir.resolve()])
 
     @classmethod
     def for_style(cls, style: StyleProfile, *, theme: Theme = "dark", font_dir: Path | None = None) -> VegaRenderer:
@@ -132,6 +140,9 @@ class VegaRenderer:
 
         Returns:
             PNG bytes.
+
+        Raises:
+            RasterRefused: vl-convert refused to convert the chart's spec.
         """
         return render_png(chart.spec, palette=self.palette, scale=scale, font_dir=self.font_dir, font=self.font)
 
@@ -143,6 +154,9 @@ class VegaRenderer:
 
         Returns:
             The SVG document.
+
+        Raises:
+            RasterRefused: vl-convert refused to convert the chart's spec.
         """
         return render_svg(chart.spec, palette=self.palette, font_dir=self.font_dir, font=self.font)
 

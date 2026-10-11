@@ -26,7 +26,7 @@ single-dim rubric/dual-score judge lives in
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from threetears.evals.schema.models import (
@@ -36,13 +36,14 @@ from threetears.evals.schema.models import (
     ClientRequestSettings,
     JudgeTemperature,
 )
-from threetears.evals.schema.completion import JSON_OBJECT_RESPONSE_FORMAT, ProviderFailureDescriber
+from threetears.evals.schema.completion import CompletionResult, ProviderFailureDescriber
 from threetears.evals.kernel.provider import (
     describe_and_log_failure,
     describe_incomplete_completion,
     extract_json,
     sum_optional_tokens,
 )
+from threetears.evals.kernel.authored import strict_response_format
 from threetears.evals.kernel.usage_capture import CallUsage
 from threetears.observe import get_logger
 
@@ -200,6 +201,51 @@ def _pass_fail_score(name: str, value: Any) -> int:
 SCALE_READERS: dict[str, Callable[[str, Any], int]] = {"ordinal": _ordinal_score, "pass_fail": _pass_fail_score}
 
 
+def judge_reply_format(criteria: Sequence[Mapping[str, Any]], *, cannot_tell_offered: bool) -> dict[str, Any]:
+    """The strict ``json_schema`` directive a judge call sends: its reply, exactly as :func:`run_judge_llm` reads it.
+
+    ``{"reasoning": ..., "criteria_scores": {...}}`` with every criterion a key and nothing else, each answered
+    on its scale (``ordinal`` when the criterion names none) or with :data:`CANNOT_TELL` when it was offered.
+    Derived from the criteria the call scores, as the parse is, so a provider that enforces it cannot write a reply
+    the parse refuses, and a judge's parse retry spends nothing on one. The reply is still read and refused as
+    before, for a provider that cannot enforce a strict schema.
+
+    Args:
+        criteria: The criteria, as :func:`run_judge_llm` takes them: each with its ``name`` and, optionally, its
+            ``scale`` (a key of :data:`SCALE_READERS`).
+        cannot_tell_offered: Whether the prompt offered :data:`CANNOT_TELL`.
+
+    Returns:
+        The directive.
+    """
+    answers = {
+        str(criterion["name"]): _scale_answers(str(criterion.get("scale", "ordinal")), cannot_tell_offered)
+        for criterion in criteria
+    }
+    # Through the one projection every package directive takes, so the judge's sends only the portable strict subset.
+    return strict_response_format(
+        "judge_reply",
+        {
+            "type": "object",
+            "properties": {
+                "reasoning": {"type": "string"},
+                "criteria_scores": {"type": "object", "properties": answers},
+            },
+        },
+    )
+
+
+def _scale_answers(scale: str, cannot_tell_offered: bool) -> dict[str, Any]:
+    """One criterion's answers as a strict schema admits them: those :data:`SCALE_READERS` reads, and the offered one."""
+    offered = [CANNOT_TELL] if cannot_tell_offered else []
+    if scale == "pass_fail":
+        return {"type": "string", "enum": [*PASS_FAIL_SCORES, *offered]}
+    if scale != "ordinal":
+        raise KeyError(f"no reader for scale {scale!r}")
+    on_scale = {"type": "integer", "enum": list(range(JUDGE_SCORE_MIN, JUDGE_SCORE_MAX + 1))}
+    return {"anyOf": [on_scale, {"type": "string", "enum": offered}]} if offered else on_scale
+
+
 def _parse_criteria_response(
     content: str,
     evaluation_criteria: list[dict[str, Any]],
@@ -336,7 +382,9 @@ async def run_judge_llm(
         ``cost_usd`` is ``None`` when any attempt reported no price — the dim's dollars are then
         unknown, never the priced attempts' partial sum. A reply the
         provider cut short fails with an error naming that cause and its token
-        counts, after one call. A finished reply that will not parse — including one
+        counts, after one call. A reply whose completion carries no ``temperature`` (its type does not meet the
+        protocol, :func:`sent_temperature`) fails with an error naming the conformance check, after one call and
+        with its spend. A finished reply that will not parse — including one
         scoring a criterion with anything but an integer on the scale — fails with
         "Failed to parse" after the bounded retries. Each caller
         composites the per-dimension scores itself (``judge_service`` across its
@@ -405,11 +453,11 @@ async def run_judge_llm(
             calls=attempts_made,
         )
 
+    # Every attempt sends the reply's shape, derived from the criteria the parse reads it by.
+    response_format = judge_reply_format(criteria_dicts, cannot_tell_offered=cannot_tell_offered)
     for attempt in range(max_attempts):
         try:
-            result = await client.generate(
-                system=system_prompt, user=user_prompt, response_format=JSON_OBJECT_RESPONSE_FORMAT
-            )
+            result = await client.generate(system=system_prompt, user=user_prompt, response_format=response_format)
         except Exception as e:  # prawduct:ok-broad-except — LLM/network boundary; SDK can raise many types
             # Earlier attempts in this loop may already have spent tokens before this one
             # raised; report that spend rather than losing it to the error path.
@@ -486,6 +534,14 @@ async def run_judge_llm(
                 "judge_usage": _cumulative_usage(),
             }
 
+        # The temperature is read before the reply is, and its refusal returned with the spend: a completion whose type
+        # carries none was still billed, and raising here would lose every attempt's usage, and the cost cap with it.
+        try:
+            temperature = sent_temperature(result)
+        except TypeError as refused:
+            log.error("%s reply for case %s cannot be recorded: %s", label, case_id, refused)
+            return {"error": f"{label} reply cannot be recorded: {refused}", "judge_usage": _cumulative_usage()}
+
         parsed = _process_criteria_response(result, criteria_dicts, cannot_tell_offered=cannot_tell_offered)
         if parsed is not None:
             # Thread CUMULATIVE spend (incl. any failed attempts) onto the result
@@ -497,7 +553,7 @@ async def run_judge_llm(
             parsed["judge_served_model"] = result.served_model or None
             # And the temperature that attempt was sent at, as the client reports it — the rest of the
             # scorer's identity, since a model that refuses a temperature is sent none.
-            parsed["judge_temperature"] = sent_temperature(result)
+            parsed["judge_temperature"] = temperature
             return parsed
 
         last_preview = (getattr(result, "content", "") or "")[:200]
@@ -512,7 +568,7 @@ async def run_judge_llm(
     }
 
 
-def sent_temperature(completion: Any) -> JudgeTemperature | None:
+def sent_temperature(completion: CompletionResult) -> JudgeTemperature:
     """The temperature a judge completion was actually sent at, as its client reports it (#633).
 
     Read off :attr:`~threetears.evals.schema.completion.CompletionResult.temperature`, which the client
@@ -520,17 +576,29 @@ def sent_temperature(completion: Any) -> JudgeTemperature | None:
     temperature. The engine asks every judge call for :data:`~threetears.evals.schema.models.DEFAULT_JUDGE_TEMPERATURE`
     unless a config says otherwise, and never assumes the request was honoured.
 
+    **The attribute is the protocol's, not optional.** Read through ``hasattr``, a host whose completion type
+    omitted it had every judge recorded at no temperature — unrecordable as a profile, and "unknown" in every
+    judge comparison — with no error anywhere; so a completion without it is refused here, naming the check that
+    holds a host's type to the protocol.
+
     Args:
         completion: The judge call's completion.
 
     Returns:
-        The number sent; :data:`~threetears.evals.schema.models.MODEL_DEFAULT_TEMPERATURE` when the client
-        sent none; ``None`` when the completion reports nothing about it (a client predating the attribute, or
-        a test double) — not recorded, which every comparison reads as unknown.
+        The number sent; :data:`~threetears.evals.schema.models.MODEL_DEFAULT_TEMPERATURE` when the client sent none.
+
+    Raises:
+        TypeError: The completion carries no ``temperature`` — its type does not meet the
+            :class:`~threetears.evals.schema.completion.CompletionResult` protocol.
     """
-    if not hasattr(completion, "temperature"):
-        return None
-    sent = completion.temperature
+    try:
+        sent = completion.temperature
+    except AttributeError as missing:
+        raise TypeError(
+            f"{type(completion).__name__} carries no `temperature`, a member of the CompletionResult protocol: a judge "
+            "is recorded at the temperature its call was sent at, so report it (None when the request carried none) — "
+            "threetears.evals.testing.check_completion_conformance holds a host's completion type to the protocol"
+        ) from missing
     return MODEL_DEFAULT_TEMPERATURE if sent is None else float(sent)
 
 

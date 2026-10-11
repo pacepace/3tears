@@ -17,6 +17,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, ValidationError
 
+from threetears.evals.kernel.remedies import SCHEMA_REMEDY
 from threetears.evals.actions import render
 from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller, ConformanceStage
 from threetears.evals.schema import EvalRunStatus
@@ -56,6 +57,7 @@ from threetears.evals.ops import (
     PivotTable,
     ReportDocument,
     JudgeCasesFreeze,
+    JudgeTemplateCreate,
     JudgeProfileListing,
     JudgeProfileRecording,
     JudgeProfilesRecord,
@@ -71,6 +73,7 @@ from threetears.evals.ops import (
     RunsBisected,
     RunsCompared,
     ScoreExport,
+    TemplateLine,
     TemplateListing,
     UndescribableArmsListing,
     analyses_list,
@@ -97,6 +100,7 @@ from threetears.evals.ops import (
     report_read,
     reporter_case_archive,
     judge_cases_freeze,
+    judge_template_create,
     judge_profiles_list,
     judge_profiles_record,
     reporter_case_freeze,
@@ -354,6 +358,9 @@ class CampaignCreateParams(EvalBaseModel):
     behavior: Behavior
     description: Description = ""
     run_ids: RunIds = Field(default_factory=list)
+    template_id: Annotated[
+        str | None, Field(min_length=1, description=LaunchArguments.model_fields["template_id"].description)
+    ] = None
     declared_design: Annotated[dict[str, Any] | None, CampaignDefinition.model_fields["declared_design"]] = None
     control_from_run_id: Annotated[str | None, CampaignDefinition.model_fields["control_from_run_id"]] = None
 
@@ -391,6 +398,10 @@ class ReportReadParams(EvalBaseModel):
 
     campaign_id: CampaignId
     format: Format = "markdown"
+
+
+class JudgeTemplateCreateParams(JudgeTemplateCreate):
+    """``judge_template_create`` — the operation's own arguments, declared once on :class:`~threetears.evals.ops.JudgeTemplateCreate`."""
 
 
 class JudgeCasesFreezeParams(JudgeCasesFreeze):
@@ -712,7 +723,9 @@ async def _sweep_launch(host: OpsHost, caller: Caller, params: SweepLaunchParams
     try:
         arguments = SweepArguments.model_validate(params.model_dump())
     except ValidationError as e:
-        raise ValidationFailedError(f"invalid sweep: {e.errors()[0]['msg']} ({e.errors()[0]['loc']})") from e
+        raise ValidationFailedError(
+            f"invalid sweep: {e.errors()[0]['msg']} ({e.errors()[0]['loc']})", remedy=SCHEMA_REMEDY
+        ) from e
     return await sweep_launch(host, arguments, caller.scope_id, created_by=caller.identity)
 
 
@@ -815,6 +828,11 @@ async def _report_read(host: OpsHost, caller: Caller, params: ReportReadParams) 
 async def _bars_propose(host: OpsHost, caller: Caller, params: CampaignParams) -> BarProposals:
     eval_host = host.eval_host
     return await run_blocking(eval_host.blocking_executor, bars_propose, eval_host, params.campaign_id, caller.scope_id)
+
+
+async def _judge_template_create(host: OpsHost, caller: Caller, params: JudgeTemplateCreateParams) -> TemplateLine:
+    create = JudgeTemplateCreate.model_validate(params.model_dump())
+    return await run_blocking(host.eval_host.blocking_executor, judge_template_create, host, create, caller.scope_id)
 
 
 async def _judge_cases_freeze(host: OpsHost, caller: Caller, params: JudgeCasesFreezeParams) -> JudgeCaseFreezeReport:
@@ -1197,7 +1215,6 @@ def engine_actions() -> tuple[Action, ...]:
             params=SweepLaunchParams,
             result=JobsStarted,
             handler=_sweep_launch,
-            render=render.render_jobs_started,
             happy_path=_sweep_launch_path,
             example={
                 "template_id": "tmpl-1",
@@ -1265,7 +1282,6 @@ def engine_actions() -> tuple[Action, ...]:
             params=RunLaunchParams,
             result=JobsStarted,
             handler=_run_launch,
-            render=render.render_jobs_started,
             happy_path=_run_launch_path,
             example={"template_id": "tmpl-1", "subject_id": "subject-1", "models": ["model-a", "model-b"]},
             long_running=True,
@@ -1410,7 +1426,8 @@ def engine_actions() -> tuple[Action, ...]:
                 "cannot honour it: an axis it does not declare, a bar looser than the registered one. control_from_run_id "
                 "names the run whose variant every other cell is read against. Omit both and the campaign is "
                 "exploratory: its report and analysis say once that its readings confirm nothing, and its design is "
-                "inferred from the runs."
+                "inferred from the runs. template_id names the template whose rubric dimensions and goal-state "
+                "checks a bar may name; omitted, it is the one template every run named ran."
             ),
         ),
         Action(
@@ -1421,7 +1438,6 @@ def engine_actions() -> tuple[Action, ...]:
             params=AnalysisGenerateParams,
             result=JobsStarted,
             handler=_analysis_generate,
-            render=render.render_jobs_started,
             happy_path=_analysis_generate_path,
             example={"campaign_id": campaign_id},
             long_running=True,
@@ -1457,7 +1473,6 @@ def engine_actions() -> tuple[Action, ...]:
             params=JudgeSecondParams,
             result=JobsStarted,
             handler=_judge_second,
-            render=render.render_jobs_started,
             long_running=True,
             happy_path=_second_judge_path,
             example={"run_id": run_id, "second_judge_model": "judge/other", "sample_fraction": 0.5},
@@ -1491,7 +1506,6 @@ def engine_actions() -> tuple[Action, ...]:
             params=JudgeDriftParams,
             result=JobsStarted,
             handler=_judge_drift_check,
-            render=render.render_jobs_started,
             long_running=True,
             happy_path=_second_judge_path,
             example={"run_id": run_id, "second_judge_model": "judge/new"},
@@ -1511,7 +1525,6 @@ def engine_actions() -> tuple[Action, ...]:
             params=JudgeTemperatureParams,
             result=JobsStarted,
             handler=_judge_temperature,
-            render=render.render_jobs_started,
             long_running=True,
             happy_path=_judge_temperature_path,
             example={"run_id": run_id, "repeats": 5},
@@ -1667,6 +1680,26 @@ def engine_actions() -> tuple[Action, ...]:
             ),
         ),
         Action(
+            name="judge_template_create",
+            summary="Write a judge template: the judge kind and an intent, which judge cases are frozen into.",
+            workflow=ANALYSE,
+            permission="write",
+            params=JudgeTemplateCreateParams,
+            result=TemplateLine,
+            handler=_judge_template_create,
+            render=render.render_template_line,
+            example={
+                "template_name": "faithfulness judge",
+                "intent": "Score how faithfully an extraction reproduces its invoice.",
+            },
+            detail=(
+                "A judge campaign's template is the package's, not the host's: the judge kind, a name and an intent, "
+                "and nothing else — its cases carry everything a trial reads. Freeze cases into it with "
+                "judge_cases_freeze, then run_launch it. Refused on a host that does not launch the judge kind, and "
+                "for a name the scope already holds. Calls no model."
+            ),
+        ),
+        Action(
             name="judge_cases_freeze",
             summary="Freeze stored judged outputs, their criteria and their labels into cases of a judge template.",
             workflow=ANALYSE,
@@ -1748,8 +1781,11 @@ def engine_actions() -> tuple[Action, ...]:
             render=render.render_runs_compared,
             example={"baseline_run_id": run_id, "candidate_run_id": "0193a1b2-run-b"},
             detail=(
-                "pass^k is read on both arms at the shallower arm's depth. The composite is tested paired over the "
-                "cases both runs scored, else unpaired, and the answer says which; a miss reads not significant, "
+                "pass^k is read on both arms at the shallower arm's depth, over the cases each averaged there, and "
+                "names what its attempts were held to — goal checks, a judge's criteria at the threshold, or both. "
+                "The composite is tested paired over the cases both runs scored, else unpaired, and the answer says "
+                "which; where no case carries a composite in both, no test ran and it says why. A miss reads not "
+                "significant, "
                 "never no difference. Composites of two different subjects are not compared. Each run that "
                 "delivered less than its matrix carries its sentence, and the answer says when the two were "
                 "measured over spans that do not overlap or recorded different cassette modes. A run not in the "

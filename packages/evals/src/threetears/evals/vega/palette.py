@@ -1,9 +1,9 @@
 """The packaged chart palette, and the Vega-Lite config built from any palette.
 
 **Two palettes reach this module, and one config builder serves both.** A host declares its own
-:class:`~threetears.evals.kernel.host.ChartPalette` on its style profile, and a renderer built for that
-style draws in it; a host that declares none draws in the palette packaged here
-(:func:`packaged_palette`). :func:`vega_config` turns either into the Vega-Lite config — the only place a
+:class:`~threetears.evals.kernel.host.ChartPalette` on its style profile — built in code, or read from an
+artifact of the packaged one's shape with :func:`load_palette` — and a renderer built for that style draws
+in it; a host that declares none draws in the palette packaged here (:func:`packaged_palette`). :func:`vega_config` turns either into the Vega-Lite config — the only place a
 palette becomes Vega's vocabulary, so the host contract never names a Vega key. The packaged artifact is
 checked with the contract's own colour check
 (:func:`~threetears.evals.kernel.host.require_resolved_colour`), so "what a palette may hold" has one
@@ -46,7 +46,14 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from threetears.evals.kernel.host import ChartFont, ChartPalette, StyleError, require_resolved_colour
+from threetears.evals.kernel.host import (
+    SERIES_SLOTS,
+    VALIDATED_SLOTS,
+    ChartFont,
+    ChartPalette,
+    StyleError,
+    require_resolved_colour,
+)
 from threetears.evals.vega.text_metrics import packaged_font
 from threetears.observe import get_logger
 
@@ -110,22 +117,27 @@ CONTEXT_STYLE = "chart-context"
 #: the lightest one's ink and makes a contiguous block read as though it wrapped.
 SEQUENTIAL_RANGE = "chart-seq"
 
+#: The roles a theme's block names — :class:`~threetears.evals.kernel.host.ChartPalette`'s own fields, so an
+#: artifact maps onto the contract with no translation table.
+_ROLES: tuple[str, ...] = ("series", "sequential", "background", "ink", "muted", "grid", "rule", "context", "on_fill")
+
 
 class PaletteError(RuntimeError):
     """The chart palette artifact is missing or cannot be drawn with."""
 
 
 @lru_cache(maxsize=1)
-def load_palette() -> dict[str, Any]:
-    """Load and check the packaged palette artifact.
+def packaged_artifact() -> dict[str, Any]:
+    """Load and check the packaged palette artifact — the type scale, geometry and both themes' colours.
 
     Returns:
         The parsed artifact.
 
     Raises:
-        PaletteError: The artifact is absent, or holds a colour that is not resolved
-            sRGB hex — refused by the contract's colour check, since the server-side
-            rasteriser renders another notation (oklch) as black.
+        PaletteError: The artifact is absent, holds a colour that is not resolved sRGB hex — refused
+            by the contract's colour check, since the server-side rasteriser renders another notation
+            (oklch) as black — or records slot widths the chart vocabulary does not assign
+            (:func:`check_palette_artifact`).
     """
     try:
         raw = _PALETTE_PATH.read_text(encoding="utf-8")
@@ -138,8 +150,85 @@ def load_palette() -> dict[str, Any]:
     return check_palette_artifact(palette)
 
 
+def load_palette(path: Path, theme: Theme) -> ChartPalette:
+    """Read a palette artifact a host built for its own colours, as the palette to declare.
+
+    What a host puts on ``StyleProfile.chart_palette``, beside the face
+    :func:`~threetears.evals.vega.text_metrics.load_chart_font` reads.
+    The artifact has the packaged one's shape (``chart_palette.json`` beside this module): a block per
+    theme whose keys are :class:`~threetears.evals.kernel.host.ChartPalette`'s own roles, and the slot
+    widths its author measured. It is held to every check the packaged artifact is
+    (:func:`check_palette_artifact`), the one that matters most being the measurement: an artifact
+    whose ``validated_slots`` is below :data:`~threetears.evals.kernel.host.VALIDATED_SLOTS` was
+    validated over fewer series than the engine promises a reader can tell apart, and drawing with it
+    would break that promise silently, in a picture.
+
+    Args:
+        path: The artifact.
+        theme: Which theme's block to read.
+
+    Returns:
+        The palette, held to the contract.
+
+    Raises:
+        PaletteError: The file is absent or is not JSON, a colour is not resolved sRGB hex, the slot
+            widths are not the vocabulary's, or the theme's block is absent or does not make a palette.
+    """
+    try:
+        artifact: Any = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise PaletteError(f"chart palette artifact missing at {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise PaletteError(f"chart palette artifact {path} is not JSON: {exc}") from exc
+    if not isinstance(artifact, dict):
+        raise PaletteError(f"chart palette artifact {path} is not an object of theme blocks and slot widths")
+    return _palette_of(check_palette_artifact(artifact), theme, where=str(path))
+
+
+def _palette_of(artifact: dict[str, Any], theme: Theme, *, where: str) -> ChartPalette:
+    """One theme's block of a checked artifact, as the contract's palette.
+
+    Args:
+        artifact: An artifact :func:`check_palette_artifact` passed.
+        theme: Which block.
+        where: The artifact's name in a refusal.
+
+    Returns:
+        The palette.
+
+    Raises:
+        PaletteError: The block is absent, lacks a role, or does not make a palette.
+    """
+    mode = artifact.get(theme)
+    if not isinstance(mode, dict):
+        raise PaletteError(f"chart palette artifact {where} has no {theme!r} block")
+    if missing := [role for role in _ROLES if role not in mode]:
+        raise PaletteError(f"chart palette artifact {where}'s {theme!r} block names no {', '.join(missing)}")
+    try:
+        return ChartPalette(
+            series=tuple(mode["series"]),
+            sequential=tuple(mode["sequential"]),
+            background=mode["background"],
+            ink=mode["ink"],
+            muted=mode["muted"],
+            grid=mode["grid"],
+            rule=mode["rule"],
+            context=mode["context"],
+            on_fill=mode["on_fill"],
+        )
+    except (StyleError, TypeError) as refused:
+        raise PaletteError(f"chart palette artifact {where}'s {theme!r} block is not a palette: {refused}") from refused
+
+
 def check_palette_artifact(palette: dict[str, Any]) -> dict[str, Any]:
-    """Hold every colour in a palette artifact to the contract's one colour check.
+    """Hold a palette artifact to the contract's one colour check, and to the slot widths the chart vocabulary assigns.
+
+    The slot widths are the artifact's record of its author's measurement. ``series_slots`` must be
+    :data:`~threetears.evals.kernel.host.SERIES_SLOTS`, the width every palette supplies. ``validated_slots``
+    — how many slots the author measured as separating for colourblind readers — must reach
+    :data:`~threetears.evals.kernel.host.VALIDATED_SLOTS`, because the engine assigns that many slots to
+    series it promises a reader can tell apart: an artifact measured over fewer would carry a promise
+    nothing checked. It may not exceed the width.
 
     Args:
         palette: A parsed palette artifact.
@@ -149,14 +238,47 @@ def check_palette_artifact(palette: dict[str, Any]) -> dict[str, Any]:
 
     Raises:
         PaletteError: A colour is not resolved sRGB hex
-            (:func:`~threetears.evals.kernel.host.require_resolved_colour`).
+            (:func:`~threetears.evals.kernel.host.require_resolved_colour`), or a slot width is absent,
+            not a whole number, or not the vocabulary's.
     """
     for path, colour in _colour_values(palette):
         try:
-            require_resolved_colour(f"packaged chart palette value {path}", colour)
+            require_resolved_colour(f"chart palette value {path}", colour)
         except StyleError as unresolved:
             raise PaletteError(str(unresolved)) from unresolved
+    series = _slot_width(palette, "series_slots")
+    validated = _slot_width(palette, "validated_slots")
+    if series != SERIES_SLOTS:
+        raise PaletteError(
+            f"chart palette artifact records series_slots={series}; a palette supplies exactly the {SERIES_SLOTS} "
+            "slots a chart assigns"
+        )
+    if not VALIDATED_SLOTS <= validated <= series:
+        raise PaletteError(
+            f"chart palette artifact records validated_slots={validated}; the engine assigns {VALIDATED_SLOTS} slots "
+            f"as validated, so the artifact's measurement must cover at least those and at most its {series} slots — "
+            "slots past the measurement would carry a separation promise nothing checked"
+        )
     return palette
+
+
+def _slot_width(palette: dict[str, Any], key: str) -> int:
+    """A slot width the artifact records, refused unless it is a whole number.
+
+    Args:
+        palette: A parsed palette artifact.
+        key: ``series_slots`` or ``validated_slots``.
+
+    Returns:
+        The width.
+
+    Raises:
+        PaletteError: The width is absent or not a whole number.
+    """
+    width = palette.get(key)
+    if isinstance(width, bool) or not isinstance(width, int):
+        raise PaletteError(f"chart palette artifact records {key}={width!r}; it must be a whole number of slots")
+    return width
 
 
 def _colour_values(palette: dict[str, Any]) -> list[tuple[str, str]]:
@@ -182,7 +304,7 @@ def _colour_values(palette: dict[str, Any]) -> list[tuple[str, str]]:
 
 def validated_slots() -> int:
     """How many categorical palette slots may be assigned before falling back."""
-    return int(load_palette()["validated_slots"])
+    return int(packaged_artifact()["validated_slots"])
 
 
 def series_slots() -> int:
@@ -192,7 +314,7 @@ def series_slots() -> int:
     answer today, and only this one is a single statement of the width rather than a
     measurement of one theme's list.
     """
-    return int(load_palette()["series_slots"])
+    return int(packaged_artifact()["series_slots"])
 
 
 def geometry() -> dict[str, Any]:
@@ -208,7 +330,7 @@ def geometry() -> dict[str, Any]:
         …); callers read the ones they need rather than unpacking a fixed shape,
         so a value added for one chart type does not break the others.
     """
-    return dict(load_palette()["geometry"])
+    return dict(packaged_artifact()["geometry"])
 
 
 def font_sizes() -> dict[str, float]:
@@ -226,7 +348,7 @@ def font_sizes() -> dict[str, float]:
         The ``font_size`` block. Keys are the scale's own names (``title``,
         ``tick``, ``label``, …); callers read the ones they need.
     """
-    return dict(load_palette()["font_size"])
+    return dict(packaged_artifact()["font_size"])
 
 
 def font_weights() -> dict[str, float]:
@@ -241,7 +363,19 @@ def font_weights() -> dict[str, float]:
         The ``font_weight`` block, keyed by the same step names as
         :func:`font_sizes`.
     """
-    return dict(load_palette()["font_weight"])
+    return dict(packaged_artifact()["font_weight"])
+
+
+def drawn_weights() -> list[int]:
+    """Every weight the chart type scale draws at, ascending: what a face's metrics table is measured at.
+
+    The one list both sides read — the measurer measures at it, and a table measured at any other is refused — so
+    a type scale that gains a weight cannot leave a table laying text out at widths it was never measured at.
+
+    Returns:
+        The distinct :func:`font_weights`, as integers.
+    """
+    return sorted({int(weight) for weight in font_weights().values()})
 
 
 def series_colors(theme: Theme) -> list[str]:
@@ -255,7 +389,7 @@ def series_colors(theme: Theme) -> list[str]:
     direct label on every mark is mandatory from five series up, so identity has left
     the hue channel before the hue channel weakens.
     """
-    return list(load_palette()[theme]["series"])
+    return list(packaged_artifact()[theme]["series"])
 
 
 def sequential_colors(theme: Theme) -> list[str]:
@@ -266,7 +400,7 @@ def sequential_colors(theme: Theme) -> list[str]:
     ceiling on how many levels a dimension may have. As a range it is a path Vega
     samples, so five stops draw seven levels as seven distinct tones.
     """
-    return list(load_palette()[theme]["sequential"])
+    return list(packaged_artifact()[theme]["sequential"])
 
 
 def packaged_palette(theme: Theme) -> ChartPalette:
@@ -284,21 +418,7 @@ def packaged_palette(theme: Theme) -> ChartPalette:
     Raises:
         PaletteError: The artifact is absent or does not make a palette.
     """
-    mode = load_palette()[theme]
-    try:
-        return ChartPalette(
-            series=tuple(mode["series"]),
-            sequential=tuple(mode["sequential"]),
-            background=mode["background"],
-            ink=mode["ink"],
-            muted=mode["muted"],
-            grid=mode["grid"],
-            rule=mode["rule"],
-            context=mode["context"],
-            on_fill=mode["on_fill"],
-        )
-    except StyleError as refused:
-        raise PaletteError(f"the packaged {theme} palette is not a palette: {refused}") from refused
+    return _palette_of(packaged_artifact(), theme, where=str(_PALETTE_PATH))
 
 
 def vega_config(palette: ChartPalette, font: ChartFont | None = None) -> dict[str, Any]:
@@ -331,7 +451,7 @@ def vega_config(palette: ChartPalette, font: ChartFont | None = None) -> dict[st
     Returns:
         A Vega-Lite ``config`` object.
     """
-    artifact = load_palette()
+    artifact = packaged_artifact()
     font_family = (font if font is not None else packaged_font()).family
     # The chart type scale and weights, in px. Charts read their OWN scale rather than
     # borrowing a page's caption and helper-text sizes: a tick and the value written on a
@@ -511,9 +631,11 @@ __all__ = [
     "Theme",
     "check_palette_artifact",
     "font_sizes",
+    "drawn_weights",
     "font_weights",
     "geometry",
     "load_palette",
+    "packaged_artifact",
     "packaged_palette",
     "sequential_colors",
     "series_colors",

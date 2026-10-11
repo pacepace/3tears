@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from threetears.evals.gen.prompts.boundary_gen import EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT
 from threetears.evals.gen.prompts.proposer import EVAL_PROPOSER_TEMPLATE_DEFAULT
-from threetears.evals.gen.proposers import PROPOSER_MAX_TOKENS, ProposedDraft, propose_draft
+from threetears.evals.gen.proposers import PROPOSER_MAX_TOKENS, ProposedDraft, plan_draft, propose_draft
 from threetears.evals.gen.variation_gen import generate_variations, price_variations
 from threetears.evals.gen.variation_gen import EvalTestCaseStore, GeneratedVariations
 
@@ -26,6 +26,7 @@ __all__ = [
     "GeneratedVariations",
     "ProposedDraft",
     "generate_variations",
+    "plan_draft",
     "price_variations",
     "propose_draft",
 ]

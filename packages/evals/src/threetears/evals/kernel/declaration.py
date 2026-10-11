@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_validator
 
 from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.covariates import COVARIATE_KEYS
 from threetears.evals.kernel.host.bars import Bar, BarRegistrationError, contradicts_descriptor, no_better_end
 from threetears.evals.schema.values import Scale, SweepableValue
@@ -758,9 +759,10 @@ def reconcile_question_edits(stored: list[Question], incoming: list[Question]) -
     """
     by_id = {q.id: q for q in stored}
     if dropped := sorted(set(by_id) - {q.id for q in incoming}):
-        raise ValueError(
+        raise DesignRefused(
             f"questions are retired, never deleted — this update omits {', '.join(dropped)}, "
-            f"and an analysis may already resolve them by id. Send each one back with `retired_at` set instead"
+            "and an analysis may already resolve them by id",
+            remedy="send each one back with `retired_at` set instead",
         )
 
     reconciled: list[Question] = []
@@ -1044,13 +1046,29 @@ def resolve_bar_name(
     )
 
 
-class UndeclarableAxisError(ValueError):
+class DesignRefused(RefusedInput):
+    """A declaration this host cannot honour, as what is wrong with it and what to declare instead.
+
+    What :func:`refuse_an_undeclarable_design` and :func:`reconcile_question_edits` raise; the authoring surface hands
+    its two halves on apart, as every refusal states them.
+    """
+
+
+class UndeclarableAxisError(DesignRefused):
     """A declared axis this host will not accept: neither a registered lever nor a recognised open-family member.
 
-    A :class:`ValueError` like every refusal :func:`refuse_an_undeclarable_design` raises, and distinct so the
-    authoring surface can point its author at the one call listing what IS declarable
+    Distinct so the authoring surface can point its author at the one call listing what IS declarable
     (:func:`~threetears.evals.analysis.campaigns.declarable_axes`) — a pointer that would be noise on a refused bar.
     """
+
+
+#: How a campaign comes to have a template whose rubric dimensions and goal-state checks a bar or a guardrail
+#: margin may name — what every refusal of one that found none says. Both ways are reachable at creation:
+#: ``campaign_create`` takes ``template_id``, and infers it from runs that all ran one template.
+NO_TEMPLATE_REMEDY = (
+    "name the template with template_id when creating the campaign (templates_list names this scope's templates), "
+    "or create it over runs that all ran one template, which is then the campaign's"
+)
 
 
 def _refuse_unreadable_guardrail_margins(design: CampaignDesign, template: EvalTemplate | None) -> None:
@@ -1068,21 +1086,26 @@ def _refuse_unreadable_guardrail_margins(design: CampaignDesign, template: EvalT
         dim = dims.get(entry.dimension)
         if dim is None or dim.axis != "boundary":
             why = (
-                "this campaign names no template that could be read, so no rubric dimension is known"
+                f"this campaign names no template that could be read, so no rubric dimension is known — "
+                f"{NO_TEMPLATE_REMEDY}"
                 if template is None
                 else "the template declares no such dimension"
                 if dim is None
                 else "it is on the capability axis, which is compared, not held"
             )
-            raise ValueError(
-                f"a guardrail margin names '{entry.dimension}': {why}. A guardrail margin is declared on a rubric "
-                f"dimension of the campaign's template on the boundary axis: {', '.join(boundary) or 'it declares none'}"
+            raise DesignRefused(
+                f"a guardrail margin names '{entry.dimension}': {why}",
+                remedy=(
+                    "declare a guardrail margin on a rubric dimension of the campaign's template on the boundary "
+                    f"axis: {', '.join(boundary) or 'it declares none'}"
+                ),
             )
         low, high = SCALES[dim.scale].value_range
         if entry.margin >= high - low:
-            raise ValueError(
+            raise DesignRefused(
                 f"a guardrail margin of {entry.margin!r} on '{entry.dimension}', scored {low:g} to {high:g}, is as "
-                "wide as its scale, so every arm would hold whatever it did"
+                "wide as its scale, so every arm would hold whatever it did",
+                remedy=f"declare a margin narrower than {high - low:g}",
             )
 
 
@@ -1178,7 +1201,11 @@ def refuse_an_undeclarable_design(
         # member this same gate accepts: `lever_names` cannot express a family, and `axis_remedy`
         # can. One derivation, not two free to disagree.
         raise UndeclarableAxisError(
-            f"host '{profile.host_id}' cannot vary every axis this campaign declares — {reasons}"
+            f"host '{profile.host_id}' cannot vary every axis this campaign declares — {reasons}",
+            remedy=(
+                "declare only the axes this refusal lists as declarable — the host's levers and the members of its open "
+                "families it recognises, read from the registry this gate decides with"
+            ),
         )
 
     # The naming check and the direction check read ONE resolver, and the bundle's bar adjudication
@@ -1213,9 +1240,10 @@ def refuse_an_undeclarable_design(
         if override.measure_id == FRONTIER_RANKING_MEASURE and not 0.0 <= override.threshold <= 1.0
     ]
     if out_of_range:
-        raise ValueError(
+        raise DesignRefused(
             f"a bar on {FRONTIER_RANKING_MEASURE} is read by the frontier against pass^k, a probability, so its "
-            f"threshold must lie in [0, 1]; this campaign declares {', '.join(repr(t) for t in out_of_range)}"
+            f"threshold must lie in [0, 1]; this campaign declares {', '.join(repr(t) for t in out_of_range)}",
+            remedy="declare it in [0, 1]",
         )
     if unreadable:
         # The author's own declared value, echoed as written: a refusal quotes its input rather than
@@ -1226,7 +1254,8 @@ def refuse_an_undeclarable_design(
         if template is None:
             minted = (
                 "The campaign's template: none — this campaign names no template that could be read, so no "
-                "rubric dimension or goal-state check is known beyond the reserved axes every run scores"
+                "rubric dimension or goal-state check is known beyond the reserved axes every run scores; "
+                f"{NO_TEMPLATE_REMEDY}"
             )
         else:
             dims = ", ".join(sorted(rubric)) or "none — the campaign's template declares no rubric"
@@ -1242,11 +1271,15 @@ def refuse_an_undeclarable_design(
                 BarName,
             )
         )
-        raise ValueError(
+        raise DesignRefused(
             f"a bar must name something this campaign's results will carry and a verdict can be given on — "
-            f"{named}. {minted}. Reserved judged axes: {', '.join(sorted(RESERVED_DIM_IDS))}. "
-            f"Measures a result carries with a direction (the engine's core and host '{profile.host_id}''s "
-            f"catalogue): {', '.join(readable)}. And {FRONTIER_RANKING_MEASURE}, which the frontier reads"
+            f"{named}. {minted}",
+            remedy=(
+                f"name one of the reserved judged axes ({', '.join(sorted(RESERVED_DIM_IDS))}), a measure a result "
+                f"carries with a direction (the engine's core and host '{profile.host_id}''s catalogue: "
+                f"{', '.join(readable)}), {FRONTIER_RANKING_MEASURE}, which the frontier reads, or a rubric dimension "
+                "or goal-state check of the campaign's template"
+            ),
         )
 
     for override in design.bars:
@@ -1265,7 +1298,13 @@ def refuse_an_undeclarable_design(
                 )
             )
         except BarRegistrationError as e:
-            raise ValueError(str(e)) from e
+            raise DesignRefused(
+                str(e),
+                remedy=(
+                    "declare the bar at least as tight as the registered one, in the registered direction, or leave "
+                    "the registered bar to stand"
+                ),
+            ) from e
 
     # The fourth check, and the one `check_override` above cannot make: it judges a proposed
     # direction against an INCUMBENT, and a host that has registered no bars leaves
@@ -1316,10 +1355,11 @@ def refuse_an_undeclarable_design(
         )
     )
     if contradicted:
-        raise ValueError(
+        raise DesignRefused(
             f"host '{profile.host_id}' describes these measures differently from the bars this campaign "
             f"declares — {'; '.join(contradicted)}. The descriptor owns the direction, so a bar read the "
-            "other way round is not a tighter standard — it is cleared by exactly the values it should fail"
+            "other way round is not a tighter standard — it is cleared by exactly the values it should fail",
+            remedy="declare each bar in the direction its measure is described",
         )
 
     # Latency is under test only when the design says so (#701), never inferred from a bar or a question: a
@@ -1340,15 +1380,19 @@ def refuse_an_undeclarable_design(
         if "latency" in design.merit_priority:
             latency.append("latency in merit_priority")
         if latency:
-            raise ValueError(
-                f"this campaign asks about latency — {'; '.join(latency)} — and does not declare latency under test. "
-                "Set measure_latency=True on its design and launch its runs with measure_latency=True (start_run, "
-                "run_eval or compare), so their cells run one at a time and their latency is read clean; a run "
-                "launched without it executes its cells concurrently, and the latency it records is never compared"
+            raise DesignRefused(
+                f"this campaign asks about latency — {'; '.join(latency)} — and does not declare latency under test; "
+                "a run launched without it executes its cells concurrently, and the latency it records is never "
+                "compared",
+                remedy=(
+                    "set measure_latency=True on its design and launch its runs with measure_latency=True (run_launch, "
+                    "or sweep_launch for a sweep), so their cells run one at a time and their latency is read clean"
+                ),
             )
 
 
 __all__ = [
+    "NO_TEMPLATE_REMEDY",
     "BarName",
     "BarNameKind",
     "BarNameRefusal",
@@ -1358,6 +1402,7 @@ __all__ = [
     "GuardrailMargin",
     "Question",
     "SweptAxis",
+    "DesignRefused",
     "UndeclarableAxisError",
     "UnreadableBarName",
     "JUDGED_MERIT_AXIS",

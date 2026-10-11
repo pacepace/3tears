@@ -103,7 +103,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from threetears.evals.kernel.authored import strict_schema
+from threetears.evals.kernel.authored import strict_response_format
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import (
     CANDIDATE_SPEAKER,
@@ -199,21 +199,8 @@ class NextSpeakerReply(EvalBaseModel):
 
 
 def _response_format(name: str, model: type[EvalBaseModel]) -> dict[str, Any]:
-    """The ``response_format`` directive for ``model``, through the strict projection.
-
-    The model's docstring is dropped from what is sent: it is written for the next developer, and the
-    user prompt is what tells the model what the fields mean.
-    """
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "name": name,
-            "strict": True,
-            "schema": {
-                key: value for key, value in strict_schema(model.model_json_schema()).items() if key != "description"
-            },
-        },
-    }
+    """The ``response_format`` directive for ``model``, through the strict projection every typed call sends."""
+    return strict_response_format(name, model.model_json_schema())
 
 
 #: The ``response_format`` directive every simulated-user call sends. Derived from

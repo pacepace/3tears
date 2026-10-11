@@ -81,7 +81,7 @@ def _two_runs(fixture: OpsFixture, *, baseline: RunCompleteness, candidate: RunC
 
 
 def _no_template(template_id: str) -> Any:
-    raise NotFoundError("template", template_id)
+    raise NotFoundError("template", template_id, remedy="list them first")
 
 
 async def _call(tool: MountedTool, fixture: OpsFixture, arguments: dict[str, Any], caller: Caller = CALLER) -> Any:

@@ -3,7 +3,7 @@
 A number a reader sees is code's, including one inside a sentence. So the
 model never types a figure into prose: it writes a **figure reference** —
 ``{{<cell>|<measure_id>|<reading>|<stat>}}`` — and :func:`render_prose_figures` replaces each one
-with the value read off the decision surface, in the unit a chart axis would choose and spelled for a sentence.
+with the value read off the decision surface, on its measure's one ruler for the report and spelled for a sentence.
 
 - ``<cell>`` is the cell's short alias, its ``cell`` in ``cell_measures`` (``c1``, ``c2``, …), read back
   through :func:`~threetears.evals.analysis.references.cell_of_alias` like every other cell a writer names.
@@ -52,7 +52,8 @@ from typing import Literal, get_args
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.numbers import ABSENT, format_number
 from threetears.evals.analysis.references import cell_aliases, cell_of_alias, require_cell, resolve_reading
-from threetears.evals.analysis.viz.quantities import UNSPACED_UNITS, display_scale
+from threetears.evals.analysis.surface_table import UNITLESS, MeasureRuler, measure_rulers
+from threetears.evals.analysis.viz.quantities import UNSPACED_UNITS
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.kernel.authored import AuthoredAnalysis
 from threetears.evals.kernel.campaign import ReadingKind
@@ -109,17 +110,21 @@ def prose_number(value: float | None) -> str:
     return f"{value:.2g}"
 
 
-def state_in_prose(value: float, unit: str | None) -> str:
-    """State one value in a sentence, in the unit a chart axis would choose for it.
+def state_in_prose(value: float, ruler: MeasureRuler) -> str:
+    """State one value in a sentence, on its measure's one ruler for the report.
+
+    The ruler is the one every table and chart states the measure on
+    (:func:`~threetears.evals.analysis.surface_table.measure_rulers`): a figure in a sentence choosing its unit over
+    itself alone read ``950 ms`` beside a table stating the same latency in s.
 
     Args:
         value: The value, in the unit it was measured in.
-        unit: That unit, or ``None`` when none was declared.
+        ruler: Its measure's ruler; :data:`~threetears.evals.analysis.surface_table.UNITLESS` for a judged score.
 
     Returns:
         The value's text: money as ``$0.012``, anything else joined to its unit where one is known.
     """
-    factor, shown = display_scale([value], unit)
+    factor, shown = ruler
     scaled = value * factor
     if shown == "usd":
         return f"{'-' if scaled < 0 else ''}${prose_number(abs(scaled))}"
@@ -185,6 +190,7 @@ def render_reference(surface: DecisionSurface, inner: str) -> str:
     """
     cell, measure_id, reading, stat = parse_reference(inner)
     cell_ref = cell_of_alias(surface, cell)
+    ruler = measure_rulers(surface).get(measure_id, UNITLESS) if reading == "measure" else UNITLESS
     if reading == "measure":
         counts = _category_counts(surface, inner, cell_ref, measure_id, stat)
         if counts is not None:
@@ -204,13 +210,13 @@ def render_reference(surface: DecisionSurface, inner: str) -> str:
         if reading == "measure" and goal_check_of(measure_id) is not None:
             # A pass rate is passed / evaluated, so the count is exact, and it is what the reader wants.
             return f"{round(resolved.mean * resolved.n)} of {resolved.n}"
-        return state_in_prose(resolved.mean, resolved.unit)
+        return state_in_prose(resolved.mean, ruler)
     value = getattr(_summary(surface, cell_ref, measure_id), stat)
     if value is None:
         raise UnresolvableReference(
             f"figure reference {{{{{inner}}}}}: measure {measure_id!r} at {cell_ref!r} has no {stat}"
         )
-    return state_in_prose(value, resolved.unit)
+    return state_in_prose(value, ruler)
 
 
 def _summary(surface: DecisionSurface, cell_ref: str, measure_id: str) -> MeasureSummary:

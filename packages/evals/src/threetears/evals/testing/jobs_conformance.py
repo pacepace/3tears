@@ -305,7 +305,7 @@ def _happy_path_case(action: Action, timeout_s: float, call_return_timeout_s: fl
             except CompletionOutsideJob as refused:
                 raise _fail(action, rule, f"its call made a completion request: {refused}") from None
             except EvalServiceError as refused:
-                raise _fail(action, rule, f"its call refused its happy path: {refused.message}") from None
+                raise _fail(action, rule, f"its call refused its happy path: {refused}") from None
             finally:
                 guard.call_returned()
             if guard.awaited_by_call:

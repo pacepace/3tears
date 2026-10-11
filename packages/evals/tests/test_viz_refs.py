@@ -795,8 +795,8 @@ def test_a_sweep_ranks_descending_and_reads_its_configuration_off_the_variant_in
     # Declared from each level's scale: an interval lever orders, a nominal one does not.
     assert payload["dimensions"] == [{"name": "max_rounds", "ordered": True}, {"name": "model", "ordered": False}]
     assert (payload["ranked"], payload["secondary"]) == (
-        {"measure": "pass_rate", "unit": None},
-        {"measure": "Production cost", "unit": "usd"},
+        {"measure": "pass_rate", "unit": None, "stated_unit": None},
+        {"measure": "Production cost", "unit": "usd", "stated_unit": "usd"},
     )
     # Every configuration is drawn, unconstrained: the authored chart names no limit and no held value.
     assert "omitted" not in payload and "held_fixed" not in payload

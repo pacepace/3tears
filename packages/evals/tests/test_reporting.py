@@ -8109,7 +8109,7 @@ class TestGoalStatePivots:
         assert "POOLED" not in table.formula
 
     def test_a_check_expression_passed_as_the_metric_is_pointed_at_goal_check(self):
-        with pytest.raises(PivotError, match="'check_a' is a goal-state check, not a measure — aggregate 'goal_state'"):
+        with pytest.raises(PivotError, match="'check_a' is a goal-state check, not a measure; aggregate 'goal_state'"):
             compute_pivot(
                 self.goal_state_records(),
                 row_factor="template_id",

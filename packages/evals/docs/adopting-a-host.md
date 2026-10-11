@@ -66,7 +66,11 @@ pass it to every entrypoint. It holds:
   label prints in place of its key ("Output speed", not `candidate_output_tokens_per_s`). `MeasureRegistry`
   refuses a measure without one, and one whose `reader_name` matches another measure's (yours or the engine's,
   ignoring case), so the mistake surfaces at startup, not on a chart. The key stays what the store files the
-  number under and what a reader cites;
+  number under and what a reader cites. Your bars (`BarRegistry`, each a `Bar`, with any per-behavior
+  `PassThreshold`) can be built in code or kept as data: `load_bar_registry(mapping)` reads
+  `{"bars": [...], "pass_thresholds": [...]}`, each entry its type's fields. It refuses a field it does not
+  know and a value of the wrong type rather than ignoring or coercing them, because a misspelt `rationale`
+  dropped silently would register a standard other than the one you wrote;
 - the `EvalStorage` you read and write through;
 - a factory for the completion clients the engine's own judge, simulator and analysis roles call. Every
   completion a client returns is read by `CompletionResult`'s attribute names, and the usage ledger reads its
@@ -86,7 +90,9 @@ pass it to every entrypoint. It holds:
 Nothing is ambient: there is no installed or default host, so two hosts in one process never meet.
 
 An app that starts runs builds a `LaunchHost` (in `threetears.evals.run`) around its `EvalHost`: the
-launch settings, a registry of the kinds it can launch, a job timeout, `world_placements` (required exactly
+launch settings, a registry of the kinds it can launch, a job timeout, `resolve_subject` (whether it holds the
+subject a launch names: `None`, or an `UnknownSubject` saying how a caller finds one it does — asked at admission,
+so `launch_estimate` and a launch refuse an unknown subject alike, before anything is priced), `world_placements` (required exactly
 when the profile declares a world: what each assembled run did with every dimension) and a `launch_pricer`
 (without one, an arm under an enforced cap is refused unless the launch names its own cap; see
 [Cost and budgets](cost-and-budgets.md#every-arm-is-priced-before-any-launcher-runs)); it builds its job manager over
@@ -207,10 +213,14 @@ from threetears.evals.storage import DocTypeRoute, RoutedDocumentStore, SqliteDo
 stores = {"evidence": MyPostgresStore(dsn), "scratch": SqliteDocumentStore("regenerable.sqlite")}
 route = DocTypeRoute(by="lifecycle", to={"kept": "evidence", "regenerable": "scratch"}, unregistered="evidence")
 
-# Once, with the engine stopped: move what the stores already hold to where the route puts it.
-RoutedDocumentStore.relocate(stores, route, scope_ids=["acme", "globex"], host_doc_types=["host_note"])
+ROUTING = "evals-routing.production"  # yours to name; never a scope you keep documents in
 
-storage = EvalStorage(RoutedDocumentStore(stores, route), host_doc_types=["host_note"])
+# Once, with the engine stopped: move what the stores already hold to where the route puts it.
+RoutedDocumentStore.relocate(
+    stores, route, scope_ids=["acme", "globex"], routing_scope=ROUTING, host_doc_types=["host_note"]
+)
+
+storage = EvalStorage(RoutedDocumentStore(stores, route, routing_scope=ROUTING), host_doc_types=["host_note"])
 ```
 
 A route keys on facts, never on type names, so a type a later release adds is placed by what it is. Every
@@ -226,8 +236,13 @@ id in two stores, or in a store its type is not kept in, raises `MisplacedDocume
 it, as a single store would refuse it. Only the owning store's create is atomic, so a write racing that check
 can leave the id in two stores, and the next id-only read reports it as `MisplacedDocument`.
 
-**Changing the route is an operation.** Each store records the placements it was written under, in a scope of
-its own (`ROUTING_SCOPE`: never use it as a scope of your own, and your adapter must be able to hold it).
+**Changing the route is an operation.** Each store records the placements it was written under, in the routing
+scope you name (`routing_scope`, on the router and on `relocate` alike, with no default). Never keep documents in
+it, and your adapter must be able to hold it. If you run several partitions in one database, such as
+environments or tenants behind row-level security over tables whose key is global, run one router per partition
+and give each its own routing scope: one shared scope would hold every partition's record under one key, which
+only the first partition could write. A router built with another routing scope than `relocate` was given finds
+no record and refuses to start.
 The router refuses to start (`RouteChanged`) when a type would be read from a store it was not written to, when
 two stores are passed under each other's names, and when no store has a record yet. `RoutedDocumentStore.relocate`
 moves every document of the scopes and host types you name to its new store, then writes the records. Run it
@@ -336,6 +351,28 @@ engine resolves every run's level of them — with its `candidate_model` and its
 variant key. Your profile's `host_sweepables` (the shared core extended with your own levers) and its
 `variant_levers` reader cover only the levers you declare beyond those; a host with none wires no reader.
 
+**How many cells your kind runs at once is yours to declare.** A run not measuring latency executes its cells
+side by side, and one kind instance may then be driving several of them: whether that is safe — the clients it
+shares across cells, a pool, a world it does not bind per cell — only your kind's code knows. So the kind
+declares it, as `max_concurrent_cells` beside `judged_artifact`: `1` is serial, a larger int is that many, and
+`None` is no limit of its own. **A kind that declares nothing runs one cell at a time.** Its launcher hands the
+same value to the launch (`KindWiring(max_concurrent_cells=kind.max_concurrent_cells)`), which runs the run at
+the narrowest of that, the host's `LaunchSettings.max_concurrent_cells` (a ceiling, 4 by default) and the matrix.
+The runner holds every cell's kind to it, refusing a kind that declares less than the run executes at before
+anything is spent.
+
+**Your kind's paid calls answer to the run's cost cap as they are made.** The cell's sink keeps the cell's spend
+by source and holds each priced call against the cap while it is in flight, so cells running side by side cannot
+together pass it. Before a call whose worst case your client can price, reserve it — `held =
+sink.reserve("candidate", ceiling)`, then `held.settle(cost)` when it returns and `held.release()` if it raises —
+or wrap the client in `CappedCompletion(client, sink=sink, source="candidate")`, which does both for every call,
+pricing each by the client's `price_ceiling`. A call that cannot be priced is reserved with no ceiling, which
+only asks whether the cap is already reached. Spend you learn of any other way, report as it lands
+(`sink.add_spend(source, cost)`); it adds, and never replaces what another source reported. A reservation the
+cap refuses raises `CostCapReached`: a one-shot kind catches it and returns what it has, and inside
+`drive_conversation` it simply propagates out of your candidate turn. The full rule is in [Cost and budgets:
+caps](cost-and-budgets.md#caps).
+
 A run is one arm with one `candidate_model`; a launch naming several models starts one run per model, and
 runs of different kinds are always different variants. A reader of yours that answers for a run its lever
 does not apply to (a run of another kind) returns `SweepableValue.not_this_kind(kind)` — the level a kind
@@ -346,7 +383,8 @@ report recognises, by its content hash, as a lever the arm did not run, and neve
 
 **A kind's launcher resolves only what is the kind's.** `start_run` refuses a launch argument the
 kind declares it cannot honour before the launcher runs, then hands the launcher a `LaunchRequest`.
-The launcher captures the subject the request names, freezes the cases, builds its judge
+The launcher captures the subject the request names (admission has already asked `resolve_subject` whether
+the host holds it, so a launcher never meets one it does not), freezes the cases, builds its judge
 (`build_judge_service`) if it has one, and returns `launch_run(host, request, KindWiring(...))`. The
 engine stamps everything the request and the template already say — scope, model, repeats, cassette
 mode, overlays, spec, world seed, tool bound, ceilings — and refuses a wiring that contradicts them.
@@ -369,13 +407,19 @@ A host adds its own actions to the catalogue (`eval_catalogue(my_actions)`). One
 rubric proposer, a drafter of a classifier's cases — is a `spend` action and keeps the engine's rule: **its call
 makes no completion request.** It prices and refuses in the call, then starts the work as a job with
 `start_action_job`, which writes an `EvalActionJob` record carrying the job's lease and, once the work returns,
-its typed result as JSON — what `job_poll` returns. Declare it `long_running=True` with result `JobsStarted`:
+its typed result as JSON — what `job_poll` returns. Declare it `long_running=True` with result `JobsStarted`. It
+needs no `render`: long work reads back as the jobs it started, with `render_jobs_started` (exported from
+`threetears.evals.actions`), which is the default, and which an action returning anything else may not use:
 
 ```python
 async def _propose(host: OpsHost, caller: Caller, params: ProposeParams) -> JobsStarted:
-    budget = my_budget(host, caller.scope_id)            # price and refuse here, spending nothing
-    async def draft() -> RubricDraft:                    # the job's work: the model calls
-        return await my_proposer(host, params, budget)
+    budget = my_budget(host, caller.scope_id)
+    client = my_proposer_client(host)
+    call = plan_draft(system_prompt=..., subject_feed=..., catalog_feed=...)
+    [admitted] = budget.admit(client, "proposer", [call])   # price and refuse here, spending nothing
+    async def draft() -> RubricProposal:                     # the job's work: the admitted call, made
+        proposed = await propose_draft(client, admitted, budget=budget, axis=params.axis, subject_id=...)
+        return proposed.proposal
     return await start_action_job(host, caller.scope_id, action="rubric_propose", run=draft, label=params.topic)
 
 async def _propose_happy_path(stage: ConformanceStage) -> Mapping[str, Any]:
@@ -440,12 +484,14 @@ generated once for every arm:
   `blocking_executor=host.blocking_executor` (its case reads and writes run there; its model calls stay
   on the loop), and hand its counts on as `KindWiring(variation_counts=...)`.
 - An `llm` axis is written by the model the launch names as `variation_model` — required then, refused
-  when nothing would call it — which the launcher asks of the host's client factory in the `variation`
-  role (`clients("variation", request.variation_model)`), never the simulator's.
+  when nothing would call it. The launch's call builds the writer from the host's client factory in the
+  `variation` role (never the simulator's), plans and admits its calls there, and hands them to the launcher
+  as `request.generation`. The launcher builds no writer of its own.
 - The run records the model the client resolved to on `variation_counts.variation_model`; it enters no
   identity, because the cases it wrote are already hashed through `test_case_ids`.
-- The launcher hands `generate_variations` the request's `budget=request.generation_budget`.
-  `propose_draft` takes a budget the same way.
+- The launcher hands `generate_variations` the request's `generation=request.generation`, which makes exactly
+  the calls the launch admitted. A rubric proposal is planned (`plan_draft`), admitted in your call and made in
+  your job (`propose_draft(client, admitted, ...)`) the same way.
 
 Generation runs before any run exists, so its calls are outside every run's cost cap and metered-call
 ceiling. How they are priced and ledgered instead is in [Cost and budgets: spend outside any
@@ -461,6 +507,93 @@ declaration of the host). The dispatch resolves a launch's settings against thos
 launcher reads every one off `request.apparatus_settings` with no default of its own, and the run records
 the rig as set up (`EvalRun.apparatus_settings`), a component of its measurement context — a launch naming
 a default and one leaving it out are one condition.
+
+## The engine's prompts: seeded into your registry
+
+The engine steers three LLM calls of its own with a prompt: the analysis generator (`ANALYSIS_GEN_PROMPT`,
+one string), the capability proposer (`PROPOSER_PROMPT`) and the boundary proposer (`BOUNDARY_GEN_PROMPT`),
+both sectioned templates. Each is store-master. Your prompt registry holds the copy that runs, an operator
+tunes it with no deploy, and the engine ships only the default a fresh deployment starts from.
+
+`SEED_PROMPTS` (from `threetears.evals.kernel`) is that list, one `SeedPrompt` per prompt. Each names its id
+(`prompt_type`), which registry seeds it (`kind`: `template` or `text`), and where the default lives:
+`seed_ref` is the `(module, constant)` to import it from, and `promotion_ref` the source file a promotion
+writes a tuned preset back into. Seed an empty slot from each entry and never overwrite a stored one:
+
+```python
+for entry in SEED_PROMPTS:
+    module, constant = entry.seed_ref
+    default = getattr(importlib.import_module(module), constant)
+    registry.seed_if_empty(entry.prompt_type, entry.kind, default)  # your registry's own call
+```
+
+Key the slots by the exported constants rather than by the strings. Declare your own prompts with the
+same `SeedPrompt` type and seed from both lists. The engine's ids start with `eval_`, so your own can use
+any other name. A `SeedPrompt` refuses an unknown `kind` or a blank field when it is constructed.
+
+**See a stored copy the package has moved past, before you pay for it.** A slot seeded from an older default
+keeps being sent after an upgrade changes the default, and if the change is one the package's own validation
+depends on, every call it steers can fail. Record `seed_digest(default)` when you seed a slot, and on start-up
+read each slot with `prompt_drift`:
+
+```python
+drift = prompt_drift(entry, shipped=default, stored=stored_copy, seeded_digest=recorded_digest,
+                     customized=operator_owns_it)
+if drift.stale:
+    log.warning("%s: %s", drift.prompt_type, drift.remedy)
+```
+
+A stored copy reads `current` when it is the shipped default, `customized` when it changed since you seeded it
+or you say it is deliberately yours (`customized=True`), and `stale` otherwise: untouched since seeding, or with
+no record of its seeding, and not the default. Pass a template's stored copy as
+`SeedTemplate.from_dict(payload)` and a text prompt's as its string. The digest names content, not the revision
+number. A copy you tune is never reported stale.
+
+### Launching the analysis reporter
+
+The analysis reporter (`REPORTER_KIND`) evaluates the analysis writer itself. Its cases are frozen campaign
+bundles (see [Agents and MCP](agents-and-mcp.md#reporter-runs-evaluating-the-analysis-writer-itself)). A
+candidate is a preset of the `ANALYSIS_GEN_PROMPT` prompt on a generator model, or `AS_RECORDED_MODEL`,
+which replays the memo each campaign got.
+
+The kind is declared by the engine, so your host supplies only two things:
+
+- **Your prompt registry**, as a `ReporterPrompts`: `resolve(preset)` returns that preset's text, or the
+  system default for `None`. It returns `None` for a preset you do not hold, never the default in its
+  place. A registry that fell back would bill the incumbent prompt under the candidate's name.
+- **Your model resolution**, as a `ReporterModelResolver`: `(role, named)` returns the provider model,
+  or the role's default when `named` is `None`. The roles are `generator` and `judge`. Raise
+  `ValidationFailedError` for a name you do not know.
+
+Declare `REPORTER_KIND_CONTRACT` (from `threetears.evals.analysis`) on your profile's `kinds`. Its one
+overlay is `prompt_preset`, and it seats the judge and the spend ceiling. If the profile refuses it for
+leaving one of your own apparatus dimensions unseated, build it with
+`reporter_kind_contract(host_seats=[...])`. On a reporter template, your `refuse_undeliverable_template`
+hook calls `refuse_undeliverable_reporter_template`.
+
+Then register the kind's launch entry (from `threetears.evals.ops`):
+
+```python
+LaunchableKind(
+    launch=your_reporter_launcher,
+    unhonoured_launch_arguments=REPORTER_UNHONOURED_LAUNCH_ARGUMENTS,
+    plan_arm=lambda request: plan_reporter_arm(eval_host, request, prompts=load_prompts(), resolve_model=resolve),
+)
+```
+
+`plan_reporter_arm` and `admit_reporter_launch` make every refusal before the arm is priced, in this order:
+
+1. a template asking for apparatus a memo writer cannot honour, or with no rubric;
+2. a preset you do not hold, or no default;
+3. a model named by alias (a name you resolve to another model), since the run records the name and an
+   alias's target moves;
+4. a template with no live case, or a campaign-and-memo pair holding two live cases. When the launch
+   names a case set, its cases run instead, and each must carry a reporter case;
+5. the replay over a case with no recorded memo.
+
+Your launcher calls `admit_reporter_launch` again, off the event loop. It builds `ReporterKind` (prompt id
+`ANALYSIS_GEN_PROMPT`) or `AsRecordedReporterKind` from what that returns, and wires its client, subject,
+cell ceiling (`reporter_cell_timeout_s`) and judge as for any kind.
 
 ## A world, through the cell's session
 
@@ -508,10 +641,13 @@ stored on the cell's `EvalTrace`, and a re-judge sends exactly what the first ju
 **Conversations.** A conversing kind's template carries a `ConversationSpec`: its simulated actors, who
 speaks next, and the turn limit. A document or classifier template carries none. The kind runs it with
 `drive_conversation(driver, candidate_turn, post_user_turn, llm=..., sink=sink)`, handing over its cell's
-sink: before every paid call the loop asks the run's cost cap whether the simulator's spend so far
-reaches it (`CellSink.cost_cap_reached`), and stops `budget_stopped` when it does — the runner excludes
-that cell and ends the run `budget_stopped`, so one conversation (thousands of simulator calls at the
-schema's maxima) cannot run far past the cap. Fold the driver's calls with `fold_usage`: the stored
+sink: every simulator call is reserved against the run's cost cap at the client's own ceiling before it is
+made (a client with no `price_ceiling` has the cap asked instead), and the loop asks before every decision
+whether the cap is reached (`CellSink.cost_cap_reached`), stopping `budget_stopped` when it is — the runner
+excludes that cell and ends the run `budget_stopped`, so one conversation (thousands of simulator calls at the
+schema's maxima) cannot run past the cap. Your `candidate_turn` holds the candidate's own calls the same way;
+when the cap has no room it raises `CostCapReached` (a refused `sink.reserve` raises it for you), and the
+conversation ends `budget_stopped` — not `candidate_error` — with the rounds already answered kept. Fold the driver's calls with `fold_usage`: the stored
 `simulator` rows are one per actor and purpose (`RoleUsage.actor_id`, `RoleUsage.purpose`).
 
 **A round can be the world's.** `ConversationSpec.world_rounds` names rounds whose stimulus is a triggered

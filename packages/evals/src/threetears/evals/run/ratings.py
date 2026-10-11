@@ -37,6 +37,7 @@ from pydantic import ValidationError
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.schema.models import CalibrationRating, EvalResult, RaterKind
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import FIND_RESULT, SCHEMA_REMEDY
 
 log = get_logger(__name__)
 
@@ -97,7 +98,7 @@ def rate_result(
     """
     result = storage.load_eval_result(result_id, scope_id)
     if result is None:
-        raise NotFoundError("result", result_id)
+        raise NotFoundError("result", result_id, remedy=FIND_RESULT)
     judged = result.judge_score(rubric_dim)
     if judged is None:
         scored = sorted(
@@ -107,8 +108,9 @@ def rate_result(
         )
         raise ValidationFailedError(
             f"result {result_id!r} carries no judge score on {rubric_dim!r}, so a rating of it has nothing to be "
-            f"calibrated against; the judged dimensions are {scored or 'none'}",
+            "calibrated against",
             details={"result_id": result_id, "rubric_dim": rubric_dim, "judged_dimensions": scored},
+            remedy=f"rate a dimension the result was judged on: {scored or 'it was judged on none'}",
         )
     try:
         rating = CalibrationRating(
@@ -127,7 +129,9 @@ def rate_result(
             criterion_fingerprint=judged.criterion_fingerprint,
         )
     except ValidationError as e:
-        raise ValidationFailedError(f"rating of {rubric_dim!r} on result {result_id!r} refused: {e}") from e
+        raise ValidationFailedError(
+            f"rating of {rubric_dim!r} on result {result_id!r} refused: {e}", remedy=SCHEMA_REMEDY
+        ) from e
     storage.save_calibration_rating(rating)
     log.info(
         "eval.rate_result result=%s run=%s scope=%s dim=%s rater=%s rater_kind=%s score=%s",

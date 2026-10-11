@@ -32,10 +32,11 @@ from threetears.evals.actions import (
     engine_actions,
     eval_catalogue,
     read_only_tools,
+    render_jobs_started,
     standard_tools,
 )
 from threetears.evals.schema.base import EvalBaseModel
-from threetears.evals.ops import JobsStarted, OpsHost, RunLine
+from threetears.evals.ops import JobHandle, JobsStarted, OpsHost, RunLine
 from packages.evals.tests.ops_support import CALLER, ops_fixture
 
 
@@ -115,6 +116,7 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "bars_propose": "read",
         "reporter_case_freeze": "write",
         "reporter_cases_list": "read",
+        "judge_template_create": "write",
         "judge_cases_freeze": "write",
         "judge_profiles_record": "write",
         "judge_profiles_list": "read",
@@ -257,7 +259,8 @@ async def test_a_missing_required_parameter_is_refused_naming_it(tools: dict[str
 async def test_an_engine_refusal_is_a_refused_call_with_the_engines_reason(tools: dict[str, Any]) -> None:
     outcome = await _call(tools["evals"], {"action": "run_get", "run_id": "no-such-run"})
     assert outcome.is_error and outcome.structured is None
-    assert outcome.text.startswith("refused: run_get: ") and outcome.text.endswith("'no-such-run' not found")
+    assert outcome.text.startswith("refused: run_get: ") and "'no-such-run' not found" in outcome.text
+    assert outcome.text.splitlines()[-1] == "remedy: runs_list names this scope's runs"
 
 
 async def test_a_destructive_action_refuses_a_confirm_that_does_not_echo_the_id(tools: dict[str, Any]) -> None:
@@ -358,6 +361,52 @@ class _OtherMeaning(EvalBaseModel):
 def test_an_action_no_transport_could_mount_honestly_is_refused(overrides: dict[str, Any], message: str) -> None:
     with pytest.raises(ValueError, match=message):
         _action(**overrides)
+
+
+async def _start_note(host: OpsHost, caller: Caller, params: _Echo) -> JobsStarted:
+    return JobsStarted(jobs=[JobHandle(job_id="action:n1", kind="action", target_id="note_digest")])
+
+
+def test_long_work_reads_back_as_the_jobs_it_started_with_no_render_declared() -> None:
+    """Every action returning JobsStarted needs the same render, so a host's long action is given it."""
+    action = Action(
+        name="note_digest",
+        summary="Digest a note, as a job.",
+        workflow="Host",
+        permission="write",
+        params=_Echo,
+        result=JobsStarted,
+        handler=_start_note,
+        example={"note": "hello"},
+        long_running=True,
+    )
+    started = JobsStarted(jobs=[JobHandle(job_id="action:n1", kind="action", target_id="note_digest")])
+
+    assert action.render is render_jobs_started
+    assert action.render(started) == (
+        "started 1 job(s):\n- action:n1 (action note_digest)\nPoll each with action='job_poll', job_id='<id>' until "
+        "it reads done."
+    )
+
+
+def test_every_engine_action_that_starts_jobs_reads_them_back_the_one_way() -> None:
+    assert {a.name for a in engine_actions() if a.long_running and a.render is not render_jobs_started} == set()
+
+
+def test_a_short_action_declaring_no_render_is_refused() -> None:
+    """The jobs-started render reads only JobsStarted; an action whose result is anything else says how it reads."""
+    fields = {
+        "name": "note_echo",
+        "summary": "Echo a note back.",
+        "workflow": "Host",
+        "permission": "read",
+        "params": _Echo,
+        "result": _Echoed,
+        "handler": _echo,
+        "example": {"note": "hello"},
+    }
+    with pytest.raises(ValueError, match="declares its render"):
+        Action(**fields)
 
 
 def test_the_valid_action_the_refusals_start_from_is_accepted() -> None:

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.status_filter import StatusFilterError, validate_status_filter
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import FIND_RESULT
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.eval_host import EvalHost
@@ -60,7 +61,7 @@ def _listing_status_filter(status: str | None) -> EvalRunStatus | None:
     try:
         return validate_status_filter(status)
     except StatusFilterError as e:
-        raise ValidationFailedError(str(e)) from e
+        raise ValidationFailedError(e.fault, remedy=e.remedy) from e
 
 
 def list_runs(
@@ -154,7 +155,7 @@ def get_result(storage: ResultStore, result_id: str, scope_id: str) -> EvalResul
     """
     result = storage.load_eval_result(result_id, scope_id)
     if result is None:
-        raise NotFoundError("eval result", result_id)
+        raise NotFoundError("eval result", result_id, remedy=FIND_RESULT)
     return result
 
 

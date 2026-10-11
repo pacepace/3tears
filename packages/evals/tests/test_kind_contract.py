@@ -194,7 +194,9 @@ def test_an_overlay_the_model_refuses_is_refused_naming_each_field():
 
 
 def test_an_overlay_the_model_does_not_have_is_refused_naming_it_and_the_ones_it_has():
-    with pytest.raises(ValidationFailedError, match=r"has no overlay page_limt; its overlays are field_aliases"):
+    with pytest.raises(
+        ValidationFailedError, match=r"has no overlay page_limt; supply only its overlays: field_aliases"
+    ):
         TOY_EXTRACTOR_CONTRACT.validate_overlays({"page_limt": 3})
 
 
@@ -581,7 +583,10 @@ def test_a_spec_field_with_an_alias_is_refused_at_declaration_by_name():
     [
         ({"graded_fields": []}, "graded_fields: List should have at least 1 item"),
         ({"graded_fields": ["tip_amount"]}, "graded_fields.0: Input should be"),
-        ({"graded": ["total_amount"]}, "has no kind_spec field graded; its kind_spec fields are graded_fields"),
+        (
+            {"graded": ["total_amount"]},
+            "has no kind_spec field graded; supply only its kind_spec fields: graded_fields",
+        ),
     ],
     ids=["empty", "a-field-the-spec-does-not-grade", "a-name-the-spec-does-not-have"],
 )
@@ -589,7 +594,7 @@ def test_a_spec_the_kinds_model_refuses_is_refused_naming_the_field(kind_spec, n
     with pytest.raises(ValidationFailedError) as refused:
         TOY_EXTRACTOR_CONTRACT.validate_spec(kind_spec)
 
-    assert named in refused.value.message
+    assert named in str(refused.value)
 
 
 def test_a_kind_with_no_spec_model_refuses_any_spec_and_admits_none():

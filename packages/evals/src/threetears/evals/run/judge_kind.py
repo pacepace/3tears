@@ -41,8 +41,10 @@ from threetears.evals.kernel.candidate_kind import (
     CandidateTelemetry,
     CellSink,
     CellSpanWindow,
+    CostCapReached,
     VariantConfig,
 )
+from threetears.evals.kernel.capped_completion import call_ceiling
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.judge_cases import (
     JUDGE_CASE_KEY,
@@ -63,7 +65,14 @@ from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
 from threetears.evals.run.case_sets import mint_case_set
 from threetears.evals.run.judge import sent_temperature
 from threetears.evals.run.judge_service import JudgeContext, JudgeRequest, JudgeService
-from threetears.evals.run.launch import ArmPlan, KindWiring, LaunchableKind, launch_run, require_candidate_model
+from threetears.evals.run.launch import (
+    TEMPLATE_FIELDS,
+    ArmPlan,
+    KindWiring,
+    LaunchableKind,
+    launch_run,
+    require_candidate_model,
+)
 from threetears.evals.run.rejudge import reproducible_judge_inputs
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import (
@@ -77,6 +86,7 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_RESULT, FIND_RUN
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.cassettes import CellCassettes
@@ -197,7 +207,8 @@ def _judge_template(template: EvalTemplate) -> EvalTemplate:
     if template.candidate_kind != JUDGE_KIND:
         raise ValidationFailedError(
             f"template {template.id!r} is of kind {template.candidate_kind!r}, not {JUDGE_KIND!r}; a judge case is "
-            f"frozen into a template of the {JUDGE_KIND!r} kind, whose launch is what runs it"
+            f"frozen into a template of the {JUDGE_KIND!r} kind, whose launch is what runs it",
+            remedy="write one with judge_template_create",
         )
     return template
 
@@ -306,7 +317,10 @@ def freeze_judge_cases(
     """
     _judge_template(template)
     if not run_ids:
-        raise ValidationFailedError("name at least one judged run whose results to freeze")
+        raise ValidationFailedError(
+            "a freeze was named no judged run",
+            remedy=f"name at least one judged run whose results to freeze ({FIND_RUN})",
+        )
     cases: list[FrozenJudgeCase] = []
     skipped: list[JudgeCaseSkip] = []
     seen: set[str] = set()
@@ -315,7 +329,7 @@ def freeze_judge_cases(
     for run_id in run_ids:
         run = storage.load_eval_run(run_id, scope_id)
         if run is None:
-            raise NotFoundError("run", run_id)
+            raise NotFoundError("run", run_id, remedy=FIND_RUN)
         for result in storage.query_eval_results_by_run(run.id, scope_id):
             if wanted is not None and result.id not in wanted:
                 continue
@@ -358,10 +372,16 @@ def freeze_judge_cases(
                     )
                 )
     if wanted is not None and (stray := sorted(wanted - found)):
-        raise ValidationFailedError(f"result(s) {stray} are not results of the named runs in this scope")
+        raise ValidationFailedError(
+            f"result(s) {stray} are not results of the named runs in this scope",
+            remedy=f"name results of those runs ({FIND_RESULT})",
+        )
     if not cases:
         why = "; ".join(f"{skip.result_id}: {skip.reason}" for skip in skipped) or "the runs have no results"
-        raise ValidationFailedError(f"no judge case could be frozen — {why}")
+        raise ValidationFailedError(
+            f"no judge case could be frozen — {why}",
+            remedy="freeze from judged runs whose results recorded their judging, or launch the template again for one",
+        )
     minted: CaseSetRef | None = None
     if case_set is not None:
         ids = [case.test_case_id for case in cases]
@@ -422,6 +442,19 @@ class _CellClient:
         self.completions.append(completion)
         return completion
 
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
+        """The ceiling of one request on the client this forwards to, or ``None`` when it cannot say.
+
+        Args:
+            system: The system prompt.
+            user: The user message.
+            response_format: The provider directive.
+
+        Returns:
+            The kind's client's own ceiling for the pair.
+        """
+        return call_ceiling(self.inner, system=system, user=user, response_format=response_format)
+
     async def aclose(self) -> None:
         """Release nothing: the client this forwards to is the kind's."""
 
@@ -445,6 +478,11 @@ class JudgeKind:
 
     #: Graded by code against what the case froze: no judge phase runs over a judge kind's cells.
     judged_artifact = JudgedArtifact.UNJUDGED
+    #: No limit of the kind's own: a cell's state is its :class:`PreparedJudge` and the per-cell client view
+    #: :meth:`invoke` builds, and the judge clients it shares across cells are completion clients, which the
+    #: port requires to be safe to call from several cells at once
+    #: (:class:`~threetears.evals.schema.completion.CompletionClient`); building one on first ask awaits nothing.
+    max_concurrent_cells: int | None = None
 
     def __init__(
         self,
@@ -572,7 +610,9 @@ class JudgeKind:
     async def invoke(self, instance: PreparedJudge, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         """Ask the judge under test the case's criterion over the frozen evidence, and grade its answer.
 
-        Never raises. A case that cannot be read is the harness's (``infra_errors``, the cell excluded). The judge's
+        Never raises. A case that cannot be read is the harness's (``infra_errors``, the cell excluded). A call the
+        run's cost cap has no room for is not sent, and the cell returns empty — the runner excludes it for the cap
+        and stops the run. The judge's
         own call failing is the candidate's (``candidate_errors``) — unless the host's describer says the call was
         refused for the calling account, which excludes the cell and stops the run (``account_refused``). A reply
         that came back is a measurement whatever it says: a score, a "can't tell", or a reply that broke the
@@ -581,7 +621,8 @@ class JudgeKind:
         Args:
             instance: What :meth:`prepare` bound.
             test_case: The cell's case, carrying the judge case in its ``host_payload``.
-            sink: Unused — one call, whose spend there is nothing to report until it returns.
+            sink: This cell's sink, which holds the one call against the run's cost cap: reserved at its
+                ceiling before it is sent, settled to what it cost when it returns.
 
         Returns:
             The answer, its code grade on ``host_measures``, the trial on ``kind_payload``, and the call's spend as
@@ -620,8 +661,18 @@ class JudgeKind:
                 request = self._request(service, case, context)
             except ValueError as exc:
                 return CandidateOutput(infra_errors=[f"apparatus: test case {test_case.id}'s judge case: {exc}"])
-            with scopes.collecting():
-                outcome = await service.score_request(request, case_id=test_case.id)
+            try:
+                held = sink.reserve("candidate", service.price_ceiling(request))
+            except CostCapReached:
+                # The sink recorded the breach: the runner excludes this cell for the cap, with nothing spent.
+                return CandidateOutput()
+            try:
+                with scopes.collecting():
+                    outcome = await service.score_request(request, case_id=test_case.id)
+            except BaseException:
+                held.release()
+                raise
+            held.settle(outcome.usage.cost_usd if outcome.usage is not None else 0.0)
         return self._graded(case, test_case, request, outcome, cell)
 
     def _graded(
@@ -644,6 +695,13 @@ class JudgeKind:
         else:
             outcome_kind = "invalid"
         score = outcome.score
+        try:
+            sent = (
+                score.judge_temperature if score is not None else (sent_temperature(last) if last is not None else None)
+            )
+        except TypeError as refused:
+            # Refused after the call was billed: the cell's telemetry carries its spend all the same.
+            return CandidateOutput(infra_errors=[f"apparatus: judge: {refused}"], telemetry=telemetry)
         trial = JudgeTrial(
             test_case_id=test_case.id,
             dim=case.dim,
@@ -659,9 +717,7 @@ class JudgeKind:
             error=outcome.error,
             served_model=(score.served_model if score is not None else (getattr(last, "served_model", None) or None)),
             judge_config_id=request.config.id if request.config is not None else None,
-            judge_temperature=(
-                score.judge_temperature if score is not None else (sent_temperature(last) if last is not None else None)
-            ),
+            judge_temperature=sent,
         )
         payload = trial.model_dump(mode="json")
         if outcome_kind == "no_reply":
@@ -730,7 +786,7 @@ def judge_kind(
     for dim, config_id in overlays.config_ids.items():
         config = storage.load_judge_config(config_id, scope_id)
         if config is None:
-            raise NotFoundError("judge_config", config_id)
+            raise NotFoundError("judge_config", config_id, remedy=FIND_JUDGE_CONFIG)
         configs[dim] = config
     try:
         return JudgeKind(
@@ -741,7 +797,10 @@ def judge_kind(
             temperature=overlays.temperature,
         )
     except ValueError as exc:
-        raise ValidationFailedError(str(exc)) from exc
+        raise ValidationFailedError(
+            str(exc),
+            remedy="name each judge config under the criterion it was authored for, pinning no model but the arm's",
+        ) from exc
 
 
 def _template_cases(storage: EvalStorage, template: EvalTemplate, scope_id: str) -> list[EvalTestCase]:
@@ -783,7 +842,8 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
         cases = request.cases_or(_template_cases(host.storage, request.template, request.scope_id))
         if not cases:
             raise ValidationFailedError(
-                f"template {request.template.id!r} holds no judge case to run; freeze some with judge_cases_freeze"
+                f"template {request.template.id!r} holds no judge case to run",
+                remedy="freeze some with judge_cases_freeze",
             )
         return ArmPlan(
             case_count=len(cases),
@@ -816,6 +876,7 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
                 subject=SubjectSnapshot(subject_id=request.subject_id, subject_label=request.subject_id, state={}),
                 test_cases=cases,
                 teardown=teardown,
+                max_concurrent_cells=kind.max_concurrent_cells,
             ),
         )
 
@@ -824,5 +885,8 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
         unhonoured_launch_arguments=frozenset(
             {"n_variations", "judge_model", "judge_config_ids", "simulator_model", "cassette_mode"}
         ),
+        # A judge template is a kind and an intent: its cases carry what each trial reads, so a seed, a tool, a
+        # goal check or a rubric on it would be stated and never acted on.
+        ignored_template_fields=frozenset(TEMPLATE_FIELDS),
         plan_arm=plan,
     )

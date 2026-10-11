@@ -154,6 +154,7 @@ from threetears.evals.schema.job_lease import (
     LeasedRecord,
     LostField,
 )
+from threetears.evals.schema.refusal import REFUSAL_KINDS, JobRefusal, RefusalField, RefusalKind
 from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.schema.traces import CellIdentity, CellTrace, TraceSink
 from threetears.evals.schema.values import (
@@ -185,6 +186,10 @@ __all__ = [
     "LeaseField",
     "LeasedRecord",
     "LostField",
+    "REFUSAL_KINDS",
+    "JobRefusal",
+    "RefusalField",
+    "RefusalKind",
     "CANDIDATE_SPEAKER",
     "DEFAULT_JUDGE_TEMPERATURE",
     "DEFAULT_LAUNCH_K_RUNS",

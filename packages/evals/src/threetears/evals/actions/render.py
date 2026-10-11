@@ -16,6 +16,7 @@ This module reads the catalogue's types only for annotations, so the catalogue i
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -48,6 +49,7 @@ from threetears.evals.ops import (
     InsightListing,
     JobsStarted,
     JobStatus,
+    JudgeTemperatureComparison,
     OutOfRunSpendReport,
     PivotTable,
     ReportDocument,
@@ -64,6 +66,7 @@ from threetears.evals.ops import (
     RunsCompared,
     ScoreExport,
     SecondJudgeRead,
+    TemplateLine,
     TemplateListing,
     bar_proposals_text,
     UndescribableArmsListing,
@@ -81,7 +84,6 @@ from threetears.evals.ops import (
 
 if TYPE_CHECKING:
     from threetears.evals.actions.catalogue import Action, MountedTool
-    from threetears.evals.ops import JudgeTemperatureComparison
     from threetears.evals.run import JudgeCaseFreezeReport, JudgeTemperatureEstimate, SecondJudgeEstimate
 
 
@@ -208,12 +210,36 @@ def refuse_invalid(tool: MountedTool, action: Action, invalid: ValidationError) 
 
 
 def refuse_by_engine(tool: MountedTool, action: Action, refused: EvalServiceError) -> str:
-    """A call the engine refused, with the engine's own reason."""
-    del tool
-    return f"refused: {action.name}: {refused.message}"
+    """A call the engine refused: the engine's own reason, then what to do next where the refusal names it.
+
+    A remedy naming an action this tool does not carry says which tool does — the remedy is the engine's and
+    names the catalogue's actions, while which of them a caller can reach here is this tool's — so an agent is
+    never sent to a call its tool would refuse as unknown.
+    """
+    lines = [f"refused: {action.name}: {refused.message}"]
+    if refused.remedy is not None:
+        lines.append(f"remedy: {refused.remedy}")
+        named = sorted(set(_ACTION_TOKEN.findall(refused.remedy)))
+        for name in named:
+            elsewhere = tool.catalogue.get(name)
+            if elsewhere is not None and tool.action(name) is None:
+                lines.append(
+                    f"{name} is a {elsewhere.permission} action, which tool {tool.name} does not carry: call it on "
+                    f"the tool that mounts {elsewhere.permission} actions"
+                )
+    return "\n".join(lines)
+
+
+#: A word that could name an action: two or more lowercase parts joined by underscores (``templates_list``).
+_ACTION_TOKEN = re.compile(r"\b[a-z]+(?:_[a-z]+)+\b")
 
 
 # --- results -----------------------------------------------------------------------------------------
+
+
+def render_template_line(template: TemplateLine) -> str:
+    """One template, as written."""
+    return f"template {template.id}: {template.name} — kind {template.candidate_kind}; {template.intent}"
 
 
 def render_templates(listing: TemplateListing) -> str:
@@ -240,11 +266,6 @@ def render_summary(summary: EvalSummary) -> str:
     return summary.render()
 
 
-def _usd(amount: float | None) -> str:
-    """Spend as a run's summary prints it (:func:`~threetears.evals.ops.dollars_text`); unpriced says so, never $0."""
-    return "unpriced" if amount is None else dollars_text(amount)
-
-
 def _compact(value: Any) -> str:
     """A stored JSON value on one line, keys sorted, as written — never re-typed or summarised."""
     return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
@@ -254,7 +275,7 @@ def _result_line(line: ResultLine) -> str:
     """One result on one line: where it sits, its condition, and its headline measures."""
     parts = [
         f"{line.condition.value} ({line.termination})",
-        f"cost {_usd(line.cost_usd)}",
+        f"cost {dollars_text(line.cost_usd)}",
         f"total_ms {_ms(line.total_ms)}",
     ]
     if line.goal_checks:
@@ -350,7 +371,7 @@ def _record_lines(detail: ResultDetail) -> list[str]:
         )
         if error
     ]
-    lines.append(f"cost {_usd(result.cost_usd)} over {', '.join(result.cost_roles) or 'no role'}")
+    lines.append(f"cost {dollars_text(result.cost_usd)} over {', '.join(result.cost_roles) or 'no role'}")
     lines += _latency_lines(detail)
     lines.append(f"usage ({len(result.usage)} row(s)):")
     lines += [f"- {_compact(row.model_dump(mode='json', exclude_none=True))}" for row in result.usage]
@@ -443,6 +464,8 @@ def render_job_status(status: JobStatus) -> str:
         lines.append("progress: " + json.dumps(status.progress, sort_keys=True))
     if status.detail:
         lines.append(f"detail: {status.detail}")
+    if status.refusal is not None:
+        lines.append(f"refusal: {status.refusal.kind} ({status.refusal.status})")
     if status.run_ids:
         lines.append("runs: " + ", ".join(status.run_ids))
     if status.result is not None:
@@ -734,7 +757,7 @@ def _bounds(interval: tuple[float, float] | None) -> str:
 def render_second_judge(read: SecondJudgeRead) -> str:
     """A second judge's pass: what it asked and spent apart from the candidate, then agreement and drift per dim."""
     report = read.report
-    cost = _usd(report.cost_usd) if report.cost_usd is not None else "unpriced"
+    cost = dollars_text(report.cost_usd)
     lines = [
         f"second judge {report.judge.model} on run {report.run_id} (pass {report.pass_id}): asked about "
         f"{len(report.judged)} of {report.eligible} judgeable result(s) (fraction {report.sample_fraction:g}, seed "
@@ -765,8 +788,8 @@ def render_second_judge(read: SecondJudgeRead) -> str:
 
 def render_second_judge_estimate(estimate: SecondJudgeEstimate) -> str:
     """A second judge's price before it starts, against the cap, and whether it would start."""
-    ceiling = _usd(estimate.ceiling_usd) if estimate.ceiling_usd is not None else "unpriceable"
-    cap = _usd(estimate.cap_usd) if estimate.cap_usd is not None else "none enforced"
+    ceiling = dollars_text(estimate.ceiling_usd) if estimate.ceiling_usd is not None else "unpriceable"
+    cap = dollars_text(estimate.cap_usd) if estimate.cap_usd is not None else "none enforced"
     verdict = "would start" if estimate.would_start else f"would be refused: {estimate.refusal}"
     return (
         f"estimate: second judge {estimate.judge.model} on run {estimate.run_id} — {len(estimate.sampled)} of "

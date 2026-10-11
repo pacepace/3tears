@@ -10,6 +10,11 @@ edits it and commits the parts they accept through the authoring operations. Wha
 the call's spend: the call runs outside any run, so it is priced before it is made and ledgered
 once it is, through the :class:`~threetears.evals.kernel.out_of_run.OutOfRunBudget` the host hands in.
 
+**Planned, then admitted by the host, then made.** :func:`plan_draft` is the call as it will be sent, made
+of nothing but the three strings; the host quotes it and admits it under its budget in its own call
+(:meth:`~threetears.evals.kernel.out_of_run.OutOfRunBudget.admit`), refusing there what the cap cannot pay
+for, and :func:`propose_draft` — in the job — makes exactly that admitted call and reads the draft.
+
 **What arrives here is text.** The host renders the subject feed from its own subject, the
 catalog feed from its rubric-dim store, and the system prompt from its prompt registry — each
 for the axis it is proposing on — then hands this module the three strings and a
@@ -25,10 +30,10 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from pydantic import ValidationError
 
 from threetears.evals.kernel.errors import ValidationFailedError
-from threetears.evals.schema.models import RubricAxis, RubricProposal
+from threetears.evals.schema.models import SCALE_LEVELS, RubricAxis, RubricProposal
 from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
-from threetears.evals.kernel.out_of_run import PlannedCall
-from threetears.evals.schema.completion import JSON_OBJECT_RESPONSE_FORMAT
+from threetears.evals.kernel.out_of_run import AdmittedCall, PlannedCall
+from threetears.evals.kernel.authored import strict_response_format
 from threetears.evals.kernel.provider import extract_json
 from threetears.observe import get_logger
 
@@ -54,6 +59,33 @@ _REFUSAL_SUBJECT: dict[str, str] = {
 #: reasoning budget plus its answer budget.
 PROPOSER_MAX_TOKENS = 16384
 
+#: Every level any scale answers: what a drafted dimension's scoring guide may describe.
+_GUIDE_LEVELS: tuple[str, ...] = tuple(dict.fromkeys(level for levels in SCALE_LEVELS.values() for level in levels))
+
+
+def _proposal_schema() -> dict[str, Any]:
+    """:class:`~threetears.evals.schema.models.RubricProposal`'s JSON schema, its one map field closed.
+
+    A strict schema admits no object with arbitrary keys, and ``RubricDim.scoring_guide`` maps a scale's levels to
+    descriptors. Which levels depends on the dimension's own ``scale``, which a strict schema cannot condition on,
+    so the guide is sent as an object holding every level any scale has, each a descriptor or ``null``: the
+    unwritten levels are dropped before the draft is validated (:func:`_drop_unwritten_levels`), and the model
+    still refuses a guide describing a level its dimension's scale does not have.
+    """
+    schema = RubricProposal.model_json_schema()
+    schema["$defs"]["RubricDim"]["properties"]["scoring_guide"] = {
+        "type": "object",
+        "description": "Each level of the dimension's scale mapped to what earns it; null for a level not described "
+        "and for every level its scale does not have.",
+        "properties": {level: {"anyOf": [{"type": "string"}, {"type": "null"}]} for level in _GUIDE_LEVELS},
+    }
+    return schema
+
+
+#: What a proposal asks for: the draft model as a strict schema, so a provider that enforces it cannot write a
+#: draft the model refuses — a dimension with no ``scale``, say — whatever the stored prompt says.
+_PROPOSAL_RESPONSE_FORMAT: dict[str, Any] = strict_response_format("rubric_proposal", _proposal_schema())
+
 
 class ProposedDraft(NamedTuple):
     """A rubric draft, and the ledger row of the call that wrote it."""
@@ -64,17 +96,39 @@ class ProposedDraft(NamedTuple):
     spend: OutOfRunSpend
 
 
+def plan_draft(*, system_prompt: str, subject_feed: str, catalog_feed: str) -> PlannedCall:
+    """The one call a rubric proposal sends, on either axis, built before anything is priced or made.
+
+    What a host quotes and admits under its out-of-run budget in its call
+    (:meth:`~threetears.evals.kernel.out_of_run.OutOfRunBudget.quote` / ``admit`` with purpose ``proposer``),
+    then hands, admitted, to :func:`propose_draft`. The user message is the subject feed, then the catalog
+    feed, because the catalog is read against the subject: which dims to reuse depends on what the subject is.
+
+    Args:
+        system_prompt: The rendered system prompt for the axis being proposed on.
+        subject_feed: The rendered description of the subject under test.
+        catalog_feed: The rendered reusable catalog for the axis, each dim with its ``key`` so the model can
+            name reuses in ``reused_dim_keys``.
+
+    Returns:
+        The planned call.
+    """
+    return PlannedCall(
+        system=system_prompt,
+        user=f"{subject_feed}\n{catalog_feed}".rstrip() + "\n",
+        response_format=_PROPOSAL_RESPONSE_FORMAT,
+    )
+
+
 async def propose_draft(
     client: BoundCompletionClient,
+    admitted: AdmittedCall,
     *,
     budget: OutOfRunBudget,
     axis: RubricAxis,
     subject_id: str,
-    system_prompt: str,
-    subject_feed: str,
-    catalog_feed: str,
 ) -> ProposedDraft:
-    """Draft a rubric on ``axis`` from a subject feed and a catalog feed.
+    """Make an admitted rubric proposal on ``axis`` and read its draft.
 
     On the ``capability`` axis the draft is a capability rubric and its scenario axes. On the
     ``boundary`` axis it is a *universal* boundary template carrying an adversarial
@@ -87,63 +141,66 @@ async def propose_draft(
     encodes the rule that for a broad-domain generalist 'out of domain' collapses toward unsafe
     or abusive rather than merely off-topic.
 
-    One call on ``client`` renders both feeds into a strict-JSON draft, which is validated
-    into a :class:`~threetears.evals.schema.models.RubricProposal` and **returned for operator
-    review — no draft is persisted**. The call runs outside any run, so it goes through ``budget``:
-    priced on the client before it is made and refused when the cap cannot pay for it, and its
-    spend ledgered as soon as it returns — before the reply is read, so a draft refused for its
-    content still has its cost on record. The client is released when the call returns, on the
-    refusal paths too: a proposal is the client's whole lifetime.
+    The call is the one :func:`plan_draft` planned, which the host admitted under ``budget`` in its own
+    call — so a proposal the cap cannot pay for was refused there, with nothing called, and this admits
+    nothing. It makes the call on ``client``, whose spend ``budget`` ledgers as soon as it returns — before
+    the reply is read, so a draft refused for its content still has its cost on record — and validates the
+    reply into a :class:`~threetears.evals.schema.models.RubricProposal`, **returned for operator review —
+    no draft is persisted**. The client is released when the call returns, on the refusal paths too: a
+    proposal is the client's whole lifetime.
 
     Args:
-        client: The completion client to draft with — the host's client for the ``proposer`` role
-            (:data:`~threetears.evals.kernel.host.CompletionRole`). This function owns it from here
-            and releases it.
-        budget: The out-of-run budget the call is priced against and ledgered through. Its
-            ``subject_id``, when it names one, is the subject the draft is for.
+        client: The completion client the call was admitted on — the host's client for the ``proposer`` role
+            (:data:`~threetears.evals.kernel.host.CompletionRole`). This function owns it from here and
+            releases it.
+        admitted: The proposal's call, as ``budget`` admitted it on ``client`` (purpose ``proposer``).
+        budget: The out-of-run budget that admitted the call, which ledgers it. Its ``subject_id``, when it
+            names one, is the subject the draft is for.
         axis: Which catalog axis the draft is for; stamped onto every new-dim suggestion.
         subject_id: The subject the draft is for, named in the log line only.
-        system_prompt: The rendered system prompt for ``axis``.
-        subject_feed: The rendered description of the subject under test.
-        catalog_feed: The rendered reusable catalog for ``axis``, each dim with its ``key``
-            so the model can name reuses in ``reused_dim_keys``.
 
     Returns:
         The validated :class:`~threetears.evals.schema.models.RubricProposal` draft, and its call's
         ledger row.
 
     Raises:
-        ValueError: ``budget`` names another subject than ``subject_id``.
-        ValidationFailedError: The call cannot be priced under the budget's enforced cap, or is priced
-            above it (nothing was called); or the completion was not JSON, or failed draft validation
-            (the call's spend is already ledgered).
+        ValueError: ``budget`` names another subject than ``subject_id``; ``admitted`` was admitted for
+            another purpose than ``proposer``; or ``budget`` did not admit it on ``client`` (another
+            budget's, already made, or a copy) — the client released, nothing called.
+        ValidationFailedError: The completion was not JSON, or failed draft validation (the call's spend is
+            already ledgered).
     """
-    if budget.subject_id is not None and budget.subject_id != subject_id:
-        raise ValueError(
-            f"the budget ledgers its calls under subject {budget.subject_id!r} and the draft is for {subject_id!r}; "
-            "one budget per proposal, built for the subject it drafts"
-        )
+    async with client:
+        if budget.subject_id is not None and budget.subject_id != subject_id:
+            raise ValueError(
+                f"the budget ledgers its calls under subject {budget.subject_id!r} and the draft is for "
+                f"{subject_id!r}; one budget per proposal, built for the subject it drafts"
+            )
+        if admitted.purpose != "proposer":
+            raise ValueError(
+                f"a proposal makes a call admitted for purpose 'proposer', and this one was admitted for "
+                f"{admitted.purpose!r}; admit plan_draft's call with budget.admit(client, 'proposer', [call])"
+            )
+        recorded = await budget.generate(client, admitted)
+    content: str = recorded.result.content
+    spend = recorded.spend
     refused = _REFUSAL_SUBJECT[axis]
-    content, spend = await _draft(
-        client,
-        budget,
-        PlannedCall(
-            system=system_prompt,
-            user=_assemble_user_prompt(subject_feed, catalog_feed),
-            response_format=JSON_OBJECT_RESPONSE_FORMAT,
-        ),
-    )
     cost = _spent(spend)
     try:
         payload = extract_json(content)
     except ValueError as e:
-        raise ValidationFailedError(f"{refused} LLM output was not valid JSON ({cost}): {e}") from e
+        raise ValidationFailedError(
+            f"{refused} LLM output was not valid JSON ({cost}): {e}", remedy="propose again, or with another model"
+        ) from e
 
+    _drop_unwritten_levels(payload)
     _coerce_new_dim_axis(payload, axis)
     try:
         proposal = RubricProposal(**payload)
     except ValidationError as e:
-        raise ValidationFailedError(f"{refused} LLM output failed draft validation ({cost}): {e}") from e
+        raise ValidationFailedError(
+            f"{refused} LLM output failed draft validation ({cost}): {e}", remedy="propose again, or with another model"
+        ) from e
 
     if axis == "boundary":
         log.info(
@@ -165,31 +222,22 @@ async def propose_draft(
     return ProposedDraft(proposal, spend)
 
 
-async def _draft(client: BoundCompletionClient, budget: OutOfRunBudget, call: PlannedCall) -> tuple[str, OutOfRunSpend]:
-    """Admit the call under ``budget``, make it, and return the completion text and its ledger row.
-
-    The ``async with`` releases the client on every exit, a refused admission included: it owns a
-    connection pool that garbage collection does not close deterministically, and one proposal is
-    its whole lifetime.
-    """
-    async with client:
-        [admitted] = budget.admit(client, "proposer", [call])
-        recorded = await budget.generate(client, admitted)
-    return recorded.result.content, recorded.spend
-
-
 def _spent(spend: OutOfRunSpend) -> str:
     """What the refused draft's call cost, for the refusal to say — it was paid either way."""
     return "the call cost an unreported amount" if spend.cost_usd is None else f"the call cost ${spend.cost_usd:.4f}"
 
 
-def _assemble_user_prompt(subject_feed: str, catalog_feed: str) -> str:
-    """Join the two feeds into the user message the proposer sends on either axis.
-
-    The subject feed comes first because the catalog is read against it: which dims to
-    reuse depends on what the subject is.
-    """
-    return f"{subject_feed}\n{catalog_feed}".rstrip() + "\n"
+def _drop_unwritten_levels(payload: Any) -> None:
+    """Drop every ``null`` level from every scoring guide in ``payload``: the levels the schema made it name."""
+    if isinstance(payload, list):
+        for item in payload:
+            _drop_unwritten_levels(item)
+    elif isinstance(payload, dict):
+        guide = payload.get("scoring_guide")
+        if isinstance(guide, dict):
+            payload["scoring_guide"] = {level: text for level, text in guide.items() if text is not None}
+        for value in payload.values():
+            _drop_unwritten_levels(value)
 
 
 def _coerce_new_dim_axis(payload: Any, axis: RubricAxis) -> None:
@@ -223,5 +271,6 @@ def _coerce_new_dim_axis(payload: Any, axis: RubricAxis) -> None:
 __all__ = [
     "PROPOSER_MAX_TOKENS",
     "ProposedDraft",
+    "plan_draft",
     "propose_draft",
 ]

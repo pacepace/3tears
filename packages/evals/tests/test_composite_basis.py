@@ -46,7 +46,7 @@ def _ragged_run(**run_overrides):
 
 
 def _no_template(template_id: str) -> EvalTemplate:
-    raise NotFoundError("template", template_id)
+    raise NotFoundError("template", template_id, remedy="list them first")
 
 
 class TestThePooledBasis:

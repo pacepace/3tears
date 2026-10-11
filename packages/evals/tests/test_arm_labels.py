@@ -300,7 +300,7 @@ def _table(report: Report, name: str) -> TableBlock:
 
 def _arm_column(report: Report, name: str) -> list[str]:
     """The Arm column of the named table, as served."""
-    return [str(row["arm"]) for row in _table(report, name).rows]
+    return [str(row["arm"]) for row in _table(report, name).values()]
 
 
 def _chart_groups(report: Report) -> list[list[str]]:
@@ -358,7 +358,7 @@ class TestARigOnlyCampaignIsNamedByItsModelAndRig:
             assert "toy-summarizer" not in output
 
     def test_the_full_lever_set_is_stated_once_in_the_arms_table(self, rig_only: Report) -> None:
-        (row,) = _table(rig_only, "arms").rows
+        (row,) = _table(rig_only, "arms").values()
         levers = str(row["levers"])
         assert levers == (
             f"candidate_kind={TOY_EXTRACTOR_KIND}; chunk_tokens=256tok; extraction_prompt=extraction prompt, rev 3; "
@@ -390,7 +390,7 @@ class TestArmsDifferingOnOneLeverAreNamedByIt:
         _assert_every_output_prints(one_lever, names)
 
     def test_each_arm_still_states_everything_it_ran_once(self, one_lever: Report) -> None:
-        rows = _table(one_lever, "arms").rows
+        rows = _table(one_lever, "arms").values()
         assert len(rows) == 2
         for row in rows:
             levers = str(row["levers"])
@@ -406,7 +406,7 @@ class TestTheCutNeverMergesTwoArms:
         _assert_every_output_prints(cut_alike, set(arms))
 
     def test_the_arms_table_still_states_each_value_as_the_host_displayed_it(self, cut_alike: Report) -> None:
-        stated = [str(row["levers"]) for row in _table(cut_alike, "arms").rows]
+        stated = [str(row["levers"]) for row in _table(cut_alike, "arms").values()]
         for text in _PARTING_IN_THE_MIDDLE:
             assert sum(text[:59] in levers for levers in stated) == 1
 
@@ -544,9 +544,22 @@ class TestAnAnalysisReportNamesArmsByTheRule:
     def test_no_output_carries_a_lever_dump_or_an_inapplicable_lever(self, named: tuple[Report, list[str]]) -> None:
         """The shared settings are stated once — the Arms table's lever column — and never in a name."""
         report, _ = named
-        for output in (report_markdown(report), report_html(report), report.to_canonical_json()):
+        for output in (report_markdown(report), report_html(report)):
             assert output.count(_LEVER_DUMP_MARK) == 1
             assert "(not a " not in output
+        # The JSON serves each cell's value beside its text, so the one cell stating them carries the mark twice.
+        document = report.to_canonical_json()
+        assert "(not a " not in document
+        stating = [
+            cell
+            for block in report.blocks
+            if isinstance(block, TableBlock)
+            for row in block.rows
+            for cell in row.values()
+            if _LEVER_DUMP_MARK in str(cell.value)
+        ]
+        assert len(stating) == 1 and _LEVER_DUMP_MARK in stating[0].text
+        assert document.count(_LEVER_DUMP_MARK) == 2
 
 
 # =============================================================================

@@ -68,7 +68,12 @@ CORE_BASELINE_VERSION: Final[int] = 8
 #:   the attempt with the same four lease fields; the v8 step reads a v8 campaign without what v8 retired.
 #:   ``EvalGenerationSlot``, new at v10, is core from the start, and so are the four job records new at v10:
 #:   ``EvalLaunch``, ``EvalSecondJudgePass``, ``EvalJudgeTemperatureCheck`` and ``EvalActionJob``.
-CORE_SCHEMA_VERSION: int = 10
+#: - **v11** — a job record keeps the engine refusal its work ended on as data (:mod:`~threetears.evals.schema.refusal`):
+#:   ``refusal`` (its kind and status, as a refused call's are), OPTIONAL, on ``EvalLaunch``, ``EvalSecondJudgePass``,
+#:   ``EvalJudgeTemperatureCheck``, ``EvalActionJob``, ``EvalSweep`` and ``EvalAnalysisAttempt``. Additive: the v10 step
+#:   is the identity, and a v10 record reads with none — its ending's words are in ``detail`` (an attempt's ``error``)
+#:   as they always were, and its kind is not recorded.
+CORE_SCHEMA_VERSION: int = 11
 """The core version this build writes, and the newest a read of a core document accepts.
 
 How each value a core document stored at v8 predates reads — a field v8 gained after the document was
@@ -395,6 +400,24 @@ CORE_UPGRADERS: tuple[CoreUpgrader, ...] = (
         reason=(
             "v10 adds the optional job lease (lease, cancel_requested_at, cancel_request_reason, lost) to a run, a "
             "sweep and an analysis attempt; a v9 one has none, which v10 reads as a record no process holds"
+        ),
+        upgrade=lambda document: document,
+    ),
+    CoreUpgrader(
+        from_version=10,
+        doc_types=frozenset(
+            {
+                "eval_launch",
+                "eval_second_judge_pass",
+                "eval_judge_temperature_check",
+                "eval_action_job",
+                "eval_sweep",
+                "eval_analysis_attempt",
+            }
+        ),
+        reason=(
+            "v11 adds the optional refusal a job ended on (its kind and status) to every job record but a run's; a "
+            "v10 one has none, which v11 reads as not recorded"
         ),
         upgrade=lambda document: document,
     ),

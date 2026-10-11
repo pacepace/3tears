@@ -40,12 +40,12 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 from threetears.evals.kernel import JobTimeoutFactory
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.host.kinds import freeze
-from threetears.evals.schema.models import WorldPlacement
+from threetears.evals.schema.models import EvalTemplate, WorldPlacement
 
 from threetears.evals.kernel.arguments import normalize_blank
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.sweepables import CORE_SWEEPABLES
-from threetears.evals.kernel.metrics import declaration_of, run_margin_refusal
+from threetears.evals.kernel.metrics import RUN_MARGIN_MEASURES, declaration_of, run_margin_refusal
 from threetears.evals.kernel.identity import derive_context_identity, variant_levers_of_run
 from threetears.evals.schema.models import (
     DEFAULT_JUDGE_TEMPERATURE,
@@ -64,7 +64,7 @@ from threetears.evals.schema.models import (
     resolve_effective_judges,
     scored_dim_ids,
 )
-from threetears.evals.kernel.out_of_run import OutOfRunBudget, plan_variation_calls
+from threetears.evals.kernel.out_of_run import AdmittedGeneration, OutOfRunBudget, plan_variation_calls
 from threetears.evals.run.authoring import validated_kind_spec
 from threetears.evals.run.budget import EvalRunCostCap
 from threetears.evals.run.case_sets import resolve_case_set
@@ -94,12 +94,13 @@ from threetears.evals.run.runner import (
 )
 from threetears.evals.run.simulator import SIMULATOR_REQUEST_SETTINGS
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_RUN, FIND_TEMPLATE
 
 if TYPE_CHECKING:
     from threetears.evals.schema.subject import SubjectSnapshot
     from threetears.evals.kernel.host.sweepables import SweepableRegistry
-    from threetears.evals.schema.models import EvalTemplate, JudgeConfig, VariationCounts
-    from threetears.evals.schema.completion import PricedCompletion
+    from threetears.evals.schema.models import JudgeConfig, VariationCounts
+    from threetears.evals.schema.completion import BoundCompletionClient, PricedCompletion
     from threetears.evals.kernel.scoring import CellSummary
     from threetears.evals.kernel.storage import DefinitionStore
     from threetears.evals.kernel.usage_capture import ExternalRateTable
@@ -133,9 +134,11 @@ class LaunchSettings(BaseModel):
         max_admitted_runs: How many runs may be admitted and unfinished at once across every launch
             — the ceiling admission refuses past rather than queueing behind.
         judge_concurrency: How many judge calls one cell makes at once.
-        max_concurrent_cells: How many of a run's cells execute at once when its launch does not declare
-            latency under test (``measure_latency``). A launch that declares it runs its cells one at a time
-            whatever this says. Defaults to
+        max_concurrent_cells: The most of a run's cells that execute at once when its launch does not declare
+            latency under test (``measure_latency``) — a ceiling, never a width a kind is pushed to: a run executes
+            at the narrower of this and what its kind declares it is safe at
+            (:attr:`KindWiring.max_concurrent_cells`), and a kind that declares nothing runs serially. A launch
+            that declares latency runs its cells one at a time whatever either says. Defaults to
             :data:`~threetears.evals.run.executor.DEFAULT_MAX_CONCURRENT_CELLS`; ``1`` runs every run serially.
         enforcement_enabled: Whether the cost and metered-call ceilings are enforced at all.
         max_cost_usd: The run cost ceiling a run inherits when its launch names none.
@@ -407,6 +410,33 @@ class LaunchPricer(Protocol):
 
 
 @dataclass(frozen=True, kw_only=True)
+class UnknownSubject:
+    """A host's answer that it holds no subject of the id a launch named — and how its caller finds one it does.
+
+    Attributes:
+        remedy: How the caller finds a subject this host holds, in the host's words (the call or page that lists
+            them); stated beside the refusal, so it must say something.
+    """
+
+    remedy: str
+
+    def __post_init__(self) -> None:
+        """Refuse a blank remedy.
+
+        Raises:
+            ValueError: ``remedy`` is blank.
+        """
+        if not self.remedy.strip():
+            raise ValueError("an unknown subject's remedy says how to find a subject the host holds; it is blank")
+
+
+#: How a host answers whether it holds the subject a launch names, before anything is priced:
+#: ``(subject_id, scope_id) -> None`` when it does, :class:`UnknownSubject` when it does not. Called off the event
+#: loop, through the host's blocking executor, so it may read the host's own store.
+SubjectResolver = Callable[[str, str], UnknownSubject | None]
+
+
+@dataclass(frozen=True, kw_only=True)
 class LaunchHost:
     """An :class:`~threetears.evals.kernel.host.eval_host.EvalHost`, and what starting its runs needs.
 
@@ -422,6 +452,11 @@ class LaunchHost:
             template declares, with its launcher. A template naming a kind with no entry is refused
             before anything is read.
         settings: Reads the host's :class:`LaunchSettings` — a callable because they hot-reload.
+        resolve_subject: Whether the host holds the subject a launch names (:data:`SubjectResolver`). Asked at
+            admission — by :func:`quote_launch` and by every launch, before any arm is priced — so an estimate and
+            a launch refuse one unknown subject alike, and a launcher never meets one. No default: what a subject
+            is is the host's, and a host that does not say would have every launch's estimate price a subject its
+            launch then refuses.
         job_timeout_factory: What bounds each run's job, as
             :class:`~threetears.evals.run.jobs.EvalJobManager` takes it. No default, for the reason the
             host's cell timeout has none: :func:`~threetears.evals.kernel.default_job_timeout` is
@@ -440,8 +475,8 @@ class LaunchHost:
             under test takes all of them while its runs execute, one run at a time, so nothing executes
             beside a latency it measures.
         cell_executor: What runs each run's cells (:class:`~threetears.evals.run.executor.CellExecutor`) — a
-            host's own pool or queue — or ``None`` for the in-process default, which runs them serially or up
-            to :attr:`LaunchSettings.max_concurrent_cells` at once, as each run's launch decided.
+            host's own pool or queue — or ``None`` for the in-process default, which runs them serially or at
+            the width each run's launch decided.
         on_job_progress: Called with ``(run id, progress)`` on every progress write — typically a
             broadcast to an operator's view — or ``None``.
         on_run_end: Told each run's recorded terminal status
@@ -464,6 +499,7 @@ class LaunchHost:
     eval_host: EvalHost
     kinds: Mapping[str, LaunchableKind]
     settings: Callable[[], LaunchSettings]
+    resolve_subject: SubjectResolver
     job_timeout_factory: JobTimeoutFactory
     world_placements: Callable[[EvalRun], dict[str, WorldPlacement]] | None = None
     launch_pricer: LaunchPricer | None = None
@@ -575,8 +611,8 @@ def _refuse_oversized_launch(n_runs: int, ceiling: int, setting: str) -> None:
     if n_runs > ceiling:
         raise ValidationFailedError(
             f"this launch would start {n_runs} arms (one run each: every model at every setting), more than one "
-            f"launch may start together ({ceiling}, {setting}); launch fewer models or settings at "
-            "once, or raise the ceiling"
+            f"launch may start together ({ceiling}, {setting})",
+            remedy=f"launch fewer models or settings at once, or raise {setting}",
         )
 
 
@@ -601,7 +637,7 @@ def _normalized_cassette_mode(cassette_mode: str | None) -> CassetteMode:
         if mode == known:
             return known
     raise ValidationFailedError(
-        f"cassette_mode={cassette_mode!r} is not a mode: expected 'off', 'capture' or 'replay'."
+        f"cassette_mode={cassette_mode!r} is not a mode", remedy="name one of 'off', 'capture' or 'replay'"
     )
 
 
@@ -622,13 +658,14 @@ def _refuse_a_corpus_the_mode_cannot_use(cassette_mode: CassetteMode, cassette_c
     """
     if cassette_mode == "replay" and cassette_corpus_id is None:
         raise ValidationFailedError(
-            "cassette_mode='replay' names no corpus: pass cassette_corpus_id=<the id of the capture run whose "
-            "recording this launch replays>"
+            "cassette_mode='replay' names no corpus",
+            remedy="pass cassette_corpus_id=<the id of the capture run whose recording this launch replays>",
         )
     if cassette_mode != "replay" and cassette_corpus_id is not None:
         raise ValidationFailedError(
             f"cassette_corpus_id={cassette_corpus_id!r} is a corpus to replay, and this launch's cassette_mode is "
-            f"{cassette_mode!r}; name a corpus only with cassette_mode='replay'"
+            f"{cassette_mode!r}",
+            remedy="name a corpus only with cassette_mode='replay'",
         )
 
 
@@ -651,18 +688,32 @@ def _refuse_a_corpus_that_cannot_serve(
     if corpus_run is None:
         raise ValidationFailedError(
             f"cassette_corpus_id={cassette_corpus_id!r} names no run in scope {scope_id!r}; a replay serves the "
-            "corpus of a capture run in its own scope"
+            "corpus of a capture run in its own scope",
+            remedy=f"name a capture run of this scope ({FIND_RUN})",
         )
     if corpus_run.cassette_mode != "capture":
         raise ValidationFailedError(
             f"run {cassette_corpus_id!r} ran with cassette_mode={corpus_run.cassette_mode!r}, so it recorded no "
-            "corpus to replay; name a capture run"
+            "corpus to replay",
+            remedy="name a run launched with cassette_mode='capture'",
         )
     if corpus_run.template_id != template.id:
         raise ValidationFailedError(
             f"run {cassette_corpus_id!r} captured template {corpus_run.template_id!r}, and this launch runs "
-            f"{template.id!r}; its corpus holds no recording of this template's cases"
+            f"{template.id!r}; its corpus holds no recording of this template's cases",
+            remedy=f"name a capture run of template {template.id!r}",
         )
+
+
+async def _refuse_an_unknown_subject(host: LaunchHost, subject_id: str, scope_id: str) -> None:
+    """Refuse a launch naming a subject the host does not hold — at admission, before anything is priced.
+
+    Raises:
+        NotFoundError: The host's :attr:`LaunchHost.resolve_subject` holds no such subject; its remedy is the host's.
+    """
+    unknown = await run_blocking(host.eval_host.blocking_executor, host.resolve_subject, subject_id, scope_id)
+    if unknown is not None:
+        raise NotFoundError("subject", subject_id, remedy=unknown.remedy)
 
 
 class LaunchGroup:
@@ -801,10 +852,10 @@ class LaunchRequest:
             launch generates (``n_variations`` > 0), as the caller named it. The dispatch has already
             made it present exactly when the template has an ``llm`` axis and the launch generates, so
             ``None`` means no model writes this launch's cases. A launcher builds the writer through its
-            host's client factory in the ``variation`` role (never the simulator's — a kind with no
-            simulated user still generates) and hands it to
-            :func:`~threetears.evals.gen.generate_variations`, whose counts record the model it resolved
-            to and which :func:`launch_run` checks against this pin. Generation runs before the run
+            engine's writer for it (:attr:`generation`), built from the host's client factory in the ``variation``
+            role (never the simulator's — a kind with no simulated user still generates), makes the calls in
+            :func:`~threetears.evals.gen.generate_variations`, whose counts record the model it resolved to and
+            which :func:`launch_run` checks against this pin. Generation runs before the run
             exists, once per launch for every arm (:meth:`LaunchGroup.resolve_once`), so its calls are
             outside every run's cost cap and metered-call ceiling.
         judge_model: The run-level judge pin, unresolved.
@@ -828,10 +879,15 @@ class LaunchRequest:
             run records exactly these (``EvalRun.apparatus_settings``).
         generation_budget: For a launch that generates (``n_variations`` > 0), the out-of-run budget its
             generation's calls are priced against and ledgered through — one for the whole launch, shared
-            by every arm, capped at the host's ``max_out_of_run_cost_usd``. A launcher hands it to
-            :func:`~threetears.evals.gen.generate_variations` as ``budget``; a generation a model wrote
+            by every arm, capped at the host's ``max_out_of_run_cost_usd``. The calls :attr:`generation` admitted
+            were admitted under it, and are ledgered through it as they are made; a generation a model wrote
             whose calls this budget never ledgered is refused at the launch tail. ``None`` for a launch
             that generates nothing.
+        generation: For a launch whose generation a model writes, its calls as the launch's call admitted them,
+            before it returned: the writer they were priced on, :attr:`generation_budget`, and each ``llm`` axis's
+            admitted call. A launcher hands it to :func:`~threetears.evals.gen.generate_variations` as
+            ``generation`` and builds no writer of its own; the launch holds the writer open around its launchers
+            and releases it. ``None`` for a launch that generates nothing, or whose template no model writes.
         arm_plan: What the kind planned this arm to run (:attr:`LaunchableKind.plan_arm`) — the plan the arm
             was priced at, and the launch tail holds its run to — for an arm over stored cases and a generating
             one alike. ``None`` for a kind that plans nothing.
@@ -844,8 +900,9 @@ class LaunchRequest:
             refusals were made under, and what :func:`launch_run` records and enforces the run's ceilings
             and judge concurrency from. A launcher reads the host's settings from here, never afresh.
         measure_latency: Whether the launch declared latency under test: its run executes its cells one at a time
-            and records it, and its group holds every job slot. ``False``: the cells run up to
-            :attr:`LaunchSettings.max_concurrent_cells` at once, and their latency is stamped read under concurrency.
+            and records it, and its group holds every job slot. ``False``: the cells run up to the narrower of
+            :attr:`LaunchSettings.max_concurrent_cells` and what the kind declares (:attr:`KindWiring.max_concurrent_cells`)
+            at once, and their latency is stamped read under concurrency.
         refused_goal_checks: Each of the stored template's goal checks the current grammar refuses, with why
             (:func:`~threetears.evals.schema.models.refused_goal_checks`). ``template`` already leaves them
             out (:func:`~threetears.evals.run.runner.template_as_graded`), so every launcher and every cell
@@ -893,6 +950,7 @@ class LaunchRequest:
     case_set_cases: tuple[EvalTestCase, ...] = ()
     margins: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
     measure_latency: bool = False
+    generation: AdmittedGeneration | None = None
 
     def cases_or(self, template_cases: Sequence[EvalTestCase]) -> list[EvalTestCase]:
         """The cases this arm freezes: the case set's, when the launch names one, else the kind's own.
@@ -966,6 +1024,26 @@ KindLauncher = Callable[[LaunchRequest], Awaitable[EvalRun]]
 #: might ignore it — a cassette mode ignored is a requested replay run live, and paid for.
 LaunchArgument = Literal["n_variations", "judge_model", "judge_config_ids", "simulator_model", "cassette_mode"]
 
+#: The fields of a template a kind may never act on: what it states about tools, the cases it generates, a
+#: conversation, the world (its seed, what it presumes, the checks graded against it) and the rubric a judge scores.
+#: A template carrying one its kind ignores would run as if it said nothing, so a kind's registry entry declares them
+#: (:attr:`LaunchableKind.ignored_template_fields`) and the dispatch refuses the template. Its identity, its intent and
+#: its kind spec — validated by the kind's own model — are every kind's.
+TemplateField = Literal[
+    "tools_required",
+    "tools_allowed",
+    "variation_axes",
+    "conversation",
+    "world_seed",
+    "preconditions",
+    "goal_state_checks",
+    "goal_check_controls",
+    "rubric",
+]
+
+#: Every :data:`TemplateField`, in the template's order.
+TEMPLATE_FIELDS: tuple[TemplateField, ...] = get_args(TemplateField)
+
 
 @dataclass(frozen=True)
 class LaunchableKind:
@@ -1000,6 +1078,9 @@ class LaunchableKind:
             every arm is unpriceable — refused under an inherited cap, saying the launch may also be missing
             something its kind needs, and run under one its launch named — and nothing holds its launcher to a
             plan.
+        ignored_template_fields: The template fields this kind never acts on (:data:`TemplateField`); a template
+            stating any of them — anything but the field's default — is refused at the dispatch, naming it, rather
+            than run as if it had said nothing. Empty for a kind that reads every one.
         apparatus_settings: The host-declared apparatus dimensions this kind's launcher sets its rig up
             from, each with the value its rig takes when a launch sets none — the kind's standing rig. A
             launch setting any other is refused at the dispatch; the :class:`LaunchHost` refuses a name the
@@ -1013,6 +1094,7 @@ class LaunchableKind:
 
     launch: KindLauncher
     unhonoured_launch_arguments: frozenset[LaunchArgument] = frozenset()
+    ignored_template_fields: frozenset[TemplateField] = frozenset()
     plan_arm: Callable[[LaunchRequest], ArmPlan] | None = None
     apparatus_settings: Mapping[str, ApparatusSettingValue] = field(default_factory=lambda: MappingProxyType({}))
 
@@ -1020,8 +1102,9 @@ class LaunchableKind:
         """Refuse a name that is not a launch argument, and a default no run could store.
 
         Raises:
-            ValueError: An entry of ``unhonoured_launch_arguments`` is not a :data:`LaunchArgument`, or an
-                apparatus default is not a string, a bool or a finite number.
+            ValueError: An entry of ``unhonoured_launch_arguments`` is not a :data:`LaunchArgument`, one of
+                ``ignored_template_fields`` is not a :data:`TemplateField`, or an apparatus default is not a string,
+                a bool or a finite number.
         """
         try:
             defaults = _APPARATUS_SETTINGS.validate_python(dict(self.apparatus_settings))
@@ -1036,6 +1119,11 @@ class LaunchableKind:
             raise ValueError(
                 f"unhonoured_launch_arguments names {', '.join(unknown)}, which are not launch arguments; "
                 f"the arguments a kind can decline are {', '.join(get_args(LaunchArgument))}"
+            )
+        if undeclared := sorted(set(self.ignored_template_fields) - set(TEMPLATE_FIELDS)):
+            raise ValueError(
+                f"ignored_template_fields names {', '.join(undeclared)}, which are not template fields a kind may "
+                f"ignore; those are {', '.join(TEMPLATE_FIELDS)}"
             )
 
 
@@ -1110,6 +1198,13 @@ class KindWiring:
             them counted and unpriced.
         teardown: What the run owns and must release when it ends, or ``None`` for nothing. Owned by
             the launch tail from the moment it is handed over.
+        max_concurrent_cells: The most cells the kind declares it can drive at once — the kind's own
+            :attr:`~threetears.evals.kernel.candidate_kind.CandidateKind.max_concurrent_cells`, handed here
+            because the launch sizes the run before any cell builds a kind. ``None`` declares no limit of the
+            kind's own. A run not measuring latency executes at the smallest of this, the host's
+            :attr:`LaunchSettings.max_concurrent_cells` and its matrix; the runner refuses a kind whose own
+            declaration is narrower than the run, so stating more here than the kind does fails the run before
+            anything is spent. Defaults to ``1``, the safe width: a launcher that says nothing runs serially.
     """
 
     kind_factory: KindFactory
@@ -1124,6 +1219,20 @@ class KindWiring:
     cell_timeout_s: float | None = None
     external_rates: ExternalRateTable | None = None
     teardown: contextlib.AsyncExitStack | None = None
+    max_concurrent_cells: int | None = 1
+
+    def __post_init__(self) -> None:
+        """Refuse a width no run can execute at.
+
+        Raises:
+            ValueError: ``max_concurrent_cells`` is neither ``None`` nor an int of at least 1.
+        """
+        width = self.max_concurrent_cells
+        if width is not None and (isinstance(width, bool) or not isinstance(width, int) or width < 1):
+            raise ValueError(
+                f"a kind declares the most cells it can drive at once as an int of at least 1, or None for no limit "
+                f"of its own; got max_concurrent_cells={width!r}"
+            )
 
 
 def no_launcher_for(template_id: str, candidate_kind: str, launchable: Mapping[str, Any]) -> ValidationFailedError:
@@ -1139,9 +1248,12 @@ def no_launcher_for(template_id: str, candidate_kind: str, launchable: Mapping[s
     """
     return ValidationFailedError(
         f"template {template_id!r} declares candidate_kind={candidate_kind!r}, which this "
-        f"host has no launcher for; launchable kinds: {', '.join(launchable)}. "
-        "A kind the runner can be wired with still needs a launch that builds its collaborators, "
-        "because the runner cannot build a client it has never heard of."
+        "host has no launcher for. A kind the runner can be wired with still needs a launch that builds its "
+        "collaborators, because the runner cannot build a client it has never heard of",
+        remedy=(
+            f"launch a template of a kind this host launches ({', '.join(launchable) or 'it launches none'}), or "
+            f"register a launcher for {candidate_kind!r} in the LaunchHost's kinds"
+        ),
     )
 
 
@@ -1221,21 +1333,23 @@ def _refuse_a_variation_model_the_launch_cannot_use(
         if n_variations > 0 and llm_axes:
             raise ValidationFailedError(
                 f"template {template.id!r} has its {', '.join(repr(name) for name in llm_axes)} axis values written "
-                f"by a model, and this launch asks for {n_variations} generated case(s) without naming one: pass "
-                "variation_model=<the model that writes them>. It is its own role (the host's 'variation' client, "
-                "never the simulator's), and the runs record it beside their generation counts"
+                f"by a model, and this launch asks for {n_variations} generated case(s) without naming one. It is "
+                "its own role (the host's 'variation' client, never the simulator's), and the runs record it beside "
+                "their generation counts",
+                remedy="pass variation_model=<the model that writes them>",
             )
         return
     if n_variations == 0:
         raise ValidationFailedError(
             f"variation_model={variation_model!r} names the model that writes generated cases, and this launch "
-            "generates none (n_variations=0); launch it without variation_model, or ask for n_variations"
+            "generates none (n_variations=0)",
+            remedy="launch it without variation_model, or ask for n_variations",
         )
     if not llm_axes:
         raise ValidationFailedError(
             f"variation_model={variation_model!r} names the model that writes a template's llm-generated axis "
-            f"values, and template {template.id!r} has no llm axis, so no model writes its cases; launch it "
-            "without variation_model"
+            f"values, and template {template.id!r} has no llm axis, so no model writes its cases",
+            remedy="launch it without variation_model",
         )
 
 
@@ -1267,15 +1381,17 @@ def _validated_apparatus_settings(
         honoured = ", ".join(sorted(launchable.apparatus_settings)) or "none"
         raise ValidationFailedError(
             f"template {template.id!r} is a {template.candidate_kind!r} template, and that kind's launcher sets its rig "
-            f"up from no apparatus setting named {', '.join(repr(name) for name in unhonoured)} (it reads: {honoured}); "
-            "a setting nothing reads would be recorded as a rig nobody built"
+            f"up from no apparatus setting named {', '.join(repr(name) for name in unhonoured)}; "
+            "a setting nothing reads would be recorded as a rig nobody built",
+            remedy=f"set only what it reads: {honoured}",
         )
     try:
         # Resolved against the kind's standing rig: what the run records is the rig as it was set up.
         return {**launchable.apparatus_settings, **_APPARATUS_SETTINGS.validate_python(dict(apparatus_settings))}
     except ValidationError as e:
         raise ValidationFailedError(
-            f"invalid apparatus_settings: {e.errors()[0]['msg']} ({e.errors()[0]['loc']})"
+            f"invalid apparatus_settings: {e.errors()[0]['msg']} ({e.errors()[0]['loc']})",
+            remedy="give each apparatus setting a string, a bool or a finite number",
         ) from e
 
 
@@ -1340,7 +1456,10 @@ def _launchable(
     if n_variations < 0:
         # Every surface reaches here; one without a wire-level bound would otherwise read a negative as
         # "generate nothing" and run the stored cases while the caller believed it asked for new ones.
-        raise ValidationFailedError(f"n_variations must be 0 (reuse the stored cases) or more; got {n_variations}")
+        raise ValidationFailedError(
+            f"n_variations must be 0 (reuse the stored cases) or more; got {n_variations}",
+            remedy="pass 0, or the number of new cases to generate",
+        )
     candidate_kind = template.candidate_kind
     launchable = host.kinds.get(candidate_kind)
     if launchable is None:
@@ -1357,8 +1476,19 @@ def _launchable(
     ):
         raise ValidationFailedError(
             f"template {template.id!r} is a {candidate_kind!r} template, and that kind cannot honour "
-            + ", ".join(f"{name}={value!r}" for name, value in unusable.items())
-            + "; launch it without them"
+            + ", ".join(f"{name}={value!r}" for name, value in unusable.items()),
+            remedy="launch it without them",
+        )
+    if stated := [
+        name
+        for name in sorted(launchable.ignored_template_fields)
+        if getattr(template, name) != EvalTemplate.model_fields[name].get_default(call_default_factory=True)
+    ]:
+        raise ValidationFailedError(
+            f"template {template.id!r} is a {candidate_kind!r} template, and that kind never acts on its "
+            + ", ".join(stated)
+            + " — it would run as if the template had not stated them",
+            remedy="remove them from the template, or run it as a kind that reads them",
         )
     _refuse_a_variation_model_the_launch_cannot_use(
         template, n_variations=n_variations, variation_model=variation_model
@@ -1407,7 +1537,8 @@ def _refuse_repeated_models(models: Sequence[str]) -> None:
     if repeated := sorted({model for model in models if models.count(model) > 1}):
         raise ValidationFailedError(
             f"{', '.join(repr(model) for model in repeated)} named more than once; each model is one arm, so "
-            "a second mention would measure that arm twice — raise k_runs for more repeats"
+            "a second mention would measure that arm twice",
+            remedy="name each model once, and raise k_runs for more repeats",
         )
 
 
@@ -1463,7 +1594,7 @@ async def _dispatch(
     eval_host = host.eval_host
     template = await run_blocking(eval_host.blocking_executor, eval_host.storage.load_template, template_id, scope_id)
     if template is None:
-        raise NotFoundError("template", template_id)
+        raise NotFoundError("template", template_id, remedy=FIND_TEMPLATE)
 
     # THE LAUNCH DISPATCH — ``template.candidate_kind`` is read HERE, once per tier: the
     # tiers and their one reader each are declared by
@@ -1509,7 +1640,8 @@ async def _dispatch(
         if n_variations > 0:
             raise ValidationFailedError(
                 f"case_set={case_set.label!r} names the cases to run and n_variations={n_variations} asks for new "
-                "ones; a launch runs one or the other"
+                "ones; a launch runs one or the other",
+                remedy="drop case_set to generate new cases, or n_variations to run the set",
             )
         stored, cases = await run_blocking(
             eval_host.blocking_executor,
@@ -1625,8 +1757,9 @@ async def start_run(
             every run of the campaign declares it alike.
         measure_latency: Declare latency under test. Each run then executes its cells one at a time, and the
             launch's runs execute one at a time with nothing else beside them, so the latency they record is
-            read clean. ``False`` (the default) runs each run's cells up to the host's
-            :attr:`LaunchSettings.max_concurrent_cells` at once: far faster, and the latency still recorded is
+            read clean. ``False`` (the default) runs each run's cells up to the narrower of the host's
+            :attr:`LaunchSettings.max_concurrent_cells` and what its kind declares it is safe at
+            (:attr:`KindWiring.max_concurrent_cells`) at once: far faster, and the latency still recorded is
             stamped read under concurrency and kept out of every comparison, bar and ranking. Every run
             records the declaration (``EvalRun.measure_latency``) and the width it ran at
             (``EvalRun.cell_concurrency``).
@@ -1773,7 +1906,13 @@ def _refused_margins_or(margins: Mapping[str, float] | None) -> dict[str, float]
     """
     declared = dict(margins or {})
     if refusals := [refusal for name, margin in declared.items() if (refusal := run_margin_refusal(name, margin))]:
-        raise ValidationFailedError("; ".join(refusals))
+        raise ValidationFailedError(
+            "; ".join(refusals),
+            remedy=(
+                f"declare a run margin only on {', '.join(sorted(RUN_MARGIN_MEASURES))}, as a number between 0 "
+                "and 1 in its units"
+            ),
+        )
     return {name: float(margin) for name, margin in sorted(declared.items())}
 
 
@@ -1810,7 +1949,7 @@ def _refuse_raised_ceilings(
                 configured_name=settings.name_of("max_metered_calls"),
             )
     except CeilingRaisedError as refused:
-        raise ValidationFailedError(str(refused)) from refused
+        raise ValidationFailedError(refused.fault, remedy=refused.remedy) from refused
 
 
 def _refuse_cell_timeout(settings: LaunchSettings, cell_timeout_s: float | None, *, ceiling: float | None) -> None:
@@ -1833,7 +1972,8 @@ def _refuse_cell_timeout(settings: LaunchSettings, cell_timeout_s: float | None,
     if not (math.isfinite(cell_timeout_s) and cell_timeout_s > 0):
         raise ValidationFailedError(
             f"cell_timeout_s must be a finite number of seconds above 0 (got {cell_timeout_s}); a cell with no time "
-            "to run measures nothing"
+            "to run measures nothing",
+            remedy="pass one, or omit it for the kind's own deadline",
         )
     if ceiling is not None and cell_timeout_s > ceiling:
         declared = settings.max_cell_timeout_s is not None
@@ -1845,7 +1985,8 @@ def _refuse_cell_timeout(settings: LaunchSettings, cell_timeout_s: float | None,
                 if declared
                 else f"; the host declares no {settings.name_of('max_cell_timeout_s')}, so a launch may only lower "
                 "the kind's own deadline"
-            )
+            ),
+            remedy=f"pass a cell_timeout_s at or below {ceiling:g}",
         )
 
 
@@ -1886,18 +2027,23 @@ def _refuse_launch_arguments(
     # run before the first result — reject it as a run-parameter error up
     # front, before any snapshot / generation spend.
     if max_cost_usd is not None and max_cost_usd <= 0:
-        raise ValidationFailedError(f"max_cost_usd must be > 0 (got {max_cost_usd})")
+        raise ValidationFailedError(
+            f"max_cost_usd must be > 0 (got {max_cost_usd})", remedy="pass one above 0, or omit it for the host's"
+        )
     # Same reasoning one currency over: a ceiling of zero or less would refuse the
     # candidate's first metered call and measure a candidate that could not search.
     if max_metered_calls is not None and max_metered_calls <= 0:
-        raise ValidationFailedError(f"max_metered_calls must be > 0 (got {max_metered_calls})")
+        raise ValidationFailedError(
+            f"max_metered_calls must be > 0 (got {max_metered_calls})",
+            remedy="pass one above 0, or omit it for the host's",
+        )
     # A host that declares no metered tools has nothing for a ceiling to bound, and recording one would
     # claim a bound the run never had.
     if max_metered_calls is not None and settings.max_metered_calls is None:
         raise ValidationFailedError(
             f"max_metered_calls={max_metered_calls} names a metered-call ceiling, and host "
-            f"{host.eval_host.profile.host_id!r} declares no metered tools, so it would bound nothing; launch "
-            "without max_metered_calls"
+            f"{host.eval_host.profile.host_id!r} declares no metered tools, so it would bound nothing",
+            remedy="launch without max_metered_calls",
         )
     _refuse_raised_ceilings(settings, max_cost_usd=max_cost_usd, max_metered_calls=max_metered_calls)
     _refuse_cell_timeout(settings, cell_timeout_s, ceiling=settings.max_cell_timeout_s)
@@ -1908,7 +2054,10 @@ def _refuse_launch_arguments(
     try:
         TypeAdapter(Annotated[int, *k_field.metadata]).validate_python(k_runs)
     except ValidationError as e:
-        raise ValidationFailedError(f"invalid k_runs: {e.errors()[0]['msg']} (got {k_runs})") from e
+        raise ValidationFailedError(
+            f"invalid k_runs: {e.errors()[0]['msg']} (got {k_runs})",
+            remedy="pass k_runs as a whole number of repeats within its bounds, or omit it for the default",
+        ) from e
     mode = _normalized_cassette_mode(cassette_mode)
     _refuse_a_corpus_the_mode_cannot_use(mode, cassette_corpus_id)
     return mode
@@ -1976,6 +2125,9 @@ async def _admit_run(
         cassette_corpus_id=cassette_corpus_id,
         cell_timeout_s=cell_timeout_s,
     )
+    # The subject is the host's to know, and is refused here, at admission — where the estimate refuses it too —
+    # rather than by a launcher inside the launch's job, after every arm was priced.
+    await _refuse_an_unknown_subject(host, subject_id, scope_id)
     declared_margins = MappingProxyType(_refused_margins_or(margins))
     dispatch = partial(
         _dispatch,
@@ -1994,6 +2146,10 @@ async def _admit_run(
         apparatus_settings=apparatus_settings,
         case_set=case_set,
     )
+
+    #: The writer a generating launch's calls were admitted on, built in the call and released once the
+    #: launchers that make them have run.
+    writers: list[BoundCompletionClient] = []
 
     async def priced(group: LaunchGroup, dispatched: _Dispatched) -> list[LaunchRequest]:
         """Every arm's request, planned and priced — no launcher has run, nothing is built and nothing spent.
@@ -2032,25 +2188,30 @@ async def _admit_run(
         # pays for the generation the arms share and what builds an arm's clients, so pricing an arm after
         # it would refuse a launch already billed. Priced exactly once — here, or by the battery's
         # pre-flight, whose plans the arms then carry.
-        if priced_arms is not None:
-            return priced_arms.carried_by(requests)
-        priced_requests = await price_arms(host, dispatched.launchable, requests)
-        # And the generation's own calls, against the out-of-run cap they will be admitted under — the battery's
-        # pre-flight quotes its templates' the same way. Without it a generation the cap cannot pay for was refused
-        # only inside the launcher, which a transport runs in the launch's job, after the call had returned.
-        await _quote_generation(
+        priced_requests = (
+            priced_arms.carried_by(requests)
+            if priced_arms is not None
+            else await price_arms(host, dispatched.launchable, requests)
+        )
+        # And the generation's own calls, admitted here, in the call, against the out-of-run cap — the battery's
+        # pre-flight quotes its templates' the same way. Admitted rather than only quoted, so the launcher makes
+        # exactly the calls priced here, on the writer they were priced on, and admits nothing in the job.
+        return await _with_admitted_generation(
             host,
             dispatched.template,
-            requests[0].generation_budget,
+            priced_requests,
             n_variations=n_variations,
             variation_model=variation_model,
             scope_id=scope_id,
+            writers=writers,
         )
-        return priced_requests
 
     async def launched(dispatched: _Dispatched, requests: list[LaunchRequest]) -> list[EvalRun]:
         """Hand each priced arm, one per model, to the kind's launcher — where a generating launch's calls are made."""
-        return [await dispatched.launchable.launch(request) for request in requests]
+        async with contextlib.AsyncExitStack() as held:
+            for writer in writers:
+                await held.enter_async_context(writer)
+            return [await dispatched.launchable.launch(request) for request in requests]
 
     async def dispatched_once() -> _Dispatched:
         """The launch's dispatch — or, for a battery's launch, the one its pre-flight priced, template and all.
@@ -2095,45 +2256,59 @@ async def _admit_run(
     )
 
 
-async def _quote_generation(
+async def _with_admitted_generation(
     host: LaunchHost,
     template: EvalTemplate,
-    budget: OutOfRunBudget | None,
+    requests: list[LaunchRequest],
     *,
     n_variations: int,
     variation_model: str | None,
     scope_id: str,
-) -> None:
-    """Price a launch's case generation on its writer against the budget it will be admitted under — no call made.
+    writers: list[BoundCompletionClient],
+) -> list[LaunchRequest]:
+    """Admit a launch's case generation in its call, and carry the admission on every arm's request.
 
-    The plan and the budget are the ones the launcher's generation uses (:func:`plan_variation_calls`,
-    :func:`_generation_budget`), so a generation this passes is one the launcher's admission passes too; the quote
-    commits nothing. A launch that generates nothing, or whose template no model writes, has nothing to price.
+    The plan and the budget are the ones the battery's pre-flight quotes (:func:`plan_variation_calls`,
+    :func:`_generation_budget`), so a generation the pre-flight passes is one this admits. The writer is built here
+    and every call admitted on it, so the launcher makes exactly what was priced, on the client it was priced on;
+    it is kept in ``writers`` for the launch to hold open around its launchers and release. A launch that
+    generates nothing, or whose template no model writes, admits nothing and carries no generation.
 
     Args:
         host: The host: its writer client and the store the existing cases are read from.
         template: The template whose ``llm`` axes the generation writes.
-        budget: The launch's generation budget; ``None`` for a launch that generates nothing.
+        requests: The launch's priced requests, every one carrying the launch's generation budget.
         n_variations: The cases the launch generates.
         variation_model: The writer model the launch named.
         scope_id: The scope the cases are generated into.
+        writers: Where the built writer is kept for the launch to release.
+
+    Returns:
+        The requests, each carrying the admitted generation.
 
     Raises:
-        ValidationFailedError: Under an enforced cap, a call the writer cannot price, or calls priced above it.
+        ValidationFailedError: Under an enforced cap, a call the writer cannot price, or calls priced above it — the
+            writer released, nothing called.
         ValueError: The host supplies no completion clients.
     """
+    budget = requests[0].generation_budget if requests else None
     if budget is None or n_variations <= 0 or variation_model is None or not _llm_axes(template):
-        return
+        return requests
     existing = await run_blocking(
         host.eval_host.blocking_executor,
         partial(host.eval_host.storage.query_test_cases, scope_id, template_id=template.id),
     )
-    planned = list(plan_variation_calls(template, n_variations, existing).values())
-    if not planned:
-        return
-    writer = host.eval_host.completion_clients("a launch's generation pricing")("variation", variation_model)
-    async with writer:
-        budget.quote(writer, "variation", planned)
+    planned = plan_variation_calls(template, n_variations, existing)
+    writer = host.eval_host.completion_clients("a launch's generation")("variation", variation_model)
+    try:
+        admitted = budget.admit(writer, "variation", list(planned.values()))
+    except BaseException:
+        async with writer:
+            pass
+        raise
+    writers.append(writer)
+    generation = AdmittedGeneration(writer=writer, budget=budget, calls=dict(zip(planned, admitted, strict=True)))
+    return [replace(request, generation=generation) for request in requests]
 
 
 def _generation_budget(
@@ -2411,6 +2586,7 @@ class ArmVerdict:
         cap_origin: ``chosen`` when the launch named the cap, ``inherited`` from the host's; ``None`` uncapped.
         outcome: What the rule made of it (:data:`ArmOutcome`).
         refusal: The refusal the launch makes of it, word for word; ``None`` unless ``outcome`` is ``refused``.
+        remedy: What brings the arm under its cap, or names one; set exactly when ``refusal`` is.
     """
 
     described: str
@@ -2421,6 +2597,7 @@ class ArmVerdict:
     cap_origin: Literal["chosen", "inherited"] | None
     outcome: ArmOutcome
     refusal: str | None
+    remedy: str | None = None
 
 
 def _cap_of(request: LaunchRequest) -> tuple[float | None, Literal["chosen", "inherited"] | None]:
@@ -2467,7 +2644,7 @@ def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
     plan = request.arm_plan
     model = plan.candidate_model if plan is not None else request.candidate_model
 
-    def verdict(outcome: ArmOutcome, refusal: str | None = None) -> ArmVerdict:
+    def verdict(outcome: ArmOutcome, refusal: str | None = None, remedy: str | None = None) -> ArmVerdict:
         return ArmVerdict(
             described=what,
             candidate_model=model,
@@ -2477,6 +2654,7 @@ def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
             cap_origin=origin,
             outcome=outcome,
             refusal=refusal,
+            remedy=remedy,
         )
 
     if cap is None:
@@ -2499,10 +2677,11 @@ def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
         return verdict(
             "refused",
             f"{what} cannot be priced: {price.basis}. Its cost is unknown, not $0, and its ${cap:.2f} cap is "
-            f"inherited from {request.settings.name_of('max_cost_usd')}, which nobody chose for it. Launch it naming "
-            f"max_cost_usd (at most ${request.settings.max_cost_usd:.2f}; a launch may only lower the host's "
-            "ceiling) — the most you will risk on a run nobody can price; what it costs then prices the next "
-            f"launch.{unplanned} {refused}",
+            f"inherited from {request.settings.name_of('max_cost_usd')}, which nobody chose for it.{unplanned} "
+            f"{refused}",
+            f"launch it naming max_cost_usd (at most ${request.settings.max_cost_usd:.2f}; a launch may only lower "
+            "the host's ceiling) — the most you will risk on a run nobody can price; what it costs then prices the "
+            "next launch",
         )
     if price.predicted_usd > cap:
         ceiling = request.settings.max_cost_usd
@@ -2515,7 +2694,8 @@ def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
         return verdict(
             "refused",
             f"{what} is predicted to cost ${price.predicted_usd:.2f} ({price.basis}), above its ${cap:.2f} cap. "
-            f"Fewer cases, a smaller k_runs or a cheaper model brings it under; {raise_it}. {refused}",
+            f"{refused}",
+            f"fewer cases, a smaller k_runs or a cheaper model brings it under; {raise_it}",
         )
     return verdict("admitted")
 
@@ -2581,7 +2761,8 @@ async def price_arms(
         price = await _arm_price(host, request)
         judged = _judged(request, price)
         if judged.refusal is not None:
-            raise ValidationFailedError(judged.refusal)
+            assert judged.remedy is not None  # set with every refusal
+            raise ValidationFailedError(judged.refusal, remedy=judged.remedy)
         priced.append(replace(request, arm_price=price))
     return priced
 
@@ -2679,7 +2860,10 @@ async def quote_launch(
         ValueError: The kind planned an arm contradicting what it named.
     """
     if case_count is not None and case_count < 1:
-        raise ValidationFailedError(f"case_count prices a grid of at least one case; got {case_count}")
+        raise ValidationFailedError(
+            f"case_count prices a grid of at least one case; got {case_count}",
+            remedy="pass one of at least 1, or omit it to price each arm at its plan",
+        )
     settings = host.settings()
     mode = _refuse_launch_arguments(
         host,
@@ -2692,6 +2876,7 @@ async def quote_launch(
         cell_timeout_s=cell_timeout_s,
     )
     _refuse_oversized_launch(max(1, len(models)), settings.max_launch_arms, settings.name_of("max_launch_arms"))
+    await _refuse_an_unknown_subject(host, subject_id, scope_id)
     dispatched = await _dispatch(
         host,
         template_id,
@@ -3164,7 +3349,7 @@ def require_candidate_model(request: LaunchRequest, default: str | None) -> str:
     """
     model = request.candidate_model or default
     if model is None:
-        raise ValidationFailedError(f"kind {request.kind!r} has no default candidate model; name one")
+        raise ValidationFailedError(f"kind {request.kind!r} has no default candidate model", remedy="name one")
     return model
 
 
@@ -3258,16 +3443,16 @@ def _refuse_wiring_the_request_contradicts(request: LaunchRequest, wiring: KindW
     if counts is not None and counts.variation_model != request.variation_model:
         raise ValueError(
             f"the launch named variation model {request.variation_model!r} and kind {kind!r}'s launcher's generation "
-            f"recorded {counts.variation_model!r} as the model that wrote its cases; build the writer in the "
-            "'variation' role from the request's variation_model and hand it to generate_variations, whose counts "
-            "name the model it called"
+            f"recorded {counts.variation_model!r} as the model that wrote its cases; hand generate_variations the "
+            "request's generation, whose writer the launch built from its variation_model, and whose counts name "
+            "the model it called"
         )
     budget = request.generation_budget
     if counts is not None and counts.variation_model is not None and (budget is None or not budget.recorded):
         raise ValueError(
             f"kind {kind!r}'s launcher recorded cases written by {counts.variation_model!r}, and the launch's "
-            "generation budget ledgered no call: hand generate_variations budget=request.generation_budget, so the "
-            "calls are priced against the launch's out-of-run cap before they are made and ledgered once they are"
+            "generation budget ledgered no call: hand generate_variations generation=request.generation, the calls "
+            "the launch admitted against its out-of-run cap, so they are made as admitted and ledgered once they are"
         )
     plan = request.arm_plan
     if plan is not None:
@@ -3450,12 +3635,20 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 cassette_mode=request.cassette_mode,
                 cassette_corpus_id=request.cassette_corpus_id,
                 # Whether latency is under test, and the width the cells execute at, which follows from it: one
-                # at a time when it is, up to the host's width (never more than the matrix) when it is not.
+                # at a time when it is; when it is not, the narrowest of what the kind declares it is safe at, the
+                # host's width (a ceiling) and the matrix.
                 measure_latency=request.measure_latency,
                 cell_concurrency=(
                     1
                     if request.measure_latency
-                    else max(1, min(settings.max_concurrent_cells, len(test_cases) * request.k_runs))
+                    else max(
+                        1,
+                        min(
+                            settings.max_concurrent_cells,
+                            wiring.max_concurrent_cells or settings.max_concurrent_cells,
+                            len(test_cases) * request.k_runs,
+                        ),
+                    )
                 ),
                 simulator_model=wiring.simulator_model,
                 turn_budget_s=wiring.turn_budget_s,
@@ -3496,7 +3689,9 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 ),
             )
         except ValidationError as e:
-            raise ValidationFailedError(f"invalid run parameters: {e}") from e
+            raise ValidationFailedError(
+                f"invalid run parameters: {e}", remedy="correct the run parameter the error names"
+            ) from e
 
         # What this run did with every dimension the host's world declares, derived from the
         # assembled run for the same reason the context key is: the run is the thing the record
@@ -3684,8 +3879,8 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
     return run
 
 
-def _battery_refusal(refused: Exception) -> str:
-    """Render a per-template refusal as a battery refusal.
+def _battery_refusal(refused: str) -> str:
+    """Render a per-template refusal's message as a battery refusal's.
 
     The per-run message cannot know that nothing was launched, and an operator reading a
     battery failure has to. Punctuated rather than concatenated: the refusals it wraps end
@@ -3693,12 +3888,12 @@ def _battery_refusal(refused: Exception) -> str:
     Nothing was launched.`` is what naive concatenation produced.
 
     Args:
-        refused: The refusal raised for one template.
+        refused: The message of the refusal raised for one template — its remedy is carried apart.
 
     Returns:
-        Its message with the battery's own suffix.
+        The message with the battery's own suffix.
     """
-    message = str(refused).rstrip()
+    message = refused.rstrip()
     separator = "" if message.endswith((".", "!", "?")) else "."
     return f"{message}{separator} Nothing was launched."
 
@@ -3825,18 +4020,22 @@ async def start_universal_battery(
     # refuses part-way through the set.
     settings = host.settings()
     if max_cost_usd is not None and max_cost_usd <= 0:
-        raise ValidationFailedError(_battery_refusal(ValueError(f"max_cost_usd must be > 0 (got {max_cost_usd})")))
+        raise ValidationFailedError(
+            _battery_refusal(f"max_cost_usd must be > 0 (got {max_cost_usd})"),
+            remedy="pass one above 0, or omit it for the host's",
+        )
     try:
         _refuse_raised_ceilings(settings, max_cost_usd=max_cost_usd, max_metered_calls=None)
     except ValidationFailedError as refused:
-        raise ValidationFailedError(_battery_refusal(refused)) from refused
+        raise ValidationFailedError(_battery_refusal(refused.message), remedy=refused.remedy) from refused
     # Every template is one launch of one run per model, so a launch's own argument refusals — a model named
     # twice, more arms than one launch may start — read the battery's arguments alone, and are made here once.
     try:
         _refuse_repeated_models(models)
         _refuse_oversized_launch(max(1, len(models)), settings.max_launch_arms, settings.name_of("max_launch_arms"))
     except ValidationFailedError as refused:
-        raise ValidationFailedError(_battery_refusal(refused)) from refused
+        raise ValidationFailedError(_battery_refusal(refused.message), remedy=refused.remedy) from refused
+    await _refuse_an_unknown_subject(host, subject_id, scope_id)
     ticket = host.job_manager.admit(
         len(templates) * max(1, len(models)),
         limit=settings.max_admitted_runs,
@@ -3861,28 +4060,26 @@ async def start_universal_battery(
         try:
             battery_cassette_mode = _normalized_cassette_mode(cassette_mode)
         except ValidationFailedError as refused:
-            raise ValidationFailedError(_battery_refusal(refused)) from refused
+            raise ValidationFailedError(_battery_refusal(refused.message), remedy=refused.remedy) from refused
         # A replay serves ONE capture run's corpus, and a capture run recorded one template; a battery
         # launches many templates, so no single corpus could serve it.
         if battery_cassette_mode == "replay":
             raise ValidationFailedError(
                 _battery_refusal(
-                    ValueError(
-                        "a replay serves the corpus of one capture run, which recorded one template, and a battery "
-                        "launches every universal template; replay each template with start_run and its own corpus"
-                    )
-                )
+                    "a replay serves the corpus of one capture run, which recorded one template, and a battery "
+                    "launches every universal template"
+                ),
+                remedy="replay each template with a run_launch of its own, over the corpus its own capture recorded",
             )
         # A variation model reaches only the templates with an llm axis, so per template it is honoured
         # or absent — and one no template could use is refused here, since no template's launch would.
         if variation_model is not None and templates and not any(_llm_axes(t) for t in templates):
             raise ValidationFailedError(
                 _battery_refusal(
-                    ValueError(
-                        f"variation_model={variation_model!r} names the model that writes llm-generated axis values, "
-                        "and none of the battery's templates has an llm axis; launch it without variation_model"
-                    )
-                )
+                    f"variation_model={variation_model!r} names the model that writes llm-generated axis values, "
+                    "and none of the battery's templates has an llm axis"
+                ),
+                remedy="launch it without variation_model",
             )
         # The refusals the dispatch itself makes, per template — a kind with no launcher, a battery
         # argument the kind cannot honour, a stored spec its model now refuses — through the same
@@ -3974,7 +4171,7 @@ async def start_universal_battery(
                         list(plan_variation_calls(universal_template, n_variations, existing).values()),
                     )
                 except ValidationFailedError as refused:
-                    raise ValidationFailedError(_battery_refusal(refused)) from refused
+                    raise ValidationFailedError(_battery_refusal(refused.message), remedy=refused.remedy) from refused
         # Every refusal an arm of any template would make, made here over the whole set before anything
         # launches — through the host's check, which calls what its launchers call. The subject is read
         # once for the check and not shared with the launches, which each capture their own.
@@ -3984,7 +4181,7 @@ async def start_universal_battery(
                 try:
                     await check(universal_template, battery_cassette_mode)
                 except ValidationFailedError as refused:
-                    raise ValidationFailedError(_battery_refusal(refused)) from refused
+                    raise ValidationFailedError(_battery_refusal(refused.message), remedy=refused.remedy) from refused
 
         # Every template's arms PREPARED before any template's runs start — each launcher called, each case
         # set frozen, each tail's checks made against the plans priced above — and only then is every group
@@ -4266,17 +4463,21 @@ def _resolve_selected_judge_configs(
     for dim_id, config_id in selection.items():
         if dim_id not in scored:
             raise ValidationFailedError(
-                f"judge_config_ids names dim {dim_id!r}, which this template does not score. Scored dims: {', '.join(dim_ids)}."
+                f"judge_config_ids names dim {dim_id!r}, which this template does not score",
+                remedy=f"name a config only for a dim the template scores: {', '.join(dim_ids) or 'it scores none'}",
             )
         config = storage.load_judge_config(config_id, scope_id)
         if config is None:
             raise ValidationFailedError(
-                f"judge_config_ids names judge config {config_id!r} for dim {dim_id!r}, which does not exist in scope {scope_id!r}."
+                f"judge_config_ids names judge config {config_id!r} for dim {dim_id!r}, which does not exist in "
+                f"scope {scope_id!r}",
+                remedy=f"name a config the scope holds ({FIND_JUDGE_CONFIG})",
             )
         if config.rubric_dim_id != dim_id:
             raise ValidationFailedError(
                 f"judge config {config_id!r} was authored for dim {config.rubric_dim_id!r}, so it cannot "
-                f"be named under {dim_id!r} — that dim would be scored by another dim's prompt."
+                f"be named under {dim_id!r} — that dim would be scored by another dim's prompt",
+                remedy=f"name it under {config.rubric_dim_id!r}, or name a config authored for {dim_id!r}",
             )
         resolved[dim_id] = config
     return resolved
@@ -4293,6 +4494,10 @@ __all__ = [
     "KindWiring",
     "LaunchArgument",
     "LaunchHost",
+    "TEMPLATE_FIELDS",
+    "TemplateField",
+    "SubjectResolver",
+    "UnknownSubject",
     "LaunchGroup",
     "LaunchPricer",
     "LaunchQuote",

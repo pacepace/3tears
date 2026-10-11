@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -40,6 +40,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
 from threetears.evals.kernel.errors import ConflictError, EvalServiceError, JobFenced, StorageError
+from threetears.evals.kernel.refusals import job_refusal
 from threetears.evals.kernel.job_leases import JobLeases, LeasedJobKind, write_held_record
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
 from threetears.evals.kernel.storage import JobRecordStore, LeaseStore
@@ -53,6 +54,7 @@ from threetears.evals.schema.job_lease import (
     LeaseField,
     LostField,
 )
+from threetears.evals.schema.refusal import RefusalField
 from threetears.evals.schema.models import CoreSchemaVersion, utc_now_iso
 from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION
 from threetears.observe import get_logger
@@ -99,21 +101,25 @@ def _written_lost[R: EvalDocumentModel](record: R, loss: JobLoss, _store: LeaseS
     )
 
 
-def leased_job_kind[R: EvalDocumentModel](name: str, model: type[R]) -> LeasedJobKind[R]:
+def leased_job_kind[R: EvalDocumentModel](
+    name: str, model: type[R], *, named_runs: Callable[[R], Sequence[str]] | None = None
+) -> LeasedJobKind[R]:
     """The lease machinery's reading of a record of this module's shape: ended once its outcome is not ``running``.
 
     Args:
         name: The job kind's name, for a message.
         model: The record's model, declaring ``outcome``, ``detail``, ``ended_at`` and the four lease fields.
+        named_runs: The runs the record names as its own, settled with it when it is written lost; ``None`` for none.
 
     Returns:
-        The kind.
+        The kind, registered by its model so every store read of a record of it settles it.
     """
     return LeasedJobKind(
         name=name,
         model=model,
         ended=lambda record: getattr(record, "outcome") != "running",
         end_lost=_written_lost,
+        **({"named_runs": named_runs} if named_runs is not None else {}),
     )
 
 
@@ -197,8 +203,9 @@ class JobWork[R: EvalDocumentModel]:
         kind: The record's type, as the lease machinery reads it.
         record: The record as the job starts: ``outcome`` ``running``, no lease yet (the runner grants it).
         run: Runs the work to its end and returns the record as it ends (:func:`end_record`), writing any progress
-            through the recorder on the way. What it raises ends the job ``failed`` with the error as its detail, a
-            cancel ends it ``cancelled``, and a fenced write ends it as the record already says.
+            through the recorder on the way. What it raises ends the job ``failed`` with the error as its detail —
+            and, for an engine refusal, its kind and status as the record's ``refusal`` — a cancel ends it
+            ``cancelled``, and a fenced write ends it as the record already says.
         budget_s: The work's wall-clock ceiling when it runs as a job: when it runs out, the work is stopped and the
             record ends ``timed_out``. ``None`` for work that bounds what it does itself — a launch bounds its
             preparation and leaves its runs to their own budgets, so time its runs spend queued for a slot is never
@@ -238,7 +245,7 @@ class JobWork[R: EvalDocumentModel]:
 def _failure_detail(broke: BaseException) -> str:
     """Why a job's work failed, in a poll's words: an engine refusal as it was said, anything else by its class too."""
     if isinstance(broke, EvalServiceError):
-        return broke.message
+        return str(broke)
     return f"{type(broke).__name__}: {broke}"
 
 
@@ -282,7 +289,9 @@ async def _run_to_end[R: EvalDocumentModel](
     # prawduct:ok-broad-except — the job's record is where its ending is stated; the boundary writes it failed
     except Exception as broke:
         log.exception("eval.job %s=%s scope=%s failed", name, record_id, scope_id)
-        ended = end_record(recorder.record, "failed", _failure_detail(broke))
+        # An engine refusal is kept as data beside its words, so a poll serves its kind as a refused call's.
+        refusal = job_refusal(broke) if isinstance(broke, EvalServiceError) else None
+        ended = end_record(recorder.record, "failed", _failure_detail(broke), refusal=refusal)
     try:
         return await _write_ending(recorder, ended, name=name, record_id=record_id, scope_id=scope_id)
     except JobFenced as fenced:
@@ -424,7 +433,9 @@ async def start_job_work[R: EvalDocumentModel](
     except ConflictError as refused:
         if work.discard is not None:
             await work.discard()
-        await recorder.save(end_record(started, "failed", f"refused before it started: {refused}"))
+        await recorder.save(
+            end_record(started, "failed", f"refused before it started: {refused}", refusal=job_refusal(refused))
+        )
         raise
     return started
 
@@ -515,6 +526,7 @@ class EvalActionJob(CoreDocumentModel):
     cancel_requested_at: CancelRequestedAtField = None
     cancel_request_reason: CancelRequestReasonField = None
     lost: LostField = None
+    refusal: RefusalField = None
 
     @field_validator("doc_type")
     @classmethod

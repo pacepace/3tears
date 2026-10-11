@@ -13,8 +13,13 @@ intents and adds a picture, and decides nothing a reader is told.
 - :mod:`compiler` draws through one arm per chart type (:mod:`arms`); :mod:`spec_policy` is this
   renderer's own gate on the spec; :mod:`palette`, :mod:`text_metrics` and :mod:`render` are its
   theme, its measurements and its rasteriser. A host drawing in its own typeface measures it with
-  ``packages/evals/scripts/measure_font_metrics.py`` and declares it with :func:`load_chart_font`;
-  :func:`packaged_font` is the default face, Liberation Sans.
+  ``python -m threetears.evals.vega.measure_font`` (:mod:`measure_font`, a command rather than an import)
+  and declares it with :func:`load_chart_font`; :func:`packaged_font` is the default face, Liberation Sans. A
+  host drawing in its own colours declares a palette read from an artifact of the packaged one's shape with
+  :func:`load_palette`, which holds it to the slot widths the chart vocabulary assigns; :func:`packaged_palette`
+  is the default. :func:`check_font_files` is a host's CI gate on a face it ships: whether the files its table was
+  measured from are still those bytes. It hashes files and needs no rasteriser, and importing this package imports
+  none (``vl-convert`` is imported only inside the calls that rasterise).
 
 **This module is the package's public root.** A host imports from here and from no module below it,
 and only the names in ``__all__``; ``tests/test_package_matrix.py`` holds that, and holds that nothing
@@ -24,24 +29,33 @@ outside this package imports it.
 from __future__ import annotations
 
 from threetears.evals.vega.compiler import CompiledChart, CompiledColumn, compile_chart, draw_intent
-from threetears.evals.vega.palette import PaletteError, Theme, packaged_palette, vega_config
-from threetears.evals.vega.render import register_fonts, render_png, render_svg
+from threetears.evals.vega.palette import PaletteError, Theme, load_palette, packaged_palette, vega_config
+from threetears.evals.vega.render import RasterRefused, register_fonts, render_png, render_svg
 from threetears.evals.vega.renderer import VegaRenderer
 from threetears.evals.vega.spec_policy import SpecPolicyError, check_spec
-from threetears.evals.vega.text_metrics import TextMetricsError, load_chart_font, packaged_font, write_font_metrics
+from threetears.evals.vega.text_metrics import (
+    TextMetricsError,
+    check_font_files,
+    load_chart_font,
+    packaged_font,
+    write_font_metrics,
+)
 
 __all__ = [
     "CompiledChart",
     "CompiledColumn",
     "PaletteError",
+    "RasterRefused",
     "SpecPolicyError",
     "TextMetricsError",
     "Theme",
     "VegaRenderer",
+    "check_font_files",
     "check_spec",
     "compile_chart",
     "draw_intent",
     "load_chart_font",
+    "load_palette",
     "packaged_font",
     "packaged_palette",
     "register_fonts",

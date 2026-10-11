@@ -74,6 +74,7 @@ from threetears.evals.kernel import (
     CellCassettes,
     CellSink,
     CellSpanWindow,
+    CostCapReached,
     EvalStorage,
     MetricDescriptor,
     VariantConfig,
@@ -90,6 +91,7 @@ from threetears.evals.schema import (
     EvalTestCase,
     JudgedArtifact,
     JudgeEvidence,
+    UsageRole,
     WorldSeed,
     canonical_digest,
 )
@@ -122,6 +124,8 @@ from threetears.evals.run import (
     LaunchGroup,
     LaunchSettings,
     RunJudge,
+    TemplateField,
+    UnknownSubject,
     build_judge_service,
     get_result_trace,
     launch_as_group,
@@ -131,6 +135,7 @@ from threetears.evals.run import (
 )
 from threetears.evals.run.authoring import refuse_unsupplied_world
 from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.kernel.usage_capture import blended_cost
 from threetears.evals.quick.answer import unwrap_answer
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Judge, judge_evidence
@@ -741,6 +746,10 @@ def callable_kind(
     )
 
 
+#: The one role a callable candidate's own spend lands under — what its answer's cost is summed over.
+_CANDIDATE_ROLE: tuple[UsageRole, ...] = ("candidate",)
+
+
 @dataclass(frozen=True)
 class _Prepared:
     """One cell's candidate, as ``prepare`` hands it to ``invoke``."""
@@ -767,6 +776,11 @@ class CallableKind:
     """
 
     judged_artifact = JudgedArtifact.UNJUDGED
+    #: No limit of the kind's own: it holds nothing between cells (each cell's tools are its own
+    #: :class:`~threetears.evals.quick.tools.CellTools`), and whether the callable is safe beside itself is its
+    #: author's to say — which :func:`~threetears.evals.quick.run_eval` asks through ``measure_latency``, its cases
+    #: running several at once unless latency is under test.
+    max_concurrent_cells: int | None = None
 
     def __init__(
         self,
@@ -837,13 +851,21 @@ class CallableKind:
         Args:
             instance: What ``prepare`` returned.
             test_case: The cell's case; the caller's case rides on its ``host_payload``.
-            sink: The cell's sink, unused: the scores are reported on the output.
+            sink: The cell's sink. The candidate's call cannot be priced before it is made, so the run's cost
+                cap is asked first — a cell the cap has already been reached for calls nothing and returns
+                empty, which the runner excludes for the cap — and what an
+                :class:`~threetears.evals.quick.answer.Answer` reports it cost is counted the moment it returns.
 
         Returns:
             The answer as the stored trace, and each scorer's grade as a host measure, beside a
             classifier's ``match`` and ``confusion_cell``, and a judged kind's evidence.
         """
         case = test_case.host_payload[_CASE_KEY]
+        try:
+            # Unpriceable, so held to the cap by asking (``CellSink.reserve`` with no ceiling holds nothing).
+            held = sink.reserve("candidate", None)
+        except CostCapReached:
+            return CandidateOutput()
         try:
             answer, telemetry = unwrap_answer(await _call_candidate(self._candidate, case, instance.tools))
         except ApparatusError:
@@ -857,6 +879,13 @@ class CallableKind:
                 # One call, and it answered nothing: a refusal's round trip is no turn's time or spend.
                 telemetry=CandidateTelemetry(turns_delivered=0),
             )
+        else:
+            # What the answer says it cost, counted for every cell's question of the cap now rather than when the
+            # result lands — the judge phase still to come is paid for beside it. A plain answer reports nothing.
+            held.settle(blended_cost(telemetry.usage, _CANDIDATE_ROLE) if telemetry.usage else 0.0)
+        finally:
+            # A call that raised, or was cancelled, settled nothing; a settled reservation ignores this.
+            held.release()
         # One call, answered: the kind's whole turn.
         telemetry = telemetry.model_copy(update={"turns_delivered": 1})
         evidence: JudgeEvidence | None = None
@@ -1316,6 +1345,8 @@ def _launch_host(
                 test_cases=cases,
                 judge=run_judge,
                 payload=_arm_payload(arm.arm),
+                # What every kind the factory builds declares — the callable kind's, which a world cell adopts.
+                max_concurrent_cells=CallableKind.max_concurrent_cells,
             ),
         )
 
@@ -1326,10 +1357,38 @@ def _launch_host(
         unhonoured.add("judge_model")
     if not calls_tools:
         unhonoured.add("cassette_mode")
+
+    def resolve_subject(subject_id: str, _scope_id: str) -> UnknownSubject | None:
+        # A one-call run's subjects are its arms' own, named by the caller as it launched them.
+        held = {arm.subject for arm in (*arms, *preparing)}
+        if subject_id in held:
+            return None
+        return UnknownSubject(remedy=f"this call's arms measure {', '.join(sorted(held))}")
+
+    # A one-call template states its intent, its goal checks and, judged, its rubric; a world reaches a cell through
+    # each case's own seed. Every other field would be stated and never acted on.
+    ignored: set[TemplateField] = {
+        "tools_required",
+        "tools_allowed",
+        "variation_axes",
+        "conversation",
+        "world_seed",
+        "preconditions",
+        "goal_check_controls",
+    }
+    if judge is None:
+        ignored.add("rubric")
     launch_host = LaunchHost(
         eval_host=host,
-        kinds={kind_name: LaunchableKind(launch=launch, unhonoured_launch_arguments=frozenset(unhonoured))},
+        kinds={
+            kind_name: LaunchableKind(
+                launch=launch,
+                unhonoured_launch_arguments=frozenset(unhonoured),
+                ignored_template_fields=frozenset(ignored),
+            )
+        },
         settings=partial(_launch_settings, len(arms), max_cost_usd),
+        resolve_subject=resolve_subject,
         job_timeout_factory=default_job_timeout,
         world_placements=place if declared is not None else None,
     )
@@ -1735,7 +1794,7 @@ async def run_arms(
         try:
             refuse_unsupplied_world(template, profile=host.profile)
         except ValidationFailedError as refused:
-            raise ValueError(refused.message) from refused
+            raise ValueError(str(refused)) from refused
     _save_unless_unchanged(host, template, test_cases)
     # Each scorer's declared range, which every score it returns is held to: the bounded tests read it as a fact.
     ranges = {

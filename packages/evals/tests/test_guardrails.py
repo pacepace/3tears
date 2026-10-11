@@ -263,7 +263,7 @@ class TestTheCodeOnlyReportShowsTheGuardrails:
         )
         (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "guardrails"]
         assert table.section == "guardrails"
-        (row,) = table.rows
+        (row,) = table.values()
         assert row["guardrail"] == f"{BOUNDARY} (judged)"
         assert str(row["decision"]).startswith("breached")
         assert any(

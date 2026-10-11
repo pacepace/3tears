@@ -28,14 +28,25 @@ results' ``judge`` usage rows — unknown, never zero, when any judge call went 
 template's intent, which the judge reads beside every answer: an unjudged run's is read by nothing that
 grades it, so its summary leaves it out.
 
-**So is what the candidate reported spending.** A kind's own ``candidate`` usage rows — a
-:func:`~threetears.evals.quick.run_eval` candidate's :class:`~threetears.evals.quick.Answer` — are summed
-the same way, unknown rather than zero when any went unpriced. A run whose candidate reported nothing
-carries none of it.
+**So is what every role spent.** Each role a result's usage rows name — the candidate, the judge, a simulator,
+an inner agent the candidate called, a paid external API — is summed on its own line (:class:`RoleSpend`), unknown
+rather than zero when any of its calls went unpriced, with an external API's own units (search credits, quota
+units) beside it per provider, and the results' blended cost below as the total. A line per role rather than a
+line for the candidate and one for a judge: a run whose inner agent spent most of its money printed the
+other two and hid it, and a judge campaign — every trial bills the ``judge`` role — printed no spend at all. A run
+whose results reported nothing carries none of it.
 
 **So are its goal-state checks.** Each check the results carry is counted as every per-check rate counts
 it (:func:`~threetears.evals.kernel.counted_goal_verdicts`): passed as it evaluated, failed on every
 check of a result the candidate failed, and in no count for a result excluded as a fault of the rig.
+
+**Its words are served with it.** Every line :meth:`EvalSummary.render` prints is a field of the summary's JSON
+(each a ``computed_field``): the run's line, its results line, why it stopped, its spend cap, each measure's
+state and line, the confusion and per-label lines, the intent, each judged dimension, the self-judging warning,
+each role's spend and the total, and each goal check (each error is ``errors`` itself, printed as written) —
+and ``text``, all of it as one string.
+So a browser shows the words this package wrote, and ``render`` is those fields joined, never a second spelling.
+A summary read back from its JSON re-derives them and discards what the document said.
 """
 
 from __future__ import annotations
@@ -44,15 +55,16 @@ import math
 
 from collections import Counter
 from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, JsonValue
+from pydantic import BaseModel, ConfigDict, JsonValue, computed_field, model_validator
 
 from threetears.evals.analysis.agreement import InterJudgeDimension, inter_judge_agreement
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, confusion_matrix, label_statistics
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.surface_table import NO_SUCCESSFUL_RESULTS
+from threetears.evals.analysis.viz.quantities import display_scale, with_unit
 from threetears.evals.kernel import (
     NotFoundError,
     CONFUSION_CELL_MEASURE,
@@ -63,6 +75,7 @@ from threetears.evals.kernel import (
     delivered_a_turn,
 )
 from threetears.evals.schema import CostCapOrigin, EvalResult, EvalRun, GoalCheckProof, RubricScale, UsageRole
+from threetears.evals.schema.base import without_computed_field_echo
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.host.sweepables import UNCAPPED_SPEND
 from threetears.evals.schema.models import (
@@ -71,10 +84,14 @@ from threetears.evals.schema.models import (
     stale_goal_check_proofs,
 )
 from threetears.evals.kernel.metrics import describe_measure, summary_population
-from threetears.evals.kernel.usage_capture import blended_cost
+from threetears.evals.kernel.remedies import FIND_RUN
 
 
-def dollars_text(amount: float) -> str:
+#: What an amount no client could price reads as. Never ``$0``: an unpriced call may have been billed.
+UNPRICED = "unpriced"
+
+
+def dollars_text(amount: float | None) -> str:
     """Spend as a person reads it: dollars and cents from ten cents up, three significant figures below.
 
     A cheap model's call costs a few hundred-thousandths of a dollar, so a fixed number of decimals either
@@ -86,19 +103,50 @@ def dollars_text(amount: float) -> str:
     agent-facing rendering of its results — and one rule for both is what keeps one amount from reading two
     ways.
 
+    An amount that is not there — a cost no client could price — is :data:`UNPRICED`, never ``$0``, which would say
+    the spend was measured and was nothing. Said here rather than by each caller, so every surface that prints a
+    possibly-unpriced amount says it in one word.
+
     Args:
-        amount: Dollars, as stored.
+        amount: Dollars, as stored; ``None`` when the amount went unpriced.
 
     Returns:
         The amount with its dollar sign: ``$0`` for zero, two decimals from ten cents up (``$0.50``,
-        ``$1.20``), three significant figures below (``$0.0123``, ``$0.000160``).
+        ``$1.20``), three significant figures below (``$0.0123``, ``$0.000160``); :data:`UNPRICED` for ``None``.
     """
+    if amount is None:
+        return UNPRICED
     if amount == 0:
         return "$0"
     if abs(amount) >= 0.1:
         return f"${amount:.2f}"
     decimals = 2 - math.floor(math.log10(abs(amount)))
     return f"${amount:.{decimals}f}"
+
+
+#: How one measure came out over a run, as the summary states it: ``measured`` (a mean), ``not_a_number`` (it is
+#: carried, as words, and never averaged), ``in_confusion_matrix`` (a classifier's cells, counted in the matrix),
+#: ``no_successful_results`` (every result carrying it took no turn), ``all_excluded`` (every result carrying it
+#: was excluded as a fault of the rig) or ``not_carried`` (no result carries it).
+MeasureState = Literal[
+    "measured", "not_a_number", "in_confusion_matrix", "no_successful_results", "all_excluded", "not_carried"
+]
+
+
+class MeasureLine(BaseModel):
+    """One measure's state over a run, and the line :meth:`EvalSummary.render` prints for it.
+
+    Attributes:
+        name: The measure.
+        state: How it came out (:data:`MeasureState`).
+        text: The line, without indentation.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    state: MeasureState
+    text: str
 
 
 #: Said beside a guardrail's level in one run's summary, which has no control to decide it against.
@@ -123,6 +171,8 @@ class RunMeasureSummary(BaseModel):
         guardrail: Whether the host declares it a guardrail, something no arm may get worse on. A run alone has no
             control to hold it against, so its level here is no verdict: held, breached or undecided is decided
             only against a control, in a comparison.
+        unit: The unit the host declares its values in; empty when it declares none. Its line states the mean, the
+            minimum and the maximum on one ruler chosen over the three, as a report states a measure on one ruler.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -135,6 +185,7 @@ class RunMeasureSummary(BaseModel):
     n_no_turn: int = 0
     n_faulted: int = 0
     guardrail: bool = False
+    unit: str = ""
 
 
 class GoalCheckSummary(BaseModel):
@@ -439,6 +490,93 @@ class CaseResult(BaseModel):
         return "\n".join(lines)
 
 
+class ProviderUnits(BaseModel):
+    """What an external API metered over a run, in its own unit, for one provider.
+
+    Attributes:
+        provider: Who was called, as the host names it; ``None`` where the caller could not say.
+        unit: The provider's unit (``credits``, ``quota_units``).
+        units: How many the results' rows report, summed within this provider and unit only — two providers'
+            units are never added together.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider: str | None
+    unit: str
+    units: int
+
+
+#: Why a model-metered role's call carries no dollars: its client priced nothing for it (a local model, a client that
+#: prices nothing) — the one way such a row comes to hold none.
+MODEL_CALL_UNPRICED = "its client reported no price for them"
+
+#: Why an external call carries no dollars in a run that declared external rates: neither a charge its provider
+#: reported nor a rate the run declared for its provider and unit priced it (a call the candidate's own tools made is
+#: counted as volume and never priced).
+EXTERNAL_CALL_UNPRICED = "neither a charge their provider reported nor a rate the run declared priced them"
+
+#: Why an external call carries no dollars in a run that declared no external rate, whose total sums none.
+EXTERNAL_NOT_COUNTED = "the run declared no external rate, so its total sums no external dollars"
+
+
+class RoleSpend(BaseModel):
+    """What one role spent over a run, summed from its results' usage rows.
+
+    **Priced and unpriced are stated side by side, never folded.** A role some of whose calls went unpriced spent the
+    priced calls' dollars AND something nobody can put a number on, so it states both: its priced dollars and a count
+    of its unpriced calls, with why they are unpriced. A role read as wholly unknown the moment one call went
+    unpriced dropped dollars the run's total still counted, so its lines no longer added up to it.
+
+    Attributes:
+        role: The role (:data:`~threetears.evals.schema.UsageRole`).
+        calls: How many calls its rows count.
+        cost_usd: What its priced calls cost, summed as priced when they were made; ``None`` when none was priced.
+        unpriced_calls: How many of its calls carry no dollars.
+        counted: Whether the run's total (each result's blended cost) sums this role. Every model-metered role is;
+            the ``external`` role is only in a run that declared external rates.
+        units: The ``external`` role's own metering, per provider and unit; empty for every other role.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    role: UsageRole
+    calls: int
+    cost_usd: float | None
+    unpriced_calls: int = 0
+    counted: bool = True
+    units: list[ProviderUnits] = []
+
+    @property
+    def unpriced_because(self) -> str | None:
+        """Why its unpriced calls carry no dollars, as true for its run; ``None`` when every call was priced."""
+        if not self.unpriced_calls and self.cost_usd is not None:
+            return None
+        if self.role != "external":
+            return MODEL_CALL_UNPRICED
+        return EXTERNAL_CALL_UNPRICED if self.counted else EXTERNAL_NOT_COUNTED
+
+    def money_text(self) -> str:
+        """Its dollars over its calls: the priced calls' cost (or :data:`UNPRICED`), and how many are unpriced and why."""
+        money = UNPRICED if self.cost_usd is None else dollars_text(self.cost_usd)
+        text = f"{money} over {self.calls} call(s)"
+        if (because := self.unpriced_because) is None:
+            return text
+        if self.cost_usd is None:
+            return f"{text}: {because}"
+        return f"{text}, {self.unpriced_calls} of them {UNPRICED}: {because}"
+
+    def line(self) -> str:
+        """The role's spend line: its priced dollars and unpriced calls, and whether the run's total leaves it out."""
+        outside = "" if self.counted or self.unpriced_because == EXTERNAL_NOT_COUNTED else "; not in the total"
+        if self.role != "external":
+            return f"{self.role} spend: {self.money_text()}{outside}"
+        metered = ", ".join(
+            f"{units.units} {units.unit}" + (f" ({units.provider})" if units.provider else "") for units in self.units
+        )
+        return f"external spend: {metered or 'no units counted'}, {self.money_text()}{outside}"
+
+
 def _shown_value(value: Any) -> str:
     """A value as a result's line prints it: a string quoted, anything else as written."""
     return repr(value) if isinstance(value, str) or value is None else str(value)
@@ -480,15 +618,14 @@ class EvalSummary(BaseModel):
             default); ``None`` for an intent stated outright, and for a summary read back from the store,
             which keeps the intent but not its source.
         second_judge_calls: How many calls second judges asked about this run made, as the out-of-run ledger records
-            them under purpose ``second_judge``. Measurement cost: never in :attr:`judge_calls` or the candidate's.
+            them under purpose ``second_judge``. Measurement cost: never in :attr:`spend` or :attr:`total_cost_usd`.
         second_judge_cost_usd: What those calls cost; ``None`` when any went unpriced, and when none was made.
-        judge_calls: How many judge calls the results' ``judge`` usage rows count.
-        judge_cost_usd: What those calls cost, as their client priced them; ``None`` when any went
-            unpriced, and for a run no judge was called in.
-        candidate_calls: How many calls the results' ``candidate`` usage rows count; 0 when the candidate
-            reported no spend.
-        candidate_cost_usd: What those calls cost, as the candidate priced them; ``None`` when any went
-            unpriced, and for a run whose candidate reported no spend.
+        spend: What each role spent (:class:`RoleSpend`), in :data:`~threetears.evals.schema.UsageRole`'s order, for
+            every role the results' usage rows name; empty for a run whose results reported none.
+        total_cost_usd: The results' cost summed (each result's blended ``cost_usd``) — what the counted roles'
+            dollars add up to, external units aside; ``None`` when any result's cost is unknown (its line then states
+            the counted roles' priced dollars and their unpriced calls), and for a run whose results reported no
+            spend.
         errors: Each failed or excluded result's error, prefixed by its case, then the run's own. A case is named
             as the caller that summarised the run named it (:func:`~threetears.evals.quick.run_eval`: its own
             ``id``, else its position), else by its stored test case id.
@@ -528,12 +665,10 @@ class EvalSummary(BaseModel):
     confusion: list[ConfusionCount]
     labels: list[LabelStatistics]
     judged: list[DimensionSummary] = []
-    judge_calls: int = 0
-    judge_cost_usd: float | None = None
+    spend: list[RoleSpend] = []
+    total_cost_usd: float | None = None
     second_judge_calls: int = 0
     second_judge_cost_usd: float | None = None
-    candidate_calls: int = 0
-    candidate_cost_usd: float | None = None
     goal_checks: list[GoalCheckSummary] = []
     intent: str | None = None
     intent_source: str | None = None
@@ -578,83 +713,239 @@ class EvalSummary(BaseModel):
         """
         return [result for result in self.results() if result.missed]
 
+    def role_spend(self, role: UsageRole) -> RoleSpend | None:
+        """What one role spent over the run, or ``None`` when its results name no row of it.
+
+        Args:
+            role: The role.
+
+        Returns:
+            Its :class:`RoleSpend`, or ``None``.
+        """
+        return next((spend for spend in self.spend if spend.role == role), None)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _discard_served_words(cls, data: Any) -> Any:
+        """Drop the served words a summary's JSON carries: they are re-derived from the fields beside them."""
+        return without_computed_field_echo(cls, data)
+
+    @property
+    def _judged_in_play(self) -> bool:
+        """Whether a judge is in play — the rig a first run can meet, and whose spend a cap bounds.
+
+        With neither a judge nor a cap in play, the rig's exclusions and the cap say nothing a newcomer can act on,
+        so they print only when they do.
+        """
+        judge = self.role_spend("judge")
+        return bool(self.judged) or (judge is not None and judge.calls > 0)
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description="The run's first line: its id, how it ended, the candidate (or arm), its cases and repeats."
+    )
+    @property
+    def headline(self) -> str:
+        """The run's line, as :meth:`render` opens with it."""
+        who = self.candidate_model if self.arm is None else f"arm {self.arm} (model {self.candidate_model})"
+        return f"run {self.run_id} {self.status}: {who} over {self.n_cases} case(s) x k={self.k_runs}"
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description=(
+            "How the results came out: scored, then failed by the candidate and excluded as a fault of the rig where "
+            "there are some (excluded always once a judge is in play)."
+        )
+    )
+    @property
+    def results_text(self) -> str:
+        """The results line, without indentation."""
+        counts = [f"{self.n_scored} scored"]
+        if self.n_candidate_failed:
+            counts.append(f"{self.n_candidate_failed} failed by the candidate")
+        if self.n_excluded or self._judged_in_play:
+            counts.append(f"{self.n_excluded} excluded")
+        return f"{self.n_results} result(s): {', '.join(counts)}"
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description="Why a designed stop ended the run short (`stopped: <reason>`); null when nothing stopped it."
+    )
+    @property
+    def stopped_text(self) -> str | None:
+        """The stop line, without indentation, or None."""
+        return None if self.stopped_because is None else f"stopped: {self.stopped_because}"
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description=(
+            "The spend ceiling the run was held to, or that nothing bounded it; null when the summary prints no cap "
+            "line — no cap recorded, or none of a cap, a judge or any role's spend in play."
+        )
+    )
+    @property
+    def spend_cap_text(self) -> str | None:
+        """The spend-cap line, without indentation, or None."""
+        if self.max_cost_usd is None and not self._judged_in_play and not self.spend:
+            return None
+        return _spend_cap_line(self)
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description="Each measure, in `measures` order: its state and the line printed for it."
+    )
+    @property
+    def measure_lines(self) -> list[MeasureLine]:
+        """Each measure's state and line."""
+        return [self._measure_line(measure) for measure in self.measures]
+
+    def _measure_line(self, measure: RunMeasureSummary) -> MeasureLine:
+        """One measure's state, and its line."""
+        left_out = _left_out(measure)
+        state: MeasureState
+        if measure.n == 0 and measure.n_no_turn:
+            state, said = "no_successful_results", f"{NO_SUCCESSFUL_RESULTS}{left_out}"
+        elif measure.n == 0 and measure.n_faulted:
+            state, said = "all_excluded", f"every result carrying it was excluded{left_out}"
+        elif measure.n == 0:
+            state, said = "not_carried", "no result carries it"
+        elif measure.name == CONFUSION_CELL_MEASURE and self.confusion:
+            state, said = "in_confusion_matrix", f"n={measure.n}, counted in the confusion matrix below"
+        elif measure.mean is None:
+            state, said = "not_a_number", f"n={measure.n}, not a number"
+        else:
+            state = "measured"
+            # One ruler for the line's three figures, chosen over all of them: a mean in s beside a max in ms is two
+            # rulers read as one.
+            figures = [value for value in (measure.mean, measure.minimum, measure.maximum) if value is not None]
+            factor, unit = display_scale(figures, measure.unit)
+
+            def stated(value: float | None) -> str:
+                return with_unit(None if value is None else value * factor, unit)
+
+            said = (
+                f"mean {stated(measure.mean)} (n={measure.n}, "
+                f"min {stated(measure.minimum)}, max {stated(measure.maximum)}{left_out})"
+                + (f"; {_GUARDRAIL_ALONE}" if measure.guardrail else "")
+            )
+        return MeasureLine(name=measure.name, state=state, text=f"{measure.name}: {said}")
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description="The confusion matrix, a line per cell (`expected → predicted: count`); empty with `confusion`."
+    )
+    @property
+    def confusion_lines(self) -> list[str]:
+        """Each confusion cell's line."""
+        return [f"{_shown(cell.expected)} → {_shown(cell.predicted)}: {cell.count}" for cell in self.confusion]
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description="Each label's precision and recall with their counts and intervals, and its F1; empty with `labels`."
+    )
+    @property
+    def label_lines(self) -> list[str]:
+        """Each label's line."""
+        return [_label_line(statistics) for statistics in self.labels]
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description="The intent the judge read, with where it came from; null when the summary carries no intent."
+    )
+    @property
+    def intent_text(self) -> str | None:
+        """The intent line, without indentation, or None."""
+        if self.intent is None:
+            return None
+        source = "" if self.intent_source is None else f" ({self.intent_source})"
+        return f"intent{source}: {' '.join(self.intent.split())}"
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description="Each judged dimension: its scale, mean and range, and how often the judge could not tell."
+    )
+    @property
+    def dimension_lines(self) -> list[str]:
+        """Each judged dimension's line."""
+        return [_dimension_line(dimension) for dimension in self.judged]
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description="The warning that a judge graded answers its own model produced; null when none did."
+    )
+    @property
+    def self_judging_warning(self) -> str | None:
+        """The self-judging line, or None."""
+        if not self.judge_shares_candidate_model:
+            return None
+        return self_judging_text(self.judge_shares_candidate_model, "the candidate")
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description=(
+            "Each role's spend line, in `spend` order: what it cost, or why that is unknown, over how many calls — an "
+            "external API's units per provider beside it. Empty for a run whose results reported no spend."
+        )
+    )
+    @property
+    def spend_lines(self) -> list[str]:
+        """Each role's spend line (:meth:`RoleSpend.line`)."""
+        return [spend.line() for spend in self.spend]
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description=(
+            "The results' total cost — what the role lines add up to — or that it is unknown and why; null for a "
+            "run whose results reported no spend."
+        )
+    )
+    @property
+    def total_spend_text(self) -> str | None:
+        """The total-spend line, without indentation, or None."""
+        if not self.spend:
+            return None
+        if self.total_cost_usd is not None:
+            return f"total spend: {dollars_text(self.total_cost_usd)}, the results' cost"
+        # Unknown in full: what the counted roles' priced calls cost, which their lines add up to, and how many of
+        # their calls are unpriced — never a bare "unknown" that drops the dollars the lines state.
+        counted = [spend for spend in self.spend if spend.counted]
+        priced = [spend.cost_usd for spend in counted if spend.cost_usd is not None]
+        unpriced = sum(spend.unpriced_calls for spend in counted)
+        stated = f"{dollars_text(math.fsum(priced))} over the priced calls" if priced else "no call priced"
+        return f"total spend: unknown in full: {stated}, plus {unpriced} call(s) {UNPRICED}"
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description="Each goal check's pass count and, unless proven, why it is not a measurement."
+    )
+    @property
+    def goal_check_lines(self) -> list[str]:
+        """Each goal check's line (:meth:`GoalCheckSummary.line`)."""
+        return [goal.line() for goal in self.goal_checks]
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description="The whole summary as `render()` prints it for a terminal: every line above, indented."
+    )
+    @property
+    def text(self) -> str:
+        """:meth:`render`'s text."""
+        return self.render()
+
     def render(self) -> str:
-        """The summary as a few lines of text for a terminal.
+        """The summary as a few lines of text for a terminal: the served lines, in order, indented.
 
         The results line counts the failures and the rig's exclusions only when there are some, or a judge is in
-        play; the spend-cap line prints only when a cap bounded the run, a judge ran, or the candidate reported
+        play; the spend-cap line prints only when a cap bounded the run, a judge ran, or any role reported
         spend — a first run of a free function is not handed the vocabulary of a rig it does not have.
 
         Returns:
             The text, without a trailing newline.
         """
-        # A judge is the rig a first run can meet, and the spend it bills is what a cap bounds: with neither in
-        # play, the rig's exclusions and the cap say nothing a newcomer can act on, so they print only when they do.
-        judged = bool(self.judged) or self.judge_calls > 0
-        counts = [f"{self.n_scored} scored"]
-        if self.n_candidate_failed:
-            counts.append(f"{self.n_candidate_failed} failed by the candidate")
-        if self.n_excluded or judged:
-            counts.append(f"{self.n_excluded} excluded")
-        lines = [
-            f"run {self.run_id} {self.status}: "
-            + (self.candidate_model if self.arm is None else f"arm {self.arm} (model {self.candidate_model})")
-            + f" over {self.n_cases} case(s) x k={self.k_runs}",
-            f"  {self.n_results} result(s): {', '.join(counts)}",
-        ]
-        if self.stopped_because is not None:
-            lines.append(f"  stopped: {self.stopped_because}")
-        if (self.max_cost_usd is not None or judged or self.candidate_calls) and (
-            cap := _spend_cap_line(self)
-        ) is not None:
-            lines.append(f"  {cap}")
-        for measure in self.measures:
-            left_out = _left_out(measure)
-            if measure.n == 0 and measure.n_no_turn:
-                lines.append(f"  {measure.name}: {NO_SUCCESSFUL_RESULTS}{left_out}")
-            elif measure.n == 0 and measure.n_faulted:
-                lines.append(f"  {measure.name}: every result carrying it was excluded{left_out}")
-            elif measure.n == 0:
-                lines.append(f"  {measure.name}: no result carries it")
-            elif measure.name == CONFUSION_CELL_MEASURE and self.confusion:
-                lines.append(f"  {measure.name}: n={measure.n}, counted in the confusion matrix below")
-            elif measure.mean is None:
-                lines.append(f"  {measure.name}: n={measure.n}, not a number")
-            else:
-                lines.append(
-                    f"  {measure.name}: mean {format_number(measure.mean)} (n={measure.n}, "
-                    f"min {format_number(measure.minimum)}, max {format_number(measure.maximum)}{left_out})"
-                    + (f"; {_GUARDRAIL_ALONE}" if measure.guardrail else "")
-                )
+        lines = [self.headline, f"  {self.results_text}"]
+        lines += [f"  {line}" for line in (self.stopped_text, self.spend_cap_text) if line is not None]
+        lines += [f"  {measure.text}" for measure in self.measure_lines]
         if self.confusion:
             lines.append("  confusion (expected → predicted):")
-            lines.extend(
-                f"    {_shown(cell.expected)} → {_shown(cell.predicted)}: {cell.count}" for cell in self.confusion
-            )
+            lines += [f"    {line}" for line in self.confusion_lines]
             lines.append("  per label:")
-            lines.extend(f"    {_label_line(statistics)}" for statistics in self.labels)
-        if self.intent is not None:
-            source = "" if self.intent_source is None else f" ({self.intent_source})"
-            lines.append(f"  intent{source}: {' '.join(self.intent.split())}")
-        lines.extend(f"  {_dimension_line(dimension)}" for dimension in self.judged)
-        if self.judge_shares_candidate_model:
-            lines.append(f"  {self_judging_text(self.judge_shares_candidate_model, 'the candidate')}")
-        if self.judged:
-            spend = (
-                "unknown: a judge call went unpriced"
-                if self.judge_cost_usd is None
-                else dollars_text(self.judge_cost_usd)
-            )
-            lines.append(f"  judge spend: {spend} over {self.judge_calls} call(s)")
-        if self.candidate_calls:
-            spend = (
-                "unknown: a candidate call went unpriced"
-                if self.candidate_cost_usd is None
-                else dollars_text(self.candidate_cost_usd)
-            )
-            lines.append(f"  candidate spend: {spend} over {self.candidate_calls} call(s)")
-        lines.extend(f"  {goal.line()}" for goal in self.goal_checks)
-        lines.extend(f"  error: {error}" for error in self.errors)
+            lines += [f"    {line}" for line in self.label_lines]
+        if self.intent_text is not None:
+            lines.append(f"  {self.intent_text}")
+        lines += [f"  {line}" for line in self.dimension_lines]
+        if self.self_judging_warning is not None:
+            lines.append(f"  {self.self_judging_warning}")
+        lines += [f"  {line}" for line in self.spend_lines]
+        if self.total_spend_text is not None:
+            lines.append(f"  {self.total_spend_text}")
+        lines += [f"  {line}" for line in self.goal_check_lines]
+        lines += [f"  error: {error}" for error in self.errors]
         return "\n".join(lines)
 
 
@@ -699,16 +990,16 @@ def _self_judging(run: EvalRun, results: list[EvalResult]) -> list[str]:
 def _spend_cap_line(summary: EvalSummary) -> str | None:
     """The spend ceiling the run was held to, or that it had none; nothing for a run that recorded neither.
 
-    A cap counts the spend results report, so a capped run none of whose candidate calls reported any says
-    that its cap counted only what else was spent (a judge's calls, say).
+    A cap counts the spend results report, so a capped run none of whose results reported any says that its cap
+    had nothing to count.
     """
     if summary.max_cost_usd_origin == "uncapped":
         return f"spend cap: {UNCAPPED_SPEND}"
     if summary.max_cost_usd is None:
         return None
     line = f"spend cap: {dollars_text(summary.max_cost_usd)} for this run"
-    if summary.candidate_calls == 0:
-        line += "; it counts only spend a result reports, and the candidate reported none"
+    if not summary.spend:
+        line += "; it counts only spend a result reports, and no result reported any"
     return line
 
 
@@ -798,7 +1089,7 @@ def summarize_run(
     """
     run = host.storage.load_eval_run(run_id, scope_id)
     if run is None:
-        raise NotFoundError("run", run_id)
+        raise NotFoundError("run", run_id, remedy=FIND_RUN)
     results = host.storage.query_eval_results_by_run(run_id, scope_id)
     outcomes = [classify_result(result) for result in results]
     declared = host.profile.measures.names
@@ -827,6 +1118,7 @@ def summarize_run(
                 n_no_turn=sum(1 for result in left if classify_result(result) is ResultOutcome.CANDIDATE_FAIL),
                 n_faulted=sum(1 for result in left if classify_result(result) is ResultOutcome.INFRA_EXCLUDE),
                 guardrail=describe_measure(name, host.profile.measures).guardrail,
+                unit=describe_measure(name, host.profile.measures).unit or "",
             )
         )
     names = case_names or {}
@@ -848,11 +1140,9 @@ def summarize_run(
         for result in results
         if isinstance(cell := result.host_measures.get(CONFUSION_CELL_MEASURE), str)
     ]
-    judge_rows = [row for result in results for row in result.usage if row.role == "judge"]
     template = None
     if run.judge_model is not None and run.template_id is not None:
         template = host.storage.load_template(run.template_id, scope_id)
-    candidate_rows = [row for result in results for row in result.usage if row.role == "candidate"]
     # A second judge's spend is the out-of-run ledger's, stamped with the run — never a result's usage row.
     second_rows = [
         row for row in host.storage.query_out_of_run_spend(scope_id, purpose="second_judge") if row.run_id == run.id
@@ -874,16 +1164,14 @@ def summarize_run(
         confusion=confusion,
         labels=label_statistics(classifications),
         judged=_judged_dimensions(results),
-        judge_calls=sum(row.call_count or 0 for row in judge_rows),
-        judge_cost_usd=blended_cost(judge_rows, _JUDGE_ROLE) if judge_rows else None,
+        spend=_role_spend(results),
+        total_cost_usd=_total_cost(results),
         second_judge_calls=len(second_rows),
         second_judge_cost_usd=(
             math.fsum(cost for cost in second_costs if cost is not None)
             if second_rows and None not in second_costs
             else None
         ),
-        candidate_calls=sum(row.call_count or 0 for row in candidate_rows),
-        candidate_cost_usd=blended_cost(candidate_rows, _CANDIDATE_ROLE) if candidate_rows else None,
         goal_checks=_goal_checks(results, run),
         # Templates are edited in place: one edited since the launch no longer holds what the judge read.
         intent=template.intent if template is not None and template.updated_at <= run.created_at else None,
@@ -895,11 +1183,52 @@ def summarize_run(
     )
 
 
-#: The one role a run's judge spends under, which the summary's judge spend sums.
-_JUDGE_ROLE: tuple[UsageRole, ...] = ("judge",)
+def _role_spend(results: list[EvalResult]) -> list[RoleSpend]:
+    """What each role the results' usage rows name spent, in :data:`~threetears.evals.schema.UsageRole`'s order.
 
-#: The role a kind's own calls spend under, which the summary's candidate spend sums.
-_CANDIDATE_ROLE: tuple[UsageRole, ...] = ("candidate",)
+    A role's dollars are its priced rows' costs summed, and its unpriced calls are counted beside them, so a role
+    partly priced states what was priced rather than reading wholly unknown: the run's total
+    (:func:`~threetears.evals.kernel.usage_capture.blended_cost`, per result) sums exactly the counted roles' priced
+    rows, and the role lines add up to it. Whether a role is counted is the results' own composition
+    (``cost_roles``): the ``external`` role is in it only where the run declared external rates. Its units are summed
+    per provider and unit, never across two.
+    """
+    spent: list[RoleSpend] = []
+    for role in get_args(UsageRole):
+        carrying = [result for result in results if any(row.role == role for row in result.usage)]
+        rows = [row for result in carrying for row in result.usage if row.role == role]
+        if not rows:
+            continue
+        priced = [row.cost_usd for row in rows if row.cost_usd is not None]
+        metered: dict[tuple[str | None, str], int] = {}
+        for row in rows:
+            if row.provider_unit is not None and row.provider_units is not None:
+                key = (row.provider, row.provider_unit)
+                metered[key] = metered.get(key, 0) + row.provider_units
+        spent.append(
+            RoleSpend(
+                role=role,
+                calls=sum(row.call_count or 0 for row in rows),
+                cost_usd=math.fsum(priced) if priced else None,
+                unpriced_calls=sum(row.call_count or 0 for row in rows if row.cost_usd is None),
+                counted=all(role in result.cost_roles for result in carrying),
+                units=[
+                    ProviderUnits(provider=provider, unit=unit, units=units)
+                    for (provider, unit), units in sorted(
+                        metered.items(), key=lambda item: (item[0][0] or "", item[0][1])
+                    )
+                ],
+            )
+        )
+    return spent
+
+
+def _total_cost(results: list[EvalResult]) -> float | None:
+    """The results' cost summed, or ``None`` when any result's is unknown or no result's rows observed spend."""
+    if not any(row.cost_usd is not None for result in results for row in result.usage):
+        return None
+    costs = [result.cost_usd for result in results]
+    return None if None in costs else math.fsum(cost for cost in costs if cost is not None)
 
 
 def _judged_dimensions(results: list[EvalResult]) -> list[DimensionSummary]:
@@ -962,12 +1291,17 @@ def _goal_checks(results: list[EvalResult], run: EvalRun) -> list[GoalCheckSumma
 
 
 __all__ = [
+    "UNPRICED",
     "CaseOutcome",
     "CaseResult",
     "DimensionSummary",
     "EvalSummary",
     "GoalCheckSummary",
     "JudgeGrade",
+    "MeasureLine",
+    "MeasureState",
+    "ProviderUnits",
+    "RoleSpend",
     "RunMeasureSummary",
     "dollars_text",
     "self_judging_text",

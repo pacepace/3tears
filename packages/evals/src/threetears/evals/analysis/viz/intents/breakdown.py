@@ -6,7 +6,7 @@ from typing import Any
 
 from threetears.evals.analysis.viz.intent import ChartAxis, ChartColumn, ChartEncoding, ChartIdentity, ChartIntent
 from threetears.evals.analysis.viz.payloads import BreakdownPayload
-from threetears.evals.analysis.viz.quantities import axis_title, display_scale, with_unit
+from threetears.evals.analysis.viz.quantities import axis_title, ruled_scale, with_unit
 
 
 def breakdown_intent(payload: BreakdownPayload) -> ChartIntent:
@@ -23,7 +23,7 @@ def breakdown_intent(payload: BreakdownPayload) -> ChartIntent:
         The intent.
     """
     ordered = sorted(payload.parts, key=lambda part: (-part.value, part.label))
-    scale, unit = display_scale([part.value for part in ordered], payload.unit)
+    scale, unit = ruled_scale([part.value for part in ordered], payload.unit, payload.stated_unit)
     rows: list[dict[str, Any]] = [{"label": part.label, "value": part.value * scale, "n": part.n} for part in ordered]
     # The generator's own words for the measure, verbatim — a title assembled around it ("<measure> by
     # part") reads as machine output the moment the measure is itself a phrase.

@@ -41,6 +41,7 @@ from threetears.evals.kernel.identity import resolve_variant_identity
 from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.quick import run_cli
 from threetears.evals.analysis import JudgeTemperatureComparison, read_judge_temperatures
+from threetears.evals.kernel.judge_temperature import JudgeTemperatureAnswers, TemperatureAnswer, TemperatureCaseAnswers
 from threetears.evals.run import (
     borderline_dims,
     estimate_judge_repeat,
@@ -474,16 +475,28 @@ class TestAClientThatIgnoresTemperature:
         assert (row.pinned.cases, row.pinned.mean_variance) == (0, None)
         assert "NOT COMPARABLE" in comparison.render()
 
-    async def test_a_client_that_reports_no_temperature_makes_the_comparison_not_comparable(self):
+    async def test_a_client_that_reports_no_temperature_fails_every_call_naming_the_protocol(self):
+        """Not two "unrecorded" settings read as a comparison: each call fails, its error naming the protocol member."""
         judge = _Judge()
         host, run_id = await _judged_run(judge)
         judge.sends = _UNREPORTED
 
-        comparison = await compare_judge_temperatures(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)
+        leases = JobLeases(host.storage, blocking_executor=host.blocking_executor)
+        try:
+            work = await judge_temperature_work(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)
+            ended = await run_job_work(work, store=host.storage, executor=host.blocking_executor, leases=leases)
+        finally:
+            await leases.shut_down()
 
+        assert ended.answers is not None
+        errors = [answer.error for case in ended.answers.answers for answer in case.answers]
+        assert errors and all(error and "check_completion_conformance" in error for error in errors)
+        # Every call failed, so neither side scored a case twice: there is nothing to compare, and it says so.
+        comparison = read_judge_temperatures(ended.answers)
         assert not comparison.comparable
-        assert [read.recorded for read in comparison.settings] == [["unrecorded"], ["unrecorded"]]
-        assert [read.off_setting for read in comparison.settings] == [6, 6]
+        assert comparison.incomparable is not None and "scored no case it answered twice" in comparison.incomparable
+        assert "call(s) failed" in comparison.incomparable
+        assert "NOT COMPARABLE" in comparison.render()
 
 
 #: The judge request settings a run recorded before ``strict_output`` joined the engine's defaults.
@@ -612,3 +625,60 @@ async def _cli(argv: list[str], host: EvalHost) -> int:
     import asyncio
 
     return await asyncio.to_thread(run_cli, argv, host_factory=lambda: host)
+
+
+class TestASideThatOnlyCouldNotTellMeasuredNothing:
+    """Every answer at one setting "cannot tell": they agree, but with no score there is no spread and no agreement."""
+
+    @staticmethod
+    def _answers(*, pinned: list[TemperatureAnswer]) -> JudgeTemperatureAnswers:
+        scored = [
+            TemperatureAnswer(
+                score=RubricScore(dim=_DIM, score=score, scale="ordinal", judge_temperature=MODEL_DEFAULT_TEMPERATURE)
+            )
+            for score in (3, 4)
+        ]
+        cases = [
+            TemperatureCaseAnswers(
+                result_id="res-1", rubric_dim=_DIM, scale="ordinal", stored_score=3, setting="pinned", answers=pinned
+            ),
+            TemperatureCaseAnswers(
+                result_id="res-1",
+                rubric_dim=_DIM,
+                scale="ordinal",
+                stored_score=3,
+                setting="provider_default",
+                answers=scored,
+            ),
+        ]
+        return JudgeTemperatureAnswers(
+            run_id="run-1",
+            judge_model="judge/model",
+            selection="all",
+            repeats=2,
+            results=1,
+            cases=1,
+            answers=cases,
+            skipped=[],
+            calls_made=4,
+            cost_usd=None,
+            cap_usd=None,
+        )
+
+    def test_answering_only_cannot_tell_reads_not_comparable(self) -> None:
+        unsure = [TemperatureAnswer(cannot_tell="the answer is cut off") for _ in range(2)]
+        comparison = read_judge_temperatures(self._answers(pinned=unsure))
+        assert not comparison.comparable
+        assert comparison.incomparable is not None
+        assert f"on {_DIM}, the pinned setting scored no case it answered twice" in comparison.incomparable
+        assert "2 could not tell, 0 scored" in comparison.incomparable
+
+    def test_a_score_beside_a_cannot_tell_is_a_measurement_of_instability(self) -> None:
+        mixed = [
+            TemperatureAnswer(
+                score=RubricScore(dim=_DIM, score=3, scale="ordinal", judge_temperature=DEFAULT_JUDGE_TEMPERATURE)
+            ),
+            TemperatureAnswer(cannot_tell="the answer is cut off"),
+        ]
+        comparison = read_judge_temperatures(self._answers(pinned=mixed))
+        assert comparison.comparable, comparison.incomparable

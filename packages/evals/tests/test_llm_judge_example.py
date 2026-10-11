@@ -31,7 +31,7 @@ async def test_with_no_api_key_the_example_runs_offline_and_prints_each_miss_wit
     assert list(judged) == ["answer.helpful", "answer.grounded"]
     assert all(dimension.scale == "pass_fail" and dimension.n == 10 for dimension in judged.values())
     assert (judged["answer.helpful"].mean, judged["answer.grounded"].mean) == (1.0, 0.8)
-    assert summary.judge_calls == 20 and summary.errors == []
+    assert summary.role_spend("judge").calls == 20 and summary.errors == []
     assert summary.judge_shares_candidate_model == [], "the stand-in judge is not the stand-in candidate"
 
     misses = summary.misses()
@@ -81,5 +81,5 @@ async def test_live_it_makes_the_thirty_calls_its_docstring_states(monkeypatch: 
     )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     summary = await module.main()
-    assert len(sent) == 30 and summary.judge_calls == 20
+    assert len(sent) == 30 and summary.role_spend("judge").calls == 20
     assert summary.judge_shares_candidate_model == [module.MODEL], "a model judging its own answers is disclosed"

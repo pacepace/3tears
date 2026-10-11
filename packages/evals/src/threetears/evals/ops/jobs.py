@@ -55,6 +55,7 @@ from pydantic import Field
 
 from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.schema.refusal import JobRefusal
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalSweep
 from threetears.evals.schema.models import EvalRun
 from threetears.evals.ops.host import OpsHost
@@ -87,6 +88,7 @@ from threetears.evals.run.job_work import (
 from threetears.evals.run.judge_second import SECOND_JUDGE_JOB, EvalSecondJudgePass, SecondJudgeReport
 from threetears.evals.run.judge_temperature import JUDGE_TEMPERATURE_JOB, EvalJudgeTemperatureCheck
 from threetears.evals.run.launch_job import LAUNCH_JOB, EvalLaunch
+from threetears.evals.kernel.remedies import FIND_JOB, FIND_RUN
 
 #: What a job's work is: a launch (its arms prepared and its runs run), one launched run, an analysis generation, a
 #: sweep launching its arms in order, a second judge's pass, a judge temperature comparison, or a host action's work.
@@ -216,6 +218,15 @@ class JobStatus(EvalBaseModel):
     analysis_id: str | None = Field(default=None, description="The analysis a completed generation stored.")
     sweep_id: str | None = Field(default=None, description="The sweep a sweep job runs.")
     detail: str | None = Field(default=None, description="Why it ended other than completed, when the record says.")
+    refusal: JobRefusal | None = Field(
+        default=None,
+        description=(
+            "The engine refusal the job ended on, as data — its kind and status, the same pair a refused call's "
+            "structured refusal carries — so a host branches on the kind, never on `detail`'s words. Set when the "
+            "job's work was refused (a provider refusing its account is `provider_refused`); None otherwise, and "
+            "for a run, whose `status` is its own ending's word (`exhausted` for an account the provider refused)."
+        ),
+    )
     result: dict[str, Any] | None = Field(
         default=None,
         description="What the work came to, once it completed: a second judge's read (its report, agreement and "
@@ -291,6 +302,7 @@ def _sweep_status(sweep: EvalSweep, runs: dict[str, EvalRun]) -> JobStatus:
         campaign_id=sweep.campaign_id,
         sweep_id=sweep.id,
         detail=detail if state != "completed" else None,
+        refusal=sweep.refusal,
     )
 
 
@@ -347,9 +359,12 @@ def parse_job_id(job_id: str) -> tuple[JobKind, str, str | None]:
         if colon and campaign_id and attempt_id:
             return "analysis", campaign_id, attempt_id
     raise ValidationFailedError(
-        f"job id {job_id!r} names no job: a job id is 'launch:<id>', 'run:<run id>', "
-        "'analysis:<campaign id>:<attempt id>', 'sweep:<sweep id>', 'second-judge:<id>', 'judge-temperature:<id>' "
-        "or 'action:<id>', exactly as the start returned it"
+        f"job id {job_id!r} names no job",
+        remedy=(
+            "pass a job id exactly as its start returned it: 'launch:<id>', 'run:<run id>', "
+            "'analysis:<campaign id>:<attempt id>', 'sweep:<sweep id>', 'second-judge:<id>', 'judge-temperature:<id>' "
+            "or 'action:<id>'"
+        ),
     )
 
 
@@ -403,6 +418,7 @@ def _attempt_status(job_id: str, attempt: EvalAnalysisAttempt) -> JobStatus:
         campaign_id=attempt.campaign_id,
         analysis_id=attempt.analysis_id,
         detail=attempt.lost.cause if attempt.lost is not None else (attempt.error if state != "running" else None),
+        refusal=attempt.refusal,
     )
 
 
@@ -452,6 +468,7 @@ def _record_status(
         run_ids=run_ids or [],
         detail=detail if state != "completed" else None,
         result=result if state == "completed" else None,
+        refusal=record.refusal,
     )
 
 
@@ -495,7 +512,7 @@ async def _settled_attempt(
     """
     attempt = await _settled(host, ANALYSIS_JOB, attempt_id, scope_id)
     if attempt is None or attempt.campaign_id != campaign_id:
-        raise NotFoundError("analysis job", job_id)
+        raise NotFoundError("analysis job", job_id, remedy=FIND_JOB)
     return attempt
 
 
@@ -524,19 +541,19 @@ async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
     if kind == "run":
         run = await _settled(host, RUN_JOB, target_id, scope_id)
         if run is None:
-            raise NotFoundError("run", target_id)
+            raise NotFoundError("run", target_id, remedy=FIND_RUN)
         return _run_status(run)
     if kind == "sweep":
         sweep = await _settled(host, SWEEP_JOB, target_id, scope_id)
         if sweep is None:
-            raise NotFoundError("sweep", target_id)
+            raise NotFoundError("sweep", target_id, remedy=FIND_JOB)
         run_ids = [arm.run_id for arm in sweep.arms if arm.run_id is not None]
         runs = await run_blocking(eval_host.blocking_executor, eval_host.storage.load_eval_runs, run_ids, scope_id)
         return _sweep_status(sweep, {run.id: run for run in runs})
     if kind == "launch":
         launch = await _settled(host, LAUNCH_JOB, target_id, scope_id)
         if launch is None:
-            raise NotFoundError("launch", target_id)
+            raise NotFoundError("launch", target_id, remedy=FIND_JOB)
         started = await run_blocking(
             eval_host.blocking_executor, eval_host.storage.load_eval_runs, launch.run_ids, scope_id
         )
@@ -545,7 +562,7 @@ async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
     if kind == "second_judge":
         judged = await _settled(host, SECOND_JUDGE_JOB, target_id, scope_id)
         if judged is None:
-            raise NotFoundError("second judge pass", target_id)
+            raise NotFoundError("second judge pass", target_id, remedy=FIND_JOB)
         read: dict[str, Any] | None = None
         if judged.outcome == "completed" and judged.report is not None and judged.lost is None:
             results = await run_blocking(
@@ -560,13 +577,13 @@ async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
     if kind == "judge_temperature":
         check = await _settled(host, JUDGE_TEMPERATURE_JOB, target_id, scope_id)
         if check is None:
-            raise NotFoundError("judge temperature comparison", target_id)
+            raise NotFoundError("judge temperature comparison", target_id, remedy=FIND_JOB)
         comparison = None if check.answers is None else read_judge_temperatures(check.answers).model_dump(mode="json")
         return _record_status(job_id, kind, check, run_id=check.run_id, result=comparison)
     if kind == "action":
         acted = await _settled(host, ACTION_JOB, target_id, scope_id)
         if acted is None:
-            raise NotFoundError("action job", target_id)
+            raise NotFoundError("action job", target_id, remedy=FIND_JOB)
         return _record_status(job_id, kind, acted, result=acted.result)
     assert attempt_id is not None  # parse_job_id names an attempt for every analysis job
     return _attempt_status(job_id, await _settled_attempt(host, job_id, target_id, attempt_id, scope_id))
@@ -602,13 +619,14 @@ async def job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str |
     if kind == "run":
         run = await _settled(host, RUN_JOB, target_id, scope_id)
         if run is None:
-            raise NotFoundError("run", target_id)
+            raise NotFoundError("run", target_id, remedy=FIND_RUN)
         require_cancellable(run)
     else:
         status = await job_poll(host, job_id, scope_id)
         if status.done:
             raise ValidationFailedError(
-                f"{kind} job {job_id!r} is not running (it reads {status.state}); there is nothing to cancel"
+                f"{kind} job {job_id!r} is not running (it reads {status.state}); there is nothing to cancel",
+                remedy="read how it ended with job_poll",
             )
         if attempt_id is not None:
             record_id = attempt_id

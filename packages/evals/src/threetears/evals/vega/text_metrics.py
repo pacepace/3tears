@@ -12,8 +12,19 @@ distinguish one build from another.
 what the TTF declares — a variable font's declared advances depend on axis values
 this stack never sets. The artifact is committed because a measurement taken at
 compile time would cost a full Vega layout pass on a request path. The tool that
-takes it is ``packages/evals/scripts/measure_font_metrics.py`` — dev tooling, not
-part of the installed package.
+takes it ships with the renderer (:mod:`threetears.evals.vega.measure_font`, run as
+``python -m threetears.evals.vega.measure_font`` under the ``[vega]`` extra), and a
+host measures its own face with the same tool, through the same gate.
+
+**A table is held to the engine and the files it was measured from.** It records the
+metrics format it was written in (:data:`METRICS_FORMAT`) and the SHA-256 of each font
+file that provided its face — those files only, not the directory they sit in, which
+may hold other faces. Turning a table into a font refuses one of another format
+(:func:`chart_font_from_artifact`), since this module would read its fields under a
+meaning they were not written with; a renderer that registers a font directory refuses
+a font whose files there no longer hash as measured (:func:`check_font_files`), since a
+face updated in place keeps its name and changes its widths. Both refusals name the
+command that re-measures the face (:func:`measure_command`).
 
 **A table belongs to one face, and travels with it.** The table is a
 :class:`~threetears.evals.kernel.host.ChartFont` — the family list a renderer
@@ -50,20 +61,102 @@ conservative answer.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import struct
+from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from threetears.evals.kernel.host import ChartFont, StyleError
+from threetears.evals.kernel.host import CHART_FONT_CHARACTERS, ChartFont, StyleError
 
 #: The measured artifact, beside the module that reads it.
 #:
 #: The chart palette ships the same way, and the two are siblings here for the same
 #: reason: a package that must be installable reads only what ships with it. This one
-#: is measured by ``packages/evals/scripts/measure_font_metrics.py``, and names its
-#: generator in its own ``$comment``.
+#: is measured by :mod:`threetears.evals.vega.measure_font`, and names its generator in
+#: its own ``$comment``.
 METRICS_PATH = Path(__file__).resolve().parent / "font_metrics.json"
+
+#: The packaged face's family list: Liberation Sans, which vl-convert embeds (so a raster draws it on a
+#: host with no fonts installed), then Arial, which is metric-compatible with it (so a browser without
+#: Liberation Sans lays text out at the same widths), then the generic family.
+PACKAGED_FAMILY = "Liberation Sans, Arial, sans-serif"
+
+#: The metrics format this engine writes and reads, recorded in every table as ``format``.
+#:
+#: Raised whenever what a table's fields mean changes, so a table written under one meaning is never
+#: read under another: :func:`chart_font_from_artifact` refuses any other number, naming the command that
+#: re-measures the face. Format 2 added ``font_files``; a table with no ``format`` is format 1.
+METRICS_FORMAT = 2
+
+#: The font size every probe is drawn at, in px. Vega reports the sized SVG in whole px, so a larger probe
+#: makes that rounding a smaller fraction of an advance: at 1000 px it is under 0.001 of the font size.
+PROBE_SIZE = 1000
+
+#: How many copies of a character the repeated context draws.
+RUN_LENGTH = 10
+
+#: The glyph every character is framed between when it is probed: isolated as ``H<c>H``, repeated as
+#: ``H<c * RUN_LENGTH>H``, each less the width of ``HH``.
+PROBE_FRAME = "H"
+
+#: Strings a chart lays out, drawn whole to check the per-character sum against Vega's own measurement.
+CORPUS = (
+    "anthropic/claude-opus-4-20250514",
+    "anthropic-0/claude-opus-4-20250514-extended-thinking-preview",
+    "openai/gpt-4o-2024-08-06",
+    "google/gemini-2.5-pro-preview-05-06",
+    "meta-llama/Llama-3.1-405B-Instruct-Turbo",
+    "mistralai/Mixtral-8x22B-Instruct-v0.1",
+    "accuracy",
+    "cost_usd",
+    "mean_composite",
+    "p95 latency (s)",
+    "share of stops",
+    "budget_exhausted",
+    "End-to-end",
+    "Subsystem",
+    "Unattributed",
+    "timeout=4s",
+    "0.1234",
+    "1,234,567",
+    "1.235e-05",
+    "+12.5%",
+    "-0.0081",
+    "11111111",
+    "AVAVAVAVAVAV",
+    "To Ty Te Yo LT LV",
+    "WWWWWWWWWWWWWWWWWWWW",
+    "/////",
+    "The batch never fills before the deadline at either setting.",
+)
+
+
+def probe_digest() -> str:
+    """The SHA-256 of what the measurer probes: the characters, how each is framed and repeated, the size, the corpus.
+
+    Recorded in every table (``probe_digest``) and compared when one is read (:func:`chart_font_from_artifact`), so a
+    change to what is probed — a character added, a context changed, a corpus string replaced — that forgot to raise
+    :data:`METRICS_FORMAT` is caught as drift too: a table answers the probes it was measured with, and the
+    engine's own reading of it assumes today's. The weights are not in it; a table records them itself.
+
+    Returns:
+        The digest, lowercase hex.
+    """
+    probes = {
+        "characters": CHART_FONT_CHARACTERS,
+        "frame": PROBE_FRAME,
+        "run_length": RUN_LENGTH,
+        "probe_size": PROBE_SIZE,
+        "corpus": list(CORPUS),
+    }
+    return hashlib.sha256(json.dumps(probes, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+#: The command that measures a face and writes its table — the one a refusal tells a reader to run.
+MEASURE_COMMAND = "python -m threetears.evals.vega.measure_font"
 
 #: How far over its estimate a string is allowed to draw before the estimate is
 #: not to be trusted, as a fraction.
@@ -85,6 +178,14 @@ METRICS_PATH = Path(__file__).resolve().parent / "font_metrics.json"
 SAFETY_MARGIN = 0.04
 
 
+#: The file suffixes the rasteriser's font database loads from a registered directory, lowercased.
+FONT_SUFFIXES = frozenset({".ttf", ".otf", ".ttc", ".otc"})
+
+#: The ``name`` table records that name a family: 1 is the family, 16 the typographic family a face that
+#: has more than four styles declares beside it. A face is matched against either.
+_FAMILY_NAME_IDS = frozenset({1, 16})
+
+
 class TextMetricsError(RuntimeError):
     """The font metrics artifact is missing or unusable."""
 
@@ -103,8 +204,7 @@ def load_metrics() -> dict[str, Any]:
         artifact: dict[str, Any] = json.loads(METRICS_PATH.read_text(encoding="utf-8"))
     except OSError as exc:
         raise TextMetricsError(
-            f"chart font metrics missing at {METRICS_PATH} — regenerate it by measuring through vl-convert "
-            "and writing the result with write_font_metrics(), then commit it"
+            f"chart font metrics missing at {METRICS_PATH} — regenerate it with {MEASURE_COMMAND}, then commit it"
         ) from exc
     if not artifact.get("advances"):
         raise TextMetricsError(
@@ -123,6 +223,7 @@ def write_font_metrics(
     measured_with: str,
     probe_size: int,
     weights: list[int],
+    font_files: Mapping[str, str],
     path: Path = METRICS_PATH,
 ) -> Path:
     """Commit a fresh measurement as a table :func:`text_width` reads.
@@ -143,8 +244,15 @@ def write_font_metrics(
         probe_size: The font size the probes were drawn at, in px.
         weights: The font weights measured. Each advance is the widest across them, so
             one table serves every step of the type scale.
+        font_files: Each font file that provided the measured face, by its path relative to
+            the font directory measured from, to the SHA-256 of its bytes
+            (:func:`font_file_digest`); empty for the face the rasteriser embeds.
         path: Where to write it — the packaged table by default; a host measuring its own
             face writes it anywhere and reads it back with :func:`load_chart_font`.
+
+    The table is written in :data:`METRICS_FORMAT` and records :func:`probe_digest`, neither of which the caller
+    chooses: the format is this module's reading of the fields and the probes are this module's, not the
+    measurement's.
 
     Returns:
         The path written.
@@ -164,14 +272,18 @@ def write_font_metrics(
         )
     artifact = {
         "$comment": (
-            "GENERATED by packages/evals/scripts/measure_font_metrics.py through text_metrics.write_font_metrics "
+            f"GENERATED by {MEASURE_COMMAND} through text_metrics.write_font_metrics "
             "— do not hand-edit. Advances are a fraction of the font size, measured through vl-convert's own layout "
             "so they describe what Vega will do rather than what the font file says, in the first family of `font`. "
             "Linear in size, measured. Each advance is the widest across the measured weights, and across a "
             "character drawn between two H glyphs and in a run of itself. Kerning is not included: the "
             "per-character sum is an estimate carrying SAFETY_MARGIN, and the generator refuses to write a table "
-            "whose corpus underestimates past it."
+            "whose corpus underestimates past it. font_files are the files that provided the measured face, "
+            "relative to the directory measured from, by SHA-256; a renderer refuses the table once they differ. "
+            "probe_digest is the SHA-256 of what was probed (characters, framing, size, corpus); a table probed "
+            "with anything else is refused."
         ),
+        "format": METRICS_FORMAT,
         "font": font,
         "measured_with": measured_with,
         "probe_size": probe_size,
@@ -180,6 +292,8 @@ def write_font_metrics(
         "worst_corpus_label": worst_label,
         "fallback_advance": fallback_advance,
         "advances": advances,
+        "font_files": dict(sorted(font_files.items())),
+        "probe_digest": probe_digest(),
     }
     chart_font_from_artifact(artifact, where=str(path))
     path.write_text(json.dumps(artifact, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -200,27 +314,233 @@ def chart_font_from_artifact(artifact: dict[str, Any], *, where: str) -> ChartFo
         The font: the artifact's family list with its measured advances.
 
     Raises:
-        TextMetricsError: The artifact names no family, or its table is not one a
-            renderer can lay out against (the contract's refusal, with its reason).
+        TextMetricsError: The artifact names no family, was written in a metrics format
+            other than :data:`METRICS_FORMAT`, records a probe digest other than :func:`probe_digest` (or none),
+            was measured at weights other than the ones the chart type scale draws at
+            (:func:`~threetears.evals.vega.palette.drawn_weights`), or its table is not one a renderer can lay out
+            against (the contract's refusal, with its reason).
     """
     family = artifact.get("font")
     if not isinstance(family, str):
         raise TextMetricsError(f"chart font metrics at {where} name no font family")
+    written = artifact.get("format", 1)
+    if written != METRICS_FORMAT:
+        raise TextMetricsError(
+            f"chart font metrics at {where} are in metrics format {written!r}, and this engine reads format "
+            f"{METRICS_FORMAT} — the table's fields would be read under a meaning they were not written with. "
+            f"Re-measure the face: {measure_command(family, out=where)}"
+        )
     try:
-        return ChartFont(
+        font = ChartFont(
             family=family,
             advances=dict(artifact.get("advances") or {}),
             fallback_advance=float(artifact.get("fallback_advance", 0.0)),
+            font_files=dict(artifact.get("font_files") or {}),
         )
     except StyleError as refused:
         raise TextMetricsError(f"chart font metrics at {where} are not usable: {refused}") from refused
+    # After the table's own shape: a table no renderer could lay out against says so first, whatever it was probed by.
+    if (probed := artifact.get("probe_digest")) != probe_digest():
+        recorded = "no probe digest" if probed is None else f"probe digest {str(probed)[:12]}…"
+        raise TextMetricsError(
+            f"chart font metrics at {where} record {recorded}, and this engine probes a face with "
+            f"{probe_digest()[:12]}… — the advances answer probes (characters, their framing, the corpus) this engine "
+            f"no longer makes, so a layout read from them is drift. Re-measure the face: {measure_command(family, out=where)}"
+        )
+    # Deferred: the palette reads this module's packaged font, so a top-level import would close a cycle.
+    from threetears.evals.vega.palette import drawn_weights
+
+    drawn = drawn_weights()
+    if (measured := artifact.get("weights")) != drawn:
+        raise TextMetricsError(
+            f"chart font metrics at {where} were measured at weights {measured!r}, and the chart type scale draws at "
+            f"{drawn} — each advance is the widest across the weights a chart draws, so a table measured at others "
+            f"lays a label out against widths it is not drawn at. Re-measure the face: "
+            f"{measure_command(family, out=where)}"
+        )
+    return font
+
+
+def measure_command(family: str, *, out: str, font_dir: str = "<the directory holding its font files>") -> str:
+    """The command that re-measures ``family``'s first face into ``out``.
+
+    The packaged face is embedded in the rasteriser and measured with no directory, into the
+    packaged table by default; any other face is measured from the directory its files are in.
+
+    Args:
+        family: The CSS family list the table is for.
+        out: Where the table is written.
+        font_dir: The font directory to name, when the caller knows it.
+
+    Returns:
+        A command line a reader can run.
+    """
+    if family == PACKAGED_FAMILY:
+        return MEASURE_COMMAND if out == str(METRICS_PATH) else f"{MEASURE_COMMAND} --out {out}"
+    return f"{MEASURE_COMMAND} --family '{family}' --font-dir {font_dir} --out {out}"
+
+
+def font_file_digest(path: Path) -> str:
+    """The SHA-256 of a font file's bytes, as lowercase hex — what a table records for each file.
+
+    Args:
+        path: The file.
+
+    Returns:
+        The digest.
+    """
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def font_families(data: bytes) -> frozenset[str]:
+    """Every family a font file's ``name`` table declares, in every face it holds.
+
+    Reads an sfnt font (TrueType or OpenType, ``.ttf``/``.otf``) or a collection of them (``.ttc``/
+    ``.otc``): name IDs 1 and 16, on the Unicode and Windows platforms (UTF-16BE) and the Macintosh
+    platform's Roman encoding. Nothing else is read.
+
+    Args:
+        data: The file's bytes.
+
+    Returns:
+        The families, as declared. Empty for bytes that are not a font, or a font with no family name.
+    """
+    try:
+        if data[:4] == b"ttcf":
+            (count,) = struct.unpack_from(">I", data, 8)
+            offsets = struct.unpack_from(f">{count}I", data, 12)
+        else:
+            offsets = (0,)
+        return frozenset(family for offset in offsets for family in _sfnt_families(data, offset))
+    # NOSILENT: bytes that do not parse as a font declare no family; the rasteriser's font database skips
+    # such a file too, so it cannot be what drew the face, and the caller refuses when no file declares it.
+    except struct.error:
+        return frozenset()
+
+
+def _sfnt_families(data: bytes, offset: int) -> list[str]:
+    """The families one sfnt face at ``offset`` declares in its ``name`` table.
+
+    Args:
+        data: The file's bytes.
+        offset: Where the face's table directory starts.
+
+    Returns:
+        The families; empty when the face has no ``name`` table.
+
+    Raises:
+        struct.error: The bytes end inside a structure they declare.
+    """
+    (tables,) = struct.unpack_from(">H", data, offset + 4)
+    for record in range(tables):
+        tag, _checksum, start, _length = struct.unpack_from(">4sIII", data, offset + 12 + 16 * record)
+        if tag == b"name":
+            _format, count, strings = struct.unpack_from(">HHH", data, start)
+            families = []
+            for entry in range(count):
+                platform, encoding, _language, name_id, length, at = struct.unpack_from(
+                    ">HHHHHH", data, start + 6 + 12 * entry
+                )
+                if name_id not in _FAMILY_NAME_IDS:
+                    continue
+                raw = data[start + strings + at : start + strings + at + length]
+                if platform in {0, 3}:
+                    families.append(raw.decode("utf-16-be", errors="replace"))
+                elif platform == 1 and encoding == 0:
+                    families.append(raw.decode("mac_roman"))
+            return families
+    return []
+
+
+def resolving_files(face: str, font_dir: Path) -> dict[str, str]:
+    """Every font file under ``font_dir`` that declares ``face`` as its family, with its digest.
+
+    The directory is read recursively, as the rasteriser registers it, and a family matches without
+    regard to case. Files declaring other families are not in the result: the table is tied to the files
+    of the face it measured, not to the directory.
+
+    Args:
+        face: The family measured.
+        font_dir: The directory registered for it.
+
+    Returns:
+        Each file's path relative to ``font_dir`` (``/``-separated) to the SHA-256 of its bytes.
+    """
+    wanted = face.casefold()
+    return {
+        path.relative_to(font_dir).as_posix(): font_file_digest(path)
+        for path in sorted(font_dir.rglob("*"))
+        if path.is_file()
+        and path.suffix.lower() in FONT_SUFFIXES
+        and wanted in {family.casefold() for family in font_families(path.read_bytes())}
+    }
+
+
+def check_font_files(font: ChartFont, font_dirs: Sequence[Path]) -> None:
+    """Refuse ``font`` when the files declaring its face in ``font_dirs`` are not, byte for byte, the ones it was measured from.
+
+    **A host's CI gate.** Exported from :mod:`threetears.evals.vega` and needing no rasteriser — it hashes files and
+    reads their ``name`` tables, and imports and calls nothing of ``vl-convert`` — so a host's suite runs it, over the
+    table it ships and the font directory its image carries, wherever it builds: a face updated without a re-measure
+    fails there, before any renderer is built. ``load_chart_font`` holds the table to this engine's format, probes
+    and type scale the same way.
+
+    The advances describe the bytes that were measured, not the family name, so a face updated, replaced or
+    extended in place lays out against widths it no longer has. **The face's whole file set is compared**, as
+    :func:`resolving_files` reads it in each directory: every file the table recorded must be there with the digest
+    it was measured at, and no other file may declare the face. A weight file added beside the measured ones (a
+    semibold the face did not have) is drawn by the rasteriser wherever the chart asks for that weight, at widths
+    the table never measured, so it is refused like a changed one. A file declaring another family says nothing
+    about this face and is not read. A font that records no files (the embedded face, or one declared in code) is
+    held to the same rule: a directory that provides its face with files the table was not measured from is
+    refused.
+
+    Args:
+        font: The font a render is set in.
+        font_dirs: The directories registered for it; a recorded path is read relative to each.
+
+    Raises:
+        TextMetricsError: A recorded file is in none of the directories, or hashes differently in every one that
+            holds it, or a file the table did not record declares the face; each is named, with the command that
+            re-measures the face.
+    """
+    face = font.family.split(",")[0].strip()
+    present = [
+        (directory, name, digest)
+        for directory in font_dirs
+        for name, digest in resolving_files(face, directory).items()
+    ]
+    stale: list[str] = []
+    for name, measured in sorted(font.font_files.items()):
+        found = [directory / name for directory in font_dirs if (directory / name).is_file()]
+        if not found:
+            stale.append(f"{name} is in none of {[str(directory) for directory in font_dirs]}")
+        elif all(font_file_digest(candidate) != measured for candidate in found):
+            stale.append(f"{found[0]} hashes differently from the {name} its table was measured from")
+    stale.extend(
+        f"{directory / name} declares {face!r}, and its table was not measured from it"
+        for directory, name, digest in present
+        if name not in font.font_files
+    )
+    if stale:
+        named = str(font_dirs[0]) if len(font_dirs) == 1 else "<the directory holding its font files>"
+        raise TextMetricsError(
+            f"chart font {font.family!r} was measured from font files that are not what this renderer would draw "
+            f"with: {'; '.join(stale)}. Its advances describe the files measured, so a layout taken from them would "
+            f"fit labels against widths the face no longer has. Re-measure the face: "
+            f"{measure_command(font.family, out='<its metrics table>', font_dir=named)}"
+        )
 
 
 def load_chart_font(path: Path) -> ChartFont:
     """Read a metrics artifact a host measured for its own face, as the font to declare.
 
     What a host puts on ``StyleProfile.chart_font`` after measuring its face with
-    ``packages/evals/scripts/measure_font_metrics.py --out <path>``.
+    ``python -m threetears.evals.vega.measure_font --out <path>``.
 
     Args:
         path: The artifact.
@@ -229,7 +549,8 @@ def load_chart_font(path: Path) -> ChartFont:
         The font.
 
     Raises:
-        TextMetricsError: The file is absent, or its table is not usable.
+        TextMetricsError: The file is absent, was written in another metrics format, or its
+            table is not usable.
     """
     try:
         artifact: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
@@ -329,13 +650,22 @@ def wrap_text(text: str, font_size: float, limit: float, font: ChartFont | None 
 
 
 __all__ = [
+    "MEASURE_COMMAND",
+    "METRICS_FORMAT",
     "METRICS_PATH",
+    "PACKAGED_FAMILY",
     "SAFETY_MARGIN",
     "TextMetricsError",
     "chart_font_from_artifact",
+    "FONT_SUFFIXES",
+    "check_font_files",
+    "font_families",
+    "resolving_files",
     "fits",
+    "font_file_digest",
     "load_chart_font",
     "load_metrics",
+    "measure_command",
     "packaged_font",
     "text_width",
     "wrap_text",

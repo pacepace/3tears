@@ -67,6 +67,7 @@ class _Reply:
     served_model: str | None = "scripted/judge-2026"
     reasoning_tokens: int | None = None
     stop_reason: StopReason = "end_turn"
+    temperature: float | None = None
 
 
 # parity-with: threetears.evals.schema.CompletionClient
@@ -121,8 +122,8 @@ async def test_each_dimension_is_scored_by_the_engines_judge_and_summarised_besi
         assert (dimension.scale, dimension.n, dimension.minimum, dimension.maximum) == ("ordinal", 2, 2.0, 5.0)
         assert dimension.mean == pytest.approx(3.5) and dimension.cannot_tell == 0
     assert len(client.calls) == 4, "one call per case per dimension, and no conversation axis"
-    assert summary.judge_calls == 4
-    assert summary.judge_cost_usd == pytest.approx(4 * JUDGE_COST_USD)
+    assert summary.role_spend("judge").calls == 4
+    assert summary.role_spend("judge").cost_usd == pytest.approx(4 * JUDGE_COST_USD)
 
     rendered = summary.render()
     assert "  answer.helpful (judged 1-5): mean 3.5 (n=2, min 2, max 5)" in rendered
@@ -220,8 +221,8 @@ async def test_the_judges_client_is_lent_never_closed_so_one_client_serves_two_r
 
 async def test_a_judge_that_prices_nothing_leaves_its_spend_unknown_never_zero() -> None:
     summary = await run_eval(CASES, answer, judge=_judge(_FakeJudgeClient(priced=False)), scope_id=SCOPE, k=1)
-    assert summary.judge_calls == 4 and summary.judge_cost_usd is None
-    assert "  judge spend: unknown: a judge call went unpriced over 4 call(s)" in summary.render()
+    assert summary.role_spend("judge").calls == 4 and summary.role_spend("judge").cost_usd is None
+    assert "  judge spend: unpriced over 4 call(s): its client reported no price for them" in summary.render()
 
 
 async def test_a_judge_reply_that_will_not_parse_excludes_the_cell_and_says_so() -> None:
@@ -231,7 +232,11 @@ async def test_a_judge_reply_that_will_not_parse_excludes_the_cell_and_says_so()
     assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (0, 0, 1)
     assert summary.errors and all(": judge: " in error for error in summary.errors)
     # Every attempt the judge made was paid for, parsed or not, so its spend is still counted.
-    assert summary.judge_calls >= 2 and summary.judge_cost_usd is not None and summary.judge_cost_usd > 0
+    assert (
+        summary.role_spend("judge").calls >= 2
+        and summary.role_spend("judge").cost_usd is not None
+        and summary.role_spend("judge").cost_usd > 0
+    )
 
 
 async def test_a_judge_that_cannot_tell_is_counted_apart_and_excludes_nothing() -> None:

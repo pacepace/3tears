@@ -16,12 +16,13 @@ Seeded empty-slot-only; the store is master once set.
 
 from __future__ import annotations
 
+from threetears.evals.kernel.prompts.catalogue import PROPOSER_PROMPT
 from threetears.evals.kernel.prompts.seed import SeedSection, SeedTemplate
 
 #: The seeded default ``eval_proposer`` template: drafts a capability rubric and the variation axes that stress it.
 EVAL_PROPOSER_TEMPLATE_DEFAULT = SeedTemplate(
     template_name="default",
-    template_type="eval_proposer",
+    template_type=PROPOSER_PROMPT,
     scope="base",
     description="Eval rubric proposer — drafts a capability rubric + scenario axes for a subject.",
     sections=(

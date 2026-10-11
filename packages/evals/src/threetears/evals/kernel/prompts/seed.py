@@ -207,6 +207,29 @@ class SeedPrompt:
     definition_path: str
     constant: str
 
+    def __post_init__(self) -> None:
+        """Refuse a declaration no registry could seed from: an unknown kind, or a blank field.
+
+        Checked where the declaration is written, because a host registers its own prompts through this
+        type too, and a typo here otherwise surfaces as a slot a fresh deployment silently never seeds.
+
+        Raises:
+            ValueError: ``kind`` is neither :data:`KIND_TEMPLATE` nor :data:`KIND_TEXT`, or a field is blank.
+        """
+        if self.kind not in (KIND_TEMPLATE, KIND_TEXT):
+            raise ValueError(
+                f"seed prompt {self.prompt_type!r} declares kind {self.kind!r}; a seed is {KIND_TEMPLATE!r} (a sectioned "
+                f"template, for a template registry) or {KIND_TEXT!r} (one string, for a shared-prompt registry)"
+            )
+        if blank := [
+            name
+            for name in ("prompt_type", "seed_module", "definition_path", "constant")
+            if not getattr(self, name).strip()
+        ]:
+            raise ValueError(
+                f"seed prompt {self.prompt_type!r} leaves {', '.join(blank)} blank; a registry finds the seed by all four"
+            )
+
     @property
     def seed_ref(self) -> tuple[str, str]:
         """``(module, attribute)`` — how a registry resolves this seed by import."""

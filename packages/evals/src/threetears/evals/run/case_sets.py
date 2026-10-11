@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.schema.models import CaseSet, CaseSetRef
+from threetears.evals.kernel.remedies import FIND_CASE_SET, SCHEMA_REMEDY
 
 if TYPE_CHECKING:
     from threetears.evals.schema.models import EvalTemplate, EvalTestCase
@@ -43,12 +44,14 @@ def _refuse_cases_outside(
     if missing := [case_id for case_id in test_case_ids if case_id not in cases]:
         raise ValidationFailedError(
             f"{what} names case(s) that no longer resolve in this scope: {', '.join(missing)}; a set runs exactly its "
-            "cases, so mint a new version without them"
+            "cases",
+            remedy="mint a new version without them (case_set_mint)",
         )
     if strays := [case_id for case_id in test_case_ids if cases[case_id].template_id != template_id]:
         raise ValidationFailedError(
             f"{what} names case(s) of another template than {template_id!r}: {', '.join(strays)}; a set holds one "
-            "template's cases, because a run's cases are its template's"
+            "template's cases, because a run's cases are its template's",
+            remedy=f"name only cases of template {template_id!r}",
         )
 
 
@@ -83,11 +86,13 @@ def mint_case_set(
     latest = versions[0] if versions else None
     if latest is not None and latest.template_id != template_id:
         raise ValidationFailedError(
-            f"case set {name!r} lists template {latest.template_id!r}'s cases, not {template_id!r}'s; name a new set"
+            f"case set {name!r} lists template {latest.template_id!r}'s cases, not {template_id!r}'s",
+            remedy=f"name a new set for template {template_id!r}",
         )
     if latest is not None and list(test_case_ids) == latest.test_case_ids:
         raise ValidationFailedError(
-            f"case set {latest.ref.label!r} already lists exactly these cases; a new version records a change"
+            f"case set {latest.ref.label!r} already lists exactly these cases; a new version records a change",
+            remedy=f"target {latest.ref.label!r} as it is, or mint a version that changes its cases",
         )
     what = f"case set {name!r}"
     _refuse_cases_outside(
@@ -103,7 +108,7 @@ def mint_case_set(
             tracked=tracked,
         )
     except ValueError as e:
-        raise ValidationFailedError(f"invalid case set: {e}") from e
+        raise ValidationFailedError(f"invalid case set: {e}", remedy=SCHEMA_REMEDY) from e
     storage.save_case_set(minted)
     return minted
 
@@ -129,11 +134,12 @@ def resolve_case_set(
     """
     case_set = storage.load_case_set(ref.name, ref.version, scope_id)
     if case_set is None:
-        raise NotFoundError("case set", ref.label)
+        raise NotFoundError("case set", ref.label, remedy=FIND_CASE_SET)
     what = f"case set {ref.label!r}"
     if case_set.template_id != template.id:
         raise ValidationFailedError(
-            f"{what} lists template {case_set.template_id!r}'s cases, and this launch runs {template.id!r}"
+            f"{what} lists template {case_set.template_id!r}'s cases, and this launch runs {template.id!r}",
+            remedy=f"name a case set of template {template.id!r} ({FIND_CASE_SET})",
         )
     cases = _cases_of(storage, case_set.test_case_ids, scope_id)
     _refuse_cases_outside(cases, case_set.test_case_ids, template_id=template.id, what=what)

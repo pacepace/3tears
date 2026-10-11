@@ -255,7 +255,7 @@ async def test_launch_estimate_prices_the_launch_by_the_launchs_own_rule(evals: 
     (first_refused,) = [arm.refusal for arm in estimate.arms if arm.refusal is not None][:1]
     with pytest.raises(ValidationFailedError) as refused:
         await run_launch(fixture.host, LaunchArguments(**arguments), TOYHOST_SCOPE)
-    assert str(refused.value) == first_refused
+    assert refused.value.message == first_refused
     assert outcome.text.startswith(f"estimate: template {toyhost_template().id}, subject {TOYHOST_SUBJECT.subject_id}")
     assert "would be refused" in outcome.text
 
@@ -271,7 +271,7 @@ async def test_an_estimate_raises_what_the_launch_refuses_before_pricing_a_kinds
     with pytest.raises(ValidationFailedError) as refused:
         await run_launch(unpriced.host, LaunchArguments(**_launching(toyhost_template().id)), TOYHOST_SCOPE)
 
-    assert outcome.is_error and "has no default candidate model; name one" in outcome.text
+    assert outcome.is_error and "has no default candidate model\nremedy: name one" in outcome.text
     assert "cannot be priced" not in outcome.text
     assert str(refused.value) == f"kind '{toyhost_template().candidate_kind}' has no default candidate model; name one"
 

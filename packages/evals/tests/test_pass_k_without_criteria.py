@@ -145,7 +145,7 @@ def test_the_rendered_comparison_says_the_classifier_has_no_pass_k() -> None:
             return classifier if run_id == classifier.id else judged
 
     def no_template(template_id: str) -> EvalTemplate:
-        raise NotFoundError("template", template_id)
+        raise NotFoundError("template", template_id, remedy="list them first")
 
     compared = compare_two_runs(
         _Store(),  # type: ignore[arg-type]

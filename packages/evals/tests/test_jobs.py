@@ -403,7 +403,7 @@ async def test_a_terminal_status_write_that_loses_one_race_still_lands() -> None
     def _refuse_the_first_terminal_write(saving: EvalRun, *, if_match: str | None = None) -> None:
         if saving.status == "completed" and not refused:
             refused.append(saving.status)
-            raise ConflictError("lost the race")
+            raise ConflictError("lost the race", remedy="try again")
         real_save(saving, if_match=if_match)
 
     storage.save_eval_run = _refuse_the_first_terminal_write  # type: ignore[method-assign]
@@ -856,7 +856,7 @@ async def test_a_refused_progress_write_is_logged_with_the_figure_it_lost(caplog
 
     def _refuse_progress_writes(saving: EvalRun, *, if_match: str | None = None) -> None:
         if saving.progress:
-            raise ConflictError("lost the race")
+            raise ConflictError("lost the race", remedy="try again")
         real_save(saving, if_match=if_match)
 
     storage.save_eval_run = _refuse_progress_writes  # type: ignore[method-assign]

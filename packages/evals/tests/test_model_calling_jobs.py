@@ -215,7 +215,7 @@ async def test_an_action_job_returns_its_typed_result_and_its_failure() -> None:
         return _Draft(text="a rubric")
 
     async def broken() -> _Draft:
-        raise ValidationFailedError("the proposer refused the subject")
+        raise ValidationFailedError("the proposer refused the subject", remedy="propose for another subject")
 
     (done,) = await await_job(
         built.host,
@@ -229,7 +229,11 @@ async def test_an_action_job_returns_its_typed_result_and_its_failure() -> None:
     )
 
     assert (done.state, done.result) == ("completed", {"text": "a rubric"})
-    assert (failed.state, failed.result, failed.detail) == ("failed", None, "the proposer refused the subject")
+    assert (failed.state, failed.result, failed.detail) == (
+        "failed",
+        None,
+        "the proposer refused the subject; propose for another subject",
+    )
     record, _ = built.host.eval_host.storage.load_job_record(
         EvalActionJob, done.job_id.split(":", 1)[1], CONFORMANCE_SCOPE
     )

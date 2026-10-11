@@ -38,6 +38,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, TypeVar
 
+from threetears.evals.kernel.errors import RefusedInput
+
 if TYPE_CHECKING:
     from threetears.evals.schema.models import CostCapOrigin
 
@@ -57,14 +59,14 @@ if TYPE_CHECKING:
 Ceiling = TypeVar("Ceiling", float, int)
 
 
-class CeilingRaisedError(ValueError):
+class CeilingRaisedError(RefusedInput):
     """A launch named a per-run ceiling ABOVE the host's configured one.
 
     A launch's override may only lower the host's ceiling. The host's configured ceiling is the
     most the host's operator agreed a run may spend (or call), and whoever holds the launch tool —
     an agent among them — is not the operator, so an override that could raise it would make the
     host's ceiling a suggestion. Raised by :func:`refuse_raised_ceiling`; every launch surface
-    translates it into its own refusal before anything is paid for.
+    translates it into its own refusal before anything is paid for, from its two halves.
     """
 
 
@@ -90,8 +92,8 @@ def refuse_raised_ceiling(override: Ceiling | None, *, configured: Ceiling, name
     if override is not None and override > configured:
         raise CeilingRaisedError(
             f"{name}={override} is above the host's ceiling ({configured_name}={configured}); a launch may only "
-            f"lower the host's ceiling, never raise it — launch with {name} at or below {configured}, or ask the "
-            f"host's operator to raise {configured_name}"
+            "lower the host's ceiling, never raise it",
+            remedy=f"launch with {name} at or below {configured}, or ask the host's operator to raise {configured_name}",
         )
 
 

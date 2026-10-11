@@ -12,7 +12,8 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import compare_two_runs
-from threetears.evals.schema import EvalRun, EvalTemplate, RubricScore
+from threetears.evals.ops import RunsCompared, runs_compared_text
+from threetears.evals.schema import EvalRun, EvalTemplate, GoalStateOutcome, RubricScore
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.scoring import compute_per_case_composites
 from packages.evals.tests.factories import make_eval_result, make_eval_run, make_template
@@ -80,3 +81,65 @@ def test_the_composites_and_delta_are_over_the_cases_the_paired_test_read() -> N
     assert low <= arm["composite_delta"] <= high
     # The interval is the one the test inverts: it excludes zero exactly when p is below alpha.
     assert (low > 0 or high < 0) == (arm["p"] < 0.05)
+
+
+def _goal_checked_run(storage: EvalStorage, run_id: str, cases: list[str], *, k: int = 2) -> EvalRun:
+    """A completed run of one template judged by nothing: every attempt of every case passed its one goal check."""
+    run = make_eval_run(id=run_id, status="completed", template_id="tpl-1", test_case_ids=cases, k_runs=k)
+    storage.save_eval_run(run)
+    for case in cases:
+        for iteration in range(1, k + 1):
+            storage.save_eval_result(
+                make_eval_result(
+                    id=f"{run_id}-{case}-{iteration}",
+                    eval_run_id=run.id,
+                    scope_id=run.scope_id,
+                    model=run.candidate_model,
+                    test_case_id=case,
+                    k_iteration=iteration,
+                    rubric_scores=[],
+                    goal_state_outcomes=[GoalStateOutcome(expression="state.done == true", passed=True)],
+                )
+            )
+    return run
+
+
+class TestTwoRunsNoJudgeScored:
+    """Two goal-check-only runs (k=2, four shared cases): no composite exists, so nothing is paired over it (gap 19).
+
+    Read as "paired over 0 shared case(s)" with ``paired=True``, contradicting ``n_pairs``, and its pass^k line was
+    stated under a judged criterion the attempts never had, over "0 vs 0 case(s)" — the composite's case count,
+    which is not the cases pass^k averaged.
+    """
+
+    def _compared(self) -> tuple[dict[str, Any], str]:
+        storage = EvalStorage(InMemoryDocumentStore())
+        cases = ["c1", "c2", "c3", "c4"]
+        run_a = _goal_checked_run(storage, "run-a", cases)
+        _goal_checked_run(storage, "run-b", cases)
+        view = compare_two_runs(
+            storage, "run-a", "run-b", run_a.scope_id, load_template=_load_template, subject_detail=_detail
+        )
+        compared = RunsCompared(
+            baseline_run_id="run-a",
+            candidate_run_id="run-b",
+            comparison=view,
+            completeness_disclosures={},
+            measurement_window_disclosure=None,
+            cassette_mode_disclosure=None,
+        )
+        return view["comparison"]["arm"], runs_compared_text(compared)
+
+    def test_no_composite_is_paired_over_no_case(self) -> None:
+        arm, text = self._compared()
+        assert arm["paired"] is False and arm["n_pairs"] is None
+        assert arm["composite_untested_reason"] == "neither run's results carry a judged composite"
+        assert "paired over 0" not in text
+        assert "mean composite: none — no paired cases: neither run's results carry a judged composite" in text
+
+    def test_pass_k_names_the_criterion_its_attempts_had_and_the_cases_it_read(self) -> None:
+        arm, text = self._compared()
+        assert (arm["pass_hat_k_n_cases_a"], arm["pass_hat_k_n_cases_b"]) == (4, 4)
+        assert arm["pass_criteria_a"] == arm["pass_criteria_b"] == ["goal_checks"]
+        assert "pass^k (k=2, every goal check): 1 vs 1 (delta 0; 4 vs 4 case(s))" in text
+        assert "criterion >= 3 of 5" not in text

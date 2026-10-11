@@ -98,6 +98,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
+from threetears.evals.analysis.viz.renderer import ChartRefused
 from threetears.evals.vega.palette import VALUE_ON_FILL_STYLE, series_slots, validated_slots
 from threetears.observe import get_logger
 
@@ -222,8 +223,8 @@ _NESTED_VIEW_KEYS = ("spec",)
 _CONCAT_INDEPENDENT_CHANNELS = frozenset({"x", "y", "theta", "radius"})
 
 
-class SpecPolicyError(ValueError):
-    """A chart's spec breaks one or more of the report's presentation rules."""
+class SpecPolicyError(ChartRefused):
+    """A chart's spec breaks one or more of the report's presentation rules: the renderer refuses that chart."""
 
     def __init__(self, violations: list[str]) -> None:
         """Store the full violation list and render it as one message.

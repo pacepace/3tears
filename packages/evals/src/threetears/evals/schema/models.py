@@ -3008,8 +3008,8 @@ class EvalRun(CoreDocumentModel):
         description=(
             "Whether the launch declared latency under test (`start_run(measure_latency=True)`). True: the run "
             "executed its cells one at a time, with no other run executing beside it, so the latency it recorded "
-            "is read clean. False: it was not under test, and the run executed its cells concurrently "
-            "(`cell_concurrency`). None: launched before 3tears-evals recorded the declaration (or recorded by a "
+            "is read clean. False: it was not under test, and the run executed its cells as many at once as its "
+            "kind declared safe and the host allowed (`cell_concurrency`). None: launched before 3tears-evals recorded the declaration (or recorded by a "
             "writer that is no launch) — such a run executed its cells one at a time, and whether it ran beside "
             "another run is what its results' `execution_mode` says."
         ),
@@ -3232,7 +3232,8 @@ class EvalRun(CoreDocumentModel):
             "perfect rate unqualified. Written on every terminal run whatever stopped it — including "
             "a harness failure, and a cancel that lands while the job is still queued for a slot, whose "
             "honest record is 0 of N. On a TERMINAL run None therefore means every attempt to write the "
-            "record was refused (rare, and loud in the log). A run "
+            "record was refused, or the run was written lost while a result it stored could not be read, so "
+            "what it delivered could not be counted (rare, and loud in the log). A run "
             "that has not gone terminal yet simply has none — this field is readable at any status, so "
             "a surface reading across runs of mixed status cannot treat absence as either. Absence is "
             "never evidence that nothing was delivered: read it as unknown."
@@ -4025,8 +4026,10 @@ class ConversationStopCause(StrEnum):
 
     One is the run's own ceiling, and it too excludes the cell:
 
-      ``budget_stopped``   the run's cost cap was reached mid-conversation, counting the simulator's spend
-                           so far (:func:`~threetears.evals.run.conversation.drive_conversation`), so no
+      ``budget_stopped``   the run's cost cap had no room for the conversation's next paid call — a simulator
+                           call, or the candidate's own when its kind raised
+                           :class:`~threetears.evals.kernel.candidate_kind.CostCapReached`
+                           (:func:`~threetears.evals.run.conversation.drive_conversation`) — so no
                            further paid call was made. The conversation is cut short rather than finished, so
                            the runner puts an infra error on the result, which excludes it, and the run stops
                            ``budget_stopped`` after the cell is saved. Never a judgement of the candidate.

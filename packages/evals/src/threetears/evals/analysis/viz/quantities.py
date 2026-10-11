@@ -15,8 +15,8 @@ import math
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.viz.payloads import ConfidenceInterval
+from threetears.evals.analysis.numbers import format_number, format_signed
+from threetears.evals.analysis.viz.payloads import ConfidenceInterval, PayloadError
 
 #: Restatement ladder for durations, largest unit first: ``(unit, in terms of, factor)``.
 #:
@@ -58,6 +58,41 @@ def display_scale(values: Sequence[float], unit: str | None) -> tuple[float, str
     return 1.0, unit
 
 
+def ruled_scale(values: Sequence[float], unit: str | None, stated_unit: str | None) -> tuple[float, str]:
+    """The unit a chart states a measure's quantity in: the report's ruler for it where one is stated, else its own.
+
+    A report states each measure on one ruler (:func:`~threetears.evals.analysis.surface_table.measure_rulers`),
+    chosen over every figure its tables state of it. A chart compiled from a reference against the decision
+    surface records that ruler's unit on its payload (``stated_unit``), and is drawn in it: a chart choosing over
+    its own values — interval ends a table never states, a threshold the chart never draws — is how one section
+    read a latency in s on its chart and in ms in the table beside it. A payload with no stated unit (one built
+    by hand, or compiled with no surface ruler for its quantity) is stated by :func:`display_scale` over the
+    values it draws.
+
+    Args:
+        values: Every value the chart draws in this unit, in the payload's ``unit``.
+        unit: The payload's declared unit, or ``None`` when it carried none.
+        stated_unit: The report's unit for the measure, or ``None`` where none is stated.
+
+    Returns:
+        ``(factor, unit)``, as :func:`display_scale` returns them.
+
+    Raises:
+        PayloadError: ``stated_unit`` is not ``unit`` or a restatement of it the ladder reaches.
+    """
+    if stated_unit is None:
+        return display_scale(values, unit)
+    if (unit or "") == stated_unit:
+        return 1.0, stated_unit
+    for source, target, factor in _DURATION_LADDER:
+        if unit == source and stated_unit == target:
+            return 1.0 / factor, target
+    raise PayloadError(
+        f"stated unit {stated_unit!r} is no restatement of the payload's unit {unit!r}; a measure in {unit!r} is "
+        f"stated in it or in a larger unit of its ladder"
+    )
+
+
 def axis_title(quantity: str, unit: str) -> str:
     """Name a quantity and, where one is known, the unit it is stated in."""
     return f"{quantity} ({unit})" if unit else quantity
@@ -80,17 +115,24 @@ def with_unit(value: float | None, unit: str) -> str:
     ``42 ms`` takes a space and ``42%`` does not; getting it wrong is small but it
     is the kind of small that makes a generated report read as machine output.
     """
-    rendered = format_number(value)
-    if not unit or value is None:
-        return rendered
-    return f"{rendered}{unit}" if unit in UNSPACED_UNITS else f"{rendered} {unit}"
+    return _joined(format_number(value), value, unit)
 
 
 def signed_with_unit(value: float | None, unit: str) -> str:
-    """A delta in its own unit, carrying its sign — the direction is half the fact."""
-    if value is None:
-        return "—"
-    return f"{'+' if value > 0 else ''}{with_unit(value, unit)}"
+    """A delta in its own unit, carrying its sign — the direction is half the fact.
+
+    Signed by :func:`~threetears.evals.analysis.numbers.format_signed`, the one signed spelling, so a change below
+    :data:`~threetears.evals.analysis.numbers.WRITTEN_FROM` reads as its bound (``< 0.000001 ms``), which carries its
+    direction already, and never as a signed bound (``+< 0.000001 ms``).
+    """
+    return _joined(format_signed(value), value, unit)
+
+
+def _joined(text: str, value: float | None, unit: str) -> str:
+    """A number's spelled ``text`` joined to its unit; an absent or non-finite value (a dash) states none."""
+    if not unit or value is None or not math.isfinite(value):
+        return text
+    return f"{text}{unit}" if unit in UNSPACED_UNITS else f"{text} {unit}"
 
 
 def relative_change_text(change: float | None) -> str:
@@ -283,6 +325,7 @@ __all__ = [
     "interval_statement",
     "relative_change_text",
     "render_cell",
+    "ruled_scale",
     "signed_with_unit",
     "strip_common_prefix",
     "table_spellings",

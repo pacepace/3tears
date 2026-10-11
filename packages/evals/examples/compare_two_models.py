@@ -129,7 +129,9 @@ async def main() -> Comparison:
         k=2,
     )
     for arm, summary in comparison.arms.items():
-        print(f"{arm}: {summary.candidate_calls} calls, candidate spend ${summary.candidate_cost_usd:.5f}")
+        candidate = summary.role_spend("candidate")
+        assert candidate is not None and candidate.cost_usd is not None, "every arm's candidate reports a priced Answer"
+        print(f"{arm}: {candidate.calls} calls, candidate spend ${candidate.cost_usd:.5f}")
 
     # The verdicts: accuracy, then spend (lower is better, so a saving reads "improved").
     print("\nEach reading against the control (Production cost is US dollars per answer):")

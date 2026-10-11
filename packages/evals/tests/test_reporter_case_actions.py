@@ -27,6 +27,7 @@ from threetears.evals.actions import Caller, eval_catalogue, standard_tools
 from threetears.evals.analysis import REPORTER_KIND, ReporterKind, assemble_context_bundle
 from threetears.evals.analysis.reporter_kind import REPORTER_CASE_KEY, LabelCriterion, reporter_case_of
 from threetears.evals.schema import EvalResult
+from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.kernel import NotFoundError, ValidationFailedError, delivered_a_turn
 from threetears.evals.schema.models import EvalTemplate, EvalTestCase, RubricDim
 from threetears.evals.ops import (
@@ -370,8 +371,12 @@ class _RefusedWriter(FixturedClient):
         raise RuntimeError("the provider refused the request")
 
 
-async def _reporter_result(client: FixturedClient) -> tuple[EvalResult, Any]:
-    """Run the reporter kind once over a frozen case with ``client``, and return its result and a bundle over it."""
+async def _reporter_result(client: FixturedClient, *, cap: EvalRunCostCap | None = None) -> tuple[EvalResult, Any]:
+    """Run the reporter kind once over a frozen case with ``client``, and return its result and a bundle over it.
+
+    Under ``cap`` the run is held to it as a launch holds one, and a stop it causes is left to the caller to see on
+    the result.
+    """
     fixture = _fixture()
     host = fixture.host.eval_host
     receipt = _freeze(fixture)
@@ -389,7 +394,19 @@ async def _reporter_result(client: FixturedClient) -> tuple[EvalResult, Any]:
     )
     host.storage.save_eval_run(run)
     options = RunnerOptions(candidate_kinds={REPORTER_KIND: lambda _cell: kind})
-    await execute_run(host, run=run, template=template, test_cases=[case], judge_service=None, options=options)
+    try:
+        await execute_run(
+            host,
+            run=run,
+            template=template,
+            test_cases=[case],
+            judge_service=None,
+            options=options,
+            budget_gate=cap.check if cap is not None else None,
+            on_cost=cap.record if cap is not None else None,
+        )
+    except BudgetStoppedError:
+        assert cap is not None
     (result,) = host.storage.query_eval_results_by_run(run.id, TOYHOST_SCOPE)
     campaign = make_campaign(scope_id=TOYHOST_SCOPE, run_ids=[run.id])
     return result, assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
@@ -419,3 +436,21 @@ async def test_a_memo_whose_first_call_was_refused_delivered_no_turn() -> None:
     assert not delivered_a_turn(result)
     (cell,) = bundle.cell_measures
     assert (cell.n_candidate_failed, cell.n_no_turn, cell.all_failed) == (1, 1, True)
+
+
+async def test_a_generator_call_the_runs_cap_has_no_room_for_is_not_sent_and_the_calls_before_it_keep_their_cost() -> (
+    None
+):
+    """The first call's $0.20 ceiling fits a $0.30 cap; the repair's, on top of the $0.15 the first cost, does not."""
+    client = FixturedClient("this is not a memo")
+    client.completion.cost_usd = 0.15
+    client.ceiling_usd = 0.20
+    cap = EvalRunCostCap("reporter-run", 0.30, enabled=True)
+
+    result, _bundle = await _reporter_result(client, cap=cap)
+
+    assert result.turns_delivered == 1, "the repair call was refused before it was sent"
+    assert result.cost_usd == pytest.approx(0.15)
+    assert result.candidate_error is None, "the cap doing its job is no failure of the candidate's"
+    assert result.infra_error is not None and "cost cap" in result.infra_error
+    assert cap.accumulated_usd <= 0.30

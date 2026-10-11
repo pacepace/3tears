@@ -734,7 +734,9 @@ async def test_a_battery_starts_no_template_when_a_later_templates_preparation_r
     async def refuses_second(request: LaunchRequest) -> EvalRun:
         prepared.append(request.template.id)
         if request.template.id == "second":
-            raise ValidationFailedError("the second template's subject cannot be captured")
+            raise ValidationFailedError(
+                "the second template's subject cannot be captured", remedy="launch another subject"
+            )
         return await launchable.launch(request)
 
     host = replace(launched.host, kinds={TOY_EXTRACTOR_KIND: replace(launchable, launch=refuses_second)})

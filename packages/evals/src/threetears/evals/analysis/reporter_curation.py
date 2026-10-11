@@ -20,6 +20,7 @@ from threetears.evals.analysis.reporter_bank import case_pair, decidable_reporte
 from threetears.evals.analysis.reporter_kind import reporter_case_of
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import FIND_TEST_CASE
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
@@ -104,19 +105,21 @@ def set_reporter_case_archived(
 
     current = storage.load_test_case(test_case_id, scope_id)
     if current is None:
-        raise NotFoundError("test case", test_case_id)
+        raise NotFoundError("test case", test_case_id, remedy=FIND_TEST_CASE)
     try:
         case = reporter_case_of(current)
     except ValueError as e:
         raise ValidationFailedError(
             f"test case {test_case_id!r} carries a reporter case this build cannot read, so whether it is live cannot "
-            f"be decided here: {e} — read it with the build that wrote it"
+            f"be decided here: {e}",
+            remedy="read it with the build that wrote it",
         ) from e
     if case is None:
         raise ValidationFailedError(
-            f"test case {test_case_id!r} carries no reporter case. Only a reporter case is retired this way: the "
+            f"test case {test_case_id!r} carries no reporter case, and only a reporter case is retired this way: the "
             "reporter case bank is the one launch path that reads a case's retirement, so retiring any other case "
-            "would record a retirement no launch honours."
+            "would record a retirement no launch honours",
+            remedy="name a reporter case (reporter_cases_list names a template's)",
         )
     template_id = current.template_id
     if template_id is None:
@@ -125,7 +128,8 @@ def set_reporter_case_archived(
         raise ValidationFailedError(
             f"test case {test_case_id!r} carries a reporter case but names no template, so it is in no template's "
             "case bank: no launch reads its retirement, and whether restoring it makes a second live case of its "
-            "pair cannot be decided. A freeze stores every reporter case under its template."
+            "pair cannot be decided",
+            remedy="freeze the pair again with reporter_case_freeze, which stores its case under its template",
         )
     target_reason = reason if archived else None
     if current.archived == archived and current.archived_reason == target_reason:
@@ -143,7 +147,8 @@ def set_reporter_case_archived(
                 raise ValidationFailedError(
                     f"restoring case {test_case_id!r} would make it a second live case of campaign {campaign_id!r} "
                     f"with {memo_text}, beside {', '.join(repr(case_id) for case_id in rivals)} — and a pair with two "
-                    "live cases refuses every launch. Retire that case first, or leave this one retired."
+                    "live cases refuses every launch",
+                    remedy="retire that case first (reporter_case_archive), or leave this one retired",
                 )
 
     data = current.to_dict()
@@ -162,7 +167,7 @@ def set_reporter_case_archived(
     # case as persisted", and only storage can say what that is.
     persisted = storage.load_test_case(test_case_id, scope_id)
     if persisted is None:
-        raise NotFoundError("test case", test_case_id)
+        raise NotFoundError("test case", test_case_id, remedy=FIND_TEST_CASE)
     return persisted
 
 

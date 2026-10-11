@@ -6,6 +6,99 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: what reviewing .8 found
+
+- **A measure reads on one ruler on every surface of a report.** A chart compiled from a reference records its
+  measure's ruler (`stated_unit`) and is drawn in it, so a latency no longer reads in s on its chart and ms in the
+  table beside it; a figure in prose, an evidence row (now carrying its unit), a contrast's margin and a run
+  summary's measure line (`RunMeasureSummary.unit`) are stated on it too. A signed change below a millionth reads
+  `< 0.000001 ms`, never `+< 0.000001 ms`.
+- **A partly priced role states its priced dollars and its unpriced calls (breaking for `RoleSpend`).** The role
+  lines add up to the run's total, each unpriced reason true for the run, and an unknown total states what was priced.
+- **The published report schema states that a table cell's unit qualifies only a number.**
+- **The import check reads `from threetears import evals` and `import importlib.util`, and refuses to read nothing**
+  (no source, or a directory with no `.py` file).
+- **A font table is held to its face's whole file set and to the type scale's weights**: a weight file added to the
+  family, or a table measured at other weights, is refused. Only a renderer's refusal (`ChartRefused`) counts as a
+  chart's refusal in `report_charts`, and vl-convert's own conversion failure is a `RasterRefused`.
+- **One record that cannot be settled never breaks a list.** A lost run settles from its record, its completeness
+  unknown when a result cannot be read, and every settling read tolerates one bad record as the boot reclaim does.
+- **The MIGRATIONS labelling check follows a release tagged on `main`**, which `develop` never reaches, by release
+  order rather than reachability.
+- **A finished action's outcome reaches the caller whatever the `around` hook does after its yield**: the hook's
+  tail is held to its own bound (`HOOK_TAIL_TIMEOUT_S`), and `ToolBinding.call` raises `CallTimedOut`.
+- **A judge reply refused for carrying no temperature still accounts for its billed call.**
+- **Every remedy names a call its caller can make**, and the reach check reads every identifier in every remedy.
+- **A temperature setting that only answered "cannot tell" measured nothing**, and the comparison says so.
+- **A strict schema sends only the keywords both major providers' strict modes accept**
+  (`kernel.PORTABLE_STRICT_KEYWORDS`); bounds and lengths are still enforced on return.
+- **A job refused by an engine error keeps the refusal's kind and status (core schema v11).** `job_poll` serves
+  `JobStatus.refusal`, so a host branches on `provider_refused`, never on the words.
+
+### 3tears-evals: what adopting .7 found (gaps 29–34)
+
+- **`MIGRATIONS.toml` names v0.66.0-evaladopt.7's section for its tag**, which shipped still called "unreleased",
+  and .8's records sit in a new unreleased section since that tag. `release_notes.py v0.66.0-evaladopt.7` prints
+  what .7 shipped. `tests/test_api_surface.py` now fails once HEAD is past a tag with no section of its own, or
+  while the unreleased section starts at an older tag, and `docs/releasing.md` names the rename as a release step.
+- **The host names a routed store's routing scope (breaking).** `RoutedDocumentStore` and `relocate` take a
+  required `routing_scope`, so partitions of one database (row-level security over a global key) each keep their
+  own placement record instead of only the first being able to write it; `ROUTING_SCOPE` is gone.
+- **Long work reads back as the jobs it started, with no render declared.** An `Action` returning `JobsStarted`
+  defaults its `render` to `render_jobs_started`, now exported from `threetears.evals.actions`; an action returning
+  anything else must still declare its own, and is refused using that one.
+- **Every out-of-run model call is planned, admitted by its caller, then made (breaking).** `plan_draft` is the
+  proposer's public planner and `propose_draft` makes a call its host admitted, so a host's `rubric_propose` prices
+  and refuses in its call. `generate_variations` takes an `AdmittedGeneration` and admits nothing; a launch admits
+  its generation in its call, on the writer it hands the launcher (`LaunchRequest.generation`). A test holds that
+  no package function both admits a call and makes it, and lists every out-of-run caller's planner and executor.
+- **`job_poll` reads back a completed judge temperature comparison** — its render raised `NameError` on a name
+  imported only for type checking. A test completes a job of every `JobKind` and renders it through the catalogue,
+  and the workspace's ruff now selects TC004, which catches a type-checking import read at runtime.
+- **Every typed model call sends its reply's shape as a strict schema.** The proposer, the variation writer and the
+  judge sent `{"type": "json_object"}`, so a stale stored proposer prompt got drafts with no `scale`, every one a
+  paid refusal. Each now sends a strict `json_schema` derived from what its reply is read into
+  (`kernel.strict_response_format`, `run.judge.judge_reply_format`), and a test holds that no package call sends
+  the unshaped directive.
+- **A host can see that a stored prompt predates the package's.** `seed_digest` names a catalogue default's content
+  and `prompt_drift` reads a stored copy as `current`, `stale` (with its remedy) or `customized` — changed since it
+  was seeded, or declared the host's own — so a tuned prompt is never reported.
+- **A job whose holder died reads lost everywhere.** `run_get` and `runs_list` kept a hard-killed run `running`
+  until its own job was polled. Every store read of a leased record now settles it through the lease read
+  `job_poll` uses, a launch or a sweep written lost settles the runs it names, and a test enumerates the leased
+  kinds and the store's readers of them so neither can be added unsettled.
+
+### 3tears-evals: what a consumer's end-to-end test of .6 found (gaps 16–27)
+
+- **A run's summary states every role's spend and a total equal to its results' cost (breaking).** `EvalSummary.spend`
+  holds a `RoleSpend` per role (an inner agent's and an external API's units included) and `total_cost_usd` the
+  results' cost; `judge_calls`/`judge_cost_usd`/`candidate_calls`/`candidate_cost_usd` are gone (`role_spend(role)`).
+  A judge campaign's spend is stated.
+- **One spelling for a number, and one ruler for a measure.** `format_number` never writes an exponent: a small
+  value is four significant figures in full, and one below a millionth reads as `< 0.000001`. A report states a
+  measure's figures in one unit on every table, and each contrast cell carries it (`TableCell.unit`).
+- **`runs_compare` pairs only over cases that exist.** Two runs with no judged composite read "no paired cases", and
+  pass^k is stated over its own cases and under the criteria its attempts had.
+- **Every refusal names a remedy its caller can reach (breaking for a host raising or catching one).** Every
+  `EvalServiceError` requires `remedy` (storage, provider and admission refusals supply their own), a lower layer's
+  refusal is a `RefusedInput` carrying `fault` and `remedy` that its surface hands on, and a refused call states the
+  remedy. A test holds every refusal the engine raises to it, and every action a remedy names to the catalogue.
+  `campaign_create` takes `template_id`, and infers it from runs that all ran one template.
+- **A judge temperature comparison that measured nothing is not comparable** — every call failing no longer reads
+  as comparable.
+- **A frontier verdict made on a judged pass^k names its judges' evidence tier**, on a scope's frontier as on a
+  campaign's.
+- **`judge_template_create`** writes the judge template a judge campaign freezes into and launches.
+- **A subject the host does not hold is refused at admission** by the estimate and the launch alike: `LaunchHost`
+  takes a required `resolve_subject` (breaking for a host building one).
+- **A judge completion without its temperature is a defect**, never an unrecorded judge.
+- **A template stating a field its kind never acts on is refused** (`LaunchableKind.ignored_template_fields`); the
+  judge kind ignores every one.
+- **A judge tier says when a stored profile was consulted** and decided nothing either (`consulted_profile`).
+- **`check_font_files` is exported from `threetears.evals.vega`** as a host's CI gate, needing no rasteriser, and a
+  font table records the digest of what it was probed with; a table probed with anything else is refused (re-measure
+  host tables).
+
 ### 3tears-evals: a lost job writes nothing more, a timed-out job says so, and no call waits on its own job (breaking)
 
 An independent review of the job leases and the jobs contract found holders that kept writing and spending after
@@ -66,6 +159,55 @@ old-to-new map instead.
   - `ops` keeps only the fourteen analysis names the action catalogue imports, because `actions` may reach
     `analysis` only through `ops`. It drops `CaseResult`, `CostEstimate`, `DimensionSummary`, `JudgeGrade`,
     `OutOfRunSpendTotals`, `ReportFormat`, `RunMeasureSummary`, `serialize_report` and `summarize_run`.
+### 3tears-evals: the import check sees dynamic imports, attribute chains, private names and patches
+
+`threetears.evals.testing.nonpublic_evals_imports` read only `import` and `from ... import`. It now also reports
+a literal `importlib.import_module`/`__import__` below a root (`dynamic_import`); an attribute chain or literal
+`getattr`/`hasattr` through a bound root that its `__all__` does not declare (`attribute_reach`); an `_name` on
+a chain rooted at a name bound from the package, dunders admitted (`private_reach`); and `monkeypatch`, `mock.patch`
+and its forms, `setattr`/`delattr` or attribute assignment whose target is a `"threetears.evals..."` string or an
+object bound from the package (`patch`). Each finding names its rule. Names are resolved per scope, as Python
+resolves them: a parameter, local assignment, comprehension target or `global`/`nonlocal` rebinding shadows an
+import, so `def f(run): run._x` is not reported, while a nested function that does not rebind it still is.
+
+- **Breaking:** `NonPublicImport` is now `BoundaryFinding`, with `rule` (a `BoundaryRule`, the stable identifiers
+  listed in `BOUNDARY_RULES`) and `target` (the dotted name reached) in place of `module` and `name`; its `str()`
+  reads `path:line: rule: target — reason`. A host suite that passed may now fail on the new rules.
+
+### 3tears-evals: the font measurer ships, and a table that does not match its engine or its files is refused
+
+- **The measurer is part of the `[vega]` extra**: `python -m threetears.evals.vega.measure_font --family ...
+  --font-dir ... --out ...`, writing through the same `write_font_metrics` gate. `packages/evals/scripts/
+  measure_font_metrics.py` is gone.
+- **A table records its metrics format and its files.** `format` (now 2) and `font_files`: the SHA-256 of each
+  file under `--font-dir` whose name table declares the measured family, and only those, so another face in the
+  same directory can change without invalidating the table. `ChartFont` gains `font_files`.
+- **`load_chart_font` refuses a table of another format, and a renderer refuses changed files.** `VegaRenderer`
+  built with a `font_dir`, and `render_png`/`render_svg`, refuse a font whose recorded files are missing or
+  hash differently (`TextMetricsError`). Each refusal names the command that re-measures the face.
+- **Breaking:** every host table written before this release is format 1 and is refused on load; re-measure it.
+  `write_font_metrics` takes a required `font_files`. Measuring a face other than the embedded Liberation Sans
+  now needs `--font-dir`, and is refused when no file in the directory declares the family.
+### 3tears-evals: a kind declares how many cells it runs at once, and the cost cap counts every source of a cell's spend (breaking)
+
+- **The width is the kind's to declare.** `CandidateKind.max_concurrent_cells` (`1`, an int, or `None` for no limit
+  of the kind's own) states how many cells one kind may drive at once; a kind that declares nothing runs serially.
+  Its launcher hands the value to `KindWiring.max_concurrent_cells` (default `1`), and a run not measuring latency
+  executes at the narrowest of that, the host's `LaunchSettings.max_concurrent_cells` (now a ceiling) and its
+  matrix. The runner refuses a kind declaring less than the run executes at, before anything is spent. A host whose
+  kinds declare nothing, and whose runs used to execute four cells at once, now runs them serially until it declares
+  a width. The package's own kinds declare theirs (the callable, judge and reporter kinds: no limit of their own).
+- **Spend by source, never overwritten.** A cell's sink keeps one running total per source, each only ever added to
+  (`CellSink.add_spend`), and every question of the cap reads their sum over every running cell.
+  `CellSink.cost_cap_reached()` takes no argument now: a kind reports its spend rather than passing it in.
+- **Reservation.** `CellSink.reserve(source, ceiling_usd)` holds a priced call's ceiling against the cap while it is
+  in flight and is settled to what it cost (`CellReservation`), and a call the cap has no room for is refused with
+  `CostCapReached` before it is made. `CappedCompletion` wraps a client so every call is held this way, priced by its
+  `price_ceiling`. The engine reserves the simulator's calls, every judge call of a cell's judge phase, and the judge
+  and reporter kinds' calls, so a run whose paid calls are all reserved never spends past its cap. A refused
+  reservation's stop names the call's ceiling (`CapBreach.refused_call_usd`).
+- **The cap signal.** `CostCapReached` out of a `drive_conversation` callback ends the conversation `budget_stopped`,
+  never `candidate_error`, keeping its rounds.
 
 ### 3tears-evals: the context bundle and the reporting projection are split by concern (#612)
 

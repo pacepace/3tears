@@ -1165,6 +1165,15 @@ def tier_sentence(tier: JudgeEvidenceTier) -> str:
         f"{tier.rubric_dim} ({judge}): {tier.tier} — agreement with people "
         f"{_criterion_words(tier.calibration)}; with its own repeats {_criterion_words(tier.separation)}."
     )
+    consulted = tier.consulted_profile
+    if consulted is not None:
+        return (
+            f"{measured} This campaign's evidence decided no tier, so it consulted the judge's stored profile "
+            f"{consulted.profile_id}, measured at {consulted.measured_at} on {format_number(consulted.cases)} frozen "
+            f"cases (case set {consulted.case_set_fingerprint[:12]}, runs {', '.join(consulted.run_ids)}), which is "
+            f"undetermined too: agreement with the labels {_criterion_words(consulted.calibration)}; with its own "
+            f"repeats {_criterion_words(consulted.separation)}."
+        )
     profile = tier.from_profile
     if profile is None:
         return measured

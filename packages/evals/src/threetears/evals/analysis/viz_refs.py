@@ -47,6 +47,7 @@ from threetears.evals.analysis.references import (
     require_cell,
     resolve_reading,
 )
+from threetears.evals.analysis.surface_table import measure_rulers
 from threetears.evals.analysis.viz.payloads import ABSENT_LEVEL
 from threetears.evals.kernel.authored import Chart
 from threetears.evals.schema.base import EvalBaseModel
@@ -301,6 +302,30 @@ def _shared_unit(readings: Sequence[ResolvedReading], chart: str) -> str:
     return unit
 
 
+def _stated_unit(surface: DecisionSurface, *readings: tuple[str, ReadingKind]) -> str | None:
+    """The report's one unit for what a chart draws on one axis, recorded on its payload so the chart draws in it.
+
+    A report states each measure on one ruler (:func:`~threetears.evals.analysis.surface_table.measure_rulers`),
+    chosen over every figure its tables state of it, and a chart restating onto its own choice is a second ruler for
+    the same measure on the same page. An axis carrying several measures (a breakdown's parts, an attribution's two
+    movements) is one quantity in one unit, so it takes their ruler only where every one of them has the same; where
+    they differ no single unit honours them all, and the chart chooses over what it draws.
+
+    Args:
+        surface: The decision surface the chart is compiled against.
+        readings: Each ``(measure_id, reading)`` the axis draws.
+
+    Returns:
+        The ruler's unit, or ``None`` where none is stated: a judged dimension (a score, with no unit), a measure
+        the surface describes no unit for, or measures whose rulers differ.
+    """
+    rulers = measure_rulers(surface)
+    units = {rulers[name].unit if reading == "measure" and name in rulers else "" for name, reading in readings}
+    if len(units) != 1:
+        return None
+    return next(iter(units)) or None
+
+
 def _has_measure(cell: CellFacts, name: str) -> bool:
     return any(m.name == name for m in cell.measures.measures)
 
@@ -353,6 +378,7 @@ def _delta_table(ref: DeltaTableRef, surface: DecisionSurface, labels: dict[str,
                 "a": a.mean,
                 "b": b.mean,
                 "unit": a.unit,
+                "stated_unit": _stated_unit(surface, (reading_ref.measure_id, reading_ref.reading)),
                 "delta": b.mean - a.mean,
                 "materiality": materiality(facts.materiality_threshold if facts else None, b.mean - a.mean),
                 "scale": scale,
@@ -400,6 +426,7 @@ def _distribution(ref: DistributionRef, surface: DecisionSurface, labels: dict[s
         "caption": ref.caption,
         "groups": [_distribution_group(reading, labels[reading.cell_ref]) for reading in readings],
         "unit": readings[0].unit,
+        "stated_unit": _stated_unit(surface, (ref.measure_id, ref.reading)),
         # The value axis is the reading drawn, named — without it every distribution titles itself
         # "Distribution", and two on one page cannot be told apart.
         "x_label": surface.measure_heading(ref.measure_id, ref.reading),
@@ -415,6 +442,7 @@ def _null_result(ref: NullResultRef, surface: DecisionSurface, labels: dict[str,
         ],
         "metric": surface.measure_heading(ref.measure_id, ref.reading),
         "unit": readings[0].unit,
+        "stated_unit": _stated_unit(surface, (ref.measure_id, ref.reading)),
         "mechanism": ref.mechanism,
     }
 
@@ -429,6 +457,7 @@ def _breakdown(ref: BreakdownRef, surface: DecisionSurface, labels: dict[str, st
             {"label": surface.measure_heading(part.measure_id), "value": part.mean, "n": part.n_cases} for part in parts
         ],
         "unit": _shared_unit(parts, "breakdown"),
+        "stated_unit": _stated_unit(surface, *((part.measure_id, "measure") for part in parts)),
     }
 
 
@@ -492,6 +521,7 @@ def _attribution(
         "end_to_end": movements["end_to_end"],
         "subsystem": movements["subsystem"],
         "unit": unit,
+        "stated_unit": _stated_unit(surface, (ref.end_to_end_measure, "measure"), (ref.subsystem_measure, "measure")),
         # Headed as the movements are, so the chart can check the declared whole IS the end-to-end measure drawn.
         "contained_by": surface.measure_heading(contained_by) if contained_by is not None else None,
         "lever": ref.lever,
@@ -601,6 +631,7 @@ def _frontier(ref: FrontierRef, surface: DecisionSurface, labels: dict[str, str]
         "quality_label": _titled(
             surface.measure_heading(ref.quality.measure_id, ref.quality.reading), qualities[0].unit
         ),
+        "latency_stated_unit": _stated_unit(surface, (latency_id, "measure")) if latency_id is not None else None,
     }
 
 
@@ -654,6 +685,7 @@ def _timeseries(ref: TimeseriesRef, surface: DecisionSurface, labels: dict[str, 
         "caption": ref.caption,
         "metric": surface.measure_heading(ref.measure_id, ref.reading),
         "unit": whole[0].unit,
+        "stated_unit": _stated_unit(surface, (ref.measure_id, ref.reading)),
         "basis": axis.basis,
         "release_label": axis.release_label,
         "positions": [position.key for position in axis.positions],
@@ -743,10 +775,12 @@ def _sweep_ranking(
         "ranked": {
             "measure": surface.measure_heading(ref.ranked.measure_id, ref.ranked.reading),
             "unit": ranked[0].unit,
+            "stated_unit": _stated_unit(surface, (ref.ranked.measure_id, ref.ranked.reading)),
         },
         "secondary": {
             "measure": surface.measure_heading(ref.secondary.measure_id, ref.secondary.reading),
             "unit": secondary[0].unit,
+            "stated_unit": _stated_unit(surface, (ref.secondary.measure_id, ref.secondary.reading)),
         },
         "rows": rows,
         "dimensions": dimensions,

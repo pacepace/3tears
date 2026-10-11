@@ -58,23 +58,38 @@ reaches the rasteriser with no directory registered anywhere in this process log
 warning naming the consequence and the argument that fixes it, **once per process**,
 because the fact it reports is a property of the process rather than of the chart:
 repeating it per render would be noise readers learn to filter.
+
+**A host face is drawn only from the files it was measured from.** Its
+:class:`~threetears.evals.kernel.host.ChartFont` records the SHA-256 of each file that
+provided the face when it was measured, and a render that registers a directory — or
+runs after one was registered — refuses the font when those files are not there with
+those bytes (:func:`~threetears.evals.vega.text_metrics.check_font_files`). The table's
+advances describe the bytes measured; a face updated in place keeps its family name, so
+nothing else would notice that labels are being fitted against widths it no longer has.
+
+**The font measurer draws through here too** (:func:`vega_svg`, :func:`vega_png`): it
+probes raw Vega text marks rather than compiled Vega-Lite specs, and keeping those two
+calls in this module keeps the rasteriser in one module of the renderer.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from threetears.evals.analysis.viz.renderer import ChartRefused
 from threetears.evals.kernel.host import ChartFont, ChartPalette
 from threetears.evals.vega.palette import vega_config
-from threetears.evals.vega.text_metrics import packaged_font
+from threetears.evals.vega.text_metrics import check_font_files, packaged_font
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
 
-# ``vl_convert`` is imported inside the three calls that reach the rasteriser and nowhere
+# ``vl_convert`` is imported inside the calls that reach the rasteriser and nowhere
 # at module level. It is the ``[vega]`` extra's one dependency (a native extension, and the
 # only third-party import the package matrix allows this adapter), and this module is
 # re-exported from the ``threetears.evals.vega`` root: imported here at module level,
@@ -157,17 +172,33 @@ def _prepare_fonts(font_dir: Path | None, font: ChartFont | None = None) -> None
     directory after the host registered one still draws in the host's face and has
     nothing to warn about.
 
+    A font that records the files it was measured from is checked against the
+    directory named, before it is registered, or — when none is named — against every
+    directory registered in this process; with none registered there is nothing to
+    check against, and the warning stands for that.
+
     Args:
         font_dir: The directory the caller named, or ``None`` for "draw in whatever
             this host's font database resolves".
         font: The typeface the render is set in; ``None`` for the packaged face.
+
+    Raises:
+        TextMetricsError: ``font``'s recorded files are not in the directories it would
+            be drawn from with the bytes it was measured from.
     """
     global _warned_unfonted
 
     if font_dir is not None:
+        if font is not None:
+            check_font_files(font, [font_dir.resolve()])
         register_fonts(font_dir)
         return
-    if font is None or font == packaged_font() or _fonts_registered or _warned_unfonted:
+    if font is None or font == packaged_font():
+        return
+    if _fonts_registered and font.font_files:
+        check_font_files(font, sorted(directory for directory in _registered_font_dirs if directory.is_dir()))
+        return
+    if _fonts_registered or _warned_unfonted:
         return
     with _font_lock:
         if _fonts_registered or _warned_unfonted:
@@ -180,6 +211,41 @@ def _prepare_fonts(font_dir: Path | None, font: ChartFont | None = None) -> None
             "Said once per process.",
             font.measured_face,
         )
+
+
+#: How vl-convert words its own refusal to convert a spec — the JavaScript runtime would not draw it — as against a
+#: string it could not parse or an argument it could not take, each of which is a defect in what called it.
+_CONVERSION_FAILED = re.compile(r"^(?:Vega-Lite|Vega) to \w+ conversion failed:")
+
+
+class RasterRefused(ChartRefused):
+    """vl-convert refused to convert a chart's spec: its runtime would not draw it.
+
+    Raised only for vl-convert's own conversion failure (``Vega-Lite to PNG conversion failed: ...``), whose text
+    it carries. Every other ``ValueError`` vl-convert raises — a spec string it cannot parse as JSON (a ``NaN`` the
+    compiler let through), an argument it does not take — is a defect in the code that called it and propagates as
+    it was raised.
+    """
+
+
+def _converted[T](convert: Callable[[], T]) -> T:
+    """Run one vl-convert conversion, raising :class:`RasterRefused` for its refusal and nothing else.
+
+    Args:
+        convert: The conversion.
+
+    Returns:
+        What it returns.
+
+    Raises:
+        RasterRefused: vl-convert reported the conversion failed.
+    """
+    try:
+        return convert()
+    except ValueError as failed:
+        if _CONVERSION_FAILED.match(str(failed)) is None:
+            raise
+        raise RasterRefused(str(failed)) from failed
 
 
 def render_png(
@@ -204,11 +270,15 @@ def render_png(
 
     Returns:
         PNG bytes.
+
+    Raises:
+        TextMetricsError: ``font`` was measured from files its directory no longer holds as measured.
+        RasterRefused: vl-convert refused to convert the spec.
     """
     import vl_convert as vlc
 
     _prepare_fonts(font_dir, font)
-    return vlc.vegalite_to_png(json.dumps(spec), config=vega_config(palette, font), scale=scale)
+    return _converted(lambda: vlc.vegalite_to_png(json.dumps(spec), config=vega_config(palette, font), scale=scale))
 
 
 def render_svg(
@@ -227,16 +297,57 @@ def render_svg(
 
     Returns:
         The SVG document.
+
+    Raises:
+        TextMetricsError: ``font`` was measured from files its directory no longer holds as measured.
+        RasterRefused: vl-convert refused to convert the spec.
     """
     import vl_convert as vlc
 
     _prepare_fonts(font_dir, font)
-    return vlc.vegalite_to_svg(json.dumps(spec), config=vega_config(palette, font))
+    return _converted(lambda: vlc.vegalite_to_svg(json.dumps(spec), config=vega_config(palette, font)))
+
+
+def vega_svg(spec: dict[str, Any]) -> str:
+    """Draw a raw Vega spec (not Vega-Lite) to SVG, unthemed, in whatever fonts are registered.
+
+    What the font measurer probes the rasteriser's text layout with: a Vega text mark sized to fit,
+    whose SVG width is Vega's own measurement of the string.
+
+    Args:
+        spec: A Vega spec.
+
+    Returns:
+        The SVG document.
+    """
+    import vl_convert as vlc
+
+    return vlc.vega_to_svg(json.dumps(spec))
+
+
+def vega_png(spec: dict[str, Any]) -> bytes:
+    """Rasterise a raw Vega spec (not Vega-Lite) to PNG, unthemed, in whatever fonts are registered.
+
+    What the font measurer compares to tell a face that draws from one the rasteriser cannot find,
+    which it lays out but does not paint.
+
+    Args:
+        spec: A Vega spec.
+
+    Returns:
+        PNG bytes.
+    """
+    import vl_convert as vlc
+
+    return vlc.vega_to_png(json.dumps(spec))
 
 
 __all__ = [
     "DEFAULT_SCALE",
+    "RasterRefused",
     "register_fonts",
     "render_png",
     "render_svg",
+    "vega_png",
+    "vega_svg",
 ]

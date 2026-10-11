@@ -33,6 +33,7 @@ from threetears.evals.analysis import (
     DisclosureBlock,
     Report,
     TableBlock,
+    TableCell,
     TableColumn,
     TextBlock,
     analysis_report,
@@ -46,6 +47,8 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.analysis.report import SCHEMA_PATH
+from threetears.evals.analysis.report.model import table_row
+from threetears.evals.analysis.surface_table import measure_rulers
 from threetears.evals.kernel.campaign import EvalAnalysis, Viz
 from threetears.evals.kernel.errors import NotFoundError
 from threetears.evals.kernel.host import EvalHost
@@ -87,7 +90,10 @@ class TestTheToyAnalysisSerializesThreeWays:
         markdown = report_markdown(report)
         finding = analysis.document.findings[0]
 
-        assert markdown.startswith(f"# {analysis.document.headline}\n")
+        # The campaign's name leads the author's headline: the report is read by it, as a code-only report is.
+        assert report.source.campaign_name == "chunk width sweep"
+        assert report.title == f"chunk width sweep: {analysis.document.headline}"
+        assert markdown.startswith(f"# {report.title}\n")
         assert f"### 1. {finding.title}" in markdown
         assert "**Evidence**" in markdown and "| Arm | Measure | Value | Cases | Spread |" in markdown
         chart = _chart(report)
@@ -165,8 +171,12 @@ class TestTheToyReportsContent:
         evidence = analysis.resolutions[0].evidence
 
         assert table.finding == 0
-        assert [row["value"] for row in table.rows] == [row.value for row in evidence]
-        assert [row["cases"] for row in table.rows] == [row.n_cases for row in evidence]
+        # Code's numbers, stated on each measure's one ruler for the report (a latency in s where the surface is).
+        rulers = measure_rulers(analysis.decision_surface)
+        stated = [row.value * (rulers[row.measure_id].factor if row.reading == "measure" else 1.0) for row in evidence]
+        assert [row["value"] for row in table.values()] == pytest.approx(stated)
+        assert any(cell["value"].unit == "s" for cell in table.rows), "the toy's turn time reads in s on its surface"
+        assert [row["cases"] for row in table.values()] == [row.n_cases for row in evidence]
 
     async def test_the_delta_tables_n_is_the_smaller_arms_cases_never_its_observations(
         self, toy: tuple[Any, EvalAnalysis, Report]
@@ -323,7 +333,7 @@ class TestTheReportsRefusals:
                 name="arms",
                 title="Arms",
                 columns=[TableColumn(key="arm", header="Arm")],
-                rows=[{"arm": "a"}, {"arm": "b"}],
+                rows=[table_row({"arm": "a"}), table_row({"arm": "b"})],
                 order="as given",
                 total_rows=1,
             )
@@ -334,7 +344,7 @@ class TestTheReportsRefusals:
             name="arms",
             title="Arms",
             columns=[TableColumn(key="arm", header="Arm")],
-            rows=[{"arm": "a"}],
+            rows=[table_row({"arm": "a"})],
             order="as given",
             total_rows=4,
         )
@@ -347,7 +357,20 @@ class TestTheReportsRefusals:
                 name="arms",
                 title="Arms",
                 columns=[TableColumn(key="arm", header="Arm")],
-                rows=[{"arm": "a", "hidden": 1}],
+                rows=[table_row({"arm": "a", "hidden": 1})],
+                order="as given",
+                total_rows=1,
+            )
+
+    def test_a_row_missing_a_column_is_refused(self) -> None:
+        """A row keys every column, so a client prints each row as served and never invents a missing cell's text."""
+        with pytest.raises(ValueError, match="has rows missing levers; a row keys every column"):
+            TableBlock(
+                section="arms",
+                name="arms",
+                title="Arms",
+                columns=[TableColumn(key="arm", header="Arm"), TableColumn(key="levers", header="Levers")],
+                rows=[table_row({"arm": "a"})],
                 order="as given",
                 total_rows=1,
             )
@@ -438,8 +461,8 @@ class TestTheBasisIsRefusedWhenTheReportDisagreesWithIt:
 
     def test_the_schema_holds_the_version(self) -> None:
         document = json.loads(_code_only().to_canonical_json())
-        assert document["report_version"] == REPORT_VERSION == 6
-        document["report_version"] = 5
+        assert document["report_version"] == REPORT_VERSION == 7
+        document["report_version"] = 6
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.Draft202012Validator(published_report_schema()).validate(document)
 
@@ -488,9 +511,11 @@ _TABLE = {
     "name": "evidence",
     "title": "Evidence",
     "columns": [{"key": "arm", "header": "Arm"}],
-    "rows": [{"arm": "a"}, {"arm": "b"}],
+    "rows": [{"arm": {"value": "a", "unit": "", "text": "a"}}, {"arm": {"value": "b", "unit": "", "text": "b"}}],
     "order": "as listed",
     "total_rows": 2,
+    "section_title": "Methods and disclosures",
+    "finding_number": None,
 }
 
 
@@ -529,6 +554,15 @@ class TestTheSchemaHoldsTheCrossFieldRulesItCanState:
             _with(_analysis_document(), lambda d: d["blocks"][0].update(finding=None)),
             _with(_code_only_document(), lambda d: d["blocks"].append(_chart_block(intent=None, error=""))),
             _with(_code_only_document(), lambda d: d["blocks"].append(_chart_block(intent=None, error="   "))),
+            *(
+                _with(
+                    _code_only_document(),
+                    lambda d, value=value: d["blocks"].append(
+                        _TABLE | {"rows": [{"arm": {"value": value, "unit": "s", "text": "x"}}], "total_rows": 1}
+                    ),
+                )
+                for value in ("words", True, None)
+            ),
         ],
         ids=[
             "code-only-names-an-analysis",
@@ -543,11 +577,23 @@ class TestTheSchemaHoldsTheCrossFieldRulesItCanState:
             "a-findings-title-names-no-finding",
             "a-chart-with-neither-intent-nor-error",
             "a-chart-whose-error-is-blank",
+            "a-unit-on-words",
+            "a-unit-on-a-boolean",
+            "a-unit-on-no-value",
         ],
     )
     def test_each_rule_the_schema_can_state_refuses_in_the_schema_and_the_model(self, document: dict[str, Any]) -> None:
         assert _model_refuses(document), "the case must be one the model refuses"
         assert _schema_refuses(document)
+
+    def test_a_unit_on_a_number_passes_both(self) -> None:
+        document = _with(
+            _code_only_document(),
+            lambda d: d["blocks"].append(
+                _TABLE | {"rows": [{"arm": {"value": 1.5, "unit": "s", "text": "1.5 s"}}], "total_rows": 1}
+            ),
+        )
+        assert not _schema_refuses(document) and not _model_refuses(document)
 
     async def test_a_chart_with_both_an_intent_and_an_error_or_another_types_intent_is_refused(
         self, toy: tuple[Any, Any, Report]
@@ -566,9 +612,28 @@ class TestTheSchemaHoldsTheCrossFieldRulesItCanState:
         [
             _with(_analysis_document(), lambda d: d["blocks"][0].update(finding=5)),
             _with(_code_only_document(), lambda d: d["blocks"].append(_TABLE | {"total_rows": 0})),
-            _with(_code_only_document(), lambda d: d["blocks"].append(_TABLE | {"rows": [{"stray": "x"}]})),
+            _with(
+                _code_only_document(),
+                lambda d: d["blocks"].append(
+                    _TABLE
+                    | {
+                        "rows": [
+                            {
+                                "arm": {"value": "a", "unit": "", "text": "a"},
+                                "stray": {"value": "x", "unit": "", "text": "x"},
+                            }
+                        ]
+                    }
+                ),
+            ),
+            _with(_code_only_document(), lambda d: d["blocks"].append(_TABLE | {"rows": [{}]})),
         ],
-        ids=["a-position-past-finding_count", "total_rows-below-rows-shown", "a-row-keyed-by-no-column"],
+        ids=[
+            "a-position-past-finding_count",
+            "total_rows-below-rows-shown",
+            "a-row-keyed-by-no-column",
+            "a-row-missing-a-column",
+        ],
     )
     def test_the_three_rules_that_compare_siblings_are_the_models_alone(self, document: dict[str, Any]) -> None:
         """What the README and the model's docstring name as the schema's superset, pinned so it cannot grow."""
@@ -691,8 +756,8 @@ def test_a_code_only_report_states_the_contrasts_code_tested_against_the_control
     (comparisons,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"]
     # The question in the words it was asked, never its id.
     asked = next(q.text for q in campaign.declared_design.questions if q.id == "q-chunk-width")
-    assert comparisons.rows and {row["question"] for row in comparisons.rows} == {asked}
-    by_reading = {row["reading"]: row["verdict"] for row in comparisons.rows}
+    assert comparisons.rows and {row["question"] for row in comparisons.values()} == {asked}
+    by_reading = {row["reading"]: row["verdict"] for row in comparisons.values()}
     assert by_reading["Field accuracy"] == "improved on the control"
     assert by_reading["Turn time"] == "regressed from the control"
     assert any(
@@ -700,7 +765,37 @@ def test_a_code_only_report_states_the_contrasts_code_tested_against_the_control
         for block in report.blocks
     )
     (arms,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "arms"]
-    assert sum(str(row["arm"]).endswith("(control)") for row in arms.rows) == 1
+    assert sum(str(row["arm"]).endswith("(control)") for row in arms.values()) == 1
+
+
+def test_a_contrast_states_its_figures_in_the_unit_the_decision_surface_states_them_in() -> None:
+    """One figure, one ruler, with its unit: the surface read ``Turn time (s) 1.42`` while the contrast read ``1420``.
+
+    The decision surface chooses a measure's unit once; every table of the report that states that measure's
+    figures — the contrasts' means, their delta and its interval — states them restated onto it, each cell
+    carrying the unit, since a contrast table's rows are several measures and no header can name one unit.
+    """
+    host, campaign = toy_campaign_host()
+    set_campaign_control(
+        host.storage, campaign.id, campaign.scope_id, campaign.run_ids[0], set_by="t", profile=host.profile
+    )
+    report = campaign_report(host, campaign.id, campaign.scope_id)
+    (surface,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "surface"]
+    (comparisons,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"]
+    assert "Turn time (s)" in [column.header for column in surface.columns]
+    (turn_time,) = [row for row in comparisons.rows if row["reading"].value == "Turn time"]
+    assert [turn_time[key].text for key in ("control_mean", "arm_mean", "delta")] == ["0.92 s", "1.42 s", "0.5 s"]
+    assert (turn_time["arm_mean"].value, turn_time["arm_mean"].unit) == (1.42, "s")
+    assert turn_time["interval"].text == "[0.4498, 0.5502] s at 99%"
+    # A reading with no unit is stated as a bare number, as before.
+    (accuracy,) = [row for row in comparisons.rows if row["reading"].value == "Field accuracy"]
+    assert (accuracy["arm_mean"].text, accuracy["arm_mean"].unit) == ("0.91", "")
+
+
+@pytest.mark.parametrize("value", ["words", True, None])
+def test_a_unit_qualifies_only_a_number(value: Any) -> None:
+    with pytest.raises(ValueError, match="qualifies a number"):
+        TableCell(value=value, unit="s")
 
 
 # =============================================================================

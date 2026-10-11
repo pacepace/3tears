@@ -33,6 +33,7 @@ from threetears.evals.kernel.candidate_kind import (
     CandidateOutput,
     CandidateTelemetry,
     CellSink,
+    CostCapReached,
     CellSpanWindow,
     VariantConfig,
 )
@@ -750,14 +751,17 @@ async def test_the_cap_reached_before_the_first_answer_under_a_perturbation_sche
 
 
 class _AsksTheCapFirstKind(ToyExtractorKind):
-    """A kind that holds no conversation and asks the run's cap before its one paid turn, stopping when it is reached.
+    """A kind that holds no conversation and reserves its one paid turn at $1, stopping when the cap refuses it.
 
     It reports no stop cause — it does not converse — so only the sink's breach says the cap stopped it.
     """
 
     async def invoke(self, instance: ToyExtractorInstance, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
-        if sink.cost_cap_reached(1.0):
+        try:
+            held = sink.reserve("candidate", 1.0)
+        except CostCapReached:
             return CandidateOutput()
+        held.release()
         await instance.world_session.at_turn(1)
         return await super().invoke(instance, test_case, sink)
 

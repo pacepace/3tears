@@ -40,7 +40,9 @@ from pydantic import Field, model_validator
 from threetears.evals.analysis.campaigns import add_runs_to_campaign
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import EvalSweep, SweepArmRecord
-from threetears.evals.kernel.errors import JobFenced, ValidationFailedError
+from threetears.evals.kernel.errors import EvalServiceError, JobFenced, ValidationFailedError
+from threetears.evals.kernel.refusals import job_refusal
+from threetears.evals.schema.refusal import JobRefusal
 from threetears.evals.kernel.job_timeout import EvalJobTimeout, timed_out_detail
 from threetears.evals.schema.models import DEFAULT_LAUNCH_K_RUNS, CaseSetRef, utc_now_iso
 from threetears.evals.kernel.offload import run_blocking
@@ -164,7 +166,8 @@ async def _refuse_what_any_arm_would_refuse(host: OpsHost, arguments: SweepArgum
     if arguments.max_concurrent_arms > settings.max_admitted_runs:
         raise ValidationFailedError(
             f"max_concurrent_arms={arguments.max_concurrent_arms} is above the runs this host admits at once "
-            f"({settings.name_of('max_admitted_runs')}={settings.max_admitted_runs})"
+            f"({settings.name_of('max_admitted_runs')}={settings.max_admitted_runs})",
+            remedy=f"pass max_concurrent_arms at or below {settings.max_admitted_runs}",
         )
     for arm in arguments.arms:
         try:
@@ -184,9 +187,15 @@ async def _refuse_what_any_arm_would_refuse(host: OpsHost, arguments: SweepArgum
                 case_set=arguments.case_set,
             )
         except ValidationFailedError as refused:
-            raise ValidationFailedError(f"arm {_arm_label(arm)!r} would be refused: {refused}") from refused
-        if refusals := [verdict.refusal for verdict in quote.arms if verdict.refusal is not None]:
-            raise ValidationFailedError(f"arm {_arm_label(arm)!r} would be refused: {'; '.join(refusals)}")
+            raise ValidationFailedError(
+                f"arm {_arm_label(arm)!r} would be refused: {refused.message}", remedy=refused.remedy
+            ) from refused
+        if refused_arms := [verdict for verdict in quote.arms if verdict.refusal is not None]:
+            raise ValidationFailedError(
+                f"arm {_arm_label(arm)!r} would be refused: "
+                + "; ".join(str(verdict.refusal) for verdict in refused_arms),
+                remedy="; ".join(dict.fromkeys(str(verdict.remedy) for verdict in refused_arms)),
+            )
 
 
 async def sweep_launch(host: OpsHost, arguments: SweepArguments, scope_id: str, *, created_by: str) -> JobsStarted:
@@ -277,6 +286,9 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
     slots = asyncio.Semaphore(sweep.max_concurrent_arms)
     in_flight: dict[str, asyncio.Task[None]] = {}
     failure: list[str] = []
+    # The engine refusal the sweep ended on, kept as data beside its words: set only for the failure the sweep's
+    # detail states (the first), since a refusal after another failure did not end it.
+    refusal: JobRefusal | None = None
     judge_pin, simulator_pin = arguments.judge_model, arguments.simulator_model
 
     leases = host.launch.job_leases
@@ -351,6 +363,8 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
                     failure.append(
                         f"arm {record.label!r} was refused at its launch, so no further arm was launched: {refused}"
                     )
+                    if isinstance(refused, EvalServiceError) and len(failure) == 1:
+                        refusal = job_refusal(refused)
                     break
                 in_flight[run.id] = asyncio.create_task(settle(record.label, run.id))
                 record.run_id = run.id
@@ -393,10 +407,13 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
     except Exception as broke:
         log.exception("eval.sweep sweep=%s scope=%s ended on an error", sweep.id, scope_id)
         failure.append(f"the sweep ended on an error: {broke}")
+        if isinstance(broke, EvalServiceError) and len(failure) == 1:
+            refusal = job_refusal(broke)
         # Arms already launched are measurements in their own right: they finish and stay members.
         await asyncio.gather(*in_flight.values(), return_exceptions=True)
     sweep.outcome = "failed" if failure else "completed"
     sweep.detail = failure[0] if failure else None
+    sweep.refusal = refusal
     sweep.ended_at = utc_now_iso()
     try:
         await save()

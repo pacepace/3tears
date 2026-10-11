@@ -45,6 +45,7 @@ class _Reply:
 
     content: str
     stop_reason: str
+    temperature: float | None = None
     input_tokens: int = 120
     output_tokens: int = 64
     reasoning_tokens: int | None = 40

@@ -325,7 +325,7 @@ class TestAnArmBothAdoptedAndRejectedIsContradicted:
     def test_the_report_shows_the_status_in_words_and_says_neither_verdict_stands(self) -> None:
         report = build_report(self._contradicting())
         (arms,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "arms"]
-        statuses = {row["arm"]: row["status"] for row in arms.rows}
+        statuses = {row["arm"]: row["status"] for row in arms.values()}
         winner = f"{_AXIS}={_WINNER}"
         assert statuses[winner] == "contradicted: one decision adopts it and another rejects it"
         assert "winner" not in statuses.values()

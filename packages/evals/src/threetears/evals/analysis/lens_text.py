@@ -91,9 +91,11 @@ def frontier_text(result: FrontierResult) -> str:
                 if verdict.tied_with
                 else ""
             )
+            # The pass^k the bar was read on stands on its judges' tier where a judge scored its criteria (#679).
+            tier = f", judge tier {verdict.judge_evidence_tier}" if verdict.judge_evidence_tier is not None else ""
             lines.append(
                 f"verdict: {_contestant(verdict.model, verdict.variant_key)} is the cheapest clearing the "
-                f"bar ({verdict.cost_decision}){tied}"
+                f"bar ({verdict.cost_decision}){tied}{tier}"
             )
         elif result.bar is not None:
             lines.append(

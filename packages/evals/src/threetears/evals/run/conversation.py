@@ -15,26 +15,35 @@ that side's :class:`~threetears.evals.schema.models.ConversationStopCause` (``si
 its candidate's error types); it reads ``driver.calls`` for the simulator's spend, which is complete
 whichever way the loop ended. Cancellation is not a fault and records nothing.
 
-**The run's cost cap is asked before every paid call.** The cap otherwise counts a cell's spend only
-once its result lands, and one conversation can make thousands of simulator calls (the bound is in
-:mod:`~threetears.evals.run.simulator`'s *Spend*). So before each call the loop makes — a scheduling
-pick, an utterance, the candidate's answer — it asks the cell's sink whether the cap is reached
-counting the simulator's spend so far (:meth:`~threetears.evals.kernel.candidate_kind.CellSink.cost_cap_reached`),
-and when it is, stops ``budget_stopped`` without making the call. A round already delivered is then left
-unanswered: answering it is a paid call past the cap. The runner excludes such a cell and stops the run.
-The candidate's own spend inside the cell is not in that count — the loop cannot see it — and is
-counted when the cell's result lands. The cap is asked once per DECISION, and an ``llm_decided``
-scheduling decision may take two calls (a refused reply buys one repair,
-:data:`~threetears.evals.run.simulator.SCHEDULER_CALL_ATTEMPTS`), so a run overshoots its cap by at most
-two simulator calls plus the stopped cell's candidate spend — one call under ``round_robin``, whose only
-paid calls are utterances.
+**The run's cost cap holds every paid call.** The cap otherwise counts a cell's spend only once its result
+lands, and one conversation can make thousands of simulator calls (the bound is in
+:mod:`~threetears.evals.run.simulator`'s *Spend*). So every simulator call goes through the cell's sink
+(:class:`~threetears.evals.kernel.capped_completion.CappedCompletion`): its ceiling is reserved before it is
+made and settled to what it cost when it returns, and a call the cap has no room for is not made; a client
+that cannot price a call has the cap asked instead. Before each decision — a scheduling pick, an utterance,
+the candidate's answer — the loop also asks whether the cap is already reached
+(:meth:`~threetears.evals.kernel.candidate_kind.CellSink.cost_cap_reached`), counting every running cell's
+spend by source and the reservations they hold. Either way the conversation stops ``budget_stopped`` without
+making the call. A round already delivered is then left unanswered: answering it is a paid call past the cap.
+The runner excludes such a cell and stops the run.
+
+**A kind stops the conversation on the cap the same way.** Its ``candidate_turn`` (or ``post_user_turn``)
+holds its candidate's own paid calls through the sink — reserving each priced one, or reporting what it spent
+(:meth:`~threetears.evals.kernel.candidate_kind.CellSink.add_spend`) — and when the cap has no room it raises
+:class:`~threetears.evals.kernel.candidate_kind.CostCapReached` (a refused reservation raises it for it). The
+loop ends the conversation ``budget_stopped`` — never ``candidate_error`` — keeping every round already
+recorded, and returns. **The bound on overshoot**: a simulator call on a client that prices its calls, and a
+candidate call its kind reserves, never takes the run past its cap; a call nobody can price is admitted only
+while the cap is not reached, so such calls pass it by at most one each per running cell — the ``llm_decided``
+scheduler's repair counts as a call of its own (:data:`~threetears.evals.run.simulator.SCHEDULER_CALL_ATTEMPTS`).
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
 
-from threetears.evals.kernel.candidate_kind import CellSink
+from threetears.evals.kernel.candidate_kind import CellSink, CostCapReached
+from threetears.evals.kernel.capped_completion import CappedCompletion
 from threetears.evals.schema.models import ConversationStopCause
 from threetears.evals.kernel.world_session import WorldSession
 from threetears.evals.schema.completion import SimulatorLLM
@@ -78,9 +87,11 @@ async def drive_conversation(
         driver: A fresh driver over the template's ``conversation`` block.
         candidate_turn: The candidate's answer to one round, handed that round's delivered utterances.
         post_user_turn: Delivers one simulated utterance into the candidate's world.
-        llm: The simulator-role client, for utterances and ``llm_decided`` picks alike.
-        sink: The cell's sink, asked before every paid call whether the run's cost cap is reached
-            counting the simulator's spend so far (see the module docstring).
+        llm: The simulator-role client, for utterances and ``llm_decided`` picks alike. Every call it makes is
+            held against the run's cost cap through ``sink``, reserved at the client's own ceiling when it
+            prices its calls (``price_ceiling``), so a client that does is never called past the cap.
+        sink: The cell's sink, which holds every simulator call against the run's cost cap and counts what it
+            cost, and is asked before every decision whether the cap is reached (see the module docstring).
         world: The cell's world session, which fires each world round's dimension; required when the
             conversation declares world rounds.
 
@@ -99,9 +110,31 @@ async def drive_conversation(
             "cell's world session as world="
         )
 
+    capped = CappedCompletion(llm, sink=sink, source="simulator")
+    try:
+        return await _converse(driver, candidate_turn, post_user_turn, capped, sink, world)
+    except CostCapReached:
+        # The cap had no room for a call — a simulator call's reservation, or a kind's own on the candidate's
+        # side. ``_side`` stopped the driver ``budget_stopped`` as it went by, unless the last actor's departure
+        # had stopped it first (see above); either way what was recorded stands.
+        cause = driver.stop_cause
+        assert cause is not None, "every side stops the driver on the cap's refusal"
+        return cause
+
+
+async def _converse(
+    driver: TurnDriver,
+    candidate_turn: Callable[[Sequence[SimulatorTurn]], Awaitable[CandidateTurn]],
+    post_user_turn: Callable[[SimulatorTurn], Awaitable[None]],
+    llm: SimulatorLLM,
+    sink: CellSink,
+    world: WorldSession | None,
+) -> ConversationStopCause:
+    """The loop :func:`drive_conversation` runs, over the simulator client already held to the cap."""
+
     def affordable() -> bool:
         """Whether the run's cap leaves room for another paid call; stops the driver when it does not."""
-        if sink.cost_cap_reached(driver.cost_usd):
+        if sink.cost_cap_reached():
             driver.stop(ConversationStopCause.BUDGET_STOPPED)
             return False
         return True
@@ -150,9 +183,16 @@ async def drive_conversation(
 
 
 async def _side[T](driver: TurnDriver, cause: ConversationStopCause, call: Awaitable[T]) -> T:
-    """Await one side's call; if it raises, stop the driver under that side's cause and re-raise."""
+    """Await one side's call; if it raises, stop the driver under that side's cause and re-raise.
+
+    Whichever side it is, the cap's refusal (:class:`~threetears.evals.kernel.candidate_kind.CostCapReached`)
+    stops the driver ``budget_stopped`` instead: the cap doing its configured job is no side's fault.
+    """
     try:
         return await call
+    except CostCapReached:
+        driver.stop(ConversationStopCause.BUDGET_STOPPED)
+        raise
     except Exception:
         driver.stop(cause)
         raise

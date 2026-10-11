@@ -20,6 +20,7 @@ from threetears.evals.analysis.lenses.pivot import PivotError, compute_pivot
 from threetears.evals.kernel.declaration import resolve_bar_name
 from threetears.evals.kernel.host import MeasureRegistry
 from threetears.evals.schema.models import (
+    MODEL_DEFAULT_TEMPERATURE,
     SCALES,
     JudgedArtifact,
     JudgeEvidence,
@@ -102,7 +103,7 @@ class _Replying:
         self.calls += 1
         return SimpleNamespace(
             served_model=None, stop_reason="end_turn", content=self.content, input_tokens=1, output_tokens=1,
-            cost_usd=0.0, model="judge-fake",
+            cost_usd=0.0, model="judge-fake", temperature=None,
         )  # fmt: skip
 
 
@@ -148,7 +149,7 @@ class _Judge:
 
     async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
         self.systems.append(system)
-        return SimpleNamespace(
+        return SimpleNamespace(temperature=None, 
             served_model=None, stop_reason="end_turn", content=_answer(self.answer).replace('"arc"', '"x.arc"'), input_tokens=1,
             output_tokens=1, cost_usd=0.0, model="judge-fake",
         )  # fmt: skip
@@ -178,6 +179,7 @@ class TestTheJudgeService:
         assert outcome.score == RubricScore(
             dim="x.arc", scale="pass_fail", axis="capability", score=1, reasoning="r",
             output_fingerprint=key.output_fingerprint, criterion_fingerprint=key.criterion_fingerprint,
+            judge_temperature=MODEL_DEFAULT_TEMPERATURE,
         )  # fmt: skip
         (system,) = judge.systems
         assert "Answer pass or fail." in system and "1 (worst) to 5 (best)" not in system
@@ -194,6 +196,7 @@ class TestTheJudgeService:
         assert outcome.score == RubricScore(
             dim="x.arc", score=4, reasoning="r", scale="ordinal", axis="capability",
             output_fingerprint=key.output_fingerprint, criterion_fingerprint=key.criterion_fingerprint,
+            judge_temperature=MODEL_DEFAULT_TEMPERATURE,
         )  # fmt: skip
         assert "1 (worst) to 5 (best)" in judge.systems[0]
 

@@ -35,7 +35,7 @@ same numbers.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Literal, Self
+from typing import Literal, NamedTuple, Self
 
 from pydantic import Field, computed_field, model_validator
 
@@ -480,6 +480,51 @@ def _run_notes(cell: CellFacts) -> list[SurfaceRunNote]:
     ]
 
 
+class MeasureRuler(NamedTuple):
+    """The one unit a measure's figures are stated in across a report, and the factor that restates a stored value into it.
+
+    Attributes:
+        factor: Multiply a value in the measure's own unit by this to state it in :attr:`unit`.
+        unit: The unit stated, after restatement (``s`` for a latency stored in ``ms`` that reaches a second);
+            empty when the measure declares none, since restating an unknown unit would be inventing one.
+    """
+
+    factor: float
+    unit: str
+
+
+#: The ruler of a measure the surface knows no unit for: its values as stored, with no unit named.
+UNITLESS = MeasureRuler(1.0, "")
+
+
+def measure_rulers(surface: DecisionSurface) -> dict[str, MeasureRuler]:
+    """Each measure's one ruler for a whole report, chosen over every figure the decision surface states of it.
+
+    A measure appears in several tables of one report — its decision-surface column, a bar's column on it, its
+    rows in the strata table, its contrasts and guardrails against the control. Each table choosing its own unit
+    over its own figures is how one latency read ``Turn time (s) 1.42`` on the surface and ``1420`` in the
+    contrast beside it: the same figure on two rulers, one of them unnamed. So the unit is chosen ONCE per
+    measure, here, over every cell's mean of it and every threshold and verdict value of a bar on it
+    (:func:`~threetears.evals.analysis.viz.quantities.display_scale`'s rule), and every table restates onto it.
+
+    Args:
+        surface: The frozen decision surface.
+
+    Returns:
+        Every measure the surface describes, by name, to its ruler; a measure absent here has none
+        (:data:`UNITLESS`).
+    """
+    values: dict[str, list[float]] = {name: [] for name in surface.measures}
+    for cell in surface.cells:
+        for summary in cell.measures.measures:
+            if summary.name in values and summary.mean is not None:
+                values[summary.name].append(summary.mean)
+    for bar in surface.bars:
+        if bar.measure_id in values:
+            values[bar.measure_id] += [bar.threshold] + [v.value for v in bar.verdicts if v.value is not None]
+    return {name: MeasureRuler(*display_scale(values[name], facts.unit)) for name, facts in surface.measures.items()}
+
+
 def _verdict_of(bar: BarAdjudication, cell: CellFacts) -> BarVerdict | None:
     """The bar's verdict on this cell, or None when the adjudication carries none for it."""
     return next(
@@ -512,18 +557,16 @@ def _value_text(value: float | None, sem: float | None, n: int) -> str:
     return f"{format_number(value)}{spread} (n={n})"
 
 
-def _bar_column(bar: BarAdjudication, surface: DecisionSurface, cells: list[CellFacts]) -> tuple[SurfaceColumn, float]:
+def _bar_column(
+    bar: BarAdjudication, surface: DecisionSurface, rulers: dict[str, MeasureRuler]
+) -> tuple[SurfaceColumn, float]:
     """One adjudicated bar's column, and the factor its values are restated by.
 
-    The ruler is chosen over the threshold and every verdict value the column states, never per
-    value — the threshold is a quantity in the same column, and a header in seconds over cells in
-    milliseconds is the two-ruler defect moved into the header.
+    The ruler is the measure's (:func:`measure_rulers`), chosen over the threshold and every verdict value
+    among the rest, never per value — the threshold is a quantity in the same column, and a header in seconds
+    over cells in milliseconds is the two-ruler defect moved into the header.
     """
-    facts = surface.measures.get(bar.measure_id)
-    values = [bar.threshold] + [
-        v.value for cell in cells if (v := _verdict_of(bar, cell)) is not None and v.value is not None
-    ]
-    factor, unit = display_scale(values, facts.unit if facts else None)
+    factor, unit = rulers.get(bar.measure_id, UNITLESS)
     threshold = bar.threshold * factor
     sign = "≥" if bar.direction == "higher_is_better" else "≤"
     registered = " (registered)" if bar.source == "registered" else ""
@@ -565,16 +608,17 @@ def _bar_value(bar: BarAdjudication, cell: CellFacts, factor: float) -> SurfaceV
     return SurfaceValue(value=value, sem=sem, n=verdict.n, verdict=_VERDICT_OF[verdict.decision], text=text)
 
 
-def _merit_columns(surface: DecisionSurface, cells: list[CellFacts]) -> list[tuple[SurfaceColumn, float]]:
-    """The cost and latency columns — by FROZEN axis, only for a measure some cell carries."""
+def _merit_columns(
+    surface: DecisionSurface, cells: list[CellFacts], rulers: dict[str, MeasureRuler]
+) -> list[tuple[SurfaceColumn, float]]:
+    """The cost and latency columns — by FROZEN axis, only for a measure some cell carries, each on its measure's ruler."""
     present = {m.name for cell in cells for m in cell.measures.measures}
     columns = []
     for axis in _SURFACE_AXES:
         for name, facts in sorted(surface.measures.items()):
             if facts.merit_axis != axis or name not in present:
                 continue
-            means = [s.mean for cell in cells if (s := _summary_of(cell, name)) is not None and s.mean is not None]
-            factor, unit = display_scale(means, facts.unit)
+            factor, unit = rulers[name]
             # A measuring-spend measure stood here only on a surface frozen before it left the cost axis; it is
             # labelled for what it is, never as what the arm costs.
             title = surface.measure_heading(name)
@@ -637,8 +681,9 @@ def surface_table_of(surface: DecisionSurface, variant_index: Sequence[VariantIn
         return SurfaceTable(state="no_cells", disclosure=NO_CELLS, unadjudicated_bars=unadjudicated)
 
     adjudicated = [bar for bar in surface.bars if bar.state == "adjudicated"]
-    bar_columns = [_bar_column(bar, surface, cells) for bar in adjudicated]
-    merit_columns = _merit_columns(surface, cells)
+    rulers = measure_rulers(surface)
+    bar_columns = [_bar_column(bar, surface, rulers) for bar in adjudicated]
+    merit_columns = _merit_columns(surface, cells, rulers)
 
     index = {entry.variant_key: entry for entry in variant_index}
     distinguishing = distinguishing_axes(variant_index)
@@ -697,6 +742,8 @@ def _all_failed_disclosure(rows: list[SurfaceRow]) -> str | None:
 
 
 __all__ = [
+    "UNITLESS",
+    "MeasureRuler",
     "NO_CELLS",
     "NO_SUCCESSFUL_RESULTS",
     "REFERENCE_MARK",
@@ -713,6 +760,7 @@ __all__ = [
     "SurfaceValue",
     "SurfaceVerdict",
     "build_surface_table",
+    "measure_rulers",
     "surface_order_sentence",
     "surface_table_of",
 ]

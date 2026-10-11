@@ -8,7 +8,8 @@ defined in [Concepts](concepts.md).
 ## The rules, in plain words
 
 **The engine never pretends a cost it could not count was zero.** A call nobody could price is recorded as
-**unpriced**, not as $0.
+**unpriced**, not as $0. Every surface spells an amount through `dollars_text`, which reads `None` as `unpriced`
+(`UNPRICED`), so the word is the same wherever a spend is printed.
 
 **Caps bind only on a host that enforces them** (`LaunchSettings.enforcement_enabled`, which every host sets).
 There, the engine does not spend money it has not priced first:
@@ -32,8 +33,33 @@ The sections below state each rule exactly.
 **The per-run cap.** A launch's runs are held to the host's per-run ceiling, which a launch's
 `max_cost_usd` may only lower — one above it is refused on every surface. A run the cap stops
 mid-flight ends `budget_stopped`, with the results it already delivered kept: an honest outcome, not
-an infrastructure failure. A conversing kind's loop checks the cap before every paid simulator call (see
-[conversations](adopting-a-host.md#what-the-judge-reads-and-conversations)).
+an infrastructure failure.
+
+**What the per-run cap counts while a cell runs.** Each cell's sink keeps one running total per source —
+the candidate, its background work, the simulator, the judge — each only ever added to, plus the ceilings of
+the priced calls in flight. Every question of the cap, in a cell or between cells, counts the sum over every
+running cell beside what the run has already recorded. So no part of a cell reporting its spend can hide
+another part's, and a sibling cell sees all of it.
+
+- **A priced call is reserved before it is made.** Its ceiling (the client's `price_ceiling` times every attempt
+  the engine makes for it) is held against the cap while it is in flight, and settled to what it actually cost
+  when it returns, or released if it raised. A call whose ceiling would take the run past its cap is refused
+  before it is made. **A run whose paid calls are all reserved never spends past its cap**, however many cells
+  run at once. The engine reserves its own calls this way: every simulator call (a conversation's
+  `drive_conversation`), every judge call in a cell's judge phase, the judge kind's call and the reporter kind's
+  generator calls. A host's kind reserves its candidate's calls through `CellSink.reserve`, or wraps the client
+  in `CappedCompletion`.
+- **A call nobody can price** (a client with no `price_ceiling`, or one answering `None`) holds nothing; it is
+  made only while the cap is not yet reached. Such calls can pass the cap by about one call per running cell.
+- **Spend nothing reported** is counted only once the cell's result lands, so a kind that neither reserves its
+  calls nor reports them (`CellSink.add_spend`) can pass the cap by up to one whole cell per running cell.
+
+A call the cap refuses stops the cell: a conversation ends `budget_stopped` — a kind's candidate turn raises
+`CostCapReached` to end it the same way — and a one-shot kind returns what it has. The cell is excluded, no cell
+starts after it, and the run ends `budget_stopped` once the cells running are saved. A judge call the cap refuses
+leaves its dim unscored with an error naming the cap, which a re-judge can repair; the candidate's work is kept.
+When a refused reservation is what stopped the run, the stop says so: the call's ceiling, and what the run would
+have spent with it.
 
 **An uncapped run** (the host's cost enforcement off) records `max_cost_usd` as null and
 `max_cost_usd_origin` as `uncapped`. When an analysis or a bisection compares spend ceilings, it reads that
@@ -42,8 +68,10 @@ one. Only a run that recorded no ceiling and no origin is undecided.
 
 **The quick path's cap.** `run_eval` and `compare` run uncapped unless given `max_cost_usd=`, and the summary
 says which. The cap is the per-run cap above, counting each result's reported spend (the candidate's `Answer`
-and the judge's); `compare` splits it equally across arms. It is checked between cases, so a run can overshoot
-by one case's spend. A candidate that returns no `Answer` is invisible to it, and the summary says so.
+and the judge's); `compare` splits it equally across arms. The candidate cannot be priced before it is called, so
+the cap is asked before each call, and what its `Answer` reports is counted as soon as it returns; the judge's
+calls are reserved. A run can overshoot by the candidate calls in flight when the cap is reached — one per case
+running. A candidate that returns no `Answer` is invisible to it, and the summary says so.
 
 **The wall-clock budget.** Each run's job also runs under a time budget sized to its matrix (cases × k ×
 the cell timeout, plus a margin, clamped between a floor and an 8-hour cap). When it binds, the run ends
@@ -60,15 +88,16 @@ declares no ceiling lets a launch only lower the kind's deadline. The job's wall
 the deadline in force. The run records it as `cell_timeout_s`, with `cell_timeout_s_origin` (`launch`, `kind`
 or `default`). A run stored before 0.66.0 records neither, and its deadline reads as unknown.
 
-**Wall time.** A run executes its cells (case × repeat) in a shuffled order, up to
-`LaunchSettings.max_concurrent_cells` (4 by default) at once, and a cell's judge calls run up to
-`judge_concurrency` at once. The arms of one launch run side by side in one concurrency slot. Estimate a
+**Wall time.** A run executes its cells (case × repeat) in a shuffled order, several at once: as many as its
+kind declares it is safe at (`CandidateKind.max_concurrent_cells`, handed to the launch as
+`KindWiring.max_concurrent_cells`; a kind that declares nothing runs one at a time), never more than the host's
+ceiling `LaunchSettings.max_concurrent_cells` (4 by default). A cell's judge calls run up to `judge_concurrency`
+at once. The arms of one launch run side by side in one concurrency slot. Estimate a
 run's wall time as cases × k × the time one cell takes, divided by the width: 30 cases at k=3 and 6 s a cell
 is a little over 2 minutes at a width of 4. A launch that declares latency under test (`measure_latency=True`)
 runs its cells one at a time and its arms one after another, with no other run beside them: the same run
 then takes about 9 minutes, times the number of arms. The cost cap and the metered-call ceiling hold at any
-width; the cap can be overshot by at most the work in flight when it is reached (one call per running cell
-for a kind that asks the cap before each call, one cell per running cell otherwise). A host with its own
+width: reserved calls never pass the cap, and what can (above) is bounded per running cell. A host with its own
 pool or queue supplies a `CellExecutor` on `LaunchHost.cell_executor`.
 
 **The out-of-run cap** is `LaunchSettings.max_out_of_run_cost_usd`. It bounds every call the engine makes
@@ -141,12 +170,26 @@ launch's job, before its runs start; a second judge's and a temperature comparis
 part-way — a kind's launcher refusing an arm, a provider refusing the account — ends `failed` on its record, and
 what it had spent is in the ledger as it went.
 
+**Planned, admitted in the call, made in the job.** Every one of these calls is a public plan before it is
+anything else, so the call can price it. The package never plans, admits and makes a call in one step: a
+planner returns the `PlannedCall` (`gen.plan_draft` for a proposal, `kernel.plan_variation_calls` for a
+generation), the caller quotes it and admits it under its `OutOfRunBudget` in its call, and the executor
+(`gen.propose_draft`, `gen.generate_variations`) takes the admitted call and only makes it, on the client it was
+priced on. The engine's own jobs (an analysis generation, a second judge, a judge repeat, a temperature
+comparison) admit in their call the same way, and each has an estimate that quotes the same plan.
+
 **Case generation.** Generation runs before any run exists, so its calls are outside every run's cost cap
-and metered-call ceiling. Every `llm` axis's call is priced on the writer's client (`price_ceiling`) against
-`LaunchSettings.max_out_of_run_cost_usd` before the first is made, and each is ledgered as an `OutOfRunSpend`
-under the launch's group. The launcher's side is in
-[Generating cases at launch](adopting-a-host.md#generating-cases-at-launch); `propose_draft` takes a budget the
-same way.
+and metered-call ceiling. In the launch's call, the engine builds the writer from the host's client factory,
+plans every `llm` axis's call, and admits them together on that writer (`price_ceiling`) against
+`LaunchSettings.max_out_of_run_cost_usd`, so a generation the cap cannot pay for is refused before the launch
+returns. Each arm's request carries the admission (`LaunchRequest.generation`); the launcher makes those calls
+and no others, and each is ledgered as an `OutOfRunSpend` under the launch's group. The launcher's side is in
+[Generating cases at launch](adopting-a-host.md#generating-cases-at-launch).
+
+**A rubric proposal.** A host plans it with `plan_draft`, admits the call with
+`budget.admit(client, "proposer", [call])` in its action's call (refusing there, with nothing called), and makes
+it in the action's job with `propose_draft(client, admitted, budget=..., axis=..., subject_id=...)`, which
+releases the client. A client admitted and never made is the host's to release.
 
 **Batteries that generate.** A battery prices every template's arms and every template's writer calls (on
 the host's `variation` client, against the budget each launch will be held to) before any template

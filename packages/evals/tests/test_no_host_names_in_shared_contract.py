@@ -234,6 +234,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # registry's self-contradiction check and the prose gate all walk.
     "schema/schema_nesting.py",
     "kernel/errors.py",
+    "kernel/refusals.py",
+    "kernel/remedies.py",
     # The write-seam refusal of an undeclared authoring field, and the lock every writer of an
     # existing campaign holds. Each is shared by two packages that may not import each other —
     # authoring in run and in analysis, campaign writes in analysis and run's delete cascade — so
@@ -360,6 +362,9 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # `CandidateTelemetry` and into engine vocabulary (`AsyncDelivery`) beside the kind's opaque
     # `kind_payload`.
     "kernel/candidate_kind.py",
+    # The completion client a cell's calls are held to the run's cost cap through — the engine's own and a
+    # host's kind's alike, so it is shared contract and names no host.
+    "kernel/capped_completion.py",
     # The cassette seams a kind implements and the cell handle ``prepare`` is handed. Split out of
     # `run/cassette_proxy.py` so the protocol that declares ``prepare`` could name its argument: it
     # is what every host's kind is written against, so a host noun here would be one host's
@@ -437,6 +442,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "kernel/job_leases.py",
     "kernel/job_timeout.py",
     "schema/job_lease.py",
+    "schema/refusal.py",
     # The generic trial loop and the per-result covariate derivation, both importing nothing of the
     # host. Moved off _HOST_COUPLED_MODULES when a host tool's delivery record became
     # `AsyncDelivery` and its conclusion-path covariate was deleted: the runner stores a kind's

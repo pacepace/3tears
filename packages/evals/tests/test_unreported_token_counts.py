@@ -118,6 +118,7 @@ class _Completion:
     served_model: str | None
     reasoning_tokens: int | None
     stop_reason: StopReason
+    temperature: float | None = None
 
 
 def _silent(stop_reason: StopReason) -> _Completion:

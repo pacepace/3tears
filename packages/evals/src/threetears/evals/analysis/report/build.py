@@ -40,10 +40,12 @@ from threetears.evals.analysis.report.model import (
     ReportBlock,
     ReportSource,
     TableBlock,
+    TableCell,
     TableColumn,
     TextBlock,
     Verdict,
     VerdictReason,
+    table_row,
 )
 from threetears.evals.analysis.report.words import (
     ARM_STATUS_WORDS,
@@ -60,8 +62,11 @@ from threetears.evals.analysis.report.words import (
 from threetears.evals.analysis.surface_table import (
     NO_SUCCESSFUL_RESULTS,
     REFERENCE_MARK,
+    UNITLESS,
+    MeasureRuler,
     SurfaceTable,
     build_surface_table,
+    measure_rulers,
     surface_order_sentence,
     surface_table_of,
 )
@@ -74,7 +79,7 @@ from threetears.evals.kernel.campaign import EvalAnalysis, EvidenceRow, FindingR
 from threetears.evals.kernel.host.measures import MeasureRegistry
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, INTERVAL_LEVEL
-from threetears.evals.analysis.viz.quantities import display_scale, with_unit
+from threetears.evals.analysis.viz.quantities import with_unit
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, ClassifierStatistic, classifier_label_of
@@ -95,11 +100,13 @@ from threetears.observe import get_logger
 log = get_logger(__name__)
 
 
-def build_report(analysis: EvalAnalysis) -> Report:
+def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None) -> Report:
     """Lay one stored analysis out as a report.
 
     Args:
         analysis: The analysis.
+        campaign_name: The campaign's name, which leads the report's title; ``None`` where the campaign is not
+            to hand, and the title is then the headline alone.
 
     Returns:
         The report.
@@ -207,6 +214,7 @@ def build_report(analysis: EvalAnalysis) -> Report:
         source=ReportSource(
             analysis_id=analysis.id,
             campaign_id=analysis.campaign_id,
+            campaign_name=campaign_name or None,
             scope_id=analysis.scope_id,
             subject_id=analysis.subject_id,
             subject_kind=analysis.subject_kind,
@@ -272,7 +280,7 @@ def _coverage_blocks(analysis: EvalAnalysis) -> list[ReportBlock]:
                 TableColumn(key="findings", header="Named by finding"),
                 TableColumn(key="next", header="Next step naming it"),
             ],
-            rows=rows,
+            rows=[table_row(row) for row in rows],
             order="as the coverage map lists the levers",
             total_rows=len(rows),
         )
@@ -633,28 +641,39 @@ def _guardrail_blocks(
     if guardrails.withheld is not None:
         blocks.append(DisclosureBlock(section="guardrails", source="guardrails", text=guardrails.withheld))
     elif guardrails.checks:
-        rows: list[dict[str, ChartValue]] = [
-            {
-                "guardrail": verdict.heading,
-                "arm": verdict.arm,
-                "control_mean": check.control.mean,
-                "arm_mean": check.contrast.mean,
-                "cases": (
-                    f"{check.control.n_cases} paired"
-                    if check.test == "paired"
-                    else f"{check.contrast.n_cases} vs {check.control.n_cases}"
-                ),
-                "delta": check.delta,
-                "interval": None
-                if check.interval is None
-                else f"[{format_number(check.interval[0])}, {format_number(check.interval[1])}] at "
-                f"{format_number(100 * INTERVAL_LEVEL)}%"
-                + (" (t: no declared range)" if check.interval_basis == "t" else ""),
-                "margin": format_number(check.margin) if check.margin_declared else "0 (none declared)",
-                "decision": verdict.words,
-            }
-            for check, verdict in zip(guardrails.checks, verdicts, strict=True)
-        ]
+        rulers = measure_rulers(surface)
+        rows: list[dict[str, TableCell]] = []
+        for check, verdict in zip(guardrails.checks, verdicts, strict=True):
+            # A measure guardrail's figures on the measure's one ruler for the report; a judged one has no unit.
+            ruler = rulers.get(check.name, UNITLESS) if check.reading == "measure" else UNITLESS
+            interval = _interval_on_delta(check.interval, ruler, INTERVAL_LEVEL)
+            rows.append(
+                {
+                    "guardrail": TableCell(value=verdict.heading),
+                    "arm": TableCell(value=verdict.arm),
+                    "control_mean": _figure(check.control.mean, ruler),
+                    "arm_mean": _figure(check.contrast.mean, ruler),
+                    "cases": TableCell(
+                        value=(
+                            f"{check.control.n_cases} paired"
+                            if check.test == "paired"
+                            else f"{check.contrast.n_cases} vs {check.control.n_cases}"
+                        )
+                    ),
+                    "delta": _figure(check.delta, ruler),
+                    "interval": TableCell(
+                        value=None
+                        if interval is None
+                        else interval + (" (t: no declared range)" if check.interval_basis == "t" else "")
+                    ),
+                    "margin": TableCell(
+                        value=with_unit(check.margin * ruler.factor, ruler.unit)
+                        if check.margin_declared
+                        else "0 (none declared)"
+                    ),
+                    "decision": TableCell(value=verdict.words),
+                }
+            )
         blocks.append(
             TableBlock(
                 section="guardrails",
@@ -756,7 +775,7 @@ def _arm_blocks(table: ArmTable) -> list[ReportBlock]:
                 *([TableColumn(key="findings", header="Rests on finding")] if founded else []),
                 TableColumn(key="levers", header="Every lever it ran"),
             ],
-            rows=rows,
+            rows=[table_row(row) for row in rows],
             order=(
                 "winner, then contradicted, then ruled out, then replaced incumbent, then unresolved"
                 if decided
@@ -855,7 +874,7 @@ def _surface_blocks(table: SurfaceTable, *, provenance: bool = True) -> list[Rep
                 name="surface",
                 title="Decision surface",
                 columns=columns,
-                rows=rows,
+                rows=[table_row(row) for row in rows],
                 order=table.order,
                 total_rows=len(rows),
             )
@@ -947,7 +966,7 @@ def _strata_blocks(surface: DecisionSurface, variant_index: Sequence[VariantInde
                 TableColumn(key="all", header="All cases"),
                 *(TableColumn(key=columns[name], header=_stratum_word(name)) for name in names),
             ],
-            rows=rows,
+            rows=[table_row(row) for row in rows],
             order=surface_order_sentence(has_control_row=any(cell.variant_key == control for cell in cells))
             + " Within each arm: its cases, then each measure by name, then each judged dimension.",
             total_rows=len(rows),
@@ -1007,15 +1026,12 @@ def _measure_rows(
             if not summary.texts
         }
     )
+    rulers = measure_rulers(surface)
     rows: list[dict[str, ChartValue]] = []
     for measure in measures:
-        found = [summary for summaries in (pooled, *per_stratum.values()) if (summary := summaries.get(measure))]
-        facts = surface.measures.get(measure)
-        # One unit for the row, chosen over every figure in it, so a stratum in ms beside a pool in s never happens.
-        factor, unit = display_scale(
-            [value for summary in found for value in (summary.mean,) if value is not None],
-            facts.unit if facts else None,
-        )
+        # The measure's one ruler for the report, so a stratum in ms beside a pool in s never happens, and this row
+        # reads in the unit the decision surface's column for the measure does.
+        factor, unit = rulers.get(measure, UNITLESS)
 
         def figure(summaries: dict[str, MeasureSummary], facts_of: CellFacts | StratumFacts) -> ChartValue:
             if measure in summaries:
@@ -1268,7 +1284,7 @@ def _question_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
                     TableColumn(key="status", header="Status"),
                     TableColumn(key="answer", header="Answer"),
                 ],
-                rows=rows,
+                rows=[table_row(row) for row in rows],
                 order="as the campaign declared them",
                 total_rows=len(rows),
             )
@@ -1309,11 +1325,20 @@ def _comparison_cases(comparison: FamilyComparison) -> str:
     return text
 
 
-def _comparison_interval(interval: tuple[float, float] | None, level: float | None) -> str | None:
-    """A contrast's interval on its delta, with the level it holds at — simultaneous over its family."""
+def _figure(value: float | None, ruler: MeasureRuler) -> TableCell:
+    """One figure of a measure as a table cell: restated onto the measure's ruler and carrying its unit."""
+    if value is None:
+        return TableCell(value=None)
+    return TableCell(value=value * ruler.factor, unit=ruler.unit)
+
+
+def _interval_on_delta(interval: tuple[float, float] | None, ruler: MeasureRuler, level: float | None) -> str | None:
+    """An interval on a delta, on the measure's ruler with its unit, and the level it holds at."""
     if interval is None or level is None:
         return None
-    return f"[{format_number(interval[0])}, {format_number(interval[1])}] at {format_number(100 * level)}%"
+    low, high = (format_number(bound * ruler.factor) for bound in interval)
+    unit = f" {ruler.unit}" if ruler.unit else ""
+    return f"[{low}, {high}]{unit} at {format_number(100 * level)}%"
 
 
 def _contrast_margin(bundle: AnalysisContextBundle, comparison: FamilyComparison) -> float | None:
@@ -1328,13 +1353,20 @@ def _contrast_margin(bundle: AnalysisContextBundle, comparison: FamilyComparison
     return bundle.run_margins.get(comparison.name)
 
 
-def _immaterial_words(margin: float | None, heading: str) -> str:
+def _margin_text(margin: float, ruler: MeasureRuler) -> str:
+    """A margin as the row's reading is stated: on its measure's one ruler, with its unit."""
+    return f"±{with_unit(margin * ruler.factor, ruler.unit)}"
+
+
+def _immaterial_words(margin: float | None, heading: str, ruler: MeasureRuler) -> str:
     """The caveat an immaterial row carries, naming the margin it was read against and the reading it is on.
 
-    In the reader's terms — the margin they declared, on the reading the row names — rather than the descriptor
-    field it is stored in, which a first comparison's reader has never seen.
+    In the reader's terms — the margin they declared, on the reading the row names and on its ruler — rather than
+    the descriptor field it is stored in, which a first comparison's reader has never seen.
     """
-    where = "the margin declared on it" if margin is None else f"the margin of ±{format_number(margin)} on {heading}"
+    where = (
+        "the margin declared on it" if margin is None else f"the margin of {_margin_text(margin, ruler)} on {heading}"
+    )
     return f" — immaterial: the observed delta is inside {where}, which does not show the true difference is that small"
 
 
@@ -1363,18 +1395,20 @@ def contrast_verdicts(bundle: AnalysisContextBundle, surface: DecisionSurface) -
     the cell read one verdict.
     """
     arm = _cell_namer(surface, bundle.variant_index)
+    rulers = measure_rulers(surface)
     verdicts = []
     for family in bundle.multiple_comparisons.families:
         for comparison in family.comparisons:
             heading = surface.measure_heading(comparison.name, comparison.reading)
             margin = _contrast_margin(bundle, comparison)
+            ruler = rulers.get(comparison.name, UNITLESS) if comparison.reading == "measure" else UNITLESS
             reason, detail = _contrast_reason(comparison)
             words = (
                 COMPARISON_VERDICT_WORDS[comparison.verdict]
                 + (f" ({comparison.untested_reason})" if comparison.untested_reason else "")
                 + (f" ({comparison.not_separated_reason})" if comparison.not_separated_reason else "")
                 + (
-                    f" (margin ±{format_number(margin)}"
+                    f" (margin {_margin_text(margin, ruler)}"
                     + (", declared on the runs" if comparison.margin_source == "run" else "")
                     + ")"
                     if comparison.verdict == "equivalent" and margin is not None
@@ -1383,7 +1417,7 @@ def contrast_verdicts(bundle: AnalysisContextBundle, surface: DecisionSurface) -
                 + (
                     # The observed delta, not the true one: only `equivalent` shows the difference is small, and an
                     # `equivalent` row already says so through its margin, so the caveat would contradict the verdict.
-                    _immaterial_words(margin, heading)
+                    _immaterial_words(margin, heading, ruler)
                     if comparison.materiality == "immaterial" and comparison.verdict != "equivalent"
                     else ""
                 )
@@ -1429,28 +1463,34 @@ def _comparison_blocks(
         return []
     typed = iter(verdicts)
 
-    rows: list[dict[str, ChartValue]] = []
+    rulers = measure_rulers(surface)
+    rows: list[dict[str, TableCell]] = []
     for family in comparisons.families:
         for comparison in family.comparisons:
             verdict = next(typed)
+            # A measure's figures on its one ruler for the report — the decision surface's — never on one chosen
+            # over this row alone; a judged dimension's are scores, with no unit.
+            ruler = rulers.get(comparison.name, UNITLESS) if comparison.reading == "measure" else UNITLESS
             rows.append(
                 {
-                    "question": (
-                        _question_words(bundle.declared_design, family.question_id)
-                        if family.question_id is not None
-                        else "(campaign-wide)"
+                    "question": TableCell(
+                        value=(
+                            _question_words(bundle.declared_design, family.question_id)
+                            if family.question_id is not None
+                            else "(campaign-wide)"
+                        )
                     ),
-                    "reading": verdict.heading,
-                    "contrast": verdict.arm,
-                    "control": verdict.control,
-                    "control_mean": comparison.control.mean,
-                    "arm_mean": comparison.contrast.mean,
-                    "cases": _comparison_cases(comparison),
-                    "delta": comparison.delta,
-                    "interval": _comparison_interval(comparison.interval, family.interval_level),
-                    "hedges_g": comparison.hedges_g,
-                    "p_adjusted": comparison.p_adjusted,
-                    "verdict": verdict.words,
+                    "reading": TableCell(value=verdict.heading),
+                    "contrast": TableCell(value=verdict.arm),
+                    "control": TableCell(value=verdict.control),
+                    "control_mean": _figure(comparison.control.mean, ruler),
+                    "arm_mean": _figure(comparison.contrast.mean, ruler),
+                    "cases": TableCell(value=_comparison_cases(comparison)),
+                    "delta": _figure(comparison.delta, ruler),
+                    "interval": TableCell(value=_interval_on_delta(comparison.interval, ruler, family.interval_level)),
+                    "hedges_g": TableCell(value=comparison.hedges_g),
+                    "p_adjusted": TableCell(value=comparison.p_adjusted),
+                    "verdict": TableCell(value=verdict.words),
                 }
             )
     blocks: list[ReportBlock] = [
@@ -1737,7 +1777,7 @@ def _label_blocks(surface: DecisionSurface, variant_index: Sequence[VariantIndex
                 TableColumn(key="arm", header="Arm"),
                 *(TableColumn(key=statistic, header=header) for statistic, header in _LABEL_STATISTICS),
             ],
-            rows=rows,
+            rows=[table_row(row) for row in rows],
             order="by label, then the control's cells first and every other cell by arm and rig",
             total_rows=len(rows),
         ),

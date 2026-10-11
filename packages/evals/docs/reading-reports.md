@@ -26,6 +26,25 @@ report_markdown(report)      # for an agent, or to paste as a memo
 report_html(report)          # a page that reads without a script
 ```
 
+## The words are served with the numbers
+
+A client renders a report from its JSON alone and prints only words this package wrote; it never formats a
+number or keeps its own copy of a heading. The JSON carries:
+
+| Where | Field | What it is |
+|---|---|---|
+| The report | `title`, `byline` | The line every serializer heads the report with, and the one under it. An analysis report's title is its headline, led by the campaign's name when the report carries it (`source.campaign_name`, which `analysis_report` and `campaign_report` set); a code-only report's names the campaign by its name, or else its id. |
+| Every block | `section_title` | The heading of its section (`SECTION_TITLES`), so a client groups blocks under the same words. |
+| Every block | `finding_number` | The finding it belongs to, counted from 1 as a reader counts (`finding` counts from 0); null when it belongs to none. |
+| A table block | `rows` | Each row keys every column, and each cell is `{"value": ..., "text": ...}`: the value to sort and draw by, the text to print — the number rule's spelling (`format_number`), a dash for an absent value, `yes`/`no` for a boolean. `TableBlock.values()` reads the rows as values alone. |
+| A chart block | `columns`, `rows` | Its values-as-drawn table, cells as above, its columns already chosen for printing (a distribution's `Shape` column is left out when no row knows a shape; the intent keeps it). The `intent` beside them is what a renderer draws from. |
+
+These are derived from the fields beside them: a report read back from its JSON re-derives them and discards what
+the document said, so a served word cannot drift from what it states, and the schema requires every one.
+
+A chart reaches a browser as the Vega-Lite adapter's compiled spec (`threetears.evals.vega`), whose axes carry
+their number formats: axis ticks are the one place a client formats a number, and the spec says how.
+
 ## The campaign's report
 
 **The campaign's report** is `campaign_report(host, campaign_id, scope_id)` — the one answer the CLI's
@@ -61,7 +80,7 @@ names it. A `thin` or `unswept` lever no step names reads "no next step names it
 no coverage row is a proposal, not a gap, and says so beside it. The methods count the levers no finding names;
 a measured lever with no finding may simply have had nothing to say, so nothing acts on the count.
 
-`Report.basis` says which a report is; `REPORT_VERSION` is 5.
+`Report.basis` says which a report is; `REPORT_VERSION` is 7.
 
 ## Reading the arm table
 
@@ -329,16 +348,20 @@ prompt lever alone (`ticket_router.prompt_version=v1` and `ticket_router.prompt_
 
 ## What the schema checks, and what only the model does
 
-`schema.json` holds the report's shape and every cross-field rule JSON Schema can state:
+`schema.json` ships in the package beside the model (`SCHEMA_PATH`; `published_report_schema()` reads it). It is
+generated from the model, a test holds it equal to the model's, and its `$id` names the report version it validates
+(`urn:threetears-evals:report:v7`), as its `report_version` const does. It holds the report's shape, every served
+word as required, and every cross-field rule JSON Schema can state:
 
 - a code-only report names no analysis or model and holds no headline, finding or text block;
 - an analysis report names both;
 - a report with no findings links no block to one;
 - a finding's own words name their finding;
-- a chart block carries exactly one of an intent and an error, the intent of its own type.
+- a chart block carries exactly one of an intent and an error, the intent of its own type;
+- a table cell's unit qualifies only a number (never words, a boolean or an absent value).
 
 Three rules compare a value with a sibling's, which JSON Schema cannot: a block's finding positions are
-below `finding_count`, a table's `total_rows` is at least the rows it shows, and a row keys only its
+below `finding_count`, a table's `total_rows` is at least the rows it shows, and a row keys exactly its
 table's columns. Those only `Report.model_validate` holds, so a host that validates against the schema
 alone accepts exactly those three malformations as well.
 
@@ -558,27 +581,82 @@ renderer.png(chart)             # or rasterised, for a surface that cannot run a
 Drawing a spec needs nothing past the core; only `png` and `svg` need the extra. Nothing in the core
 imports the adapter.
 
+To draw every chart of a report at once, use `report_charts` (from `threetears.evals.ops`) with any
+renderer:
+
+```python
+charts = report_charts(campaign_report(host, campaign_id, scope_id), renderer)
+for drawn in charts.drawn:       # block position, finding, chart type, and the renderer's drawing
+    ...
+for refused in charts.refused:   # block position, finding, chart type, cause and reason
+    ...
+```
+
+Each chart that cannot be drawn is refused on its own, and every other chart is still drawn. The cause is
+`undrawable` when the report could not decide the stored chart into an intent (its block's reason is
+carried), or `refused_by_renderer` when the renderer refused the intent by raising `ChartRefused` (from
+`threetears.evals.analysis.viz`; the Vega adapter's `SpecPolicyError` and `RasterRefused` are two). State a
+refusal where the chart would have been. A missing chart otherwise reads as a finding that carried none.
+Anything else a renderer raises, any other `ValueError` included, is a defect in the renderer or its compiler,
+and propagates; a renderer of your own refuses a chart with `ChartRefused`.
+
 The packaged palette is a brand-neutral default with a light and a dark variant (`packaged_palette("light")`,
 `packaged_palette("dark")`), a published categorical palette ordered so the four validated slots can be told
 apart as a set. The package's tests hold text to 4.5:1 against the chart surface, slot 1 (every single-series
 mark) and `context` to 3:1, and slots 1-4 to an OKLab ΔE of at least 6 under simulated protanopia
 and deuteranopia. Several categorical slots fall below 3:1 on the light surface, so a chart never relies on
 colour alone to identify a category: it labels the marks or names the level in the values table. A host's own
-`ChartPalette` is held to the contract's shape only.
+`ChartPalette` built in code is held to the contract's shape only.
+
+To keep your colours in a file instead, write an artifact of the packaged one's shape. That is
+`chart_palette.json` beside `threetears/evals/vega/palette.py`: a `light` and a `dark` block whose keys are
+`ChartPalette`'s roles, plus `series_slots` and `validated_slots`. Then read it with `load_palette`:
+
+```python
+from threetears.evals.vega import load_palette
+
+style = StyleProfile(chart_palette=load_palette(Path("chart_palette.json"), "dark"))
+```
+
+`validated_slots` records how many slots you measured as separating for colourblind readers. The loader
+refuses one below `VALIDATED_SLOTS` (4), because the engine assigns that many slots to series it promises a
+reader can tell apart. It also refuses a `series_slots` other than `SERIES_SLOTS` (8), and any colour that
+is not resolved `#rrggbb`. The measurement itself is yours to make, as it is for a palette built in code.
 
 The packaged face is Liberation Sans (`Liberation Sans, Arial, sans-serif`), embedded by the rasteriser and
-metric-compatible with Arial, with digits of one width. To draw in your own face, measure it with the tool in a
-checkout of this repository (it needs the `[vega]` extra) and declare the result:
+metric-compatible with Arial, with digits of one width. To draw in your own face, measure it with the measurer
+the `[vega]` extra installs, from the directory holding the face's files, and declare the result:
 
 ```bash
-uv run python packages/evals/scripts/measure_font_metrics.py \
+python -m threetears.evals.vega.measure_font \
     --family "Inter, Arial, sans-serif" --font-dir /srv/fonts --out inter_metrics.json
 ```
 
 ```python
-from threetears.evals.vega import load_chart_font
+from threetears.evals.vega import VegaRenderer, load_chart_font
 
 style = StyleProfile(chart_font=load_chart_font(Path("inter_metrics.json")))
+renderer = VegaRenderer.for_style(style, font_dir=Path("/srv/fonts"))
+```
+
+The table records the metrics format it was written in and the SHA-256 of each file in `--font-dir` that
+declares the measured family (other faces in the directory are not recorded, so adding or updating one leaves
+the table valid). `load_chart_font` refuses a table written in another metrics format, or measured at weights
+other than the ones the chart type scale draws at, and a renderer given a font directory refuses a font whose
+files there are not the ones it was measured from: a recorded file missing or hashing differently, or a file
+declaring the face that the table did not record (a weight added to the family, say); each refusal names the
+command that re-measures the face. The table also records a digest of what the measurer probed (the
+characters, how each is framed, the size and the corpus), and `load_chart_font` refuses a table probed with
+anything else, so a change to the probes that forgot a format bump reads as drift too.
+
+Gate on it in your own CI, where nothing renders: `check_font_files` (from `threetears.evals.vega`) hashes the
+files and needs no rasteriser, so it runs wherever your image is built.
+
+```python
+from threetears.evals.vega import check_font_files, load_chart_font
+
+def test_the_shipped_face_is_the_measured_one() -> None:
+    check_font_files(load_chart_font(Path("inter_metrics.json")), [Path("/srv/fonts")])
 ```
 
 ## Bringing your own renderer

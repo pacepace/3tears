@@ -46,8 +46,8 @@ async def test_an_answer_s_spend_lands_on_each_result_and_on_the_summary() -> No
     (match,) = [measure for measure in summary.measures if measure.name == "match"]
     assert match.mean == 1.0
     tokens = [len(case["text"]) * 10 for case in CASES]
-    assert summary.candidate_calls == 3
-    assert summary.candidate_cost_usd == pytest.approx(sum(tokens) * RATE)
+    assert summary.role_spend("candidate").calls == 3
+    assert summary.role_spend("candidate").cost_usd == pytest.approx(sum(tokens) * RATE)
     # $0.00016, shown to three significant figures rather than rounded away.
     assert "candidate spend: $0.000160 over 3 call(s)" in summary.render()
     for result in list_results(host.storage, summary.run_id, SCOPE):
@@ -66,7 +66,7 @@ async def test_a_plain_answer_reports_no_spend_as_before() -> None:
 
     host = callable_host()
     summary = await run_eval(CASES, plain, expected=_expected, scope_id=SCOPE, host=host, k=1)
-    assert summary.candidate_calls == 0 and summary.candidate_cost_usd is None
+    assert summary.role_spend("candidate") is None
     assert "candidate spend" not in summary.render()
     assert all(result.usage == [] for result in list_results(host.storage, summary.run_id, SCOPE))
 
@@ -77,8 +77,8 @@ async def test_an_unpriced_answer_leaves_the_cost_unknown_never_zero() -> None:
 
     host = callable_host()
     summary = await run_eval(CASES, unpriced, expected=_expected, scope_id=SCOPE, host=host, k=1)
-    assert summary.candidate_calls == 3 and summary.candidate_cost_usd is None
-    assert "candidate spend: unknown: a candidate call went unpriced over 3 call(s)" in summary.render()
+    assert summary.role_spend("candidate").calls == 3 and summary.role_spend("candidate").cost_usd is None
+    assert "candidate spend: unpriced over 3 call(s): its client reported no price for them" in summary.render()
     assert all(result.cost_usd is None for result in list_results(host.storage, summary.run_id, SCOPE))
 
 
@@ -115,13 +115,13 @@ async def test_compare_tests_the_arms_reported_cost_against_the_control() -> Non
     comparison = await compare(
         CASES, {"dearer": dearer, "cheaper": priced}, expected=_expected, control="dearer", scope_id=SCOPE, k=2
     )
-    assert comparison.arms["cheaper"].candidate_cost_usd == pytest.approx(
-        comparison.arms["dearer"].candidate_cost_usd / 10  # type: ignore[operator]
+    assert comparison.arms["cheaper"].role_spend("candidate").cost_usd == pytest.approx(
+        comparison.arms["dearer"].role_spend("candidate").cost_usd / 10  # type: ignore[operator]
     )
     (table,) = [
         block for block in comparison.report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"
     ]
-    by_reading = {row["reading"]: row for row in table.rows}
+    by_reading = {row["reading"]: row for row in table.values()}
     # The candidate's spend, not cost_usd, which sums a judge's spend too: what it cost to measure the arm.
     assert "Measuring spend, all roles" not in by_reading
     cost = by_reading["Production cost"]

@@ -42,9 +42,9 @@ def claude(model: str, *, max_tokens: int = 1024) -> Any:
 
     async def generate(*, system: str, user: str, response_format: dict | None = None) -> Completion:
         config = dict(effort)
-        if (response_format or {}).get("type") == "json_schema":  # the analysis writer sends the shape it wants
+        if (response_format or {}).get("type") == "json_schema":  # every typed call sends the shape it reads
             config["format"] = {"type": "json_schema", "schema": response_format["json_schema"]["schema"]}
-        # A judge asks for JSON in its prompt and sends {"type": "json_object"}, which Claude needs no flag for.
+        # Plain {"type": "json_object"} (JSON asked for in the prompt) needs no flag on Claude.
         response = await client.messages.create(
             model=model,
             max_tokens=max_tokens,  # thinking is billed as output, so leave it room

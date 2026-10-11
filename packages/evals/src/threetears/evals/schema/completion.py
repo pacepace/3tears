@@ -19,12 +19,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, Self
 
-#: ``response_format`` directive forcing JSON-object output, passed to
-#: :meth:`CompletionClient.generate` by callers that parse a structured JSON
-#: *object* (the judge, the analysis generator, the proposer/boundary-proposer).
-#: Not for callers that expect a JSON *array* — ``{"type": "json_object"}``
-#: forbids one, which is why ``variation_gen`` asks for an object wrapping its
-#: array rather than passing this and hoping.
+#: ``response_format`` directive asking for any JSON object, with no shape. No package call sends it: every call
+#: whose reply is read into a typed shape (the judge, the analysis generator, the proposer on either axis, the
+#: variation writer, the simulated user) sends that shape as a strict ``json_schema`` directive
+#: (:func:`~threetears.evals.kernel.strict_response_format`). Kept for a host's own calls, and for its client's
+#: translation of the strict directive to a provider that has only JSON mode.
 JSON_OBJECT_RESPONSE_FORMAT: dict[str, Any] = {"type": "json_object"}
 
 
@@ -190,9 +189,11 @@ class CompletionClient(Protocol):
     """The completion port eval is constructed with.
 
     The host injects an implementation; eval never builds one and never names a
-    provider. ``response_format`` is an optional provider directive (e.g.
-    :data:`JSON_OBJECT_RESPONSE_FORMAT`) for callers that parse structured
-    output; ``None`` lets the provider default apply.
+    provider. ``response_format`` is an optional provider directive for callers that parse structured
+    output: every engine call that reads its reply into a typed shape sends a strict ``json_schema`` directive
+    (``{"type": "json_schema", "json_schema": {"name", "strict": True, "schema"}}``), which a client passes to a
+    provider that enforces it, or translates to the nearest mode its provider has (JSON mode, a tool's input
+    schema); the engine validates the reply on return either way. ``None`` lets the provider default apply.
 
     **``generate`` must be safe to call concurrently on one instance.** The judge
     caches one client per ``(model, temperature)`` and scores a result's dimensions

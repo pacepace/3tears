@@ -28,9 +28,15 @@ A run's results are read by :func:`results_list` — one light row per result, p
 the cell that came out wrong — and :func:`result_get`, which reads one result back as stored with one part of its
 trace: by default the output its kind stored and the roles' spend, and the judge's evidence or the spans by name.
 
+A report's pictures are drawn by :func:`report_charts`, with the host's renderer: every chart that draws, and
+one :class:`ChartRefusal` per chart that does not, so one undrawable chart costs that chart alone.
+
 The reporter case bank's operations — :func:`reporter_case_freeze`, :func:`reporter_cases_list` and
 :func:`reporter_case_archive` — are how a surface makes the cases a reporter run measures: each is one
-campaign's analysis bundle, frozen, and a reporter template launches nothing until one is.
+campaign's analysis bundle, frozen, and a reporter template launches nothing until one is. A host launching
+reporter runs makes every refusal a reporter arm meets with :func:`admit_reporter_launch` — and plans the arm
+with :func:`plan_reporter_arm` — over its own prompt registry (:class:`ReporterPrompts`) and model resolution
+(:data:`ReporterModelResolver`).
 
 **This module is the package's public root.** A host imports from here and from no module below it,
 and only the names in ``__all__``.
@@ -72,6 +78,7 @@ from threetears.evals.ops.analysis import (
     insights_list,
     report_read,
 )
+from threetears.evals.ops.charts import ChartRefusal, ChartRefusalCause, DrawnChart, ReportCharts, report_charts
 from threetears.evals.ops.host import AnalysisGeneration, OpsHost
 from threetears.evals.ops.jobs import (
     ACTION_JOB_PREFIX,
@@ -143,7 +150,12 @@ from threetears.evals.analysis.out_of_run_spend import (
 )
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporter_bank import FrozenReporterCase
-from threetears.evals.ops.judge_cases import JudgeCasesFreeze, judge_cases_freeze
+from threetears.evals.ops.judge_cases import (
+    JudgeCasesFreeze,
+    JudgeTemplateCreate,
+    judge_cases_freeze,
+    judge_template_create,
+)
 from threetears.evals.ops.judge_profiles import (
     JudgeProfileEntry,
     JudgeProfileListing,
@@ -154,7 +166,14 @@ from threetears.evals.ops.judge_profiles import (
 )
 from threetears.evals.ops.regressions import RegressionAlert, RegressionSink, RegressionWatch
 from threetears.evals.ops.reporter import (
+    REPORTER_UNHONOURED_LAUNCH_ARGUMENTS,
     AmbiguousReporterPair,
+    ReporterAdmitted,
+    ReporterModelResolver,
+    ReporterModelRole,
+    ReporterPrompts,
+    admit_reporter_launch,
+    plan_reporter_arm,
     ReporterCaseEntry,
     ReporterCaseFreeze,
     ReporterCaseListing,
@@ -266,15 +285,27 @@ __all__ = [
     "OutOfRunSpendReport",
     "PivotTable",
     "ProposedBar",
+    "ChartRefusal",
+    "ChartRefusalCause",
+    "DrawnChart",
+    "ReportCharts",
     "ReportDocument",
     "RegressionAlert",
     "RegressionSink",
     "RegressionWatch",
     "JudgeCasesFreeze",
+    "JudgeTemplateCreate",
     "JudgeProfileEntry",
     "JudgeProfileListing",
     "JudgeProfileRecording",
     "JudgeProfilesRecord",
+    "REPORTER_UNHONOURED_LAUNCH_ARGUMENTS",
+    "ReporterAdmitted",
+    "ReporterModelResolver",
+    "ReporterModelRole",
+    "ReporterPrompts",
+    "admit_reporter_launch",
+    "plan_reporter_arm",
     "ReporterCaseEntry",
     "ReporterCaseFreeze",
     "ReporterCaseListing",
@@ -321,6 +352,7 @@ __all__ = [
     "insights_list",
     "job_cancel",
     "judge_cases_freeze",
+    "judge_template_create",
     "judge_profiles_list",
     "judge_profiles_record",
     "job_poll",
@@ -329,6 +361,7 @@ __all__ = [
     "out_of_run_spend_text",
     "parse_job_id",
     "pivot_text",
+    "report_charts",
     "report_read",
     "reporter_case_archive",
     "reporter_case_freeze",

@@ -30,7 +30,13 @@ import pytest
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis import COST_ESTIMATE_MIN_BASIS
 from threetears.evals.schema import EvalRun
-from threetears.evals.kernel import EvalStorage, OutOfRunBudget, ValidationFailedError
+from threetears.evals.kernel import (
+    AdmittedGeneration,
+    EvalStorage,
+    OutOfRunBudget,
+    ValidationFailedError,
+    plan_variation_calls,
+)
 from threetears.evals.kernel.host import CompletionRole
 from threetears.evals.kernel.identity import derive_context_identity
 from threetears.evals.schema.models import (
@@ -193,28 +199,34 @@ def _generating_host(
         handed.append(request)
 
         async def generate() -> Any:
-            factory = generating.eval_host.completion_clients("a variation generation")
-            if request.variation_model is None:
-                return await generate_variations(
-                    request.template,
-                    request.n_variations,
-                    storage=storage,
-                    scope_id=request.scope_id,
-                    blocking_executor=None,
+            if not budgeted and request.generation is not None:
+                # A launcher spending on a writer and budget of its own rather than the launch's admission.
+                own = OutOfRunBudget(storage, scope_id=request.scope_id, cap_usd=None, blocking_executor=None)
+                writer = generating.eval_host.completion_clients("a variation generation")(
+                    "variation", request.variation_model
                 )
-            budget = request.generation_budget
-            if not budgeted:
-                budget = OutOfRunBudget(storage, scope_id=request.scope_id, cap_usd=None, blocking_executor=None)
-            async with factory("variation", request.variation_model) as writer:
-                return await generate_variations(
-                    request.template,
-                    request.n_variations,
-                    storage=storage,
-                    scope_id=request.scope_id,
-                    llm=writer,
-                    budget=budget,
-                    blocking_executor=None,
-                )
+                existing = storage.query_test_cases(request.scope_id, template_id=request.template.id)
+                planned = plan_variation_calls(request.template, request.n_variations, existing)
+                admitted = own.admit(writer, "variation", list(planned.values()))
+                async with writer:
+                    return await generate_variations(
+                        request.template,
+                        request.n_variations,
+                        storage=storage,
+                        scope_id=request.scope_id,
+                        generation=AdmittedGeneration(
+                            writer=writer, budget=own, calls=dict(zip(planned, admitted, strict=True))
+                        ),
+                        blocking_executor=None,
+                    )
+            return await generate_variations(
+                request.template,
+                request.n_variations,
+                storage=storage,
+                scope_id=request.scope_id,
+                generation=request.generation,
+                blocking_executor=None,
+            )
 
         generation = await request.launch_group.resolve_once(
             ("cases", request.template.id, str(request.n_variations)), generate
@@ -276,10 +288,10 @@ async def test_a_launch_generates_with_the_named_writer_and_every_arm_records_it
     runs = await _launch(host, template, n_variations=2, variation_model=WRITER)
     await _settled(host, [run.id for run in runs])
 
-    # Twice, both in the writer's own role — never the simulator's: once by the launch's admission to price its
-    # calls before any launcher ran (asked its prices, never called), and once by the launcher to write the cases.
-    assert clients.asked == [("variation", WRITER), ("variation", WRITER)]
-    assert [writer.calls for writer in clients.writers] == [0, 1]
+    # Once, in the writer's own role — never the simulator's: by the launch's call, which priced and admitted its
+    # calls before any launcher ran; the launcher made them on that very writer and built none of its own.
+    assert clients.asked == [("variation", WRITER)]
+    assert [writer.calls for writer in clients.writers] == [1]
     first, second = runs
     assert first.test_case_ids == second.test_case_ids, "every arm answers the same generated cases"
     for run in runs:
@@ -431,7 +443,9 @@ async def test_a_battery_prepares_the_templates_a_model_writes_last_so_an_earlie
     async def refuses_enumerated(request: LaunchRequest) -> EvalRun:
         if request.template.id == "enumerated":
             handed.append(request)
-            raise ValidationFailedError("the enumerated template's subject cannot be captured")
+            raise ValidationFailedError(
+                "the enumerated template's subject cannot be captured", remedy="launch another subject"
+            )
         return await launchable.launch(request)
 
     refusing = replace(host, kinds={TOY_EXTRACTOR_KIND: replace(launchable, launch=refuses_enumerated)})
@@ -581,7 +595,9 @@ async def test_launch_estimate_prices_the_cases_a_launch_would_generate():
     _nothing_was_paid_for(host, storage, clients)
     with pytest.raises(ValidationFailedError) as refused:
         await run_launch(OpsHost(launch=host), arguments, TOYHOST_SCOPE)
-    assert str(refused.value) == arm.refusal, "the estimate reports the launch's own refusal, word for word"
+    assert (refused.value.message, refused.value.remedy) == (arm.refusal, arm.remedy), (
+        "the estimate reports the launch's own refusal, word for word"
+    )
 
 
 # =============================================================================
@@ -621,7 +637,7 @@ async def test_a_launchs_generation_is_ledgered_once_under_its_group_at_the_out_
         TOYHOST_SUBJECT.subject_id,
     )
     assert (spend.priced_ceiling_usd, spend.cap_usd) == (WRITER_CEILING, host.settings().max_out_of_run_cost_usd)
-    assert [writer.calls for writer in clients.writers] == [0, 1], "priced once at admission, called once"
+    assert [writer.calls for writer in clients.writers] == [1], "priced once at admission, in the call; called once"
 
 
 async def test_a_generation_priced_above_the_out_of_run_cap_is_refused_before_its_call():
@@ -1042,6 +1058,8 @@ async def test_a_battery_reads_the_hosts_settings_once_for_every_template():
 def _history(
     storage: EvalStorage, *, template_id: str, model: str, costs: list[float | None], **run_fields: Any
 ) -> None:
+    # A finished run: history is what ended. One still going carries a lease its process renews.
+    run_fields = {"status": "completed", **run_fields}
     run = make_eval_run(scope_id=TOYHOST_SCOPE, template_id=template_id, candidate_model=model, **run_fields)
     storage.save_eval_run(run)
     for k, cost in enumerate(costs, start=1):

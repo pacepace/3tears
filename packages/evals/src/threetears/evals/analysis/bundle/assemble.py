@@ -45,13 +45,12 @@ from typing import TYPE_CHECKING, Protocol
 
 from threetears.evals.analysis.agreement import (
     judge_agreement,
-    judge_evidence_tiers,
     judge_self_agreement,
     inter_judge_agreement,
     person_scores_by_result,
 )
 from threetears.evals.analysis.judge_drift import judge_drift
-from threetears.evals.analysis.judge_profiles import judged_criteria, tiers_with_judge_profiles
+from threetears.evals.analysis.judge_profiles import judged_ratings, judges_tiers
 from threetears.evals.analysis.arms import arm_names
 from threetears.evals.analysis.contention import (
     withheld_latency,
@@ -122,7 +121,6 @@ from threetears.evals.analysis.bundle.coverage import _coverage_map, _declared_c
 from threetears.evals.analysis.bundle.cell_reads import (
     _cell_measures,
     _cell_strata,
-    _judged_keys,
     _judged_measures,
     _results_by_cell,
 )
@@ -227,45 +225,6 @@ class CampaignReadStore(Protocol):
     def query_judge_profiles(self, scope_id: str, /) -> list[EvalJudgeProfile]:
         """Every stored judge profile in a scope — unpaged, since a judge's profile is looked up among them (#628)."""
         ...
-
-
-def _campaign_ratings(
-    storage: CampaignReadStore, scope_id: str, runs: Sequence[EvalRun], results: Sequence[EvalResult]
-) -> list[CalibrationRating]:
-    """The ratings the campaign's judge agreement reads: of its resolved members' results, and of what they judged.
-
-    Over the resolved members only, like every other lens: a rating of an archived run's result calibrates a
-    judge the bundle does not otherwise read. Except by what was read (#628): a rating anywhere in the scope
-    whose label key — the judged output and the criterion — is a key one of the members' judge scores carries
-    is a person's label of an output this campaign's judge scored, and is read too. Ratings are read per run,
-    in run order, then the scope's other ratings oldest first, so the unpaired list is deterministic for the
-    fingerprint; the scope is read only when a member's score carries a key at all.
-
-    Args:
-        storage: The store.
-        scope_id: The scope.
-        runs: The resolved member runs, in order.
-        results: Their results.
-
-    Returns:
-        The ratings, each once.
-    """
-    ratings = [rating for run in runs for rating in storage.query_calibration_ratings(scope_id, run_id=run.id)]
-    keys = {
-        key
-        for result in results
-        for score in (*result.rubric_scores, result.transcript_score, result.outcome_score)
-        if score is not None and (key := score.label_key) is not None
-    }
-    if not keys:
-        return ratings
-    held = {rating.id for rating in ratings}
-    ratings += [
-        rating
-        for rating in storage.query_calibration_ratings(scope_id)
-        if rating.id not in held and rating.label_key in keys
-    ]
-    return ratings
 
 
 def _launch_disclosure(runs: Collection[EvalRun]) -> str | None:
@@ -506,7 +465,13 @@ def assemble_context_bundle(
     # Ratings are read once, because the agreement and the prediction-powered estimates both pair them with the
     # judge (#598): the members' per run, in run order, then any in the scope labelling an output a member's judge
     # scored (#628), so the unpaired list is deterministic for the fingerprint.
-    ratings = _campaign_ratings(storage, scope_id, runs, results)
+    ratings = judged_ratings(storage, scope_id, runs, results)
+    # The judges' tiers, decided before anything judged is read: the frontier's verdict on a judged pass^k names the
+    # tier it stands on (#679), and every judged reading below carries one. A judge the campaign's own evidence
+    # leaves undetermined reads its tier from the stored profile of that very judge and criterion when the profile
+    # decides one (#628); the entry names the profile, so the tier is never presented as the campaign's own, and the
+    # profile's identity is in the fingerprint's pre-image with it.
+    tiers = judges_tiers(storage, scope_id, runs, results)
     person_scores = person_scores_by_result(ratings, results)
     bundle = AnalysisContextBundle(
         campaign_id=campaign.id,
@@ -537,6 +502,7 @@ def assemble_context_bundle(
             archived_run_ids=None,
             rubric_threshold=profile.bars.pass_threshold(campaign.behavior),
             profile=profile,
+            tiers=tiers,
             # The boundary pillar: each contestant's guardrail dimensions held against the campaign's control arm,
             # at the margins it declares, by the rule the bundle's guardrails are decided by (#613).
             control_variant_key=design.control_arm.variant_key if design.control_arm is not None else None,
@@ -608,25 +574,13 @@ def assemble_context_bundle(
         retracted_insights=retracted,
         # Over the resolved members only, like every other lens: a rating of an archived run's result
         # calibrates a judge the bundle does not otherwise read — unless it labels an output a member's judge
-        # scored (#628), which `_campaign_ratings` reads too.
+        # scored (#628), which `judged_ratings` reads too.
         judge_agreement=judge_agreement(ratings, results),
     )
     # The judge's reliability, before anything judged is summarised: every judged reading carries the
     # tier these two agreements decide for the judges that served it.
     bundle.judge_self_agreement = judge_self_agreement(results)
-    # A judge the campaign's own evidence leaves undetermined reads its tier from the stored profile of that very
-    # judge and criterion, when the profile decides one (#628); the entry names the profile, so the tier is never
-    # presented as the campaign's own, and the profile's identity is in the fingerprint's pre-image with it.
-    templates = {
-        template_id: template
-        for template_id in sorted({run.template_id for run in runs if run.template_id})
-        if (template := storage.load_template(template_id, scope_id)) is not None
-    }
-    bundle.judge_evidence_tiers = tiers_with_judge_profiles(
-        judge_evidence_tiers(bundle.judge_agreement, bundle.judge_self_agreement, _judged_keys(results)),
-        storage.query_judge_profiles(scope_id),
-        judged_criteria(runs, results_by_run, templates),
-    )
+    bundle.judge_evidence_tiers = tiers
     bundle.inter_judge_agreement = inter_judge_agreement(results)
     bundle.judge_drift = judge_drift(results)
     bundle.judge_change = _judge_change(runs, results_by_run)

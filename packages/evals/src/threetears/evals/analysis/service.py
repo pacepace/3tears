@@ -59,12 +59,15 @@ from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt
 from threetears.evals.kernel.errors import (
     ConflictError,
+    EvalServiceError,
     JobFenced,
     NotFoundError,
     ProviderRefusedError,
     StorageError,
     ValidationFailedError,
 )
+from threetears.evals.kernel.refusals import job_refusal
+from threetears.evals.schema.refusal import JobRefusal
 from threetears.evals.kernel.job_leases import ANALYSIS_JOB, JobLeases, write_held_record
 from threetears.evals.kernel.job_timeout import EvalJobTimeout, timed_out_detail
 from threetears.evals.kernel.storage import JobRecordStore
@@ -73,6 +76,14 @@ from threetears.evals.kernel.offload import run_blocking, wait_through_cancellat
 from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
 from threetears.evals.kernel.provider import describe_failure, log_provider_failure, traceback_is_safe
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import (
+    FIND_ANALYSIS,
+    FIND_CAMPAIGN,
+    FIND_FINDING,
+    FIND_RUN,
+    FIND_TEMPLATE,
+    WRITER_REMEDY,
+)
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
@@ -260,7 +271,7 @@ def _load_campaign(storage: AnalysisStore, campaign_id: str, scope_id: str) -> E
     """
     campaign = storage.load_campaign(campaign_id, scope_id)
     if campaign is None:
-        raise NotFoundError("campaign", campaign_id)
+        raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
     return campaign
 
 
@@ -403,20 +414,21 @@ async def _assemble(
         if bundle.archived_run_ids and not bundle.unresolved_run_ids:
             raise ValidationFailedError(
                 f"campaign '{campaign_id}' has {len(bundle.archived_run_ids)} run(s) in scope "
-                f"'{scope_id}' and every one is archived — nothing to analyse. Un-archive a run to "
-                f"include it."
+                f"'{scope_id}' and every one is archived — nothing to analyse",
+                remedy="un-archive a run (run_archive with archived=false) to include it",
             )
         raise ValidationFailedError(
             f"campaign '{campaign_id}' has no runs resolvable in scope '{scope_id}' — nothing to "
             f"analyse (unresolved run ids: {bundle.unresolved_run_ids or 'none attached'}"
             + (f"; archived and excluded: {len(bundle.archived_run_ids)}" if bundle.archived_run_ids else "")
-            + ")"
+            + ")",
+            remedy=f"create a campaign over runs this scope holds ({FIND_RUN})",
         )
 
     # A requested writer the host does not allow is refused before the prompt is resolved or a client
     # built; the host's default is checked once the client says which model it resolved to.
     if model is not None and (ineligible := host.profile.analysis_writer_refusal(model)) is not None:
-        raise ValidationFailedError(ineligible)
+        raise ValidationFailedError(ineligible, remedy=WRITER_REMEDY)
     prompt = await resolve_prompt()
     system, user, contract = first_request(bundle, prompt, host.profile)
 
@@ -426,7 +438,7 @@ async def _assemble(
     client = clients("analysis", model)
     if model is None and (ineligible := host.profile.analysis_writer_refusal(client.model_name)) is not None:
         await _release(client)
-        raise ValidationFailedError(f"the host's default writer: {ineligible}")
+        raise ValidationFailedError(f"the host's default writer: {ineligible}", remedy=WRITER_REMEDY)
     return _Assembled(
         campaign=campaign,
         bundle=bundle,
@@ -750,14 +762,25 @@ async def run_analysis_generation(
     tally = GenerationTally()
     started_at = utc_now_iso()
 
-    async def record(outcome: AttemptOutcome, *, error: str | None = None, analysis_id: str | None = None) -> bool:
+    async def record(
+        outcome: AttemptOutcome,
+        *,
+        error: str | None = None,
+        analysis_id: str | None = None,
+        refused_by: EvalServiceError | None = None,
+    ) -> bool:
         # On the host's blocking executor, and waited for through a cancellation: the record is how the
         # attempt ended, so a cancel arriving while it is written must not leave it half-known. Returns
-        # whether a cancellation arrived meanwhile, which the caller delivers once it has finished.
-        return (await recorded(outcome, error=error, analysis_id=analysis_id))[1]
+        # whether a cancellation arrived meanwhile, which the caller delivers once it has finished. An engine
+        # error the ending raises to its caller is kept on the record as data (its kind and status).
+        return (await recorded(outcome, error=error, analysis_id=analysis_id, refused_by=refused_by))[1]
 
     async def recorded(
-        outcome: AttemptOutcome, *, error: str | None = None, analysis_id: str | None = None
+        outcome: AttemptOutcome,
+        *,
+        error: str | None = None,
+        analysis_id: str | None = None,
+        refused_by: EvalServiceError | None = None,
     ) -> tuple[_AttemptRecorded, bool]:
         # :func:`record`, saying too whether the ending landed, or was refused because the attempt had ended.
         return await _offloaded_result(
@@ -776,6 +799,7 @@ async def run_analysis_generation(
             analysis_id=analysis_id,
             attempt_id=prepared.attempt_id,
             leases=leases,
+            refusal=None if refused_by is None else job_refusal(refused_by),
         )
 
     calls = prepared.calls
@@ -802,11 +826,14 @@ async def run_analysis_generation(
     except GenerationError as e:
         # Both calls' output refused is `refused`; every other generation-contract failure (a
         # call cut short, a precondition refused before any call) is `failed`.
-        await record("refused" if isinstance(e, SoundnessRefusal) else "failed", error=str(e))
         # A generation-contract violation is caller-restatable (retry, or edit
         # the prompt), not a server fault — surface it as a 422, like the
         # proposer surfaces its own draft-validation failures.
-        raise ValidationFailedError(f"analysis generation failed: {e}") from e
+        contract = ValidationFailedError(
+            f"analysis generation failed: {e}", remedy="start the generation again, or edit the prompt it reads"
+        )
+        await record("refused" if isinstance(e, SoundnessRefusal) else "failed", error=str(e), refused_by=contract)
+        raise contract from e
     except asyncio.CancelledError:
         # A caller's budget or disconnect, or a shutdown cancelling a background generation.
         # Recorded synchronously, before the cancellation propagates, because this is the
@@ -824,11 +851,15 @@ async def run_analysis_generation(
         # The budget refused a call before it was sent — only the repair round-trip can reach this, since
         # the first call was admitted when the generation was prepared. Nothing was sent for it, so the
         # tally counts only what was; what the first call cost is on the record.
-        await record("failed", error=f"the repair round-trip was refused before it was sent: {e}")
-        raise ValidationFailedError(
+        unrepaired = ValidationFailedError(
             f"analysis generation failed: its output was refused and the one repair round-trip was refused before "
-            f"it was sent ({e}); ${format_number(tally.token_cost)} was billed on the first call and nothing was stored"
-        ) from e
+            f"it was sent ({e}); ${format_number(tally.token_cost)} was billed on the first call and nothing was stored",
+            remedy="start the generation again, under a cap with room for its repair round-trip",
+        )
+        await record(
+            "failed", error=f"the repair round-trip was refused before it was sent: {e}", refused_by=unrepaired
+        )
+        raise unrepaired from e
     # prawduct:ok-broad-except — eval names no provider exception type; the host describer classifies what the call raised
     except Exception as e:
         # The exception's own text is not stored on the record: a provider status error stringifies
@@ -838,8 +869,14 @@ async def run_analysis_generation(
         # propagated, because an exception escaping a REST route reaches the web server, which logs
         # its whole traceback; otherwise it propagates as itself and whoever catches it logs it.
         failure = describe_failure(failure_describer, e, logger=log, where="eval.generate_analysis")
-        await record("failed", error=failure.description)
-        if traceback_is_safe(failure):
+        # The provider's refusal, when its payload was withheld: what the caller is raised, and what the record keeps.
+        provider = (
+            None
+            if traceback_is_safe(failure)
+            else ProviderRefusedError(f"analysis generation failed: {failure.description}")
+        )
+        await record("failed", error=failure.description, refused_by=provider)
+        if provider is None:
             # Nothing a traceback would print is withheld, so no provider status error is in the
             # chain: most often a defect in the generation itself. It propagates as itself, so its
             # status and code name no provider, and whatever logs it keeps the diagnosing traceback.
@@ -852,7 +889,7 @@ async def run_analysis_generation(
             prepared.attempt_id,
             campaign_id,
         )
-        raise ProviderRefusedError(f"analysis generation failed: {failure.description}") from None
+        raise provider from None
 
     # A failed persist of the just-paid artifact is re-raised with what it cost, so
     # the operator reading the 503 knows the spend happened and nothing is stored.
@@ -871,11 +908,12 @@ async def run_analysis_generation(
     try:
         cancelled = await _offloaded(executor, storage.save_analysis, analysis)
     except StorageError as e:
-        await record("failed", error=f"the generated analysis could not be stored: {e}")
-        raise StorageError(
+        unstored = StorageError(
             f"failed to persist generated analysis '{analysis.id}' for campaign '{campaign_id}' "
             f"(the generation cost ${format_number(analysis.generation.token_cost)} was already incurred)"
-        ) from e
+        )
+        await record("failed", error=f"the generated analysis could not be stored: {e}", refused_by=unstored)
+        raise unstored from e
     # A restated claim replaces the live insight that states it rather than adding a row beside it, so
     # regenerating over the same evidence leaves the ledger its size. Read now, not at assembly: the ledger
     # the bundle read is capped, and another generation may have written since.
@@ -959,6 +997,7 @@ def _record_analysis_attempt(
     analysis_id: str | None,
     attempt_id: str,
     leases: JobLeases | None,
+    refusal: JobRefusal | None = None,
 ) -> _AttemptRecorded:
     """Store how one generation attempt ended, from the tally the generator kept.
 
@@ -983,6 +1022,7 @@ def _record_analysis_attempt(
         attempt_id: The attempt's id, minted when the generation was prepared — a background
             generation's job id, so its poller can find this record once the job is gone.
         leases: The leases the attempt is held under; once they let go of it, this ending is refused.
+        refusal: The engine refusal the attempt ended on, as data; None for any other ending.
 
     Returns:
         ``recorded``; ``fenced`` when the stored attempt had already ended — written lost — so this ending was
@@ -1005,6 +1045,7 @@ def _record_analysis_attempt(
         refusals=tally.refusals,
         error=error,
         started_at=started_at,
+        refusal=refusal,
     )
     try:
         write_held_record(storage, ANALYSIS_JOB, attempt, leases=leases)
@@ -1098,7 +1139,7 @@ def get_analysis(storage: AnalysisStore, analysis_id: str, scope_id: str) -> Eva
     """
     analysis = storage.load_analysis(analysis_id, scope_id)
     if analysis is None:
-        raise NotFoundError("analysis", analysis_id)
+        raise NotFoundError("analysis", analysis_id, remedy=FIND_ANALYSIS)
     return analysis
 
 
@@ -1255,7 +1296,10 @@ def analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> 
     Raises:
         NotFoundError: No analysis with that id in the scope.
     """
-    return build_report(get_analysis(storage, analysis_id, scope_id))
+    analysis = get_analysis(storage, analysis_id, scope_id)
+    # The campaign titles the report by name; an analysis outliving its campaign is still reported, by its headline.
+    campaign = storage.load_campaign(analysis.campaign_id, scope_id)
+    return build_report(analysis, campaign_name=campaign.name if campaign is not None else None)
 
 
 def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report:
@@ -1286,7 +1330,7 @@ def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report:
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
     live = [analysis for analysis in list_analyses(host.storage, campaign_id, scope_id) if not analysis.archived]
     if live:
-        return build_report(live[0])
+        return build_report(live[0], campaign_name=campaign.name)
     assembled_at = utc_now_iso()
     bundle = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
     return build_code_only_report(
@@ -1341,17 +1385,17 @@ def finding_chart_intent(storage: AnalysisStore, analysis_id: str, scope_id: str
     # A finding is identified by its position in the authored document, as a string.
     position = int(finding_id) if finding_id.isdigit() else -1
     if not 0 <= position < len(analysis.resolutions):
-        raise NotFoundError("finding", finding_id)
+        raise NotFoundError("finding", finding_id, remedy=FIND_FINDING)
     viz = analysis.resolutions[position].chart
     if viz is None:
-        raise NotFoundError("chart for finding", finding_id)
+        raise NotFoundError("chart for finding", finding_id, remedy=FIND_FINDING)
     try:
         return chart_intent(viz.type, viz.payload)
     except (PayloadError, IntentPolicyError) as exc:
         # Surfaced rather than swallowed: this caller asked for THIS chart by id,
         # so an empty answer would read as "no chart here" when the truth is that
         # the stored payload cannot be drawn.
-        raise NotFoundError("drawable chart for finding", f"{finding_id} ({exc})") from exc
+        raise NotFoundError("drawable chart for finding", f"{finding_id} ({exc})", remedy=FIND_FINDING) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1448,8 +1492,8 @@ def list_insights(
     named = describe_insight_id_filters(subject_id, source_campaign_id)
     narrowed = f" (already narrowed by {named})" if named else ""
     raise ValidationFailedError(
-        f"No insight's scope contains {scope!r}. Searched {len(insights)} insight(s){narrowed}; "
-        f"`scope` matches by substring, case-insensitively.{vocabulary}"
+        f"No insight's scope contains {scope!r}. Searched {len(insights)} insight(s){narrowed}.{vocabulary}",
+        remedy="name a scope one of them records; `scope` matches by substring, case-insensitively",
     )
 
 
@@ -1605,34 +1649,38 @@ def freeze_reporter_case(
         # kind's launch runs one, and every other kind would meet a case it cannot interpret.
         raise ValidationFailedError(
             f"template {template_id!r} is of kind {template.candidate_kind!r}, not {REPORTER_KIND!r} — a reporter "
-            f"case is frozen into a template of the {REPORTER_KIND!r} kind, whose launch is what runs it."
+            f"case is frozen into a template of the {REPORTER_KIND!r} kind, whose launch is what runs it",
+            remedy=f"freeze into a template of the {REPORTER_KIND!r} kind ({FIND_TEMPLATE})",
         )
     try:
         parsed = [
             label if isinstance(label, ReporterLabel) else ReporterLabel.model_validate(label) for label in labels
         ]
     except ValidationError as e:
-        raise ValidationFailedError(f"invalid labels: {e}") from e
+        raise ValidationFailedError(
+            f"invalid labels: {e}", remedy="send each label as a dimension, a direction and the reader's words"
+        ) from e
     criteria = {dim.name: LabelCriterion.of(dim) for dim in template.rubric}
     if unscored := sorted({label.dimension for label in parsed} - set(criteria)):
         raise ValidationFailedError(
-            f"labels name {', '.join(unscored)}, which template {template_id!r} does not score "
-            f"({', '.join(sorted(criteria)) or 'no rubric dims'}) — a label on an unjudged dimension could never "
-            "be compared with anything."
+            f"labels name {', '.join(unscored)}, which template {template_id!r} does not score — a label on an "
+            "unjudged dimension could never be compared with anything",
+            remedy=f"label only the dimensions it scores: {', '.join(sorted(criteria)) or 'it scores none'}",
         )
     if supplied := sorted({label.dimension for label in parsed if label.criterion is not None}):
         raise ValidationFailedError(
             f"labels on {', '.join(supplied)} arrive carrying a criterion — the freeze stamps each label with the "
             f"criterion template {template_id!r} states for its dimension, so a label records what it was written "
-            "against rather than what a caller said it was. Send the labels without `criterion`."
+            "against rather than what a caller said it was",
+            remedy="send the labels without `criterion`",
         )
     # The criterion each verdict was written against, as the template words it now — the words a
     # reader of the memo had in front of them when the label is frozen with it.
     parsed = [label.model_copy(update={"criterion": criteria[label.dimension]}) for label in parsed]
     if parsed and not analysis_id:
         raise ValidationFailedError(
-            "labels are a reader's verdict on a recorded memo, and this freeze pins none — pass the analysis_id "
-            "whose memo they were written about."
+            "labels are a reader's verdict on a recorded memo, and this freeze pins none",
+            remedy=f"pass the analysis_id whose memo they were written about ({FIND_ANALYSIS})",
         )
 
     storage = host.storage
@@ -1642,7 +1690,8 @@ def freeze_reporter_case(
         if analysis.campaign_id != campaign_id:
             raise ValidationFailedError(
                 f"analysis {analysis.id!r} belongs to campaign {analysis.campaign_id!r}, not {campaign_id!r} — "
-                "its memo would be judged against another campaign's evidence."
+                "its memo would be judged against another campaign's evidence",
+                remedy=f"pass an analysis of campaign {campaign_id!r} ({FIND_ANALYSIS})",
             )
         # The ledger as the generation read it, on `inspect_analysis_bundle`'s terms.
         assembled_at = analysis.generation.bundle_assembled_at
@@ -1656,7 +1705,8 @@ def freeze_reporter_case(
         raise ValidationFailedError(
             f"campaign {campaign_id!r} resolves no runs in scope {scope_id!r} (unresolved: "
             f"{bundle.unresolved_run_ids or 'none attached'}; archived: {bundle.archived_run_ids or 'none'}) — "
-            "a case with no evidence can ground no judgement."
+            "a case with no evidence can ground no judgement",
+            remedy="freeze a campaign whose runs this scope holds, un-archived",
         )
 
     fingerprint = bundle.fingerprint()
@@ -1682,19 +1732,21 @@ def freeze_reporter_case(
             f"supersedes names {', '.join(repr(case_id) for case_id in outside)}, which "
             + ("is not a stored case" if len(outside) == 1 else "are not stored cases")
             + f" freezing campaign {bundle.campaign_id!r} with {memo_text} — a case can only replace a case of "
-            "the same campaign and memo. "
-            + (
-                f"That pair's live case(s): {', '.join(live_ids)}."
+            "the same campaign and memo",
+            remedy=(
+                f"name that pair's live case(s) in supersedes: {', '.join(live_ids)}"
                 if live
-                else "No case of that pair is stored, so freeze without supersedes."
-            )
+                else "no case of that pair is stored, so freeze without supersedes"
+            ),
         )
     if named and not live:
         raise ValidationFailedError(
             f"supersedes names {', '.join(repr(case_id) for case_id in named)}, and campaign "
             f"{bundle.campaign_id!r} with {memo_text} has no live case — every stored case of it is superseded or "
-            "retired, so there is nothing for this freeze to replace. Freeze without supersedes: the new case is "
-            "the pair's live case, and the retired ones stay as they are."
+            "retired, so there is nothing for this freeze to replace",
+            remedy=(
+                "freeze without supersedes: the new case is the pair's live case, and the retired ones stay as they are"
+            ),
         )
     same_labels = len(live) == 1 and sorted(label.model_dump_json() for label in live[0][1].labels) == wanted_labels
     same_verdicts = len(live) == 1 and sorted(
@@ -1719,9 +1771,11 @@ def freeze_reporter_case(
         if len(live) > 1:
             raise ValidationFailedError(
                 f"campaign {bundle.campaign_id!r} with {memo_text} has {len(live)} live cases ({', '.join(live_ids)}) "
-                "— each is launched, so no launch of this template runs until one case replaces them all. Freeze "
-                f"again with the labels this pair should carry and supersedes={pointer}: that stores one case "
-                "replacing every one of them, and leaves them, and the runs measured against them, as they are."
+                "— each is launched, so no launch of this template runs until one case replaces them all",
+                remedy=(
+                    f"freeze again with the labels this pair should carry and supersedes={pointer}: that stores one "
+                    "case replacing every one of them, and leaves them, and the runs measured against them, as they are"
+                ),
             )
         if not named:
             differs = []
@@ -1745,16 +1799,18 @@ def freeze_reporter_case(
                 f"case {live_ids[0]!r} already freezes campaign {bundle.campaign_id!r} with {memo_text}, "
                 + " and ".join(differs)
                 + ". One memo is one case, and stored cases are immutable — a run already measured against it "
-                "would otherwise be read against labels or evidence it never carried. To revise it, freeze again "
-                f"with supersedes={pointer}: that stores a new case carrying this freeze's bundle and labels, which "
-                f"every later launch runs instead, and leaves {live_ids[0]!r} — and the runs measured against it — "
-                "as they are."
+                "would otherwise be read against labels or evidence it never carried",
+                remedy=(
+                    f"to revise it, freeze again with supersedes={pointer}: that stores a new case carrying this "
+                    f"freeze's bundle and labels, which every later launch runs instead, and leaves {live_ids[0]!r} — "
+                    "and the runs measured against it — as they are"
+                ),
             )
         raise ValidationFailedError(
             f"supersedes names {', '.join(repr(case_id) for case_id in named)}, and only the live case of this "
             f"campaign and memo can be replaced — that is {live_ids[0]!r}; the others are already superseded or "
-            "retired. "
-            f"Pass supersedes={pointer}."
+            "retired",
+            remedy=f"pass supersedes={pointer}",
         )
 
     case = ReporterCase(
@@ -1827,7 +1883,7 @@ def reporter_calibration(
     """
     run = storage.load_eval_run(run_id, scope_id)
     if run is None:
-        raise NotFoundError("run", run_id)
+        raise NotFoundError("run", run_id, remedy=FIND_RUN)
     loaded = {case.id: case for case in storage.load_test_cases_by_ids(list(run.test_case_ids), scope_id)}
     pairs = []
     missing: list[str] = []
@@ -1840,7 +1896,8 @@ def reporter_calibration(
             reporter_case = reporter_case_of(case)
         except ValueError as e:
             raise ValidationFailedError(
-                f"case {case_id!r} of run {run_id!r} carries a reporter case this build cannot read: {e}"
+                f"case {case_id!r} of run {run_id!r} carries a reporter case this build cannot read: {e}",
+                remedy="read it with the build that wrote it",
             ) from e
         if reporter_case is not None:
             pairs.append((case_id, reporter_case))
@@ -1848,7 +1905,8 @@ def reporter_calibration(
         raise ValidationFailedError(
             f"run {run_id!r} froze no reporter case"
             + (f" (and {len(missing)} of its cases no longer load)" if missing else "")
-            + ", so it has no labels to calibrate against — calibration reads a run of an analysis_reporter template."
+            + ", so it has no labels to calibrate against",
+            remedy=f"calibrate a run of an analysis_reporter template ({FIND_RUN})",
         )
     # Who replaced whose labels, read off every stored case of the template rather than the
     # run's own: a superseding case is minted after the run it revises, so it is never one of
@@ -1860,8 +1918,8 @@ def reporter_calibration(
         # An ad-hoc run names no template, so there is no bank to read supersession from — and
         # querying the scope's cases without one would read every template's.
         raise ValidationFailedError(
-            f"run {run_id!r} names no template, so its cases' supersession cannot be read — calibration reads a "
-            "run of an analysis_reporter template."
+            f"run {run_id!r} names no template, so its cases' supersession cannot be read",
+            remedy=f"calibrate a run of an analysis_reporter template ({FIND_RUN})",
         )
     bank = reporter_case_bank(storage, template_id, scope_id)
     superseded_by = {case_id: list(ids) for case_id, ids in bank.superseded_by.items()}

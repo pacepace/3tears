@@ -61,6 +61,7 @@ class FixturedCompletion:
     output_tokens: int | None = 800
     model: str = MODEL
     stop_reason: str = "end_turn"
+    temperature: float | None = None
     tool_calls: list[Any] = field(default_factory=list)
     reasoning_tokens: int | None = None
 

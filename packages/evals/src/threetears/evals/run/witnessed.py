@@ -143,7 +143,9 @@ def stamp_witnessed_judge(
             ``ValueError``, and it is raised whether or not the host enforces ceilings.
     """
     if max_cost_usd is not None and max_cost_usd <= 0:
-        raise ValidationFailedError(f"max_cost_usd must be > 0 (got {max_cost_usd})")
+        raise ValidationFailedError(
+            f"max_cost_usd must be > 0 (got {max_cost_usd})", remedy="pass one above 0, or omit it for the host's"
+        )
     if run.apparatus_provenance != "witnessed":
         raise ValueError(f"run {run.id} is {run.apparatus_provenance!r}; a launch stamps a commissioned run's judge")
     if run.judge_model is not None or run.template_id is not None:

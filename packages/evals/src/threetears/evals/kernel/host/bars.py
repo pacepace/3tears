@@ -37,13 +37,21 @@ criterion clears on its pass). That threshold is a standard of the same kind as 
 good enough for this behavior — so a host declares it beside its bars (:class:`PassThreshold`), and
 :meth:`BarRegistry.pass_threshold` answers it, :data:`DEFAULT_PASS_THRESHOLD` where none is declared.
 Every stored pass^k figure records the threshold it was computed at.
+
+**A registry is built in code, or loaded from a declaration a host keeps as data.**
+:func:`load_bar_registry` reads a mapping — what a host's JSON or YAML file parses to — into the same
+registry, strictly: a field the declaration does not know is refused rather than ignored, because a
+misspelt ``rationale`` or ``higher_is_better`` dropped silently would register a standard other than
+the one its author wrote.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, assert_never
+from typing import TYPE_CHECKING, Any, Literal, assert_never
+
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, ValidationError
 
 from threetears.evals.kernel.host.attribution import HostAttributed
 
@@ -59,20 +67,33 @@ DEFAULT_PASS_THRESHOLD = 3
 _SCALE_TOP = 5
 
 
-def pass_threshold_label(k: int | None, threshold: int) -> str:
-    """How every surface names pass^k: its depth and the bar a criterion had to clear, e.g. ``pass^k (k=3, criterion >= 4 of 5)``.
+#: What an attempt can be held to for pass^k: every goal-state check it carries (``goal_checks``), and every
+#: capability criterion a judge scored at a level (``rubric``). pass^k conjoins whichever an attempt has.
+PassCriterion = Literal["goal_checks", "rubric"]
 
-    One spelling, so no surface can print a pass^k without the threshold it was computed at.
+
+def pass_threshold_label(k: int | None, threshold: int, *, criteria: Collection[PassCriterion]) -> str:
+    """How every surface names pass^k: its depth and what an attempt had to pass, e.g. ``pass^k (k=3, criterion >= 4 of 5)``.
+
+    One spelling, so no surface can print a pass^k without what it was computed against — and only that: a
+    pass^k over attempts no judge scored is not stated under a rubric threshold they never met, which would read
+    as a judged figure.
 
     Args:
         k: The depth the figure is read at, or None where no depth was reached.
         threshold: The 1–5 level a criterion had to reach.
+        criteria: What the attempts behind the figure were held to (:data:`PassCriterion`); empty when nothing was.
 
     Returns:
-        The label.
+        The label: ``every goal check``, ``criterion >= <threshold> of 5``, both joined by ``and``, or
+        ``no criterion``.
     """
     depth = "k=?" if k is None else f"k={k}"
-    return f"pass^k ({depth}, criterion >= {threshold} of {_SCALE_TOP})"
+    held = [
+        *(["every goal check"] if "goal_checks" in criteria else []),
+        *([f"criterion >= {threshold} of {_SCALE_TOP}"] if "rubric" in criteria else []),
+    ]
+    return f"pass^k ({depth}, {' and '.join(held) or 'no criterion'})"
 
 
 @dataclass(frozen=True)
@@ -518,6 +539,95 @@ def no_better_end(descriptor: MetricDescriptor) -> str | None:
             assert_never(unreachable)
 
 
+class _BarDeclaration(BaseModel):
+    """One bar as a declaration states it: :class:`Bar`'s fields, strictly typed, and no others."""
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    behavior: str
+    measure: str
+    threshold: FiniteFloat
+    higher_is_better: bool
+    rationale: str
+    vacuous_seed: bool = False
+
+
+class _PassThresholdDeclaration(BaseModel):
+    """One pass threshold as a declaration states it: :class:`PassThreshold`'s fields, strictly typed, and no others."""
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    behavior: str
+    threshold: int
+    rationale: str
+
+
+class _RegistryDeclaration(BaseModel):
+    """A whole declaration: its bars and its pass thresholds, either absent for none."""
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    bars: list[_BarDeclaration] = Field(default_factory=list)
+    pass_thresholds: list[_PassThresholdDeclaration] = Field(default_factory=list)
+
+
+def load_bar_registry(declaration: Mapping[str, Any]) -> BarRegistry:
+    """Build a host's bar registry from a declaration kept as data — refusing any field it does not know.
+
+    The shape is :class:`BarRegistry`'s two arguments, each entry its type's fields::
+
+        {
+            "bars": [
+                {"behavior": "extract", "measure": "field_accuracy", "threshold": 0.92,
+                 "higher_is_better": True, "rationale": "the incumbent's lower bound, adopted 2026-09"},
+            ],
+            "pass_thresholds": [
+                {"behavior": "extract", "threshold": 4, "rationale": "only a good extraction is usable"},
+            ],
+        }
+
+    Either list may be left out for none. ``vacuous_seed`` is optional on a bar (``False``) and carries
+    a ratchet proposal's flag across adoption. Values are read strictly — a threshold written as a
+    string, a pass threshold as ``4.0`` or a direction as ``"yes"`` is refused rather than coerced —
+    and a bar's threshold must be finite. What is refused here is the declaration's SHAPE; the
+    registry then refuses what it always refuses (a pair declared twice, a blank rationale, a pass
+    threshold outside 2-5), and the profile checks each bar against the host's measures
+    (:meth:`BarRegistry.validate_against`).
+
+    Args:
+        declaration: The parsed declaration.
+
+    Returns:
+        The registry.
+
+    Raises:
+        BarRegistrationError: A field the declaration does not know, a field missing, a value of the
+            wrong type, or anything :class:`BarRegistry` refuses. Every defect of the shape is named at
+            once, by its place in the declaration.
+    """
+    try:
+        parsed = _RegistryDeclaration.model_validate(dict(declaration))
+    except ValidationError as refused:
+        defects = [
+            f"{'.'.join(str(part) for part in error['loc']) or 'the declaration'}: {_declaration_defect(error)}"
+            for error in refused.errors(include_url=False)
+        ]
+        raise BarRegistrationError("bar declaration cannot be read: " + "; ".join(defects)) from refused
+    return BarRegistry(
+        (Bar(**bar.model_dump()) for bar in parsed.bars),
+        pass_thresholds=(PassThreshold(**declared.model_dump()) for declared in parsed.pass_thresholds),
+    )
+
+
+def _declaration_defect(error: Any) -> str:
+    """One validation error, in the declaration's words rather than the parser's."""
+    if error["type"] == "extra_forbidden":
+        return "is not a field a bar declaration has"
+    if error["type"] == "missing":
+        return "is required"
+    return f"{error['msg'].lower()}, got {error['input']!r}"
+
+
 __all__ = [
     "DEFAULT_PASS_THRESHOLD",
     "Bar",
@@ -526,5 +636,7 @@ __all__ = [
     "BarRegistry",
     "PassThreshold",
     "contradicts_descriptor",
+    "load_bar_registry",
+    "PassCriterion",
     "pass_threshold_label",
 ]

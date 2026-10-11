@@ -833,7 +833,10 @@ class EvalJobManager:
         """Refuse a new holder of ``key`` while anything holds it — the one check :meth:`start_task` and :meth:`hold` share."""
         holders = self.active_task_ids(key)
         if holders:
-            raise ConflictError(f"task '{holders[0]}' is already running for {key}")
+            raise ConflictError(
+                f"task '{holders[0]}' is already running for {key}",
+                remedy="poll it with job_poll, or cancel it with job_cancel, before starting another",
+            )
 
     async def _run_task(self, job_id: str, work: Callable[[], Awaitable[None]], budget_s: float | None) -> None:
         """Execute one detached task under its budget, if it has one; log how it ended if it did not end cleanly."""

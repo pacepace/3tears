@@ -331,7 +331,8 @@ def decidable_reporter_case_bank(stored: Iterable[EvalTestCase], *, template_id:
             f"template {template_id!r} holds reporter case(s) this build cannot read — "
             + "; ".join(f"{case_id!r}: {why}" for case_id, why in bank.unreadable)
             + ". One of them may supersede a case that would otherwise read as live, so which case each bundle "
-            "and memo launches cannot be decided here; read them with the build that wrote them."
+            "and memo launches cannot be decided here",
+            remedy="read them with the build that wrote them",
         )
     return bank
 

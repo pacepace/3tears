@@ -368,13 +368,15 @@ class KindContract:
         if model is None:
             if supplied:
                 raise ValidationFailedError(
-                    f"kind {self.kind!r} declares no {noun}s, so {refused_as} {', '.join(sorted(supplied))}"
+                    f"kind {self.kind!r} declares no {noun}s, so {refused_as} {', '.join(sorted(supplied))}",
+                    remedy=f"supply no {noun}s for this kind",
                 )
             return None
         known = set(model.model_fields)
         if unknown := sorted(set(supplied) - known):
             raise ValidationFailedError(
-                f"kind {self.kind!r} has no {noun} {', '.join(unknown)}; its {noun}s are {', '.join(sorted(known))}"
+                f"kind {self.kind!r} has no {noun} {', '.join(unknown)}",
+                remedy=f"supply only its {noun}s: {', '.join(sorted(known))}",
             )
         try:
             return model.model_validate(supplied)
@@ -382,6 +384,7 @@ class KindContract:
             raise ValidationFailedError(
                 f"kind {self.kind!r} refused its {noun}s: {_field_errors(refused)}",
                 details={"errors": refused.errors(include_url=False, include_context=False)},
+                remedy=f"correct each {noun} the errors name",
             ) from refused
 
     # --- levers --------------------------------------------------------------------------------

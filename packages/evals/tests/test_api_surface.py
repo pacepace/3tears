@@ -265,6 +265,19 @@ def test_the_release_notes_carry_the_old_to_new_map(capsys: pytest.CaptureFixtur
     assert "### Other breaking changes" in out
 
 
+def test_the_release_notes_of_a_tag_are_what_it_shipped_and_the_next_release_holds_the_rest(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code, tagged, _ = _notes(capsys, "v0.66.0-evaladopt.7")
+    assert code == 0 and tagged.startswith("## 3tears-evals 0.66.0-evaladopt.7")
+    assert "`threetears.evals.run.EvalJobTimeout` → `threetears.evals.kernel.EvalJobTimeout`" in tagged
+    assert "NonPublicImport" not in tagged and "Report version 7" not in tagged
+    code, following, _ = _notes(capsys, "v0.66.0-evaladopt.8")
+    assert code == 0 and following.startswith("## 3tears-evals 0.66.0-evaladopt.8")
+    assert "`threetears.evals.testing.NonPublicImport` → `threetears.evals.testing.BoundaryFinding`" in following
+    assert "Report version 7" in following and "EvalJobTimeout" not in following
+
+
 def test_the_release_notes_show_a_rename_and_a_removal() -> None:
     release = _release(_change(A, A, Cell="ChartValue"), _change(B, "removed", "gone"))
     text = "\n".join(notes.render(release))
@@ -340,7 +353,111 @@ def test_a_checkout_without_the_earlier_tag_cannot_pass_the_check() -> None:
     assert "fetch the tags" in finding.problem and not finding.regenerating_fixes
 
 
-def test_the_unreleased_section_is_checked_against_the_working_tree() -> None:
-    release = _section("unreleased")
+def test_the_0_66_0_evaladopt_7_section_records_exactly_what_left_between_its_tags() -> None:
+    release = _section("0.66.0-evaladopt.7")
     assert release.since == "v0.66.0-evaladopt.6"
     assert surface.history_findings(release) == []
+    assert len(release.migrations()) == len(
+        surface.departures(surface.exports_at("v0.66.0-evaladopt.6"), surface.exports_at("v0.66.0-evaladopt.7"))
+    )
+
+
+def test_the_newest_section_is_checked_against_its_tag_or_the_working_tree() -> None:
+    """The newest section is "unreleased" between releases and named for its version once a release is cut."""
+    release = surface.load_migrations().releases[0]
+    assert release.since is not None
+    assert surface.history_findings(release) == []
+
+
+# --- a tagged release has its own section ------------------------------------------------------------------------
+
+
+def _labelled(*sections: tuple[str, str | None]) -> Any:
+    return surface.Migrations.model_validate(
+        {"release": [{"version": version, "since": since} for version, since in sections]}
+    )
+
+
+def test_the_newest_tag_behind_head_has_its_own_section() -> None:
+    """Tagging a release whose section still reads "unreleased" leaves the next release's work in it."""
+    assert surface.labelling_findings(surface.load_migrations(), surface.newest_tag()) == []
+
+
+def test_a_tag_shipped_with_its_section_still_unreleased_is_refused() -> None:
+    migrations = _labelled(("unreleased", "v2.0.0"), ("2.0.0", "v1.0.0"))
+    unlabelled, stale_since = surface.labelling_findings(migrations, "v3.0.0")
+    assert "v3.0.0 is tagged, and MIGRATIONS.toml has no section for it" in unlabelled.problem
+    assert 'version = "3.0.0"' in unlabelled.problem and 'since = "v3.0.0"' in unlabelled.problem
+    assert "the unreleased section is since v2.0.0" in stale_since.problem
+    assert not unlabelled.regenerating_fixes and not stale_since.regenerating_fixes
+
+
+def test_the_unreleased_section_starts_at_the_newest_tag() -> None:
+    migrations = _labelled(("unreleased", "v2.0.0"), ("3.0.0", "v2.0.0"), ("2.0.0", "v1.0.0"))
+    [finding] = surface.labelling_findings(migrations, "v3.0.0")
+    assert (
+        "the unreleased section is since v2.0.0, but v3.0.0 is the newest release this tree follows" in finding.problem
+    )
+
+
+def test_a_relabelled_section_and_a_fresh_unreleased_one_pass() -> None:
+    assert surface.labelling_findings(_labelled(("unreleased", "v3.0.0"), ("3.0.0", "v2.0.0")), "v3.0.0") == []
+
+
+def test_the_tagged_commit_itself_passes_with_its_section_newest() -> None:
+    """Relabelling happens before the tag, so the tagged tree's newest section is its own version."""
+    assert surface.labelling_findings(_labelled(("3.0.0", "v2.0.0")), "v3.0.0") == []
+
+
+#: The tags of a family whose pre-releases were cut on the branch carrying their work, then released on main.
+_PRE_RELEASES = ["v0.66.0-evaladopt.1", "v0.66.0-evaladopt.9", "v0.66.0-evaladopt.10"]
+
+
+def test_the_evaladopt_flow_follows_the_newest_pre_release_its_branch_carries() -> None:
+    """Pre-releases are tagged on the branch carrying the work, so the branch follows its own, in release order."""
+    every = ["v0.64.0", "v0.65.0", *_PRE_RELEASES]
+    assert surface.newest_release_tag(every, every, "0.66.0") == "v0.66.0-evaladopt.10"
+    migrations = _labelled(("unreleased", "v0.66.0-evaladopt.10"), ("0.66.0-evaladopt.10", "v0.66.0-evaladopt.9"))
+    assert surface.labelling_findings(migrations, surface.newest_release_tag(every, every, "0.66.0")) == []
+
+
+def test_a_branch_that_has_not_merged_a_pre_release_does_not_follow_it() -> None:
+    """develop, before the work a pre-release was cut from reaches it, still follows the last final release."""
+    every = ["v0.64.0", "v0.65.0", *_PRE_RELEASES]
+    assert surface.newest_release_tag(["v0.64.0"], every, "0.66.0") == "v0.65.0"
+
+
+def test_the_main_tag_flow_follows_a_release_tagged_where_develop_cannot_reach_it() -> None:
+    """A release is tagged on main and develop never merges main back: develop follows it all the same.
+
+    Read by reachability, develop's newest tag stayed the release before, so the section it had renamed for the
+    release and the unreleased section since it read as wrong the moment the release was tagged.
+    """
+    every = ["v0.64.0", "v0.65.0", *_PRE_RELEASES, "v0.66.0"]
+    develop_reaches = ["v0.64.0", "v0.65.0", *_PRE_RELEASES]
+    for prepared in ("0.66.0", "0.67.0"):  # before, and after, develop bumps to the next version
+        tag = surface.newest_release_tag(develop_reaches, every, prepared)
+        assert tag == "v0.66.0"
+        assert surface.labelling_findings(_labelled(("unreleased", "v0.66.0"), ("0.66.0", "v0.65.0")), tag) == []
+    # A final release above the version a tree prepares has not been shipped past by it.
+    assert surface.newest_release_tag(["v0.64.0"], ["v0.64.0", "v0.65.0", "v0.66.0"], "0.65.0") == "v0.65.0"
+
+
+def test_a_final_release_sorts_above_its_pre_releases_and_a_non_release_tag_is_not_one() -> None:
+    every = ["v0.66.0", "v0.66.0-evaladopt.10", "nightly", "v0.66", "release-0.67.0"]
+    assert surface.newest_release_tag(every, every, "0.66.0") == "v0.66.0"
+    assert surface.newest_release_tag([], [], "0.66.0") is None
+
+
+def test_a_checkout_without_tags_cannot_pass_the_labelling_check() -> None:
+    [finding] = surface.labelling_findings(_labelled(("unreleased", "v1.0.0")), None)
+    assert "fetch the tags" in finding.problem
+
+
+def test_each_tagged_section_is_checked_against_its_own_tags() -> None:
+    """Every section with a `since` is held to what left between that tag and its own (the working tree only for
+    the unreleased one), so relabelling a section moves which surfaces it is read against."""
+    for release in surface.load_migrations().releases:
+        if release.since is None:
+            continue
+        assert surface.history_findings(release) == [], release.version
