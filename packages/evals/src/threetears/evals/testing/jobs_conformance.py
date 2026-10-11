@@ -21,6 +21,13 @@ Clients a host builds outside that factory are not watched, so a host routes eve
   last is the positive control: a happy path that never reaches the work passes the first two vacuously, and is
   refused here as vacuous.
 
+**A call returns before its job's model work goes on.** A handler that starts its job and then awaits it makes no
+request in its call — the request is the job's — and returns ``JobsStarted``, yet the transport call still waits
+on the model. So while a call runs, every request a job makes waits in the guarded client until the call has
+returned; a call that waits on its own job never returns, and the request gives up after
+``call_return_timeout_s`` (:data:`DEFAULT_CALL_RETURN_TIMEOUT_S`), refused (:class:`JobAwaitedByItsCall`) and
+recorded, and the case fails naming it.
+
 A spend action without a happy path is refused when it is declared (:class:`~threetears.evals.actions.Action`), so a
 host's action cannot be forgotten. Under pytest::
 
@@ -46,10 +53,12 @@ from threetears.evals.kernel.host import CompletionClients
 from threetears.evals.ops import JobsStarted, OpsHost, job_poll
 
 __all__ = [
+    "DEFAULT_CALL_RETURN_TIMEOUT_S",
     "DEFAULT_JOB_CONFORMANCE_TIMEOUT_S",
     "BuildConformanceHost",
     "CompletionGuard",
     "CompletionOutsideJob",
+    "JobAwaitedByItsCall",
     "JobsConformanceCase",
     "JobsConformanceFailure",
     "JobsConformanceHost",
@@ -58,6 +67,10 @@ __all__ = [
 
 #: How long a happy path's jobs are polled for before the case gives up on them, in seconds.
 DEFAULT_JOB_CONFORMANCE_TIMEOUT_S = 60.0
+
+#: How long a job's request waits, while the call that started its job runs, for that call to return, in seconds.
+#: A conforming call returns at once; one still running when this passes is waiting on its own job.
+DEFAULT_CALL_RETURN_TIMEOUT_S = 10.0
 
 
 class JobsConformanceFailure(AssertionError):
@@ -69,6 +82,10 @@ class JobsConformanceFailure(AssertionError):
 
 class CompletionOutsideJob(AssertionError):
     """A completion request made outside any job's work, refused by the kit's guarded client before it was sent."""
+
+
+class JobAwaitedByItsCall(AssertionError):
+    """A job's completion request that waited for the call that started the job, and found it still waiting on it."""
 
 
 class _GuardedClient:
@@ -83,11 +100,12 @@ class _GuardedClient:
         return getattr(self._inner, name)
 
     async def generate(self, **request: Any) -> Any:
-        """Count the request; refuse it outside a job, send it inside one."""
+        """Count the request; refuse it outside a job; inside one, send it once no call is running."""
+        where = f"a {self._role} request to {getattr(self._inner, 'model_name', '?')}"
         if running_job() is None:
-            where = f"a {self._role} request to {getattr(self._inner, 'model_name', '?')}"
             self._guard.outside.append(where)
             raise CompletionOutsideJob(f"{where} was made outside any job's work")
+        await self._guard.after_the_call(where)
         self._guard.inside += 1
         return await self._inner.generate(**request)
 
@@ -113,13 +131,53 @@ class _GuardedClient:
 class CompletionGuard:
     """The kit's watch on a host's completion clients: what was asked outside a job, and how often inside one.
 
+    While a call runs (:meth:`call_started` to :meth:`call_returned`), a job's request waits for it to return
+    before it is sent, at most ``call_return_timeout_s``: a call that awaits its own job never returns, so its job's
+    request is refused and recorded in :attr:`awaited_by_call` instead of the case hanging.
+
     Attributes:
         outside: Each request made outside a job's work, described; every one was refused.
         inside: How many requests a job's work made.
+        awaited_by_call: Each job's request that waited out ``call_return_timeout_s`` for the running call to return,
+            described; every one was refused.
+        call_return_timeout_s: How long a job's request waits for a running call to return.
     """
 
     outside: list[str] = field(default_factory=list)
     inside: int = 0
+    awaited_by_call: list[str] = field(default_factory=list)
+    call_return_timeout_s: float = DEFAULT_CALL_RETURN_TIMEOUT_S
+    _no_call_running: asyncio.Event = field(default_factory=asyncio.Event, init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        """No call is running until one starts."""
+        self._no_call_running.set()
+
+    def call_started(self) -> None:
+        """A call is running: every job's request waits for it to return."""
+        self._no_call_running.clear()
+
+    def call_returned(self) -> None:
+        """The call has returned: every job's request waiting on it goes on."""
+        self._no_call_running.set()
+
+    async def after_the_call(self, where: str) -> None:
+        """Wait, for a job's request, until no call is running — or refuse it when the call does not return.
+
+        Args:
+            where: The request, described.
+
+        Raises:
+            JobAwaitedByItsCall: The running call did not return within ``call_return_timeout_s``.
+        """
+        try:
+            await asyncio.wait_for(self._no_call_running.wait(), self.call_return_timeout_s)
+        except TimeoutError:
+            self.awaited_by_call.append(where)
+            raise JobAwaitedByItsCall(
+                f"{where}, made by a job, waited {self.call_return_timeout_s:g}s for the call that started the job "
+                "to return, and it had not: the call waits on its own job's model work"
+            ) from None
 
     def wrap(self, clients: CompletionClients) -> CompletionClients:
         """The host's client factory, every client it builds watched.
@@ -140,6 +198,7 @@ class CompletionGuard:
         """Forget every request counted so far."""
         self.outside.clear()
         self.inside = 0
+        self.awaited_by_call.clear()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -188,14 +247,24 @@ async def _settled(host: OpsHost, job_id: str, scope_id: str, timeout_s: float) 
             await asyncio.sleep(0.01)
 
 
-def _call_case(action: Action) -> JobsConformanceCase:
+def _awaited(action: Action, rule: str, guard: CompletionGuard) -> JobsConformanceFailure:
+    return _fail(
+        action,
+        rule,
+        f"its call waited on its own job's model work ({', '.join(guard.awaited_by_call)}); start the job and "
+        "return JobsStarted — the caller polls it",
+    )
+
+
+def _call_case(action: Action, call_return_timeout_s: float) -> JobsConformanceCase:
     rule = "its call makes no completion request"
 
     async def check(build: BuildConformanceHost) -> None:
-        guard = CompletionGuard()
+        guard = CompletionGuard(call_return_timeout_s=call_return_timeout_s)
         built = build(guard)
         try:
             params = action.params.model_validate(dict(action.example))
+            guard.call_started()
             try:
                 await action.handler(built.host, built.caller, params)
             # prawduct:ok-broad-except — the example's ids name nothing; how the call ends is not this case's question
@@ -203,20 +272,24 @@ def _call_case(action: Action) -> JobsConformanceCase:
                 # NOSILENT: the example's ids name nothing in the conformance host, so the call may refuse; how it
                 # ends is not this case's question -- only whether it made a completion request, read just below.
                 pass
+            finally:
+                guard.call_returned()
             if guard.outside:
                 raise _fail(action, rule, f"its example call made {', '.join(guard.outside)}")
+            if guard.awaited_by_call:
+                raise _awaited(action, rule, guard)
         finally:
             await built.host.launch.job_manager.shutdown()
 
     return JobsConformanceCase(f"{action.name}.call", rule, check)
 
 
-def _happy_path_case(action: Action, timeout_s: float) -> JobsConformanceCase:
+def _happy_path_case(action: Action, timeout_s: float, call_return_timeout_s: float) -> JobsConformanceCase:
     rule = "its happy path makes no request in its call, returns JobsStarted, and its job makes one"
 
     async def check(build: BuildConformanceHost) -> None:
         assert action.happy_path is not None  # a spend action declares one, or is refused when declared
-        guard = CompletionGuard()
+        guard = CompletionGuard(call_return_timeout_s=call_return_timeout_s)
         built = build(guard)
         host, caller = built.host, built.caller
         try:
@@ -226,12 +299,17 @@ def _happy_path_case(action: Action, timeout_s: float) -> JobsConformanceCase:
             except ValueError as invalid:  # a pydantic ValidationError is one
                 raise _fail(action, rule, f"its happy path names parameters that do not validate: {invalid}") from None
             guard.reset()
+            guard.call_started()
             try:
                 started = await action.handler(host, caller, params)
             except CompletionOutsideJob as refused:
                 raise _fail(action, rule, f"its call made a completion request: {refused}") from None
             except EvalServiceError as refused:
                 raise _fail(action, rule, f"its call refused its happy path: {refused.message}") from None
+            finally:
+                guard.call_returned()
+            if guard.awaited_by_call:
+                raise _awaited(action, rule, guard)
             if guard.outside:
                 raise _fail(action, rule, f"its call made {', '.join(guard.outside)}")
             if not isinstance(started, JobsStarted):
@@ -257,20 +335,25 @@ def _happy_path_case(action: Action, timeout_s: float) -> JobsConformanceCase:
 
 
 def jobs_conformance_cases(
-    catalogue: ActionCatalogue, *, job_timeout_s: float = DEFAULT_JOB_CONFORMANCE_TIMEOUT_S
+    catalogue: ActionCatalogue,
+    *,
+    job_timeout_s: float = DEFAULT_JOB_CONFORMANCE_TIMEOUT_S,
+    call_return_timeout_s: float = DEFAULT_CALL_RETURN_TIMEOUT_S,
 ) -> tuple[JobsConformanceCase, ...]:
     """Every case the catalogue's actions are held to: each action's call, and each spend action's happy path.
 
     Args:
         catalogue: The actions — the engine's and the host's (:func:`~threetears.evals.actions.eval_catalogue`).
         job_timeout_s: How long a happy path's jobs may run before the case fails.
+        call_return_timeout_s: How long a job's request waits for the running call to return before the case
+            fails it as a call that waits on its own job.
 
     Returns:
         The cases, in catalogue order: an action's call case, then, for a spend action, its happy-path case.
     """
     cases: list[JobsConformanceCase] = []
     for action in catalogue.actions:
-        cases.append(_call_case(action))
+        cases.append(_call_case(action, call_return_timeout_s))
         if action.permission == "spend":
-            cases.append(_happy_path_case(action, job_timeout_s))
+            cases.append(_happy_path_case(action, job_timeout_s, call_return_timeout_s))
     return tuple(cases)

@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.actions import Action, Caller, ConformanceStage, eval_catalogue
-from threetears.evals.ops import JobsStarted, OpsHost, job_poll, start_action_job
+from threetears.evals.ops import JobsStarted, OpsHost, await_job, job_poll, start_action_job
 from pydantic import Field
 
 from threetears.evals.schema.base import EvalBaseModel
@@ -66,6 +66,13 @@ async def _draft_in_call(host: OpsHost, caller: Caller, params: _DraftParams) ->
     return await start_action_job(host, caller.scope_id, action="rubric_propose", run=keep)
 
 
+async def _waits_on_its_job(host: OpsHost, caller: Caller, params: _DraftParams) -> JobsStarted:
+    """A non-conforming host action: it drafts in a job, then waits for the job before returning."""
+    started = await _draft_in_job(host, caller, params)
+    await await_job(host, started, caller.scope_id)
+    return started
+
+
 async def _nothing_in_job(host: OpsHost, caller: Caller, params: _DraftParams) -> JobsStarted:
     """A host action whose job makes no request on the parameters its happy path names."""
 
@@ -95,9 +102,10 @@ def _host_action(handler: Any) -> Action:
     )
 
 
-def _cases(handler: Any) -> dict[str, JobsConformanceCase]:
+def _cases(handler: Any, *, call_return_timeout_s: float = 10.0) -> dict[str, JobsConformanceCase]:
     catalogue = eval_catalogue((_host_action(handler),))
-    return {case.name: case for case in jobs_conformance_cases(catalogue, job_timeout_s=10.0)}
+    cases = jobs_conformance_cases(catalogue, job_timeout_s=10.0, call_return_timeout_s=call_return_timeout_s)
+    return {case.name: case for case in cases}
 
 
 @pytest.mark.parametrize(
@@ -142,6 +150,16 @@ async def test_the_kit_catches_a_spend_action_that_calls_its_model_in_the_call()
     with pytest.raises(JobsConformanceFailure, match="its call made a completion request"):
         await cases["rubric_propose.happy_path"].check(conformance_host)
     with pytest.raises(JobsConformanceFailure, match="its example call made a proposer request"):
+        await cases["rubric_propose.call"].check(conformance_host)
+
+
+async def test_the_kit_catches_a_handler_that_waits_on_its_own_job() -> None:
+    """It makes no request in its call and returns JobsStarted — and still holds the call until its model answers."""
+    cases = _cases(_waits_on_its_job, call_return_timeout_s=0.2)
+
+    with pytest.raises(JobsConformanceFailure, match="its call waited on its own job's model work"):
+        await cases["rubric_propose.happy_path"].check(conformance_host)
+    with pytest.raises(JobsConformanceFailure, match="its call waited on its own job's model work"):
         await cases["rubric_propose.call"].check(conformance_host)
 
 

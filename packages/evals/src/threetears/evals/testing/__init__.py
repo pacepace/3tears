@@ -32,10 +32,12 @@ from threetears.evals.testing.completion_conformance import (
 )
 from threetears.evals.testing.import_boundary import NonPublicImport, nonpublic_evals_imports
 from threetears.evals.testing.jobs_conformance import (
+    DEFAULT_CALL_RETURN_TIMEOUT_S,
     DEFAULT_JOB_CONFORMANCE_TIMEOUT_S,
     BuildConformanceHost,
     CompletionGuard,
     CompletionOutsideJob,
+    JobAwaitedByItsCall,
     JobsConformanceCase,
     JobsConformanceFailure,
     JobsConformanceHost,
@@ -54,10 +56,12 @@ from threetears.evals.testing.store_conformance import (
 )
 
 __all__ = [
+    "DEFAULT_CALL_RETURN_TIMEOUT_S",
     "DEFAULT_JOB_CONFORMANCE_TIMEOUT_S",
     "BuildConformanceHost",
     "CompletionGuard",
     "CompletionOutsideJob",
+    "JobAwaitedByItsCall",
     "JobsConformanceCase",
     "JobsConformanceFailure",
     "JobsConformanceHost",

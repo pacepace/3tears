@@ -4267,19 +4267,27 @@
     },
     "threetears.evals.testing.CompletionGuard": {
       "kind": "dataclass",
-      "signature": "CompletionGuard(outside: list[str] = list(), inside: int = 0)"
+      "signature": "CompletionGuard(outside: list[str] = list(), inside: int = 0, awaited_by_call: list[str] = list(), call_return_timeout_s: float = 10.0, _no_call_running: asyncio.Event (derived))"
     },
     "threetears.evals.testing.CompletionOutsideJob": {
       "kind": "exception",
+      "signature": ""
+    },
+    "threetears.evals.testing.DEFAULT_CALL_RETURN_TIMEOUT_S": {
+      "kind": "constant (float)",
       "signature": ""
     },
     "threetears.evals.testing.DEFAULT_JOB_CONFORMANCE_TIMEOUT_S": {
       "kind": "constant (float)",
       "signature": ""
     },
+    "threetears.evals.testing.JobAwaitedByItsCall": {
+      "kind": "exception",
+      "signature": ""
+    },
     "threetears.evals.testing.jobs_conformance_cases": {
       "kind": "function",
-      "signature": "jobs_conformance_cases(catalogue: ActionCatalogue, *, job_timeout_s: float = 60.0) -> tuple[JobsConformanceCase, ...]"
+      "signature": "jobs_conformance_cases(catalogue: ActionCatalogue, *, job_timeout_s: float = 60.0, call_return_timeout_s: float = 10.0) -> tuple[JobsConformanceCase, ...]"
     },
     "threetears.evals.testing.JobsConformanceCase": {
       "kind": "dataclass",

@@ -1737,7 +1737,7 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 - **`check_completion_conformance`** · function · Fail, naming the attribute, when a host's completion does not carry what eval reads off it.
   <br>`check_completion_conformance(completion: object) -> None`
 - **`jobs_conformance_cases`** · function · Every case the catalogue's actions are held to: each action's call, and each spend action's happy path.
-  <br>`jobs_conformance_cases(catalogue: ActionCatalogue, *, job_timeout_s: float = 60.0) -> tuple[JobsConformanceCase, ...]`
+  <br>`jobs_conformance_cases(catalogue: ActionCatalogue, *, job_timeout_s: float = 60.0, call_return_timeout_s: float = 10.0) -> tuple[JobsConformanceCase, ...]`
 - **`nonpublic_evals_imports`** · function · Every `threetears.evals` import under `sources` that reaches below a public root.
   <br>`nonpublic_evals_imports(*sources: Path | str) -> tuple[NonPublicImport, ...]`
 
@@ -1746,6 +1746,7 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 - **`CompletionConformanceFailure`** · exception · A host's completion lacks an attribute eval reads, or reports a stop reason outside eval's vocabulary.
 - **`CompletionGuard`** · dataclass · The kit's watch on a host's completion clients: what was asked outside a job, and how often inside one.
 - **`CompletionOutsideJob`** · exception · A completion request made outside any job's work, refused by the kit's guarded client before it was sent.
+- **`JobAwaitedByItsCall`** · exception · A job's completion request that waited for the call that started the job, and found it still waiting on it.
 - **`JobsConformanceCase`** · dataclass · One action held to one rule.
 - **`JobsConformanceFailure`** · exception · An action broke the job rule, or its happy path proved nothing. The message names the action and the rule.
 - **`JobsConformanceHost`** · dataclass · What a host hands the kit for one case: its operations host, who calls, and its sample launch.
@@ -1763,6 +1764,8 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 
 **Constants**
 
+- **`DEFAULT_CALL_RETURN_TIMEOUT_S`** · constant (float) · How long a job's request waits, while the call that started its job runs, for that call to return, in seconds.
+  <br>`= 10.0`
 - **`DEFAULT_JOB_CONFORMANCE_TIMEOUT_S`** · constant (float) · How long a happy path's jobs are polled for before the case gives up on them, in seconds.
   <br>`= 60.0`
 - **`READER_CONFORMANCE_CASES`** · constant (tuple) · Every promise, as a case. Parametrise over this tuple.
