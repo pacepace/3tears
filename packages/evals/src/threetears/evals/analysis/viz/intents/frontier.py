@@ -27,7 +27,7 @@ from threetears.evals.analysis.viz.intent import (
     ChartReference,
 )
 from threetears.evals.analysis.viz.payloads import FrontierPayload, FrontierVizPoint
-from threetears.evals.analysis.viz.quantities import axis_title, display_scale, strip_common_prefix
+from threetears.evals.analysis.viz.quantities import axis_title, ruled_scale, strip_common_prefix
 
 #: The class of a contestant the frontier lens tested and did not show dominated — `not_separated`.
 NOT_SHOWN_DOMINATED = "Not shown dominated"
@@ -125,7 +125,9 @@ def frontier_intent(payload: FrontierPayload) -> ChartIntent:
     # Latency is restated in the largest unit that keeps two significant figures — the only quantity
     # here with a declared unit to restate.
     latencies = [point.latency_ms for point in payload.points if point.latency_ms is not None]
-    latency_scale, latency_unit = display_scale(latencies, "ms" if latencies else None)
+    latency_scale, latency_unit = ruled_scale(
+        latencies, "ms" if latencies else None, payload.latency_stated_unit if latencies else None
+    )
     display = strip_common_prefix([point.label for point in payload.points])
     rows: list[dict[str, Any]] = [
         {

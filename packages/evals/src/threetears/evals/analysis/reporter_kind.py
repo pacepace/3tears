@@ -48,7 +48,6 @@ from threetears.evals.analysis.generator import (
     user_message_digest,
 )
 from threetears.evals.analysis.report.serialize_md import markdown_table
-from threetears.evals.analysis.viz.quantities import render_cell
 from threetears.evals.analysis.report.words import (
     CONFIDENCE_WORDS,
     EVIDENCE_COLUMNS,
@@ -1003,7 +1002,7 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
                 rows = evidence_rows(analysis, resolution.evidence, arm)
                 table = markdown_table(
                     [header for _, header in EVIDENCE_COLUMNS],
-                    [[render_cell(row[key]) for key, _ in EVIDENCE_COLUMNS] for row in rows],
+                    [[row[key].text for key, _ in EVIDENCE_COLUMNS] for row in rows],
                 )
                 findings += ["", "Evidence:", "", *table]
             if finding.chart.type != NO_CHART:

@@ -48,6 +48,7 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.analysis.report import SCHEMA_PATH
 from threetears.evals.analysis.report.model import table_row
+from threetears.evals.analysis.surface_table import measure_rulers
 from threetears.evals.kernel.campaign import EvalAnalysis, Viz
 from threetears.evals.kernel.errors import NotFoundError
 from threetears.evals.kernel.host import EvalHost
@@ -170,7 +171,11 @@ class TestTheToyReportsContent:
         evidence = analysis.resolutions[0].evidence
 
         assert table.finding == 0
-        assert [row["value"] for row in table.values()] == [row.value for row in evidence]
+        # Code's numbers, stated on each measure's one ruler for the report (a latency in s where the surface is).
+        rulers = measure_rulers(analysis.decision_surface)
+        stated = [row.value * (rulers[row.measure_id].factor if row.reading == "measure" else 1.0) for row in evidence]
+        assert [row["value"] for row in table.values()] == pytest.approx(stated)
+        assert any(cell["value"].unit == "s" for cell in table.rows), "the toy's turn time reads in s on its surface"
         assert [row["cases"] for row in table.values()] == [row.n_cases for row in evidence]
 
     async def test_the_delta_tables_n_is_the_smaller_arms_cases_never_its_observations(

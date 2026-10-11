@@ -64,6 +64,7 @@ from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics,
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.surface_table import NO_SUCCESSFUL_RESULTS
+from threetears.evals.analysis.viz.quantities import display_scale, with_unit
 from threetears.evals.kernel import (
     NotFoundError,
     CONFUSION_CELL_MEASURE,
@@ -171,6 +172,8 @@ class RunMeasureSummary(BaseModel):
         guardrail: Whether the host declares it a guardrail, something no arm may get worse on. A run alone has no
             control to hold it against, so its level here is no verdict: held, breached or undecided is decided
             only against a control, in a comparison.
+        unit: The unit the host declares its values in; empty when it declares none. Its line states the mean, the
+            minimum and the maximum on one ruler chosen over the three, as a report states a measure on one ruler.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -183,6 +186,7 @@ class RunMeasureSummary(BaseModel):
     n_no_turn: int = 0
     n_faulted: int = 0
     guardrail: bool = False
+    unit: str = ""
 
 
 class GoalCheckSummary(BaseModel):
@@ -765,9 +769,17 @@ class EvalSummary(BaseModel):
             state, said = "not_a_number", f"n={measure.n}, not a number"
         else:
             state = "measured"
+            # One ruler for the line's three figures, chosen over all of them: a mean in s beside a max in ms is two
+            # rulers read as one.
+            figures = [value for value in (measure.mean, measure.minimum, measure.maximum) if value is not None]
+            factor, unit = display_scale(figures, measure.unit)
+
+            def stated(value: float | None) -> str:
+                return with_unit(None if value is None else value * factor, unit)
+
             said = (
-                f"mean {format_number(measure.mean)} (n={measure.n}, "
-                f"min {format_number(measure.minimum)}, max {format_number(measure.maximum)}{left_out})"
+                f"mean {stated(measure.mean)} (n={measure.n}, "
+                f"min {stated(measure.minimum)}, max {stated(measure.maximum)}{left_out})"
                 + (f"; {_GUARDRAIL_ALONE}" if measure.guardrail else "")
             )
         return MeasureLine(name=measure.name, state=state, text=f"{measure.name}: {said}")
@@ -1062,6 +1074,7 @@ def summarize_run(
                 n_no_turn=sum(1 for result in left if classify_result(result) is ResultOutcome.CANDIDATE_FAIL),
                 n_faulted=sum(1 for result in left if classify_result(result) is ResultOutcome.INFRA_EXCLUDE),
                 guardrail=describe_measure(name, host.profile.measures).guardrail,
+                unit=describe_measure(name, host.profile.measures).unit or "",
             )
         )
     names = case_names or {}

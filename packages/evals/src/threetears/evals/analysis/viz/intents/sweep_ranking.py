@@ -28,7 +28,7 @@ from threetears.evals.analysis.viz.payloads import (
     SweepRankingPayload,
     SweepRow,
 )
-from threetears.evals.analysis.viz.quantities import axis_title, display_scale, with_unit
+from threetears.evals.analysis.viz.quantities import axis_title, ruled_scale, with_unit
 
 #: How many configurations a figure draws before it starts omitting them. Past this the figure keeps
 #: :data:`ROWS_WHEN_TRUNCATED` and states what it dropped: thirty-six configurations at one row step is a
@@ -106,9 +106,11 @@ def sweep_ranking_intent(payload: SweepRankingPayload) -> ChartIntent:
     if len(ranked) <= MAX_ROWS:
         drawn, dropped = ranked, []
 
-    scale, ranked_unit = display_scale([row.ranked_value for row in ranked], payload.ranked.unit)
-    secondary_scale, secondary_unit = display_scale(
-        [row.secondary_value for row in payload.rows], payload.secondary.unit
+    scale, ranked_unit = ruled_scale(
+        [row.ranked_value for row in ranked], payload.ranked.unit, payload.ranked.stated_unit
+    )
+    secondary_scale, secondary_unit = ruled_scale(
+        [row.secondary_value for row in payload.rows], payload.secondary.unit, payload.secondary.stated_unit
     )
     ranked_title = axis_title(payload.ranked.measure, ranked_unit)
     data: list[dict[str, Any]] = [

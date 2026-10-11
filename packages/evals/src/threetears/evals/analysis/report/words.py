@@ -15,6 +15,10 @@ from typing import Any, Literal
 from threetears.evals.analysis.arms import ArmStatus, arm_label, arm_names
 from threetears.evals.analysis.bundle.schema import ComparisonVerdict
 from threetears.evals.analysis.cells import variant_of_cell_ref
+from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.references import resolve_reading, restated_dispersion
+from threetears.evals.analysis.report.model import TableCell
+from threetears.evals.analysis.surface_table import UNITLESS, measure_rulers
 from threetears.evals.analysis.viz.intent import ChartValue
 from threetears.evals.analysis.viz_refs import cell_arm_labels
 from threetears.evals.kernel.campaign import ConfidenceTier, EvalAnalysis, EvidenceRow, EvidenceTier
@@ -193,12 +197,17 @@ EVIDENCE_COLUMNS: tuple[tuple[str, str], ...] = (
 
 def evidence_rows(
     analysis: EvalAnalysis, evidence: Sequence[EvidenceRow], arm: Callable[[str], str]
-) -> list[dict[str, ChartValue]]:
+) -> list[dict[str, TableCell]]:
     """A finding's evidence as table rows, keyed by :data:`EVIDENCE_COLUMNS` — each reading by what a reader calls it.
 
     The measure is headed as the decision surface heads it
     (:meth:`~threetears.evals.kernel.surface.DecisionSurface.measure_heading`), never by its key unless nothing
     names it; the key stays on the analysis's evidence rows, which every reader of the record can cite.
+
+    A measure's value and spread are stated on its one ruler for the report
+    (:func:`~threetears.evals.analysis.surface_table.measure_rulers`), the value carrying its unit, as every other
+    table states it: the stored row holds the figure in the measure's own unit, and a latency the surface table
+    states in s read ``950`` here, unitless, in ms. A judged score has no unit and is stated as stored.
 
     Args:
         analysis: The analysis the evidence was resolved under.
@@ -209,18 +218,40 @@ def evidence_rows(
         One row per evidence row, in order.
     """
     surface = analysis.decision_surface
-    return [
-        {
+    rulers = measure_rulers(surface)
+    rows: list[dict[str, TableCell]] = []
+    for row in evidence:
+        ruler = rulers.get(row.measure_id, UNITLESS) if row.reading == "measure" else UNITLESS
+        values: dict[str, ChartValue] = {
             "arm": arm(row.cell_ref),
             "measure": surface.measure_heading(row.measure_id, row.reading),
-            "value": row.value,
             # Cases, never observations: the count every interval is read over. An analysis stored before rows
             # recorded it shows none rather than its observation count under this heading.
             "cases": row.n_cases,
-            "spread": row.dispersion,
+            "spread": _restated_spread(analysis, row, ruler.factor),
         }
-        for row in evidence
-    ]
+        cells = {key: TableCell(value=value) for key, value in values.items()}
+        cells["value"] = TableCell(value=row.value * ruler.factor, unit=ruler.unit)
+        rows.append({key: cells[key] for key, _ in EVIDENCE_COLUMNS})
+    return rows
+
+
+def _restated_spread(analysis: EvalAnalysis, row: EvidenceRow, factor: float) -> str:
+    """An evidence row's spread on its value's ruler: as stored where nothing is restated, else re-read off the surface.
+
+    The stored spread is words over the figures in the measure's own unit, so a restated row re-reads its reading
+    off the analysis's frozen surface, which resolved it at generation. A surface that no longer resolves it (the
+    resolver has since learned a refusal) keeps the stored words and names the unit they are in.
+    """
+    if factor == 1.0:
+        return row.dispersion
+    surface = analysis.decision_surface
+    try:
+        resolved = resolve_reading(surface, row.cell_ref, row.measure_id, row.reading)
+    except UnresolvableReference:
+        facts = surface.measures.get(row.measure_id)
+        return f"{row.dispersion} (in {facts.unit})" if facts is not None and facts.unit else row.dispersion
+    return restated_dispersion(resolved, factor)
 
 
 def positions(numbers: list[int]) -> str:

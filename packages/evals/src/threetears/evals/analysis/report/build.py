@@ -374,7 +374,7 @@ def _finding_blocks(
                 name="evidence",
                 title="Evidence",
                 columns=[TableColumn(key=key, header=header) for key, header in EVIDENCE_COLUMNS],
-                rows=[table_row(row) for row in rows],
+                rows=rows,
                 order="as the author listed the readings",
                 total_rows=len(rows),
             )
@@ -1353,13 +1353,20 @@ def _contrast_margin(bundle: AnalysisContextBundle, comparison: FamilyComparison
     return bundle.run_margins.get(comparison.name)
 
 
-def _immaterial_words(margin: float | None, heading: str) -> str:
+def _margin_text(margin: float, ruler: MeasureRuler) -> str:
+    """A margin as the row's reading is stated: on its measure's one ruler, with its unit."""
+    return f"±{with_unit(margin * ruler.factor, ruler.unit)}"
+
+
+def _immaterial_words(margin: float | None, heading: str, ruler: MeasureRuler) -> str:
     """The caveat an immaterial row carries, naming the margin it was read against and the reading it is on.
 
-    In the reader's terms — the margin they declared, on the reading the row names — rather than the descriptor
-    field it is stored in, which a first comparison's reader has never seen.
+    In the reader's terms — the margin they declared, on the reading the row names and on its ruler — rather than
+    the descriptor field it is stored in, which a first comparison's reader has never seen.
     """
-    where = "the margin declared on it" if margin is None else f"the margin of ±{format_number(margin)} on {heading}"
+    where = (
+        "the margin declared on it" if margin is None else f"the margin of {_margin_text(margin, ruler)} on {heading}"
+    )
     return f" — immaterial: the observed delta is inside {where}, which does not show the true difference is that small"
 
 
@@ -1388,18 +1395,20 @@ def contrast_verdicts(bundle: AnalysisContextBundle, surface: DecisionSurface) -
     the cell read one verdict.
     """
     arm = _cell_namer(surface, bundle.variant_index)
+    rulers = measure_rulers(surface)
     verdicts = []
     for family in bundle.multiple_comparisons.families:
         for comparison in family.comparisons:
             heading = surface.measure_heading(comparison.name, comparison.reading)
             margin = _contrast_margin(bundle, comparison)
+            ruler = rulers.get(comparison.name, UNITLESS) if comparison.reading == "measure" else UNITLESS
             reason, detail = _contrast_reason(comparison)
             words = (
                 COMPARISON_VERDICT_WORDS[comparison.verdict]
                 + (f" ({comparison.untested_reason})" if comparison.untested_reason else "")
                 + (f" ({comparison.not_separated_reason})" if comparison.not_separated_reason else "")
                 + (
-                    f" (margin ±{format_number(margin)}"
+                    f" (margin {_margin_text(margin, ruler)}"
                     + (", declared on the runs" if comparison.margin_source == "run" else "")
                     + ")"
                     if comparison.verdict == "equivalent" and margin is not None
@@ -1408,7 +1417,7 @@ def contrast_verdicts(bundle: AnalysisContextBundle, surface: DecisionSurface) -
                 + (
                     # The observed delta, not the true one: only `equivalent` shows the difference is small, and an
                     # `equivalent` row already says so through its margin, so the caveat would contradict the verdict.
-                    _immaterial_words(margin, heading)
+                    _immaterial_words(margin, heading, ruler)
                     if comparison.materiality == "immaterial" and comparison.verdict != "equivalent"
                     else ""
                 )

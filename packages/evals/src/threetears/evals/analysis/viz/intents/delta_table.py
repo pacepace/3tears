@@ -15,7 +15,7 @@ from threetears.evals.analysis.significance import format_significance
 from threetears.evals.analysis.viz.intent import ChartAxis, ChartColumn, ChartEncoding, ChartIdentity, ChartIntent
 from threetears.evals.analysis.viz.payloads import DeltaRow, DeltaTablePayload, PayloadError
 from threetears.evals.analysis.viz.quantities import (
-    display_scale,
+    ruled_scale,
     relative_change_text,
     render_cell,
     signed_with_unit,
@@ -133,7 +133,7 @@ def _delta_row(row: DeltaRow) -> dict[str, Any]:
     a = _numeric_side(row, "a", row.a)
     b = _numeric_side(row, "b", row.b)
     delta = row.delta if row.delta is not None else b - a
-    scale, unit = display_scale([a, b, delta], row.unit)
+    scale, unit = ruled_scale([a, b, delta], row.unit, row.stated_unit)
     return {
         "metric": row.metric,
         "a": with_unit(a * scale, unit),

@@ -101,6 +101,15 @@ _REMAINDER_TOLERANCE = 0.005
 _LEVEL_ROUNDING = 1e-4
 
 
+#: What every payload's ``stated_unit`` means: the one ruler a report states the measure on, which the chart draws in.
+_STATED_UNIT = (
+    "The unit the report states this measure in on every surface — its one ruler, chosen over every figure the "
+    "decision surface states of it — which the chart restates its values onto: the payload's `unit` itself, or a "
+    "larger unit of its ladder (`s` for `ms`). Recorded by the compiler from the surface; None where no ruler is "
+    "stated, and the chart then chooses its unit over the values it draws."
+)
+
+
 class PayloadError(ValueError):
     """A viz payload does not match the contract declared for its type.
 
@@ -188,6 +197,13 @@ class BreakdownPayload(_VizPayload):
     parts: list[BreakdownPart] = Field(description="The components, in any order — the compiler sorts them.")
     unit: str = Field(
         min_length=1, description="The unit every `value` is in, carried as data so no reader infers it from a name."
+    )
+    stated_unit: str | None = Field(
+        default=None,
+        description=(
+            f"{_STATED_UNIT} The parts are one quantity on one axis, so it is stated only where every part's ruler "
+            "is the same."
+        ),
     )
     measure: str | None = Field(
         default=None, description="What was broken down, when it has a name in the measure catalog."
@@ -429,6 +445,7 @@ class DistributionPayload(_VizPayload):
         default=None,
         description="The unit every plotted value is in. None when the quantity is unitless.",
     )
+    stated_unit: str | None = Field(default=None, description=_STATED_UNIT)
     x_label: str | None = Field(default=None, description="What the value axis measures, when it has a name.")
 
     @field_validator("groups")
@@ -474,6 +491,7 @@ class NullResultPayload(_VizPayload):
     unit: str | None = Field(
         default=None, description="The unit every bound is in. None when the quantity is unitless."
     )
+    stated_unit: str | None = Field(default=None, description=_STATED_UNIT)
     mechanism: ModelProse | None = Field(
         default=None, description="Why the lever cannot act — what makes this an established null."
     )
@@ -529,6 +547,7 @@ class DeltaRow(BaseModel):
     unit: str | None = Field(
         default=None, description="The unit `a`/`b`/`delta` are in. None when the quantity is unitless."
     )
+    stated_unit: str | None = Field(default=None, description=_STATED_UNIT)
     delta: float | None = Field(default=None, description="B − A, for a numeric metric.")
     materiality: Materiality = Field(
         default="material",
@@ -748,6 +767,13 @@ class AttributionPayload(_VizPayload):
     unit: str = Field(
         min_length=1, description="The unit both movements are in; a shared unit is what makes them comparable."
     )
+    stated_unit: str | None = Field(
+        default=None,
+        description=(
+            f"{_STATED_UNIT} The two movements share one axis, so it is stated only where both measures' rulers are "
+            "the same."
+        ),
+    )
     contained_by: str | None = Field(
         default=None,
         description=(
@@ -963,6 +989,9 @@ class FrontierPayload(_VizPayload):
         default=None, description="The x caption. Defaults to `Cost` where the generator names none."
     )
     quality_label: str | None = Field(default=None, description="The y caption. Defaults to `Quality`.")
+    latency_stated_unit: str | None = Field(
+        default=None, description=f"For the points' `latency_ms`, which is in ms: {_STATED_UNIT}"
+    )
 
     @field_validator("points")
     @classmethod
@@ -1097,6 +1126,7 @@ class SweepMeasure(BaseModel):
         default=None,
         description="The unit its values are in. None when the quantity is unitless — never inferred from the name.",
     )
+    stated_unit: str | None = Field(default=None, description=_STATED_UNIT)
 
 
 class SweepDimension(BaseModel):
@@ -1533,6 +1563,7 @@ class TimeseriesPayload(_VizPayload):
 
     metric: str = Field(min_length=1, description="The measure (or judged dimension) drawn.")
     unit: str | None = Field(default=None, description="The unit every value is in. None when unitless.")
+    stated_unit: str | None = Field(default=None, description=_STATED_UNIT)
     basis: Literal["release", "date"] = Field(
         description="What the positions are: the builds the host labels, or the UTC days the runs started on."
     )

@@ -11,7 +11,7 @@ from typing import Any
 
 from threetears.evals.analysis.viz.intent import ChartAxis, ChartColumn, ChartEncoding, ChartIdentity, ChartIntent
 from threetears.evals.analysis.viz.payloads import AttributionPayload
-from threetears.evals.analysis.viz.quantities import axis_title, display_scale, signed_with_unit, with_unit
+from threetears.evals.analysis.viz.quantities import axis_title, ruled_scale, signed_with_unit, with_unit
 
 #: The remainder's row — always present, whether or not it carries a number.
 REMAINDER_SCOPE = "Unattributed"
@@ -38,7 +38,7 @@ def attribution_intent(payload: AttributionPayload) -> ChartIntent:
     magnitudes = [movement.delta for _, movement in measured]
     if unattributed is not None:
         magnitudes.append(unattributed)
-    scale, unit = display_scale(magnitudes, payload.unit)
+    scale, unit = ruled_scale(magnitudes, payload.unit, payload.stated_unit)
 
     plotted: list[dict[str, Any]] = [
         {"scope": scope, "measure": movement.measure, "delta": movement.delta * scale, "derived": False}

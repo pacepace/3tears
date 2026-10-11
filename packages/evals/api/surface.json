@@ -4011,7 +4011,7 @@
     },
     "threetears.evals.analysis.RunMeasureSummary": {
       "kind": "model",
-      "signature": "RunMeasureSummary(name: str, n: int, mean: float | None, minimum: float | None, maximum: float | None, n_no_turn: int = 0, n_faulted: int = 0, guardrail: bool = False)"
+      "signature": "RunMeasureSummary(name: str, n: int, mean: float | None, minimum: float | None, maximum: float | None, n_no_turn: int = 0, n_faulted: int = 0, guardrail: bool = False, unit: str = '')"
     },
     "threetears.evals.analysis.running_analysis_attempt": {
       "kind": "function",
