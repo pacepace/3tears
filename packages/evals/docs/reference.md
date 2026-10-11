@@ -679,6 +679,29 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`DUAL_AXIS_FAMILY`** · constant (str) · The two reserved judge axes every judged run is scored on.
   <br>`= 'dual_axis'`
 - **`ENGINE_FAMILIES`** · constant (dict) · The engine's own families, by name. A host family may not reuse one of these names.
+- **`FIND_ANALYSIS`** · constant (str) · How a caller finds an analysis's id.
+  <br>`= "analyses_list names a campaign's analyses"`
+- **`FIND_CAMPAIGN`** · constant (str) · How a caller finds a campaign's id.
+  <br>`= "campaigns_list names this scope's campaigns"`
+- **`FIND_CASE_SET`** · constant (str) · How a caller finds a case set's name and version.
+  <br>`= "case_sets_list names this scope's case sets and their versions"`
+- **`FIND_FINDING`** · constant (str) · How a caller finds a finding of an analysis.
+  <br>`= "report_read states the campaign's analysis with its findings numbered from 0"`
+- **`FIND_INSIGHT`** · constant (str) · How a caller finds an insight's id.
+  <br>`= "insights_list names this scope's insights"`
+- **`FIND_JOB`** · constant (str) · How a caller finds a job's id.
+- **`FIND_JUDGE_CONFIG`** · constant (str) · How a host finds a judge config's id. No action authors or lists them: they are the host's catalogue.
+  <br>`= "the host's catalogue lists this scope's judge configs (run.list_judge_configs)"`
+- **`FIND_RESULT`** · constant (str) · How a caller finds a result's id.
+  <br>`= "results_list names a run's results"`
+- **`FIND_RUBRIC_DIM`** · constant (str) · How a host finds a rubric dim's id. No action authors or lists them: they are the host's catalogue.
+  <br>`= "the host's catalogue lists this scope's rubric dims (run.list_rubric_dims)"`
+- **`FIND_RUN`** · constant (str) · How a caller finds a run's id.
+  <br>`= "runs_list names this scope's runs"`
+- **`FIND_TEMPLATE`** · constant (str) · How a caller finds a template's id.
+  <br>`= "templates_list names this scope's templates"`
+- **`FIND_TEST_CASE`** · constant (str) · How a caller finds a stored case's id.
+  <br>`= 'results_list names the cases a run ran, by their test case ids'`
 - **`FRONTIER_RANKING_MEASURE`** · constant (str) · The measure the frontier ranks contestants on, and so the one measure a campaign bar is passed to the frontier on.
   <br>`= 'pass_hat_k'`
 - **`GOAL_STATE_FAMILY`** · constant (str) · A goal-state check's verdict: code compared against what the candidate did.
@@ -724,11 +747,17 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`= 'reasoning_ratio'`
 - **`REFUSED_TOOL_ATTACHES_KEY`** · constant (str) · Covariate key: how many times the candidate asked to attach a tool outside its run's `tools_allowed` and the harness refused.
   <br>`= 'refused_tool_attaches'`
+- **`RELAUNCH_TO_REJUDGE`** · constant (str) · What a caller does when a run's judging cannot be reproduced from what it recorded — evidence, attribution, a config set, request settings, a temperature or a template the run no longer matches.
+- **`REREAD_AND_RETRY`** · constant (str) · What a caller does when a record changed under its write.
+  <br>`= 're-read it and make the change again'`
 - **`RUBRIC_FAMILY`** · constant (str) · A judge's score on an authored rubric dimension.
   <br>`= 'rubric'`
 - **`RUN_JOB`** · constant (LeasedJobKind) · A launched run's record.
 - **`RUN_MARGIN_MEASURES`** · constant (frozenset) · The core rate measures a run may declare a margin on (`EvalRun.declared_margins`, `run_margin_refusal`): numeric, on 0 to 1, with a better end and a merit axis (so a comparison tests them), no guardrail, and no margin of their own.
+- **`SCHEMA_REMEDY`** · constant (str) · What a caller does when a document it sent does not validate against its schema: the validator's own words name the field and the rule, so the remedy is to correct what they name.
+  <br>`= 'correct the field the validation error names, and send it again'`
 - **`SEED_PROMPTS`** · constant (tuple) · Every prompt the engine ships a default for, in the order a registry seeds them.
+- **`SEED_REMEDY`** · constant (str) · What a template's author does when its world seed states world state a goal check's control cannot be built over.
 - **`SEPARATION_MIN_AGREEMENT`** · constant (float) · The least agreement a judge must reach with its own repeated scores (the same statistic as calibration) to earn `separation`. Owner ruling, 2026-10-06.
   <br>`= 0.8`
 - **`SEPARATION_MIN_RESULTS`** · constant (int) · The fewest distinct results a self-agreement must cover before it can decide anything.
@@ -743,6 +772,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`= 'truncated_rounds'`
 - **`TURN_BUDGET_ENDED_KEY`** · constant (str) · Covariate key: how many of the candidate's turns the HOST's turn budget ended before they finished.
   <br>`= 'turns_ended_by_budget'`
+- **`WRITER_REMEDY`** · constant (str) · What a caller does when a writer model the host does not allow was asked for an analysis.
 
 <a id="api-kernel-host"></a>
 ### `threetears.evals.kernel.host`
@@ -1013,6 +1043,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`recheck_result(result: EvalResult, *, ledger: CallLedger | None, end_state: Mapping[str, Any] | None, variation: Mapping[str, Any] | None, world: WorldRegistry | None, provenance: ApparatusProvenance) -> tuple[ResultRecheck, list[GoalStateOutcome] | None]`
 - **`record_witnessed_cell`** · async function · Record one cell a host observed — a session it witnessed, not one the engine ran — as a result and its trace.
   <br>`record_witnessed_cell(host: EvalHost, run: EvalRun, test_case: EvalTestCase, output: CandidateOutput, *, k_iteration: int, result_id: str, scored_at: str, judged_artifact: JudgedArtifact, external_rates: ExternalRateTable | None = None, spans: CellTrace | None = None, world_events: Sequence[WorldEvent] | None = None, end_state: Mapping[str, Any] | None = None, judging: WitnessedJudging | None = None) -> tuple[EvalResult, EvalTrace]`
+- **`refuse_ignored_template_fields`** · function · Refuse a template stating a field its kind never acts on (`LaunchableKind.ignored_template_fields`).
+  <br>`refuse_ignored_template_fields(template: EvalTemplate, launchable: LaunchableKind) -> None`
 - **`refuse_raised_ceiling`** · function · Refuse a per-run override above the host's configured ceiling — the one rule every surface applies.
   <br>`refuse_raised_ceiling(override: Ceiling | None, *, configured: Ceiling, name: str, configured_name: str) -> None`
 - **`refuse_stale_presumptions`** · function · Refuse a template presuming world state this host's registry no longer declares.
@@ -1175,7 +1207,7 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`'today'` | `'as_recorded'`
 - **`SecondJudgeAskedBy`** · literal · Which operation asked for a second judge's pass: a seeded share's agreement (`judge_second`) or every judged result's drift under a changed judge (`judge_drift_check`).
   <br>`'judge_second'` | `'judge_drift_check'`
-- **`SubjectResolver`** · type alias · How a host answers whether it holds the subject a launch names, before anything is priced: `(subject_id, scope_id) -> None` when it does, `UnknownSubject` when it does not.
+- **`SubjectResolver`** · type alias · How a kind answers whether its host holds the subject a launch of it names, before anything is priced: `(subject_id, scope_id) -> None` when it does, `UnknownSubject` when it does not.
   <br>`Callable[[str, str], UnknownSubject | None]`
 - **`TemplateField`** · literal · The fields of a template a kind may never act on: what it states about tools, the cases it generates, a conversation, the world (its seed, what it presumes, the checks graded against it) and the rubric a judge scores.
   <br>`'tools_required'` | `'tools_allowed'` | `'variation_axes'` | `'conversation'` | `'world_seed'` | `'preconditions'` | `'goal_state_checks'` | `'goal_check_controls'` | `'rubric'`

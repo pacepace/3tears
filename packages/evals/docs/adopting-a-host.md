@@ -90,13 +90,17 @@ pass it to every entrypoint. It holds:
 Nothing is ambient: there is no installed or default host, so two hosts in one process never meet.
 
 An app that starts runs builds a `LaunchHost` (in `threetears.evals.run`) around its `EvalHost`: the
-launch settings, a registry of the kinds it can launch, a job timeout, `resolve_subject` (whether it holds the
-subject a launch names: `None`, or an `UnknownSubject` saying how a caller finds one it does — asked at admission,
-so `launch_estimate` and a launch refuse an unknown subject alike, before anything is priced), `world_placements` (required exactly
+launch settings, a registry of the kinds it can launch, a job timeout, `world_placements` (required exactly
 when the profile declares a world: what each assembled run did with every dimension) and a `launch_pricer`
 (without one, an arm under an enforced cap is refused unless the launch names its own cap; see
 [Cost and budgets](cost-and-budgets.md#every-arm-is-priced-before-any-launcher-runs)); it builds its job manager over
 the host's own storage. Hand its `eval_host` to the analysis side.
+
+Each kind in the registry (`LaunchableKind`) carries `resolve_subject`: whether the host holds the subject a launch
+of that kind names — `None`, or an `UnknownSubject` saying how a caller finds one it does. It is the kind's, not the
+host's, because one subject id means a live entity to one kind, a fixed prompt key to another and a free label to a
+third; `launchable_judge_kind` brings its own, which admits any non-blank label. It is asked at admission, once the
+template's kind is known, so `launch_estimate` and a launch refuse an unknown subject alike, before anything is priced.
 
 ## Tenancy: the scope
 
@@ -250,6 +254,9 @@ once when you adopt the router and again whenever you change the route, with the
 interrupted, run it again. A release that adds a type needs no relocation unless your route places the new type
 somewhere other than your `unregistered` store.
 
+`RouteChanged` and `MisplacedDocument` carry `fault` and `remedy` apart (their `str()` reads both). A host that
+offers its own relocation tool states its own remedy beside the router's `fault` instead of rewording the message.
+
 **A store's clock passes through when every store has one.** When each of your stores offers `StoreClock`
 (its own `now()`), so does the router, answering from the store your runs are kept in, so every process stamps
 job leases on one clock. If any store has none, neither has the router, and each process reads its own clock.
@@ -383,8 +390,8 @@ report recognises, by its content hash, as a lever the arm did not run, and neve
 
 **A kind's launcher resolves only what is the kind's.** `start_run` refuses a launch argument the
 kind declares it cannot honour before the launcher runs, then hands the launcher a `LaunchRequest`.
-The launcher captures the subject the request names (admission has already asked `resolve_subject` whether
-the host holds it, so a launcher never meets one it does not), freezes the cases, builds its judge
+The launcher captures the subject the request names (admission has already asked the kind's `resolve_subject`
+whether the host holds it, so a launcher never meets one it does not), freezes the cases, builds its judge
 (`build_judge_service`) if it has one, and returns `launch_run(host, request, KindWiring(...))`. The
 engine stamps everything the request and the template already say — scope, model, repeats, cassette
 mode, overlays, spec, world seed, tool bound, ceilings — and refuses a wiring that contradicts them.
@@ -576,6 +583,7 @@ Then register the kind's launch entry (from `threetears.evals.ops`):
 ```python
 LaunchableKind(
     launch=your_reporter_launcher,
+    resolve_subject=your_reporter_subject,  # admits the one subject id your reporter launches label
     unhonoured_launch_arguments=REPORTER_UNHONOURED_LAUNCH_ARGUMENTS,
     plan_arm=lambda request: plan_reporter_arm(eval_host, request, prompts=load_prompts(), resolve_model=resolve),
 )
