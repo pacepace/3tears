@@ -345,17 +345,19 @@ def read_judge_temperatures(answers: JudgeTemperatureAnswers) -> JudgeTemperatur
             + " — the judge's client did not send (or does not report sending) the temperature each side names, so "
             "those scores are left out and the two sides do not compare the settings as named"
         )
-    # A side that answered no case twice on a dimension measured nothing there — no spread, no self-agreement — so
-    # the two settings are not compared on it, whatever the temperatures recorded. Every call failing is one way.
+    # A side that scored no case it answered twice on a dimension measured nothing there — no spread, no
+    # self-agreement — so the two settings are not compared on it, whatever the temperatures recorded. Every call
+    # failing is one way; answering only "cannot tell" is another: answers that agree with no score among them have
+    # no spread to read and no score for a repeat to agree with.
     for spec in TEMPERATURE_SETTINGS:
         for dim in sorted(scales):
             mine = [case for case in cases_by[spec.setting] if case.rubric_dim == dim]
-            if any(case.stable is not None for case in mine):
+            if any(case.stable is not None and case.scores for case in mine):
                 continue
             failed = sum(case.failed for case in mine)
             cannot_tell = sum(case.cannot_tell for case in mine)
             reasons.append(
-                f"on {dim}, the {spec.setting} setting answered no case twice ({failed} call(s) failed, "
+                f"on {dim}, the {spec.setting} setting scored no case it answered twice ({failed} call(s) failed, "
                 f"{cannot_tell} could not tell, {sum(len(case.scores) for case in mine)} scored), so it measured "
                 "nothing there to compare"
             )
