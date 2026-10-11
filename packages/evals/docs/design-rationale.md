@@ -107,9 +107,9 @@ forbidden in capitals and done anyway), so each rule below is computed into the 
 
 - **A lever seen twice is not a confound.** A knob and the resolved surface it lands in move together, so
   every sweep of the knob read as confounded by itself. A knob now names its surface (`ResolvesInto`), and the
-  engine folds the surface into the knob where the runs show it moved with the knob alone; a fold no two arms
-  could test is disclosed as `unverified_fold`
-  ([open problems](open-problems.md#a-fold-with-one-arm-per-knob-level-is-untested)).
+  engine folds the surface into the knob where the runs show it moved with the knob alone. Where one arm ran each
+  knob level, a host reader of the surface with the knob taken out checks the fold; a fold neither two arms nor
+  such a reader could test is disclosed as `unverified_fold`.
 - **Factors that moved together are one group.** Factors that split the runs identically are reported once,
   as `aliased_factors` ("these four move together across all 22 runs; no comparison separates them"). Every
   pair of varying factors is checked, and a pair that co-varies outside a group gets a pivot whose unrun

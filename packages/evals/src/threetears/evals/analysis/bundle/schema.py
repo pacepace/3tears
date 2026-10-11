@@ -38,11 +38,13 @@ from threetears.evals.analysis.cells import (
     SubjectKeyInstability,
 )
 from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.remainder import RemainderState, remainder_state
 from threetears.evals.analysis.reporting import served_model_state
 from threetears.evals.analysis.measurement_windows import MeasurementWindow
 from threetears.evals.analysis.lenses.comparison_sets import ComparisonSetsResult
 from threetears.evals.analysis.lenses.frontier import FrontierResult
 from threetears.evals.analysis.stats import (
+    MIN_PAIRS_FOR_CORRELATION,
     MULTIPLE_COMPARISON_CORRECTION,
     SIGNIFICANCE_ALPHA,
 )
@@ -763,15 +765,19 @@ class ScopeDivergence(EvalDocumentModel):
         Enforced on the model because the pair travels to the generator as data — the single
         construction site keeping them in step is not something the JSON can be trusted on.
 
+        A blank sentence counts as no sentence, here and in the chart's payload alike: both ask
+        :func:`~threetears.evals.analysis.remainder.remainder_state`.
+
         Raises:
             ValueError: If both are set, or neither is.
         """
-        if (self.unattributed_delta is None) == (self.unattributed_withheld is None):
-            raise ValueError(
-                "exactly one of unattributed_delta / unattributed_withheld must be set — "
-                f"got delta={self.unattributed_delta!r}, withheld={self.unattributed_withheld!r}"
-            )
+        remainder_state(self.unattributed_delta, self.unattributed_withheld)
         return self
+
+    @property
+    def remainder(self) -> RemainderState:
+        """Which of its two states the remainder is in: ``"stated"`` (a number) or ``"withheld"`` (a sentence)."""
+        return remainder_state(self.unattributed_delta, self.unattributed_withheld)
 
 
 #: Why a judged dimension sits beside the ranking surface rather than on it. One sentence for every
@@ -1516,6 +1522,26 @@ class ComparedCell(EvalDocumentModel):
     )
 
 
+class PairingCorrelation(EvalDocumentModel):
+    """How far the control's and the contrast's per-case results moved together, over the cases a paired test read.
+
+    Pairing on the case helps only as far as the arms' per-case results correlate: the paired difference's
+    variance is ``var(control) + var(contrast) − 2·r·sd(control)·sd(contrast)``. Near 1, pairing removed most of
+    the between-case spread and bought much power; near 0 it bought nothing; below 0 the paired test is weaker
+    than an unpaired one would have been.
+    """
+
+    r: float = Field(
+        ge=-1.0,
+        le=1.0,
+        description="Pearson's r between the control's and the contrast's per-case means, over the paired cases.",
+    )
+    n_cases: int = Field(
+        ge=MIN_PAIRS_FOR_CORRELATION,
+        description="The paired cases r was computed over: the cases the paired test read.",
+    )
+
+
 class FamilyComparison(EvalDocumentModel):
     """One contrast against the control on one reading, tested and corrected within its family."""
 
@@ -1554,6 +1580,14 @@ class FamilyComparison(EvalDocumentModel):
         description=(
             "`paired` = over the cases both cells ran; `unpaired` = over each cell's per-case values, when they share "
             "fewer than two cases. `basis` says which test. None when no test ran."
+        ),
+    )
+    pairing_correlation: PairingCorrelation | None = Field(
+        default=None,
+        description=(
+            "Pearson's r between the control's and the contrast's per-case means over the cases the paired test read, "
+            "with their count: what pairing bought. None for an unpaired test, when no test ran, below three paired "
+            "cases, and where either side has no spread. A bundle shape before 48 carries none."
         ),
     )
     basis: Literal["t", "bounded", "identical"] | None = Field(
@@ -1846,7 +1880,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # A/B set spanning a bump must be read as spanning it. Why each earlier version moved is in
     # this file's history.
     schema_version: int = Field(
-        default=47, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=48, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -2806,6 +2840,7 @@ __all__ = [
     "MechanismUncheckedReason",
     "MeritTier",
     "MovementDirection",
+    "PairingCorrelation",
     "MultipleComparisons",
     "NO_DESIGN_EXPLORATORY",
     "NO_QUESTION_EXPLORATORY",

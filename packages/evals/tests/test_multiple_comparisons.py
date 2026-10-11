@@ -18,6 +18,7 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 
 from __future__ import annotations
 
+import random
 from collections.abc import Sequence
 from dataclasses import replace
 
@@ -36,6 +37,7 @@ from threetears.evals.analysis.stats import (
     composite_significance,
     holm_adjust,
     paired_equivalence,
+    pairing_correlation,
     separation_p,
 )
 from threetears.evals.kernel import EvalCampaign, Question
@@ -46,6 +48,7 @@ from threetears.evals.kernel.metrics import MeritAxis
 from packages.evals.tests.factories import fixture_variant_key, make_eval_result, make_eval_run, minimal_declaration
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
+from packages.evals.tests.simulation_support import ClusteredDesign, draw_paired_arms
 
 #: Per-case score differences, contrast minus control, over twelve cases. Raw paired p ≈ 0.026: a
 #: separation at α=0.05 when tested alone, and not once nine other comparisons share its family.
@@ -605,3 +608,94 @@ def test_the_report_states_each_contrast_s_means_cases_interval_and_effect_size(
     assert row["cases"] == "9 paired; 3 of the control's left out, not run by the other side"
     assert isinstance(row["interval"], str) and row["interval"].endswith("at 95%")
     assert row["hedges_g"] is not None and row["hedges_g"] > 0
+
+
+# --- what pairing bought (#595) ----------------------------------------------------------------------
+
+
+def _correlated_accuracy(correlation: float, *, n_cases: int, seed: int) -> tuple[list[float], list[float]]:
+    """Per-case field accuracies for a control and a contrast whose case levels correlate at ``correlation``.
+
+    One observation per case with no repeat noise, so the per-case means the comparison pairs ARE the case levels,
+    and their true correlation is ``correlation``. Centred at 0.5 with a 0.05 spread, so every value lies well
+    inside the measure's declared 0-1 range.
+    """
+    design = ClusteredDesign(n_cases=n_cases, repeats=1, between_case_sd=0.05, repeat_sd=0.0)
+    control, contrast = draw_paired_arms(random.Random(seed), design, effect=0.01, correlation=correlation)
+    return [0.5 + case[0] for case in control], [0.5 + case[0] for case in contrast]
+
+
+class TestWhatPairingBought:
+    """A paired comparison reports the arms' per-case correlation over the cases its test read; an unpaired one none."""
+
+    @pytest.mark.parametrize(("correlation", "seed"), [(0.0, 595), (0.5, 596), (0.9, 597)])
+    def test_a_known_between_arm_correlation_is_recovered(self, correlation: float, seed: int) -> None:
+        """Truth: the case levels correlate at ``correlation``. Over 300 cases r's standard error is at most
+        (1 − ρ²)/√300 ≈ 0.058, so the recovered r sits within 0.15 of the truth (about 2.6 SE at ρ = 0)."""
+        accuracy = _correlated_accuracy(correlation, n_cases=300, seed=seed)
+        family = _family(_bundle([], accuracy=accuracy, cases=300, profile=_accuracy_threshold(None)))
+        (comparison,) = [c for c in family.comparisons if c.name == "field_accuracy"]
+
+        assert comparison.test == "paired"
+        assert comparison.pairing_correlation is not None
+        assert comparison.pairing_correlation.n_cases == comparison.control.n_cases == 300
+        assert comparison.pairing_correlation.r == pytest.approx(correlation, abs=0.15)
+        assert comparison.pairing_correlation.r == pytest.approx(pairing_correlation(*accuracy))
+
+    def test_it_is_read_over_the_cases_the_test_read_only(self) -> None:
+        """The contrast ran nine of twelve cases, each a line of the control's: r is 1 over those nine, and the
+        control's other three, which would pull it down, are not read."""
+        accuracy = ([0.5, 0.6, 0.7, 0.55, 0.65, 0.52, 0.61, 0.58, 0.66, 0.9, 0.1, 0.9], [0.0] * 12)
+        contrast = [0.5 * value + 0.3 for value in accuracy[0][:9]] + [0.0] * 3
+        family = _family(_bundle([], accuracy=(accuracy[0], contrast), contrast_cases=range(9)))
+        (comparison,) = [c for c in family.comparisons if c.name == "field_accuracy"]
+
+        assert comparison.pairing_correlation is not None
+        assert comparison.pairing_correlation.n_cases == 9
+        assert comparison.pairing_correlation.r == pytest.approx(1.0)
+
+    def test_an_unpaired_comparison_carries_none(self) -> None:
+        (comparison,) = _family(_bundle([CLEAR], cases=6, unpaired=6)).comparisons
+        assert comparison.test == "unpaired"
+        assert comparison.pairing_correlation is None
+
+    def test_two_paired_cases_carry_none(self) -> None:
+        """Two points always lie on a line, so a correlation over two says nothing."""
+        accuracy = ([0.5, 0.7, 0.6], [0.55, 0.72, 0.0])
+        family = _family(_bundle([], accuracy=accuracy, cases=3, contrast_cases=range(2)))
+        (comparison,) = [c for c in family.comparisons if c.name == "field_accuracy"]
+        assert comparison.test == "paired"
+        assert comparison.pairing_correlation is None
+
+    def test_a_side_with_no_spread_carries_none(self) -> None:
+        """Every control case scores 3, so the control does not vary and correlates with nothing."""
+        (comparison,) = _family(_bundle([CLEAR])).comparisons
+        assert comparison.test == "paired"
+        assert comparison.pairing_correlation is None
+
+    def test_the_report_s_comparison_table_shows_it(self) -> None:
+        from threetears.evals.analysis.report.build import build_code_only_report
+
+        profile = _accuracy_threshold(None)
+        accuracy = _correlated_accuracy(0.8, n_cases=12, seed=598)
+        bundle = _bundle([], accuracy=accuracy, profile=profile)
+        report = build_code_only_report(bundle, measures=profile.measures, assembled_at="2026-10-11T00:00:00Z")
+        (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
+        (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
+
+        assert "Pairing r" in [column.header for column in table.columns]  # type: ignore[attr-defined]
+        assert row["pairing_r"] == pytest.approx(pairing_correlation(*accuracy))
+
+
+class TestPairingCorrelation:
+    def test_perfectly_collinear_samples_read_one_and_opposed_ones_minus_one(self) -> None:
+        assert pairing_correlation([1.0, 2.0, 3.0], [2.0, 4.0, 6.0]) == pytest.approx(1.0)
+        assert pairing_correlation([1.0, 2.0, 3.0], [3.0, 2.0, 1.0]) == pytest.approx(-1.0)
+
+    def test_fewer_than_three_pairs_or_a_constant_side_read_none(self) -> None:
+        assert pairing_correlation([1.0, 2.0], [2.0, 4.0]) is None
+        assert pairing_correlation([1.0, 1.0, 1.0], [2.0, 4.0, 5.0]) is None
+
+    def test_samples_of_different_lengths_are_refused(self) -> None:
+        with pytest.raises(ValueError, match="case by case"):
+            pairing_correlation([1.0, 2.0, 3.0], [1.0, 2.0])

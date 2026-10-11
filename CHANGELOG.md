@@ -68,6 +68,37 @@ packages (bumped in lock-step).
   it is measured by the reporter judge, never checked over the words.
 - **The HTML report caps prose line length (#683).** Headings that carry a sentence, paragraphs, list items, chart
   captions, disclosures and caveats are capped at `max-width: 70ch`; tables and figures keep the page's 920px.
+- **An attribution remainder's two states are named once (#615).** `analysis.remainder.remainder_state` names a
+  remainder `"stated"` (a number in `unattributed_delta`) or `"withheld"` (a sentence in `unattributed_withheld`),
+  refusing neither and both, and `AttributionPayload` and `ScopeDivergence` each enforce the invariant through it and
+  expose the answer as a `remainder` property (typed `RemainderState`, exported from `threetears.evals.analysis`).
+  The attribution chart's intent reads the property rather than either field. A blank sentence now explains nothing
+  in both: the bundle used to accept an empty `unattributed_withheld` beside no number, which the chart refused.
+- **A paired comparison reports what pairing bought (#595).** Each `FamilyComparison` carries
+  `pairing_correlation` (`PairingCorrelation`, exported from `threetears.evals.analysis`): Pearson's r between the
+  control's and the contrast's per-case means over the cases the paired test read, with that count. It is `None`
+  for an unpaired test, when no test ran, below three paired cases, and where a side does not vary. The report's
+  "Contrasts against the control" table shows it as "Pairing r", and `analysis.stats.pairing_correlation` computes
+  it. The bundle shape is version 48 (was 47), so an analysis assembled at 47 reads its bundle as moved by the
+  package (`package_shape`). The open-problems entry is removed.
+- **A fold with one arm per knob level can be checked (#605).** `ResolvesInto(lever, read_residual=reader)`, and
+  `Sweepable(resolves_into=..., read_residual=...)` on a host's own fixed lever, take an optional reader of the
+  surface with the knob's contribution taken out (called with the knob's lever name as the one removed member).
+  Where every level of the knob was run by one arm, the fold is decided by those residuals: equal across the
+  cohort, it is checked and carries no `unverified_fold` mark; unequal, the surface stays a lever and a confound of
+  its own; a `None` from any run leaves it `unverified_fold`. A host that declares no reader is read as before. A
+  fixed lever's `read_residual` used to be refused at registration; it is now refused only without
+  `resolves_into`. The `unverified_fold` sentence names the reader as a second way to test the fold. The
+  open-problems entry is removed.
+- **A run can be labelled (#648); core schema v12.** `EvalRun.labels` holds the short names an operator gave a run
+  (a baseline, a production snapshot): sorted, each once, 1 to 64 characters, at most 16, and in no identity key, so
+  setting or clearing one moves no variant key, context key or bundle fingerprint. `ops.run_label(host, run_id,
+  scope_id, *, labels)` replaces them (an empty list clears them), written through the run document's conditional
+  read-modify-write so a writer moving the run keeps its edit; the `run_label` action takes them as `run_labels`.
+  `runs_list` (operation and action) and `run.list_runs` take `label=` to list only runs carrying one, and each
+  `RunLine` carries its `labels`. The v11 step is the identity, so a v11 run reads with none; a build before this one
+  refuses a v12 run as newer, so every process sharing a store upgrades together (MIGRATIONS.toml).
+
 ### 3tears-evals: what adopting .12 found (gaps 49–50)
 
 - **A host resolver's refusal reaches both hooks as the error it raised (gap 49).** `ToolCall.refused` is the very

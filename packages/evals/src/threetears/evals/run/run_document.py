@@ -18,11 +18,12 @@ and the engine passes it back untouched.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
-from threetears.evals.kernel.errors import ConflictError
-from threetears.evals.schema.models import EvalRun
+from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
+from threetears.evals.kernel.remedies import FIND_RUN
+from threetears.evals.schema.models import RUN_LABELS_MAX, EvalRun, run_label_problem
 from threetears.evals.kernel.storage import JobStore
 from threetears.observe import get_logger
 
@@ -142,8 +143,82 @@ def update_eval_run(
     return "refused"
 
 
+def normalized_run_labels(labels: Sequence[str]) -> list[str]:
+    """The labels a run is stored with: each stripped, each once, sorted.
+
+    Args:
+        labels: Labels as an operator gave them.
+
+    Returns:
+        The labels as stored.
+
+    Raises:
+        ValidationFailedError: A label is blank or too long once stripped, or there are more than
+            :data:`~threetears.evals.schema.models.RUN_LABELS_MAX` distinct ones.
+    """
+    stored = sorted({label.strip() for label in labels})
+    for label in stored:
+        problem = run_label_problem(label)
+        if problem is not None:
+            raise ValidationFailedError(
+                f"run label {label!r} {problem}", remedy="name the run with a short label of 1 to 64 characters"
+            )
+    if len(stored) > RUN_LABELS_MAX:
+        raise ValidationFailedError(
+            f"{len(stored)} labels given and a run carries at most {RUN_LABELS_MAX}",
+            remedy="keep the labels that name the run; a note about it belongs in a campaign insight",
+        )
+    return stored
+
+
+def set_run_labels(store: JobStore, run_id: str, scope_id: str, *, labels: Sequence[str]) -> EvalRun:
+    """Replace a run's labels — curation, like archiving: no identity key, fingerprint or lens reads them (#648).
+
+    The set is replaced whole, so an empty one clears every label. Written through :func:`update_eval_run`, so a
+    run another writer is moving (a run still going stamps its completeness and its ending) keeps that writer's
+    edit and these labels both: a lost race re-reads and re-applies. Idempotent: setting the labels a run already
+    carries writes nothing. The write stores the whole run at the current core version, as every write of a run
+    document does.
+
+    Args:
+        store: Where the run lives.
+        run_id: The run to label.
+        scope_id: The scope it lives in.
+        labels: Its labels, replacing any it has; normalised by :func:`normalized_run_labels`.
+
+    Returns:
+        The run as persisted, read whole.
+
+    Raises:
+        ValidationFailedError: A label cannot name a run (:func:`normalized_run_labels`).
+        NotFoundError: No run with that id in the scope, including one deleted during the write.
+        StorageError: No write attempt completed (every one was refused by another writer, or failed).
+    """
+    stored = normalized_run_labels(labels)
+
+    def _label(current: EvalRun) -> dict[str, Any] | None:
+        if current.labels == stored:
+            return None
+        data = current.to_dict()
+        data["labels"] = stored
+        return data
+
+    outcome = update_eval_run(store, run_id, scope_id, _label)
+    if outcome == "missing":
+        raise NotFoundError("run", run_id, remedy=FIND_RUN)
+    if outcome == "refused":
+        raise StorageError(f"run '{run_id}' was not labelled: no write attempt completed (see the log)")
+    log.info("eval.set_run_labels run=%s scope=%s labels=%s outcome=%s", run_id, scope_id, stored, outcome)
+    current, _ = store.load_eval_run_with_etag(run_id, scope_id)
+    if current is None:
+        raise NotFoundError("run", run_id, remedy=FIND_RUN)
+    return current
+
+
 __all__ = [
     "RUN_DOCUMENT_WRITE_ATTEMPTS",
     "RunUpdateOutcome",
+    "normalized_run_labels",
+    "set_run_labels",
     "update_eval_run",
 ]

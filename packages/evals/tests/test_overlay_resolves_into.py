@@ -407,6 +407,103 @@ class TestASurfaceThatMovedWithoutItsKnobStaysAConfound:
         assert all(_PARAMS not in entry.folded for entry in self._sweep().variant_index)
 
 
+#: Every removed set the residual reader below was asked with, so a test can say what it was asked.
+_ASKED: list[frozenset[str]] = []
+
+
+def _params_without_effort(run: EvalRun, _results: Sequence[EvalResult], removed: frozenset[str]) -> Any:
+    """The parameters a run resolved, with the effort knob's own entry taken out; ``None`` where none were recorded."""
+    _ASKED.append(removed)
+    params = (run.host_payload or {}).get(_NAMESPACE, {}).get(_PARAMS)
+    return None if params is None else {key: value for key, value in params.items() if key != "reasoning_effort"}
+
+
+def _cannot_say(_run: EvalRun, _results: Sequence[EvalResult], _removed: frozenset[str]) -> Any:
+    """A residual reader that can read no run."""
+    return None
+
+
+class _ReadOverlays(BaseModel):
+    """The effort knob, written into the parameters, with a reader of the parameters without it (#605)."""
+
+    reasoning_effort: Annotated[
+        Literal["low", "high"], Ordinal(), ResolvesInto(_PARAMS, read_residual=_params_without_effort)
+    ] = Field("low", description="how hard the extractor is told to reason")
+    tool_configs: Annotated[dict[str, str], ResolvesInto(_TOOLS)] = Field(
+        default_factory=dict, description="the per-tool settings the launch overlaid"
+    )
+
+
+class _UnreadableOverlays(BaseModel):
+    """The same knob, with a residual reader that cannot say."""
+
+    reasoning_effort: Annotated[Literal["low", "high"], Ordinal(), ResolvesInto(_PARAMS, read_residual=_cannot_say)] = (
+        Field("low", description="how hard the extractor is told to reason")
+    )
+    tool_configs: Annotated[dict[str, str], ResolvesInto(_TOOLS)] = Field(
+        default_factory=dict, description="the per-tool settings the launch overlaid"
+    )
+
+
+class TestAResidualReaderChecksAFoldWithOneArmPerLevel:
+    """One arm per effort level, and the host reads the parameters with the effort's contribution taken out (#605).
+
+    The runs alone cannot refute the fold, so the residuals decide it: equal, the effort accounts for the parameters'
+    whole movement and the fold is checked; unequal, the high arm's token cap moved with it and the parameters stay
+    a confound; a reader that cannot say leaves the fold unverified, as a host declaring no reader does.
+    """
+
+    @staticmethod
+    def _sweep(high: dict[str, Any], overlays: type[BaseModel] = _ReadOverlays) -> AnalysisContextBundle:
+        control = _batch("low", _LOW)
+        return _bundle([control, _batch("high", high)], control=control, profile=_profile(overlays))
+
+    def test_equal_residuals_verify_the_fold(self) -> None:
+        _ASKED.clear()
+        bundle = self._sweep(_HIGH)
+        row = _row(bundle, _EFFORT)
+        assert _PARAMS not in {entry.name for entry in bundle.coverage}
+        assert _confound(row, _PARAMS) is None
+        assert _confound(row, _UNVERIFIED_PARAMS) is None
+        assert _UNVERIFIED_PARAMS not in bundle.confound_catalog
+        assert all(_PARAMS in entry.folded for entry in bundle.variant_index)
+        assert _ASKED and set(_ASKED) == {frozenset({_EFFORT})}, "the reader is asked with the knob taken out"
+
+    def test_a_verified_fold_carries_no_caveat_in_the_code_only_report(self) -> None:
+        bundle = self._sweep(_HIGH)
+        report = build_code_only_report(
+            bundle, measures=_profile(_ReadOverlays).measures, assembled_at="2026-10-11T00:00:00+00:00"
+        )
+        assert not [
+            block for block in report.blocks if isinstance(block, DisclosureBlock) and "unverified" in block.text
+        ]
+
+    def test_unequal_residuals_keep_the_surface_a_confound(self) -> None:
+        bundle = self._sweep(_HIGH_RECAPPED)
+        row = _row(bundle, _EFFORT)
+        confound = _confound(row, _PARAMS)
+        assert confound is not None
+        assert confound.kind == "swept_lever"
+        assert _confound(row, _UNVERIFIED_PARAMS) is None
+        assert _PARAMS in {entry.name for entry in bundle.coverage}
+        assert all(_PARAMS not in entry.folded for entry in bundle.variant_index)
+
+    def test_a_reader_that_cannot_say_leaves_the_fold_unverified(self) -> None:
+        row = _row(self._sweep(_HIGH, _UnreadableOverlays), _EFFORT)
+        assert _confound(row, _PARAMS) is None
+        assert _confound(row, _UNVERIFIED_PARAMS) == Confound(dimension=_UNVERIFIED_PARAMS, kind="unverified_fold")
+
+    def test_the_same_campaign_without_a_reader_is_unverified(self) -> None:
+        bundle = self._sweep(_HIGH, _Overlays)
+        assert _confound(_row(bundle, _EFFORT), _UNVERIFIED_PARAMS) is not None
+        assert "ResolvesInto's read_residual" in bundle.confound_catalog[_UNVERIFIED_PARAMS]
+
+    def test_the_marker_carries_the_reader_to_the_knob_s_declaration(self) -> None:
+        (declared,) = [d for d in _contract(_ReadOverlays).sweepables if d.name == _EFFORT]
+        assert declared.resolves_into == _PARAMS
+        assert declared.read_residual is _params_without_effort
+
+
 class TestASurfaceARunDidNotRecordFoldsNothing:
     """A run that predates the host's capture of the surface cannot show agreement."""
 
@@ -616,9 +713,15 @@ class TestAFixedLeverDeclaringASurfaceIsCheckedAtRegistration:
         with pytest.raises(RegistrationError, match="'rig' is a apparatus and declares resolves_into"):
             SHARED_CORE.extend([self._lever("surface"), rig])
 
-    def test_a_residual_reader_on_a_fixed_lever_is_refused(self) -> None:
+    def test_a_residual_reader_on_a_fixed_lever_naming_a_surface_is_admitted(self) -> None:
+        """#605: the surface with the knob taken out is what checks a fold with one arm per level."""
         knob = self._lever("knob", resolves_into="surface", read_residual=lambda _run, _results, _removed: {})
-        with pytest.raises(RegistrationError, match="'knob' declares read_residual and is not an open family"):
+        registry = SHARED_CORE.extend([self._lever("surface"), knob])
+        assert registry.resolution_surfaces["surface"].read_residual is not None
+
+    def test_a_residual_reader_on_a_fixed_lever_naming_no_surface_is_refused(self) -> None:
+        knob = self._lever("knob", read_residual=lambda _run, _results, _removed: {})
+        with pytest.raises(RegistrationError, match="'knob' declares read_residual and no resolves_into"):
             SHARED_CORE.extend([self._lever("surface"), knob])
 
     def test_a_knob_with_no_coordinate_of_its_own_is_refused(self) -> None:

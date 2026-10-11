@@ -1489,6 +1489,9 @@ def _comparison_blocks(
                     "delta": _figure(comparison.delta, ruler),
                     "interval": TableCell(value=_interval_on_delta(comparison.interval, ruler, family.interval_level)),
                     "hedges_g": TableCell(value=comparison.hedges_g),
+                    "pairing_r": TableCell(
+                        value=comparison.pairing_correlation.r if comparison.pairing_correlation is not None else None
+                    ),
                     "p_adjusted": TableCell(value=comparison.p_adjusted),
                     "verdict": TableCell(value=verdict.words),
                 }
@@ -1509,6 +1512,7 @@ def _comparison_blocks(
                 TableColumn(key="delta", header="Delta (arm − control)"),
                 TableColumn(key="interval", header="Interval on delta"),
                 TableColumn(key="hedges_g", header="Hedges' g"),
+                TableColumn(key="pairing_r", header="Pairing r"),
                 TableColumn(key="p_adjusted", header="p (Holm-adjusted)"),
                 TableColumn(key="verdict", header="Verdict"),
             ],

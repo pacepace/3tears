@@ -141,6 +141,10 @@ the control on each reading, under one rig.
   steps would separate while its interval still touches zero reads not separated, its p below 0.05 notwithstanding.
 - **Hedges' g** is the standardized difference, corrected for small samples. Cohen's d reads 0.88 for a
   true 0.5 at three paired cases; g reads 0.5. There is none at two pairs, where no unbiased estimate exists.
+- **Pairing r** is the correlation between the two arms' per-case means over the paired cases: what pairing
+  bought. Near 1, the cases' own differences cancelled and the paired test is far more sensitive than an
+  unpaired one; near 0 pairing bought nothing; below 0 the paired test is less sensitive than an unpaired one
+  would have been. Blank for an unpaired test, below three paired cases, and where an arm's values do not vary.
 - **p (Holm-adjusted)** is corrected within the family: one per declared question (the readings on its
   merit axes), or, with no question, one campaign-wide family over every reading on a merit axis. A measure
   on no axis is never tested. That keeps the rig's own readings out: the judge's time (`judge_ms`), the
@@ -411,7 +415,8 @@ declaration enters no variant key. A lever naming no mechanism reads `unchecked`
 A knob your host also records resolved as a lever of its own (`ResolvesInto`) is reported as one lever where
 the runs show the resolved lever moved only with the knob: it then has no coverage row, names no confound, and
 is listed in the arm's `folded`. Where it moved on its own it stays a lever and a confound, and a fold no two arms
-at one knob level could have refuted carries an `unverified_fold` confound. The rule in full is in
+at one knob level could have refuted, and no host residual reader checked, carries an `unverified_fold` confound.
+The rule in full is in
 [Adopting the engine](adopting-a-host.md#the-kind-what-you-are-evaluating).
 
 A comparison across candidate models can also differ in what the models did while no setting differed. A

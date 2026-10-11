@@ -157,6 +157,7 @@ from threetears.evals.analysis.reporter_kind import (
     render_memo_as_written,
     reporter_cell_timeout_s,
 )
+from threetears.evals.analysis.remainder import RemainderState
 from threetears.evals.analysis.reporting import (
     METRIC_COMPOSITE,
     METRIC_OUTCOME,
@@ -267,6 +268,7 @@ from threetears.evals.analysis.bundle.schema import (
     MechanismUncheckedReason,
     MeritTier,
     MultipleComparisons,
+    PairingCorrelation,
     QuestionScope,
     ReadingScope,
     RealizedDesign,
@@ -491,6 +493,7 @@ __all__ = [
     "FactorPairPivot",
     "FactorPairScan",
     "FamilyComparison",
+    "PairingCorrelation",
     "FrontierCostDecision",
     "FrontierCostTie",
     "FrontierDominance",
@@ -572,6 +575,7 @@ __all__ = [
     "RowColumns",
     "RunLister",
     "RunSummary",
+    "RemainderState",
     "ScopeDivergence",
     "ShortCell",
     "SoundnessRefusal",

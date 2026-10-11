@@ -181,6 +181,10 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # all: its comparisons carry no margin and no TOST p, and name the remedy in `equivalence_untested_reason` (#695).
     # A campaign that declared no design reads the exploratory-campaign sentence in `reading_scope.disclosure` (#685).
     ((47, 11), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
+    # 48/11: each paired comparison carries `pairing_correlation`, the arms' per-case correlation over the cases its
+    # test read (#595), and an `unverified_fold` confound's sentence names a host residual reader as the second way
+    # to test it (#605); the apparatus partition is unchanged.
+    ((48, 11), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
 )
 
 

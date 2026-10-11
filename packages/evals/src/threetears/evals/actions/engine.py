@@ -109,6 +109,7 @@ from threetears.evals.ops import (
     result_rate,
     results_list,
     run_archive,
+    run_label,
     run_delete,
     run_get,
     run_launch,
@@ -122,7 +123,7 @@ from threetears.evals.ops import (
     scope_pivot,
     templates_list,
 )
-from threetears.evals.schema.models import SecondJudge
+from threetears.evals.schema.models import RUN_LABELS_MAX, SecondJudge
 from threetears.evals.kernel.judge_temperature import DEFAULT_TEMPERATURE_REPEATS, TemperatureSelection
 from threetears.evals.run import JudgeCaseFreezeReport, JudgeTemperatureEstimate, SecondJudgeEstimate, run_blocking
 
@@ -260,6 +261,9 @@ class RunsListParams(EvalBaseModel):
 
     status: RunStatus = None
     include_archived: IncludeArchived = False
+    label: Annotated[
+        str | None, Field(description="List only runs carrying this label (run_label sets them); every run if unset.")
+    ] = None
 
 
 class RunParams(EvalBaseModel):
@@ -316,6 +320,19 @@ class RunArchiveParams(EvalBaseModel):
 
     run_id: RunId
     archived: Archived = True
+
+
+class RunLabelParams(EvalBaseModel):
+    """``run_label``."""
+
+    run_id: RunId
+    run_labels: list[str] = Field(
+        max_length=RUN_LABELS_MAX,
+        description=(
+            "The run's labels, replacing any it has; [] clears them. Each 1 to 64 characters, stored sorted and "
+            "each once. A label names the run (a baseline, a production snapshot) and moves no key or fingerprint."
+        ),
+    )
 
 
 class SweepLaunchParams(SweepSettings):
@@ -666,6 +683,7 @@ async def _runs_list(host: OpsHost, caller: Caller, params: RunsListParams) -> R
         caller.scope_id,
         status=params.status,
         include_archived=params.include_archived,
+        label=params.label,
     )
 
 
@@ -716,6 +734,13 @@ async def _run_archive(host: OpsHost, caller: Caller, params: RunArchiveParams) 
     eval_host = host.eval_host
     return await run_blocking(
         eval_host.blocking_executor, run_archive, eval_host, params.run_id, caller.scope_id, archived=params.archived
+    )
+
+
+async def _run_label(host: OpsHost, caller: Caller, params: RunLabelParams) -> RunLine:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor, run_label, eval_host, params.run_id, caller.scope_id, labels=params.run_labels
     )
 
 
@@ -1892,6 +1917,17 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_run_archive,
             render=render.render_run_line,
             example={"run_id": run_id, "archived": True},
+        ),
+        Action(
+            name="run_label",
+            summary="Name a run with labels (or clear them): runs_list lists runs by one, no key moves.",
+            workflow=CURATE,
+            permission="write",
+            params=RunLabelParams,
+            result=RunLine,
+            handler=_run_label,
+            render=render.render_run_line,
+            example={"run_id": run_id, "run_labels": ["baseline"]},
         ),
         Action(
             name="campaign_archive",
