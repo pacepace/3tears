@@ -5197,6 +5197,10 @@
       "kind": "function",
       "signature": "plan_reporter_arm(host: EvalHost, request: LaunchRequest, *, prompts: ReporterPrompts, resolve_model: ReporterModelResolver) -> ArmPlan"
     },
+    "threetears.evals.ops.price_largest_reporter_call": {
+      "kind": "async function",
+      "signature": "price_largest_reporter_call(host: EvalHost, request: LaunchRequest, *, prompts: ReporterPrompts, resolve_model: ReporterModelResolver) -> CallCeiling | None"
+    },
     "threetears.evals.ops.ProposedBar": {
       "kind": "model",
       "signature": "ProposedBar(measure: str, threshold: float, higher_is_better: bool, rationale: str, vacuous: bool, vacuous_reason: str | None)"
@@ -5631,7 +5635,7 @@
     },
     "threetears.evals.transports.fastmcp.ToolCall": {
       "kind": "dataclass",
-      "signature": "ToolCall(tool: str, action: str | None, caller: Caller, host: OpsHost | None, timeout_s: float, context: Any = None)"
+      "signature": "ToolCall(tool: str, action: str | None, caller: Caller, host: OpsHost | None, timeout_s: float, context: Any = None, refused: EvalServiceError | None = None)"
     },
     "threetears.evals.vega.check_font_files": {
       "kind": "function",

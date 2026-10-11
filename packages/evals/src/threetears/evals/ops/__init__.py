@@ -35,8 +35,8 @@ The reporter case bank's operations — :func:`reporter_case_freeze`, :func:`rep
 :func:`reporter_case_archive` — are how a surface makes the cases a reporter run measures: each is one
 campaign's analysis bundle, frozen, and a reporter template launches nothing until one is. A host launching
 reporter runs makes every refusal a reporter arm meets with :func:`admit_reporter_launch` — and plans the arm
-with :func:`plan_reporter_arm` — over its own prompt registry (:class:`ReporterPrompts`) and model resolution
-(:data:`ReporterModelResolver`).
+with :func:`plan_reporter_arm` and prices its largest generator call with :func:`price_largest_reporter_call` —
+over its own prompt registry (:class:`ReporterPrompts`) and model resolution (:data:`ReporterModelResolver`).
 
 **This module is the package's public root.** A host imports from here and from no module below it,
 and only the names in ``__all__``.
@@ -174,6 +174,7 @@ from threetears.evals.ops.reporter import (
     ReporterPrompts,
     admit_reporter_launch,
     plan_reporter_arm,
+    price_largest_reporter_call,
     ReporterCaseEntry,
     ReporterCaseFreeze,
     ReporterCaseListing,
@@ -306,6 +307,7 @@ __all__ = [
     "ReporterPrompts",
     "admit_reporter_launch",
     "plan_reporter_arm",
+    "price_largest_reporter_call",
     "ReporterCaseEntry",
     "ReporterCaseFreeze",
     "ReporterCaseListing",

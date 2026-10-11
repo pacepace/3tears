@@ -2072,6 +2072,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`pivot_text(table: PivotTable) -> str`
 - **`plan_reporter_arm`** · function · A reporter arm's plan, for its `LaunchableKind.plan_arm`: every refusal first, then what it will run.
   <br>`plan_reporter_arm(host: EvalHost, request: LaunchRequest, *, prompts: ReporterPrompts, resolve_model: ReporterModelResolver) -> ArmPlan`
+- **`price_largest_reporter_call`** · async function · A reporter arm's largest generator call, priced before launch, for its `LaunchableKind.price_largest_call`.
+  <br>`price_largest_reporter_call(host: EvalHost, request: LaunchRequest, *, prompts: ReporterPrompts, resolve_model: ReporterModelResolver) -> CallCeiling | None`
 - **`report_charts`** · function · Draw every chart block of `report` with `renderer`, refusing each chart that cannot be drawn on its own.
   <br>`report_charts(report: Report, renderer: ChartRenderer[DrawingT]) -> ReportCharts[DrawingT]`
 - **`report_read`** · function · The campaign's report, serialized in one form — the same report the command line's `report` prints.
