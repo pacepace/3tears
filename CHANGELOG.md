@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: what adopting .12 found, continued (gap 51)
+
+- **A bisection no longer logs a false seat contradiction for every lever and label (breaking for a host asking the
+  seats about a non-apparatus name).** `runs_bisect` asked `HostProfile.omits_apparatus` about every field the two
+  runs carried, so on a kind with a seats allow-list each lever and label (the model, a persona member, the app
+  version) logged "has no seat for apparatus dimension" on every bisection, and a blank one could be dropped or read
+  as unseated. It now asks only about apparatus, and compares levers and labels as recorded. `HostProfile.seats`,
+  `apparatus_level` and `omits_apparatus` refuse a name that is not an apparatus dimension the host declares with a
+  `ValueError` naming the host's apparatus, so the question cannot be asked of a lever again without a word.
+
 ### 3tears-evals: backlog while Discodon adopts .13
 
 - **A judge case this build cannot read is refused by name, not dropped (breaking for a judge template holding

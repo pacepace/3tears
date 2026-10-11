@@ -1050,7 +1050,15 @@ def derive_context_identity(run: EvalRun, profile: HostProfile) -> DerivedContex
     # judged run that names none (``execute_run``), so this blank is a recorded fact about the run
     # rather than a gap — which is why the run's own seats (``HostProfile.seats``) leave the judge
     # role out of an unjudged run's rig, and the judge's inputs follow it out here.
-    declared_omitted = {name for name, value in role_inputs if profile.omits_apparatus(name, [(run, value)])}
+    #
+    # Only an input this host DECLARES as apparatus has a seat to ask about — `omits_apparatus` refuses any
+    # other name. The five names above are the engine's, fixed here, and a registry built without one of them
+    # (a profile predating `judge_temperature`) has declared nothing that could take it away: the input stays
+    # required, which is the answer the seats gave it before they refused the question.
+    apparatus = {declared.name for declared in profile.sweepables.declarations if declared.role == "apparatus"}
+    declared_omitted = {
+        name for name, value in role_inputs if name in apparatus and profile.omits_apparatus(name, [(run, value)])
+    }
     role_values = dict(role_inputs)
     # A dependent is carried out with its owner ONLY when the run recorded nothing for it. The
     # rest of this mechanism rests on the value beating the declaration, and propagation is the

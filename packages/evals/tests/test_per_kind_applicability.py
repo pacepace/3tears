@@ -36,6 +36,7 @@ from threetears.evals.analysis.reads import bisect_runs
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.schema import RubricScore
 from threetears.evals.kernel.host import (
+    CANDIDATE_MODEL_LEVER,
     SHARED_CORE,
     UNSEATED_LEVEL,
     KindContract,
@@ -266,6 +267,68 @@ def test_a_kind_recording_a_level_it_does_not_seat_is_reported_and_logged(caplog
     assert blank_only, "nothing contradicts the seats when every run read blank"
     assert not with_a_level, "a run that recorded a judge refutes the seats, and the dimension must be reported"
     assert "has no seat for apparatus dimension 'judge_model'" in caplog.text
+
+
+_PROFILE_LOGGER = "threetears.evals.kernel.host.profile"
+
+
+def test_bisecting_two_runs_whose_levers_differ_logs_no_seat_contradiction(caplog: pytest.LogCaptureFixture) -> None:
+    """Gap 51: a bisection asks the seats about apparatus only, so a lever or a label is never a contradiction.
+
+    The extractor's contract is a seats allow-list naming no lever and no label — none can be seated. Asking
+    the seats about every field the runs carried logged "has no seat" for each lever and label on every
+    bisection. The lever difference is still reported: only the question changed, not the comparison.
+    """
+    profile = _with_kinds(TOY_EXTRACTOR_CONTRACT, _JUDGED_CONTRACT)
+    storage = EvalStorage(InMemoryDocumentStore())
+    run_a = make_eval_run(id="run-a", candidate_kind=TOY_EXTRACTOR_KIND, candidate_model="vendor/model-a")
+    run_b = make_eval_run(id="run-b", candidate_kind=TOY_EXTRACTOR_KIND, candidate_model="vendor/model-b")
+    for run in (run_a, run_b):
+        storage.save_eval_run(run)
+    unseated_levers = [
+        name
+        for name in profile.sweepables.names
+        if (declared := profile.sweepables.get(name)) is not None and declared.role != "apparatus"
+    ]
+    assert unseated_levers, "the precondition: the toy host declares levers and labels no kind seats"
+
+    with caplog.at_level(logging.WARNING, logger=_PROFILE_LOGGER):
+        bisected = bisect_runs(storage, run_a.id, run_b.id, run_a.scope_id, profile=profile)
+
+    seat_warnings = [r.getMessage() for r in caplog.records if r.name == _PROFILE_LOGGER]
+    assert not seat_warnings, seat_warnings
+    assert CANDIDATE_MODEL_LEVER in bisected["differs"], bisected
+
+
+def test_bisecting_a_run_that_records_an_apparatus_level_its_kind_does_not_seat_still_warns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The contradiction the warning exists for survives the fix: a recorded level on an unseated apparatus seat."""
+    profile = _with_kinds(TOY_EXTRACTOR_CONTRACT, _JUDGED_CONTRACT)
+    storage = EvalStorage(InMemoryDocumentStore())
+    run_a = make_eval_run(id="run-a", candidate_kind=TOY_EXTRACTOR_KIND, simulator_model=None)
+    run_b = make_eval_run(id="run-b", candidate_kind=TOY_EXTRACTOR_KIND, simulator_model="vendor/sim-1")
+    for run in (run_a, run_b):
+        storage.save_eval_run(run)
+
+    with caplog.at_level(logging.WARNING, logger=_PROFILE_LOGGER):
+        bisected = bisect_runs(storage, run_a.id, run_b.id, run_a.scope_id, profile=profile)
+
+    assert "has no seat for apparatus dimension 'simulator_model'" in caplog.text, caplog.text
+    assert "simulator_model" in bisected["differs"], bisected
+
+
+@pytest.mark.parametrize("name", [CANDIDATE_MODEL_LEVER, "chunk_tokens", "batch_label", "no-such-dimension"])
+def test_the_seat_questions_refuse_a_name_that_is_not_apparatus(name: str) -> None:
+    """A lever, a label or an undeclared name has no seat: asked about one, each seat question refuses by name."""
+    profile = _with_kinds(TOY_EXTRACTOR_CONTRACT, _JUDGED_CONTRACT)
+    run = _run(TOY_EXTRACTOR_KIND, judged=False)
+    with pytest.raises(ValueError, match=rf"omits_apparatus\('{name}'\).*not an apparatus dimension"):
+        profile.omits_apparatus(name, [(run, "x")])
+    with pytest.raises(ValueError, match=rf"seats\('{name}'\)"):
+        profile.seats(run, name)
+    with pytest.raises(ValueError, match=rf"apparatus_level\('{name}'\)"):
+        profile.apparatus_level(run, name, None)
 
 
 # --- surface: the bundle, and with it the cell partition -----------------------------------------

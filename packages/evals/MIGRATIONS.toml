@@ -31,6 +31,16 @@
 # callers.
 
 [[release]]
+version = "unreleased"
+since = "v0.66.0-evaladopt.14"
+summary = """
+What adopting .12 found, continued (gap 51): a bisection asks the seats about apparatus only.
+"""
+notes = [
+    "HostProfile.seats, HostProfile.apparatus_level and HostProfile.omits_apparatus refuse, with a ValueError naming the host's apparatus, a dimension that is not an apparatus dimension the host declares (a lever, a label, or an undeclared name), where they used to answer for it — omits_apparatus logging a false seat contradiction as it did. Seats describe the measuring rig only: a caller that passed every sweepable now asks these only for names whose declaration has role \"apparatus\", and compares the rest directly.",
+]
+
+[[release]]
 version = "0.66.0-evaladopt.14"
 since = "v0.66.0-evaladopt.13"
 summary = """
