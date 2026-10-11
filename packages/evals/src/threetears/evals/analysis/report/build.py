@@ -40,6 +40,7 @@ from threetears.evals.analysis.report.model import (
     ReportBlock,
     ReportSource,
     TableBlock,
+    TableCell,
     TableColumn,
     TextBlock,
     Verdict,
@@ -61,8 +62,11 @@ from threetears.evals.analysis.report.words import (
 from threetears.evals.analysis.surface_table import (
     NO_SUCCESSFUL_RESULTS,
     REFERENCE_MARK,
+    UNITLESS,
+    MeasureRuler,
     SurfaceTable,
     build_surface_table,
+    measure_rulers,
     surface_order_sentence,
     surface_table_of,
 )
@@ -75,7 +79,7 @@ from threetears.evals.kernel.campaign import EvalAnalysis, EvidenceRow, FindingR
 from threetears.evals.kernel.host.measures import MeasureRegistry
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, INTERVAL_LEVEL
-from threetears.evals.analysis.viz.quantities import display_scale, with_unit
+from threetears.evals.analysis.viz.quantities import with_unit
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, ClassifierStatistic, classifier_label_of
@@ -637,28 +641,39 @@ def _guardrail_blocks(
     if guardrails.withheld is not None:
         blocks.append(DisclosureBlock(section="guardrails", source="guardrails", text=guardrails.withheld))
     elif guardrails.checks:
-        rows: list[dict[str, ChartValue]] = [
-            {
-                "guardrail": verdict.heading,
-                "arm": verdict.arm,
-                "control_mean": check.control.mean,
-                "arm_mean": check.contrast.mean,
-                "cases": (
-                    f"{check.control.n_cases} paired"
-                    if check.test == "paired"
-                    else f"{check.contrast.n_cases} vs {check.control.n_cases}"
-                ),
-                "delta": check.delta,
-                "interval": None
-                if check.interval is None
-                else f"[{format_number(check.interval[0])}, {format_number(check.interval[1])}] at "
-                f"{format_number(100 * INTERVAL_LEVEL)}%"
-                + (" (t: no declared range)" if check.interval_basis == "t" else ""),
-                "margin": format_number(check.margin) if check.margin_declared else "0 (none declared)",
-                "decision": verdict.words,
-            }
-            for check, verdict in zip(guardrails.checks, verdicts, strict=True)
-        ]
+        rulers = measure_rulers(surface)
+        rows: list[dict[str, TableCell]] = []
+        for check, verdict in zip(guardrails.checks, verdicts, strict=True):
+            # A measure guardrail's figures on the measure's one ruler for the report; a judged one has no unit.
+            ruler = rulers.get(check.name, UNITLESS) if check.reading == "measure" else UNITLESS
+            interval = _interval_on_delta(check.interval, ruler, INTERVAL_LEVEL)
+            rows.append(
+                {
+                    "guardrail": TableCell(value=verdict.heading),
+                    "arm": TableCell(value=verdict.arm),
+                    "control_mean": _figure(check.control.mean, ruler),
+                    "arm_mean": _figure(check.contrast.mean, ruler),
+                    "cases": TableCell(
+                        value=(
+                            f"{check.control.n_cases} paired"
+                            if check.test == "paired"
+                            else f"{check.contrast.n_cases} vs {check.control.n_cases}"
+                        )
+                    ),
+                    "delta": _figure(check.delta, ruler),
+                    "interval": TableCell(
+                        value=None
+                        if interval is None
+                        else interval + (" (t: no declared range)" if check.interval_basis == "t" else "")
+                    ),
+                    "margin": TableCell(
+                        value=with_unit(check.margin * ruler.factor, ruler.unit)
+                        if check.margin_declared
+                        else "0 (none declared)"
+                    ),
+                    "decision": TableCell(value=verdict.words),
+                }
+            )
         blocks.append(
             TableBlock(
                 section="guardrails",
@@ -675,7 +690,7 @@ def _guardrail_blocks(
                     TableColumn(key="margin", header="Margin"),
                     TableColumn(key="decision", header="Decision"),
                 ],
-                rows=[table_row(row) for row in rows],
+                rows=rows,
                 order="by guardrail, then rig, then arm",
                 total_rows=len(rows),
             )
@@ -1011,15 +1026,13 @@ def _measure_rows(
             if not summary.texts
         }
     )
+    rulers = measure_rulers(surface)
     rows: list[dict[str, ChartValue]] = []
     for measure in measures:
         found = [summary for summaries in (pooled, *per_stratum.values()) if (summary := summaries.get(measure))]
-        facts = surface.measures.get(measure)
-        # One unit for the row, chosen over every figure in it, so a stratum in ms beside a pool in s never happens.
-        factor, unit = display_scale(
-            [value for summary in found for value in (summary.mean,) if value is not None],
-            facts.unit if facts else None,
-        )
+        # The measure's one ruler for the report, so a stratum in ms beside a pool in s never happens, and this row
+        # reads in the unit the decision surface's column for the measure does.
+        factor, unit = rulers.get(measure, UNITLESS)
 
         def figure(summaries: dict[str, MeasureSummary], facts_of: CellFacts | StratumFacts) -> ChartValue:
             if measure in summaries:
@@ -1313,11 +1326,20 @@ def _comparison_cases(comparison: FamilyComparison) -> str:
     return text
 
 
-def _comparison_interval(interval: tuple[float, float] | None, level: float | None) -> str | None:
-    """A contrast's interval on its delta, with the level it holds at — simultaneous over its family."""
+def _figure(value: float | None, ruler: MeasureRuler) -> TableCell:
+    """One figure of a measure as a table cell: restated onto the measure's ruler and carrying its unit."""
+    if value is None:
+        return TableCell(value=None)
+    return TableCell(value=value * ruler.factor, unit=ruler.unit)
+
+
+def _interval_on_delta(interval: tuple[float, float] | None, ruler: MeasureRuler, level: float | None) -> str | None:
+    """An interval on a delta, on the measure's ruler with its unit, and the level it holds at."""
     if interval is None or level is None:
         return None
-    return f"[{format_number(interval[0])}, {format_number(interval[1])}] at {format_number(100 * level)}%"
+    low, high = (format_number(bound * ruler.factor) for bound in interval)
+    unit = f" {ruler.unit}" if ruler.unit else ""
+    return f"[{low}, {high}]{unit} at {format_number(100 * level)}%"
 
 
 def _contrast_margin(bundle: AnalysisContextBundle, comparison: FamilyComparison) -> float | None:
@@ -1433,28 +1455,34 @@ def _comparison_blocks(
         return []
     typed = iter(verdicts)
 
-    rows: list[dict[str, ChartValue]] = []
+    rulers = measure_rulers(surface)
+    rows: list[dict[str, TableCell]] = []
     for family in comparisons.families:
         for comparison in family.comparisons:
             verdict = next(typed)
+            # A measure's figures on its one ruler for the report — the decision surface's — never on one chosen
+            # over this row alone; a judged dimension's are scores, with no unit.
+            ruler = rulers.get(comparison.name, UNITLESS) if comparison.reading == "measure" else UNITLESS
             rows.append(
                 {
-                    "question": (
-                        _question_words(bundle.declared_design, family.question_id)
-                        if family.question_id is not None
-                        else "(campaign-wide)"
+                    "question": TableCell(
+                        value=(
+                            _question_words(bundle.declared_design, family.question_id)
+                            if family.question_id is not None
+                            else "(campaign-wide)"
+                        )
                     ),
-                    "reading": verdict.heading,
-                    "contrast": verdict.arm,
-                    "control": verdict.control,
-                    "control_mean": comparison.control.mean,
-                    "arm_mean": comparison.contrast.mean,
-                    "cases": _comparison_cases(comparison),
-                    "delta": comparison.delta,
-                    "interval": _comparison_interval(comparison.interval, family.interval_level),
-                    "hedges_g": comparison.hedges_g,
-                    "p_adjusted": comparison.p_adjusted,
-                    "verdict": verdict.words,
+                    "reading": TableCell(value=verdict.heading),
+                    "contrast": TableCell(value=verdict.arm),
+                    "control": TableCell(value=verdict.control),
+                    "control_mean": _figure(comparison.control.mean, ruler),
+                    "arm_mean": _figure(comparison.contrast.mean, ruler),
+                    "cases": TableCell(value=_comparison_cases(comparison)),
+                    "delta": _figure(comparison.delta, ruler),
+                    "interval": TableCell(value=_interval_on_delta(comparison.interval, ruler, family.interval_level)),
+                    "hedges_g": TableCell(value=comparison.hedges_g),
+                    "p_adjusted": TableCell(value=comparison.p_adjusted),
+                    "verdict": TableCell(value=verdict.words),
                 }
             )
     blocks: list[ReportBlock] = [
@@ -1476,7 +1504,7 @@ def _comparison_blocks(
                 TableColumn(key="p_adjusted", header="p (Holm-adjusted)"),
                 TableColumn(key="verdict", header="Verdict"),
             ],
-            rows=[table_row(row) for row in rows],
+            rows=rows,
             order="by declared question, then as the bundle tested them",
             total_rows=len(rows),
         )

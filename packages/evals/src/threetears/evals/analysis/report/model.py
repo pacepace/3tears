@@ -62,7 +62,7 @@ from pydantic import ConfigDict, Field, computed_field, model_validator
 
 from threetears.evals.analysis.viz.intent import ChartValue, ChartColumn, ChartIntent, ChartType
 from threetears.evals.analysis.viz.intents.distribution import SHAPE_UNKNOWN
-from threetears.evals.analysis.viz.quantities import render_cell
+from threetears.evals.analysis.viz.quantities import render_cell, with_unit
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.prose import ModelProse
 
@@ -386,13 +386,37 @@ class TableCell(EvalDocumentModel):
     """
 
     value: ChartValue = Field(description="The cell's value: a number, words, a boolean, or null where there is none.")
+    unit: str = Field(
+        default="",
+        description=(
+            "The unit a number in this cell is stated in, already restated onto its measure's one ruler for the "
+            "report (a latency stored in ms and reaching a second reads in s on every table). Empty for a "
+            "unitless number, for words, and wherever the column's header names the unit instead."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _a_unit_qualifies_a_number(self) -> Self:
+        """Refuse a unit on anything but a number: words and a boolean carry none, and an absent value states none.
+
+        Raises:
+            ValueError: ``unit`` is set and ``value`` is not a number.
+        """
+        if self.unit and (isinstance(self.value, bool) or not isinstance(self.value, int | float)):
+            raise ValueError(f"a cell's unit qualifies a number, and this cell holds {self.value!r}")
+        return self
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
-        description="The value as a reader is shown it: a number spelled by the number rule, null as `—`, a boolean as yes or no."
+        description=(
+            "The value as a reader is shown it: a number spelled by the number rule and joined to its unit, null as "
+            "`—`, a boolean as yes or no."
+        )
     )
     @property
     def text(self) -> str:
         """``value`` as every serializer prints it."""
+        if self.unit and isinstance(self.value, int | float) and not isinstance(self.value, bool):
+            return with_unit(self.value, self.unit)
         return render_cell(self.value)
 
 

@@ -33,6 +33,7 @@ from threetears.evals.analysis import (
     DisclosureBlock,
     Report,
     TableBlock,
+    TableCell,
     TableColumn,
     TextBlock,
     analysis_report,
@@ -505,7 +506,7 @@ _TABLE = {
     "name": "evidence",
     "title": "Evidence",
     "columns": [{"key": "arm", "header": "Arm"}],
-    "rows": [{"arm": {"value": "a", "text": "a"}}, {"arm": {"value": "b", "text": "b"}}],
+    "rows": [{"arm": {"value": "a", "unit": "", "text": "a"}}, {"arm": {"value": "b", "unit": "", "text": "b"}}],
     "order": "as listed",
     "total_rows": 2,
     "section_title": "Methods and disclosures",
@@ -588,7 +589,11 @@ class TestTheSchemaHoldsTheCrossFieldRulesItCanState:
             _with(
                 _code_only_document(),
                 lambda d: d["blocks"].append(
-                    _TABLE | {"rows": [{"arm": {"value": "a", "text": "a"}, "stray": {"value": "x", "text": "x"}}]}
+                    _TABLE | {
+                        "rows": [
+                            {"arm": {"value": "a", "unit": "", "text": "a"}, "stray": {"value": "x", "unit": "", "text": "x"}}
+                        ]
+                    }
                 ),
             ),
             _with(_code_only_document(), lambda d: d["blocks"].append(_TABLE | {"rows": [{}]})),
@@ -731,6 +736,36 @@ def test_a_code_only_report_states_the_contrasts_code_tested_against_the_control
     )
     (arms,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "arms"]
     assert sum(str(row["arm"]).endswith("(control)") for row in arms.values()) == 1
+
+
+def test_a_contrast_states_its_figures_in_the_unit_the_decision_surface_states_them_in() -> None:
+    """One figure, one ruler, with its unit: the surface read ``Turn time (s) 1.42`` while the contrast read ``1420``.
+
+    The decision surface chooses a measure's unit once; every table of the report that states that measure's
+    figures — the contrasts' means, their delta and its interval — states them restated onto it, each cell
+    carrying the unit, since a contrast table's rows are several measures and no header can name one unit.
+    """
+    host, campaign = toy_campaign_host()
+    set_campaign_control(
+        host.storage, campaign.id, campaign.scope_id, campaign.run_ids[0], set_by="t", profile=host.profile
+    )
+    report = campaign_report(host, campaign.id, campaign.scope_id)
+    (surface,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "surface"]
+    (comparisons,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"]
+    assert "Turn time (s)" in [column.header for column in surface.columns]
+    (turn_time,) = [row for row in comparisons.rows if row["reading"].value == "Turn time"]
+    assert [turn_time[key].text for key in ("control_mean", "arm_mean", "delta")] == ["0.92 s", "1.42 s", "0.5 s"]
+    assert (turn_time["arm_mean"].value, turn_time["arm_mean"].unit) == (1.42, "s")
+    assert turn_time["interval"].text == "[0.4498, 0.5502] s at 99%"
+    # A reading with no unit is stated as a bare number, as before.
+    (accuracy,) = [row for row in comparisons.rows if row["reading"].value == "Field accuracy"]
+    assert (accuracy["arm_mean"].text, accuracy["arm_mean"].unit) == ("0.91", "")
+
+
+@pytest.mark.parametrize("value", ["words", True, None])
+def test_a_unit_qualifies_only_a_number(value: Any) -> None:
+    with pytest.raises(ValueError, match="qualifies a number"):
+        TableCell(value=value, unit="s")
 
 
 # =============================================================================

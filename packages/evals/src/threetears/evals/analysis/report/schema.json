@@ -1215,9 +1215,15 @@
       "description": "One cell of a report table: its value, and the text a reader is shown for it.\n\nThe value is what a client sorts by and draws from; the text is what it prints, spelled here by the one\nnumber rule (:func:`~threetears.evals.analysis.viz.quantities.render_cell`: an absent value is a dash, never a\nzero; a boolean is yes or no), so a client never formats a number of its own.",
       "properties": {
         "text": {
-          "description": "The value as a reader is shown it: a number spelled by the number rule, null as `\u2014`, a boolean as yes or no.",
+          "description": "The value as a reader is shown it: a number spelled by the number rule and joined to its unit, null as `\u2014`, a boolean as yes or no.",
           "readOnly": true,
           "title": "Text",
+          "type": "string"
+        },
+        "unit": {
+          "default": "",
+          "description": "The unit a number in this cell is stated in, already restated onto its measure's one ruler for the report (a latency stored in ms and reaching a second reads in s on every table). Empty for a unitless number, for words, and wherever the column's header names the unit instead.",
+          "title": "Unit",
           "type": "string"
         },
         "value": {
@@ -1244,6 +1250,7 @@
       },
       "required": [
         "value",
+        "unit",
         "text"
       ],
       "title": "TableCell",
