@@ -1,6 +1,6 @@
 # Eval extraction: requirements for discodon
 
-**Status:** Requirements -- 2026-08-19; R8, R9 and the evidence section added 2026-08-20; R10 the same day; R11 and per-requirement status added 2026-08-20 (evening); R9 and R11 reconciled against the discodon Wave 2 rulings 2026-08-20; every per-requirement status re-checked against discodon's tree 2026-08-24; **re-checked again 2026-09-05** -- **R12 is built** (so R10 has three axes of four, not two), R5 is built, and R2, R7, R4 and R10's `observable` axis are the entire remainder. R2, R3, R4 and R7 gained statuses they had never carried, which is why three of them read as new problems and are not. **No requirement has ever changed; only what is true of the consumer has.**
+**Status:** Requirements -- 2026-08-19; R8, R9 and the evidence section added 2026-08-20; R10 the same day; R11 and per-requirement status added 2026-08-20 (evening); R9 and R11 reconciled against the discodon Wave 2 rulings 2026-08-20; every per-requirement status re-checked against discodon's tree 2026-08-24; **re-checked again 2026-09-05** -- **R12 is built** (so R10 has three axes of four, not two), R5 is built, and R2, R7, R4 and R10's `observable` axis are the entire remainder. R2, R3, R4 and R7 gained statuses they had never carried, which is why three of them read as new problems and are not. **No requirement has ever changed; only what is true of the consumer has.** **Re-checked 2026-09-16: R2, R4, R7 and R10's `observable` axis all shipped 2026-09-07** (discodon #2558, v2.3.48, `build-plan-eval-contracts-finish`, archived) -- so **every requirement in this document is built or deliberately retired**, and the in-tree boundary this document asked discodon for holds. What remained on 2026-09-16 was `convergence-sequencing.md` Phase 5's second bullet -- 3tears cuts `3tears-eval-contracts` and discodon consumes it -- and it has not been taken: `packages/` still holds no `eval*`. **Re-checked 2026-09-23 (discodon's extraction Checkpoint D) and RULED by the owner: the packages are not cut now.** The in-tree boundary holds as an *import* boundary -- the contracts set is closed and installs on pydantic alone -- but it is not free of host vocabulary: `models.py` still requires `id_universe` on its stored documents and defines `PersonaSnapshot`, and `toolworld.py` reads a persona's catalog, all inside the contracts set and all outside what discodon's no-host-names canary scans ([What 3tears owes back](#what-3tears-owes-back)). The second consumers are now named: **metallm and other projects outside discodon's security boundary**, which run primitive evals today -- a fixed list of 50-100 queries and a hardcoded scorer rubric. So the first adopter RUNS candidates rather than only observing them, which falsifies the observational, runless adopter the metallm paper-walk assumed: where a requirement here was walked against metallm, read metallm as a consumer that runs evals and scores them with its own rubric. The ruling's sequence: discodon's eval quality satisfies the owner; the de-Discodon work runs (discodon #2666); the cut is checkpointed again. #2666 completing is what re-opens the cut.
 **For:** discodon, next release
 **Why now:** the eval packages
 ([`family-convergence.md` §4.2](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon))
@@ -16,8 +16,8 @@ commits a day. Each item below says what must be true, why, and how to prove it.
 
 ## What this is worth
 
-`discodon/eval/` is 28,286 lines across 29 modules. Measured by what each module
-imports from `discodon.*` outside `discodon.eval`:
+Measured 2026-08-19, `discodon/eval/` was 28,286 lines across 29 modules. By what
+each module imported from `discodon.*` outside `discodon.eval`:
 
 | Tier | Lines | Coupling |
 |---|---|---|
@@ -30,11 +30,29 @@ So 60% of the subsystem is a small compatibility surface away from lifting, and
 the bottom tier is *correctly* coupled -- it stays in discodon behind ports and
 is not in scope here.
 
-**Scope for this release** is the `3tears-eval-contracts` candidate set, ~6,900
-lines: `identity.py`, `models.py`, `errors.py`, `result_condition.py`, `dsl.py`,
-`versioned_inputs.py`, `budget.py`, `metering.py`, `usage_capture.py`. Nothing
+That reading set this document's scope; its figures are not kept current. The
+package has more than doubled since and R2, R3 and R4 retired the middle tier's
+three types, so measure rather than quote (`find discodon/eval -name '*.py' |
+xargs cat | wc -l` in discodon's tree). The host-resident tier is still exactly
+the five modules named, pinned by `_EVAL_HOST_RESIDENT` in
+`tests/unit/eval/test_extraction_import_boundary.py`.
+
+**Scope for this release** is the `3tears-eval-contracts` candidate set. Nothing
 moves out of discodon. No package is published. The deliverable is that those
 modules stop reaching into the host.
+
+> **The set is now MEASURED rather than enumerated here (discodon, 2026-09-16).**
+> This paragraph listed nine modules, and it had gone stale in both directions:
+> `versioned_inputs.py` was **deleted** from discodon ("the host declares its
+> vocabulary; the engine keeps only the algebra"), and `base.py` — what R2 built —
+> was never added. It also omitted `discodon/eval/host/**` entirely, which the rest
+> of this document treats as in scope.
+>
+> The authority is now `_CONTRACTS_SET` in
+> `tests/unit/eval/test_extraction_import_boundary.py`, pinned by
+> `_CONTRACTS_SET_CEILING`, each member carrying why it is admitted. Its size is
+> deliberately not copied here. Read it rather than this sentence —
+> a hand-copy of a module list is the thing that just went stale twice.
 
 ## R1 -- the eval boundary is asserted, not remembered
 
@@ -52,7 +70,8 @@ Every requirement below is a specific instance of this one. R1 is what makes
 them stay true after they are met.
 
 **How it works in discodon** (`tests/unit/eval/test_extraction_import_boundary.py`).
-The AST walk is as specified. What holds it in place is **two registers, not one**:
+The AST walk is as specified. What holds it in place is **three edge registers, not
+one**, plus one exempt tree:
 
 - `_EVAL_HOST_ALLOWLIST` -- **debt, and it may only shrink.** Each entry carries a
   reason and, as a typed field, the issue that retires it. Free-text scanning for
@@ -61,12 +80,23 @@ The AST walk is as specified. What holds it in place is **two registers, not one
 - `_EVAL_HOST_ADAPTERS` -- **the declared host-adapter seam, permanent by design.**
   These modules exist to be host-coupled; an extraction deletes them rather than
   porting them.
+- `_EVAL_HOST_RESIDENT` -- **the host-resident half, permanent too, on a different
+  authority.** The five modules this document leaves in place
+  ([Explicitly not in scope](#explicitly-not-in-scope)) were never adapters; they
+  implement the ports rather than cross them. A file may sit here and on the debt
+  register at once -- the registers are disjoint per `(file, host module)` pair.
+- `discodon/eval/adapters/` (`_HOST_REACH_EXEMPT_TREE`) is not scanned at all: it is
+  the declared host half an extraction deletes.
+
+Further registers in the same file pin the other directions (host → eval, the eval
+public API, engine and factory imports of adapters, engine imports of host-resident
+modules, contract leaves). The file is the authority for the full set.
 
 Filing a seam as debt records a retirement that must never happen; filing debt as
 a seam launders it into architecture. Neither is detectable afterwards, so the
 split is structural.
 
-Both registers are **size-pinned, counted in `(file, host module)` pairs** -- an
+Every register is **size-pinned, counted in `(file, host module)` pairs** -- an
 entry-counting ceiling lets a new module join an existing file's tuple silently.
 Growing a ceiling is a two-line, diff-visible act.
 
@@ -74,9 +104,14 @@ Growing a ceiling is a two-line, diff-visible act.
 unclassified. Rename and deletion of a declared module fail; a new unclassified
 file is simply absent from every register, and absence is not a failure. Closing
 it requires asserting the classified set is total -- write that assertion first,
-while the module set is small. **Discodon did (#2409, closed 2026-08-21):** every
-`*.py` under `discodon/eval/` must appear in exactly one register, and an
-unclassified module now fails the canary by name rather than passing unlooked-at.
+while the module set is small. **Discodon did (#2409, closed 2026-08-21)** -- in its
+concept canary rather than in this one:
+`test_no_host_names_in_shared_contract.py::test_every_eval_module_is_classified_one_way_or_the_other`
+requires every top-level module and subpackage tree under `discodon/eval/` to be
+classified as shared contract or host-coupled, and an unclassified
+module fails by name rather than passing unlooked-at. The import canary itself still
+registers only files with a host edge, so a host-free new file passes it by design.
+The totality is on the host-*noun* axis, not the import axis.
 The retrofit cost ~35 files at that size; a package cutting the assertion in on
 day one pays none of it.
 
@@ -108,9 +143,16 @@ extraction. Keep `forbid` now; record it as a decision the first cross-repo
 consumer has to revisit, so it is a choice on the record rather than a default
 nobody examined.
 
-**Status: not built** (first checked 2026-09-05 -- this requirement had carried no status
-line at all, which is why it reads as a new finding and is not). Seven modules on the
-contract surface still inherit `discodon.models.base`: `identity.py`, `models.py`,
+**Status: built** -- discodon, 2026-09-07 (#2468 closed via #2558; this line read "not built"
+until 2026-09-16). `discodon/eval/base.py` declares `EvalBaseModel`, reproducing the five
+configuration settings and the `to_json`/`from_json` pair; eight scope-set modules repoint,
+and a before/after fingerprint over all 165 model shapes proved no stored document changed
+shape. The `forbid` decision above is recorded, not changed. The canary was widened in the same
+plan from four named host packages to the whole package, so a `discodon.models` reach now goes
+red rather than unseen. What follows is the pre-fix state, kept as the evidence for the widening.
+
+**Was (2026-09-05):** seven modules on the
+contract surface inherited `discodon.models.base`: `identity.py`, `models.py`,
 `result_condition.py`, `usage_capture.py`, `metrics.py`, `reporting.py` and
 `viz/models.py`. **R1's test does not see it**, and that is the point worth carrying: the
 discodon canary approximates "no `discodon.*` outside `discodon.eval`" by scanning four
@@ -153,7 +195,11 @@ depend on the tool subsystem.
 
 **Verify.** Covered by R1 once the collector call moves to the caller.
 
-**Status: not built** (first checked 2026-09-05). `discodon/eval/models.py` imports both
+**Status: built** -- discodon, 2026-09-07 (#2406 closed via #2558). `PersonaSnapshot.tool_cognitive_hints`
+is eval's own `ToolCognitiveHints`; the host's `CognitiveStyleHints` maps onto it at capture in
+`adapters/discodon/subject.py`, where the ninety-line collector walk now lives. The stored shape
+was byte-identical between the two types, proven by a write-under-host / read-under-eval test, so
+there was no migration to write. **Was (2026-09-05):** `discodon/eval/models.py` imported both
 names from `discodon.tools.cognitive_hints` and declares
 `tool_cognitive_hints: dict[str, CognitiveStyleHints]` as a pydantic field on a **stored**
 model, so this is the one remaining reach that is in the observation schema rather than
@@ -293,8 +339,12 @@ host resolves configuration and passes the values in.
 
 **Verify.** Covered by R1.
 
-**Status: not built** (first checked 2026-09-05). `budget.py` and `metering.py` both import
-`discodon.config`, each through a `from_config` classmethod plus a pair of
+**Status: built** -- discodon, 2026-09-07 (#2468 closed via #2558). `budget.py`, `metering.py`
+and `classifier.py` import no `discodon.config`; `from_config` became a value-taking `for_run`,
+and `service.py` resolves the host's settings once and threads them in -- which also closed a
+latent race where two reads could straddle a hot reload. "Covered by R1" is true as written for
+the first time, because the canary now scans the whole package. **Was (2026-09-05):** both
+modules imported `discodon.config`, each through a `from_config` classmethod plus a pair of
 `resolve_effective_ceiling` / `resolve_ceiling_origin` helpers that read it. **"Covered by
 R1" is not true as written**, for the same reason R2's status gives: `discodon.config` is
 not one of the four packages the discodon canary scans, so R1 is green over R7 as well.
@@ -599,10 +649,16 @@ has production callers, and R12's own status below carries the detail. discodon 
 constraints as written (derive rather than maintain; the unit is a precondition, not an
 area; fidelity stays a test and gains no map entry).
 
-**Still not built: observability.** `observable()` has a predicate on the host profile
-and **no production caller**, which is the state most easily mistaken for done -- and it
-is now the only one of the four in it. discodon **#2433**. Note it does not carry
-discodon's `tag:extraction` label, so it is invisible in that repo's extraction view.
+**Observability -- the delete arm was taken, 2026-09-07 (#2433 closed via #2558, owner-confirmed).**
+`HostProfile.observable()` and `MeasureRegistry.is_observable()` are gone. A gate could not use
+the predicate (every gate wanting "is this declared" also wants the descriptor `get()` returns
+in the same lookup), and could not be right anyway: the measure name space is half open --
+every rubric dimension and goal-state check mints a measure no registry enumerates -- so a
+coverage surface over it answers `uncovered` for every honest name it cannot classify. The
+measures registry stays and IS R10's observability map, read through `get()`. **R10 therefore
+stands at three axes built and one deliberately retired**, not four built, and not one
+outstanding. Until 2026-09-16 this paragraph read "still not built" and named the predicate
+with no production caller as "the state most easily mistaken for done" -- it was, one way over.
 
 ## R11 -- the subject key declares the pooling boundary; the engine discloses the basis
 
@@ -669,7 +725,8 @@ label under two keys, classifying no single string. Take this shape.
 names representable: the host registers each state dimension a run may set or a subject
 may perceive -- a name the engine never interprets, a JSON Schema for the value, opaque
 `seed` and `read` handles resolved through a binding table, `machine | labeled` evidence,
-the perceiving surface, `initial | triggered(turn | event | human)` timing, and required
+every perceiving surface (plural since 2026-10-02: one fact usually reaches a subject several
+ways, and each named surface is held to answering it), `initial | triggered(turn | event | human)` timing, and required
 `matters` prose. The engine computes over registrations, knowing nothing about the host.
 At registration it computes capability (seedable x perceivable); at run time it computes
 what THIS run did -- *seeded* derived from the run's own seed record, *perceived* derived
@@ -768,6 +825,52 @@ not discodon's.
 
 ## What 3tears owes back
 
+- **The contracts set is closed, and it installs -- and it still carries discodon's
+  object model, so it is not yet what 3tears should cut.** `tests/unit/eval/test_contracts_installable.py` (discodon,
+  2026-09-16) pins the modules `3tears-eval-contracts` takes, asserts no member
+  imports a non-member under `discodon.eval`, and imports every one of them in an
+  interpreter holding the standard library, pydantic and nothing else — discodon off
+  `sys.path`, nothing downloaded. Two things that changes for the lift: the module
+  list is a register with a ceiling rather than a reading of prose, so the cut has a
+  manifest; and "Pydantic-only" is a measured fact rather than a claim about a tree
+  nobody had tried to import. **What 3tears owes back is the same pair of assertions
+  in the package's own conformance suite** — the closure half especially, because once
+  the package is cut the set is whatever `packages/3tears-eval-contracts/` contains and
+  discodon's canary can no longer see it.
+
+  **What that green does not cover is vocabulary.** `models.py`, a contracts member,
+  requires `id_universe` on `EvalTestCase`, `EvalRun`, `EvalTrace`, `EvalResult` and
+  `EvalCassette`, and defines `PersonaSnapshot`, which `EvalRun` carries; `toolworld.py`,
+  also a member, resolves `from_persona_catalog` against a persona's `music_catalog`.
+  discodon's no-host-names canary does not scan these members: it classifies `models.py`,
+  `toolworld.py`, `usage_capture.py`, `covariates.py` and `__init__.py` as host-coupled,
+  so the contracts manifest and the canary's shared set are different sets, and an import
+  closure plus a pydantic-only install pass over a set that ships a host's object model.
+  The fix is discodon #2666 -- `scope` for `id_universe`, host subjects out of
+  `models.py`, `toolworld.py` out of the set, the canary over every contracts member --
+  and the owner ruled on 2026-09-23 that the cut waits for it.
+
+- **One boundary question the cut has to answer, and discodon cannot.** Closure admits
+  four modules that `family-convergence.md` §4.2's contracts bullet does not describe:
+  `ceilings.py`, `provider.py`, `spend.py` — each reached from
+  `budget.py` / `metering.py` / `usage_capture.py` — and `covariates.py`. The sharpest
+  is `provider.py`: `metering.py`, `usage_capture.py` and `covariates.py` each reach it
+  for one four-line helper, `sum_optional_tokens`, and the entire completion Protocol
+  (`CompletionClient`, `CompletionResult`, `ProviderFailure`) travels on that edge.
+  Where the budget/metering/usage family goes no longer settles it:
+  `analysis/declaration.py`, a contracts member, imports `covariates.py` for its covariate
+  key constants, so `covariates.py` stays in contracts whatever is decided and brings
+  `provider.py` with it. Moving the family (`budget`, `metering`, `usage_capture`,
+  `ceilings`, `spend`) to run would make the contracts package five modules smaller and
+  leave the completion Protocol in it; only moving `sum_optional_tokens` out of
+  `provider.py` takes the Protocol out. Either way §4.2's eval-**run** bullet, which lists
+  "budget", disagrees with the manifest, where `budget.py` is a member by requirement.
+  **`covariates.py` arrived differently and is the more interesting one:** its edge and
+  the register were built on two branches that each passed review, and the pair existed
+  only once they merged. §4.2 names "the measure registry", and covariate keys are
+  arguably that vocabulary — but no phrase of it says so, and guessing is what the
+  closure-alone class exists to refuse.
+
 - The eval budget contract, shaped from `EvalRunCostCap` rather than from
   `BudgetPort` (R6). The instructions asking for the opposite are already
   withdrawn across `search-spec.md`, `convergence-sequencing.md` and
@@ -799,10 +902,13 @@ not discodon's.
   host's and the fidelity axis is a test rather than a record; what the package
   owes is the shape they are expressed in, so two consumers describe their gaps
   the same way.
-- The package cut itself, once R1 holds -- at which point the lift is mechanical.
-  R1's test holds in discodon today, **and so does its totality assertion** (#2409,
-  closed 2026-08-21): an unclassified module fails by name. The package still owes
-  the assertion in its own conformance suite, where the module set is still small
+- The package cut itself -- after discodon #2666 has run and the cut is checkpointed
+  again (owner ruling, 2026-09-23). R1 holding does not make the lift mechanical: the
+  import boundary holds while the contracts set still carries host vocabulary (first
+  bullet above). R1's test holds in discodon today, **and so does the totality
+  assertion** (#2409, closed 2026-08-21), which lives in discodon's concept canary
+  rather than R1's: an unclassified module fails by name. The package still owes
+  that assertion in its own conformance suite, where the module set is still small
   and cutting it in costs nothing.
 
 ---
@@ -845,11 +951,13 @@ a latency. The distinction is structural, not a documentation problem.
 
 ## Owned by `3tears-eval-analysis` (later package -- do not extract the assumption)
 
-**The campaign design model assumes one run = one arm, and the best design
-violates it.** `CampaignCell` is run-level (`bundle.py:369` -- "one non-control
-*run*, and what it moved off the control") and the model axis is read per run
-(`sorted(run.models)`). A campaign whose arms live *inside* one run therefore has
-no lever movement between its runs.
+**The campaign design model assumed one run = one arm, and the best design
+violates it.** In the wave, `CampaignCell` was run-level (`bundle.py:369` -- "one
+non-control *run*, and what it moved off the control") and the model axis was read
+per run (`sorted(run.models)`). A campaign whose arms live *inside* one run therefore
+had no lever movement between its runs. *(Since fixed in discodon, 2026-08-21: the
+cell is keyed by variant, not by run -- `analysis/cells.py` -- and `CampaignCell` no
+longer exists. The lesson stands for the package's own design model.)*
 
 Co-running arms in one run is precisely the design that **eliminates**
 `measurement_windows_disjoint`, `context_differs` and `roles_differ` -- arms share
@@ -973,7 +1081,10 @@ irreversible delete by promising a reversible option they cannot reach. The
 mechanism for getting this right already exists and was applied one call site
 away: the classifier-snapshot delete noticed the same mismatch for its own object
 and passed a corrected `alternative`. **An extracted package should treat the
-alternative named in a refusal as a claim under test, not prose.**
+alternative named in a refusal as a claim under test, not prose.** *(Since fixed in
+discodon: `insight_delete` passes its own `alternative` -- an insight has no archive,
+and deleting a wrong one is the ruled answer -- and `_ARCHIVE_INSTEAD`'s comment
+records the correction.)*
 
 ## Discodon-specific -- recorded so it is not mistaken for contract work
 

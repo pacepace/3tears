@@ -83,11 +83,12 @@ repos (2026-08-02) found:
 - **Three independent AES-256-GCM secrets implementations.**
 - **Two OTel bootstraps and two dashboard sets.**
 - **Three hand-rolled chat frontends**, with a fourth on the way.
-- **Five different answers to "how do we eval"**: discodon's ~43k-line system
-  (backend plus frontend kit; ~72k counting its test suites),
+- **Five different answers to "how do we eval"**: discodon's full system (backend
+  plus frontend kit),
   scriob's continuity harness, samsung's MCP-driver eval, hallucinote's
-  hand-operated scenario briefs, and metallm's nothing -- despite metallm being
-  the most LLM-central app in the family.
+  hand-operated scenario briefs, and metallm's primitive one -- a fixed list of
+  50-100 queries and a hardcoded scorer rubric (owner, 2026-09-23) -- despite
+  metallm being the most LLM-central app in the family.
 - **Five answers to "where does long-lived shared state live"** (state survey,
   same date):
   - metallm holds every persistent entity in core collections and keeps
@@ -264,8 +265,8 @@ question moot, and its lock discipline is already sound.
 
 Discodon's eval system is the seed: its analysis core is nearly dependency-free,
 its internal boundaries are already enforced by import-boundary tests, and its
-four aspects communicate through stored documents rather than function calls -- so
-the package split follows seams that already exist:
+four aspects are meant to communicate through stored documents rather than function
+calls -- so the package split follows seams that already exist:
 
 - **`3tears-eval-contracts`** -- document models (runs, results, test cases,
   campaigns, analyses), the measure registry, identity/fingerprinting, the
@@ -280,6 +281,35 @@ the package split follows seams that already exist:
   renders from.
 - **`3tears-eval-gen`** -- LLM-assisted variation expansion and rubric/case
   proposers. The most independent aspect; it only writes documents.
+
+**The stored-documents rule is violated in two places in discodon today**
+(re-checked 2026-09-23), both from the analysis side into the run side:
+`analysis/reporter_kind.py` implements the run-side `CandidateKind` (importing
+its output, telemetry and variant types from `candidate_kind.py`) and calls the
+analysis generator from inside it; and `analysis/generator.py` imports
+`judge.extract_json`, which makes a contracts-plus-analysis consumer carry
+`judge.py` and its `discodon.llm.json_parse` debt (#2473). **The owner ruled on
+2026-09-23 that the reporter kind is split**: the kind implementation goes
+runner-side, and `ReporterCase` and `render_memo_as_written` stay in the analysis
+package. That is part of discodon #2666.
+
+**These bullets disagree with discodon's host-resident register, and the register
+governs.** [`eval-extraction-discodon-requirements.md`](eval-extraction-discodon-requirements.md)
+§ "Explicitly not in scope" declares `service.py`, `runner.py`, `persona_factory.py`,
+`storage.py` and `cassette_proxy.py` host-resident -- they implement the ports rather
+than cross them -- and discodon pins exactly that set as `_EVAL_HOST_RESIDENT`. So the
+eval-**run** bullet's "runner" and "cassettes" do not describe modules that travel,
+and discodon's `EVAL_SYSTEM.md` §6 keeps "the whole runner -- kinds, simulator,
+toolworld, traces" host-side. Three further disagreements with discodon's contracts
+manifest (`_CONTRACTS_SET`): `budget.py` and `covariates.py` are contracts members,
+not run or analysis; `toolworld.py` is a contracts member although §6 puts it on the
+adapter side; and `store_port.py`, this section's storage Protocol, is not a member,
+because no member imports it. What `3tears-eval-run` holds is therefore open, and
+the ruling that the second consumers RUN evals (§5 metallm) makes it a live
+question. Only contracts has a manifest in discodon, so modules outside it --
+`candidate_kind.py` (the kind declaration discodon says travels), `numbers.py`,
+`prompts/`, `run_document.py`, `scoring.py`, `store_port.py`, `viz/` and others --
+have no declared package; a manifest for run, gen and analysis is part of #2666.
 
 Verified against discodon 2026-08-04, updated 2026-08-20 -- three findings that
 shape the extraction:
@@ -310,12 +340,17 @@ shape the extraction:
   independently of the SQL text. No query in the port carries an environment
   predicate of its own.
 
-  **The prerequisite this bullet named has since been met** (re-checked 2026-09-05;
-  it read "still open -- 33 `universe_id` references and no `scope_id`" until then).
-  `universe` is generalised to `scope` everywhere that travels: `identity.py` stamps
-  `scope_id`, and the analysis tree carries no `universe_id` at all. The name survives
-  only in discodon's own host-resident modules, which is where the requirement leaves
-  it. So the port is no longer carved under host vocabulary. discodon #2397.
+  **The prerequisite this bullet named is met for identity and analysis, not for
+  the stored documents** (re-checked 2026-09-23). `identity.py` stamps `scope_id`,
+  and the analysis tree's own models carry no `universe_id` (discodon #2397). But
+  `models.py` is in the contracts set and still requires `id_universe` on
+  `EvalTestCase`, `EvalRun`, `EvalTrace`, `EvalResult` and `EvalCassette`, defines
+  `PersonaSnapshot`, and is read by `usage_capture.py` and `analysis/reporter_bank.py`;
+  `toolworld.py`, also a member, reads a persona's catalog. discodon's no-host-names
+  canary does not scan those members -- it classifies `models.py`, `toolworld.py`,
+  `usage_capture.py`, `covariates.py` and `__init__.py` as host-coupled -- so it stays
+  green over them. The documents the port stores are still keyed under host
+  vocabulary. The fix is discodon #2666.
 - **The analysis *core* is dependency-free; the analysis *generator* is
   not.** `analysis/bundle.py` and its models are stdlib + pydantic as
   claimed. `analysis/generator.py` imports the host's OpenRouter client and
@@ -331,11 +366,14 @@ shape the extraction:
   **Status 2026-09-05** (was 2026-08-20). The narrow completion protocol exists --
   `discodon/eval/provider.py` declares `CompletionClient` and `CompletionResult`
   as Protocols, and it is a registered contract surface. **The generator no longer
-  imports the host's client** (discodon #2403), and the analysis tree as a whole
-  reaches nothing outside `discodon.eval` -- `analysis/` is at the full rule with
-  zero debt, so this bullet's premise is discharged. Four of the six enumerated
-  `discodon.llm` edges are closed (#2402, #2403, #2404, #2407); the two that remain
-  are in discodon's host-wiring modules, not the contracts candidates. The protocol
+  imports the host's client** (discodon #2403), and no module in the analysis tree
+  directly imports anything outside `discodon.eval` -- `analysis/` is at the full rule
+  with zero debt. Transitively it still reaches `discodon.llm`: `analysis/generator.py`
+  imports `judge.extract_json`, and `judge.py` imports `discodon.llm.json_parse`
+  (#2473, open). Five of the six enumerated `discodon.llm` edges are closed (#2402,
+  #2403, #2404, #2407, #2393); what remains is #2405, in the host-resident
+  `service.py` and `persona_factory.py`, plus `judge.py`'s parser edge under #2473 --
+  and `judge.py` is on this section's eval-run bullet, not in host wiring. The protocol
   also gained a **failure half** the original bullet did not anticipate:
   `ProviderFailure` plus a host-injected describer, whose default withholds
   everything and says why -- so a host that wires nothing loses diagnostic text
@@ -416,13 +454,15 @@ contract**: they are what a real consumer built, and cutting the packages agains
 |---|---|---|
 | `SweepableValue` carries no `display` or `scale` | a readable memo, and a true-spacing axis, for any consumer whose levers are scalars | **Built** -- `discodon/eval/host/values.py`: `content_hash`, a required `display` never derived from the hash, and `scale` in three kinds (`nominal`, `ordinal(rank)`, `interval(value, unit?)`, the last deriving its own display). R9's shape as written |
 | No declared pooling boundary; a pooled composite carries no dimension basis | evaluating subjects that have no self-description | **Built** -- all three R11 obligations. `SubjectSnapshot` carries `subject_id` and `subject_label` as separate `min_length=1` fields; `ScoreRecord.dimension_basis` refuses a value that arrives without its basis, and a basis that arrives without a value; `subject_key_instabilities` warns at population level on one key under two labels or one label under two keys |
-| `universe` not generalised to `scope` | eval-contracts binding under final vocabulary | **Built** (2026-09-05; read "half built" until then) -- `identity.py` stamps `scope_id` and the analysis tree carries no `universe_id`. `id_universe` survives only in discodon's host-resident modules, which #2397's own scope-out declares host-resident. Nothing that travels binds under host vocabulary any more |
-| Package still imports `discodon.llm` | R1 holding for the analysis generator | **Discharged for the generator** (2026-09-05) -- #2403 closed and `discodon/eval/analysis/` now reaches nothing outside `discodon.eval`, at the full rule with zero debt. Four of six edges closed (#2402, #2403, #2404, #2407); #2405 and #2393 remain, both in host-wiring modules. #2402 was ruled the *other* way on evidence: `run_judge_llm` is eval core, and a host calling it is the seam working |
+| `universe` not generalised to `scope` | eval-contracts binding under final vocabulary | **Half built** (re-checked 2026-09-23) -- `identity.py` stamps `scope_id` and the analysis tree carries no `universe_id` (#2397). But the contracts set still carries `id_universe` (required on five stored document models in `models.py`), `PersonaSnapshot`, and a persona-reading `toolworld.py`; #2397's scope-out called `id_universe` host-resident, and `models.py` never was. discodon's no-host-names canary does not scan those members. discodon #2666 |
+| Package still imports `discodon.llm` | R1 holding for the analysis generator | **Discharged for the generator's direct imports** (2026-09-05) -- #2403 closed and no `discodon/eval/analysis/` module imports anything outside `discodon.eval`, at the full rule with zero debt. Transitively the generator still reaches `discodon.llm` through `judge.extract_json` (#2473). Five of six edges closed (#2402, #2403, #2404, #2407, #2393); #2405 remains in the host-resident `service.py` and `persona_factory.py`, and `judge.py`'s parser edge is debt under #2473. #2402 was ruled the *other* way on evidence: `run_judge_llm` is eval core, and a host calling it is the seam working |
 | R8's input registry not built | R10's controllability map, which derives from it | **Built** -- `discodon/eval/host/sweepables.py`: the `lever` / `apparatus` / `label` classification, a `SHARED_CORE` holding only what every LLM product has, and a registration that refuses an `apparatus` input stating no `confounds` prose (*"a bare name is a label"*). The host extends it rather than editing it -- `DISCODON_SWEEPABLE_REGISTRY = SHARED_CORE.extend(...)` |
-| R10's authoring-time refusal not built | the gate; only the fidelity axis of four exists | **Three axes of four** (2026-09-05; read "two" until R12 landed) -- fidelity, controllability, and now **representability**: R12's world registry is built across eight chunks, `representable()` has production callers, and #2421 and #2412 are both closed. Only `observable` still has a predicate and no caller. discodon #2433 |
-| Eval does not own its model base (R2) | eval-contracts installing without `discodon.models` | **Open**, first recorded 2026-09-05. Seven contract modules inherit `discodon.models.base`, and R1's test cannot see it. Evidence and module list: [`eval-extraction-discodon-requirements.md` R2](eval-extraction-discodon-requirements.md). discodon #2468 |
-| Configuration does not arrive as values (R7) | the same install | **Open**, first recorded 2026-09-05. `budget.py` and `metering.py` import `discodon.config`; R1's test cannot see this one either. [`eval-extraction-discodon-requirements.md` R7](eval-extraction-discodon-requirements.md). discodon #2468 |
-| A host tool type is a field on a stored eval model (R4) | the observation schema being host-free | **Open.** The reach is in the stored schema, not only in an import, which is what distinguishes it from the rest. [`eval-extraction-discodon-requirements.md` R4](eval-extraction-discodon-requirements.md). discodon #2406 |
+| R10's authoring-time refusal not built | the gate; only the fidelity axis of four exists | **Three axes of four** (2026-09-05; read "two" until R12 landed) -- fidelity, controllability, and now **representability**: R12's world registry is built across eight chunks, `representable()` has production callers, and #2421 and #2412 are both closed. `observable` was **retired, not built** (2026-09-07, #2433 closed via #2558, owner-confirmed): the predicate was deleted, because a gate over a half-open measure name space cannot be right, and the measures registry read through `get()` is the map. Three built, one retired, none outstanding |
+| Eval does not own its model base (R2) | eval-contracts installing without `discodon.models` | **Built** (2026-09-07, #2468 closed via #2558; read "Open" until 2026-09-16) -- `discodon/eval/base.py` declares `EvalBaseModel` reproducing the stance; eight modules repoint; stored shapes proven unchanged. [`eval-extraction-discodon-requirements.md` R2](eval-extraction-discodon-requirements.md) |
+| Configuration does not arrive as values (R7) | the same install | **Built** (2026-09-07, same PR) -- `from_config` became a value-taking `for_run`; `service.py` resolves settings once and threads them in. The canary now scans the whole package, so R1 covers this as written. [`eval-extraction-discodon-requirements.md` R7](eval-extraction-discodon-requirements.md) |
+| A host tool type is a field on a stored eval model (R4) | the observation schema being host-free | **Built** (2026-09-07, #2406 closed via #2558) -- `ToolCognitiveHints` is eval's own; the host maps onto it at capture in `adapters/discodon/subject.py`; stored shape byte-identical, so no migration. [`eval-extraction-discodon-requirements.md` R4](eval-extraction-discodon-requirements.md) |
+
+**As of 2026-09-23 this table has one open row, the `universe` row.** Every requirement discodon was asked for is built or retired, and the contracts set is closed and installs on pydantic alone -- but it still carries discodon's object model, which the canary that should catch it does not scan. **The owner ruled on 2026-09-23 that the packages are not cut now.** The sequence: discodon's eval quality satisfies the owner; the de-Discodon work runs (discodon #2666); the cut is checkpointed again, and #2666 completing is what re-opens it. `packages/` holds no `eval*`. See `convergence-sequencing.md` Phase 5.
 
 ### 4.3 Prompt management -- identity from discodon; durable tier from scriob's pattern
 
@@ -482,8 +522,9 @@ observation may reference one or carry its apparatus inline.
 
 **Each observation records whether its apparatus was `declared` or
 `witnessed`.** Declared means set before the measurement and controlled;
-witnessed means recorded as found. Across the family this splits four to two -- 
-discodon, scriob, samsung and hallucinote commission; metallm's live turns and
+witnessed means recorded as found. Across the family both kinds occur -- 
+discodon, scriob, samsung and hallucinote commission, and so does metallm's
+fixed query list with its hardcoded scorer rubric; metallm's live turns and
 3tears `scrape`'s runtime recipe-judge loop witness -- and the two never pool
 into one cell, because pooling them would report an experimental k over partly
 observational evidence. Without the flag the analysis layer has to be *told in
@@ -949,9 +990,12 @@ hard edge is a reviewed decision rather than drift.
 ### metallm
 
 - **Adopts:** `iam`, `backup`, `enforcement` (scriob proved all three), the
-  shared stream protocol for its frontend, the `eval-*` packages (it has zero
-  eval infrastructure today -- the family's biggest gap), and eventually
-  `scrape`.
+  shared stream protocol for its frontend, the `eval-*` packages, and
+  eventually `scrape`. Its evals today are primitive -- a fixed list of 50-100
+  queries and a hardcoded scorer rubric -- and it RUNS them, so it needs
+  `eval-run` as well as contracts and analysis, and a home for its own scorer's
+  measures. The owner named metallm, with other projects outside discodon's
+  security boundary, as the eval packages' second consumers (2026-09-23).
 - **Contributes:** it already contributed most of the platform; newly: the
   sycophancy-judge prompt, the PII sanitization wrapper, machine-written prompts
   as the store's second consumer, and its frontend as the chat-kit feature
@@ -1022,10 +1066,10 @@ hard edge is a reviewed decision rather than drift.
    What is unknown is how large the relaxable subset is; nobody has checked what
    each module's own dependencies support.
    **Ruled in principle 2026-08-04: discodon adopts 3.14.** Its declared floor
-   is already `requires-python = ">=3.12"` -- a floor, not a pin -- so adoption
-   is an interpreter switch plus verification, which discodon takes as its own
-   workstream. The per-module-floor option is retired unless that adoption
-   hits a real wall. This ordering matters most for the eval extraction:
+   was then `requires-python = ">=3.12"` -- a floor, not a pin -- so adoption
+   was an interpreter switch plus verification, which discodon took as its own
+   workstream; it now declares `requires-python = ">=3.14"`. The
+   per-module-floor option is retired unless that adoption hits a real wall. This ordering matters most for the eval extraction:
    discodon is the extracted packages' source *and* first consumer, so the
    floor had to resolve before extraction, not after.
 2. **Eval extraction timing.** "After discodon's in-flight schema work lands"
@@ -1116,10 +1160,11 @@ hard edge is a reviewed decision rather than drift.
     be a lie in the contract; pick where the seam goes.
 22. **Store-shape proliferation.** Four store ports are now in flight:
     `ObjectStore` (published, blob-shaped), the `DurableStore` direction
-    (open question 16, row/document-shaped), eval-contracts' planned storage
-    Protocol (§4.2 -- which does not exist yet in discodon), and search's
+    (open question 16, row/document-shaped), eval-contracts' storage
+    Protocol (§4.2 -- carved in discodon as `store_port.py`'s seven-method
+    `DocumentStore`), and search's
     `RecordingStore` (already `ObjectStore`-shaped by ruling). Proposed rule:
     blob-shaped ports follow `ObjectStore`, document-shaped ports follow the
     `DurableStore` direction, and a new package *picks* one rather than
-    minting a third. Eval-contracts is the first test, which is one more
-    reason its port should be carved in discodon before extraction (§4.2).
+    minting a third. Eval-contracts is the first test, and its port is
+    already carved in discodon, ahead of extraction (§4.2).

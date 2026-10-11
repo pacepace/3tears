@@ -577,7 +577,7 @@ discodon's NATS convergence and sits outside this sequence.)
 - **discodon:** consume its own extraction -- first consumer, green before
   anyone else binds.
   → [`family-convergence.md` §5 (discodon)](family-convergence.md#5-implications-per-family-member)
-- **discodon (first, and it is the only thing this phase currently waits on):**
+- **discodon (first):**
   put the package boundary inside its own tree -- the eval modules destined for
   `3tears-eval-contracts` stop reaching into the host, asserted by a test.
   Requirements, measured and stated as properties, at
@@ -588,7 +588,7 @@ discodon's NATS convergence and sits outside this sequence.)
   **Nearly held as of 2026-09-05**, re-checked against discodon's tree, and the
   prior reading of this list (2026-08-24) was stale in four of its five outstanding
   bullets -- discodon shipped three build plans between those dates. In place: R1's
-  boundary test and its totality assertion; the `DocumentStore` port with its
+  boundary test, and the totality assertion in discodon's concept canary; the `DocumentStore` port with its
   YugabyteDB adapter; the narrow completion protocol (`CompletionClient` /
   `CompletionResult`); R10's fidelity axis; an installable chart/spec package with
   a host-supplied palette. Built during discodon's Wave 2:
@@ -616,14 +616,20 @@ discodon's NATS convergence and sits outside this sequence.)
     this repo's `Spend` already uses, and keeps calls nobody declared a rate for in
     a bucket of their own rather than pooling them with zero-money ones. discodon
     #2447, #2399.
-  - **`universe` -> `scope`** -- done for everything that travels. `identity.py`
-    stamps `scope_id`, and the analysis tree carries no `universe_id`; the name
-    survives only in discodon's own host-resident modules, which is where the
-    requirement leaves it. discodon #2397.
-  - **The `discodon.llm` edges** -- four of the six closed (#2402, #2403, #2404,
-    #2407), and #2402 was ruled the *other* way on evidence: `run_judge_llm` is eval
-    core, and a host calling it is the seam working. Two remain, #2405 and #2393,
-    both in discodon's host-wiring modules rather than in the contracts candidates.
+  - **`universe` -> `scope`** -- done for identity and the analysis tree:
+    `identity.py` stamps `scope_id`, and the analysis tree's models carry no
+    `universe_id` (discodon #2397). **Not done for the contracts set as a whole**
+    (re-checked 2026-09-23): `models.py`, a contracts member, still requires
+    `id_universe` on five stored document models and defines `PersonaSnapshot`, and
+    `toolworld.py`, also a member, reads a persona's catalog. discodon's no-host-names
+    canary does not scan those members, so it stays green over them. discodon #2666.
+  - **The `discodon.llm` edges** -- five of the six closed (#2402, #2403, #2404,
+    #2407, #2393), and #2402 was ruled the *other* way on evidence: `run_judge_llm` is
+    eval core, and a host calling it is the seam working. #2405 remains, in the
+    host-resident `service.py` and `persona_factory.py`. Separately, `judge.py` imports
+    `discodon.llm.json_parse` as debt under #2473, and `judge.py` is an eval-run
+    module, not host wiring; `analysis/generator.py` imports `judge.extract_json`, so
+    the analysis tree reaches that edge transitively.
   - Two ports the earlier list did not anticipate: a **provider-failure port**
     (`ProviderFailure` plus an injected describer, whose default withholds
     everything and says why) and a **`TraceSink` port**, which took the eval
@@ -634,7 +640,30 @@ discodon's NATS convergence and sits outside this sequence.)
   [`family-convergence.md` §4.2](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon).
   Take them as the contract: they are what a real consumer built.
 
-  **Outstanding -- three requirements and one axis, and that is the whole list.**
+  **RULED 2026-09-23 by the owner: no cut now.** discodon's extraction Checkpoint D
+  examined the cut against three real campaigns and found three things. No consumer has
+  pulled. The contracts set installs standalone but still carries discodon's object model
+  (see the `universe` bullet above). And the core's identity and bundle versions moved
+  several times a week. The second consumers are named: **metallm and other projects outside
+  discodon's security boundary**, which run primitive evals today -- a fixed list of 50-100
+  queries and a hardcoded scorer rubric -- so they need `eval-run`, not only contracts and
+  analysis. The sequence: (1) discodon's eval quality satisfies the owner; (2) the
+  de-Discodon work runs (discodon #2666 -- `scope` for `id_universe`, host subjects out of
+  `models.py`, the canary over the whole contracts set, run-agnostic readers, the reporter
+  kind split runner-side, a package manifest per package); (3) the cut is checkpointed
+  again. Step 2 completing is what re-opens the cut. So this phase waits on discodon
+  again, and 3tears cuts nothing before step 3.
+
+  **HELD as of 2026-09-16.** The four items below shipped together on 2026-09-07
+  (discodon #2558, v2.3.48, `build-plan-eval-contracts-finish`): R2, R4 and R7 are built,
+  and R10's `observable` axis was deliberately RETIRED rather than built -- the predicate was
+  deleted, owner-confirmed, because a gate over a half-open measure name space cannot be
+  right; the measures registry read through `get()` is the map. discodon's in-tree boundary
+  therefore held, and on 2026-09-16 **this phase no longer waited on discodon**. What it
+  waited on then was the second bullet above -- cutting `3tears-eval-contracts` in this repo -- which nothing here
+  has started. The list is kept as the record of what the 2026-09-05 reading found.
+
+  **Outstanding as of 2026-09-05 (all since closed) -- three requirements and one axis:**
   Measured on discodon's tree 2026-09-05 by walking every module under
   `discodon/eval/` for a `discodon.*` import outside `discodon.eval`, excluding
   `discodon/eval/adapters/`, which is the declared host half an extraction deletes:
@@ -651,18 +680,24 @@ discodon's NATS convergence and sits outside this sequence.)
   - **R10's fourth axis, `observable`** -- the predicate exists on the host profile
     and has no production caller. discodon **#2433**.
 
-  Nothing else on the contract surface reaches the host: `discodon/eval/host/` and
-  `discodon/eval/analysis/` are at the full rule with zero debt, `viz/` carries the
-  one R2 reach above, and discodon's no-host-names canary sits at a **zero-entry**
-  allowlist -- no host noun anywhere in the declared shared contract.
+  Nothing else on the contract surface reached the host by direct import:
+  `discodon/eval/host/` and `discodon/eval/analysis/` were at the full rule with zero
+  debt, and `viz/` carried the one R2 reach above. discodon's no-host-names canary sits
+  at a **zero-entry** allowlist, but its declared shared contract is its own set, not
+  the contracts manifest: it classifies five contracts members (`models.py`,
+  `toolworld.py`, `usage_capture.py`, `covariates.py`, `__init__.py`) as host-coupled
+  and never scans them, which is how `id_universe` and `PersonaSnapshot` stay in the
+  contracts set with the canary green (discodon #2666).
 
   **The reciprocal deferral is now the binding constraint, and half of it is ours.**
   discodon's `EVAL_SYSTEM.md` §6 defers the physical package split until "a second
   real consumer pulls on it", while this phase waits on discodon's in-tree boundary
-  -- which is four items from complete. Neither document moves on its own once
-  discodon closes them. `packages/` in this repo holds no `eval*` today, so the next
-  move after R2/R4/R7 is 3tears cutting `3tears-eval-contracts` and discodon
-  consuming its own extraction, per this phase's second bullet.
+  -- which was four items from complete on 2026-09-05 and is complete on 2026-09-16.
+  Neither document moves on its own once discodon closes them, and on 2026-09-16 that
+  was the live condition: discodon had closed them and nothing had moved. The owner's
+  2026-09-23 ruling resolves the deferral rather than breaking it: the second consumer
+  is named, and the cut waits on discodon's eval quality and #2666, then a new
+  checkpoint. `packages/` in this repo holds no `eval*`.
 
 **Checkpoint:** discodon running on the extracted packages; the eval
 contracts ratified per
@@ -672,10 +707,14 @@ contracts ratified per
 
 All parallel:
 
-- **metallm:** adopt `eval-*` -- today it has zero eval infrastructure, the
-  family's biggest gap.
+- **metallm:** adopt `eval-*`, including `eval-run` -- today it runs primitive
+  evals (a fixed list of 50-100 queries and a hardcoded scorer rubric), and it is
+  a named second consumer of the extraction (owner, 2026-09-23).
   → [`family-convergence.md` §5](family-convergence.md#5-implications-per-family-member)
-- **scriob:** adopt `eval-{contracts,analysis}` for its continuity corpus.
+- **scriob:** adopt `eval-{contracts,analysis}` for its continuity corpus. As
+  discodon stands, analysis does not stop at those two: `analysis/generator.py`
+  imports `judge.extract_json` and `analysis/reporter_kind.py` implements the run-side
+  `CandidateKind` ([§4.2](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon)).
   → [`family-convergence.md` §5](family-convergence.md#5-implications-per-family-member)
 - **samsung:** adopt `eval-run` for its MCP-driver eval.
   → [`family-convergence.md` §5](family-convergence.md#5-implications-per-family-member)
