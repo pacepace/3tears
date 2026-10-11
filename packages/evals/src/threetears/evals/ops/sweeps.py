@@ -8,7 +8,8 @@ neutral, because shared provider rate limits inflate the latency each arm measur
 :func:`sweep_launch` declares the template, the subject, ``k`` and the settings the arms share, and a list of
 arms, each with its own model, overlays and apparatus settings. It refuses up front whatever any arm's launch
 would refuse (each arm is quoted by the launch's own rule, :func:`~threetears.evals.run.quote_launch`), creates
-the named campaign, and starts one background job that launches the arms in order. By default one arm runs at a
+the named campaign, and starts one background job that launches the arms in order — its record written carrying
+the job's lease first, so every process answers the job alike. By default one arm runs at a
 time (``max_concurrent_arms=1``), and a caller can raise it. Arms one after another do not share provider load,
 but a run's own cells still run side by side unless the sweep declares latency under test (``measure_latency``,
 passed to every arm's launch as ``run_launch`` takes it), which latency comparisons need. Each arm's run joins the campaign as it is created,
@@ -38,7 +39,7 @@ from pydantic import Field, model_validator
 from threetears.evals.analysis.campaigns import add_runs_to_campaign
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import EvalSweep, SweepArmRecord
-from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.kernel.errors import JobFenced, ValidationFailedError
 from threetears.evals.schema.models import DEFAULT_LAUNCH_K_RUNS, CaseSetRef, utc_now_iso
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.ops.analysis import CampaignDefinition, campaign_create
@@ -47,6 +48,7 @@ from threetears.evals.ops.jobs import JobHandle, JobsStarted, sweep_job_id, swee
 from threetears.evals.ops.runs import LaunchArguments
 from threetears.evals.run.jobs import JOB_TIMEOUT_CAP_S
 from threetears.evals.run.launch import quote_launch, start_run
+from threetears.evals.kernel.job_leases import SWEEP_JOB, write_held_record
 from threetears.evals.run.lifecycle import get_run
 from threetears.observe import get_logger
 
@@ -220,7 +222,14 @@ async def sweep_launch(host: OpsHost, arguments: SweepArguments, scope_id: str, 
         arms=[SweepArmRecord(label=_arm_label(arm), model=arm.model) for arm in arguments.arms],
         max_concurrent_arms=arguments.max_concurrent_arms,
     )
-    await run_blocking(eval_host.blocking_executor, eval_host.storage.save_sweep, sweep)
+    leases = host.launch.job_leases
+
+    def save_started() -> None:
+        # Written carrying its lease, so no reader ever finds the sweep running and unleased, which reads lost.
+        sweep.lease = leases.grant()
+        eval_host.storage.save_sweep(sweep)
+
+    await run_blocking(eval_host.blocking_executor, save_started)
 
     async def work() -> None:
         await _run_sweep(host, arguments, sweep)
@@ -228,7 +237,9 @@ async def sweep_launch(host: OpsHost, arguments: SweepArguments, scope_id: str, 
     # The task's own ceiling sits above every arm's: each arm's job is bounded by the engine's job cap, and the
     # arms may run one after another.
     budget_s = (len(arguments.arms) + 1) * JOB_TIMEOUT_CAP_S
-    manager.start_task(sweep.id, work, budget_s=budget_s, key=sweep_key(sweep.id, scope_id))
+    manager.start_task(
+        sweep.id, work, budget_s=budget_s, key=sweep_key(sweep.id, scope_id), record=(SWEEP_JOB, scope_id)
+    )
     return JobsStarted(
         jobs=[JobHandle(job_id=sweep_job_id(sweep.id), kind="sweep", target_id=campaign.id, label=campaign.name)]
     )
@@ -238,7 +249,11 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep)
     """Launch each arm in order, at most ``max_concurrent_arms`` at once, joining each run to the campaign.
 
     The sweep's record is written as each arm's run is created and when the sweep ends, however it ends: a
-    cancel stops the arms in flight (each records ``cancelled``) and launches none after.
+    cancel — here, or asked on the record from another process — stops the arms in flight (each records
+    ``cancelled``) and launches none after. Every write is the job's own guarded write
+    (:func:`~threetears.evals.kernel.job_leases.write_held_record`): once the record reads lost — the lease lapsed and a
+    reader somewhere wrote so, or this process shut down — the sweep launches nothing more and writes nothing
+    more, leaving the arms it launched to their own jobs.
 
     Args:
         host: The launching host.
@@ -253,7 +268,10 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep)
     judge_pin, simulator_pin = arguments.judge_model, arguments.simulator_model
 
     async def save() -> None:
-        await run_blocking(eval_host.blocking_executor, eval_host.storage.save_sweep, sweep)
+        await run_blocking(eval_host.blocking_executor, write_held_record, eval_host.storage, SWEEP_JOB, sweep)
+
+    def fenced(why: JobFenced) -> None:
+        log.warning("eval.sweep sweep=%s scope=%s stopped: %s", sweep.id, scope_id, why)
 
     async def settle(label: str, run_id: str) -> None:
         try:
@@ -318,8 +336,16 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep)
         await manager.wait_for(list(in_flight))
         await asyncio.gather(*in_flight.values(), return_exceptions=True)
         sweep.outcome, sweep.detail, sweep.ended_at = "cancelled", "cancelled before every arm ran", utc_now_iso()
-        await save()
+        try:
+            await save()
+        except JobFenced as why:
+            fenced(why)
         raise
+    except JobFenced as why:
+        # The record reads lost: this process no longer holds the sweep. Launch nothing more and write nothing
+        # more; the arms already launched are their own jobs, and finish or are lost as their own records say.
+        fenced(why)
+        return
     # prawduct:ok-broad-except — the sweep's record is where its ending is stated; the task boundary logs it
     except Exception as broke:
         log.exception("eval.sweep sweep=%s scope=%s ended on an error", sweep.id, scope_id)
@@ -329,7 +355,10 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep)
     sweep.outcome = "failed" if failure else "completed"
     sweep.detail = failure[0] if failure else None
     sweep.ended_at = utc_now_iso()
-    await save()
+    try:
+        await save()
+    except JobFenced as why:
+        fenced(why)
 
 
 __all__ = [

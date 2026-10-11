@@ -55,7 +55,16 @@ from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.analysis.viz.policy import IntentPolicyError
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt
-from threetears.evals.kernel.errors import NotFoundError, ProviderRefusedError, StorageError, ValidationFailedError
+from threetears.evals.kernel.errors import (
+    ConflictError,
+    JobFenced,
+    NotFoundError,
+    ProviderRefusedError,
+    StorageError,
+    ValidationFailedError,
+)
+from threetears.evals.kernel.job_leases import ANALYSIS_JOB, write_held_record
+from threetears.evals.kernel.storage import JobRecordStore
 from threetears.evals.schema.models import EvalTestCase, utc_now_iso
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
 from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
@@ -85,7 +94,7 @@ log = get_logger(__name__)
 _SCOPE_SAMPLE = 5
 
 
-class AnalysisStore(CampaignReadStore, Protocol):
+class AnalysisStore(CampaignReadStore, JobRecordStore, Protocol):
     """The storage calls the analysis service makes — its own, plus the bundle assembly's it hands the store to.
 
     It extends :class:`~threetears.evals.analysis.bundle.assemble.CampaignReadStore` rather than repeating it,
@@ -93,7 +102,9 @@ class AnalysisStore(CampaignReadStore, Protocol):
     :func:`~threetears.evals.analysis.bundle.assemble.assemble_context_bundle`, so a store satisfying this port
     has to satisfy that one. ``query_insights`` is declared again, wider: the ledger listing
     filters on the minting campaign as well as the subject, and the bundle's narrower call is one
-    this signature accepts.
+    this signature accepts. A generation's attempt is written through the job record's read-modify-write
+    (:class:`~threetears.evals.kernel.storage.JobRecordStore`), because a background generation's attempt is
+    its job's record, carrying a lease another process may have found lapsed.
 
     Structural, so a host's own storage satisfies it by having the methods —
     :class:`~threetears.evals.kernel.storage.EvalStorage` does. Positional parameters are
@@ -119,10 +130,6 @@ class AnalysisStore(CampaignReadStore, Protocol):
 
     def list_analyses_by_campaign(self, campaign_id: str, scope_id: str, /) -> list[EvalAnalysis]:
         """Every analysis of one campaign, newest first."""
-        ...
-
-    def save_analysis_attempt(self, attempt: EvalAnalysisAttempt, /) -> None:
-        """Write the record of how one generation attempt ended; raises ``StorageError`` on failure."""
         ...
 
     def list_analysis_attempts_by_campaign(self, campaign_id: str, scope_id: str, /) -> list[EvalAnalysisAttempt]:
@@ -550,6 +557,51 @@ async def prepare_analysis_generation(
     )
 
 
+def running_analysis_attempt(
+    prepared: PreparedGeneration, *, prompt_id: str, started_at: str | None = None
+) -> EvalAnalysisAttempt:
+    """The attempt a background generation writes as it starts: ``running``, nothing sent yet.
+
+    Written before the generation's job starts — carrying the job's lease, which the caller stamps — so the job is
+    answered from the store in every process from its first poll; :func:`run_analysis_generation` writes it again
+    as it ends.
+
+    Args:
+        prepared: The prepared generation.
+        prompt_id: The registry key its prompt was resolved under.
+        started_at: When it was started; now when omitted.
+
+    Returns:
+        The attempt, ``running``, its id the generation's.
+    """
+    return EvalAnalysisAttempt(
+        id=prepared.attempt_id,
+        scope_id=prepared.scope_id,
+        campaign_id=prepared.campaign_id,
+        outcome="running",
+        generator_model=prepared.resolved_model,
+        prompt_id=prompt_id,
+        bundle_fingerprint=prepared.bundle.fingerprint(),
+        started_at=started_at or utc_now_iso(),
+    )
+
+
+def _still_held(storage: AnalysisStore, prepared: PreparedGeneration) -> None:
+    """Refuse to go on with a generation whose attempt record has ended under it — written lost by another reader.
+
+    A generation run inline has no stored attempt until it ends, and is never refused here.
+
+    Raises:
+        JobFenced: The stored attempt has ended.
+    """
+    stored, _ = storage.load_job_record(EvalAnalysisAttempt, prepared.attempt_id, prepared.scope_id)
+    if stored is not None and ANALYSIS_JOB.ended(stored):
+        raise JobFenced(
+            f"analysis attempt '{prepared.attempt_id}' reads {stored.outcome}"
+            f"{' (lost)' if stored.lost is not None else ''}; the generation stores nothing more"
+        )
+
+
 async def _offloaded[**P](
     executor: Executor | None, fn: Callable[P, object], /, *args: P.args, **kwargs: P.kwargs
 ) -> bool:
@@ -587,6 +639,12 @@ async def run_analysis_generation(
     refused, failed or cancelled — with what it sent, what it cost and why it ended, read from a
     tally the generator writes as it goes.
 
+    **A background generation's attempt is its job's record**, written ``running`` before it started
+    (:func:`running_analysis_attempt`) and carrying the job's lease. Its ending is written over that record and
+    never over one that has already ended: once another process has written it lost (its lease lapsed), the
+    generation stores nothing more — not its ending, and not its analysis, which is checked for before it is
+    stored — and :class:`~threetears.evals.kernel.JobFenced` is raised.
+
     Args:
         host: The host: where the analysis, its insights and the attempt record are written, the
             vocabulary the memo is checked in, and how a provider call that raised becomes the
@@ -602,10 +660,12 @@ async def run_analysis_generation(
     Raises:
         ValidationFailedError: The generator's output failed the generation contract, or the repair
             round-trip it bought was refused by the generation's budget before it was sent.
-        StorageError: The analysis or one of its insights could not be stored. An insight fails
-            AFTER the attempt is recorded ``stored``, so a background generation's poll reports
-            the memo stored while its insight ledger is incomplete; the background task catches
-            that failure and logs it, and nothing else reports it.
+        JobFenced: The generation's attempt was written lost by another process before its analysis was stored;
+            nothing was stored.
+        StorageError: The analysis or one of its insights could not be stored. An insight that fails
+            leaves the attempt recorded ``stored`` all the same — the analysis is — so a background
+            generation's poll reports the memo stored while its insight ledger is incomplete; the
+            background task catches that failure and logs it, and nothing else reports it.
         ProviderRefusedError: The generator call raised and the host describer withheld its payload
             (a provider status error in its chain, or no describer able to say otherwise). The attempt is recorded ``failed`` and the failure
             logged, both through the host describer, before this is raised in its place. Any other
@@ -740,6 +800,7 @@ async def run_analysis_generation(
     # Every write runs on the host's blocking executor and is waited for through a cancellation, so a
     # cancel arriving while the paid-for analysis is stored cannot leave it stored with no record saying
     # so; the cancellation is delivered once the analysis, its record and its insights are written.
+    await _offloaded(executor, _still_held, storage, prepared)
     try:
         cancelled = await _offloaded(executor, storage.save_analysis, analysis)
     except StorageError as e:
@@ -748,10 +809,12 @@ async def run_analysis_generation(
             f"failed to persist generated analysis '{analysis.id}' for campaign '{campaign_id}' "
             f"(the generation cost ${format_number(analysis.generation.token_cost)} was already incurred)"
         ) from e
-    cancelled = await record("stored", analysis_id=analysis.id) or cancelled
     # A restated claim replaces the live insight that states it rather than adding a row beside it, so
     # regenerating over the same evidence leaves the ledger its size. Read now, not at assembly: the ledger
     # the bundle read is capped, and another generation may have written since.
+    #
+    # The attempt is recorded ``stored`` only once the insights are written (or have failed to be): a background
+    # generation's job reads its attempt, so a poll reading ``completed`` finds the ledger already written.
     written: list[list[EvalInsight]] = []
 
     def supersede() -> None:
@@ -761,21 +824,24 @@ async def run_analysis_generation(
         )
 
     try:
-        cancelled = await _offloaded(executor, supersede) or cancelled
-    except StorageError as e:
-        raise StorageError(
-            f"failed to read the insight ledger before writing analysis '{analysis.id}''s insights — the analysis "
-            f"itself was stored, but none of its insights were"
-        ) from e
-    insights = written[0]
-    for insight in insights:
         try:
-            cancelled = await _offloaded(executor, storage.save_insight, insight) or cancelled
+            cancelled = await _offloaded(executor, supersede) or cancelled
         except StorageError as e:
             raise StorageError(
-                f"failed to persist insight '{insight.id}' from analysis '{analysis.id}' — the analysis "
-                f"itself was stored, but its insight ledger is incomplete"
+                f"failed to read the insight ledger before writing analysis '{analysis.id}''s insights — the "
+                f"analysis itself was stored, but none of its insights were"
             ) from e
+        insights = written[0]
+        for insight in insights:
+            try:
+                cancelled = await _offloaded(executor, storage.save_insight, insight) or cancelled
+            except StorageError as e:
+                raise StorageError(
+                    f"failed to persist insight '{insight.id}' from analysis '{analysis.id}' — the analysis "
+                    f"itself was stored, but its insight ledger is incomplete"
+                ) from e
+    finally:
+        cancelled = await record("stored", analysis_id=analysis.id) or cancelled
 
     log.info(
         "eval.generate_analysis stored campaign=%s analysis=%s insights=%d cost=$%.4f model=%s",
@@ -809,7 +875,9 @@ def _record_analysis_attempt(
 
     A write that fails is logged at ERROR with the whole record and NOT raised: this runs on the
     way out of every ending, including a failure the caller must still be shown, and a second
-    exception here would replace the one that says what went wrong.
+    exception here would replace the one that says what went wrong. Written over the attempt's stored
+    ``running`` record when there is one, keeping its lease fields, and never over one that has ended: an
+    attempt another process wrote lost keeps that ending, and this one is logged and dropped.
 
     Args:
         storage: Where the attempt record is written.
@@ -845,8 +913,16 @@ def _record_analysis_attempt(
         started_at=started_at,
     )
     try:
-        storage.save_analysis_attempt(attempt)
-    except StorageError:
+        write_held_record(storage, ANALYSIS_JOB, attempt)
+    except JobFenced as fenced:
+        log.warning(
+            "eval.generate_analysis attempt %s campaign=%s outcome=%s NOT recorded: %s",
+            attempt_id,
+            campaign_id,
+            outcome,
+            fenced,
+        )
+    except StorageError, ConflictError:
         log.exception(
             "eval.generate_analysis attempt record NOT stored campaign=%s outcome=%s calls=%d cost=$%.4f model=%s — %s",
             campaign_id,
@@ -1697,6 +1773,7 @@ __all__ = [
     "inspect_campaign_bundle",
     "list_analyses",
     "list_analysis_attempts",
+    "running_analysis_attempt",
     "list_insights",
     "prepare_analysis_generation",
     "reporter_calibration",

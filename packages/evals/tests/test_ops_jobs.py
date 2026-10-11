@@ -6,12 +6,13 @@ job from the record its work writes, and :func:`job_cancel` asks it to stop. Pin
 - **A launch is one job per arm**, polled to ``completed`` with the run's progress, then summarised.
 - **A generation is one job**, polled to ``completed`` naming the analysis it stored, whose report reads
   three ways.
-- **A job outlives the process that ran it as an answer**: a run that reads ``running`` with no live job,
-  and a generation that recorded no attempt, both read ``lost``.
+- **A job outlives the process that ran it as an answer**: a run that reads ``running`` with no lease reads
+  ``lost``, written on its record, and its cancel is refused; a generation with no attempt record reads absent.
+  (Two processes over one store: ``test_job_leases.py``.)
 - **Cancel converges**: a held generation cancelled lands ``cancelled``; a held live run cancelled lands
-  ``cancelled`` through its own boundary; a run with no live job is repaired to ``cancelled``.
-- **A generation is answered only in its scope and campaign**: polled from another scope, or under another
-  campaign, it reads ``lost``; cancelled from there, it is refused and keeps running.
+  ``cancelled`` through its own boundary.
+- **A generation is answered only in its scope and campaign**: polled or cancelled from another scope, or under
+  another campaign, it reads absent; the refused cancel leaves it running.
 - **Every refusal fires** — a job id of neither shape, cancelling a job that has ended, a generation on
   a host without generation settings, a second generation of a campaign while one runs (releasing the
   client it built when it loses the race), and generation settings that cannot bound a generation.
@@ -86,7 +87,7 @@ async def test_a_launch_is_a_job_per_arm_polled_to_completed() -> None:
         assert summary.status == "completed" and summary.n_results > 0
 
 
-async def test_a_run_reading_running_with_no_live_job_is_lost_and_cancel_repairs_it() -> None:
+async def test_a_run_reading_running_with_no_lease_is_written_lost_and_its_cancel_is_refused() -> None:
     fixture = ops_fixture()
     storage = fixture.host.eval_host.storage
     run = storage.load_eval_run(fixture.campaign.run_ids[0], TOYHOST_SCOPE)
@@ -94,11 +95,11 @@ async def test_a_run_reading_running_with_no_live_job_is_lost_and_cancel_repairs
     storage.save_eval_run(run.model_copy(update={"status": "running", "completed_at": None}))
 
     lost = await job_poll(fixture.host, run_job_id(run.id), TOYHOST_SCOPE)
-    assert (lost.state, lost.status, lost.done) == ("lost", "running", True)
-    assert lost.detail is not None and "no job in this process is running it" in lost.detail
+    assert (lost.state, lost.status, lost.done) == ("lost", "cancelled", True)
+    assert lost.detail is not None and "no process can be running it" in lost.detail
 
-    cancelled = await job_cancel(fixture.host, run_job_id(run.id), TOYHOST_SCOPE, reason="stale")
-    assert (cancelled.state, cancelled.status) == ("cancelled", "cancelled")
+    with pytest.raises(ValidationFailedError, match="is cancelled — only pending/running runs can be cancelled"):
+        await job_cancel(fixture.host, run_job_id(run.id), TOYHOST_SCOPE, reason="stale")
 
 
 async def test_a_run_its_wall_clock_budget_stopped_reads_stopped_and_says_why() -> None:
@@ -166,7 +167,7 @@ async def test_a_held_generation_is_running_refuses_a_second_and_cancels_to_canc
     cancelled = await settled(fixture.host, job.job_id)
     assert (cancelled.state, cancelled.status) == ("cancelled", "cancelled")
 
-    with pytest.raises(ValidationFailedError, match="is not running here \\(it reads cancelled\\)"):
+    with pytest.raises(ValidationFailedError, match="is not running \\(it reads cancelled\\)"):
         await job_cancel(fixture.host, job.job_id, TOYHOST_SCOPE)
 
 
@@ -187,9 +188,9 @@ async def test_a_generation_is_neither_polled_nor_cancelled_from_outside_its_cam
     assert attempt is not None
     probe = analysis_job_id(forged_campaign or fixture.campaign.id, attempt)
 
-    polled = await job_poll(fixture.host, probe, scope_id)
-    assert (polled.state, polled.status) == ("lost", "unrecorded"), "another scope's live generation reads as none"
-    with pytest.raises(ValidationFailedError, match="is not running here"):
+    with pytest.raises(NotFoundError):
+        await job_poll(fixture.host, probe, scope_id)
+    with pytest.raises(NotFoundError):
         await job_cancel(fixture.host, probe, scope_id)
 
     owner = await job_poll(fixture.host, job.job_id, TOYHOST_SCOPE)
@@ -237,10 +238,10 @@ async def test_a_generation_that_loses_the_race_releases_its_client(monkeypatch:
     assert writer.closed == 1 and writer.calls == []
 
 
-async def test_a_generation_that_recorded_no_attempt_is_lost() -> None:
+async def test_a_generation_with_no_attempt_record_reads_absent() -> None:
     fixture = ops_fixture()
-    status = await job_poll(fixture.host, analysis_job_id(fixture.campaign.id, "0193-never"), TOYHOST_SCOPE)
-    assert (status.state, status.status, status.done) == ("lost", "unrecorded", True)
+    with pytest.raises(NotFoundError, match="analysis job"):
+        await job_poll(fixture.host, analysis_job_id(fixture.campaign.id, "0193-never"), TOYHOST_SCOPE)
 
 
 async def test_a_host_without_generation_settings_refuses_a_generation() -> None:

@@ -78,6 +78,7 @@ from threetears.evals.run.jobs import (
 )
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
+from threetears.evals.kernel.job_leases import DEFAULT_JOB_LEASE_S, JobLeases
 from threetears.evals.run.lifecycle import record_completeness
 from threetears.evals.run.executor import DEFAULT_MAX_CONCURRENT_CELLS, CellExecutor
 from threetears.evals.run.metering import MeteredCallLedger
@@ -447,10 +448,17 @@ class LaunchHost:
             (:class:`~threetears.evals.run.jobs.RunEndHook`) — a
             :class:`~threetears.evals.ops.RegressionWatch` to check a completed run against its contestant's
             history — or ``None`` for nobody.
+        job_lease_s: How long a job's lease lasts unless renewed, in seconds
+            (:data:`~threetears.evals.kernel.job_leases.DEFAULT_JOB_LEASE_S` by default); renewed every third of it. A
+            job whose process stops renewing reads lost this long after its last renewal, in every process, so
+            it bounds both how soon a dead process's jobs are answered lost and how long a cancel asked from
+            another process waits (a third of it).
+        job_leases: The process's job leases, built here over :attr:`eval_host`'s storage and executor: every
+            job this host starts — a run, a sweep, an analysis generation — carries one on its record.
         job_manager: The process's job manager, built here over :attr:`eval_host`'s storage and
-            executor, so the store a run's status is written to is the store its results are. It is
-            the one a host hands :func:`~threetears.evals.run.lifecycle.cancel_run`, the boot reclaim
-            and its shutdown.
+            executor and holding :attr:`job_leases`, so the store a run's status is written to is the store
+            its results are. It is the one a host hands :func:`~threetears.evals.run.lifecycle.cancel_run`
+            and its shutdown, which writes every job it holds lost.
     """
 
     eval_host: EvalHost
@@ -463,6 +471,8 @@ class LaunchHost:
     cell_executor: CellExecutor | None = None
     on_job_progress: Callable[[str, dict[str, Any]], None] | None = None
     on_run_end: RunEndHook | None = None
+    job_lease_s: float = DEFAULT_JOB_LEASE_S
+    job_leases: JobLeases = field(init=False, repr=False, compare=False)
     job_manager: EvalJobManager = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -470,8 +480,8 @@ class LaunchHost:
 
         Raises:
             ValueError: The profile declares a world and no placement was supplied, or declares
-                none and one was; or a kind honours an apparatus setting the profile does not declare as
-                one of the host's own apparatus dimensions.
+                none and one was; a kind honours an apparatus setting the profile does not declare as
+                one of the host's own apparatus dimensions; or ``job_lease_s`` is not positive.
         """
         profile = self.eval_host.profile
         settable = settable_apparatus(profile.sweepables)
@@ -493,6 +503,10 @@ class LaunchHost:
                 f"host {profile.host_id!r} declares no world, so there is nothing to place a run in: "
                 "drop world_placements, or declare the world on the profile"
             )
+        leases = JobLeases(
+            self.eval_host.storage, lease_s=self.job_lease_s, blocking_executor=self.eval_host.blocking_executor
+        )
+        object.__setattr__(self, "job_leases", leases)
         object.__setattr__(
             self,
             "job_manager",
@@ -503,6 +517,7 @@ class LaunchHost:
                 job_timeout_factory=self.job_timeout_factory,
                 blocking_executor=self.eval_host.blocking_executor,
                 on_run_end=self.on_run_end,
+                leases=leases,
             ),
         )
 

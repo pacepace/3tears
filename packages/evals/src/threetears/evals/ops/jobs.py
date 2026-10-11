@@ -1,28 +1,28 @@
 """One job contract for every long-running operation: start, a job id, poll, cancel.
 
-A launch and an analysis generation both take minutes, and both already record their own ending
-durably — a run its ``status``, a generation its :class:`~threetears.evals.kernel.campaign.EvalAnalysisAttempt`.
-So a job here is not a new record: it is a **name for the record that will say how the work ended**,
-and polling reads that record. Nothing about a job lives only in this process's memory, so a job id
-handed to an agent stays answerable after a restart — the answer is then that nothing is running it.
+A launch, a sweep and an analysis generation all take minutes, and each already records its own ending
+durably — a run its ``status``, a sweep its :class:`~threetears.evals.kernel.campaign.EvalSweep`, a generation its
+:class:`~threetears.evals.kernel.campaign.EvalAnalysisAttempt`. So a job here is not a new record: it is a **name
+for the record that says how the work stands**, and polling reads that record. Nothing about a job lives only in
+one process's memory, so a job id handed to an agent is answered the same by every process sharing the store, and
+after a restart.
 
 **The job id names its record.** ``run:<run id>`` for a launched run (one per arm),
-``analysis:<campaign id>:<attempt id>`` for a generation — the attempt is filed under its campaign, so
-the id carries both — and ``sweep:<sweep id>`` for a sweep, whose record
-(:class:`~threetears.evals.kernel.campaign.EvalSweep`) names its arms and their runs. :func:`parse_job_id`
-is the one reader of that shape. A sweep is live to a caller only under its own scope's task key
-(:func:`sweep_key`), as a generation is.
+``analysis:<campaign id>:<attempt id>`` for a generation — the attempt is filed under its campaign, so the id
+carries both — and ``sweep:<sweep id>`` for a sweep, whose record names its arms and their runs. :func:`parse_job_id`
+is the one reader of that shape.
 
-**A job is answered only inside the caller's scope.** A run job's run is read scoped, and a generation is
-live to a caller only when its task holds the exclusivity key of the campaign AND scope the caller names
-(:func:`generation_key`) — the job manager is process-wide, so asking it "is this attempt live?" alone would
-let any scope that learned an attempt id poll or cancel another scope's generation, and echo back whatever
-campaign it typed as fact. A generation another scope runs therefore reads to this caller exactly as one
-nothing runs: ``lost`` on poll, refused on cancel.
+**Whether a job is still running is its record's answer, through its lease** (:mod:`threetears.evals.kernel.job_leases`).
+The process running a job holds a lease on its record and renews it; a record that has not ended and whose lease
+has lapsed — or that carries none, written by a build before leases — is ``lost``, and the first poll to see that
+writes it on the record (:func:`~threetears.evals.kernel.job_leases.settle_job_record`), so every later poll, in any
+process, reads the same. A **cancel** is written on the record too (``cancel_requested_at``), from whichever process
+was asked; the process running the job reads it at its next renewal — at once when it is this one — and the job
+ends ``cancelled``. A job is therefore cancelled from any process, and a cancel lands within one renewal interval.
 
-**Liveness is read before the record.** A job ends by writing its record and only then leaving the job
-manager, so asking "is it live?" first and reading the record second never sees a finished job as
-lost; the other order can.
+**A job is answered only inside the caller's scope.** Its record is read scoped, so another scope's run, sweep or
+generation reads absent — not found, on poll and cancel alike — and a generation's attempt is answered only under
+the campaign it was filed under, so a caller typing another campaign into the id learns nothing.
 """
 
 from __future__ import annotations
@@ -31,13 +31,20 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from threetears.evals.analysis.service import list_analysis_attempts
-from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
-from threetears.evals.kernel.campaign import EvalSweep
+from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalSweep
 from threetears.evals.schema.models import EvalRun
 from threetears.evals.ops.host import OpsHost
-from threetears.evals.run.lifecycle import get_run, repair_abandoned_run, require_cancellable
+from threetears.evals.kernel.job_leases import (
+    ANALYSIS_JOB,
+    RUN_JOB,
+    SWEEP_JOB,
+    LeasedJobKind,
+    request_job_cancel,
+    settle_job_record,
+)
+from threetears.evals.run.lifecycle import require_cancellable
 from threetears.evals.kernel.offload import run_blocking
 
 #: What a job's work is: a launched run, an analysis generation, or a sweep launching its arms in order.
@@ -45,8 +52,8 @@ JobKind = Literal["run", "analysis", "sweep"]
 
 #: Where a job stands. ``running`` — still going (a run ``pending`` or ``running``, a generation live);
 #: ``completed`` — ended with what it was for; ``stopped`` — a run ended short by its budget or its
-#: account, keeping what it measured; ``failed``; ``cancelled``; ``lost`` — its record says it never
-#: ended and nothing in this process is running it (a restart took it).
+#: account, keeping what it measured; ``failed``; ``cancelled``; ``lost`` — the process running it went
+#: away before it ended: its lease lapsed, or its process shut down, and its record says so.
 JobState = Literal["running", "completed", "stopped", "failed", "cancelled", "lost"]
 
 #: The states a job does not leave.
@@ -117,23 +124,12 @@ class JobStatus(EvalBaseModel):
 
 
 def generation_key(campaign_id: str, scope_id: str) -> str:
-    """The exclusivity key one campaign's generations share: one runs at a time, and only its scope sees it."""
-    return f"analysis-generation:{scope_id}:{campaign_id}"
+    """The exclusivity key one campaign's generations share in this process: one starts at a time per scope.
 
-
-def _live_generation(host: OpsHost, campaign_id: str, attempt_id: str, scope_id: str) -> bool:
-    """Whether this process runs ``attempt_id`` as a generation of ``campaign_id`` in ``scope_id`` — the one scope check.
-
-    Args:
-        host: The host whose job manager runs generations.
-        campaign_id: The campaign the job id names.
-        attempt_id: The attempt the job id names.
-        scope_id: The caller's scope.
-
-    Returns:
-        ``True`` only when the attempt is a live task under that campaign's and scope's key.
+    Within a process the key makes the check and the start one step; across processes a start also refuses while
+    the campaign has an attempt whose lease is live (:func:`~threetears.evals.ops.analysis_generate`).
     """
-    return attempt_id in host.launch.job_manager.active_task_ids(generation_key(campaign_id, scope_id))
+    return f"analysis-generation:{scope_id}:{campaign_id}"
 
 
 def sweep_job_id(sweep_id: str) -> str:
@@ -142,7 +138,7 @@ def sweep_job_id(sweep_id: str) -> str:
 
 
 def sweep_key(sweep_id: str, scope_id: str) -> str:
-    """The task key a sweep runs under: the scope is in it, so only its own scope sees it live."""
+    """The task key a sweep runs under in the process that started it, scoped like every key."""
     return f"eval-sweep:{scope_id}:{sweep_id}"
 
 
@@ -170,47 +166,27 @@ def sweep_progress(sweep: EvalSweep, runs: dict[str, EvalRun]) -> dict[str, Any]
     }
 
 
-def _live_sweep(host: OpsHost, sweep_id: str, scope_id: str) -> bool:
-    """Whether this process runs ``sweep_id`` in ``scope_id`` — another scope's sweep reads as none."""
-    return sweep_id in host.launch.job_manager.active_task_ids(sweep_key(sweep_id, scope_id))
-
-
-async def _sweep_status(host: OpsHost, sweep_id: str, scope_id: str) -> JobStatus:
-    """A sweep's job status: its record, its arms' runs, and whether this process still runs it.
+def _sweep_status(sweep: EvalSweep, runs: dict[str, EvalRun]) -> JobStatus:
+    """A sweep's job status from its record and its launched arms' runs.
 
     Args:
-        host: The host whose job manager runs the sweep.
-        sweep_id: The sweep.
-        scope_id: The caller's scope.
+        sweep: Its record, as settled.
+        runs: Its launched arms' runs, by id.
 
     Returns:
         The status, its progress counting the arms launched and finished.
-
-    Raises:
-        NotFoundError: No sweep with that id in the scope.
     """
-    eval_host = host.eval_host
-    live = _live_sweep(host, sweep_id, scope_id)
-    sweep = await run_blocking(eval_host.blocking_executor, eval_host.storage.load_sweep, sweep_id, scope_id)
-    if sweep is None:
-        raise NotFoundError("sweep", sweep_id)
-    run_ids = [arm.run_id for arm in sweep.arms if arm.run_id is not None]
-    runs = await run_blocking(eval_host.blocking_executor, eval_host.storage.load_eval_runs, run_ids, scope_id)
-    state: JobState = "running" if sweep.outcome == "running" else sweep.outcome
+    state: JobState = "lost" if sweep.lost is not None else ("running" if sweep.outcome == "running" else sweep.outcome)
     detail = sweep.detail
-    if state == "running" and not live:
-        state = "lost"
-        detail = (
-            "the sweep reads running but nothing in this process is running it — the process that started it ended; "
-            "its launched arms are campaign members, and no further arm will be launched"
-        )
+    if sweep.lost is not None:
+        detail = f"{sweep.lost.cause}; its launched arms are campaign members, and no further arm will be launched"
     return JobStatus(
-        job_id=sweep_job_id(sweep_id),
+        job_id=sweep_job_id(sweep.id),
         kind="sweep",
         state=state,
         status=sweep.outcome,
         done=state in TERMINAL_JOB_STATES,
-        progress=sweep_progress(sweep, {run.id: run for run in runs}),
+        progress=sweep_progress(sweep, runs),
         campaign_id=sweep.campaign_id,
         sweep_id=sweep.id,
         detail=detail if state != "completed" else None,
@@ -255,24 +231,19 @@ def parse_job_id(job_id: str) -> tuple[JobKind, str, str | None]:
     )
 
 
-def _run_status(run: EvalRun, *, live: bool) -> JobStatus:
-    """A run's job status from its stored document and whether this process is running it.
+def _run_status(run: EvalRun) -> JobStatus:
+    """A run's job status from its stored document, as settled.
 
     Args:
         run: The run as stored.
-        live: Whether this process's job manager holds a live task for it — read BEFORE the run was.
 
     Returns:
-        The status.
+        The status: ``lost`` when its record says so, else its own status's job state.
     """
-    state = _RUN_STATES[run.status]
+    state: JobState = "lost" if run.lost is not None else _RUN_STATES[run.status]
     detail = run.cancellation_reason or run.budget_stop_reason or ("; ".join(run.error_details) or None)
-    if state == "running" and not live:
-        state = "lost"
-        detail = (
-            f"the run reads {run.status} but no job in this process is running it — the process that started it "
-            "ended; the host's boot sweep relabels it abandoned"
-        )
+    if run.lost is not None:
+        detail = run.lost.cause
     return JobStatus(
         job_id=run_job_id(run.id),
         kind="run",
@@ -285,14 +256,67 @@ def _run_status(run: EvalRun, *, live: bool) -> JobStatus:
     )
 
 
-async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
-    """Where a job stands, read from the record its work writes.
-
-    Liveness is asked of the job manager on the loop that owns it; the record is read on the host's
-    blocking executor, after.
+def _attempt_status(job_id: str, attempt: EvalAnalysisAttempt) -> JobStatus:
+    """A generation's job status from its attempt record, as settled.
 
     Args:
-        host: The host whose job manager runs the work and whose store holds its record.
+        job_id: The job's id.
+        attempt: Its attempt, as stored.
+
+    Returns:
+        The status: ``running`` while the attempt is, ``lost`` when its record says so, else its outcome's state.
+    """
+    if attempt.lost is not None:
+        state: JobState = "lost"
+    elif attempt.outcome == "running":
+        state = "running"
+    else:
+        state = _ATTEMPT_STATES[attempt.outcome]
+    return JobStatus(
+        job_id=job_id,
+        kind="analysis",
+        state=state,
+        status=attempt.outcome,
+        done=state in TERMINAL_JOB_STATES,
+        campaign_id=attempt.campaign_id,
+        analysis_id=attempt.analysis_id,
+        detail=attempt.lost.cause if attempt.lost is not None else (attempt.error if state != "running" else None),
+    )
+
+
+async def _settled[R: EvalDocumentModel](
+    host: OpsHost, kind: LeasedJobKind[R], record_id: str, scope_id: str
+) -> R | None:
+    """A job's record as every process reads it — written lost first when its lease has lapsed — on the blocking executor."""
+    eval_host = host.eval_host
+    record, _ = await run_blocking(
+        eval_host.blocking_executor, settle_job_record, eval_host.storage, kind, record_id, scope_id
+    )
+    return record
+
+
+async def _settled_attempt(
+    host: OpsHost, job_id: str, campaign_id: str, attempt_id: str, scope_id: str
+) -> EvalAnalysisAttempt:
+    """A generation's attempt, settled, answered only under the campaign the job id names.
+
+    Raises:
+        NotFoundError: No attempt with that id in the scope, or it is filed under another campaign.
+    """
+    attempt = await _settled(host, ANALYSIS_JOB, attempt_id, scope_id)
+    if attempt is None or attempt.campaign_id != campaign_id:
+        raise NotFoundError("analysis job", job_id)
+    return attempt
+
+
+async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
+    """Where a job stands, read from the record its work writes — the same answer in every process.
+
+    The record is read on the host's blocking executor and settled: one that has not ended and whose lease has
+    lapsed is written lost first (:func:`~threetears.evals.kernel.job_leases.settle_job_record`).
+
+    Args:
+        host: The host whose store holds the job's record.
         job_id: The id the start returned.
         scope_id: The scope the work's record lives in.
 
@@ -301,99 +325,77 @@ async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
 
     Raises:
         ValidationFailedError: The id names no job.
-        NotFoundError: A run job whose run is not in the scope.
+        NotFoundError: No record of the job in the scope (another scope's job reads so), or a generation's
+            attempt filed under another campaign than the id names.
+        ConflictError: The record kept changing while its lapsed lease was being written lost; poll again.
     """
     kind, target_id, attempt_id = parse_job_id(job_id)
-    manager, eval_host = host.launch.job_manager, host.eval_host
+    eval_host = host.eval_host
     if kind == "run":
-        live = manager.is_active(target_id)
-        run = await run_blocking(eval_host.blocking_executor, get_run, eval_host.storage, target_id, scope_id)
-        return _run_status(run, live=live)
+        run = await _settled(host, RUN_JOB, target_id, scope_id)
+        if run is None:
+            raise NotFoundError("run", target_id)
+        return _run_status(run)
     if kind == "sweep":
-        return await _sweep_status(host, target_id, scope_id)
+        sweep = await _settled(host, SWEEP_JOB, target_id, scope_id)
+        if sweep is None:
+            raise NotFoundError("sweep", target_id)
+        run_ids = [arm.run_id for arm in sweep.arms if arm.run_id is not None]
+        runs = await run_blocking(eval_host.blocking_executor, eval_host.storage.load_eval_runs, run_ids, scope_id)
+        return _sweep_status(sweep, {run.id: run for run in runs})
     assert attempt_id is not None  # parse_job_id names an attempt for every analysis job
-    if _live_generation(host, target_id, attempt_id, scope_id):
-        return JobStatus(
-            job_id=job_id, kind="analysis", state="running", status="running", done=False, campaign_id=target_id
-        )
-    attempts = await run_blocking(
-        eval_host.blocking_executor, list_analysis_attempts, eval_host.storage, target_id, scope_id
-    )
-    attempt = next((recorded for recorded in attempts if recorded.id == attempt_id), None)
-    if attempt is None:
-        return JobStatus(
-            job_id=job_id,
-            kind="analysis",
-            state="lost",
-            status="unrecorded",
-            done=True,
-            campaign_id=target_id,
-            detail=(
-                "no generation in this process is running it and it recorded no attempt — the process that "
-                "started it ended mid-generation, before writing its attempt record. Each model call it made is "
-                "on the out-of-run spend ledger (purpose 'analysis', carrying this campaign's id), which "
-                "scope_out_of_run_spend reads"
-            ),
-        )
-    state = _ATTEMPT_STATES[attempt.outcome]
-    return JobStatus(
-        job_id=job_id,
-        kind="analysis",
-        state=state,
-        status=attempt.outcome,
-        done=True,
-        campaign_id=target_id,
-        analysis_id=attempt.analysis_id,
-        detail=attempt.error if state != "completed" else None,
-    )
+    return _attempt_status(job_id, await _settled_attempt(host, job_id, target_id, attempt_id, scope_id))
 
 
 async def job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str | None = None) -> JobStatus:
-    """Ask a running job to stop, then report where it stands.
+    """Ask a running job to stop — from any process — then report where it stands.
 
-    Cancellation is request-then-converge: the work records ``cancelled`` as it unwinds, so the status
-    returned may still read ``running`` for a moment — poll to see it land.
+    The cancel is written on the job's record (:func:`~threetears.evals.kernel.job_leases.request_job_cancel`), which the
+    process running the job reads at its next lease renewal; when that process is this one, the job is cancelled
+    here at once as well. Request-then-converge: the work records ``cancelled`` as it unwinds, so the status
+    returned may still read ``running`` for up to one renewal interval — poll to see it land.
 
     Args:
-        host: The host whose job manager runs the work.
+        host: The host whose store holds the job's record and whose job manager may run it.
         job_id: The id the start returned.
         scope_id: The scope the work's record lives in.
-        reason: Why, recorded on a cancelled run.
+        reason: Why, recorded on the record and on a cancelled run.
 
     Returns:
         The job's status after the request.
 
     Raises:
-        ValidationFailedError: The id names no job, the job has already ended, or it is a generation no task
-            runs under the campaign and scope the caller names (another scope's generation reads as none).
-        NotFoundError: A run job whose run is not in the scope.
-        ConflictError: An abandoned run's repair lost its write race; nothing was repaired.
+        ValidationFailedError: The id names no job, or the job has already ended — lost included, which this
+            read may have just written.
+        NotFoundError: No record of the job in the scope, or a generation's attempt filed under another campaign.
+        ConflictError: The record kept changing while its lapsed lease was being written lost; nothing was asked.
+        StorageError: The request could not be written.
     """
     kind, target_id, attempt_id = parse_job_id(job_id)
     manager, eval_host = host.launch.job_manager, host.eval_host
+    record_id = target_id
     if kind == "run":
-        # cancel_run's halves, split so its store calls run on the blocking executor and only the job
-        # manager — which belongs to this loop — is asked on the loop.
-        run = await run_blocking(eval_host.blocking_executor, get_run, eval_host.storage, target_id, scope_id)
+        run = await _settled(host, RUN_JOB, target_id, scope_id)
+        if run is None:
+            raise NotFoundError("run", target_id)
         require_cancellable(run)
-        if not manager.cancel_job(target_id, reason=reason):
-            await run_blocking(
-                eval_host.blocking_executor, repair_abandoned_run, eval_host.storage, target_id, scope_id, reason=reason
-            )
-        return await job_poll(host, job_id, scope_id)
-    if kind == "sweep":
-        if not _live_sweep(host, target_id, scope_id) or not manager.cancel_task(target_id):
-            status = await job_poll(host, job_id, scope_id)
-            raise ValidationFailedError(
-                f"sweep job {job_id!r} is not running here (it reads {status.state}); there is nothing to cancel"
-            )
-        return await job_poll(host, job_id, scope_id)
-    assert attempt_id is not None  # parse_job_id names an attempt for every analysis job
-    if not _live_generation(host, target_id, attempt_id, scope_id) or not manager.cancel_task(attempt_id):
+    else:
         status = await job_poll(host, job_id, scope_id)
-        raise ValidationFailedError(
-            f"analysis job {job_id!r} is not running here (it reads {status.state}); there is nothing to cancel"
-        )
+        if status.done:
+            raise ValidationFailedError(
+                f"{kind} job {job_id!r} is not running (it reads {status.state}); there is nothing to cancel"
+            )
+        if attempt_id is not None:
+            record_id = attempt_id
+    await run_blocking(
+        eval_host.blocking_executor, request_job_cancel, eval_host.storage, record_id, scope_id, reason=reason
+    )
+    # This process may be the one running it: cancel it here now rather than at the next renewal. The record was
+    # read in the caller's scope, so the id is one this caller may cancel.
+    if kind == "run":
+        manager.cancel_job(record_id, reason=reason)
+    else:
+        manager.cancel_task(record_id)
     return await job_poll(host, job_id, scope_id)
 
 

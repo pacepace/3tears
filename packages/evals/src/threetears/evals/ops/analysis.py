@@ -31,16 +31,24 @@ from threetears.evals.analysis.service import (
     get_analysis,
     list_analyses,
     list_insights,
+    list_analysis_attempts,
     prepare_analysis_generation,
     run_analysis_generation,
+    running_analysis_attempt,
 )
 from threetears.evals.schema.base import EvalBaseModel, VerbatimText
 from threetears.evals.kernel.campaign import ConfidenceTier, EvalAnalysis, EvalCampaign, EvalInsight
-from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
+from threetears.evals.kernel.errors import ConflictError, JobFenced, NotFoundError, ValidationFailedError
+from threetears.evals.kernel.job_leases import ANALYSIS_JOB, settle_job_record, write_held_record
+from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops.host import AnalysisGeneration, OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, analysis_job_id, generation_key
 from threetears.evals.run.curation import delete_analysis, delete_insight, set_analysis_archived, set_campaign_archived
+from threetears.evals.schema.models import utc_now_iso
+from threetears.observe import get_logger
+
+log = get_logger(__name__)
 
 
 class CampaignLine(EvalBaseModel):
@@ -450,19 +458,24 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
             prompt does not resolve, the writer model is not one the host allows
             (``HostProfile.analysis_writer_models``, checked before any provider request), or the first call cannot be priced under the enforced cap or is priced
             above it.
-        ConflictError: A generation of this campaign is already running.
+        ConflictError: A generation of this campaign is already running — in this process, or in another one
+            whose attempt's lease is live.
         NotFoundError: No campaign with that id in the scope.
     """
     generation = _generation_settings(host)
     manager = host.launch.job_manager
     key = generation_key(campaign_id, scope_id)
     running = manager.active_task_ids(key)
+    eval_host = host.eval_host
+    if not running:
+        running = await run_blocking(
+            eval_host.blocking_executor, _attempts_running_elsewhere, eval_host, campaign_id, scope_id
+        )
     if running:
         raise ConflictError(
             f"a generation of campaign '{campaign_id}' is already running "
             f"(job {analysis_job_id(campaign_id, running[0])}); poll it rather than starting another"
         )
-    eval_host = host.eval_host
     prepared = await prepare_analysis_generation(
         eval_host,
         campaign_id,
@@ -472,18 +485,39 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
         out_of_run_cap_usd=host.out_of_run_cap(),
     )
 
+    started = running_analysis_attempt(prepared, prompt_id=generation.prompt_id)
+    leases = host.launch.job_leases
+
+    def save_started() -> None:
+        # Written carrying its lease before the job starts, so its first poll — in any process — finds it running.
+        started.lease = leases.grant()
+        eval_host.storage.save_analysis_attempt(started)
+
+    await run_blocking(eval_host.blocking_executor, save_started)
+
     async def work() -> None:
-        await run_analysis_generation(
-            eval_host, prepared, prompt_id=generation.prompt_id, max_output_tokens=generation.max_output_tokens
-        )
+        try:
+            await run_analysis_generation(
+                eval_host, prepared, prompt_id=generation.prompt_id, max_output_tokens=generation.max_output_tokens
+            )
+        except JobFenced as fenced:
+            # Another process wrote the attempt lost (its lease lapsed): its record is the answer, and the
+            # generation has stored nothing more.
+            log.warning("eval.generate_analysis campaign=%s scope=%s stopped: %s", campaign_id, scope_id, fenced)
 
     try:
-        manager.start_task(prepared.attempt_id, work, budget_s=generation.budget_s, key=key)
-    except ConflictError:
+        manager.start_task(
+            prepared.attempt_id, work, budget_s=generation.budget_s, key=key, record=(ANALYSIS_JOB, scope_id)
+        )
+    except ConflictError as lost_race:
         # Another start won the race while this one prepared: release the client it built, which only
-        # the generation itself would otherwise have entered and released.
+        # the generation itself would otherwise have entered and released, and end the attempt it recorded.
         async with prepared.client:
             pass
+        refused = started.model_copy(
+            update={"outcome": "failed", "error": f"refused before any call: {lost_race}", "created_at": utc_now_iso()}
+        )
+        await run_blocking(eval_host.blocking_executor, write_held_record, eval_host.storage, ANALYSIS_JOB, refused)
         raise
     return JobsStarted(
         jobs=[
@@ -495,6 +529,27 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
             )
         ]
     )
+
+
+def _attempts_running_elsewhere(host: EvalHost, campaign_id: str, scope_id: str) -> list[str]:
+    """The campaign's attempts still running in some process: each read as every process reads it, settled first.
+
+    Args:
+        host: Where the attempts live.
+        campaign_id: The campaign.
+        scope_id: Its scope.
+
+    Returns:
+        The ids of attempts whose lease is live, newest first.
+    """
+    live: list[str] = []
+    for attempt in list_analysis_attempts(host.storage, campaign_id, scope_id):
+        if attempt.outcome != "running":
+            continue
+        settled, _ = settle_job_record(host.storage, ANALYSIS_JOB, attempt.id, scope_id)
+        if settled is not None and not ANALYSIS_JOB.ended(settled):
+            live.append(attempt.id)
+    return live
 
 
 def report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat) -> ReportDocument:

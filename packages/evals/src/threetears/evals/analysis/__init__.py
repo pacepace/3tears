@@ -234,6 +234,7 @@ from threetears.evals.analysis.service import (
     reporter_calibration,
     reporter_case_bank,
     run_analysis_generation,
+    running_analysis_attempt,
 )
 from threetears.evals.analysis.stats import EQUIVALENCE_TEST_NAME, PAIRED_TEST_NAME, ChangeLabel
 from threetears.evals.analysis.surface_table import SurfaceTable
@@ -645,6 +646,7 @@ __all__ = [
     "reporter_case_bank",
     "reporter_cell_timeout_s",
     "run_analysis_generation",
+    "running_analysis_attempt",
     "run_summary",
     "set_campaign_control",
     "set_reporter_case_archived",

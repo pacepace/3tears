@@ -16,11 +16,17 @@ would not resemble that one, since the shape it generated no longer exists.
 work that already writes its OWN durable record (an analysis generation writes an
 ``EvalAnalysisAttempt`` however it ends), so the manager gives it only what a background job needs
 from a process — tracking, a timeout, and cancellation at shutdown — and never a status of its own.
+
+**Every job's record carries its lease** (:mod:`threetears.evals.kernel.job_leases`), held through the manager's
+:class:`~threetears.evals.kernel.job_leases.JobLeases`: a run's from its first save to its terminal write, a task's
+record from its start to its end. Which process runs a job is the record's answer, never this manager's memory,
+so a process that did not start a job reads it as the one that did.
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Sequence
 from concurrent.futures import Executor
@@ -33,6 +39,7 @@ from threetears.evals.schema.models import TERMINAL_RUN_STATUSES, EvalRun
 from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.kernel.storage import JobStore
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
+from threetears.evals.kernel.job_leases import RUN_JOB, JobLeases, LeasedJobKind
 from threetears.evals.run.run_document import update_eval_run
 from threetears.observe import get_logger
 
@@ -475,6 +482,7 @@ class EvalJobManager:
         job_timeout_factory: JobTimeoutFactory | None = None,
         blocking_executor: Executor | None = None,
         on_run_end: RunEndHook | None = None,
+        leases: JobLeases | None = None,
     ):
         """Wire the job manager to storage and configure concurrency.
 
@@ -508,6 +516,13 @@ class EvalJobManager:
                 site to name one.
             on_run_end: Told each run's recorded terminal status (:class:`RunEndHook`), or
                 ``None`` for nobody. What it raises is logged and never changes the run.
+            leases: The process's job leases (:class:`~threetears.evals.kernel.job_leases.JobLeases`), over the
+                store the runs are saved to: every run is saved carrying a lease and renewed while its job
+                lives, a cancel asked of it on its record from any process reaches it, and a shutdown writes
+                it lost. ``None`` saves runs with no lease, which every reader of the job contract
+                (:func:`~threetears.evals.ops.job_poll`) reads as lost — for a harness that reads its runs
+                through this manager alone (:meth:`wait_for`), never a host serving the job contract;
+                the construction-site gate requires every non-test site to name it.
         """
         self._storage = storage
         self._max_concurrent = max_concurrent
@@ -520,6 +535,7 @@ class EvalJobManager:
         self._job_timeout_factory: JobTimeoutFactory = job_timeout_factory or default_job_timeout
         self._blocking_executor = blocking_executor
         self._on_run_end = on_run_end
+        self._leases = leases
         # The terminal status each in-flight run's write actually recorded, keyed by run id: set by
         # _set_status when a terminal write lands, read once by _run_job as the job ends, so the
         # hook hears the stored status and only one that was stored.
@@ -564,6 +580,11 @@ class EvalJobManager:
             self._on_progress(job_id, payload)
         except Exception:  # prawduct:ok-broad-except — best-effort broadcast must not corrupt job state
             log.warning("on_progress broadcast failed for job %s", job_id, exc_info=True)
+
+    @property
+    def leases(self) -> JobLeases | None:
+        """The process's job leases, or ``None`` for a manager whose runs carry none."""
+        return self._leases
 
     @property
     def active_count(self) -> int:
@@ -697,14 +718,15 @@ class EvalJobManager:
     async def shutdown(self, timeout: float = SHUTDOWN_SETTLE_TIMEOUT_S) -> list[str]:
         """Cancel all active jobs and wait up to ``timeout`` for each to settle.
 
-        A cancelled job settles by writing its terminal status (and, for a run, its completeness
-        record) as it unwinds. One whose writes outlast ``timeout`` is given up on, and what that
-        leaves depends on its kind, so the two are logged apart by id and returned rather than
-        folded into a success: a RUN keeps its non-terminal status in storage until a later process
-        relabels it abandoned, while a detached TASK (:meth:`start_task`) has no stored status at all
-        — its work had not recorded its ending (a generation writes no attempt), nothing at the next
-        boot repairs it, and what it spent is only where its work recorded each call as it went (an
-        analysis generation writes every model call to the out-of-run spend ledger).
+        A cancelled job settles as it unwinds. One whose writes outlast ``timeout`` is given up on,
+        logged by id and returned rather than folded into a success: runs and tasks apart, since a
+        task's spend is only where its work recorded each call as it went (an analysis generation
+        writes every model call to the out-of-run spend ledger).
+
+        **Every job this process holds a lease on ends lost first** (:meth:`JobLeases.shut_down
+        <threetears.evals.kernel.job_leases.JobLeases.shut_down>`), its cause the shutdown, its lease released: its
+        record reads lost at once in every process, rather than ``running`` until the lease lapses. The jobs are
+        cancelled after, and the endings they write as they unwind are refused — the record has ended.
 
         Args:
             timeout: Seconds to wait for every cancelled job to finish.
@@ -712,6 +734,10 @@ class EvalJobManager:
         Returns:
             The ids of the jobs still unfinished when the wait ended; empty when all settled.
         """
+        if self._leases is not None:
+            ended = await self._leases.shut_down()
+            if ended:
+                log.info("eval.shutdown wrote %d held job(s) lost: %s", len(ended), ", ".join(ended))
         # Detached tasks are cancelled with the runs: each records its own ending as it unwinds
         # (a generation writes a `cancelled` attempt), which is the settling this waits for.
         every = {**self._tasks, **self._detached}
@@ -724,17 +750,17 @@ class EvalJobManager:
         unsettled_tasks = [job_id for job_id, task in self._detached.items() if not task.done()]
         if unsettled_runs:
             log.warning(
-                "eval.shutdown gave up on %d job(s) after %.1fs — their runs keep a non-terminal status "
-                "until the next boot relabels them abandoned: %s",
+                "eval.shutdown gave up on %d job(s) after %.1fs — a run it held a lease on was written lost "
+                "before it was cancelled; one it held none on keeps a non-terminal status, which reads lost: %s",
                 len(unsettled_runs),
                 timeout,
                 ", ".join(unsettled_runs),
             )
         if unsettled_tasks:
             log.warning(
-                "eval.shutdown gave up on %d background task(s) after %.1fs — none is a run: their work "
-                "recorded no ending (a memo generation stored no attempt), nothing at the next boot "
-                "repairs that, and what they spent is not recorded: %s",
+                "eval.shutdown gave up on %d background task(s) after %.1fs — none is a run: a task whose "
+                "record it held a lease on was written lost before it was cancelled; what each spent is only "
+                "where its work recorded it as it went: %s",
                 len(unsettled_tasks),
                 timeout,
                 ", ".join(unsettled_tasks),
@@ -746,7 +772,13 @@ class EvalJobManager:
         return unsettled
 
     def start_task(
-        self, job_id: str, work: Callable[[], Awaitable[None]], *, budget_s: float, key: str | None = None
+        self,
+        job_id: str,
+        work: Callable[[], Awaitable[None]],
+        *,
+        budget_s: float,
+        key: str | None = None,
+        record: tuple[LeasedJobKind[Any], str] | None = None,
     ) -> str:
         """Run ``work`` in the background under a timeout, tracked until it ends.
 
@@ -769,19 +801,36 @@ class EvalJobManager:
                 caller derives it from the work's own inner ceilings.
             key: An exclusivity key: while a task with this key is live, starting another with
                 the same key is refused. ``None`` for no exclusivity.
+            record: The work's own record, ``(its kind, its scope)``, whose id is ``job_id``, already
+                written carrying a lease from :meth:`JobLeases.grant
+                <threetears.evals.kernel.job_leases.JobLeases.grant>`: held until the task ends, so a cancel asked
+                of it on the record from any process cancels the task, and a lease lost stops it. ``None``
+                for work with no record of its own here.
 
         Returns:
             ``job_id``.
 
         Raises:
             ConflictError: A live task already holds ``key``.
+            ValueError: ``record`` is given to a manager with no leases.
         """
         if key is not None:
             self._refuse_held(key)
+        if record is not None and self._leases is None:
+            raise ValueError(f"task {job_id!r} names a leased record, but this manager holds no leases")
         task = asyncio.create_task(self._run_task(job_id, work, budget_s), name=f"eval-task-{job_id[:8]}")
         self._detached[job_id] = task
         if key is not None:
             self._task_keys[job_id] = key
+        if record is not None and self._leases is not None:
+            kind, scope_id = record
+            self._leases.hold(
+                kind,
+                job_id,
+                scope_id,
+                cancel=lambda _reason: self.cancel_task(job_id),
+                stop=lambda: self.cancel_task(job_id),
+            )
         return job_id
 
     def is_task_active(self, job_id: str) -> bool:
@@ -864,6 +913,8 @@ class EvalJobManager:
             # the work's own record already written.
             self._detached.pop(job_id, None)
             self._task_keys.pop(job_id, None)
+            if self._leases is not None:
+                self._leases.release(job_id)
 
     async def start_group(
         self, members: Sequence[tuple[EvalRun, WorkFn, float | None]], *, measure_latency: bool = False
@@ -914,6 +965,14 @@ class EvalJobManager:
             else _GroupSlot(self._semaphore, len(members))
         )
         for run, work, job_timeout_s in members:
+            if self._leases is not None:
+                self._leases.hold(
+                    RUN_JOB,
+                    run.id,
+                    run.scope_id,
+                    cancel=functools.partial(self.cancel_job, run.id),
+                    stop=functools.partial(self.cancel_job, run.id),
+                )
             task = asyncio.create_task(
                 self._run_job(run.id, run.scope_id, work, job_timeout_s, slot=slot),
                 name=f"eval-{run.id[:8]}",
@@ -927,7 +986,9 @@ class EvalJobManager:
     def _save_group(self, runs: list[EvalRun]) -> None:
         """Save every run of a group, or settle the ones already saved and re-raise.
 
-        The blocking half of :meth:`start_group`, whole so it takes one worker hop.
+        The blocking half of :meth:`start_group`, whole so it takes one worker hop. Each run is saved
+        carrying a lease (when the manager holds leases), so no reader ever finds one not ended and
+        unleased — which reads lost.
 
         Args:
             runs: The group's runs, in the order they are started.
@@ -935,6 +996,8 @@ class EvalJobManager:
         saved: list[EvalRun] = []
         try:
             for run in runs:
+                if self._leases is not None:
+                    run.lease = self._leases.grant()
                 self._storage.save_eval_run(run)
                 saved.append(run)
         # prawduct:allow prawduct/broad-except -- cleanup-then-reraise: whatever stopped a sibling's save, the runs already saved must not be left pending
@@ -1072,6 +1135,8 @@ class EvalJobManager:
             log.exception("Job %s failed", run_id)
             await self._set_status(run_id, scope_id, "failed", error=str(exc))
         finally:
+            if self._leases is not None:
+                self._leases.release(run_id)
             ended = self._recorded_end.pop(run_id, None)
             if ended is not None:
                 await self._tell_run_end(run_id, scope_id, ended)
@@ -1264,6 +1329,13 @@ class EvalJobManager:
         was in flight.
         """
         outcome = await run_blocking(self._blocking_executor, self._write_progress, run_id, scope_id, progress)
+        if outcome == "fenced":
+            # The run's record says it was lost — a reader in some process found its lease lapsed, or this
+            # process shut down — so this job no longer holds it: stop at once and write nothing more. Its
+            # terminal write is refused by the record, which has ended.
+            log.warning("Job %s: its record reads lost — stopping it; nothing more is written", run_id)
+            self.cancel_job(run_id)
+            return
         if outcome == "declined":
             # The store already refused to reopen the run; broadcasting `running` here
             # would do to every live reader what the write was stopped from doing to
@@ -1281,7 +1353,7 @@ class EvalJobManager:
 
     def _write_progress(
         self, run_id: str, scope_id: str, progress: dict[str, Any]
-    ) -> Literal["saved", "refused", "declined"] | None:
+    ) -> Literal["saved", "refused", "declined", "fenced"] | None:
         """Stamp ``progress`` onto the run document under its own ETag.
 
         The blocking half of :meth:`_update_progress`, kept whole so the load and
@@ -1295,13 +1367,16 @@ class EvalJobManager:
         Returns:
             ``"saved"``, or ``"refused"`` when the conditional write lost its race or
             failed — a tick is not retried, since the next one supersedes it; ``None`` when there is no
-            document to write to — one deleted from under the live job; or ``"declined"`` when the run has
-            already reached a terminal status, which no progress tick may reopen. Neither ``None`` nor
-            ``"declined"`` is a refusal and neither is logged as one.
+            document to write to — one deleted from under the live job; ``"declined"`` when the run has
+            already reached a terminal status, which no progress tick may reopen; or ``"fenced"`` when that
+            status is a loss another writer recorded, so this job no longer holds the run. None of the last
+            three is a refusal and none is logged as one.
         """
         run, etag = self._storage.load_eval_run_with_etag(run_id, scope_id)
         if run is None:
             return None
+        if run.lost is not None:
+            return "fenced"
         if run.status in TERMINAL_RUN_STATUSES:
             # Same rule as the status write, and the same reason: this line used to set
             # `status = "running"` unconditionally, so a tick still in flight when the
