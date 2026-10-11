@@ -393,7 +393,9 @@ async def test_a_battery_cannot_replay_one_corpus_across_its_templates():
 
         return check
 
-    with pytest.raises(ValidationFailedError, match="Nothing was launched.*replay each template with start_run"):
+    with pytest.raises(
+        ValidationFailedError, match="Nothing was launched.*replay each template with a run_launch of its own"
+    ):
         await start_universal_battery(
             host,
             TOYHOST_SUBJECT.subject_id,

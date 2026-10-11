@@ -1203,8 +1203,8 @@ def refuse_an_undeclarable_design(
         raise UndeclarableAxisError(
             f"host '{profile.host_id}' cannot vary every axis this campaign declares — {reasons}",
             remedy=(
-                "declare only axes analysis.declarable_axes() lists — the host's levers and the open families whose members "
-                "it recognises — read from the registry this gate decides with"
+                "declare only the axes this refusal lists as declarable — the host's levers and the members of its open "
+                "families it recognises, read from the registry this gate decides with"
             ),
         )
 
