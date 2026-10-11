@@ -693,6 +693,10 @@
       "kind": "function",
       "signature": "agreement_statistic(scale: RubricScale, kappa: float | None, weighted_kappa: float | None) -> float | None"
     },
+    "threetears.evals.kernel.ANALYSIS_GEN_PROMPT": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
     "threetears.evals.kernel.ANALYSIS_JOB": {
       "kind": "constant (LeasedJobKind)",
       "signature": ""
@@ -744,6 +748,10 @@
     "threetears.evals.kernel.blended_cost_roles": {
       "kind": "function",
       "signature": "blended_cost_roles(rate_table: ExternalRateTable | None) -> tuple[UsageRole, ...]"
+    },
+    "threetears.evals.kernel.BOUNDARY_GEN_PROMPT": {
+      "kind": "constant (str)",
+      "signature": ""
     },
     "threetears.evals.kernel.calibration_criterion": {
       "kind": "function",
@@ -1445,6 +1453,10 @@
       "kind": "function",
       "signature": "program_cost(usage: list[RoleUsage]) -> float | None"
     },
+    "threetears.evals.kernel.PROPOSER_PROMPT": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
     "threetears.evals.kernel.ProviderRefusedError": {
       "kind": "exception",
       "signature": "ProviderRefusedError(message: str)"
@@ -1568,6 +1580,10 @@
     "threetears.evals.kernel.save_document": {
       "kind": "function",
       "signature": "save_document(repo: DocumentStore, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None"
+    },
+    "threetears.evals.kernel.SEED_PROMPTS": {
+      "kind": "constant (tuple)",
+      "signature": ""
     },
     "threetears.evals.kernel.SeedPrompt": {
       "kind": "dataclass",
@@ -1896,6 +1912,10 @@
     "threetears.evals.kernel.host.KindContractError": {
       "kind": "exception",
       "signature": ""
+    },
+    "threetears.evals.kernel.host.load_bar_registry": {
+      "kind": "function",
+      "signature": "load_bar_registry(declaration: Mapping[str, Any]) -> BarRegistry"
     },
     "threetears.evals.kernel.host.MeasureRegistrationError": {
       "kind": "exception",
@@ -3573,6 +3593,10 @@
       "kind": "function",
       "signature": "list_insights(storage: AnalysisStore, scope_id: str, *, subject_id: str | None = None, scope: str | None = None, source_campaign_id: str | None = None) -> list[EvalInsight]"
     },
+    "threetears.evals.analysis.live_reporter_cases": {
+      "kind": "function",
+      "signature": "live_reporter_cases(storage: AnalysisStore, template: EvalTemplate, scope_id: str) -> list[tuple[EvalTestCase, ReporterCase]]"
+    },
     "threetears.evals.analysis.measure_movement": {
       "kind": "function",
       "signature": "measure_movement(descriptor: MetricDescriptor, at_a: Mapping[str, Fraction], at_b: Mapping[str, Fraction]) -> MeasureMovement"
@@ -3745,6 +3769,10 @@
       "kind": "model",
       "signature": "RealizedDesign(control_arm: DesignArm | None = None, control_excluded: Literal['archived', 'unresolved', 'unobserved'] | None = None, contrasts: list[DesignArm] = list(), unplaced_run_ids: list[str] = list(), shape: Literal['one_factor_at_a_time', 'multi_factor', 'undesignated'] = 'undesignated')"
     },
+    "threetears.evals.analysis.refuse_undeliverable_reporter_template": {
+      "kind": "function",
+      "signature": "refuse_undeliverable_reporter_template(template: EvalTemplate) -> None"
+    },
     "threetears.evals.analysis.RefusedMerge": {
       "kind": "model",
       "signature": "RefusedMerge(variant_key: str, apparatus_class_ids: list[str], reason: Literal['apparatus_differs', 'apparatus_unknown', 'provenance_differs'], dimensions: list[str] = list())"
@@ -3805,6 +3833,14 @@
       "kind": "constant (str)",
       "signature": ""
     },
+    "threetears.evals.analysis.REPORTER_KIND_CONTRACT": {
+      "kind": "constant (KindContract)",
+      "signature": ""
+    },
+    "threetears.evals.analysis.reporter_kind_contract": {
+      "kind": "function",
+      "signature": "reporter_kind_contract(host_seats: Iterable[str] = ()) -> KindContract"
+    },
     "threetears.evals.analysis.ReporterCalibration": {
       "kind": "model",
       "signature": "ReporterCalibration(run_id: str, template_id: str, status: str, dimensions: list[str], judge_model: str | None, effective_judges: dict[str, str] | None, cases: list[CalibrationCase] = list(), missing_case_ids: list[str] = list(), rating_agreement: JudgeAgreement = JudgeAgreement())"
@@ -3828,6 +3864,10 @@
     "threetears.evals.analysis.ReporterLabel": {
       "kind": "model",
       "signature": "ReporterLabel(dimension: DimName, direction: LabelDirection, quote: str, note: str | None = None, criterion: LabelCriterion | None = None)"
+    },
+    "threetears.evals.analysis.ReporterOverlays": {
+      "kind": "model",
+      "signature": "ReporterOverlays(prompt_preset: str | None = None)"
     },
     "threetears.evals.analysis.ReportFormat": {
       "kind": "literal",
@@ -4525,6 +4565,10 @@
       "kind": "constant (str)",
       "signature": ""
     },
+    "threetears.evals.ops.admit_reporter_launch": {
+      "kind": "function",
+      "signature": "admit_reporter_launch(request: LaunchRequest, *, storage: EvalStorage, prompts: ReporterPrompts, resolve_model: ReporterModelResolver) -> ReporterAdmitted"
+    },
     "threetears.evals.ops.AdmittedJob": {
       "kind": "dataclass",
       "signature": "AdmittedJob(work: JobWork[Any], kind: JobKind, target_id: str, label: str = '', key: str | None = None)"
@@ -4649,6 +4693,14 @@
       "kind": "model",
       "signature": "CaseSetMint(case_set: str, template_id: Annotated[str, LaunchArguments.model_fields['template_id']], test_case_ids: list[str], tracked: bool = True)"
     },
+    "threetears.evals.ops.ChartRefusal": {
+      "kind": "model",
+      "signature": "ChartRefusal(block: int, finding: int | None, viz_type: ChartType, cause: ChartRefusalCause, reason: str)"
+    },
+    "threetears.evals.ops.ChartRefusalCause": {
+      "kind": "literal",
+      "signature": "'undrawable'` | `'refused_by_renderer'"
+    },
     "threetears.evals.ops.DetectableEffect": {
       "kind": "model",
       "signature": "DetectableEffect(reading: ReadingKind, name: str, delta: float | None, cannot_estimate: str | None, basis: Literal['paired_runs', 'unrelated_case_effects'] | None = None, within_case_sd: float | None = None, between_case_sd: float | None = None, difference_sd: float | None = None, n_history_cases: int | None = None, run_ids: list[str] = list())"
@@ -4660,6 +4712,10 @@
     "threetears.evals.ops.dollars_text": {
       "kind": "function",
       "signature": "dollars_text(amount: float) -> str"
+    },
+    "threetears.evals.ops.DrawnChart": {
+      "kind": "dataclass",
+      "signature": "DrawnChart(block: int, finding: int | None, viz_type: ChartType, drawing: DrawingT)"
     },
     "threetears.evals.ops.estimate_text": {
       "kind": "function",
@@ -4885,6 +4941,10 @@
       "kind": "model",
       "signature": "PivotTable(metric: str, measure: MetricDescriptor, formula: str, weighting: str, row_factor: str, column_factor: str, rows: list[str], columns: list[str], cells: list[PivotCell], simpsons_flags: list[SimpsonsFlag] = [], n_observations: int = 0, n_filtered_out: int = 0, exclusions: ProjectionExclusions = ProjectionExclusions(results_without_run=0, results_outside_queried_runs=0, results_from_archived_runs=0), completeness_disclosures: dict[str, str] = {}, n_degraded_observations: int = 0, cost_compositions_differ: bool = False, composite_bases_differ: bool = False, cassette_mode_disclosure: str | None = None, identity_pooling_disclosure: str | None = None, served_model_disclosure: str | None = None, unplaced_predicted_models: list[str] = [])"
     },
+    "threetears.evals.ops.plan_reporter_arm": {
+      "kind": "function",
+      "signature": "plan_reporter_arm(host: EvalHost, request: LaunchRequest, *, prompts: ReporterPrompts, resolve_model: ReporterModelResolver) -> ArmPlan"
+    },
     "threetears.evals.ops.ProposedBar": {
       "kind": "model",
       "signature": "ProposedBar(measure: str, threshold: float, higher_is_better: bool, rationale: str, vacuous: bool, vacuous_reason: str | None)"
@@ -4901,9 +4961,17 @@
       "kind": "dataclass",
       "signature": "RegressionWatch(host: EvalHost, sink: RegressionSink, measures: Sequence[str], min_absolute_change: float = 0.0, min_relative_change: float = 0.0)"
     },
+    "threetears.evals.ops.report_charts": {
+      "kind": "function",
+      "signature": "report_charts(report: Report, renderer: ChartRenderer[DrawingT]) -> ReportCharts[DrawingT]"
+    },
     "threetears.evals.ops.report_read": {
       "kind": "function",
       "signature": "report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat) -> ReportDocument"
+    },
+    "threetears.evals.ops.ReportCharts": {
+      "kind": "dataclass",
+      "signature": "ReportCharts(drawn: tuple[DrawnChart[DrawingT], ...], refused: tuple[ChartRefusal, ...])"
     },
     "threetears.evals.ops.ReportDocument": {
       "kind": "model",
@@ -4921,6 +4989,14 @@
       "kind": "function",
       "signature": "reporter_cases_list(host: EvalHost, template_id: str, scope_id: str, *, include_archived: bool = False) -> ReporterCaseListing"
     },
+    "threetears.evals.ops.REPORTER_UNHONOURED_LAUNCH_ARGUMENTS": {
+      "kind": "constant (frozenset)",
+      "signature": ""
+    },
+    "threetears.evals.ops.ReporterAdmitted": {
+      "kind": "dataclass",
+      "signature": "ReporterAdmitted(preset: str | None, prompt: str, candidate_model: str, judge_model: str, cases: tuple[EvalTestCase, ...])"
+    },
     "threetears.evals.ops.ReporterCaseEntry": {
       "kind": "model",
       "signature": "ReporterCaseEntry(case: FrozenReporterCase, live: bool, superseded_by: list[str])"
@@ -4932,6 +5008,18 @@
     "threetears.evals.ops.ReporterCaseListing": {
       "kind": "model",
       "signature": "ReporterCaseListing(template_id: str, include_archived: bool, cases: list[ReporterCaseEntry], unreadable: list[UnreadableReporterCase], ambiguous: list[AmbiguousReporterPair])"
+    },
+    "threetears.evals.ops.ReporterModelResolver": {
+      "kind": "type alias",
+      "signature": "Callable[[ReporterModelRole, str | None], str]"
+    },
+    "threetears.evals.ops.ReporterModelRole": {
+      "kind": "literal",
+      "signature": "'generator'` | `'judge'"
+    },
+    "threetears.evals.ops.ReporterPrompts": {
+      "kind": "protocol",
+      "signature": "ReporterPrompts{resolve(self, preset: str | None) -> str | None}"
     },
     "threetears.evals.ops.result_get": {
       "kind": "function",
@@ -5292,6 +5380,10 @@
     "threetears.evals.vega.load_chart_font": {
       "kind": "function",
       "signature": "load_chart_font(path: Path) -> ChartFont"
+    },
+    "threetears.evals.vega.load_palette": {
+      "kind": "function",
+      "signature": "load_palette(path: Path, theme: Theme) -> ChartPalette"
     },
     "threetears.evals.vega.packaged_font": {
       "kind": "function",

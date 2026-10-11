@@ -126,6 +126,7 @@ from threetears.evals.kernel.host.measures import MeasureRegistry
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.host.style import prompt_fragment
 from threetears.evals.kernel.identity import IDENTITY_VERSION
+from threetears.evals.kernel.prompts.catalogue import ANALYSIS_GEN_PROMPT
 from threetears.evals.schema.models import ClientRequestSettings, utc_now_iso
 from threetears.evals.schema.completion import RequestCeiling
 from threetears.evals.kernel.provider import describe_incomplete_completion, extract_json
@@ -592,7 +593,7 @@ def _prompt_provenance_clause(prompt: str) -> str:
     if prompt.strip() == EVAL_ANALYSIS_GEN_DEFAULT.strip():
         return ""
     return (
-        ". NOTE: the resolved eval_analysis_gen prompt is NOT the in-repo default — the store is master, so a rule "
+        f". NOTE: the resolved {ANALYSIS_GEN_PROMPT} prompt is NOT the in-repo default — the store is master, so a rule "
         "shipped in gen_prompt.py reaches this deployment only when pushed to the host's prompt store; a refusal "
         "naming a rule the default teaches is the signature of that gap"
     )

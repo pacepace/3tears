@@ -41,6 +41,7 @@ notes = [
     "`EVAL_DOC_TYPES` and `CORE_DOC_TYPES` are derived from `schema.DOC_TYPE_FACTS`; a host partitioning storage reads the facts (origin, lifecycle, suppresses), or uses `storage.RoutedDocumentStore`.",
     "`actions.ActionOutcome` takes `refusal: Refusal | None` in place of `is_error: bool`; `is_error` is now a property (`refusal is not None`). A host constructing an outcome passes `refusal=Refusal(kind=..., status=...)`, or `Refusal.of(error)` for an engine error.",
     "`transports.fastmcp.ToolBinding` takes everything after `mounted` by keyword, and exactly one of `host` and `host_resolver`; `around` and `call_timeout_s` are keyword too. A refused call's structured content is `{\"refusal\": {\"kind\": ..., \"status\": ...}}`.",
+    "`threetears.evals.vega.palette.load_palette()` (the packaged artifact, read as a dict) is `packaged_artifact()`; `vega.load_palette(path, theme)` now reads a host's own palette artifact as a `ChartPalette`. A palette artifact whose `series_slots` is not `SERIES_SLOTS`, or whose `validated_slots` is below `VALIDATED_SLOTS`, is refused.",
 ]
 
 [[release.change]]

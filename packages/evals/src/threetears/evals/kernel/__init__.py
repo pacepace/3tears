@@ -256,6 +256,12 @@ from threetears.evals.kernel.out_of_run import (
     existing_axis_values,
     plan_variation_calls,
 )
+from threetears.evals.kernel.prompts.catalogue import (
+    ANALYSIS_GEN_PROMPT,
+    BOUNDARY_GEN_PROMPT,
+    PROPOSER_PROMPT,
+    SEED_PROMPTS,
+)
 from threetears.evals.kernel.prompts.seed import KIND_TEMPLATE, KIND_TEXT, SeedPrompt, SeedSection, SeedTemplate
 from threetears.evals.kernel.provider import (
     describe_and_log_failure,
@@ -378,8 +384,12 @@ __all__ = [
     "INCOMPLETE_STOP_REASONS",
     "FRONTIER_RANKING_MEASURE",
     "HOST_PRODUCED_MEASURES",
+    "ANALYSIS_GEN_PROMPT",
+    "BOUNDARY_GEN_PROMPT",
     "KIND_TEMPLATE",
     "KIND_TEXT",
+    "PROPOSER_PROMPT",
+    "SEED_PROMPTS",
     "METRIC_DESCRIPTORS",
     "DROPPED_TOOL_CALLS_KEY",
     "REASONING_RATIO_KEY",
