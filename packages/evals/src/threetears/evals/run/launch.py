@@ -1110,9 +1110,9 @@ class LaunchableKind:
                 f"unhonoured_launch_arguments names {', '.join(unknown)}, which are not launch arguments; "
                 f"the arguments a kind can decline are {', '.join(get_args(LaunchArgument))}"
             )
-        if unknown := sorted(set(self.ignored_template_fields) - set(TEMPLATE_FIELDS)):
+        if undeclared := sorted(set(self.ignored_template_fields) - set(TEMPLATE_FIELDS)):
             raise ValueError(
-                f"ignored_template_fields names {', '.join(unknown)}, which are not template fields a kind may "
+                f"ignored_template_fields names {', '.join(undeclared)}, which are not template fields a kind may "
                 f"ignore; those are {', '.join(TEMPLATE_FIELDS)}"
             )
 

@@ -133,7 +133,6 @@ CORPUS = (
 )
 
 
-
 def probe_digest() -> str:
     """The SHA-256 of what the measurer probes: the characters, how each is framed and repeated, the size, the corpus.
 

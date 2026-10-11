@@ -84,6 +84,7 @@ FONT_SUFFIXES = frozenset({".ttf", ".otf", ".ttc", ".otc"})
 #: has more than four styles declares beside it. A face is matched against either.
 _FAMILY_NAME_IDS = frozenset({1, 16})
 
+
 class FontMeasureError(SystemExit):
     """The face cannot be measured as asked: it does not draw, or cannot be tied to the files it draws from.
 
