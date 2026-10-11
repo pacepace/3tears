@@ -1173,6 +1173,45 @@ def _plain_cases(cases: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return plain
 
 
+def _case_strata(
+    cases: list[dict[str, Any]], stratum_key: str | None, names: list[str]
+) -> tuple[list[dict[str, Any]], list[str | None] | None]:
+    """Each case with its stratum taken out of it, and the stratum each declared; the cases as given with no key.
+
+    The stratum is metadata about the case, never stimulus: a case that says it is a lookalike tells the candidate
+    what to look out for. So it leaves the case before anything is handed it — the candidate, every scorer,
+    ``expected=``, ``seed=`` and the judge — and before the case set is addressed, so re-labelling a case keeps
+    the case, its template and the history of every run over it.
+
+    Raises:
+        ValueError: A ``stratum_key`` that is not a non-blank string or is ``id``, or a case whose value under
+            it is neither absent, ``None``, nor a non-blank string.
+    """
+    if stratum_key is None:
+        return cases, None
+    if not isinstance(stratum_key, str) or not stratum_key.strip():
+        raise ValueError(
+            f"stratum_key= names the key each case carries its stratum under: a non-blank string, not {stratum_key!r}"
+        )
+    if stratum_key == "id":
+        raise ValueError(
+            "stratum_key='id' would make every case a stratum of one: a stratum is a kind of case, which many share; "
+            "name the key that holds each case's kind (stratum_key='kind')"
+        )
+    stripped: list[dict[str, Any]] = []
+    strata: list[str | None] = []
+    for name, case in zip(names, cases, strict=True):
+        stratum = case.get(stratum_key)
+        if stratum is not None and (not isinstance(stratum, str) or not stratum.strip()):
+            raise ValueError(
+                f"case {name}'s {stratum_key!r} is {stratum!r}; a stratum is a non-blank string naming the kind of "
+                "case it is, or absent (or None) for a case that declares none"
+            )
+        strata.append(stratum)
+        stripped.append({key: value for key, value in case.items() if key != stratum_key})
+    return stripped, strata
+
+
 def _template_id(
     cases: list[dict[str, Any]],
     labels: list[str] | None,
@@ -1497,6 +1536,7 @@ async def run_eval(
     *,
     scope_id: str | None = None,
     expected: ExpectedLabel | None = None,
+    stratum_key: str | None = None,
     judge: Judge | None = None,
     intent: str | None = None,
     world: World | None = None,
@@ -1539,6 +1579,15 @@ async def run_eval(
             ``confusion_cell`` (expected, then predicted), and the summary carries the confusion matrix
             and each label's precision, recall and F1. An answer that is not a non-blank string is
             counted as :data:`UNUSABLE_ANSWER`; any other answer is a label as written, whitespace and all.
+        stratum_key: The key each case carries its stratum under, the kind of case it is (``"kind"``, for a case
+            ``{"ticket": ..., "kind": "lookalike"}``): stored as its test case's ``stratum``, so the summary reads
+            every measure again per stratum (:attr:`~threetears.evals.analysis.summary.EvalSummary.strata`) and a
+            comparison's report adds its By stratum table. A case without the key, or with ``None`` under it,
+            declares none. The key is taken out of the case before anything is handed it — the candidate, every
+            scorer, ``expected``, ``seed`` and the judge — since a case that says it is a lookalike tells the
+            candidate what to look out for, and out of what addresses the case set, so re-labelling a case keeps
+            its identity and history: the new stratum is stored on the same test case, and every run over it,
+            earlier ones included, is then read under it. ``None`` declares no strata.
         judge: A model grading each answer on a rubric (:class:`~threetears.evals.quick.judged.Judge`): one
             call per dimension per answer, through the engine's judge service. Each dimension's scores
             are summarised beside the measures, and the judge's spend as its client priced it. A judge
@@ -1611,7 +1660,8 @@ async def run_eval(
             or ``judge``, an ``intent`` that is not a non-blank string, a scorer with no name, a repeated one or
             one named after an engine core measure (``match``, ``confusion_cell``, ``accuracy``, ``score``,
             ``cost_usd`` or any other name in ``METRIC_DESCRIPTORS``), an ``expected`` that raises or gives a case a blank, non-string or
-            :data:`UNUSABLE_ANSWER` label, a given host that declares no callable-kind contract
+            :data:`UNUSABLE_ANSWER` label, a ``stratum_key`` that is blank or ``id``, or a case whose stratum
+            under it is not a non-blank string, a given host that declares no callable-kind contract
             (or one with no seats, a seat in :data:`CALLABLE_UNSEATED`, overlays or a spec), a judged call on
             a given host whose judged-kind contract is missing or seats too much or no judge, a scorer
             the given host declares no measure for, no ``model`` for a candidate that has no ``__name__``, an
@@ -1632,6 +1682,7 @@ async def run_eval(
         scorers,
         scope_id=scope_id,
         expected=expected,
+        stratum_key=stratum_key,
         judge=judge,
         intent=intent,
         world=world,
@@ -1683,6 +1734,7 @@ async def run_arms(
     *,
     scope_id: str | None = None,
     expected: ExpectedLabel | None = None,
+    stratum_key: str | None = None,
     judge: Judge | None = None,
     intent: str | None = None,
     world: World | None = None,
@@ -1724,6 +1776,7 @@ async def run_arms(
     scope_id = quick_scope(scope_id, host, store)
     plain_cases = _plain_cases(cases)
     names = _case_names(plain_cases)
+    plain_cases, strata = _case_strata(plain_cases, stratum_key, names)
     _refuse_an_unusable_cap(max_cost_usd)
     goal_checks = list(goal_checks)
     if not scorers and expected is None and judge is None and not goal_checks:
@@ -1780,6 +1833,7 @@ async def run_arms(
             id=f"{template_id}-{index}",
             scope_id=scope_id,
             template_id=template_id,
+            stratum=None if strata is None else strata[index],
             variation_params=stored_variation(case),
             host_payload=_case_payload(
                 case, None if labels is None else labels[index], None if seeds is None else seeds[index]
@@ -1910,6 +1964,7 @@ def _with_case_results(
         key=lambda result: (order.get(result.test_case_id, len(order)), result.k_iteration),
     )
     payloads = {test_case.id: test_case.host_payload for test_case in test_cases}
+    strata = {test_case.id: test_case.stratum for test_case in test_cases}
     # Every measure's direction, guardrail or not: a caller's own lower-is-better measure misses above 0, not at it.
     directions = {
         name: descriptor.higher_is_better
@@ -1929,6 +1984,7 @@ def _with_case_results(
                 expected=payload.get(_EXPECTED_KEY),
                 answer=_stored_answer(trace.trace if trace is not None else []),
                 higher_is_better=directions,
+                stratum=strata.get(result.test_case_id),
             )
         )
     return summary.model_copy(update={"case_results": case_results})

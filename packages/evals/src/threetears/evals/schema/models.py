@@ -2013,9 +2013,10 @@ class EvalTestCase(CoreDocumentModel):
             "stratum, beside the figure pooled over all of them. Metadata about the case, never stimulus: the "
             "engine puts it in no prompt — not the candidate's variation, the simulated user's or the judge's — "
             "and a kind, which is handed the whole case, must leave it out of what it renders, so naming a case a "
-            "lookalike never tells the candidate what to look out for. Not part of `content_hash` or of any identity key, because "
-            "the case's id already pins it (a stored case never changes) and two arms over the same cases share "
-            "their strata. None when the case declares none; a run none of whose cases declares one reads "
+            "lookalike never tells the candidate what to look out for. Not part of `content_hash` or of any identity key: "
+            "two arms over the same cases share their strata, and a case re-labelled in place (as `run_eval` and "
+            "`compare` store a changed `stratum_key=` value on the same case) keeps its id and its history, every "
+            "run over it then read under the new stratum. None when the case declares none; a run none of whose cases declares one reads "
             "exactly as an unstratified run. A generated case takes it from the template's nominated axis "
             "(`VariationAxis.stratum`)."
         ),

@@ -3239,7 +3239,7 @@
     },
     "threetears.evals.analysis.CaseResult": {
       "kind": "model",
-      "signature": "CaseResult(case: str, input: JsonValue, expected: str | None = None, repeat: int, outcome: CaseOutcome, answer: JsonValue = None, scores: dict[str, bool | float | str] = {}, judged: list[JudgeGrade] = [], judge_cannot_tell: dict[str, str] = {}, goal_checks: dict[str, bool] = {}, errors: list[str] = [], missed_because: list[str] = [], cost_usd: float | None = None)"
+      "signature": "CaseResult(case: str, input: JsonValue, expected: str | None = None, stratum: str | None = None, repeat: int, outcome: CaseOutcome, answer: JsonValue = None, scores: dict[str, bool | float | str] = {}, judged: list[JudgeGrade] = [], judge_cannot_tell: dict[str, str] = {}, goal_checks: dict[str, bool] = {}, errors: list[str] = [], missed_because: list[str] = [], cost_usd: float | None = None)"
     },
     "threetears.evals.analysis.CaseSetIdentity": {
       "kind": "model",
@@ -3435,7 +3435,7 @@
     },
     "threetears.evals.analysis.EvalSummary": {
       "kind": "model",
-      "signature": "EvalSummary(run_id: str, scope_id: str, template_id: str | None, candidate_model: str, arm: str | None = None, status: str, k_runs: int, n_cases: int, n_results: int, n_scored: int, n_candidate_failed: int, n_excluded: int, measures: list[RunMeasureSummary], confusion: list[ConfusionCount], labels: list[LabelStatistics], judged: list[DimensionSummary] = [], spend: list[RoleSpend] = [], total_cost_usd: float | None = None, second_judge_calls: int = 0, second_judge_cost_usd: float | None = None, goal_checks: list[GoalCheckSummary] = [], intent: str | None = None, intent_source: str | None = None, errors: list[str], stopped_because: str | None = None, max_cost_usd: float | None = None, max_cost_usd_origin: CostCapOrigin | None = None, judge_shares_candidate_model: list[str] = [], case_results: list[CaseResult] | None = None)"
+      "signature": "EvalSummary(run_id: str, scope_id: str, template_id: str | None, candidate_model: str, arm: str | None = None, status: str, k_runs: int, n_cases: int, n_results: int, n_scored: int, n_candidate_failed: int, n_excluded: int, measures: list[RunMeasureSummary], confusion: list[ConfusionCount], labels: list[LabelStatistics], judged: list[DimensionSummary] = [], strata: list[StratumSummary] = [], spend: list[RoleSpend] = [], total_cost_usd: float | None = None, second_judge_calls: int = 0, second_judge_cost_usd: float | None = None, goal_checks: list[GoalCheckSummary] = [], intent: str | None = None, intent_source: str | None = None, errors: list[str], stopped_because: str | None = None, max_cost_usd: float | None = None, max_cost_usd_origin: CostCapOrigin | None = None, judge_shares_candidate_model: list[str] = [], case_results: list[CaseResult] | None = None)"
     },
     "threetears.evals.analysis.export_results": {
       "kind": "function",
@@ -4197,6 +4197,10 @@
       "kind": "exception",
       "signature": ""
     },
+    "threetears.evals.analysis.StratumSummary": {
+      "kind": "model",
+      "signature": "StratumSummary(stratum: str | None, n_cases: int, n_results: int, measures: list[RunMeasureSummary])"
+    },
     "threetears.evals.analysis.SubjectFrontier": {
       "kind": "model",
       "signature": "SubjectFrontier(subject_id: str, subject_label: str = '', k: int = 1, points: list[FrontierPoint] = [], verdict: FrontierVerdict | None = None, n_cleared_bar: int = 0, n_undecided_bar: int = 0, boundary_dimensions: list[str] = [], n_disqualified: int = 0, n_boundary_undecided: int = 0, boundary_pillar: str | None = None)"
@@ -4667,11 +4671,11 @@
     },
     "threetears.evals.quick.compare": {
       "kind": "async function",
-      "signature": "compare(cases: Sequence[Mapping[str, Any]], candidates: Mapping[str, Candidate | ToolUsingCandidate | WorldCandidate] | Mapping[tuple[str, ...], Candidate | ToolUsingCandidate | WorldCandidate], scorers: Sequence[Scorer] = (), *, control: ArmKey, scope_id: str | None = None, expected: ExpectedLabel | None = None, judge: Judge | None = None, intent: str | None = None, host: EvalHost | None = None, store: DocumentStore | None = None, k: int = 3, name: str | None = None, created_by: str = 'compare', factors: Sequence[str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), max_cost_usd: float | None = None, margins: Mapping[str, float] | None = None, ranges: Mapping[str, tuple[float, float]] | None = None, guardrails: Mapping[str, Guardrail] | None = None, measure_latency: bool = False) -> Comparison"
+      "signature": "compare(cases: Sequence[Mapping[str, Any]], candidates: Mapping[str, Candidate | ToolUsingCandidate | WorldCandidate] | Mapping[tuple[str, ...], Candidate | ToolUsingCandidate | WorldCandidate], scorers: Sequence[Scorer] = (), *, control: ArmKey, scope_id: str | None = None, expected: ExpectedLabel | None = None, stratum_key: str | None = None, judge: Judge | None = None, intent: str | None = None, host: EvalHost | None = None, store: DocumentStore | None = None, k: int = 3, name: str | None = None, created_by: str = 'compare', factors: Sequence[str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), max_cost_usd: float | None = None, margins: Mapping[str, float] | None = None, ranges: Mapping[str, tuple[float, float]] | None = None, guardrails: Mapping[str, Guardrail] | None = None, measure_latency: bool = False) -> Comparison"
     },
     "threetears.evals.quick.Comparison": {
       "kind": "dataclass",
-      "signature": "Comparison(campaign_id: str, scope_id: str, name: str, control: ArmKey, arms: dict[ArmKey, EvalSummary], report: Report, host: EvalHost, factors: tuple[str, ...] = ('model',), contrast_arms: tuple[ArmKey | None, ...] = (), contrast_measures: tuple[str | None, ...] = (), kind: str = 'callable', guardrail_readings: GuardrailReadings = GuardrailReadings(), arm_variants: dict[ArmKey, str] = dict())"
+      "signature": "Comparison(campaign_id: str, scope_id: str, name: str, control: ArmKey, arms: dict[ArmKey, EvalSummary], report: Report, host: EvalHost, factors: tuple[str, ...] = ('model',), contrast_arms: tuple[ArmKey | None, ...] = (), contrast_measures: tuple[str | None, ...] = (), kind: str = 'callable', guardrail_readings: GuardrailReadings = GuardrailReadings(), arm_variants: dict[ArmKey, str] = dict(), labelled_arms: dict[str, ArmKey | None] = dict())"
     },
     "threetears.evals.quick.DEFAULT_PROG": {
       "kind": "constant (str)",
@@ -4759,7 +4763,7 @@
     },
     "threetears.evals.quick.run_eval": {
       "kind": "async function",
-      "signature": "run_eval(cases: Sequence[Mapping[str, Any]], candidate: Candidate | ToolUsingCandidate | WorldCandidate, scorers: Sequence[Scorer] = (), *, scope_id: str | None = None, expected: ExpectedLabel | None = None, judge: Judge | None = None, intent: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), host: EvalHost | None = None, store: DocumentStore | None = None, k: int = 3, model: str | None = None, levers: Mapping[str, str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, max_cost_usd: float | None = None, measure_latency: bool = False) -> EvalSummary"
+      "signature": "run_eval(cases: Sequence[Mapping[str, Any]], candidate: Candidate | ToolUsingCandidate | WorldCandidate, scorers: Sequence[Scorer] = (), *, scope_id: str | None = None, expected: ExpectedLabel | None = None, stratum_key: str | None = None, judge: Judge | None = None, intent: str | None = None, world: World | None = None, seed: CaseSeed | None = None, goal_checks: Sequence[str] = (), host: EvalHost | None = None, store: DocumentStore | None = None, k: int = 3, model: str | None = None, levers: Mapping[str, str] | None = None, tools: Mapping[str, Tool] | None = None, cassette_mode: CassetteMode = 'off', cassette_corpus_id: str | None = None, max_cost_usd: float | None = None, measure_latency: bool = False) -> EvalSummary"
     },
     "threetears.evals.quick.Scorer": {
       "kind": "type alias",
@@ -4967,7 +4971,7 @@
     },
     "threetears.evals.ops.EvalSummary": {
       "kind": "model",
-      "signature": "EvalSummary(run_id: str, scope_id: str, template_id: str | None, candidate_model: str, arm: str | None = None, status: str, k_runs: int, n_cases: int, n_results: int, n_scored: int, n_candidate_failed: int, n_excluded: int, measures: list[RunMeasureSummary], confusion: list[ConfusionCount], labels: list[LabelStatistics], judged: list[DimensionSummary] = [], spend: list[RoleSpend] = [], total_cost_usd: float | None = None, second_judge_calls: int = 0, second_judge_cost_usd: float | None = None, goal_checks: list[GoalCheckSummary] = [], intent: str | None = None, intent_source: str | None = None, errors: list[str], stopped_because: str | None = None, max_cost_usd: float | None = None, max_cost_usd_origin: CostCapOrigin | None = None, judge_shares_candidate_model: list[str] = [], case_results: list[CaseResult] | None = None)"
+      "signature": "EvalSummary(run_id: str, scope_id: str, template_id: str | None, candidate_model: str, arm: str | None = None, status: str, k_runs: int, n_cases: int, n_results: int, n_scored: int, n_candidate_failed: int, n_excluded: int, measures: list[RunMeasureSummary], confusion: list[ConfusionCount], labels: list[LabelStatistics], judged: list[DimensionSummary] = [], strata: list[StratumSummary] = [], spend: list[RoleSpend] = [], total_cost_usd: float | None = None, second_judge_calls: int = 0, second_judge_cost_usd: float | None = None, goal_checks: list[GoalCheckSummary] = [], intent: str | None = None, intent_source: str | None = None, errors: list[str], stopped_because: str | None = None, max_cost_usd: float | None = None, max_cost_usd_origin: CostCapOrigin | None = None, judge_shares_candidate_model: list[str] = [], case_results: list[CaseResult] | None = None)"
     },
     "threetears.evals.ops.export_text": {
       "kind": "function",

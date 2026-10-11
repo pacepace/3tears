@@ -466,9 +466,16 @@ generated before the axis was nominated keeps the stratum it was written with, w
 cell's pooled figure: a reference names a cell and a measure, and there is no reference to one stratum of
 a cell yet.
 
-**Identity.** A stratum enters no identity key. A stored case never changes, so its id already pins its
-stratum, and two arms run over the same cases share their strata. It is not part of `content_hash`
-either, which digests what the candidate is given.
+**On the quick path**, `run_eval` and `compare` take `stratum_key=`, the key each case carries its kind under
+(`stratum_key="kind"`). The key is taken out of the case before the candidate, a scorer or the judge is handed
+it, and stored as the test case's stratum. A `compare` report then carries the table above, which
+`Comparison.strata()` reads row by row, and every run's summary (`EvalSummary.strata`) reads each measure per
+stratum, under `by stratum:` in `render()`, with the same too-few-cases warning.
+
+**Identity.** A stratum enters no identity key, and two arms run over the same cases share their strata. It is
+not part of `content_hash` either, which digests what the candidate is given. So re-labelling a case keeps the
+case: `run_eval` and `compare` store a changed stratum on the same test case, and every run over it, earlier
+ones included, is then read under the new one.
 
 ## How far a judged score can be leaned on: evidence tiers
 
