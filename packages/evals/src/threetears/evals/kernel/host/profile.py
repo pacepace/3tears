@@ -742,6 +742,31 @@ class HostProfile:
         pins = {role.name: role.pins for role in self.sweepables.roles}
         return frozenset(name for seat in seats for name in pins.get(seat, (seat,)))
 
+    def _require_apparatus(self, method: str, dimension: str) -> None:
+        """Refuse ``dimension`` unless this host declares it as apparatus.
+
+        Seating, the unseated level and the omission are all claims about the measuring rig, and a
+        kind contract seats only apparatus (and pinned roles, whose pins are apparatus by
+        construction). Asked about a lever or a label, :meth:`seats` would answer from a seat list
+        that never mentions it, and :meth:`omits_apparatus` would log that the kind's seat
+        declaration is contradicted by a value it was never meant to cover — one false warning per
+        lever per read, which is what a bisection over every field produced. A caller asking about
+        one is wrong, so it is refused by name rather than answered.
+
+        Raises:
+            ValueError: ``dimension`` is not an apparatus dimension this host declares.
+        """
+        declared = self.sweepables.get(dimension)
+        if declared is not None and declared.role == "apparatus":
+            return
+        what = "nothing this host declares" if declared is None else f"a {declared.role}"
+        apparatus = ", ".join(d.name for d in self.sweepables.declarations if d.role == "apparatus") or "none"
+        raise ValueError(
+            f"{method}({dimension!r}) on host {self.host_id!r}: {dimension!r} is {what}, not an apparatus "
+            f"dimension — seats describe the measuring rig only, so a lever or a label has no seat to consult. "
+            f"Compare it directly instead. Apparatus this host declares: {apparatus}"
+        )
+
     def seats(self, run: EvalRun, dimension: str) -> bool:
         """Whether this run's rig had a seat for apparatus ``dimension``.
 
@@ -760,7 +785,11 @@ class HostProfile:
 
         Returns:
             Whether the run's rig had that seat.
+
+        Raises:
+            ValueError: ``dimension`` is not an apparatus dimension this host declares.
         """
+        self._require_apparatus("seats", dimension)
         if run.judge_model is None and dimension in _UNJUDGED_RUN_HAS_NO:
             return False
         return self._kind_seats(run.candidate_kind, dimension)
@@ -785,7 +814,11 @@ class HostProfile:
 
         Returns:
             ``value``, or :data:`UNSEATED_LEVEL`.
+
+        Raises:
+            ValueError: ``dimension`` is not an apparatus dimension this host declares.
         """
+        self._require_apparatus("apparatus_level", dimension)
         if not self.seats(run, dimension) and self.sweepables.is_indeterminate(dimension, value):
             return UNSEATED_LEVEL
         return value
@@ -823,8 +856,11 @@ class HostProfile:
         Raises:
             ValueError: No runs were passed. Answering without them is the unvalidated omission this
                 method replaces, and it is available to a caller that simply forgets the argument — so
-                it is refused rather than defaulted.
+                it is refused rather than defaulted. Or ``dimension`` is not an apparatus dimension
+                this host declares: a lever or a label has no seat, and answering for one logged a
+                false seat contradiction for every lever a bisection compared.
         """
+        self._require_apparatus("omits_apparatus", dimension)
         observations = list(observed)
         if not observations:
             raise ValueError(
