@@ -1363,7 +1363,7 @@
     },
     "threetears.evals.kernel.LeasedJobKind": {
       "kind": "dataclass",
-      "signature": "LeasedJobKind(name: str, model: type[R], ended: Callable[[R], bool], end_lost: Callable[[R, JobLoss, LeaseStore], R])"
+      "signature": "LeasedJobKind(name: str, model: type[R], ended: Callable[[R], bool], end_lost: Callable[[R, JobLoss, LeaseStore], R], named_runs: Callable[[R], Sequence[str]] = …)"
     },
     "threetears.evals.kernel.LeaseStore": {
       "kind": "protocol",
@@ -2647,7 +2647,7 @@
     },
     "threetears.evals.run.leased_job_kind": {
       "kind": "function",
-      "signature": "leased_job_kind(name: str, model: type[R]) -> LeasedJobKind[R]"
+      "signature": "leased_job_kind(name: str, model: type[R], *, named_runs: Callable[[R], Sequence[str]] | None = None) -> LeasedJobKind[R]"
     },
     "threetears.evals.run.list_judge_configs": {
       "kind": "function",

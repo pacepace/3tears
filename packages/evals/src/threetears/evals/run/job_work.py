@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -99,21 +99,25 @@ def _written_lost[R: EvalDocumentModel](record: R, loss: JobLoss, _store: LeaseS
     )
 
 
-def leased_job_kind[R: EvalDocumentModel](name: str, model: type[R]) -> LeasedJobKind[R]:
+def leased_job_kind[R: EvalDocumentModel](
+    name: str, model: type[R], *, named_runs: Callable[[R], Sequence[str]] | None = None
+) -> LeasedJobKind[R]:
     """The lease machinery's reading of a record of this module's shape: ended once its outcome is not ``running``.
 
     Args:
         name: The job kind's name, for a message.
         model: The record's model, declaring ``outcome``, ``detail``, ``ended_at`` and the four lease fields.
+        named_runs: The runs the record names as its own, settled with it when it is written lost; ``None`` for none.
 
     Returns:
-        The kind.
+        The kind, registered by its model so every store read of a record of it settles it.
     """
     return LeasedJobKind(
         name=name,
         model=model,
         ended=lambda record: getattr(record, "outcome") != "running",
         end_lost=_written_lost,
+        **({"named_runs": named_runs} if named_runs is not None else {}),
     )
 
 

@@ -1058,6 +1058,8 @@ async def test_a_battery_reads_the_hosts_settings_once_for_every_template():
 def _history(
     storage: EvalStorage, *, template_id: str, model: str, costs: list[float | None], **run_fields: Any
 ) -> None:
+    # A finished run: history is what ended. One still going carries a lease its process renews.
+    run_fields = {"status": "completed", **run_fields}
     run = make_eval_run(scope_id=TOYHOST_SCOPE, template_id=template_id, candidate_model=model, **run_fields)
     storage.save_eval_run(run)
     for k, cost in enumerate(costs, start=1):

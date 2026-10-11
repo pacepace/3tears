@@ -34,6 +34,10 @@ packages (bumped in lock-step).
 - **A host can see that a stored prompt predates the package's.** `seed_digest` names a catalogue default's content
   and `prompt_drift` reads a stored copy as `current`, `stale` (with its remedy) or `customized` — changed since it
   was seeded, or declared the host's own — so a tuned prompt is never reported.
+- **A job whose holder died reads lost everywhere.** `run_get` and `runs_list` kept a hard-killed run `running`
+  until its own job was polled. Every store read of a leased record now settles it through the lease read
+  `job_poll` uses, a launch or a sweep written lost settles the runs it names, and a test enumerates the leased
+  kinds and the store's readers of them so neither can be added unsettled.
 
 ### 3tears-evals: what a consumer's end-to-end test of .6 found (gaps 16–27)
 

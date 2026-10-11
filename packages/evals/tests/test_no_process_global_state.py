@@ -117,6 +117,11 @@ CACHES: frozenset[str] = frozenset({"cache", "lru_cache", "cached_property"})
 
 #: ``(module, name)`` -> why this module state holds nothing a host could read. The only entries.
 ALLOWED: dict[tuple[str, str], str] = {
+    ("threetears/evals/kernel/job_leases.py", "_KIND_OF_MODEL"): (
+        "each leased job kind, keyed by its record model, registered as the kind is constructed — code (how a "
+        "record type ends and reads lost), not a host's data: one model reads the same way for every host, and a "
+        "store read needs it to settle a record whose holder died"
+    ),
     ("threetears/evals/vega/render.py", "_fonts_registered"): (
         "whether the renderer's bundled fonts were registered with the chart library — a process-wide "
         "font cache shared by every host because the library's font table is process-wide"

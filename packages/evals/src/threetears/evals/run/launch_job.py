@@ -89,7 +89,7 @@ class EvalLaunch(CoreDocumentModel):
 
 
 #: A launch's record.
-LAUNCH_JOB: LeasedJobKind[EvalLaunch] = leased_job_kind("launch", EvalLaunch)
+LAUNCH_JOB: LeasedJobKind[EvalLaunch] = leased_job_kind("launch", EvalLaunch, named_runs=lambda launch: launch.run_ids)
 
 
 def launch_job_work(

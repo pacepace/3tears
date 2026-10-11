@@ -8,6 +8,10 @@ reproduce every stored verdict, and must move exactly the verdict whose stored l
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+from threetears.evals.schema import JobLease
+from threetears.evals.schema.models import TERMINAL_RUN_STATUSES
+
 from typing import Any
 
 import pytest
@@ -394,7 +398,9 @@ def test_a_launched_cell_s_fired_armed_checks_re_grade_from_its_events() -> None
 
 
 def _stored_run(storage: EvalStorage, *, status: str = "completed", emitted: int = 3) -> tuple[str, EvalResult]:
-    run = make_eval_run(status=status)
+    # A run not yet ended is still being written: its process holds a lease it renews.
+    live = JobLease(holder="the-writer", expires_at=(datetime.now(UTC) + timedelta(hours=1)).isoformat())
+    run = make_eval_run(status=status, lease=None if status in TERMINAL_RUN_STATUSES else live)
     storage.save_eval_run(run)
     storage.save_test_case(make_test_case(id="tc-1"))
     result = make_eval_result(eval_run_id=run.id, goal_state_outcomes=[_every_field(True)])

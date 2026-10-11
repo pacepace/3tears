@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Any, Final, NamedTuple, Protocol, cast
 
 from pydantic import ValidationError
 
@@ -78,6 +78,11 @@ from threetears.evals.schema.models import (
 from threetears.evals.schema.out_of_run_spend import OutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
 from threetears.evals.schema.store_port import DocumentStore, StoreClock, StoreConflict
 from threetears.observe import get_logger
+
+
+#: The status a run written lost takes (:data:`~threetears.evals.kernel.job_leases.RUN_JOB`): what a run that stopped
+#: without finishing has always read, its cause on ``cancellation_reason`` and ``lost``.
+RUN_LOST_STATUS: Final = "cancelled"
 
 log = get_logger(__name__)
 
@@ -543,10 +548,41 @@ class EvalStorage:
         """
         return model_cls.from_dict(data)
 
-    @classmethod
-    def _hydrate_all[M: EvalBaseModel](cls, model_cls: type[M], rows: list[dict[str, Any]]) -> list[M]:
-        """Reconstruct a list of models from stored documents (see :meth:`_hydrate`)."""
-        return [cls._hydrate(model_cls, row) for row in rows]
+    def _hydrate_all[M: EvalBaseModel](self, model_cls: type[M], rows: list[dict[str, Any]]) -> list[M]:
+        """Reconstruct a list of models from stored documents (see :meth:`_hydrate`), each job record settled."""
+        return self._settled(model_cls, [self._hydrate(model_cls, row) for row in rows])
+
+    def _settled[M: EvalBaseModel](self, model_cls: type[M], records: list[M]) -> list[M]:
+        """``records`` as every process reads them: a job record whose lease lapsed before it ended, written lost.
+
+        The one settling read every surface goes through — a run's get and its listings, a sweep's, an analysis
+        attempt's, and any other job record a reader loads: a record of a leased kind
+        (:func:`~threetears.evals.kernel.job_leases.leased_kind_of`) that has not ended, and whose lease has
+        lapsed or which carries none, is settled exactly as ``job_poll`` settles it
+        (:func:`~threetears.evals.kernel.job_leases.settle_job_record`), so a process that died holding a job
+        does not leave it reading ``running`` on any surface, and no count of what is still running counts it.
+        A record that has ended, or whose holder still renews it, is returned as read; only a lapsed one costs a
+        read and a conditional write. The lease machinery's own reads (:meth:`load_job_record`, the reads that
+        return an etag) and the boot reclaim's scan (:meth:`query_non_terminal_eval_runs`) are not settled here:
+        they are what settling is made of, and the reclaim counts what it writes lost itself.
+        """
+        from threetears.evals.kernel.job_leases import lease_lapsed, leased_kind_of, settle_job_record
+
+        kind = leased_kind_of(model_cls) if issubclass(model_cls, EvalDocumentModel) else None
+        if kind is None:
+            return records
+        open_records = [index for index, record in enumerate(records) if not kind.ended(record)]
+        if not open_records:
+            return records
+        now = self.store_time()
+        settled = list(records)
+        for index in open_records:
+            record: Any = records[index]
+            if lease_lapsed(record, now):
+                current, _ = settle_job_record(self, kind, record.id, record.scope_id)
+                if current is not None:
+                    settled[index] = cast(M, current)
+        return settled
 
     @staticmethod
     def _of_type[M: EvalBaseModel](model_cls: type[M], data: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -653,11 +689,13 @@ class EvalStorage:
         return now.astimezone(UTC)
 
     def _load[M: EvalBaseModel](self, model_cls: type[M], doc_id: str, scope_id: str) -> M | None:
-        """One document by id within a scope, hydrated, or ``None`` when no document of its type resolves there."""
+        """One document by id within a scope, hydrated and, a job record, settled (:meth:`_settled`), or ``None``
+        when no document of its type resolves there."""
         data = self._of_type(model_cls, self._store.get(doc_id, scope_id))
         if data is None:
             return None
-        return self._hydrate(model_cls, data)
+        (loaded,) = self._settled(model_cls, [self._hydrate(model_cls, data)])
+        return loaded
 
     # =========================================================================
     # EvalTemplate
@@ -1342,14 +1380,21 @@ class EvalStorage:
             The matching runs.
         """
         field_eq: dict[str, Any] = {}
-        if status:
-            field_eq["status"] = status
         if elide_payload:
             # Only when there is something to drop: a store written to the port before ``exclude``
             # would read it as an equality predicate and return no runs at all.
             field_eq["exclude"] = _payload_exclusions(elide_payload)
-        items = self._store.by_doc_type("eval_run", scope_id, **field_eq)
-        return self._hydrate_runs(items, elide_payload)
+        if not status:
+            return self._hydrate_runs(self._store.by_doc_type("eval_run", scope_id, **field_eq), elide_payload)
+        # A run is settled as it is read, so the status asked for is the settled one: a lapsed ``running`` run reads
+        # ``cancelled`` and leaves a ``running`` listing, and a ``cancelled`` listing reads the lapsed ones too.
+        asked = {status} | (NON_TERMINAL_RUN_STATUSES if status == RUN_LOST_STATUS else set())
+        items = [
+            item
+            for asked_for in sorted(asked)
+            for item in self._store.by_doc_type("eval_run", scope_id, status=asked_for, **field_eq)
+        ]
+        return [run for run in self._hydrate_runs(items, elide_payload) if run.status == status]
 
     def load_eval_runs(
         self,

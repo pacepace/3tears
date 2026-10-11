@@ -33,6 +33,9 @@ Mutations that turn this file red (each made in a scratch copy, the file restore
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+from threetears.evals.schema import JobLease
+
 import dataclasses
 import json
 import re
@@ -524,7 +527,9 @@ class TestTheEstimateIsTheRepeatsOwnAnswer:
 class TestWhatCannotBeReproducedIsRefusedBeforeAnySpend:
     async def test_a_run_still_running_is_refused(self):
         judge = _PricedJudge()
-        host, run_id = await _judged_run(judge, status="running")
+        # Still being written: its process holds a lease it renews.
+        lease = JobLease(holder="the-writer", expires_at=(datetime.now(UTC) + timedelta(hours=1)).isoformat())
+        host, run_id = await _judged_run(judge, status="running", lease=lease)
         judge.calls.clear()
 
         with pytest.raises(ValidationFailedError, match="still being written"):

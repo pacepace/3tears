@@ -46,7 +46,10 @@ A job id names the durable record its work writes, so
 every process sharing the store answers it alike, and it is still answerable after a restart. Whether a job is
 still running is its record's answer: the process running it holds a **lease** on the record and renews it
 (every third of `LaunchHost.job_lease_s`, 60s by default). A job whose record has not ended and whose lease has
-lapsed reads `lost`, and the first poll to see that writes it on the record. A cancel is written on the record
+lapsed reads `lost`, and the first read to see that writes it on the record: not only `job_poll`, but every read
+of the record — `run_get`, `runs_list`, a campaign's or a report's read of its runs, a sweep's, an analysis
+attempt's — so a job whose process died reads `lost` everywhere once its lease lapses, and nothing counts it as
+still running. A launch or a sweep written lost settles the runs it names with it. A cancel is written on the record
 too, so `job_cancel` works from any process: the job ends `cancelled` within one renewal interval. A graceful
 shutdown writes every job its process holds `lost` at once. A job is answered only in the caller's scope:
 another scope's job reads not found, on poll and on cancel.

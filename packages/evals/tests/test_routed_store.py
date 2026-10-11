@@ -84,7 +84,7 @@ def test_the_engine_reads_and_writes_through_a_router() -> None:
     router, stores = _router()
     storage = EvalStorage(router)
     run, campaign, analysis = (
-        make_eval_run(scope_id=_SCOPE),
+        make_eval_run(scope_id=_SCOPE, status="completed"),
         make_campaign(scope_id=_SCOPE),
         make_analysis(scope_id=_SCOPE),
     )

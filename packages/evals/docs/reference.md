@@ -968,7 +968,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`launchable_judge_kind`** · function · The judge kind's entry in a host's launch registry: each arm one judge over the template's frozen cases.
   <br>`launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKind`
 - **`leased_job_kind`** · function · The lease machinery's reading of a record of this module's shape: ended once its outcome is not `running`.
-  <br>`leased_job_kind(name: str, model: type[R]) -> LeasedJobKind[R]`
+  <br>`leased_job_kind(name: str, model: type[R], *, named_runs: Callable[[R], Sequence[str]] | None = None) -> LeasedJobKind[R]`
 - **`list_judge_configs`** · function · List judge configs in a scope.
   <br>`list_judge_configs(storage: DefinitionStore, scope_id: str, *, rubric_dim_id: str | None = None, archived: bool = False) -> list[JudgeConfig]`
 - **`list_results`** · function · List every result for one eval run within its scope.

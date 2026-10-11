@@ -40,7 +40,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -50,7 +50,7 @@ from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalSweep
 from threetears.evals.kernel.errors import ConflictError, JobFenced
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.scoring import reconstruct_completeness
-from threetears.evals.kernel.storage import JobRecordStore, LeaseStore
+from threetears.evals.kernel.storage import RUN_LOST_STATUS, JobRecordStore, LeaseStore
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.job_lease import JobLease, JobLoss, LeasedRecord
 from threetears.evals.schema.models import TERMINAL_RUN_STATUSES, EvalRun
@@ -81,12 +81,40 @@ class LeasedJobKind[R: EvalDocumentModel]:
         ended: Whether the record says, by its own status, that the job has ended.
         end_lost: The record as it is written lost: its own ending set and ``loss`` recorded on it. Given the store
             because a run's ending reconstructs its completeness from its stored results.
+        named_runs: The runs the record names as its own (a launch's, a sweep's arms'), which are settled with it
+            when it is written lost (:func:`settle_job_record`); none by default.
+
+    Every kind constructed is registered by its model, so every store read of a record of that model settles it
+    (:func:`leased_kind_of`, :meth:`~threetears.evals.kernel.EvalStorage.load_eval_run` and every other read) — a
+    host's own kinds, built with ``leased_job_kind``, included.
     """
 
     name: str
     model: type[R]
     ended: Callable[[R], bool]
     end_lost: Callable[[R, JobLoss, LeaseStore], R]
+    named_runs: Callable[[R], Sequence[str]] = lambda _record: ()
+
+    def __post_init__(self) -> None:
+        """Register the kind by its model, so a read of the model's records can settle them."""
+        _KIND_OF_MODEL[self.model] = self
+
+
+#: Every leased kind constructed, by its record model: what a store read settles a record of that model by.
+_KIND_OF_MODEL: dict[type[EvalDocumentModel], LeasedJobKind[Any]] = {}
+
+
+def leased_kind_of(model: type[EvalDocumentModel]) -> LeasedJobKind[Any] | None:
+    """The leased kind whose records are ``model``'s, or ``None`` for a model no job records itself in.
+
+    Args:
+        model: A stored model.
+
+    Returns:
+        Its kind, once a :class:`LeasedJobKind` of it has been constructed — at the import of the module that
+        defines the model's kind, which a reader of the model has already imported.
+    """
+    return _KIND_OF_MODEL.get(model)
 
 
 def _run_lost(run: EvalRun, loss: JobLoss, store: LeaseStore) -> EvalRun:
@@ -97,7 +125,7 @@ def _run_lost(run: EvalRun, loss: JobLoss, store: LeaseStore) -> EvalRun:
     )
     return run.model_copy(
         update={
-            "status": "cancelled",
+            "status": RUN_LOST_STATUS,
             "cancellation_reason": f"lost: {loss.cause}",
             "completed_at": loss.at,
             "completeness": completeness,
@@ -127,7 +155,11 @@ RUN_JOB: LeasedJobKind[EvalRun] = LeasedJobKind(
 
 #: A sweep's record.
 SWEEP_JOB: LeasedJobKind[EvalSweep] = LeasedJobKind(
-    name="sweep", model=EvalSweep, ended=lambda sweep: sweep.outcome != "running", end_lost=_sweep_lost
+    name="sweep",
+    model=EvalSweep,
+    ended=lambda sweep: sweep.outcome != "running",
+    end_lost=_sweep_lost,
+    named_runs=lambda sweep: [arm.run_id for arm in sweep.arms if arm.run_id is not None],
 )
 
 #: An analysis generation's record: its attempt.
@@ -237,11 +269,27 @@ def settle_job_record[R: EvalDocumentModel](
             scope_id,
             _lapse_cause(_leased(record)),
         )
+        _settle_named_runs(store, kind, lost, scope_id)
         return lost, True
     raise ConflictError(
         f"{kind.name} job '{record_id}' kept changing while its lapsed lease was being written lost",
         remedy="read it again with job_poll",
     )
+
+
+def _settle_named_runs[R: EvalDocumentModel](store: LeaseStore, kind: LeasedJobKind[R], lost: R, scope_id: str) -> None:
+    """Settle every run a record just written lost names: each is read as any reader would read it.
+
+    A launch or a sweep holds its runs in the process that held it, so when its lease lapsed theirs did too, and a run
+    it prepared but never started carries no lease at all; either reads lost. A run whose lease another process still
+    renews is left running. A run that keeps changing under its settle is left to its own next read.
+    """
+    for run_id in kind.named_runs(lost):
+        try:
+            settle_job_record(store, RUN_JOB, run_id, scope_id)
+        except ConflictError:
+            # NOSILENT: a run another writer keeps moving is live enough to be read again; its own next read settles it
+            log.warning("eval.job_lease run=%s scope=%s named by lost %s kept changing", run_id, scope_id, kind.name)
 
 
 def require_held[R: EvalDocumentModel](
