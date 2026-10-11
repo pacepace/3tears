@@ -5605,9 +5605,13 @@
       "kind": "constant (float)",
       "signature": ""
     },
+    "threetears.evals.transports.fastmcp.HostResolution": {
+      "kind": "dataclass",
+      "signature": "HostResolution(host: OpsHost, context: Any = None)"
+    },
     "threetears.evals.transports.fastmcp.HostResolver": {
       "kind": "type alias",
-      "signature": "Callable[[], OpsHost | Awaitable[OpsHost]]"
+      "signature": "Callable[[], OpsHost | HostResolution | Awaitable[OpsHost | HostResolution]]"
     },
     "threetears.evals.transports.fastmcp.mount_fastmcp": {
       "kind": "function",
@@ -5619,7 +5623,7 @@
     },
     "threetears.evals.transports.fastmcp.ToolCall": {
       "kind": "dataclass",
-      "signature": "ToolCall(tool: str, action: str | None, caller: Caller)"
+      "signature": "ToolCall(tool: str, action: str | None, caller: Caller, host: OpsHost | None, context: Any = None)"
     },
     "threetears.evals.vega.check_font_files": {
       "kind": "function",

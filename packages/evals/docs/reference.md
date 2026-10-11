@@ -2306,8 +2306,9 @@ The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
 
 - **`CallTimedOut`** · exception · A call outlived the call timeout and was stopped before its action finished.
 - **`CatalogueTool`** · model · One mounted tool, as FastMCP serves it: every call handed to the catalogue.
+- **`HostResolution`** · dataclass · What a host resolver may answer in place of the bare host: the host, and state of the host's own for the hooks.
 - **`ToolBinding`** · class · What a `CatalogueTool` hands each call to: the mounted tool, the host, the caller resolver and the hooks.
-- **`ToolCall`** · dataclass · One call, as an `around` hook sees it before the catalogue carries it out.
+- **`ToolCall`** · dataclass · One call, as the `around` and `annotate` hooks see it once its caller and host are known.
 
 **Types**
 
@@ -2320,7 +2321,7 @@ The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
 - **`CallTimeout`** · type alias · The timeout every call is held to, in seconds: a fixed number, or a function the binding reads once as each call starts — a host reading it from live configuration, so an operator retunes it without remounting.
   <br>`float | Callable[[], float]`
 - **`HostResolver`** · type alias · Resolves the host one call works in — sync or async — for a server that serves more than one: a tenant's storage, job manager and settings, read from the same request context as the caller.
-  <br>`Callable[[], OpsHost | Awaitable[OpsHost]]`
+  <br>`Callable[[], OpsHost | HostResolution | Awaitable[OpsHost | HostResolution]]`
 
 **Constants**
 

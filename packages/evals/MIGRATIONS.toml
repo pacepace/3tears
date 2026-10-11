@@ -39,6 +39,7 @@ and hands per-call state from the host resolver to both hooks on `ToolCall`.
 """
 notes = [
     "`transports.fastmcp`: a host resolver's `kernel.EvalServiceError` refusal now enters the `around` hook, which runs to its yield and is handed the refused `ActionOutcome` as its outcome, as for an action's; it entered no hook before. A hook that assumed every outcome it sees came from an action that ran now also sees these. A caller resolver's refusal still enters no hook. A host that wrote its audit line for such a refusal from `annotate` (which already saw it) writes it once, from one hook or the other.",
+    "`transports.fastmcp.ToolCall` takes a required `host` (`OpsHost | None`) and an optional `context`: a host that builds a `ToolCall` itself, in a test of its hooks, passes `host=`. A `host_resolver` answering a bare `OpsHost` is unchanged.",
 ]
 
 [[release]]
