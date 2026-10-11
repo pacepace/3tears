@@ -1163,7 +1163,7 @@
     },
     "threetears.evals.kernel.JobRecordStore": {
       "kind": "protocol",
-      "signature": "JobRecordStore{load_job_record(self, model: type[R], record_id: str, scope_id: str, /) -> tuple[R | None, str | None]; save_job_record(self, document: dict[str, Any], /, *, if_match: str | None) -> None}"
+      "signature": "JobRecordStore{load_job_record(self, model: type[R], record_id: str, scope_id: str, /) -> tuple[R | None, str | None]; save_job_record(self, document: dict[str, Any], /, *, if_match: str | None, create_only: bool = False) -> None}"
     },
     "threetears.evals.kernel.JobStore": {
       "kind": "protocol",
@@ -1315,7 +1315,7 @@
     },
     "threetears.evals.kernel.LeaseStore": {
       "kind": "protocol",
-      "signature": "LeaseStore{load_job_record(self, model: type[R], record_id: str, scope_id: str, /) -> tuple[R | None, str | None]; merge_job_record_fields(self, record_id: str, scope_id: str, fields: dict[str, Any], /) -> bool; query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]; save_job_record(self, document: dict[str, Any], /, *, if_match: str | None) -> None; store_time(self) -> datetime}"
+      "signature": "LeaseStore{load_job_record(self, model: type[R], record_id: str, scope_id: str, /) -> tuple[R | None, str | None]; merge_job_record_fields(self, record_id: str, scope_id: str, fields: dict[str, Any], /) -> bool; query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]; save_job_record(self, document: dict[str, Any], /, *, if_match: str | None, create_only: bool = False) -> None; store_time(self) -> datetime}"
     },
     "threetears.evals.kernel.LeverCoordinateError": {
       "kind": "exception",
@@ -2391,7 +2391,7 @@
     },
     "threetears.evals.run.JobWork": {
       "kind": "dataclass",
-      "signature": "JobWork(kind: LeasedJobKind[R], record: R, run: Callable[[JobRecorder[R]], Awaitable[R]], budget_s: float | None, discard: Callable[[], Awaitable[None]] | None = None)"
+      "signature": "JobWork(kind: LeasedJobKind[R], record: R, run: Callable[[JobRecorder[R]], Awaitable[R]], budget_s: float | None, discard: Callable[[], Awaitable[None]] | None = None, _used: list[bool] (derived))"
     },
     "threetears.evals.run.JUDGE_CALL_ATTEMPTS": {
       "kind": "constant (int)",
@@ -2647,7 +2647,7 @@
     },
     "threetears.evals.run.ReclaimStore": {
       "kind": "protocol",
-      "signature": "ReclaimStore{load_job_record(self, model: type[R], record_id: str, scope_id: str, /) -> tuple[R | None, str | None]; merge_job_record_fields(self, record_id: str, scope_id: str, fields: dict[str, Any], /) -> bool; query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]; query_non_terminal_eval_runs(self, scope_id: str, /) -> NonTerminalRunScan; save_job_record(self, document: dict[str, Any], /, *, if_match: str | None) -> None; store_time(self) -> datetime}"
+      "signature": "ReclaimStore{load_job_record(self, model: type[R], record_id: str, scope_id: str, /) -> tuple[R | None, str | None]; merge_job_record_fields(self, record_id: str, scope_id: str, fields: dict[str, Any], /) -> bool; query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]; query_non_terminal_eval_runs(self, scope_id: str, /) -> NonTerminalRunScan; save_job_record(self, document: dict[str, Any], /, *, if_match: str | None, create_only: bool = False) -> None; store_time(self) -> datetime}"
     },
     "threetears.evals.run.record_witnessed_cell": {
       "kind": "async function",
@@ -2931,7 +2931,7 @@
     },
     "threetears.evals.analysis.AnalysisStore": {
       "kind": "protocol",
-      "signature": "AnalysisStore{analysis_archived(self, analysis_id: str, scope_id: str, /) -> bool | None; delete_analysis(self, analysis_id: str, scope_id: str, /) -> bool; delete_insight(self, insight_id: str, scope_id: str, /) -> bool; list_analyses_by_campaign(self, campaign_id: str, scope_id: str, /) -> list[EvalAnalysis]; list_analysis_attempts_by_campaign(self, campaign_id: str, scope_id: str, /) -> list[EvalAnalysisAttempt]; load_analysis(self, analysis_id: str, scope_id: str, /) -> EvalAnalysis | None; load_campaign(self, campaign_id: str, scope_id: str, /) -> EvalCampaign | None; load_case_strata(self, test_case_ids: Sequence[str], scope_id: str, /) -> list[EvalCaseStratum]; load_eval_run(self, run_id: str, scope_id: str, /) -> EvalRun | None; load_eval_runs(self, run_ids: Sequence[str], scope_id: str, /, *, elide_payload: frozenset[str]) -> list[EvalRun]; load_job_record(self, model: type[R], record_id: str, scope_id: str, /) -> tuple[R | None, str | None]; load_template(self, template_id: str, scope_id: str, /) -> EvalTemplate | None; load_test_cases_by_ids(self, test_case_ids: list[str], scope_id: str, /) -> list[EvalTestCase]; query_calibration_ratings(self, scope_id: str, /, *, run_id: str | None = None) -> list[CalibrationRating]; query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]; query_insights(self, scope_id: str, /, *, subject_id: str | None = None, source_campaign_id: str | None = None) -> list[EvalInsight]; query_judge_profiles(self, scope_id: str, /) -> list[EvalJudgeProfile]; query_test_cases(self, scope_id: str, /, *, template_id: str | None = None) -> list[EvalTestCase]; save_analysis(self, analysis: EvalAnalysis, /) -> None; save_insight(self, insight: EvalInsight, /) -> None; save_job_record(self, document: dict[str, Any], /, *, if_match: str | None) -> None; save_test_case(self, test_case: EvalTestCase, /) -> None}"
+      "signature": "AnalysisStore{analysis_archived(self, analysis_id: str, scope_id: str, /) -> bool | None; delete_analysis(self, analysis_id: str, scope_id: str, /) -> bool; delete_insight(self, insight_id: str, scope_id: str, /) -> bool; list_analyses_by_campaign(self, campaign_id: str, scope_id: str, /) -> list[EvalAnalysis]; list_analysis_attempts_by_campaign(self, campaign_id: str, scope_id: str, /) -> list[EvalAnalysisAttempt]; load_analysis(self, analysis_id: str, scope_id: str, /) -> EvalAnalysis | None; load_campaign(self, campaign_id: str, scope_id: str, /) -> EvalCampaign | None; load_case_strata(self, test_case_ids: Sequence[str], scope_id: str, /) -> list[EvalCaseStratum]; load_eval_run(self, run_id: str, scope_id: str, /) -> EvalRun | None; load_eval_runs(self, run_ids: Sequence[str], scope_id: str, /, *, elide_payload: frozenset[str]) -> list[EvalRun]; load_job_record(self, model: type[R], record_id: str, scope_id: str, /) -> tuple[R | None, str | None]; load_template(self, template_id: str, scope_id: str, /) -> EvalTemplate | None; load_test_cases_by_ids(self, test_case_ids: list[str], scope_id: str, /) -> list[EvalTestCase]; query_calibration_ratings(self, scope_id: str, /, *, run_id: str | None = None) -> list[CalibrationRating]; query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]; query_insights(self, scope_id: str, /, *, subject_id: str | None = None, source_campaign_id: str | None = None) -> list[EvalInsight]; query_judge_profiles(self, scope_id: str, /) -> list[EvalJudgeProfile]; query_test_cases(self, scope_id: str, /, *, template_id: str | None = None) -> list[EvalTestCase]; save_analysis(self, analysis: EvalAnalysis, /) -> None; save_insight(self, insight: EvalInsight, /) -> None; save_job_record(self, document: dict[str, Any], /, *, if_match: str | None, create_only: bool = False) -> None; save_test_case(self, test_case: EvalTestCase, /) -> None}"
     },
     "threetears.evals.analysis.ArmLevel": {
       "kind": "model",

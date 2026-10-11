@@ -34,7 +34,7 @@ import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Executor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -173,7 +173,10 @@ class JobWork[R: EvalDocumentModel]:
     """One operation admitted and not yet run: its record as it starts, and the awaitable that runs it to its end.
 
     Built by the operation's admission — the half that prices, checks the cap and refuses — so whatever holds one
-    holds work that will be paid for only when it runs.
+    holds work that will be paid for only when it runs. **It runs once**: what admission priced and admitted is spent
+    by one run, so a second start of the same work is refused before anything is written (as
+    :class:`~threetears.evals.run.AdmittedLaunch` refuses a second start), and its record's first write is
+    create-only, so no run writes over another's.
 
     Attributes:
         kind: The record's type, as the lease machinery reads it.
@@ -194,6 +197,17 @@ class JobWork[R: EvalDocumentModel]:
     run: Callable[[JobRecorder[R]], Awaitable[R]]
     budget_s: float | None
     discard: Callable[[], Awaitable[None]] | None = None
+    _used: list[bool] = field(default_factory=list, init=False, repr=False, compare=False)
+
+    def claim(self) -> None:
+        """Take the work's one run: what :func:`start_job_work` and :func:`run_job_work` do before they write anything.
+
+        Raises:
+            RuntimeError: It was already started — the caller holds work its admission priced for one run.
+        """
+        if self._used:
+            raise RuntimeError(f"{self.kind.name} job {self.record_id!r} was already started; admitted work runs once")
+        self._used.append(True)
 
     @property
     def record_id(self) -> str:
@@ -343,11 +357,14 @@ async def _write_ending[R: EvalDocumentModel](
 async def _save_started[R: EvalDocumentModel](
     work: JobWork[R], store: JobRecordStore, executor: Executor | None, leases: JobLeases
 ) -> R:
-    """Write the record as it starts, carrying a fresh lease, so its first poll in any process finds it running."""
+    """Write the record as it starts, carrying a fresh lease, so its first poll in any process finds it running.
+
+    Create-only: a record already stored under the id is a job already started, and is never written over.
+    """
 
     def save() -> R:
         started = work.record.model_copy(update={"lease": leases.grant()})
-        store.save_job_record(started.to_dict(), if_match=None)
+        store.save_job_record(started.to_dict(), if_match=None, create_only=True)
         return started
 
     return await run_blocking(executor, save)
@@ -375,12 +392,15 @@ async def start_job_work[R: EvalDocumentModel](
 
     Raises:
         ValueError: The manager holds no leases — its job could be read lost by every other process at once.
+        RuntimeError: The work was already started; nothing was written.
         ConflictError: A live job holds ``key``; the record is written ``failed`` and admission's holdings released.
+            Or a record is already stored under the work's id; it is left as it is.
         StorageError: The record could not be written; nothing started.
     """
     leases = manager.leases
     if leases is None:
         raise ValueError(f"{work.kind.name} job {work.record_id!r} runs as a job only under a manager holding leases")
+    work.claim()
     try:
         started = await _save_started(work, store, executor, leases)
     except BaseException:
@@ -434,8 +454,11 @@ async def run_job_work[R: EvalDocumentModel](
     Raises:
         asyncio.CancelledError: The caller was cancelled, or a cancel was asked on the record; it is written
             ``cancelled`` first.
+        RuntimeError: The work was already started; nothing was written.
+        ConflictError: A record is already stored under the work's id; it is left as it is, and nothing ran.
         StorageError: The record could not be written as it started; nothing ran.
     """
+    work.claim()
     try:
         started = await _save_started(work, store, executor, leases)
     except BaseException:

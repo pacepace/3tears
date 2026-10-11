@@ -203,7 +203,7 @@ class JobRecordStore(Protocol):
         """See :meth:`EvalStorage.load_job_record`."""
         ...
 
-    def save_job_record(self, document: dict[str, Any], /, *, if_match: str | None) -> None:
+    def save_job_record(self, document: dict[str, Any], /, *, if_match: str | None, create_only: bool = False) -> None:
         """See :meth:`EvalStorage.save_job_record`."""
         ...
 
@@ -591,18 +591,20 @@ class EvalStorage:
             return None, None
         return self._hydrate(model, data), etag
 
-    def save_job_record(self, document: dict[str, Any], /, *, if_match: str | None) -> None:
+    def save_job_record(self, document: dict[str, Any], /, *, if_match: str | None, create_only: bool = False) -> None:
         """Write a job record whole — as its model's ``to_dict`` writes it — conditionally when ``if_match`` is given.
 
         A document rather than a model, so one write serves every job record type; the record carries its own
         scope. The lease machinery writes only records it read whole (:meth:`load_job_record`), so a run here never
-        lacks payload a listing left out.
+        lacks payload a listing left out. A job's first write is ``create_only``: it starts the job, and a record
+        already stored under its id is a job already started, never one to write over.
 
         Raises:
-            ConflictError: ``if_match`` was given and the stored record has moved on.
+            ConflictError: ``if_match`` was given and the stored record has moved on, or ``create_only`` was given
+                and a record is already stored under the id.
             StorageError: Any other write failure.
         """
-        self._save(document, if_match=if_match)
+        self._save(document, if_match=if_match, create_only=create_only)
 
     def merge_job_record_fields(self, record_id: str, scope_id: str, fields: dict[str, Any], /) -> bool:
         """Set top-level fields on a job record in place — a cancel request — without reading or re-sending it.
