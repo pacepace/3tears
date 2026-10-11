@@ -6,6 +6,35 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: what reviewing .8 found
+
+- **A measure reads on one ruler on every surface of a report.** A chart compiled from a reference records its
+  measure's ruler (`stated_unit`) and is drawn in it, so a latency no longer reads in s on its chart and ms in the
+  table beside it; a figure in prose, an evidence row (now carrying its unit), a contrast's margin and a run
+  summary's measure line (`RunMeasureSummary.unit`) are stated on it too. A signed change below a millionth reads
+  `< 0.000001 ms`, never `+< 0.000001 ms`.
+- **A partly priced role states its priced dollars and its unpriced calls (breaking for `RoleSpend`).** The role
+  lines add up to the run's total, each unpriced reason true for the run, and an unknown total states what was priced.
+- **The published report schema states that a table cell's unit qualifies only a number.**
+- **The import check reads `from threetears import evals` and `import importlib.util`, and refuses to read nothing**
+  (no source, or a directory with no `.py` file).
+- **A font table is held to its face's whole file set and to the type scale's weights**: a weight file added to the
+  family, or a table measured at other weights, is refused. Only a renderer's refusal (`ChartRefused`) counts as a
+  chart's refusal in `report_charts`, and vl-convert's own conversion failure is a `RasterRefused`.
+- **One record that cannot be settled never breaks a list.** A lost run settles from its record, its completeness
+  unknown when a result cannot be read, and every settling read tolerates one bad record as the boot reclaim does.
+- **The MIGRATIONS labelling check follows a release tagged on `main`**, which `develop` never reaches, by release
+  order rather than reachability.
+- **A finished action's outcome reaches the caller whatever the `around` hook does after its yield**: the hook's
+  tail is held to its own bound (`HOOK_TAIL_TIMEOUT_S`), and `ToolBinding.call` raises `CallTimedOut`.
+- **A judge reply refused for carrying no temperature still accounts for its billed call.**
+- **Every remedy names a call its caller can make**, and the reach check reads every identifier in every remedy.
+- **A temperature setting that only answered "cannot tell" measured nothing**, and the comparison says so.
+- **A strict schema sends only the keywords both major providers' strict modes accept**
+  (`kernel.PORTABLE_STRICT_KEYWORDS`); bounds and lengths are still enforced on return.
+- **A job refused by an engine error keeps the refusal's kind and status (core schema v11).** `job_poll` serves
+  `JobStatus.refusal`, so a host branches on `provider_refused`, never on the words.
+
 ### 3tears-evals: what adopting .7 found (gaps 29–34)
 
 - **`MIGRATIONS.toml` names v0.66.0-evaladopt.7's section for its tag**, which shipped still called "unreleased",
