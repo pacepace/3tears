@@ -21,7 +21,9 @@ passes in:
 * ``refuse_undeclared_world_seed`` — whether a ``world_seed`` names only paths the host's world
   can seed, which is the host's walk over its own namespaces;
 * ``refuse_undeliverable_template`` — whether the template declares apparatus its candidate kind
-  can honour, which is the host's kind capability table.
+  can honour, which is the host's kind capability table. For the fields a kind's registry entry declares it
+  ignores, it calls :func:`~threetears.evals.run.launch.refuse_ignored_template_fields`, the dispatch's own refusal,
+  rather than restate the list.
 
 Each hook raises :class:`~threetears.evals.kernel.errors.ValidationFailedError` to refuse and
 returns ``None`` to admit. They are required rather than defaulted: a host with nothing to check

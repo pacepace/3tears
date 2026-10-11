@@ -1419,6 +1419,33 @@ class _Launchable(NamedTuple):
     apparatus_settings: dict[str, ApparatusSettingValue]
 
 
+def refuse_ignored_template_fields(template: EvalTemplate, launchable: LaunchableKind) -> None:
+    """Refuse a template stating a field its kind never acts on (:attr:`LaunchableKind.ignored_template_fields`).
+
+    The dispatch's own refusal, public so a host's authoring check can refuse the same template before it is
+    stored rather than restate the list or the rule: a field is stated when it holds anything but its default. It
+    reads the registry entry it is handed, never the template's kind, which the dispatch reads once.
+
+    Args:
+        template: The template, as authored or as stored.
+        launchable: The registry entry of the kind it declares.
+
+    Raises:
+        ValidationFailedError: The template states a field the kind ignores; every one is named.
+    """
+    if stated := [
+        name
+        for name in sorted(launchable.ignored_template_fields)
+        if getattr(template, name) != EvalTemplate.model_fields[name].get_default(call_default_factory=True)
+    ]:
+        raise ValidationFailedError(
+            f"template {template.id!r} declares a kind that never acts on its "
+            + ", ".join(stated)
+            + " — it would run as if the template had not stated them",
+            remedy="remove them from the template, or run it as a kind that reads them",
+        )
+
+
 def _launchable(
     host: LaunchHost,
     template: EvalTemplate,
@@ -1485,17 +1512,7 @@ def _launchable(
             + ", ".join(f"{name}={value!r}" for name, value in unusable.items()),
             remedy="launch it without them",
         )
-    if stated := [
-        name
-        for name in sorted(launchable.ignored_template_fields)
-        if getattr(template, name) != EvalTemplate.model_fields[name].get_default(call_default_factory=True)
-    ]:
-        raise ValidationFailedError(
-            f"template {template.id!r} is a {candidate_kind!r} template, and that kind never acts on its "
-            + ", ".join(stated)
-            + " — it would run as if the template had not stated them",
-            remedy="remove them from the template, or run it as a kind that reads them",
-        )
+    refuse_ignored_template_fields(template, launchable)
     _refuse_a_variation_model_the_launch_cannot_use(
         template, n_variations=n_variations, variation_model=variation_model
     )
@@ -4528,6 +4545,7 @@ __all__ = [
     "plan_judge",
     "price_arms",
     "quote_launch",
+    "refuse_ignored_template_fields",
     "require_candidate_model",
     "resolve_judge_pin",
     "settable_apparatus",

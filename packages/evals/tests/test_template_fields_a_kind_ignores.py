@@ -5,6 +5,9 @@ launch ran as if the template had said nothing — the same silence a launch arg
 meet, before ``unhonoured_launch_arguments`` refused it. So a kind's registry entry declares the template fields it
 ignores (``LaunchableKind.ignored_template_fields``), the dispatch refuses a template stating any of them, and the
 package's own launchables declare theirs.
+
+A host's authoring check refuses the same template before it is stored through the dispatch's own refusal,
+``refuse_ignored_template_fields``, rather than restating the list and the rule beside it.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from threetears.evals.run import (
     LaunchHost,
     launchable_judge_kind,
     quote_launch,
+    refuse_ignored_template_fields,
 )
 from threetears.evals.schema import EvalTemplate, Precondition, WorldSeed
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
@@ -96,3 +100,15 @@ def test_a_kind_declaring_a_name_no_template_has_is_refused() -> None:
             ignored_template_fields=frozenset({"world_sed"}),
         )
 
+
+def test_a_hosts_authoring_check_refuses_what_the_dispatch_would_through_the_same_call() -> None:
+    entry = launchable_judge_kind(lambda: _judge_host())
+    refuse_ignored_template_fields(_judge_template(), entry)
+    with pytest.raises(ValidationFailedError, match="never acts on its goal_state_checks, world_seed") as refused:
+        refuse_ignored_template_fields(
+            _judge_template(
+                world_seed=WorldSeed(namespaces={"inbox": {"unread": 3}}), goal_state_checks=["state.done == 1"]
+            ),
+            entry,
+        )
+    assert refused.value.remedy
