@@ -40,7 +40,7 @@ from threetears.evals.run import (
     rate_result,
 )
 from threetears.evals.schema import DEFAULT_JUDGE_TEMPERATURE, EvalResult, EvalRun, EvalTemplate, JudgeConfig
-from packages.evals.tests.factories import make_eval_run
+from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.scripted_table import FakeCellSink
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT, TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
@@ -581,3 +581,16 @@ async def test_a_label_follows_a_byte_identical_output_into_its_case_and_never_c
         case = judge_case_of(stored)
         assert case is not None
         assert [label.rating_id for label in case.labels] == [later.id]
+
+
+def test_a_result_whose_trial_this_build_cannot_read_is_left_out_saying_why() -> None:
+    """An unreadable trial read as "carries no judge trial": the validation error behind it was swallowed."""
+    unreadable = make_eval_result(id="res-unreadable", kind_payload={"test_case_id": "c-1", "dim": FAITHFULNESS_DIM})
+    absent = make_eval_result(id="res-absent", kind_payload=None)
+
+    readings = judge_kind_readings([unreadable, absent])
+
+    reasons = {entry.result_id: entry.reason for entry in readings.unread}
+    assert reasons["res-absent"] == "it carries no judge trial"
+    assert reasons["res-unreadable"].startswith("its kind_payload is not a judge trial this build can read")
+    assert "scale" in reasons["res-unreadable"], "the reason names what failed to validate"

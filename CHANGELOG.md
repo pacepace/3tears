@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: no exception is swallowed
+
+- **`judge_trial_of` raises `ValueError` for a `kind_payload` that is not a judge trial this build can read
+  (breaking for a direct caller).** It answered `None`, the answer for a result carrying no trial at all, so
+  `judge_kind_readings` listed an unreadable trial as "it carries no judge trial" and the validation error behind
+  it was lost. `None` now means only that the result carries no payload object; the readout lists an unreadable
+  trial as unread with the validation error as its reason.
+
 ### 3tears-evals: backlog while Discodon adopts .13
 
 - **A judge case this build cannot read is refused by name, not dropped (breaking for a judge template holding

@@ -31,6 +31,17 @@
 # callers.
 
 [[release]]
+version = "unreleased"
+since = "v0.66.0-evaladopt.14"
+summary = """
+No exception is swallowed: every handler that turned an error into a quiet None, default, skip or "no figure" now
+raises it, returns it as a failure the caller reports, or records it where the operator reads it.
+"""
+notes = [
+    "`threetears.evals.kernel.judge_trial_of` raises `ValueError` for a `kind_payload` that is not a judge trial this build can read, where it answered `None`. `None` now means only that the result carries no payload object; a caller that read `None` as \"not a trial\" catches the `ValueError` and reports its message.",
+]
+
+[[release]]
 version = "0.66.0-evaladopt.14"
 since = "v0.66.0-evaladopt.13"
 summary = """
