@@ -13,6 +13,9 @@ packages (bumped in lock-step).
   `judge_kind_readings` listed an unreadable trial as "it carries no judge trial" and the validation error behind
   it was lost. `None` now means only that the result carries no payload object; the readout lists an unreadable
   trial as unread with the validation error as its reason.
+- **A run written lost with its completeness unknown says why on its own record.** When a result it stored cannot
+  be read under the current model, the lost run's `completeness` stays `None` as before, and the validation error,
+  which only reached the log, is now an `EvalRun.error_details` entry: a fault an operator triages on the run.
 
 ### 3tears-evals: backlog while Discodon adopts .13
 

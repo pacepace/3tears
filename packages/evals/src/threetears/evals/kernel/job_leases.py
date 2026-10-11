@@ -127,19 +127,24 @@ def _run_lost(run: EvalRun, loss: JobLoss, store: LeaseStore) -> EvalRun:
     else, and a result this build cannot reconstruct (a corpus that outlived the model that wrote it) fails the
     whole listing of them. That must not keep the run from settling — it would read ``running`` on every surface,
     and break every list that settles it — so the run is written lost with its completeness unknown (``None``, which
-    every reader of the field reads as unknown), and the unreadable results are logged.
+    every reader of the field reads as unknown), and why it is unknown is written on the run itself, as an
+    ``error_details`` entry naming the validation error: a result the run stored cannot be read, which is a fault.
     """
     completeness = run.completeness
+    unreadable: list[str] = []
     if completeness is None:
         try:
             completeness = reconstruct_completeness(run, store.query_eval_results_by_run(run.id, run.scope_id))
-        except ValidationError:
-            # NOSILENT: an unreadable result leaves what the run delivered unknown, recorded as None; the run settles
+        except ValidationError as refused:
             log.exception(
                 "eval run %s (scope %s) is written lost with its completeness unknown: a result it stored cannot "
                 "be read under the current model, so what it delivered cannot be counted",
                 run.id,
                 run.scope_id,
+            )
+            unreadable.append(
+                "written lost with its completeness unknown: a result it stored cannot be read under the current "
+                f"model, so what it delivered cannot be counted — {refused}"
             )
     return run.model_copy(
         update={
@@ -147,6 +152,7 @@ def _run_lost(run: EvalRun, loss: JobLoss, store: LeaseStore) -> EvalRun:
             "cancellation_reason": f"lost: {loss.cause}",
             "completed_at": loss.at,
             "completeness": completeness,
+            "error_details": [*run.error_details, *unreadable],
             "lost": loss,
         }
     )

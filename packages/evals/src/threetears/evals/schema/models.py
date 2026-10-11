@@ -3258,7 +3258,8 @@ class EvalRun(CoreDocumentModel):
             "a harness failure, and a cancel that lands while the job is still queued for a slot, whose "
             "honest record is 0 of N. On a TERMINAL run None therefore means every attempt to write the "
             "record was refused, or the run was written lost while a result it stored could not be read, so "
-            "what it delivered could not be counted (rare, and loud in the log). A run "
+            "what it delivered could not be counted (rare; that case names the unreadable result's error in "
+            "``error_details``). A run "
             "that has not gone terminal yet simply has none — this field is readable at any status, so "
             "a surface reading across runs of mixed status cannot treat absence as either. Absence is "
             "never evidence that nothing was delivered: read it as unknown."
@@ -3298,7 +3299,8 @@ class EvalRun(CoreDocumentModel):
         default_factory=list,
         description=(
             "Things that BROKE — the run-terminal failure channel, written only by the job "
-            "manager's failure branches (a harness exception, an exhausted provider account). The "
+            "manager's failure branches (a harness exception, an exhausted provider account) and by a "
+            "run written lost while a result it stored cannot be read (its completeness unknown). The "
             "designed stops each have their own channel (``cancellation_reason`` for a cancel, "
             "``budget_stop_reason`` for the cost cap and the wall-clock budget), so a non-empty list "
             "means a fault, and its length is a count an operator can triage on."

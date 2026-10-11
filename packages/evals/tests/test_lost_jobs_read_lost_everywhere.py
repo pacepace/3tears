@@ -214,6 +214,22 @@ def test_a_lost_run_whose_result_cannot_be_read_settles_with_its_completeness_un
     assert stored is not None and stored.lost is not None, "the run was written lost, not merely read so"
 
 
+def test_a_lost_run_whose_completeness_is_unknown_says_why_on_its_own_record() -> None:
+    """The unreadable result was only logged: the record read as an unknown completeness with no fault named on it."""
+    store = InMemoryDocumentStore()
+    storage = EvalStorage(store)
+    run = make_eval_run(scope_id=_SCOPE, status="running")
+    storage.save_job_record(run.to_dict(), if_match=None)
+    _unreadable_result(storage, store, run)
+
+    assert storage.load_eval_run(run.id, _SCOPE) is not None  # the read that settles it
+    stored, _ = storage.load_job_record(EvalRun, run.id, _SCOPE)
+
+    assert stored is not None and stored.completeness is None
+    (detail,) = stored.error_details
+    assert "completeness unknown" in detail and "turns_delivered" in detail, detail
+
+
 class _ContestedStore(InMemoryDocumentStore):
     """Every conditional write of one record loses its race, as a record another writer keeps moving does."""
 

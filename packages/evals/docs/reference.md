@@ -359,7 +359,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`judge_criterion_digest(dim: str, scale: RubricScale, criterion: RubricDim | None) -> str`
 - **`judge_profile_id`** · function · The id of the one profile of a judge on a criterion: derived from both, so recording again replaces it.
   <br>`judge_profile_id(rubric_dim: str, scale: str, judge_model: str, judge_config_id: str | None, judge_temperature: JudgeTemperature, criterion_digest: str) -> str`
-- **`judge_trial_of`** · function · The judge trial a result's `kind_payload` carries, or `None` when it carries none this build can read.
+- **`judge_trial_of`** · function · The judge trial a result's `kind_payload` carries, or `None` when it carries none.
   <br>`judge_trial_of(kind_payload: object) -> JudgeTrial | None`
 - **`lease_lapsed`** · function · Whether a record's lease has lapsed at `now` — or it has none, which no process can be renewing.
   <br>`lease_lapsed(record: LeasedRecord, now: datetime) -> bool`
