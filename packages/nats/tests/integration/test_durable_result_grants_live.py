@@ -27,9 +27,8 @@ import asyncio
 import base64
 import contextlib
 import json
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from datetime import timedelta
-from pathlib import Path
 
 import nats
 import nats.errors
@@ -47,6 +46,8 @@ from threetears.nats import (
     set_default_namespace,
 )
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
+
+from .nats_support import running_nats
 
 pytestmark = pytest.mark.integration
 
@@ -118,24 +119,6 @@ def _scoped_user(name: str, password: str, allow: tuple[list[str], list[str]]) -
     }
 
 
-@contextlib.contextmanager
-def _nats_with_auth(config_text: str, conf_dir: Path) -> Iterator[str]:
-    """start a JetStream nats-server with a custom ``authorization`` config; yield its URI."""
-    from testcontainers.nats import NatsContainer  # noqa: PLC0415
-
-    (conf_dir / "nats.conf").write_text(config_text)
-    container = (
-        NatsContainer(jetstream=False)
-        .with_volume_mapping(str(conf_dir), "/etc/nats", "ro")
-        .with_command(["-c", "/etc/nats/nats.conf"])
-    )
-    container.start()
-    try:
-        yield container.nats_uri()
-    finally:
-        container.stop()
-
-
 @contextlib.asynccontextmanager
 async def _raw(uri: str, *, user: str, password: str, inbox: str, errors: list[str]) -> AsyncIterator:
     """connect a raw nats client; route async permission-violation frames into ``errors``."""
@@ -157,7 +140,7 @@ async def _raw(uri: str, *, user: str, password: str, inbox: str, errors: list[s
         await nc.close()
 
 
-async def test_a_pod_delivers_its_own_result_and_a_registry_collects_it(tmp_path: Path) -> None:
+async def test_a_pod_delivers_its_own_result_and_a_registry_collects_it() -> None:
     if not check_docker_available():
         pytest.skip("Docker not available")
 
@@ -182,7 +165,7 @@ async def test_a_pod_delivers_its_own_result_and_a_registry_collects_it(tmp_path
         ]
     )
 
-    with _nats_with_auth(config, tmp_path) as uri:
+    with running_nats(config) as uri:
         # --- admin declares the stream the registry declares in production ---
         admin_errors: list[str] = []
         async with _raw(uri, user="admin", password=_ADMIN_PW, inbox="_INBOX", errors=admin_errors) as admin_nc:

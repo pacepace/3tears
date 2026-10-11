@@ -25,13 +25,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
 import json
 import logging
-from collections.abc import Iterator
 from contextlib import aclosing
 from datetime import timedelta
-from pathlib import Path
 from uuid import UUID
 
 import nats
@@ -51,6 +48,8 @@ from threetears.nats.subject_permissions import (
 )
 from threetears.nats.subjects import get_default_namespace, set_default_namespace
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
+
+from .nats_support import running_nats
 
 pytestmark = pytest.mark.integration
 
@@ -115,32 +114,6 @@ def _server_config(pub_allow: list[str], sub_allow: list[str]) -> str:
     return f"jetstream {{ store_dir: /tmp/js-store }}\nport: 4222\nauthorization {json.dumps(authorization)}\n"
 
 
-@contextlib.contextmanager
-def _nats_with_auth(config_text: str, conf_dir: Path) -> Iterator[str]:
-    """start a JetStream nats-server with a custom ``authorization`` config; yield its URI.
-
-    :param config_text: the server configuration
-    :ptype config_text: str
-    :param conf_dir: a directory to mount the configuration from
-    :ptype conf_dir: Path
-    :return: the server's URI, yielded
-    :rtype: Iterator[str]
-    """
-    from testcontainers.nats import NatsContainer  # noqa: PLC0415
-
-    (conf_dir / "nats.conf").write_text(config_text)
-    container = (
-        NatsContainer(jetstream=False)
-        .with_volume_mapping(str(conf_dir), "/etc/nats", "ro")
-        .with_command(["-c", "/etc/nats/nats.conf"])
-    )
-    container.start()
-    try:
-        yield container.nats_uri()
-    finally:
-        container.stop()
-
-
 async def _watch_consumers(admin_js: object, stream: str) -> list[str]:
     """the names of the key-watch consumers live on ``stream``, as the admin sees them.
 
@@ -156,7 +129,7 @@ async def _watch_consumers(admin_js: object, stream: str) -> list[str]:
 
 
 async def test_watch_key_works_under_the_one_key_grant_where_the_stock_watch_is_refused(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """current value, updates, delete marker, consumer replacement and close, under the real grant."""
     if not check_docker_available():
@@ -175,7 +148,7 @@ async def test_watch_key_works_under_the_one_key_grant_where_the_stock_watch_is_
     own = data_version_kv_key(_AGENT)
     other = data_version_kv_key(_OTHER_AGENT)
 
-    with _nats_with_auth(_server_config(pub_allow, sub_allow), tmp_path) as uri:
+    with running_nats(_server_config(pub_allow, sub_allow)) as uri:
         admin_nc = await nats.connect(uri, user="admin", password=_ADMIN_PW, max_reconnect_attempts=0)
         pod: NatsClient | None = None
         try:

@@ -21,7 +21,7 @@ the credential:
 
 The minted permissions are applied as static config-mode ``authorization`` rather than by standing up
 the auth-callout responder: the grant STRINGS are what the scope changes and this is the credential
-the server enforces either way. The harness (docker gate, per-test ``nats.conf`` volume, minted
+the server enforces either way. The harness (docker gate, per-test ``nats.conf``, minted
 allow-lists read back out of the signed claim) is the one
 ``test_forward_grants_live.py`` / ``test_user_jwt_scoped_grant_live.py`` already use, including their
 reason for not using the session-scoped ``nats_container`` fixture: a shared container cannot carry a
@@ -34,11 +34,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
 import json
 import logging
-from collections.abc import Iterator
-from pathlib import Path
 
 import pytest
 
@@ -46,6 +43,8 @@ from threetears.core.testing.containers import check_docker_available
 from threetears.nats import IncomingMessage, NatsClient, Subjects, set_default_namespace
 from threetears.nats.subject_permissions import Principal, PrincipalPermissions, build_permissions
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
+
+from .nats_support import running_nats
 
 pytestmark = pytest.mark.integration
 
@@ -171,30 +170,6 @@ def _server_config() -> str:
     return f"jetstream {{ store_dir: /tmp/js-store }}\nport: 4222\nauthorization {json.dumps(authorization)}\n"
 
 
-@contextlib.contextmanager
-def _nats_with_auth(conf_dir: Path) -> Iterator[str]:
-    """start a JetStream nats-server carrying the minted ``authorization``; yield its URI.
-
-    :param conf_dir: a writable directory the container mounts read-only at ``/etc/nats``
-    :ptype conf_dir: Path
-    :return: an iterator yielding the broker URI
-    :rtype: Iterator[str]
-    """
-    from testcontainers.nats import NatsContainer  # noqa: PLC0415
-
-    (conf_dir / "nats.conf").write_text(_server_config())
-    container = (
-        NatsContainer(jetstream=False)
-        .with_volume_mapping(str(conf_dir), "/etc/nats", "ro")
-        .with_command(["-c", "/etc/nats/nats.conf"])
-    )
-    container.start()
-    try:
-        yield container.nats_uri()
-    finally:
-        container.stop()
-
-
 async def _connect(uri: str, *, user: str, password: str, permissions: PrincipalPermissions) -> NatsClient:
     """connect the canonical wrapper on one principal's credential + its scoped inbox.
 
@@ -225,7 +200,6 @@ async def _connect(uri: str, *, user: str, password: str, permissions: Principal
 
 
 async def test_hitl_grant_delivers_and_its_absence_is_a_silent_dead_subscription(
-    tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """with tool namespaces the owner-routed message arrives; without them nothing does, silently."""
@@ -237,7 +211,7 @@ async def test_hitl_grant_delivers_and_its_absence_is_a_silent_dead_subscription
     subject = Subjects.forward_scoped(family, _SESSION_KEY)
     payload = b"open_tab"
 
-    with _nats_with_auth(tmp_path) as uri:
+    with running_nats(_server_config()) as uri:
         hub = await _connect(uri, user="hub", password=_HUB_PW, permissions=_hub_permissions())
 
         # --- WITH tool namespaces: the subscription is real and the message lands ---
