@@ -216,7 +216,23 @@ def refuse_by_engine(tool: MountedTool, action: Action, refused: EvalServiceErro
     names the catalogue's actions, while which of them a caller can reach here is this tool's — so an agent is
     never sent to a call its tool would refuse as unknown.
     """
-    lines = [f"refused: {action.name}: {refused.message}"]
+    return _refused_with_remedy(tool, action.name, refused)
+
+
+def refuse_by_resolver(tool: MountedTool, action: Action | None, refused: EvalServiceError) -> str:
+    """A call the host refused while resolving it — who is calling, or the host it works in — before any action ran.
+
+    Read exactly as a refusal the engine raises from inside an action (:func:`refuse_by_engine`): the host's own
+    reason, then its remedy, so a host booting or a tenant suspended teaches the caller what to do as any refusal
+    does. It is headed by the action the call named when this tool has it, and by the tool otherwise: the call was
+    refused before its ``action`` was ever checked, so it may name none.
+    """
+    return _refused_with_remedy(tool, action.name if action is not None else tool.name, refused)
+
+
+def _refused_with_remedy(tool: MountedTool, subject: str, refused: EvalServiceError) -> str:
+    """A refusal's reason under ``subject``, then its remedy, then where any action the remedy names is carried."""
+    lines = [f"refused: {subject}: {refused.message}"]
     if refused.remedy is not None:
         lines.append(f"remedy: {refused.remedy}")
         named = sorted(set(_ACTION_TOKEN.findall(refused.remedy)))
@@ -868,6 +884,7 @@ __all__ = [
     "example_call",
     "parameter_lines",
     "refuse_by_engine",
+    "refuse_by_resolver",
     "refuse_help_parameters",
     "refuse_invalid",
     "refuse_no_action",

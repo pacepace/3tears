@@ -5573,6 +5573,10 @@
       "kind": "dataclass",
       "signature": "ToolSpec(name: str, description: str, permissions: frozenset[PermissionClass])"
     },
+    "threetears.evals.transports.fastmcp.CallAnnotator": {
+      "kind": "type alias",
+      "signature": "Callable[[ToolCall, ActionOutcome], str | None | Awaitable[str | None]]"
+    },
     "threetears.evals.transports.fastmcp.CallerResolver": {
       "kind": "type alias",
       "signature": "Callable[[], Caller | Awaitable[Caller]]"
@@ -5584,6 +5588,10 @@
     "threetears.evals.transports.fastmcp.CallTimedOut": {
       "kind": "exception",
       "signature": "CallTimedOut(timeout_s: float) -> None"
+    },
+    "threetears.evals.transports.fastmcp.CallTimeout": {
+      "kind": "type alias",
+      "signature": "float | Callable[[], float]"
     },
     "threetears.evals.transports.fastmcp.CatalogueTool": {
       "kind": "model",
@@ -5603,11 +5611,11 @@
     },
     "threetears.evals.transports.fastmcp.mount_fastmcp": {
       "kind": "function",
-      "signature": "mount_fastmcp(server: FastMCP, catalogue: ActionCatalogue, *, host: OpsHost | None = None, host_resolver: HostResolver | None = None, caller: CallerResolver, around: CallHook | None = None, tools: Sequence[ToolSpec] | None = None, call_timeout_s: float = 60.0) -> tuple[str, ...]"
+      "signature": "mount_fastmcp(server: FastMCP, catalogue: ActionCatalogue, *, host: OpsHost | None = None, host_resolver: HostResolver | None = None, caller: CallerResolver, around: CallHook | None = None, annotate: CallAnnotator | None = None, tools: Sequence[ToolSpec] | None = None, call_timeout_s: CallTimeout = 60.0) -> tuple[str, ...]"
     },
     "threetears.evals.transports.fastmcp.ToolBinding": {
       "kind": "class",
-      "signature": "ToolBinding(mounted: MountedTool, *, host: OpsHost | None = None, host_resolver: HostResolver | None = None, caller: CallerResolver, around: CallHook | None = None, call_timeout_s: float = 60.0) -> None"
+      "signature": "ToolBinding(mounted: MountedTool, *, host: OpsHost | None = None, host_resolver: HostResolver | None = None, caller: CallerResolver, around: CallHook | None = None, annotate: CallAnnotator | None = None, call_timeout_s: CallTimeout = 60.0) -> None"
     },
     "threetears.evals.transports.fastmcp.ToolCall": {
       "kind": "dataclass",

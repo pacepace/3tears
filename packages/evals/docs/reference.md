@@ -2300,21 +2300,25 @@ The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
 **Functions**
 
 - **`mount_fastmcp`** · function · Add the catalogue's tools to a FastMCP server.
-  <br>`mount_fastmcp(server: FastMCP, catalogue: ActionCatalogue, *, host: OpsHost | None = None, host_resolver: HostResolver | None = None, caller: CallerResolver, around: CallHook | None = None, tools: Sequence[ToolSpec] | None = None, call_timeout_s: float = 60.0) -> tuple[str, ...]`
+  <br>`mount_fastmcp(server: FastMCP, catalogue: ActionCatalogue, *, host: OpsHost | None = None, host_resolver: HostResolver | None = None, caller: CallerResolver, around: CallHook | None = None, annotate: CallAnnotator | None = None, tools: Sequence[ToolSpec] | None = None, call_timeout_s: CallTimeout = 60.0) -> tuple[str, ...]`
 
 **Classes**
 
 - **`CallTimedOut`** · exception · A call outlived the call timeout and was stopped before its action finished.
 - **`CatalogueTool`** · model · One mounted tool, as FastMCP serves it: every call handed to the catalogue.
-- **`ToolBinding`** · class · What a `CatalogueTool` hands each call to: the mounted tool, the host, the caller resolver and the hook.
+- **`ToolBinding`** · class · What a `CatalogueTool` hands each call to: the mounted tool, the host, the caller resolver and the hooks.
 - **`ToolCall`** · dataclass · One call, as an `around` hook sees it before the catalogue carries it out.
 
 **Types**
 
+- **`CallAnnotator`** · type alias · Adds the host's own word to what a call returns: handed the `ToolCall` and its `ActionOutcome` once the outcome exists, and answering a note or `None` — sync or async, as a resolver may be::
+  <br>`Callable[[ToolCall, ActionOutcome], str | None | Awaitable[str | None]]`
 - **`CallerResolver`** · type alias · Resolves who is calling, and their scope, for one call — sync or async. The host reads its own request context (an access token, a session) to answer it.
   <br>`Callable[[], Caller | Awaitable[Caller]]`
 - **`CallHook`** · type alias · Wraps every call for a host's tracing, metrics or audit log, seeing the call and its outcome and changing neither.
   <br>`Callable[[ToolCall], AsyncGenerator[None, ActionOutcome]]`
+- **`CallTimeout`** · type alias · The timeout every call is held to, in seconds: a fixed number, or a function the binding reads once as each call starts — a host reading it from live configuration, so an operator retunes it without remounting.
+  <br>`float | Callable[[], float]`
 - **`HostResolver`** · type alias · Resolves the host one call works in — sync or async — for a server that serves more than one: a tenant's storage, job manager and settings, read from the same request context as the caller.
   <br>`Callable[[], OpsHost | Awaitable[OpsHost]]`
 
@@ -2322,7 +2326,7 @@ The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
 
 - **`DEFAULT_CALL_TIMEOUT_S`** · constant (float) · How long one call may take, in seconds, unless a host mounts with another: every call, whatever its action.
   <br>`= 60.0`
-- **`HOOK_TAIL_TIMEOUT_S`** · constant (float) · How long an `around` hook may take, in seconds, past the outcome it was handed — or closing, once a call is stopped.
+- **`HOOK_TAIL_TIMEOUT_S`** · constant (float) · How long an `around` hook may take, in seconds, past the outcome it was handed — or closing, once a call is stopped — and, separately, how long the `annotate` hook may take over that outcome.
   <br>`= 10.0`
 
 <a id="api-vega"></a>

@@ -6,6 +6,25 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: what adopting .8 found, continued (gap 39)
+
+- **A resolver's refusal is a refusal, not a defect.** A caller or host resolver that raises an `EvalServiceError` —
+  a host's own subclass among them, a 503 for a host still booting — answers the call as an action's refusal is
+  answered, with that error's kind, status and `remedy:` line (`MountedTool.refused_by_host`), so a host mounting
+  with `host_resolver` no longer wraps the transport to say so. It is refused before the `around` hook is entered,
+  as any resolver failure is; anything else a resolver raises still propagates.
+- **The call timeout may be read per call.** `call_timeout_s` on `ToolBinding`, `CatalogueTool.over` and
+  `mount_fastmcp` takes a function (`CallTimeout`) in place of the number, read once as each call starts, so an
+  operator retunes it from live configuration without remounting. A function answering anything but a positive
+  number fails that call with a `ValueError` naming the value, before anything runs; `CallTimedOut` reports the
+  value the call read.
+- **An `annotate` hook adds the host's note to what a call returns** (`CallAnnotator`, sync or async): a non-empty
+  note is appended as a text block of its own after the outcome's, and the outcome's text, structured content and
+  error flag are untouched — the pricing catalogue a refused launch was priced against is stale, say. One that
+  raises, answers no string or overruns `HOOK_TAIL_TIMEOUT_S` is logged, and the call returns as if there were none.
+- **What an `around` hook sets before its yield is the action's, and its tail undoes it in the call's own task** —
+  a `ContextVar` it sets or a `with` it enters — now stated in `CallHook` and held by a test.
+
 ### 3tears-evals: what adopting .8 found (gaps 35–38)
 
 - **A subject is asked of its kind, not its host (breaking for `LaunchHost` and `LaunchableKind`).** One subject id
