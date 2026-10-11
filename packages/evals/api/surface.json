@@ -1553,6 +1553,10 @@
       "kind": "model",
       "signature": "RunIndexEntry(run_id: str, config: dict[str, Any] = dict(), config_provenance: dict[str, str] = dict(), key_metrics: dict[str, Any] = dict())"
     },
+    "threetears.evals.kernel.running_job": {
+      "kind": "function",
+      "signature": "running_job() -> str | None"
+    },
     "threetears.evals.kernel.RunRecordStore": {
       "kind": "protocol",
       "signature": "RunRecordStore{delete_eval_result(self, result_id: str, scope_id: str, /) -> bool; delete_eval_run(self, run_id: str, scope_id: str, /) -> bool; load_eval_result(self, result_id: str, scope_id: str, /) -> EvalResult | None; load_eval_result_with_etag(self, result_id: str, scope_id: str, /) -> tuple[EvalResult | None, str | None]; load_eval_run(self, run_id: str, scope_id: str, /) -> EvalRun | None; load_eval_run_stamps(self, run_ids: Sequence[str], scope_id: str, /) -> list[EvalRunStamp]; load_eval_run_with_etag(self, run_id: str, scope_id: str, /) -> tuple[EvalRun | None, str | None]; load_eval_runs(self, run_ids: Sequence[str], scope_id: str, /, *, elide_payload: frozenset[str] = frozenset()) -> list[EvalRun]; load_eval_trace(self, result_id: str, scope_id: str, /) -> EvalTrace | None; query_eval_results(self, scope_id: str, /, *, run_id: str | None = None, test_case_id: str | None = None, model: str | None = None) -> list[EvalResult]; query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]; query_eval_runs(self, scope_id: str, status: EvalRunStatus | None = None, *, elide_payload: frozenset[str] = frozenset()) -> list[EvalRun]; query_non_terminal_eval_runs(self, scope_id: str, /) -> NonTerminalRunScan; replace_eval_result(self, result: EvalResult, /, *, if_match: str | None) -> None; save_eval_result(self, result: EvalResult, trace: EvalTrace | None = None, /) -> None; save_eval_run(self, run: EvalRun, /, *, if_match: str | None = None) -> None; set_eval_run_archived(self, run_id: str, scope_id: str, /, *, archived: bool) -> bool}"
@@ -2093,9 +2097,29 @@
       "kind": "exception",
       "signature": "AccountExhaustedError(completed: int, total: int, *, accumulated_usd: float, unpriced_results: int, detail: str)"
     },
+    "threetears.evals.run.ACTION_JOB": {
+      "kind": "constant (LeasedJobKind)",
+      "signature": ""
+    },
+    "threetears.evals.run.action_job_work": {
+      "kind": "function",
+      "signature": "action_job_work(scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], label: str = '', budget_s: float = 3600.0, discard: Callable[[], Awaitable[None]] | None = None) -> JobWork[EvalActionJob]"
+    },
     "threetears.evals.run.AdmissionTicket": {
       "kind": "class",
       "signature": "AdmissionTicket(manager: EvalJobManager, runs: int) -> None"
+    },
+    "threetears.evals.run.admit_group": {
+      "kind": "async function",
+      "signature": "admit_group(host: LaunchHost, n_runs: int, *, settings: LaunchSettings, form: Callable[[], Awaitable[tuple[LaunchGroup, _Formed]]], prepare: Callable[[LaunchGroup, _Formed], Awaitable[list[EvalRun]]], event: str, admission: AdmissionTicket | None = None, attach: Callable[[list[EvalRun]], Awaitable[None]] | None = None, detach: Callable[[list[EvalRun]], Awaitable[None]] | None = None) -> AdmittedLaunch"
+    },
+    "threetears.evals.run.admit_launch": {
+      "kind": "async function",
+      "signature": "admit_launch(host: LaunchHost, *, template_id: str, subject_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, judge_config_ids: dict[str, str] | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', cassette_corpus_id: str | None = None, overlays: Mapping[str, Any] | None = None, apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, max_metered_calls: int | None = None, scope_id: str, launch_group: LaunchGroup | None = None, admission: AdmissionTicket | None = None, cell_timeout_s: float | None = None, case_set: CaseSetRef | None = None, margins: Mapping[str, float] | None = None, measure_latency: bool = False) -> AdmittedLaunch"
+    },
+    "threetears.evals.run.AdmittedLaunch": {
+      "kind": "class",
+      "signature": "AdmittedLaunch(host: LaunchHost | None, group: LaunchGroup, formed: Any, prepare: Callable[[LaunchGroup, Any], Awaitable[list[EvalRun]]], *, event: str, ticket: AdmissionTicket | None, owns_group: bool, attach: Callable[[list[EvalRun]], Awaitable[None]] | None = None, detach: Callable[[list[EvalRun]], Awaitable[None]] | None = None) -> None"
     },
     "threetears.evals.run.ArmOutcome": {
       "kind": "literal",
@@ -2116,10 +2140,6 @@
     "threetears.evals.run.ArmVerdict": {
       "kind": "dataclass",
       "signature": "ArmVerdict(described: str, candidate_model: str | None, plan: ArmPlan | None, price: ArmPrice, cap_usd: float | None, cap_origin: Literal['chosen', 'inherited'] | None, outcome: ArmOutcome, refusal: str | None)"
-    },
-    "threetears.evals.run.ask_second_judge": {
-      "kind": "async function",
-      "signature": "ask_second_judge(host: EvalHost, run_id: str, scope_id: str, *, judge: SecondJudge, out_of_run_cap_usd: float | None, sample_fraction: float = 1.0, seed: int = 0, result_ids: Sequence[str] | None = None) -> SecondJudgeReport"
     },
     "threetears.evals.run.assert_preconditions": {
       "kind": "function",
@@ -2201,6 +2221,10 @@
       "kind": "protocol",
       "signature": "CurationStore{delete_analysis(self, analysis_id: str, scope_id: str, /) -> bool; delete_eval_result(self, result_id: str, scope_id: str, /) -> bool; delete_eval_run(self, run_id: str, scope_id: str, /) -> bool; delete_insight(self, insight_id: str, scope_id: str, /) -> bool; list_campaigns(self, scope_id: str, /) -> list[EvalCampaign]; load_analysis(self, analysis_id: str, scope_id: str, /) -> EvalAnalysis | None; load_campaign(self, campaign_id: str, scope_id: str, /) -> EvalCampaign | None; load_eval_runs(self, run_ids: Sequence[str], scope_id: str, /, *, elide_payload: frozenset[str]) -> list[EvalRun]; load_insight(self, insight_id: str, scope_id: str, /) -> EvalInsight | None; query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]; save_analysis(self, analysis: EvalAnalysis, /) -> None; save_campaign(self, campaign: EvalCampaign, /) -> None; set_eval_run_archived(self, run_id: str, scope_id: str, /, *, archived: bool) -> bool}"
     },
+    "threetears.evals.run.DEFAULT_ACTION_JOB_BUDGET_S": {
+      "kind": "constant (float)",
+      "signature": ""
+    },
     "threetears.evals.run.default_job_timeout": {
       "kind": "function",
       "signature": "default_job_timeout(budget_s: float) -> AsyncIterator[float]"
@@ -2237,6 +2261,10 @@
       "kind": "async function",
       "signature": "drive_conversation(driver: TurnDriver, candidate_turn: Callable[[Sequence[SimulatorTurn]], Awaitable[CandidateTurn]], post_user_turn: Callable[[SimulatorTurn], Awaitable[None]], *, llm: SimulatorLLM, sink: CellSink, world: WorldSession | None = None) -> ConversationStopCause"
     },
+    "threetears.evals.run.end_record": {
+      "kind": "function",
+      "signature": "end_record(record: R, outcome: JobOutcome, detail: str | None = None, **fields: Any) -> R"
+    },
     "threetears.evals.run.ErrorLedger": {
       "kind": "dataclass",
       "signature": "ErrorLedger(candidate: list[str] = list(), infra: list[str] = list(), apparatus_failed: bool = False, account_refused: bool = False)"
@@ -2253,6 +2281,10 @@
       "kind": "async function",
       "signature": "estimate_second_judge(host: EvalHost, run_id: str, scope_id: str, *, judge: SecondJudge, out_of_run_cap_usd: float | None, sample_fraction: float = 1.0, seed: int = 0, result_ids: Sequence[str] | None = None) -> SecondJudgeEstimate"
     },
+    "threetears.evals.run.EvalActionJob": {
+      "kind": "model",
+      "signature": "EvalActionJob(id: str = <lambda>(), doc_type: Literal['eval_action_job'] = 'eval_action_job', schema_version: CoreSchemaVersion = 10, scope_id: str, action: str, label: str = '', outcome: JobOutcome = 'running', result: dict[str, Any] | None = None, result_model: str | None = None, detail: str | None = None, created_at: str = utc_now_iso(), ended_at: str | None = None, lease: LeaseField = None, cancel_requested_at: CancelRequestedAtField = None, cancel_request_reason: CancelRequestReasonField = None, lost: LostField = None)"
+    },
     "threetears.evals.run.EvalJobManager": {
       "kind": "class",
       "signature": "EvalJobManager(storage: JobStore, max_concurrent: int = 2, on_progress: Callable[[str, dict[str, Any]], None] | None = None, job_timeout_s: float = 3600, *, job_timeout_factory: JobTimeoutFactory | None = None, blocking_executor: Executor | None = None, on_run_end: RunEndHook | None = None, leases: JobLeases | None = None)"
@@ -2261,9 +2293,21 @@
       "kind": "exception",
       "signature": "EvalJobTimeout(budget_s: float, elapsed_s: float, attribution: str | None = None) -> None"
     },
+    "threetears.evals.run.EvalJudgeTemperatureCheck": {
+      "kind": "model",
+      "signature": "EvalJudgeTemperatureCheck(id: str = <lambda>(), doc_type: Literal['eval_judge_temperature_check'] = 'eval_judge_temperature_check', schema_version: CoreSchemaVersion = 10, scope_id: str, run_id: str, selection: TemperatureSelection, repeats: int, result_ids: list[str] | None = None, outcome: JobOutcome = 'running', answers: JudgeTemperatureAnswers | None = None, detail: str | None = None, created_at: str = utc_now_iso(), ended_at: str | None = None, lease: LeaseField = None, cancel_requested_at: CancelRequestedAtField = None, cancel_request_reason: CancelRequestReasonField = None, lost: LostField = None)"
+    },
+    "threetears.evals.run.EvalLaunch": {
+      "kind": "model",
+      "signature": "EvalLaunch(id: str, doc_type: Literal['eval_launch'] = 'eval_launch', schema_version: CoreSchemaVersion = 10, scope_id: str, template_id: str, subject_id: str, models: list[str], k_runs: int, n_variations: int, run_ids: list[str] = list(), outcome: JobOutcome = 'running', detail: str | None = None, created_at: str = utc_now_iso(), ended_at: str | None = None, lease: LeaseField = None, cancel_requested_at: CancelRequestedAtField = None, cancel_request_reason: CancelRequestReasonField = None, lost: LostField = None)"
+    },
     "threetears.evals.run.EvalRunCostCap": {
       "kind": "class",
       "signature": "EvalRunCostCap(run_id: str, max_cost_usd: float, *, enabled: bool)"
+    },
+    "threetears.evals.run.EvalSecondJudgePass": {
+      "kind": "model",
+      "signature": "EvalSecondJudgePass(id: str = <lambda>(), doc_type: Literal['eval_second_judge_pass'] = 'eval_second_judge_pass', schema_version: CoreSchemaVersion = 10, scope_id: str, run_id: str, asked_by: SecondJudgeAskedBy, judge: SecondJudge, sample_fraction: float, sample_seed: int, result_ids: list[str] | None = None, outcome: JobOutcome = 'running', report: SecondJudgeReport | None = None, detail: str | None = None, created_at: str = utc_now_iso(), ended_at: str | None = None, lease: LeaseField = None, cancel_requested_at: CancelRequestedAtField = None, cancel_request_reason: CancelRequestReasonField = None, lost: LostField = None)"
     },
     "threetears.evals.run.evaluate_goal_state": {
       "kind": "function",
@@ -2329,13 +2373,21 @@
       "kind": "class",
       "signature": ""
     },
+    "threetears.evals.run.JobOutcome": {
+      "kind": "literal",
+      "signature": "'running'` | `'completed'` | `'failed'` | `'cancelled'"
+    },
+    "threetears.evals.run.JobRecorder": {
+      "kind": "class",
+      "signature": "JobRecorder(store: JobRecordStore, executor: Executor | None, kind: LeasedJobKind[R], record: R) -> None"
+    },
     "threetears.evals.run.JobTimeoutFactory": {
       "kind": "protocol",
       "signature": "JobTimeoutFactory{__call__(self, budget_s: float) -> AbstractAsyncContextManager[Any]}"
     },
-    "threetears.evals.run.judge_at_two_temperatures": {
-      "kind": "async function",
-      "signature": "judge_at_two_temperatures(host: EvalHost, run_id: str, scope_id: str, *, out_of_run_cap_usd: float | None, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: Sequence[str] | None = None) -> JudgeTemperatureAnswers"
+    "threetears.evals.run.JobWork": {
+      "kind": "dataclass",
+      "signature": "JobWork(kind: LeasedJobKind[R], record: R, run: Callable[[JobRecorder[R]], Awaitable[R]], budget_s: float, discard: Callable[[], Awaitable[None]] | None = None)"
     },
     "threetears.evals.run.JUDGE_CALL_ATTEMPTS": {
       "kind": "constant (int)",
@@ -2356,6 +2408,14 @@
     "threetears.evals.run.JUDGE_REQUEST_SETTINGS": {
       "kind": "constant (ClientRequestSettings)",
       "signature": ""
+    },
+    "threetears.evals.run.JUDGE_TEMPERATURE_JOB": {
+      "kind": "constant (LeasedJobKind)",
+      "signature": ""
+    },
+    "threetears.evals.run.judge_temperature_work": {
+      "kind": "async function",
+      "signature": "judge_temperature_work(host: EvalHost, run_id: str, scope_id: str, *, out_of_run_cap_usd: float | None, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: Sequence[str] | None = None) -> JobWork[EvalJudgeTemperatureCheck]"
     },
     "threetears.evals.run.JudgeCaseFreezeReport": {
       "kind": "model",
@@ -2429,6 +2489,18 @@
       "kind": "async function",
       "signature": "launch_as_group(host: LaunchHost, n_runs: int, *, settings: LaunchSettings, form: Callable[[], Awaitable[tuple[LaunchGroup, _Formed]]], prepare: Callable[[LaunchGroup, _Formed], Awaitable[list[EvalRun]]], event: str, admission: AdmissionTicket | None = None, attach: Callable[[list[EvalRun]], Awaitable[None]] | None = None, detach: Callable[[list[EvalRun]], Awaitable[None]] | None = None) -> list[EvalRun]"
     },
+    "threetears.evals.run.LAUNCH_CANCEL_REASON": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
+    "threetears.evals.run.LAUNCH_JOB": {
+      "kind": "constant (LeasedJobKind)",
+      "signature": ""
+    },
+    "threetears.evals.run.launch_job_work": {
+      "kind": "function",
+      "signature": "launch_job_work(host: LaunchHost, admitted: AdmittedLaunch, *, template_id: str, subject_id: str, models: list[str], k_runs: int, n_variations: int, scope_id: str) -> JobWork[EvalLaunch]"
+    },
     "threetears.evals.run.launch_run": {
       "kind": "async function",
       "signature": "launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWiring) -> EvalRun"
@@ -2468,6 +2540,10 @@
     "threetears.evals.run.LaunchSettings": {
       "kind": "model",
       "signature": "LaunchSettings(max_launch_arms: int, max_admitted_runs: int, judge_concurrency: int, max_concurrent_cells: int = 4, enforcement_enabled: bool, max_cost_usd: float, max_metered_calls: int | None, max_out_of_run_cost_usd: float, judge_alternate_model: str | None = None, max_cell_timeout_s: float | None = None, setting_names: dict[str, str] = dict())"
+    },
+    "threetears.evals.run.leased_job_kind": {
+      "kind": "function",
+      "signature": "leased_job_kind(name: str, model: type[R]) -> LeasedJobKind[R]"
     },
     "threetears.evals.run.list_judge_configs": {
       "kind": "function",
@@ -2637,6 +2713,10 @@
       "kind": "async function",
       "signature": "run_blocking(executor: Executor | None, fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T"
     },
+    "threetears.evals.run.run_job_work": {
+      "kind": "async function",
+      "signature": "run_job_work(work: JobWork[R], *, store: JobRecordStore, executor: Executor | None, leases: JobLeases) -> R"
+    },
     "threetears.evals.run.run_judge_llm": {
       "kind": "async function",
       "signature": "run_judge_llm(client: Any, system_prompt: str, user_prompt: str, criteria_dicts: list[dict[str, Any]], label: str, case_id: str, *, cannot_tell_offered: bool = False, failure_describer: ProviderFailureDescriber | None = None) -> dict[str, Any] | None"
@@ -2668,6 +2748,18 @@
     "threetears.evals.run.SCHEDULER_CALL_ATTEMPTS": {
       "kind": "constant (int)",
       "signature": ""
+    },
+    "threetears.evals.run.SECOND_JUDGE_JOB": {
+      "kind": "constant (LeasedJobKind)",
+      "signature": ""
+    },
+    "threetears.evals.run.second_judge_work": {
+      "kind": "async function",
+      "signature": "second_judge_work(host: EvalHost, run_id: str, scope_id: str, *, judge: SecondJudge, out_of_run_cap_usd: float | None, asked_by: SecondJudgeAskedBy = 'judge_second', sample_fraction: float = 1.0, seed: int = 0, result_ids: Sequence[str] | None = None) -> JobWork[EvalSecondJudgePass]"
+    },
+    "threetears.evals.run.SecondJudgeAskedBy": {
+      "kind": "literal",
+      "signature": "'judge_second'` | `'judge_drift_check'"
     },
     "threetears.evals.run.SecondJudgeEstimate": {
       "kind": "model",
@@ -2744,6 +2836,10 @@
     "threetears.evals.run.stamp_witnessed_judge": {
       "kind": "function",
       "signature": "stamp_witnessed_judge(host: EvalHost, run: EvalRun, template: EvalTemplate, *, judge_model: str, judged_artifact: JudgedArtifact, selection: dict[str, str] | None = None, configured_max_cost_usd: float, enforcement_enabled: bool, max_cost_usd: float | None = None) -> EvalRun"
+    },
+    "threetears.evals.run.start_job_work": {
+      "kind": "async function",
+      "signature": "start_job_work(manager: EvalJobManager, work: JobWork[R], *, store: JobRecordStore, executor: Executor | None, key: str | None = None) -> R"
     },
     "threetears.evals.run.start_run": {
       "kind": "async function",
@@ -4153,6 +4249,10 @@
       "kind": "class",
       "signature": "SqliteDocumentStore(path: str | os.PathLike[str]) -> None"
     },
+    "threetears.evals.testing.BuildConformanceHost": {
+      "kind": "type alias",
+      "signature": "Callable[[CompletionGuard], JobsConformanceHost]"
+    },
     "threetears.evals.testing.check_completion_conformance": {
       "kind": "function",
       "signature": "check_completion_conformance(completion: object) -> None"
@@ -4160,6 +4260,34 @@
     "threetears.evals.testing.CompletionConformanceFailure": {
       "kind": "exception",
       "signature": ""
+    },
+    "threetears.evals.testing.CompletionGuard": {
+      "kind": "dataclass",
+      "signature": "CompletionGuard(outside: list[str] = list(), inside: int = 0)"
+    },
+    "threetears.evals.testing.CompletionOutsideJob": {
+      "kind": "exception",
+      "signature": ""
+    },
+    "threetears.evals.testing.DEFAULT_JOB_CONFORMANCE_TIMEOUT_S": {
+      "kind": "constant (float)",
+      "signature": ""
+    },
+    "threetears.evals.testing.jobs_conformance_cases": {
+      "kind": "function",
+      "signature": "jobs_conformance_cases(catalogue: ActionCatalogue, *, job_timeout_s: float = 60.0) -> tuple[JobsConformanceCase, ...]"
+    },
+    "threetears.evals.testing.JobsConformanceCase": {
+      "kind": "dataclass",
+      "signature": "JobsConformanceCase(name: str, rule: str, check: Callable[[BuildConformanceHost], Awaitable[None]])"
+    },
+    "threetears.evals.testing.JobsConformanceFailure": {
+      "kind": "exception",
+      "signature": ""
+    },
+    "threetears.evals.testing.JobsConformanceHost": {
+      "kind": "dataclass",
+      "signature": "JobsConformanceHost(host: OpsHost, caller: Caller, sample: ConformanceSample)"
     },
     "threetears.evals.testing.nonpublic_evals_imports": {
       "kind": "function",
@@ -4389,6 +4517,18 @@
       "kind": "class",
       "signature": "WorldTools(world: World, session: WorldSession, state: dict[str, Any]) -> None"
     },
+    "threetears.evals.ops.action_job_id": {
+      "kind": "function",
+      "signature": "action_job_id(record_id: str) -> str"
+    },
+    "threetears.evals.ops.ACTION_JOB_PREFIX": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
+    "threetears.evals.ops.AdmittedJob": {
+      "kind": "dataclass",
+      "signature": "AdmittedJob(work: JobWork[Any], kind: JobKind, target_id: str, label: str = '', key: str | None = None)"
+    },
     "threetears.evals.ops.AmbiguousReporterPair": {
       "kind": "model",
       "signature": "AmbiguousReporterPair(campaign_id: str | None, recorded_analysis_id: str | None, live_case_ids: list[str])"
@@ -4448,6 +4588,10 @@
     "threetears.evals.ops.ArmEstimate": {
       "kind": "model",
       "signature": "ArmEstimate(described: str, candidate_model: str | None, case_count: int | None, case_source: Literal['stored', 'generated'], n_observations: int | None, predicted_usd: float | None, central_usd: float | None, low_usd: float | None, method_id: str | None, basis: str, outcome: ArmOutcome, refusal: str | None)"
+    },
+    "threetears.evals.ops.await_job": {
+      "kind": "async function",
+      "signature": "await_job(host: OpsHost, started: JobsStarted, scope_id: str) -> list[JobStatus]"
     },
     "threetears.evals.ops.bar_proposals_text": {
       "kind": "function",
@@ -4607,7 +4751,7 @@
     },
     "threetears.evals.ops.JobKind": {
       "kind": "literal",
-      "signature": "'run'` | `'analysis'` | `'sweep'"
+      "signature": "'launch'` | `'run'` | `'analysis'` | `'sweep'` | `'second_judge'` | `'judge_temperature'` | `'action'"
     },
     "threetears.evals.ops.JobsStarted": {
       "kind": "model",
@@ -4619,7 +4763,7 @@
     },
     "threetears.evals.ops.JobStatus": {
       "kind": "model",
-      "signature": "JobStatus(job_id: str, kind: JobKind, state: JobState, status: str, done: bool, progress: dict[str, Any] = dict(), run_id: str | None = None, campaign_id: str | None = None, analysis_id: str | None = None, sweep_id: str | None = None, detail: str | None = None)"
+      "signature": "JobStatus(job_id: str, kind: JobKind, state: JobState, status: str, done: bool, progress: dict[str, Any] = dict(), run_id: str | None = None, run_ids: list[str] = list(), campaign_id: str | None = None, analysis_id: str | None = None, sweep_id: str | None = None, detail: str | None = None, result: dict[str, Any] | None = None)"
     },
     "threetears.evals.ops.judge_cases_freeze": {
       "kind": "function",
@@ -4627,7 +4771,7 @@
     },
     "threetears.evals.ops.judge_drift_check": {
       "kind": "async function",
-      "signature": "judge_drift_check(host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, result_ids: list[str] | None = None) -> SecondJudgeRead"
+      "signature": "judge_drift_check(host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, result_ids: list[str] | None = None) -> JobsStarted"
     },
     "threetears.evals.ops.judge_profiles_list": {
       "kind": "function",
@@ -4647,7 +4791,7 @@
     },
     "threetears.evals.ops.judge_second": {
       "kind": "async function",
-      "signature": "judge_second(host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, sample_fraction: float = 1.0, seed: int = 0, result_ids: list[str] | None = None) -> SecondJudgeRead"
+      "signature": "judge_second(host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, sample_fraction: float = 1.0, seed: int = 0, result_ids: list[str] | None = None, asked_by: SecondJudgeAskedBy = 'judge_second') -> JobsStarted"
     },
     "threetears.evals.ops.judge_second_estimate": {
       "kind": "async function",
@@ -4655,11 +4799,19 @@
     },
     "threetears.evals.ops.judge_temperature": {
       "kind": "async function",
-      "signature": "judge_temperature(host: OpsHost, run_id: str, scope_id: str, *, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: list[str] | None = None) -> JudgeTemperatureComparison"
+      "signature": "judge_temperature(host: OpsHost, run_id: str, scope_id: str, *, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: list[str] | None = None) -> JobsStarted"
     },
     "threetears.evals.ops.judge_temperature_estimate": {
       "kind": "async function",
       "signature": "judge_temperature_estimate(host: OpsHost, run_id: str, scope_id: str, *, selection: TemperatureSelection = 'borderline', repeats: int = 5, result_ids: list[str] | None = None) -> JudgeTemperatureEstimate"
+    },
+    "threetears.evals.ops.judge_temperature_job_id": {
+      "kind": "function",
+      "signature": "judge_temperature_job_id(check_id: str) -> str"
+    },
+    "threetears.evals.ops.JUDGE_TEMPERATURE_JOB_PREFIX": {
+      "kind": "constant (str)",
+      "signature": ""
     },
     "threetears.evals.ops.JudgeCasesFreeze": {
       "kind": "model",
@@ -4688,6 +4840,18 @@
     "threetears.evals.ops.launch_estimate": {
       "kind": "async function",
       "signature": "launch_estimate(host: OpsHost, arguments: LaunchArguments, scope_id: str, *, n_test_cases: int | None = None) -> LaunchEstimate"
+    },
+    "threetears.evals.ops.launch_job_id": {
+      "kind": "function",
+      "signature": "launch_job_id(launch_id: str) -> str"
+    },
+    "threetears.evals.ops.LAUNCH_JOB_PREFIX": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
+    "threetears.evals.ops.launch_progress": {
+      "kind": "function",
+      "signature": "launch_progress(launch: EvalLaunch, runs: dict[str, EvalRun]) -> dict[str, Any]"
     },
     "threetears.evals.ops.LaunchArguments": {
       "kind": "model",
@@ -4889,9 +5053,25 @@
       "kind": "model",
       "signature": "ScoreExport(format: ExportFormat, body: VerbatimText, n_records: int, exclusions: ProjectionExclusions, completeness_disclosures: dict[str, str] = {})"
     },
+    "threetears.evals.ops.second_judge_job_id": {
+      "kind": "function",
+      "signature": "second_judge_job_id(pass_id: str) -> str"
+    },
+    "threetears.evals.ops.SECOND_JUDGE_JOB_PREFIX": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
     "threetears.evals.ops.SecondJudgeRead": {
       "kind": "model",
       "signature": "SecondJudgeRead(report: SecondJudgeReport, agreement: InterJudgeAgreement, drift: JudgeDrift)"
+    },
+    "threetears.evals.ops.start_action_job": {
+      "kind": "async function",
+      "signature": "start_action_job(host: OpsHost, scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], label: str = '', budget_s: float = 3600.0, discard: Callable[[], Awaitable[None]] | None = None) -> JobsStarted"
+    },
+    "threetears.evals.ops.start_job": {
+      "kind": "async function",
+      "signature": "start_job(host: OpsHost, admitted: AdmittedJob) -> JobsStarted"
     },
     "threetears.evals.ops.sweep_job_id": {
       "kind": "function",
@@ -4959,7 +5139,7 @@
     },
     "threetears.evals.actions.Action": {
       "kind": "dataclass",
-      "signature": "Action(name: str, summary: str, workflow: str, permission: PermissionClass, params: type[BaseModel], result: type[BaseModel], handler: ActionHandler, render: Callable[[Any], str], example: Mapping[str, Any], long_running: bool = False, detail: str = '')"
+      "signature": "Action(name: str, summary: str, workflow: str, permission: PermissionClass, params: type[BaseModel], result: type[BaseModel], handler: ActionHandler, render: Callable[[Any], str], example: Mapping[str, Any], long_running: bool = False, detail: str = '', happy_path: HappyPath | None = None)"
     },
     "threetears.evals.actions.ACTION_NAME": {
       "kind": "constant (Pattern)",
@@ -4981,6 +5161,14 @@
       "kind": "dataclass",
       "signature": "Caller(scope_id: str, identity: str)"
     },
+    "threetears.evals.actions.ConformanceSample": {
+      "kind": "dataclass",
+      "signature": "ConformanceSample(template_id: str, subject_id: str, models: tuple[str, ...], second_judge_model: str)"
+    },
+    "threetears.evals.actions.ConformanceStage": {
+      "kind": "dataclass",
+      "signature": "ConformanceStage(host: OpsHost, caller: Caller, sample: ConformanceSample)"
+    },
     "threetears.evals.actions.DEFAULT_PREFIX": {
       "kind": "constant (str)",
       "signature": ""
@@ -4992,6 +5180,10 @@
     "threetears.evals.actions.eval_catalogue": {
       "kind": "function",
       "signature": "eval_catalogue(host_actions: tuple[Action, ...] = ()) -> ActionCatalogue"
+    },
+    "threetears.evals.actions.HappyPath": {
+      "kind": "type alias",
+      "signature": "Callable[[ConformanceStage], Awaitable[Mapping[str, Any]]]"
     },
     "threetears.evals.actions.HELP_ACTION": {
       "kind": "constant (str)",
@@ -5041,13 +5233,17 @@
       "kind": "model",
       "signature": "CatalogueTool(name: str, version: str | None = None, title: str | None = None, description: str | None = None, icons: list[mcp.types.Icon] | None = None, tags: set[str] = set(), meta: dict[str, Any] | None = None, task_config: fastmcp.utilities.tasks.TaskConfig = <lambda>(), parameters: dict[str, typing.Any], output_schema: dict[str, Any] | None = None, annotations: mcp.types.ToolAnnotations | None = None, execution: mcp.types.ToolExecution | None = None, serializer: collections.abc.Callable[[Any], str] | None = None, auth: collections.abc.Callable[[fastmcp.utilities.authorization.AuthContext], bool] | collections.abc.Callable[[fastmcp.utilities.authorization.AuthContext], collections.abc.Awaitable[bool]] | list[collections.abc.Callable[[fastmcp.utilities.authorization.AuthContext], bool] | collections.abc.Callable[[fastmcp.utilities.authorization.AuthContext], collections.abc.Awaitable[bool]]] | None = None, timeout: float | None = None, binding: ToolBinding)"
     },
+    "threetears.evals.transports.fastmcp.DEFAULT_CALL_TIMEOUT_S": {
+      "kind": "constant (float)",
+      "signature": ""
+    },
     "threetears.evals.transports.fastmcp.mount_fastmcp": {
       "kind": "function",
-      "signature": "mount_fastmcp(server: FastMCP, catalogue: ActionCatalogue, *, host: OpsHost, caller: CallerResolver, tools: Sequence[ToolSpec] | None = None) -> tuple[str, ...]"
+      "signature": "mount_fastmcp(server: FastMCP, catalogue: ActionCatalogue, *, host: OpsHost, caller: CallerResolver, tools: Sequence[ToolSpec] | None = None, call_timeout_s: float = 60.0) -> tuple[str, ...]"
     },
     "threetears.evals.transports.fastmcp.ToolBinding": {
       "kind": "class",
-      "signature": "ToolBinding(mounted: MountedTool, host: OpsHost, caller: CallerResolver) -> None"
+      "signature": "ToolBinding(mounted: MountedTool, host: OpsHost, caller: CallerResolver, call_timeout_s: float = 60.0) -> None"
     },
     "threetears.evals.vega.check_spec": {
       "kind": "function",

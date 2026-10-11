@@ -32,6 +32,14 @@ A public name has one home: the root holding its defining module. A name another
 from that root, unless the root needs it and api/reexports.toml says why (`ops` keeps the analysis results the
 action catalogue names, since `actions` may reach `analysis` only through `ops`).
 """
+notes = [
+    "Every model-calling action runs as a job: `run_launch` returns one `launch:<id>` job whose `JobStatus.run_ids` names its runs; `judge_second`, `judge_drift_check` and `judge_temperature` return `JobsStarted`, and their read is `job_poll(...).result`. Poll with `job_poll`; a transport call never waits on a model.",
+    "A host action that calls a model must run as a job (`ops.start_action_job`, recorded as `EvalActionJob`), and every `spend` action declares a `happy_path`; `threetears.evals.testing.jobs_conformance_cases` proves both over a host's catalogue.",
+    "`DocumentStore.upsert` takes `create_only`: a host's own store adapter must implement it (write only when nothing is stored under the id) and pass the conformance kit's `create.*` cases.",
+    "A job's liveness is its record's lease, the same in every process. `EvalRun`, `EvalSweep` and `EvalAnalysisAttempt` carry `lease`, `cancel_requested_at`, `cancel_request_reason` and `lost`; a non-terminal record with no lease reads as lost. `LaunchHost.job_lease_s` sets the lease (default 60s).",
+    "Core schema v10. `eval_campaign`, `eval_sweep`, `eval_analysis_attempt`, `eval_generation_slot`, `eval_launch`, `eval_second_judge_pass`, `eval_judge_temperature_check` and `eval_action_job` are kept (core) documents and upgrade on read; nothing a host stored is refused.",
+    "`EVAL_DOC_TYPES` and `CORE_DOC_TYPES` are derived from `schema.DOC_TYPE_FACTS`; a host partitioning storage reads the facts (origin, lifecycle, suppresses), or uses `storage.RoutedDocumentStore`.",
+]
 
 [[release.change]]
 from = "threetears.evals.analysis.viz"
@@ -62,6 +70,12 @@ names = [
     "CaseResult", "CostEstimate", "DimensionSummary", "JudgeGrade", "OutOfRunSpendTotals", "ReportFormat",
     "RunMeasureSummary", "serialize_report", "summarize_run",
 ]
+
+[[release.change]]
+from = "threetears.evals.run"
+to = "removed"
+why = """The judge passes run as jobs now, so the in-call functions are gone. `ask_second_judge` is replaced by `second_judge_work`, run with `run_job_work` (foreground) or `ops.start_job`; `judge_at_two_temperatures` by `judge_temperature_work`, whose answers are kept on the `EvalJudgeTemperatureCheck` record."""
+names = ["ask_second_judge", "judge_at_two_temperatures"]
 
 [[release]]
 version = "0.66.0-evaladopt.6"
