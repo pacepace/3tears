@@ -599,6 +599,15 @@ class EvalJobManager:
         return self._leases
 
     @property
+    def job_timeout_factory(self) -> JobTimeoutFactory:
+        """What bounds each job's work: the host's factory, or :func:`default_job_timeout`.
+
+        For work that bounds itself rather than being bounded by :meth:`start_task` — a job whose record must say
+        it timed out, which only the work's own frame can write (:func:`~threetears.evals.run.start_job_work`).
+        """
+        return self._job_timeout_factory
+
+    @property
     def active_count(self) -> int:
         """Runs whose task is not done: queued for a concurrency slot or executing in one.
 
@@ -795,7 +804,7 @@ class EvalJobManager:
         job_id: str,
         work: Callable[[], Awaitable[None]],
         *,
-        budget_s: float,
+        budget_s: float | None,
         key: str | None = None,
         record: tuple[LeasedJobKind[Any], str] | None = None,
         discard: Callable[[], Awaitable[None]] | None = None,
@@ -818,7 +827,9 @@ class EvalJobManager:
             work: The coroutine function to run. Whatever it raises ends the task and is logged,
                 never re-raised — the work's own record is where its ending is stated.
             budget_s: The wall-clock ceiling, entered through this manager's timeout factory. The
-                caller derives it from the work's own inner ceilings.
+                caller derives it from the work's own inner ceilings. ``None`` for work that enters its own
+                (:attr:`job_timeout_factory`), because how it ends when that fires is the work's to record: a
+                budget firing here cancels the work, which cannot tell it from an operator's cancel.
             key: An exclusivity key: while a task with this key is live, starting another with
                 the same key is refused. ``None`` for no exclusivity.
             record: The work's own record, ``(its kind, its scope)``, whose id is ``job_id``, already
@@ -942,12 +953,16 @@ class EvalJobManager:
         if holders:
             raise ConflictError(f"task '{holders[0]}' is already running for {key}")
 
-    async def _run_task(self, job_id: str, work: Callable[[], Awaitable[None]], budget_s: float) -> None:
-        """Execute one detached task under its budget; log how it ended if it did not end cleanly."""
+    async def _run_task(self, job_id: str, work: Callable[[], Awaitable[None]], budget_s: float | None) -> None:
+        """Execute one detached task under its budget, if it has one; log how it ended if it did not end cleanly."""
         try:
-            async with self._job_timeout_factory(budget_s):
+            if budget_s is None:
                 with job_running(job_id):
                     await work()
+            else:
+                async with self._job_timeout_factory(budget_s):
+                    with job_running(job_id):
+                        await work()
         except asyncio.CancelledError:
             raise
         except EvalJobTimeout as timed_out:

@@ -93,9 +93,10 @@ from threetears.evals.run.launch_job import LAUNCH_JOB, EvalLaunch
 JobKind = Literal["launch", "run", "analysis", "sweep", "second_judge", "judge_temperature", "action"]
 
 #: Where a job stands. ``running`` — still going (a run ``pending`` or ``running``, a generation live);
-#: ``completed`` — ended with what it was for; ``stopped`` — a run ended short by its budget or its
-#: account, keeping what it measured; ``failed``; ``cancelled``; ``lost`` — the process running it went
-#: away before it ended: its lease lapsed, or its process shut down, and its record says so.
+#: ``completed`` — ended with what it was for; ``stopped`` — ended short by a budget, keeping what it recorded: a
+#: run by its cost or time budget or its account, a job's work by its time budget (its status ``timed_out``);
+#: ``failed``; ``cancelled`` — asked to stop; ``lost`` — the process running it went away before it ended: its
+#: lease lapsed, or its process shut down, and its record says so.
 JobState = Literal["running", "completed", "stopped", "failed", "cancelled", "lost"]
 
 #: The states a job does not leave.
@@ -141,6 +142,7 @@ _OUTCOME_STATES: dict[JobOutcome, JobState] = {
     "completed": "completed",
     "failed": "failed",
     "cancelled": "cancelled",
+    "timed_out": "stopped",
 }
 
 #: A run's stored status, as the job state it is.

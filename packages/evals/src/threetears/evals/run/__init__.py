@@ -143,7 +143,13 @@ from threetears.evals.run.judge_second import (
     estimate_second_judge,
     second_judge_work,
 )
-from threetears.evals.run.launch_job import LAUNCH_CANCEL_REASON, LAUNCH_JOB, EvalLaunch, launch_job_work
+from threetears.evals.run.launch_job import (
+    LAUNCH_CANCEL_REASON,
+    LAUNCH_JOB,
+    LAUNCH_PREPARATION_BUDGET_S,
+    EvalLaunch,
+    launch_job_work,
+)
 from threetears.evals.run.job_work import (
     ACTION_JOB,
     DEFAULT_ACTION_JOB_BUDGET_S,
@@ -415,6 +421,7 @@ __all__ = [
     "admit_launch",
     "LAUNCH_CANCEL_REASON",
     "LAUNCH_JOB",
+    "LAUNCH_PREPARATION_BUDGET_S",
     "EvalLaunch",
     "launch_job_work",
 ]

@@ -16,7 +16,8 @@ awaitable that runs to that ending. It is run either way, and writes the same re
 
 **The record is the job's answer.** Every record here declares the four lease fields
 (:mod:`~threetears.evals.schema.job_lease`) and the same three of its own — ``outcome`` (``running``, then
-``completed``, ``failed`` or ``cancelled``), ``detail`` (why it ended other than completed) and ``ended_at`` — so one
+``completed``, ``failed``, ``cancelled`` or ``timed_out``), ``detail`` (why it ended other than completed) and
+``ended_at`` — so one
 :class:`~threetears.evals.kernel.job_leases.LeasedJobKind` shape serves them all (:func:`leased_job_kind`): a record
 whose lease lapses is written lost, as a run, a sweep and an analysis attempt are. The work's own writes go through
 :class:`JobRecorder`, which refuses once the record has ended elsewhere
@@ -42,7 +43,7 @@ from threetears.evals.kernel.errors import ConflictError, EvalServiceError, JobF
 from threetears.evals.kernel.job_leases import JobLeases, LeasedJobKind, write_held_record
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
 from threetears.evals.kernel.storage import JobRecordStore, LeaseStore
-from threetears.evals.run.jobs import EvalJobManager
+from threetears.evals.run.jobs import EvalJobManager, EvalJobTimeout, JobTimeoutFactory
 from threetears.evals.schema.base import CoreDocumentModel, EvalDocumentModel
 from threetears.evals.schema.job_lease import (
     CancelRequestedAtField,
@@ -58,9 +59,10 @@ from threetears.observe import get_logger
 log = get_logger(__name__)
 
 #: Where a job's record stands: ``running`` (started, not ended), or how it ended — ``completed`` (its work ran to
-#: its end), ``failed`` (refused or broken part-way; ``detail`` says which) or ``cancelled`` (asked to stop, shut
-#: down, or lost — which the record's ``lost`` says).
-JobOutcome = Literal["running", "completed", "failed", "cancelled"]
+#: its end), ``failed`` (refused or broken part-way; ``detail`` says which), ``cancelled`` (asked to stop, shut
+#: down, or lost — which the record's ``lost`` says) or ``timed_out`` (its own wall-clock budget ran out; ``detail``
+#: names it). A budget is not a person deciding to stop, so the two are never one outcome.
+JobOutcome = Literal["running", "completed", "failed", "cancelled", "timed_out"]
 
 #: An action job's wall-clock ceiling unless its host names another: an hour, the job manager's own default.
 DEFAULT_ACTION_JOB_BUDGET_S = 3600.0
@@ -174,7 +176,10 @@ class JobWork[R: EvalDocumentModel]:
         run: Runs the work to its end and returns the record as it ends (:func:`end_record`), writing any progress
             through the recorder on the way. What it raises ends the job ``failed`` with the error as its detail, a
             cancel ends it ``cancelled``, and a fenced write ends it as the record already says.
-        budget_s: The work's wall-clock ceiling when it runs as a job.
+        budget_s: The work's wall-clock ceiling when it runs as a job: when it runs out, the work is stopped and the
+            record ends ``timed_out``. ``None`` for work that bounds what it does itself — a launch bounds its
+            preparation and leaves its runs to their own budgets, so time its runs spend queued for a slot is never
+            counted against it.
         discard: Releases what admission built (reserved room, admitted clients) when the work never runs: its
             start refused, or its task cancelled before its first step. ``None`` when admission holds nothing.
     """
@@ -182,7 +187,7 @@ class JobWork[R: EvalDocumentModel]:
     kind: LeasedJobKind[R]
     record: R
     run: Callable[[JobRecorder[R]], Awaitable[R]]
-    budget_s: float
+    budget_s: float | None
     discard: Callable[[], Awaitable[None]] | None = None
 
     @property
@@ -196,6 +201,22 @@ class JobWork[R: EvalDocumentModel]:
         return str(getattr(self.record, "scope_id"))
 
 
+def _timed_out_detail(timed_out: EvalJobTimeout) -> str:
+    """Why a job's work was stopped by its time budget, in a poll's words.
+
+    Args:
+        timed_out: The budget's firing.
+
+    Returns:
+        The record's ``detail``.
+    """
+    named = f"; the host named {timed_out.attribution!r} as running when it fired" if timed_out.attribution else ""
+    return (
+        f"timed out: its {timed_out.budget_s:.0f}s wall-clock budget ran out after {timed_out.elapsed_s:.0f}s"
+        f"{named}; what it recorded before then is kept"
+    )
+
+
 def _failure_detail(broke: BaseException) -> str:
     """Why a job's work failed, in a poll's words: an engine refusal as it was said, anything else by its class too."""
     if isinstance(broke, EvalServiceError):
@@ -203,15 +224,31 @@ def _failure_detail(broke: BaseException) -> str:
     return f"{type(broke).__name__}: {broke}"
 
 
-async def _run_to_end[R: EvalDocumentModel](work: JobWork[R], recorder: JobRecorder[R]) -> R:
-    """Run ``work`` and write its ending — completed, failed or cancelled — whatever the work did.
+async def _run_to_end[R: EvalDocumentModel](
+    work: JobWork[R], recorder: JobRecorder[R], *, deadline: JobTimeoutFactory | None
+) -> R:
+    """Run ``work`` and write its ending — completed, failed, cancelled or timed out — whatever the work did.
+
+    Args:
+        work: The admitted work.
+        recorder: Its record's writes.
+        deadline: What bounds the work by its ``budget_s`` — entered here, around the work alone, so a budget that
+            fires is caught here and the record says ``timed_out``; a deadline entered around this whole frame
+            would reach it as a cancel. ``None`` runs the work unbounded (the foreground form).
 
     Returns:
         The record as it ended; as last written when the record was fenced off (written lost elsewhere).
     """
     record_id, scope_id, name = work.record_id, work.scope_id, work.kind.name
     try:
-        ended = await work.run(recorder)
+        if deadline is None or work.budget_s is None:
+            ended = await work.run(recorder)
+        else:
+            async with deadline(work.budget_s):
+                ended = await work.run(recorder)
+    except EvalJobTimeout as timed_out:
+        log.warning("eval.job %s=%s scope=%s timed out: %s", name, record_id, scope_id, timed_out)
+        ended = end_record(recorder.record, "timed_out", _timed_out_detail(timed_out))
     except asyncio.CancelledError:
         # The ending is written to its end even through a second cancel, then the cancel is re-raised.
         writing = asyncio.ensure_future(recorder.save(end_record(recorder.record, "cancelled", CANCELLED_DETAIL)))
@@ -287,13 +324,14 @@ async def start_job_work[R: EvalDocumentModel](
     recorder = JobRecorder(store, executor, work.kind, started)
 
     async def run() -> None:
-        await _run_to_end(work, recorder)
+        await _run_to_end(work, recorder, deadline=manager.job_timeout_factory)
 
     try:
         manager.start_task(
             work.record_id,
             run,
-            budget_s=work.budget_s,
+            # The work enters its own budget (_run_to_end), so its record can say it timed out.
+            budget_s=None,
             key=key,
             record=(work.kind, work.scope_id),
             discard=work.discard,
@@ -312,7 +350,9 @@ async def run_job_work[R: EvalDocumentModel](
     """Write the work's record, leased, and run the work to its end in the caller's own frame.
 
     The foreground form: the same record, written and held the same way, so a poll from any process reads the work
-    while it runs, and a cancel asked on the record cancels the caller's await. Not marked as a job's work
+    while it runs, and a cancel asked on the record cancels the caller's await. Not bounded by the work's
+    ``budget_s``, which bounds it as a job: the caller waits as long as the work takes, and stops it by cancelling.
+    Not marked as a job's work
     (:func:`~threetears.evals.kernel.running_job` stays the caller's), because it is not one: it is for a caller
     that is not a transport — a script, the command line — and waits as long as the work takes.
 
@@ -344,7 +384,7 @@ async def run_job_work[R: EvalDocumentModel](
 
     leases.hold(work.kind, work.record_id, work.scope_id, cancel=stop, stop=stop)
     try:
-        return await _run_to_end(work, JobRecorder(store, executor, work.kind, started))
+        return await _run_to_end(work, JobRecorder(store, executor, work.kind, started), deadline=None)
     finally:
         leases.release(work.record_id)
 

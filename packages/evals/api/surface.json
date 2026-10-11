@@ -2379,7 +2379,7 @@
     },
     "threetears.evals.run.JobOutcome": {
       "kind": "literal",
-      "signature": "'running'` | `'completed'` | `'failed'` | `'cancelled'"
+      "signature": "'running'` | `'completed'` | `'failed'` | `'cancelled'` | `'timed_out'"
     },
     "threetears.evals.run.JobRecorder": {
       "kind": "class",
@@ -2391,7 +2391,7 @@
     },
     "threetears.evals.run.JobWork": {
       "kind": "dataclass",
-      "signature": "JobWork(kind: LeasedJobKind[R], record: R, run: Callable[[JobRecorder[R]], Awaitable[R]], budget_s: float, discard: Callable[[], Awaitable[None]] | None = None)"
+      "signature": "JobWork(kind: LeasedJobKind[R], record: R, run: Callable[[JobRecorder[R]], Awaitable[R]], budget_s: float | None, discard: Callable[[], Awaitable[None]] | None = None)"
     },
     "threetears.evals.run.JUDGE_CALL_ATTEMPTS": {
       "kind": "constant (int)",
@@ -2504,6 +2504,10 @@
     "threetears.evals.run.launch_job_work": {
       "kind": "function",
       "signature": "launch_job_work(host: LaunchHost, admitted: AdmittedLaunch, *, template_id: str, subject_id: str, models: list[str], k_runs: int, n_variations: int, scope_id: str) -> JobWork[EvalLaunch]"
+    },
+    "threetears.evals.run.LAUNCH_PREPARATION_BUDGET_S": {
+      "kind": "constant (float)",
+      "signature": ""
     },
     "threetears.evals.run.launch_run": {
       "kind": "async function",

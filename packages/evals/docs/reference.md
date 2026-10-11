@@ -1122,8 +1122,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`Callable[[str, Sequence[str]], Awaitable[TemplatePreflight]]`
 - **`CellWork`** · type alias · One cell of a run, as the runner hands it to an executor: it runs the cell, records it and reports it.
   <br>`Callable[[], Awaitable[None]]`
-- **`JobOutcome`** · literal · Where a job's record stands: `running` (started, not ended), or how it ended — `completed` (its work ran to its end), `failed` (refused or broken part-way; `detail` says which) or `cancelled` (asked to stop, shut down, or lost — which the record's `lost` says).
-  <br>`'running'` | `'completed'` | `'failed'` | `'cancelled'`
+- **`JobOutcome`** · literal · Where a job's record stands: `running` (started, not ended), or how it ended — `completed` (its work ran to its end), `failed` (refused or broken part-way; `detail` says which), `cancelled` (asked to stop, shut down, or lost — which the record's `lost` says) or `timed_out` (its own wall-clock budget ran out; `detail` names it).
+  <br>`'running'` | `'completed'` | `'failed'` | `'cancelled'` | `'timed_out'`
 - **`JudgeClientFactory`** · type alias · Builds a judge LLM client for a `(model, temperature)` pair.
   <br>`Callable[[str | None, float | None], Any]`
 - **`KindLauncher`** · type alias · One kind's launcher: builds that kind's collaborators for one arm and hands `launch_run` its run.
@@ -1155,6 +1155,8 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`LAUNCH_CANCEL_REASON`** · constant (str) · The reason recorded on a run its launch's cancel stopped.
   <br>`= 'its launch was cancelled'`
 - **`LAUNCH_JOB`** · constant (LeasedJobKind) · A launch's record.
+- **`LAUNCH_PREPARATION_BUDGET_S`** · constant (float) · A launch's wall-clock ceiling on its preparation — its launchers, a generating launch's calls among them — in seconds: the engine's cap on one run's job, a backstop against a launcher or a provider that hangs.
+  <br>`= 28800.0`
 - **`RUBRIC_DIM_SERVER_FIELDS`** · constant (tuple) · Identity/lifecycle fields the rubric-dim family owns — never taken from caller input.
 - **`SCHEDULER_CALL_ATTEMPTS`** · constant (int) · How many calls one `llm_decided` scheduling decision may make: the first, and one repair that names what was wrong with it.
   <br>`= 2`
