@@ -39,6 +39,7 @@ from threetears.evals.kernel import (
 )
 from threetears.evals.ops import OpsHost
 from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.transports import fastmcp as fastmcp_transport
 from threetears.evals.transports.fastmcp import CallHook, ToolBinding, ToolCall, mount_fastmcp
 from packages.evals.tests.ops_support import CALLER, ops_fixture
 
@@ -411,3 +412,60 @@ async def test_a_call_the_timeout_stops_closes_its_hook() -> None:
     )
     assert is_error and "call timeout" in text
     assert seen == ["entered", "closed"]
+
+
+async def test_a_slow_hook_after_the_action_never_turns_its_outcome_into_a_timeout() -> None:
+    """A slow audit flush after the yield read as the call outliving its timeout, after the work was done and paid."""
+    actions = _Host()
+    flushed: list[str] = []
+
+    async def around(call: ToolCall) -> AsyncGenerator[None, ActionOutcome]:
+        outcome = yield
+        await asyncio.sleep(0.3)
+        flushed.append(outcome.text)
+
+    text, structured, is_error = await _call(
+        _served(actions, around=around, call_timeout_s=0.1), {"action": "note_take", "note": "ok"}
+    )
+    assert not is_error and structured is not None and structured["note"] == "ok", text
+    assert len(actions.ran_in) == 1 and flushed == ["noted ok"]
+
+
+async def test_a_hook_overrunning_after_the_action_is_cut_short_and_logged_and_the_outcome_stands(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(fastmcp_transport, "HOOK_TAIL_TIMEOUT_S", 0.05)
+
+    async def around(call: ToolCall) -> AsyncGenerator[None, ActionOutcome]:
+        yield
+        await asyncio.sleep(5)
+
+    with caplog.at_level(logging.ERROR, logger=_LOGGER):
+        _, structured, is_error = await _call(_served(_Host(), around=around), {"action": "note_take", "note": "ok"})
+    assert not is_error and structured is not None and structured["note"] == "ok"
+    assert [record.getMessage() for record in caplog.records if record.name == _LOGGER] == [
+        "around hook ran past its 0.05s after its yield on host/note_take and was cut short; the outcome stands"
+    ]
+
+
+async def test_a_hook_that_will_not_close_does_not_hold_a_stopped_call_open(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(fastmcp_transport, "HOOK_TAIL_TIMEOUT_S", 0.05)
+
+    async def around(call: ToolCall) -> AsyncGenerator[None, ActionOutcome]:
+        try:
+            yield
+        finally:
+            await asyncio.sleep(5)
+
+    started = asyncio.get_running_loop().time()
+    with caplog.at_level(logging.ERROR, logger=_LOGGER):
+        text, _, is_error = await _call(
+            _served(_Host(), around=around, call_timeout_s=0.05), {"action": "note_take", "note": "slow"}
+        )
+    assert is_error and "call timeout" in text
+    assert asyncio.get_running_loop().time() - started < 2, "the stopped call waited on its hook"
+    assert "around hook ran past its 0.05s closing host/note_take and was cut short" in [
+        record.getMessage() for record in caplog.records if record.name == _LOGGER
+    ]

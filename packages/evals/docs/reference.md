@@ -2264,6 +2264,7 @@ The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
 
 **Classes**
 
+- **`CallTimedOut`** · exception · A call outlived the call timeout and was stopped before its action finished.
 - **`CatalogueTool`** · model · One mounted tool, as FastMCP serves it: every call handed to the catalogue.
 - **`ToolBinding`** · class · What a `CatalogueTool` hands each call to: the mounted tool, the host, the caller resolver and the hook.
 - **`ToolCall`** · dataclass · One call, as an `around` hook sees it before the catalogue carries it out.
@@ -2281,6 +2282,8 @@ The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
 
 - **`DEFAULT_CALL_TIMEOUT_S`** · constant (float) · How long one call may take, in seconds, unless a host mounts with another: every call, whatever its action.
   <br>`= 60.0`
+- **`HOOK_TAIL_TIMEOUT_S`** · constant (float) · How long an `around` hook may take, in seconds, past the outcome it was handed — or closing, once a call is stopped.
+  <br>`= 10.0`
 
 <a id="api-vega"></a>
 ### `threetears.evals.vega`

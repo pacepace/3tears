@@ -33,7 +33,9 @@ Three hooks are what a multi-tenant host needs, so no host rebuilds :meth:`Catal
 **One fixed call timeout.** No action's call waits on a model — work that calls one runs as a job the caller
 polls — so a call is a few store round-trips, and every call is held to one fixed timeout
 (:data:`DEFAULT_CALL_TIMEOUT_S`, or the ``call_timeout_s`` a host mounts with), never one computed from what the
-call might spend. A call that outlives it is answered as an error saying so, rather than holding the client.
+call might spend. A call that outlives it is answered as an error saying so, rather than holding the client. The
+timeout holds a call up to its action's outcome; an ``around`` hook's code after its yield runs past it, under
+:data:`HOOK_TAIL_TIMEOUT_S` of its own, so a finished action's outcome always reaches its caller.
 
 **This module is a public root.** A host imports from here and from no module below it.
 """
@@ -60,6 +62,32 @@ log = get_logger(__name__)
 #: How long one call may take, in seconds, unless a host mounts with another: every call, whatever its action. No call
 #: waits on a model, so this bounds store round-trips and a host's own caller resolution, never a model's latency.
 DEFAULT_CALL_TIMEOUT_S = 60.0
+
+#: How long an ``around`` hook may take, in seconds, past the outcome it was handed — or closing, once a call is
+#: stopped. The call's own timeout ends when the action does, so the outcome reaches the caller whatever the hook
+#: does after it; a hook still running past this is cut short and logged, and the outcome stands.
+HOOK_TAIL_TIMEOUT_S = 10.0
+
+
+class CallTimedOut(Exception):
+    """A call outlived the call timeout and was stopped before its action finished.
+
+    Raised by :meth:`ToolBinding.call` only for the call's own deadline — a ``TimeoutError`` the action or a resolver
+    raises of its own propagates as itself — and answered by :class:`CatalogueTool` as an error result saying so.
+
+    Attributes:
+        timeout_s: The timeout it outlived, in seconds.
+    """
+
+    def __init__(self, timeout_s: float) -> None:
+        """Name the timeout the call outlived.
+
+        Args:
+            timeout_s: The timeout, in seconds.
+        """
+        super().__init__(f"the call outlived its {timeout_s:g}s call timeout and was stopped")
+        self.timeout_s = timeout_s
+
 
 #: Resolves who is calling, and their scope, for one call — sync or async. The host reads its own
 #: request context (an access token, a session) to answer it.
@@ -111,6 +139,12 @@ class ToolCall:
 #: unobserved, and one that raises after it, or yields a second time, leaves the outcome as it was. A
 #: host whose audit must hold before an action runs puts that check in the host or the action, which
 #: can refuse; a hook is not a gate.
+#:
+#: **Its code after the yield is not on the call's clock.** The call timeout holds the call up to the moment its
+#: action finishes; once it has, its outcome is the caller's, and a slow flush after the yield must not turn a
+#: launch that spent into a timeout the client relaunches and pays for again. That code is held to
+#: :data:`HOOK_TAIL_TIMEOUT_S` of its own, as is closing a hook whose call was stopped, and one that overruns is
+#: cut short and logged.
 CallHook = Callable[[ToolCall], AsyncGenerator[None, ActionOutcome]]
 
 _T = TypeVar("_T")
@@ -176,6 +210,10 @@ class ToolBinding:
     async def call(self, arguments: dict[str, Any]) -> ActionOutcome:
         """Carry out one call: resolve the caller, then the host, and hand the call to the catalogue under the hook.
 
+        The call timeout holds everything up to the action's outcome: the resolvers, the hook's code before its
+        yield, and the action. The hook's code after its yield runs once the outcome is in hand, under
+        :data:`HOOK_TAIL_TIMEOUT_S` of its own, and cannot replace it (:data:`CallHook`).
+
         Args:
             arguments: The call's arguments, ``action`` among them.
 
@@ -183,60 +221,108 @@ class ToolBinding:
             The catalogue's outcome, exactly as it returned it.
 
         Raises:
+            CallTimedOut: The call outlived the call timeout before its action finished; the action was stopped,
+                and the hook closed.
             TypeError: A resolver answered with something other than a
                 :class:`~threetears.evals.actions.Caller` or an :class:`~threetears.evals.ops.OpsHost`.
             Exception: Whatever a resolver raises, before the hook is entered and before any action runs —
                 with no caller there is no one to run it as — and whatever the catalogue lets propagate (a
                 defect). A refusal is an outcome, not an exception.
         """
-        caller = await _resolved(self.caller())
-        if not isinstance(caller, Caller):
-            raise TypeError(f"tool {self.mounted.name!r}: the caller resolver answered {caller!r}, not a Caller")
-        host = self.host
-        if self.host_resolver is not None:
-            host = await _resolved(self.host_resolver())
-            if not isinstance(host, OpsHost):
-                raise TypeError(f"tool {self.mounted.name!r}: the host resolver answered {host!r}, not an OpsHost")
-        assert host is not None  # one of the two is set, which __init__ holds
-        if self.around is None:
-            return await self.mounted.call(arguments, host=host, caller=caller)
-        action = arguments.get("action")
-        observed = ToolCall(tool=self.mounted.name, action=action if isinstance(action, str) else None, caller=caller)
-        return await _observed(self.around, observed, lambda: self.mounted.call(arguments, host=host, caller=caller))
+        deadline = asyncio.timeout(self.call_timeout_s)
+        hook: AsyncGenerator[None, ActionOutcome] | None = None
+        observed: ToolCall | None = None
+        try:
+            async with deadline:
+                caller = await _resolved(self.caller())
+                if not isinstance(caller, Caller):
+                    raise TypeError(
+                        f"tool {self.mounted.name!r}: the caller resolver answered {caller!r}, not a Caller"
+                    )
+                host = self.host
+                if self.host_resolver is not None:
+                    host = await _resolved(self.host_resolver())
+                    if not isinstance(host, OpsHost):
+                        raise TypeError(
+                            f"tool {self.mounted.name!r}: the host resolver answered {host!r}, not an OpsHost"
+                        )
+                assert host is not None  # one of the two is set, which __init__ holds
+                if self.around is not None:
+                    action = arguments.get("action")
+                    observed = ToolCall(
+                        tool=self.mounted.name, action=action if isinstance(action, str) else None, caller=caller
+                    )
+                    hook = await _entered(self.around, observed)
+                try:
+                    outcome = await self.mounted.call(arguments, host=host, caller=caller)
+                except BaseException as defect:
+                    if hook is not None and observed is not None:
+                        await _closed_within(hook, observed, defect)
+                    raise
+        except TimeoutError:
+            # A TimeoutError the caller resolver or the action raised of its own is not this call outliving its
+            # timeout, and answering it as one would blame the store for the action's own fault: it propagates, as
+            # anything else the action raises does.
+            if not deadline.expired():
+                raise
+            raise CallTimedOut(self.call_timeout_s) from None
+        if hook is not None and observed is not None:
+            await _finished_within(hook, observed, outcome)
+        return outcome
 
 
-async def _observed(around: CallHook, call: ToolCall, work: Callable[[], Awaitable[ActionOutcome]]) -> ActionOutcome:
-    """Run ``work`` inside the hook, which sees it and cannot change it; the hook's own failures are logged.
-
-    Args:
-        around: The hook.
-        call: The call, as the hook sees it.
-        work: Starts the catalogue's call; started once, after the hook's code before its yield.
-
-    Returns:
-        ``work``'s outcome.
-    """
+async def _entered(around: CallHook, call: ToolCall) -> AsyncGenerator[None, ActionOutcome] | None:
+    """The hook, run to its yield; ``None`` when it failed there, which is logged and leaves the call unobserved."""
     hook = around(call)
     try:
         await anext(hook)
     except Exception:
         log.exception("around hook failed before its yield on %s/%s; the call runs unobserved", call.tool, call.action)
-        return await work()
+        return None
+    return hook
+
+
+async def _finished_within(hook: AsyncGenerator[None, ActionOutcome], call: ToolCall, outcome: ActionOutcome) -> None:
+    """Hand the hook the outcome and let it finish, within :data:`HOOK_TAIL_TIMEOUT_S`; what it does is logged.
+
+    The outcome is already the caller's: a hook that raises, yields again or overruns is logged, and nothing it
+    does reaches the caller.
+    """
     try:
-        outcome = await work()
-    except BaseException as defect:
-        await _close(hook, call, defect)
-        raise
+        async with asyncio.timeout(HOOK_TAIL_TIMEOUT_S):
+            try:
+                await hook.asend(outcome)
+            except StopAsyncIteration:
+                return
+            except Exception:
+                log.exception("around hook failed after its yield on %s/%s; the outcome stands", call.tool, call.action)
+                return
+            log.error(
+                "around hook yielded twice on %s/%s; it yields once, and the outcome stands", call.tool, call.action
+            )
+            await _close(hook, call, None)
+    except TimeoutError:
+        log.error(
+            "around hook ran past its %gs after its yield on %s/%s and was cut short; the outcome stands",
+            HOOK_TAIL_TIMEOUT_S,
+            call.tool,
+            call.action,
+        )
+
+
+async def _closed_within(hook: AsyncGenerator[None, ActionOutcome], call: ToolCall, defect: BaseException) -> None:
+    """Finish a hook whose call raised or was stopped (:func:`_close`), within :data:`HOOK_TAIL_TIMEOUT_S`.
+
+    Run where the call's own timeout may already have fired, so it carries a bound of its own: a hook that will not
+    close must not hold a stopped call open.
+    """
     try:
-        await hook.asend(outcome)
-    except StopAsyncIteration:
-        return outcome
-    except Exception:
-        log.exception("around hook failed after its yield on %s/%s; the outcome stands", call.tool, call.action)
-        return outcome
-    log.error("around hook yielded twice on %s/%s; it yields once, and the outcome stands", call.tool, call.action)
-    await _close(hook, call, None)
-    return outcome
+        async with asyncio.timeout(HOOK_TAIL_TIMEOUT_S):
+            await _close(hook, call, defect)
+    except TimeoutError:
+        log.error(
+            "around hook ran past its %gs closing %s/%s and was cut short", HOOK_TAIL_TIMEOUT_S, call.tool, call.action
+        )
 
 
 async def _close(hook: AsyncGenerator[None, ActionOutcome], call: ToolCall, defect: BaseException | None) -> None:
@@ -342,20 +428,14 @@ class CatalogueTool(Tool):
             refused; and the error flag alone, with text saying so, when it outlived the call timeout.
         """
         binding = self.binding
-        deadline = asyncio.timeout(binding.call_timeout_s)
         try:
-            # The whole call — the caller and host resolvers and the hook with it — is held to the one timeout.
-            async with deadline:
-                outcome = await binding.call(arguments)
-        except TimeoutError:
-            # A TimeoutError the caller resolver or the action raised of its own is not this call outliving the
-            # server's timeout, and answering it as one would blame the store for the action's own fault: it
-            # propagates, as anything else the action raises does.
-            if not deadline.expired():
-                raise
+            # The call up to its outcome — the caller and host resolvers, the hook before its yield, the action — is
+            # held to the one timeout; the hook after its yield is not (ToolBinding.call).
+            outcome = await binding.call(arguments)
+        except CallTimedOut as stopped:
             return ToolResult(
                 content=(
-                    f"the call outlived this server's {binding.call_timeout_s:g}s call timeout and was stopped. No "
+                    f"the call outlived this server's {stopped.timeout_s:g}s call timeout and was stopped. No "
                     "action's call waits on a model — work that does runs as a job — so this is a fault of the "
                     "server's store or of the action, not something to wait out: report it"
                 ),
@@ -420,7 +500,9 @@ def mount_fastmcp(
 
 __all__ = [
     "DEFAULT_CALL_TIMEOUT_S",
+    "HOOK_TAIL_TIMEOUT_S",
     "CallHook",
+    "CallTimedOut",
     "CallerResolver",
     "CatalogueTool",
     "HostResolver",

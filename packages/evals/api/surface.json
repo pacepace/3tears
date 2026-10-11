@@ -5485,11 +5485,19 @@
       "kind": "type alias",
       "signature": "Callable[[ToolCall], AsyncGenerator[None, ActionOutcome]]"
     },
+    "threetears.evals.transports.fastmcp.CallTimedOut": {
+      "kind": "exception",
+      "signature": "CallTimedOut(timeout_s: float) -> None"
+    },
     "threetears.evals.transports.fastmcp.CatalogueTool": {
       "kind": "model",
       "signature": "CatalogueTool(name: str, version: str | None = None, title: str | None = None, description: str | None = None, icons: list[mcp.types.Icon] | None = None, tags: set[str] = set(), meta: dict[str, Any] | None = None, task_config: fastmcp.utilities.tasks.TaskConfig = <lambda>(), parameters: dict[str, typing.Any], output_schema: dict[str, Any] | None = None, annotations: mcp.types.ToolAnnotations | None = None, execution: mcp.types.ToolExecution | None = None, serializer: collections.abc.Callable[[Any], str] | None = None, auth: collections.abc.Callable[[fastmcp.utilities.authorization.AuthContext], bool] | collections.abc.Callable[[fastmcp.utilities.authorization.AuthContext], collections.abc.Awaitable[bool]] | list[collections.abc.Callable[[fastmcp.utilities.authorization.AuthContext], bool] | collections.abc.Callable[[fastmcp.utilities.authorization.AuthContext], collections.abc.Awaitable[bool]]] | None = None, timeout: float | None = None, binding: ToolBinding)"
     },
     "threetears.evals.transports.fastmcp.DEFAULT_CALL_TIMEOUT_S": {
+      "kind": "constant (float)",
+      "signature": ""
+    },
+    "threetears.evals.transports.fastmcp.HOOK_TAIL_TIMEOUT_S": {
       "kind": "constant (float)",
       "signature": ""
     },
