@@ -249,6 +249,63 @@ async def test_a_holder_that_stops_renewing_reads_lost_after_its_lease_and_the_l
     assert (attempt.outcome, attempt.lost) == ("cancelled", written)
 
 
+class LostOnStoreStore(ClockedStore):
+    """Writes a running generation's attempt lost — as another process's reader would — once its analysis is stored.
+
+    The race a check before storing cannot close: the holder found its attempt held, stored its paid analysis, and
+    only then did the lease lapse and a reader write the loss.
+    """
+
+    def __init__(self) -> None:
+        """Lose nothing until told to."""
+        super().__init__()
+        self.lose_next = False
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Write; then, for an analysis while told to, lapse the clock past the lease and settle every attempt."""
+        super().upsert(document, if_match=if_match, create_only=create_only)
+        if self.lose_next and document.get("doc_type") == "eval_analysis":
+            self.lose_next = False
+            self.at = self.at + timedelta(seconds=61)
+            storage = EvalStorage(self)
+            scope_id = str(document["scope_id"])
+            for attempt in storage.list_analysis_attempts_by_campaign(str(document["campaign_id"]), scope_id):
+                settle_job_record(storage, ANALYSIS_JOB, attempt.id, scope_id)
+
+
+async def test_a_generation_whose_attempt_is_lost_while_it_stores_withdraws_what_it_stored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import packages.evals.tests.ops_support as support
+
+    memo = support.memo_payload
+
+    def durable_memo(bundle: Any) -> dict[str, Any]:
+        payload = memo(bundle)
+        payload["findings"][0]["durable"] = "the wide chunk is slower per document than the narrow one"
+        return payload
+
+    monkeypatch.setattr(support, "memo_payload", durable_memo)
+    store = LostOnStoreStore()
+    fixture = ops_fixture(store=store)
+    storage = fixture.host.eval_host.storage
+    (first,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    assert (await settled(fixture.host, first.job_id)).state == "completed"
+    (kept,) = analyses_list(fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
+    ledger = storage.query_insights(TOYHOST_SCOPE)
+    assert ledger and all(insight.source_analysis_id == kept.id for insight in ledger)
+
+    store.lose_next = True
+    (second,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    attempt_id = second.job_id.rsplit(":", 1)[1]
+    await _until(lambda: not fixture.host.launch.job_manager.is_task_active(attempt_id))
+
+    assert (await job_poll(fixture.host, second.job_id, TOYHOST_SCOPE)).state == "lost"
+    analyses = analyses_list(fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
+    assert [analysis.id for analysis in analyses] == [kept.id], "the lost attempt keeps no analysis"
+    assert storage.query_insights(TOYHOST_SCOPE) == ledger, "the insights it restated are put back as they stood"
+
+
 async def test_a_holder_whose_own_lease_lapsed_writes_itself_lost_at_renewal_and_stops() -> None:
     gate = asyncio.Event()
     store = ClockedStore()

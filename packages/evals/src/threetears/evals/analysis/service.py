@@ -30,7 +30,7 @@ import asyncio
 import json
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
 from threetears.evals.analysis.bundle.assemble import CampaignReadStore, assemble_context_bundle
 from threetears.evals.analysis.bundle.insights import superseding_insights
@@ -85,6 +85,10 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
+#: How a generation attempt's ending write went: ``recorded``; ``fenced`` — refused, the stored attempt had already
+#: ended (written lost by another process); ``unrecorded`` — the write failed, and was logged.
+_AttemptRecorded = Literal["recorded", "fenced", "unrecorded"]
+
 #: How many distinct scopes a refusal lists before summarising the rest.
 #:
 #: An insight's ``scope`` is free prose — a scope might read like "candidate
@@ -128,6 +132,10 @@ class AnalysisStore(CampaignReadStore, JobRecordStore, Protocol):
         """Load one analysis within a scope, or ``None`` when it does not resolve there."""
         ...
 
+    def delete_analysis(self, analysis_id: str, scope_id: str, /) -> bool:
+        """Delete one analysis — a generation withdrawing what it stored for an attempt written lost."""
+        ...
+
     def list_analyses_by_campaign(self, campaign_id: str, scope_id: str, /) -> list[EvalAnalysis]:
         """Every analysis of one campaign, newest first."""
         ...
@@ -138,6 +146,10 @@ class AnalysisStore(CampaignReadStore, JobRecordStore, Protocol):
 
     def save_insight(self, insight: EvalInsight, /) -> None:
         """Write an insight a generation minted; raises ``StorageError`` on failure."""
+        ...
+
+    def delete_insight(self, insight_id: str, scope_id: str, /) -> bool:
+        """Delete one insight — a generation withdrawing one it minted for an attempt written lost."""
         ...
 
     def query_insights(
@@ -621,10 +633,23 @@ async def _offloaded[**P](
     Raises:
         Exception: Whatever the write raised.
     """
+    return (await _offloaded_result(executor, fn, *args, **kwargs))[1]
+
+
+async def _offloaded_result[**P, T](
+    executor: Executor | None, fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs
+) -> tuple[T, bool]:
+    """:func:`_offloaded`, keeping what the write returned.
+
+    Returns:
+        What ``fn`` returned, and whether a cancellation arrived while it ran.
+
+    Raises:
+        Exception: Whatever the write raised.
+    """
     work = asyncio.ensure_future(run_blocking(executor, fn, *args, **kwargs))
     cancelled = await wait_through_cancellation(work)
-    work.result()
-    return cancelled
+    return work.result(), cancelled
 
 
 async def run_analysis_generation(
@@ -644,8 +669,10 @@ async def run_analysis_generation(
     **A background generation's attempt is its job's record**, written ``running`` before it started
     (:func:`running_analysis_attempt`) and carrying the job's lease. Its ending is written over that record and
     never over one that has already ended: once another process has written it lost (its lease lapsed), the
-    generation stores nothing more — not its ending, and not its analysis, which is checked for before it is
-    stored — and :class:`~threetears.evals.kernel.JobFenced` is raised.
+    generation stores nothing more — not its ending, and not its analysis — and
+    :class:`~threetears.evals.kernel.JobFenced` is raised. The attempt's ending is the commit: it is written last,
+    conditionally, and when it finds the attempt already lost the analysis and the insights stored just before it
+    are withdrawn, so a lost attempt never keeps an analysis.
 
     Args:
         host: The host: where the analysis, its insights and the attempt record are written, the
@@ -708,7 +735,13 @@ async def run_analysis_generation(
         # On the host's blocking executor, and waited for through a cancellation: the record is how the
         # attempt ended, so a cancel arriving while it is written must not leave it half-known. Returns
         # whether a cancellation arrived meanwhile, which the caller delivers once it has finished.
-        return await _offloaded(
+        return (await recorded(outcome, error=error, analysis_id=analysis_id))[1]
+
+    async def recorded(
+        outcome: AttemptOutcome, *, error: str | None = None, analysis_id: str | None = None
+    ) -> tuple[_AttemptRecorded, bool]:
+        # :func:`record`, saying too whether the ending landed, or was refused because the attempt had ended.
+        return await _offloaded_result(
             executor,
             _record_analysis_attempt,
             storage,
@@ -802,6 +835,14 @@ async def run_analysis_generation(
     # Every write runs on the host's blocking executor and is waited for through a cancellation, so a
     # cancel arriving while the paid-for analysis is stored cannot leave it stored with no record saying
     # so; the cancellation is delivered once the analysis, its record and its insights are written.
+    #
+    # **The attempt's ending is the commit.** Checking the attempt is still held and then storing is
+    # check-then-act: another process can write the attempt lost in between (its lease lapsed while this one
+    # stalled). So the check below only refuses early; what decides is the attempt's own ending, written last
+    # and conditionally (``write_held_record``, ``if_match``). When that write finds the attempt already
+    # ended — lost — what this generation stored is withdrawn (:func:`_withdraw_generation`): the analysis
+    # deleted, each insight it wrote deleted or put back as it stood. A lost attempt never keeps an analysis.
+    # The ending stays last because a poll reading ``completed`` must find the ledger already written.
     await _offloaded(executor, _still_held, storage, prepared)
     try:
         cancelled = await _offloaded(executor, storage.save_analysis, analysis)
@@ -818,13 +859,18 @@ async def run_analysis_generation(
     # The attempt is recorded ``stored`` only once the insights are written (or have failed to be): a background
     # generation's job reads its attempt, so a poll reading ``completed`` finds the ledger already written.
     written: list[list[EvalInsight]] = []
+    # The ledger rows the new insights are written over, as they stood — what a withdrawal puts back.
+    overwritten: dict[str, EvalInsight] = {}
+    stored_insights: list[EvalInsight] = []
 
     def supersede() -> None:
         ledger = storage.query_insights(scope_id, subject_id=analysis.subject_id)
-        written.append(
-            superseding_insights(insights, ledger, lambda source: storage.analysis_archived(source, scope_id))
-        )
+        minted = superseding_insights(insights, ledger, lambda source: storage.analysis_archived(source, scope_id))
+        prior = {insight.id: insight for insight in ledger}
+        overwritten.update({insight.id: prior[insight.id] for insight in minted if insight.id in prior})
+        written.append(minted)
 
+    unfinished: StorageError | None = None
     try:
         try:
             cancelled = await _offloaded(executor, supersede) or cancelled
@@ -842,8 +888,24 @@ async def run_analysis_generation(
                     f"failed to persist insight '{insight.id}' from analysis '{analysis.id}' — the analysis "
                     f"itself was stored, but its insight ledger is incomplete"
                 ) from e
-    finally:
-        cancelled = await record("stored", analysis_id=analysis.id) or cancelled
+            stored_insights.append(insight)
+    except StorageError as e:
+        unfinished = e
+    ending, cancelled_now = await recorded("stored", analysis_id=analysis.id)
+    cancelled = cancelled_now or cancelled
+    if ending == "fenced":
+        cancelled = (
+            await _offloaded(
+                executor, _withdraw_generation, storage, analysis, stored_insights, overwritten, scope_id=scope_id
+            )
+            or cancelled
+        )
+        raise JobFenced(
+            f"analysis attempt '{prepared.attempt_id}' was written lost by another process before its ending was "
+            f"recorded; analysis '{analysis.id}' and its insights were withdrawn"
+        )
+    if unfinished is not None:
+        raise unfinished
 
     log.info(
         "eval.generate_analysis stored campaign=%s analysis=%s insights=%d cost=$%.4f model=%s",
@@ -872,7 +934,7 @@ def _record_analysis_attempt(
     error: str | None,
     analysis_id: str | None,
     attempt_id: str,
-) -> None:
+) -> _AttemptRecorded:
     """Store how one generation attempt ended, from the tally the generator kept.
 
     A write that fails is logged at ERROR with the whole record and NOT raised: this runs on the
@@ -895,6 +957,10 @@ def _record_analysis_attempt(
         analysis_id: The analysis it stored; None unless it was.
         attempt_id: The attempt's id, minted when the generation was prepared — a background
             generation's job id, so its poller can find this record once the job is gone.
+
+    Returns:
+        ``recorded``; ``fenced`` when the stored attempt had already ended — written lost — so this ending was
+        refused; ``unrecorded`` when the write failed (logged).
     """
     attempt = EvalAnalysisAttempt(
         id=attempt_id,
@@ -924,6 +990,7 @@ def _record_analysis_attempt(
             outcome,
             fenced,
         )
+        return "fenced"
     except StorageError, ConflictError:
         log.exception(
             "eval.generate_analysis attempt record NOT stored campaign=%s outcome=%s calls=%d cost=$%.4f model=%s — %s",
@@ -934,6 +1001,54 @@ def _record_analysis_attempt(
             generator_model,
             attempt.model_dump_json(),
         )
+        return "unrecorded"
+    return "recorded"
+
+
+def _withdraw_generation(
+    storage: AnalysisStore,
+    analysis: EvalAnalysis,
+    insights: list[EvalInsight],
+    overwritten: dict[str, EvalInsight],
+    *,
+    scope_id: str,
+) -> None:
+    """Undo what a generation stored when its attempt turned out lost before its ending was recorded.
+
+    Each insight it wrote is put back as the ledger held it (a restatement written over a live insight) or
+    deleted (a new one); then the analysis is deleted, so the lost attempt is left with nothing it did not record.
+    Blocking. A withdrawal that fails part-way is logged with what it left, and not raised: the caller raises the
+    fence that made it necessary.
+
+    Args:
+        storage: Where the analysis and the insights were written.
+        analysis: The analysis stored.
+        insights: The insights written, in order.
+        overwritten: The ledger rows those insights were written over, by id, as they stood.
+        scope_id: The scope they live in.
+    """
+    try:
+        for insight in insights:
+            if (prior := overwritten.get(insight.id)) is not None:
+                storage.save_insight(prior)
+            else:
+                storage.delete_insight(insight.id, scope_id)
+        storage.delete_analysis(analysis.id, scope_id)
+    # prawduct:ok-broad-except — a store's delete raises its own types; the fence the caller raises must still be raised
+    except Exception:
+        log.exception(
+            "eval.generate_analysis analysis %s was stored for an attempt written lost, and withdrawing it failed "
+            "part-way — delete it and restore its insights by hand: insights=%s",
+            analysis.id,
+            [insight.id for insight in insights],
+        )
+        return
+    log.warning(
+        "eval.generate_analysis analysis %s withdrawn: its attempt was written lost before its ending was recorded "
+        "(%d insight(s) put back or deleted)",
+        analysis.id,
+        len(insights),
+    )
 
 
 # ---------------------------------------------------------------------------
