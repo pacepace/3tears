@@ -6,6 +6,34 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: what a consumer's end-to-end test of .6 found (gaps 16–27)
+
+- **A run's summary states every role's spend and a total equal to its results' cost (breaking).** `EvalSummary.spend`
+  holds a `RoleSpend` per role (an inner agent's and an external API's units included) and `total_cost_usd` the
+  results' cost; `judge_calls`/`judge_cost_usd`/`candidate_calls`/`candidate_cost_usd` are gone (`role_spend(role)`).
+  A judge campaign's spend is stated.
+- **One spelling for a number, and one ruler for a measure.** `format_number` never writes an exponent: a small
+  value is four significant figures in full, and one below a millionth reads as `< 0.000001`. A report states a
+  measure's figures in one unit on every table, and each contrast cell carries it (`TableCell.unit`).
+- **`runs_compare` pairs only over cases that exist.** Two runs with no judged composite read "no paired cases", and
+  pass^k is stated over its own cases and under the criteria its attempts had.
+- **Every not-found and conflict names a remedy its caller can reach (breaking for a host raising either).**
+  `NotFoundError` and `ConflictError` require `remedy`, a refused call states it, and a test holds every one the
+  engine raises to it and to actions the catalogue has. `campaign_create` takes `template_id`, and infers it from
+  runs that all ran one template.
+- **A frontier verdict made on a judged pass^k names its judges' evidence tier**, on a scope's frontier as on a
+  campaign's.
+- **`judge_template_create`** writes the judge template a judge campaign freezes into and launches.
+- **A subject the host does not hold is refused at admission** by the estimate and the launch alike: `LaunchHost`
+  takes a required `resolve_subject` (breaking for a host building one).
+- **A judge completion without its temperature is a defect**, never an unrecorded judge.
+- **A template stating a field its kind never acts on is refused** (`LaunchableKind.ignored_template_fields`); the
+  judge kind ignores every one.
+- **A judge tier says when a stored profile was consulted** and decided nothing either (`consulted_profile`).
+- **`check_font_files` is exported from `threetears.evals.vega`** as a host's CI gate, needing no rasteriser, and a
+  font table records the digest of what it was probed with; a table probed with anything else is refused (re-measure
+  host tables).
+
 ### 3tears-evals: the public surface is snapshotted, and every name that leaves it is recorded (breaking)
 
 A name could leave a public root with nothing failing, and a porter learned the new home from an `ImportError`.
