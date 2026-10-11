@@ -3,9 +3,9 @@
 The quickest way in. :func:`run_eval` takes a list of cases, an async candidate and scorer
 functions, builds what a host would — a kind over the callable, a profile with one measure per
 scorer, the in-memory reference store — launches through the engine's own launch path, and returns
-an :class:`EvalSummary`. Handed each case's expected label (``expected=``), it grades the candidate as a
-classifier, and the summary carries its confusion matrix (:class:`ConfusionCount`) and each label's
-precision, recall and F1 (:class:`LabelStatistics`). Handed a :class:`Judge`, it also grades each answer
+an :class:`~threetears.evals.analysis.EvalSummary`. Handed each case's expected label (``expected=``), it grades the candidate as a
+classifier, and the summary carries its confusion matrix (:class:`~threetears.evals.analysis.ConfusionCount`) and each label's
+precision, recall and F1 (:class:`~threetears.evals.analysis.LabelStatistics`). Handed a :class:`Judge`, it also grades each answer
 with a model against a rubric. A candidate that calls a paid model returns an :class:`Answer` to report
 what each answer spent, which the summary and the results' ``cost_usd`` carry. :func:`compare` runs two or
 more candidates over one case list the same way, each as one arm, and returns a :class:`Comparison` whose
@@ -17,7 +17,7 @@ arm against the control apart from every contrast: held, breached or undecided. 
 ``cassette_mode='capture'`` records what they answered, and ``'replay'`` serves that recording to every arm
 in place of calling them. Handed a :class:`World`, each case's starting state and goal-state checks,
 :func:`run_eval` seeds every cell's world, hands the candidate :class:`WorldTools` that act on it, and
-grades the state it leaves (:class:`GoalCheckSummary`).
+grades the state it leaves (:class:`~threetears.evals.analysis.GoalCheckSummary`).
 :func:`run_cli` is ``python -m threetears.evals``: ``run``, ``ls``, ``report``, ``bundle``, ``spend``, ``gate`` and ``frontier`` over
 a host named ``module:factory``, or mounted under a product's own CLI with its host factory and any
 subcommands of its own (:class:`HostCommand`).
@@ -37,7 +37,6 @@ and only the names in ``__all__``.
 
 from __future__ import annotations
 
-from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics
 from threetears.evals.quick.answer import Answer
 from threetears.evals.quick.cli import (
     DEFAULT_PROG,
@@ -77,16 +76,6 @@ from threetears.evals.quick.judged import CaseMaterial, Judge
 from threetears.evals.quick.measures import Measure, measure
 from threetears.evals.quick.tools import CandidateTools, Tool, ToolUsingCandidate
 from threetears.evals.quick.world import CaseSeed, Dimension, ToolRefused, World, WorldCandidate, WorldTool, WorldTools
-from threetears.evals.analysis.summary import (
-    CaseOutcome,
-    CaseResult,
-    DimensionSummary,
-    EvalSummary,
-    GoalCheckSummary,
-    JudgeGrade,
-    RunMeasureSummary,
-    summarize_run,
-)
 
 __all__ = [
     "ARM_LEVER",
@@ -111,25 +100,16 @@ __all__ = [
     "Candidate",
     "CandidateTools",
     "CaseMaterial",
-    "CaseOutcome",
-    "CaseResult",
     "CaseSeed",
     "Comparison",
-    "ConfusionCount",
     "Dimension",
-    "DimensionSummary",
-    "EvalSummary",
     "ExpectedLabel",
-    "GoalCheckSummary",
     "Guardrail",
     "GuardrailDirection",
     "HostCommand",
     "HostFactory",
     "Judge",
-    "JudgeGrade",
-    "LabelStatistics",
     "Measure",
-    "RunMeasureSummary",
     "Scorer",
     "Tool",
     "ToolUsingCandidate",
@@ -146,5 +126,4 @@ __all__ = [
     "measure",
     "run_cli",
     "run_eval",
-    "summarize_run",
 ]

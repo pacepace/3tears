@@ -28,7 +28,7 @@ from typing import Any, Literal, NamedTuple
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from threetears.evals.analysis.reporting import NULL_LEVEL
-from threetears.evals.kernel.host.style import SERIES_SLOTS, VALIDATED_SLOTS
+from threetears.evals.kernel.host.style import VALIDATED_SLOTS
 from threetears.evals.schema.prose import ModelProse
 from threetears.evals.kernel.metrics import Materiality, MeasureScale
 
@@ -1695,8 +1695,6 @@ def describe_validation(exc: ValidationError) -> str:
 
 
 __all__ = [
-    "SERIES_SLOTS",
-    "VALIDATED_SLOTS",
     "ABSENT_LEVEL",
     "OFF_SCALE_LEVELS",
     "PAYLOAD_MODELS",

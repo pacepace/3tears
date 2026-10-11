@@ -26,7 +26,8 @@ import pytest
 
 from threetears.evals.analysis import list_campaigns
 from threetears.evals.kernel.errors import ValidationFailedError
-from threetears.evals.ops import scope_history, summarize_run
+from threetears.evals.ops import scope_history
+from threetears.evals.analysis import summarize_run
 from threetears.evals.quick import Judge, callable_host, compare, run_eval
 from threetears.evals.run import list_runs
 from threetears.evals.storage import SqliteDocumentStore
@@ -59,7 +60,7 @@ async def test_a_run_eval_run_is_read_back_by_a_new_process(tmp_path: Path) -> N
     # A process that never saw the runs, holding nothing but the file's path and the scorer.
     script = textwrap.dedent(
         f"""
-        from threetears.evals.ops import summarize_run
+        from threetears.evals.analysis import summarize_run
         from threetears.evals.quick import callable_host
         from threetears.evals.run import list_runs
         from threetears.evals.storage import SqliteDocumentStore

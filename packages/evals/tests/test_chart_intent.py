@@ -22,8 +22,6 @@ from typing import Any, get_args
 import pytest
 
 from threetears.evals.analysis.viz import (
-    SERIES_SLOTS,
-    VALIDATED_SLOTS,
     ChartAxis,
     ChartColours,
     ChartColumn,
@@ -39,6 +37,7 @@ from threetears.evals.analysis.viz import (
 from threetears.evals.analysis.viz.intents import INTENTS
 from threetears.evals.analysis.viz.payloads import PAYLOAD_MODELS
 from threetears.evals.kernel.campaign import VizType
+from threetears.evals.kernel.host import SERIES_SLOTS, VALIDATED_SLOTS
 from packages.evals.tests.import_resolution import absolute_module
 from packages.evals.tests.package_placement import eval_modules
 from packages.evals.tests.chart_examples import EVERY_TYPE

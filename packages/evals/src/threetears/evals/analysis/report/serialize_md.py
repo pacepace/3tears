@@ -22,7 +22,7 @@ from threetears.evals.analysis.report.model import (
 )
 from threetears.evals.analysis.report.model import chart_table_columns, finding_number, report_byline, report_title
 from threetears.evals.analysis.report.words import positions
-from threetears.evals.analysis.viz.intent import Cell
+from threetears.evals.analysis.viz.intent import ChartValue
 from threetears.evals.analysis.viz.quantities import render_cell
 
 
@@ -118,7 +118,7 @@ def _table(block: TableBlock) -> list[str]:
     return lines
 
 
-def markdown_table(headers: Sequence[str], rows: Iterable[Sequence[Cell]]) -> list[str]:
+def markdown_table(headers: Sequence[str], rows: Iterable[Sequence[ChartValue]]) -> list[str]:
     """A GitHub-flavoured Markdown table: one line per row, each cell on one line with its pipes escaped.
 
     Args:

@@ -26,8 +26,6 @@ from typing import Any, get_args
 import pytest
 
 from threetears.evals.analysis.viz import (
-    SERIES_SLOTS,
-    VALIDATED_SLOTS,
     ChartIntent,
     ChartRenderer,
     assert_renderer_conforms,
@@ -37,6 +35,7 @@ from threetears.evals.analysis.viz import (
     table_disagreements,
 )
 from threetears.evals.kernel.campaign import VizType
+from threetears.evals.kernel.host import SERIES_SLOTS, VALIDATED_SLOTS
 from threetears.evals.kernel.host import StyleError, StyleProfile
 from threetears.evals.vega import CompiledChart, VegaRenderer, packaged_font, packaged_palette, vega_config
 from threetears.evals.vega.arms import ARMS

@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.quick import EvalSummary
+from threetears.evals.analysis import EvalSummary
 from packages.evals.tests.example_loader import EXAMPLES, load_example
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 

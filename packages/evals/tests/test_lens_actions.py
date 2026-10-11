@@ -58,8 +58,8 @@ from threetears.evals.ops import (
     scope_export,
     scope_history,
     scope_pivot,
-    serialize_report,
 )
+from threetears.evals.analysis import serialize_report
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_COST_CEILING_USD
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_REVIEWER_POOL

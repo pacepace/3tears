@@ -1579,10 +1579,10 @@ Finding charts — eval's own chart intent, and the seam a renderer sits behind.
 
 **Types**
 
-- **`Cell`** · type alias · A values-table or data cell: a JSON scalar.
-  <br>`str | int | float | bool | None`
 - **`ChartType`** · literal · The chart types — eval's own, and the only ones an intent can carry.
   <br>`'delta_table'` | `'frontier'` | `'timeseries'` | `'distribution'` | `'null_result'` | `'breakdown'` | `'attribution'` | `'sweep_ranking'`
+- **`ChartValue`** · type alias · One value in a chart's data or its values table: a JSON scalar.
+  <br>`str | int | float | bool | None`
 - **`EncodingRole`** · literal · What a field encodes.
   <br>`'identity'` | `'length'` | `'position'` | `'interval_low'` | `'interval_high'` | `'level'` | `'class'` | `'ordinal'` | `'count'` | `'label'`
 
@@ -1590,10 +1590,6 @@ Finding charts — eval's own chart intent, and the seam a renderer sits behind.
 
 - **`INTENT_VERSION`** · constant (int) · The chart-intent shape's version.
   <br>`= 1`
-- **`SERIES_SLOTS`** · constant (int) · How many categorical colour slots a palette supplies before it recycles — the width of the vocabulary, and so exactly how many `ChartPalette.series` colours a palette declares.
-  <br>`= 8`
-- **`VALIDATED_SLOTS`** · constant (int) · How many categorical colour slots a chart may assign with validated separation.
-  <br>`= 4`
 
 <a id="api-gen"></a>
 ### `threetears.evals.gen`
@@ -1712,8 +1708,6 @@ Batteries: run an eval in one call, and drive the engine from a command line.
   <br>`Mapping[str, Callable[..., Awaitable[Any]]]`
 - **`CaseMaterial`** · type alias · Renders the material one case's answer is judged against: takes the case, returns non-blank text.
   <br>`Callable[[Mapping[str, Any]], str]`
-- **`CaseOutcome`** · literal · How one result came out, as `classify_result` classifies it: graded normally, failed by the candidate (it counts against the candidate), or excluded as a fault of the rig (it counts for nothing).
-  <br>`'scored'` | `'failed'` | `'excluded'`
 - **`CaseSeed`** · type alias · A case's starting state: takes the case, returns dimension name to value.
   <br>`Callable[[Mapping[str, Any]], Mapping[str, Any]]`
 - **`ExpectedLabel`** · type alias · A classifier's expected label for one case: takes the case, returns the label a correct answer gives.
@@ -1762,10 +1756,6 @@ Batteries: run an eval in one call, and drive the engine from a command line.
   <br>`= 'callable'`
 - **`UNUSABLE_ANSWER`** · constant (str) · The predicted label a classifier's answer is counted under when it is not a usable label: not a string, or a blank one.
   <br>`= '(unusable answer)'`
-
-**Also exported here**
-
-`CaseResult` ([`threetears.evals.analysis`](#api-analysis)), `ConfusionCount` ([`threetears.evals.analysis`](#api-analysis)), `DimensionSummary` ([`threetears.evals.analysis`](#api-analysis)), `EvalSummary` ([`threetears.evals.analysis`](#api-analysis)), `GoalCheckSummary` ([`threetears.evals.analysis`](#api-analysis)), `JudgeGrade` ([`threetears.evals.analysis`](#api-analysis)), `LabelStatistics` ([`threetears.evals.analysis`](#api-analysis)), `RunMeasureSummary` ([`threetears.evals.analysis`](#api-analysis)), `summarize_run` ([`threetears.evals.analysis`](#api-analysis))
 
 <a id="api-ops"></a>
 ### `threetears.evals.ops`
@@ -1966,8 +1956,6 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`'run'` | `'analysis'` | `'sweep'`
 - **`JobState`** · literal · Where a job stands.
   <br>`'running'` | `'completed'` | `'stopped'` | `'failed'` | `'cancelled'` | `'lost'`
-- **`ReportFormat`** · literal · The forms a report is read in: Markdown (the memo, and what an agent reads), its canonical JSON (what the published schema validates) and HTML that reads without any script.
-  <br>`'markdown'` | `'json'` | `'html'`
 - **`ResultPart`** · literal · Which part of a stored result `result_get` returns.
   <br>`'record'` | `'judge'` | `'spans'`
 - **`TraceState`** · literal · Whether a result's trace can be read: `stored`; `none` — the cell wrote none (its record says so); or `missing` — the record says one was written and no document backs it, which is a fault, never an ordinary absence (`get_result_trace` logs it).
@@ -1985,7 +1973,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Also exported here**
 
-`AnalysisGenerationEstimate` ([`threetears.evals.analysis`](#api-analysis)), `CaseResult` ([`threetears.evals.analysis`](#api-analysis)), `CostEstimate` ([`threetears.evals.analysis`](#api-analysis)), `DimensionSummary` ([`threetears.evals.analysis`](#api-analysis)), `dollars_text` ([`threetears.evals.analysis`](#api-analysis)), `EvalSummary` ([`threetears.evals.analysis`](#api-analysis)), `format_number` ([`threetears.evals.analysis`](#api-analysis)), `frontier_text` ([`threetears.evals.analysis`](#api-analysis)), `FrontierResult` ([`threetears.evals.analysis`](#api-analysis)), `FrozenReporterCase` ([`threetears.evals.analysis`](#api-analysis)), `HistoryResult` ([`threetears.evals.analysis`](#api-analysis)), `JudgeGrade` ([`threetears.evals.analysis`](#api-analysis)), `JudgeTemperatureComparison` ([`threetears.evals.analysis`](#api-analysis)), `out_of_run_spend_text` ([`threetears.evals.analysis`](#api-analysis)), `OutOfRunSpendReport` ([`threetears.evals.analysis`](#api-analysis)), `OutOfRunSpendTotals` ([`threetears.evals.analysis`](#api-analysis)), `PivotTable` ([`threetears.evals.analysis`](#api-analysis)), `RunMeasureSummary` ([`threetears.evals.analysis`](#api-analysis)), `scope_out_of_run_spend` ([`threetears.evals.analysis`](#api-analysis)), `ScoreExport` ([`threetears.evals.analysis`](#api-analysis)), `serialize_report` ([`threetears.evals.analysis`](#api-analysis)), `summarize_run` ([`threetears.evals.analysis`](#api-analysis))
+`AnalysisGenerationEstimate` ([`threetears.evals.analysis`](#api-analysis)), `dollars_text` ([`threetears.evals.analysis`](#api-analysis)), `EvalSummary` ([`threetears.evals.analysis`](#api-analysis)), `format_number` ([`threetears.evals.analysis`](#api-analysis)), `frontier_text` ([`threetears.evals.analysis`](#api-analysis)), `FrontierResult` ([`threetears.evals.analysis`](#api-analysis)), `FrozenReporterCase` ([`threetears.evals.analysis`](#api-analysis)), `HistoryResult` ([`threetears.evals.analysis`](#api-analysis)), `JudgeTemperatureComparison` ([`threetears.evals.analysis`](#api-analysis)), `out_of_run_spend_text` ([`threetears.evals.analysis`](#api-analysis)), `OutOfRunSpendReport` ([`threetears.evals.analysis`](#api-analysis)), `PivotTable` ([`threetears.evals.analysis`](#api-analysis)), `scope_out_of_run_spend` ([`threetears.evals.analysis`](#api-analysis)), `ScoreExport` ([`threetears.evals.analysis`](#api-analysis))
 
 <a id="api-actions"></a>
 ### `threetears.evals.actions`
@@ -2207,7 +2195,7 @@ A table code laid out — its columns, its rows in their stated order, and how m
 | `name` | `str` | required | Which table this is: `evidence`, `arms`, `surface`, `unadjudicated_bars`, `comparisons` (the contrasts against the control, as code tested them), `questions` (the declared questions, on a code-only report), `strata` (each arm's figures per stratum of its cases, beside its pooled figure, when its cases declare strata), `labels` (a classifier's per-label precision, recall and F1, a row per label and arm, on a code-only report) or `coverage` (each lever of an analysis's coverage map, the findings naming it and the next steps that would measure it). |
 | `title` | `str` | required | The table's heading. |
 | `columns` | `list[TableColumn]` | required | The columns, in display order. |
-| `rows` | `list[dict[str, Cell]]` | required | The rows shown, in the stated order, keyed by column key. |
+| `rows` | `list[dict[str, ChartValue]]` | required | The rows shown, in the stated order, keyed by column key. |
 | `order` | `str` | required | The order the rows are in, in words. |
 | `total_rows` | `int` | required | How many rows the table has; more than are shown when it is truncated. |
 

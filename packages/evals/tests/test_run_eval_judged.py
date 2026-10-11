@@ -26,8 +26,8 @@ from threetears.evals.quick import (
     Judge,
     callable_host,
     run_eval,
-    summarize_run,
 )
+from threetears.evals.analysis import summarize_run
 from threetears.evals.run import (
     get_result_trace,
     get_template,

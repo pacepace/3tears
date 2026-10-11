@@ -65,7 +65,7 @@ from threetears.evals.analysis.surface_table import (
     surface_order_sentence,
     surface_table_of,
 )
-from threetears.evals.analysis.viz.intent import Cell, chart_intent
+from threetears.evals.analysis.viz.intent import ChartValue, chart_intent
 from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.analysis.viz.policy import IntentPolicyError
 from threetears.evals.analysis.viz_refs import DistributionRef, build_viz_payload, cell_arm_labels
@@ -248,7 +248,7 @@ def _coverage_blocks(analysis: EvalAnalysis) -> list[ReportBlock]:
     if not levers:
         return []
     findings = analysis.document.findings
-    rows: list[dict[str, Cell]] = []
+    rows: list[dict[str, ChartValue]] = []
     for row in levers:
         named = [position for position, finding in enumerate(findings) if row.name in finding.axes]
         steps = [step.title for step in analysis.document.next if step.lever == row.name]
@@ -633,7 +633,7 @@ def _guardrail_blocks(
     if guardrails.withheld is not None:
         blocks.append(DisclosureBlock(section="guardrails", source="guardrails", text=guardrails.withheld))
     elif guardrails.checks:
-        rows: list[dict[str, Cell]] = [
+        rows: list[dict[str, ChartValue]] = [
             {
                 "guardrail": verdict.heading,
                 "arm": verdict.arm,
@@ -736,9 +736,9 @@ def _arm_blocks(table: ArmTable) -> list[ReportBlock]:
     """
     decided = any(row.status != "unresolved" for row in table.rows)
     founded = any(row.finding_ids for row in table.rows)
-    rows: list[dict[str, Cell]] = []
+    rows: list[dict[str, ChartValue]] = []
     for row in table.rows:
-        cells: dict[str, Cell] = {"arm": f"{row.label} (control)" if row.is_control else row.label}
+        cells: dict[str, ChartValue] = {"arm": f"{row.label} (control)" if row.is_control else row.label}
         if decided:
             cells["status"] = ARM_STATUS_WORDS[row.status]
         if founded:
@@ -831,9 +831,9 @@ def _surface_blocks(table: SurfaceTable, *, provenance: bool = True) -> list[Rep
             *(TableColumn(key=f"column_{index}", header=column.header) for index, column in enumerate(table.columns)),
             *([TableColumn(key="notes", header="Run notes")] if noted else []),
         ]
-        rows: list[dict[str, Cell]] = []
+        rows: list[dict[str, ChartValue]] = []
         for row in table.rows:
-            cells: dict[str, Cell] = {
+            cells: dict[str, ChartValue] = {
                 "arm": f"{row.label} {REFERENCE_MARK}" if row.is_control else row.label,
                 "replication": row.replication,
             }
@@ -914,14 +914,18 @@ def _strata_blocks(surface: DecisionSurface, variant_index: Sequence[VariantInde
         key=lambda name: (name is None, name or ""),
     )
     columns = {name: f"stratum_{index}" for index, name in enumerate(names)}
-    rows: list[dict[str, Cell]] = []
+    rows: list[dict[str, ChartValue]] = []
     thin: list[str] = []
     for cell in cells:
         # Every cell on the surface is named, so the lookup cannot miss.
         arm = labels[cell_ref(cell.variant_key, cell.apparatus_class_id)]
         arm = f"{arm} {REFERENCE_MARK}" if cell.variant_key == control else arm
         by_name = {stratum.stratum: stratum for stratum in cell.strata}
-        cases: dict[str, Cell] = {"arm": arm, "reading": "cases", "all": _cases_text(cell.n_observations, cell.n_cases)}
+        cases: dict[str, ChartValue] = {
+            "arm": arm,
+            "reading": "cases",
+            "all": _cases_text(cell.n_observations, cell.n_cases),
+        }
         for name, stratum in by_name.items():
             cases[columns[name]] = _cases_text(stratum.n_observations, stratum.n_cases)
             if stratum.n_cases < STRATUM_MIN_CASES:
@@ -983,7 +987,7 @@ def _measure_rows(
     by_name: dict[str | None, StratumFacts],
     columns: dict[str | None, str],
     surface: DecisionSurface,
-) -> list[dict[str, Cell]]:
+) -> list[dict[str, ChartValue]]:
     """One row per measure the cell or any of its strata holds — every one but a text measure, which is never summarised.
 
     A row says :data:`~threetears.evals.analysis.surface_table.NO_SUCCESSFUL_RESULTS` under the pool or a
@@ -1003,7 +1007,7 @@ def _measure_rows(
             if not summary.texts
         }
     )
-    rows: list[dict[str, Cell]] = []
+    rows: list[dict[str, ChartValue]] = []
     for measure in measures:
         found = [summary for summaries in (pooled, *per_stratum.values()) if (summary := summaries.get(measure))]
         facts = surface.measures.get(measure)
@@ -1013,12 +1017,12 @@ def _measure_rows(
             facts.unit if facts else None,
         )
 
-        def figure(summaries: dict[str, MeasureSummary], facts_of: CellFacts | StratumFacts) -> Cell:
+        def figure(summaries: dict[str, MeasureSummary], facts_of: CellFacts | StratumFacts) -> ChartValue:
             if measure in summaries:
                 return _summary_text(summaries[measure], factor)
             return NO_SUCCESSFUL_RESULTS if facts_of.all_failed else None
 
-        row: dict[str, Cell] = {
+        row: dict[str, ChartValue] = {
             "arm": arm,
             "reading": f"{surface.measure_heading(measure)} ({unit})" if unit else surface.measure_heading(measure),
             "all": figure(pooled, cell),
@@ -1031,16 +1035,16 @@ def _measure_rows(
 
 def _judged_rows(
     arm: str, cell: CellFacts, by_name: dict[str | None, StratumFacts], columns: dict[str | None, str]
-) -> list[dict[str, Cell]]:
+) -> list[dict[str, ChartValue]]:
     """One row per judged dimension the cell or any of its strata was scored on."""
     pooled = {reading.dimension: reading for reading in cell.judged}
     per_stratum = {
         name: {reading.dimension: reading for reading in stratum.judged} for name, stratum in by_name.items()
     }
     dimensions = sorted({dimension for readings in (pooled, *per_stratum.values()) for dimension in readings})
-    rows: list[dict[str, Cell]] = []
+    rows: list[dict[str, ChartValue]] = []
     for dimension in dimensions:
-        row: dict[str, Cell] = {
+        row: dict[str, ChartValue] = {
             "arm": arm,
             "reading": f"{dimension} (judged)",
             "all": _judged_text(pooled[dimension]) if dimension in pooled else None,
@@ -1242,7 +1246,7 @@ def _question_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
     if scope.disclosure is not None:
         blocks.append(DisclosureBlock(section="questions", source="scope", text=scope.disclosure))
     if design is not None and design.questions:
-        rows: list[dict[str, Cell]] = [
+        rows: list[dict[str, ChartValue]] = [
             {
                 "question": question.id,
                 "asks": question.text,
@@ -1425,7 +1429,7 @@ def _comparison_blocks(
         return []
     typed = iter(verdicts)
 
-    rows: list[dict[str, Cell]] = []
+    rows: list[dict[str, ChartValue]] = []
     for family in comparisons.families:
         for comparison in family.comparisons:
             verdict = next(typed)
@@ -1687,7 +1691,7 @@ def _label_blocks(surface: DecisionSurface, variant_index: Sequence[VariantIndex
     # A cell that classified nothing is no arm of this table; one that classified, but never met a label nor
     # predicted it, is a row of dashes under that label, so every label is read across the same arms.
     classifying = {ref for by_cell in figures.values() for ref in by_cell}
-    rows: list[dict[str, Cell]] = []
+    rows: list[dict[str, ChartValue]] = []
     missing = False
     single_case = False
     for label in sorted(figures):
@@ -1695,7 +1699,7 @@ def _label_blocks(surface: DecisionSurface, variant_index: Sequence[VariantIndex
             if ref not in classifying:
                 continue
             by_statistic = figures[label].get(ref, {})
-            row: dict[str, Cell] = {
+            row: dict[str, ChartValue] = {
                 "label": label,
                 "arm": f"{labels[ref]} (control)" if cell.variant_key == control else labels[ref],
             }
