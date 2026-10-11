@@ -257,7 +257,9 @@ def test_the_release_notes_carry_the_old_to_new_map(capsys: pytest.CaptureFixtur
     code, out, _ = _notes(capsys, "v0.66.0-evaladopt.6")
     assert code == 0
     assert out.startswith("## 3tears-evals 0.66.0-evaladopt.6")
-    assert "only the names discodon used" in out
+    assert "Every name that left a public root between" in out
+    assert "- `threetears.evals.quick.MeasureSummary` → `threetears.evals.quick.RunMeasureSummary`" in out
+    assert "- `threetears.evals.analysis.TwoPillarDisclosure` → removed" in out
     assert "- `threetears.evals.contracts.ActorPolicy` → `threetears.evals.schema.ActorPolicy`" in out
     assert "- `threetears.evals.contracts.host.EvalHost` → `threetears.evals.kernel.host.EvalHost`" in out
     assert "### Other breaking changes" in out
@@ -282,3 +284,63 @@ def test_the_scripts_share_one_walk() -> None:
     assert isinstance(reference, ModuleType)
     assert reference.describe is surface.describe
     assert generator.installed_surface is surface.installed_surface
+
+
+# --- a section against the two releases it sits between ----------------------------------------------------------
+
+
+def _section(version: str) -> Any:
+    release = surface.load_migrations().release(version)
+    assert release is not None
+    return release
+
+
+def test_the_departures_are_what_a_root_stopped_exporting() -> None:
+    before = {A: {"kept", "moved"}, B: {"gone"}}
+    after = {A: {"kept"}, "threetears.evals.gamma": {"moved"}}
+    assert surface.departures(before, after) == {f"{A}.moved", f"{B}.gone"}
+
+
+def test_the_0_66_0_evaladopt_6_section_records_exactly_what_left_between_its_tags() -> None:
+    release = _section("0.66.0-evaladopt.6")
+    assert release.since == "v0.66.0-evaladopt.5"
+    assert surface.history_findings(release) == []
+    assert len(release.migrations()) == len(
+        surface.departures(surface.exports_at("v0.66.0-evaladopt.5"), surface.exports_at("v0.66.0-evaladopt.6"))
+    )
+
+
+def test_a_section_missing_a_departure_is_refused() -> None:
+    release = _section("0.66.0-evaladopt.6")
+    short = release.model_copy(update={"changes": release.changes[1:]})
+    findings = surface.history_findings(short)
+    assert findings and all("does not record it" in f.problem for f in findings)
+
+
+def test_a_section_recording_a_name_that_never_left_is_refused() -> None:
+    release = _section("0.66.0-evaladopt.6")
+    extra = surface.NameChange.model_validate(_change("threetears.evals.run", "removed", "launch_run"))
+    padded = release.model_copy(update={"changes": [*release.changes, extra]})
+    [finding] = surface.history_findings(padded)
+    assert "threetears.evals.run.launch_run, which did not leave its root" in finding.problem
+
+
+def test_a_section_sending_a_name_where_that_release_does_not_export_it_is_refused() -> None:
+    wrong = _release(_change("threetears.evals.contracts", "threetears.evals.vega", "EvalRun"))
+    wrong = wrong.model_copy(update={"version": "0.66.0-evaladopt.6", "since": "v0.66.0-evaladopt.5"})
+    findings = surface.history_findings(wrong)
+    assert any(
+        "to threetears.evals.vega.EvalRun, which v0.66.0-evaladopt.6 does not export" in f.problem for f in findings
+    )
+
+
+def test_a_checkout_without_the_earlier_tag_cannot_pass_the_check() -> None:
+    release = _release(_change(A, "removed", "gone")).model_copy(update={"since": "v0.0.0-never-tagged"})
+    [finding] = surface.history_findings(release)
+    assert "fetch the tags" in finding.problem and not finding.regenerating_fixes
+
+
+def test_the_unreleased_section_is_checked_against_the_working_tree() -> None:
+    release = _section("unreleased")
+    assert release.since == "v0.66.0-evaladopt.6"
+    assert surface.history_findings(release) == []

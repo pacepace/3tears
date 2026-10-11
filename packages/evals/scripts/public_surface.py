@@ -21,6 +21,7 @@ import importlib
 import inspect
 import json
 import re
+import subprocess
 import textwrap
 import tomllib
 import types
@@ -623,6 +624,13 @@ class Release(_Record):
     must change that is not a public name (a field, a submodule)."""
 
     version: str = Field(min_length=1, description="The version, as its tag reads without the leading 'v'.")
+    since: str | None = Field(
+        default=None,
+        description=(
+            "The tag of the release before this one. Given, the section is checked against what actually left a "
+            "root between that tag and this version's (or the working tree, before this version is tagged)."
+        ),
+    )
     summary: str = Field(default="", description="What this section covers, in a paragraph.")
     changes: list[NameChange] = Field(default_factory=list, alias="change")
     notes: list[str] = Field(default_factory=list, description="Breaking changes that are not a public name.")
@@ -880,4 +888,113 @@ def all_findings(
         *duplicate_findings(exports, homes, reexports),
         *record_findings(installed, newest),
         *snapshot_findings(installed, recorded, newest),
+        *(f for release in migrations.releases if release.since for f in history_findings(release)),
     ]
+
+
+# --- history: a section against the two releases it sits between -------------------------------------------------
+
+#: The package's source tree, as a path inside the repository: what a tagged tree is read under.
+_SOURCE = "packages/evals/src"
+
+
+def _git(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", *args], cwd=PACKAGE_ROOT, capture_output=True, text=True, check=False)
+
+
+def tag_exists(tag: str) -> bool:
+    """Whether this checkout has ``tag``."""
+    return _git("rev-parse", "--verify", "--quiet", f"refs/tags/{tag}").returncode == 0
+
+
+def _source_at(ref: str | None, path: str) -> str | None:
+    """A file under the repository at ``ref``, or in the working tree when ``ref`` is ``None``."""
+    if ref is None:
+        local = PACKAGE_ROOT.parent.parent / path
+        return local.read_text(encoding="utf-8") if local.exists() else None
+    shown = _git("show", f"{ref}:{path}")
+    return shown.stdout if shown.returncode == 0 else None
+
+
+def _literal_assignment(source: str, name: str) -> Any:
+    for node in ast.parse(source).body:
+        if name in assigned_names(node) and isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            return ast.literal_eval(node.value)
+    return None
+
+
+def exports_at(ref: str | None) -> dict[str, set[str]]:
+    """Each public root at ``ref`` (a tag, or ``None`` for the working tree) → its ``__all__``, read from the source
+    as written there rather than imported, so a release's surface is read without installing it."""
+    package = _source_at(ref, f"{_SOURCE}/threetears/evals/__init__.py")
+    if package is None:
+        raise SystemExit(f"threetears.evals is not in the tree at {ref}")
+    roots = _literal_assignment(package, "PUBLIC_ROOTS")
+    found: dict[str, set[str]] = {}
+    for root in roots:
+        base = f"{_SOURCE}/{root.replace('.', '/')}"
+        source = _source_at(ref, f"{base}/__init__.py") or _source_at(ref, f"{base}.py")
+        names = _literal_assignment(source, "__all__") if source is not None else None
+        if names is None:
+            raise SystemExit(f"{root} has no literal __all__ at {ref or 'the working tree'}")
+        found[root] = set(names)
+    return found
+
+
+def departures(before: dict[str, set[str]], after: dict[str, set[str]]) -> set[str]:
+    """Every ``root.name`` exported before and not from the same root after: what moved, was renamed or removed."""
+    return {f"{root}.{name}" for root, names in before.items() for name in names - after.get(root, set())}
+
+
+def history_findings(release: Release) -> list[Finding]:
+    """Where a section disagrees with the two releases it sits between.
+
+    It must record exactly the names that left a root between ``since`` and its own version (the version's tag,
+    or the working tree before that tag exists), and each new home it names must export the name in that release.
+    Both surfaces are read from git, so a checkout without the tags cannot check it and says so rather than
+    passing.
+    """
+    assert release.since is not None
+    tag = f"v{release.version}"
+    if not tag_exists(release.since):
+        return [
+            Finding(
+                f"MIGRATIONS.toml's {release.version} section is checked against {release.since}, a tag "
+                f"this checkout lacks: fetch the tags (git fetch --tags, or fetch-depth: 0 in CI).",
+                False,
+            )
+        ]
+    after_ref = tag if tag_exists(tag) else None
+    after_label = tag if after_ref else "the working tree"
+    before, after = exports_at(release.since), exports_at(after_ref)
+    left = departures(before, after)
+    recorded = {m.old: m for m in release.migrations()}
+    findings = [
+        Finding(
+            f"{name} left its root between {release.since} and {after_label}, and MIGRATIONS.toml's "
+            f"{release.version} section does not record it.",
+            False,
+        )
+        for name in sorted(left - recorded.keys())
+    ]
+    findings += [
+        Finding(
+            f"MIGRATIONS.toml's {release.version} section records {name}, which did not leave its root between "
+            f"{release.since} and {after_label}.",
+            False,
+        )
+        for name in sorted(recorded.keys() - left)
+    ]
+    for migration in recorded.values():
+        if migration.new == REMOVED:
+            continue
+        root, name = migration.new.rsplit(".", 1)
+        if name not in after.get(root, set()):
+            findings.append(
+                Finding(
+                    f"MIGRATIONS.toml's {release.version} section sends {migration.old} to {migration.new}, "
+                    f"which {after_label} does not export.",
+                    False,
+                )
+            )
+    return findings

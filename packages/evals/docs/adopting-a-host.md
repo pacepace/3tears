@@ -198,6 +198,10 @@ snapshot:
   callers, add it to the newest section's `notes`.
 - **A name moved, renamed or removed.** The test fails until `MIGRATIONS.toml`'s first section (the release being
   prepared) records it. The generator refuses to write a snapshot that drops an unrecorded name.
+- **A section that names the tag before it (`since`).** The test reads both surfaces from git and holds the
+  section to exactly the names that left a root between that tag and this version's. Before the version is
+  tagged, it compares against the working tree. A checkout without the tags fails this check rather than passing
+  it.
 - **A name exported from two roots.** The test fails unless it is one object and `api/reexports.toml` declares
   it. Two different objects under one name always fail: rename one.
 
@@ -208,7 +212,7 @@ uv run python packages/evals/scripts/generate_api_snapshot.py --check  # report 
 
 **When a version is tagged**, rename the `unreleased` section of `MIGRATIONS.toml` to the version, without the
 leading `v`. Then paste the output of `release_notes.py v<version>` into the release description. The next change
-that moves a name starts a new `unreleased` section at the top.
+that moves a name starts a new `unreleased` section at the top, with `since` set to the tag just cut.
 
 ## The kind: what you are evaluating
 

@@ -19,7 +19,9 @@ old-to-new map instead.
   `packages/evals/MIGRATIONS.toml` (its new home or `removed`, and why). The generator refuses to write until that
   record exists.
 - **Release notes.** `scripts/release_notes.py <tag>` prints a release's section of `MIGRATIONS.toml`. The
-  section for `v0.66.0-evaladopt.6` (the `contracts` split) is seeded with the names discodon used.
+  section for `v0.66.0-evaladopt.6` records all 403 names that left a root in the `contracts` split, with
+  the renames and removals beside it. A section that names the tag before it (`since`) is checked against the two
+  surfaces as git holds them, so it records exactly what left.
 - **One home per name.** A name exported from two roots fails unless `api/reexports.toml` declares it a
   re-export. Two different objects under one name always fail. Resolving the duplicates already on the surface:
   - `analysis.viz` no longer exports `VALIDATED_SLOTS` or `SERIES_SLOTS`; import them from `kernel.host`.

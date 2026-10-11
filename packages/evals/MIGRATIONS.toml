@@ -18,11 +18,15 @@
 #   renamed  { old = "new" } for names renamed on the way
 #   why      what a porter needs to understand the change
 # A section's `notes` carry breaking changes that are not a public name: a field, a submodule, a version.
+# A section's `since` names the tag of the release before it. The test then reads both surfaces from git and holds
+# the section to exactly the names that left a root between that tag and this version's (or the working tree,
+# before this version is tagged).
 # A signature change alone needs no record here (the snapshot diff is its record); put it in `notes` when it breaks
 # callers.
 
 [[release]]
 version = "unreleased"
+since = "v0.66.0-evaladopt.6"
 summary = """
 A public name has one home: the root holding its defining module. A name another root also exported is dropped
 from that root, unless the root needs it and api/reexports.toml says why (`ops` keeps the analysis results the
@@ -61,10 +65,10 @@ names = [
 
 [[release]]
 version = "0.66.0-evaladopt.6"
+since = "v0.66.0-evaladopt.5"
 summary = """
 `threetears.evals.contracts` split into `schema` and `kernel`, and `contracts.host` became `kernel.host` (#702).
-This section covers only the names discodon used, as its port from .5 to .6 found them; every one was checked to
-be exported from the stated root at .6. CHANGELOG.md has the whole change.
+Every name that left a public root between v0.66.0-evaladopt.5 and v0.66.0-evaladopt.6 is below.
 """
 notes = [
     "The submodule `threetears.evals.contracts.provider` is `threetears.evals.kernel.provider`.",
@@ -82,13 +86,26 @@ from = "threetears.evals.contracts"
 to = "threetears.evals.schema"
 why = """`contracts` split by concern (#702). `schema` holds the stored documents, the shapes embedded in them and the ports a host implements, and imports only pydantic and `threetears.observe`."""
 names = [
-    "ActorPolicy", "AsyncDelivery", "AsyncDeliveryStatus", "AsyncExternalSpend", "CallLedger", "CatalogRubricDim",
-    "ClientRequestSettings", "CompletionClient", "CompletionResult", "ControlEndState", "ConversationSpec",
-    "ConversationStopCause", "DocumentStore", "EvalResult", "EvalRun", "EvalTemplate", "EvalTestCase",
-    "GoalCheckControl", "JudgeConfig", "JudgedArtifact", "JudgeEvidence", "judges_sharing_a_candidate_model",
-    "NON_TERMINAL_RUN_STATUSES", "OutOfRunSpend", "Precondition", "PROSE_SCHEMA_KEY", "ProviderFailure",
-    "RESERVED_DIM_IDS", "RoleUsage", "RubricAxis", "RubricDim", "RubricProposal", "StopReason", "StoreConflict",
-    "utc_now_iso", "VariationAxis", "VariationCounts", "WorldSeed",
+    "ActorPolicy", "ApparatusProvenance", "ApparatusSettingValue", "AsyncDelivery", "AsyncDeliveryStatus",
+    "AsyncExternalSpend", "attribution_state", "BoundCompletionClient", "CalibrationRating", "CallLedger",
+    "CANDIDATE_SPEAKER", "canonical_digest", "CassetteKey", "CassetteSeam", "CatalogRubricDim", "CellTermination",
+    "ClientRequestSettings", "CompletenessSource", "CompletionClient", "CompletionGenerator", "CompletionResult",
+    "ContextComponents", "ControlEndState", "ConversationSpec", "ConversationStopCause", "CostCapOrigin",
+    "DEFAULT_LAUNCH_K_RUNS", "DimName", "DocumentStore", "DSLError", "EVAL_DOC_TYPES", "eval_trace_doc_id",
+    "EvalBaseModel", "EvalCaseStratum", "EvalCassette", "EvalDocumentModel", "EvalResult", "EvalRun",
+    "EvalRunStamp", "EvalRunStatus", "EvalTemplate", "EvalTestCase", "EvalTrace", "extract_paths", "ExtractedPaths",
+    "Firings", "GoalCheckControl", "GoalCheckControls", "GoalCheckIntent", "GoalStateOutcome",
+    "JSON_OBJECT_RESPONSE_FORMAT", "JudgeAttributionSource", "JudgeAttributionState", "JudgeConfig",
+    "JudgedArtifact", "JudgeEvidence", "JudgeRepeat", "JudgeRescore", "judges_sharing_a_candidate_model",
+    "keep_fields", "LatencyMetrics", "MeteredCallOrigin", "ModelRoleOrigin", "NON_TERMINAL_RUN_STATUSES",
+    "omit_paths", "OUTCOME_DIM_ID", "OutOfRunOutcome", "OutOfRunPurpose", "OutOfRunSpend", "OutOfRunSpendStore",
+    "Precondition", "PreconditionOutcome", "PricedCompletion", "ProposedDimSuggestion", "ProposedTemplate",
+    "PROSE_SCHEMA_KEY", "ProviderFailure", "ProviderFailureDescriber", "RaterKind", "ReasoningEffort",
+    "RecordedCall", "referenced_actions", "RepeatedScore", "RequestCeiling", "RESERVED_DIM_IDS", "RoleModelOrigin",
+    "RoleUsage", "ROUND_DONE", "RubricAxis", "RubricDim", "RubricProposal", "RubricScale", "RubricScore",
+    "RunCompleteness", "SCALES", "ScaleSpec", "SimulatorLLM", "SimulatorPurpose", "StopReason", "StoreConflict",
+    "TRANSCRIPT_DIM_ID", "UsageRole", "utc_now_iso", "VariationAxis", "VariationCounts", "VariationLLM",
+    "WorldEvent", "WorldEventCause", "WorldEventKind", "WorldSeed",
 ]
 
 [[release.change]]
@@ -96,7 +113,8 @@ from = "threetears.evals.contracts.host"
 to = "threetears.evals.schema"
 why = """These are stored or port shapes rather than the host contract, so the split (#702) put them in `schema` with the other stored shapes."""
 names = [
-    "CellIdentity", "CellTrace", "ExternalSpend", "nested_schemas", "SubjectSnapshot", "SweepableValue",
+    "CellIdentity", "CellTrace", "ExternalSpend", "IntervalScale", "nested_schemas", "NestedSchema", "NominalScale",
+    "OrdinalScale", "Scale", "SubjectSnapshot", "SweepableValue", "TraceSink", "WorldPlacement",
 ]
 
 [[release.change]]
@@ -104,17 +122,43 @@ from = "threetears.evals.contracts"
 to = "threetears.evals.kernel"
 why = """`contracts` split by concern (#702). `kernel` holds the engine's behaviour: identity, scoring, metrics, the goal-check evaluator, the world session, usage capture, `EvalStorage`, the campaign and analysis documents and the candidate kind."""
 names = [
-    "ACCURACY_MEASURE", "ActionSeam", "CampaignDesign", "CandidateKind", "CandidateOutput",
-    "CandidatePreparationFailed", "CandidateTelemetry", "CassetteMiss", "CellCassettes", "CellSink",
-    "CellSpanWindow", "classifier_label_measure", "confusion_cell", "ControlDeclaration", "count_substituted",
-    "DeliveryRecorder", "DeliveryReplay", "DeliverySeam", "DeliveryTicket", "ENGINE_FAMILIES", "EvalAnalysis",
-    "EvalCampaign", "EvalServiceError", "EvalStorage", "ExternalRateTable", "extract_json", "extract_json_array",
-    "fold_phase_timings", "INCOMPLETE_STOP_REASONS", "KIND_TEMPLATE", "KIND_TEXT", "MeasureFamily",
-    "MeasureSummary", "MeritAxis", "METRIC_DESCRIPTORS", "MetricDescriptor", "NotFoundError", "OutOfRunBudget",
-    "PlannedCall", "production_replicating_cost", "ProviderRefusedError", "Question", "Recordable",
-    "ReplayedDelivery", "resolve_variant_identity", "RoleUsageLedger", "SeedSection", "SeedTemplate",
-    "StorageError", "SweptAxis", "ToolWrap", "TURN_BUDGET_ENDED_KEY", "ValidationFailedError", "VariantConfig",
-    "VizType", "WorldSession", "WorldSessionError",
+    "ACCURACY_MEASURE", "ActionSeam", "AdmissionRefusedError", "AdmittedCall", "agreement_statistic",
+    "AttemptOutcome", "AttributionScope", "AuthoredAnalysis", "BarAdjudication", "BarName", "BarNameKind",
+    "BarNameRefusal", "BarOverride", "BarVerdict", "blended_cost_roles", "calibration_criterion",
+    "CALIBRATION_MIN_AGREEMENT", "CALIBRATION_MIN_RESULTS", "CallUsage", "CampaignDesign", "CampaignView",
+    "CampaignWindow", "candidate_failure_cause", "CandidateFailureCause", "CandidateKind", "CandidateKindDefect",
+    "CandidateOutput", "CandidatePreparationFailed", "CandidateTelemetry", "CassetteCorrupt", "CassetteExhausted",
+    "CassetteMiss", "CassetteMode", "CassetteSeams", "CassetteStore", "Caveat", "CellCassettes", "CellFacts",
+    "CellPending", "CellSink", "CellSpanWindow", "CellSummary", "Chart", "CLASSIFIER_FAMILY",
+    "classifier_label_measure", "classifier_label_of", "ClassifierStatistic", "classify_result", "COMPOSITE_FAMILY",
+    "Confidence", "CONFIDENCE_TIERS", "ConfidenceTier", "ConflictError", "confusion_cell", "CONFUSION_CELL_MEASURE",
+    "confusion_of", "ControlDeclaration", "count_substituted", "count_substituted_deliveries",
+    "counted_goal_verdicts", "counted_score", "CoverageLens", "criterion_state", "CriterionState", "Decision",
+    "DecisionSurface", "DefinitionStore", "delivered_a_turn", "DeliveryOutcome", "DeliveryRecorder",
+    "DeliveryReplay", "DeliverySeam", "DeliveryTicket", "derive_variant_identity", "DerivedContextIdentity",
+    "DerivedVariantIdentity", "describe_and_log_failure", "DROPPED_TOOL_CALLS_KEY", "DUAL_AXIS_FAMILY",
+    "ENGINE_FAMILIES", "EvalAnalysis", "EvalAnalysisAttempt", "EvalCampaign", "EvalInsight", "EvalServiceError",
+    "EvalStorage", "EvidenceRef", "EvidenceRow", "EvidenceTier", "existing_axis_values", "ExternalRateTable",
+    "extract_json", "extract_json_array", "Finding", "FindingResolution", "fold_phase_timings",
+    "GenerationProvenance", "goal_check_of", "GOAL_STATE_FAMILY", "GradedBy", "IDENTITY_VERSION",
+    "INCOMPLETE_STOP_REASONS", "JobStore", "JUDGED_TIERS_WEAKEST_FIRST", "JudgedDimensionFacts",
+    "JudgedEvidenceTier", "JudgedReading", "JudgeEvidenceTier", "JudgingState", "KIND_TEMPLATE", "KIND_TEXT",
+    "LeverCoordinateError", "LeverCoverage", "list_metrics", "MATCH_MEASURE", "Materiality", "materiality",
+    "MeasureCollection", "MeasureFacts", "MeasureFamily", "MeasurePopulation", "MeasureRef", "MeasureSummary",
+    "MECHANICAL_FAMILY", "MeritAxis", "METRIC_DESCRIPTORS", "MetricDataType", "MetricDescriptor", "MetricFamily",
+    "NextStep", "NonTerminalRunScan", "NOT_ESTABLISHED", "NotFoundError", "OutOfRunBudget", "percentile",
+    "plan_variation_calls", "PlannedCall", "production_replicating_cost", "program_cost", "ProviderRefusedError",
+    "Question", "QuestionAnswer", "Reading", "REASONING_RATIO_KEY", "Recordable", "RecordedCompletion",
+    "refuse_an_undeclarable_design", "REFUSED_TOOL_ATTACHES_KEY", "ReplayedDelivery", "resolve_bar_name",
+    "resolve_context_identity", "resolve_result_condition", "resolve_result_usage", "resolve_variant_identity",
+    "ResolvedUsage", "ResultCondition", "ResultOutcome", "ResultStore", "RoleUsageLedger", "RUBRIC_FAMILY",
+    "RunIndexEntry", "RunRecordStore", "RunStore", "save_document", "SeedPrompt", "SeedSection", "SeedTemplate",
+    "separation_criterion", "SEPARATION_MIN_AGREEMENT", "SEPARATION_MIN_RESULTS", "StorageError",
+    "STRATUM_MIN_CASES", "StratumFacts", "summarize_completeness", "SweptAxis", "SyncActionSeam", "SyncToolLike",
+    "SyncToolWrap", "tier_of", "TierCriterion", "TimeAxis", "TimeAxisBasis", "TimePosition", "ToolLike", "ToolWrap",
+    "TransferabilityClass", "TRUNCATED_ROUNDS_KEY", "TURN_BUDGET_ENDED_KEY", "UnknownCandidateKind",
+    "UnreadableBarName", "ValidationFailedError", "VariantConfig", "VariantIndexEntry", "Viz", "VizType",
+    "weakest_judged_tier", "withhold_failure_detail", "WorldSession", "WorldSessionError",
 ]
 
 [[release.change]]
@@ -122,10 +166,59 @@ from = "threetears.evals.contracts.host"
 to = "threetears.evals.kernel.host"
 why = """The host contract moved with the behaviour it is a contract for: `contracts.host` is `kernel.host` (#702)."""
 names = [
-    "ActsOn", "ApparatusError", "Bar", "BarRegistrationError", "BarRegistry", "CANDIDATE_MODEL_LEVER",
-    "ChartPalette", "check_seed", "check_world_conformance", "CompletionClients", "CompletionRole",
-    "default_cell_timeout", "EvalCellTimeout", "EvalHost", "HostProfile", "Interval", "KindContract",
-    "MeasureRegistrationError", "MeasureRegistry", "Ordinal", "ResolvesInto", "SeedRefused", "SHARED_CORE",
-    "StyleError", "StyleProfile", "Sweepable", "SweepableRegistry", "Triggered", "UnsupportedSchemaError",
-    "VALIDATED_SLOTS", "WorldConformanceReport", "WorldDimension", "WorldRegistry",
+    "ActionParameterReader", "ActsOn", "ApparatusError", "Bar", "BarProposal", "BarRegistrationError",
+    "BarRegistry", "CANDIDATE_KIND_LEVER", "CANDIDATE_MODEL_LEVER", "CellTimeoutFactory", "ChartPalette",
+    "check_seed", "check_world_conformance", "CheckName", "Comparability", "CompletionClients", "CompletionRole",
+    "ConformanceResult", "Coverage", "CoverageState", "default_cell_timeout", "EvalCellTimeout", "EvalHost",
+    "Evidence", "FamilyMemberTest", "freeze", "HostProfile", "Interval", "KindContract", "KindContractError",
+    "MeasureRegistrationError", "MeasureRegistry", "obligation_rows", "ObligationRow", "obligations", "Ordinal",
+    "Outcome", "ProfileRegistrationError", "Qualification", "RegistrationError", "require_resolved_colour",
+    "ResidualReader", "ResolvedLevers", "ResolvesInto", "RolePins", "schema_violations", "SeedRefusalKind",
+    "SeedRefused", "SeedWrite", "SERIES_SLOTS", "served_models_by_score", "SHARED_CORE", "StyleError",
+    "StyleProfile", "Sweepable", "SweepableReader", "SweepableRegistry", "SweepableRole", "ToneRegister",
+    "ToolActionReader", "Triggered", "TriggerKind", "UNSEATED_LEVEL", "UnsupportedSchemaError", "VALIDATED_SLOTS",
+    "VariantLeverReader", "When", "WorldCapability", "WorldConformanceError", "WorldConformanceReport",
+    "WorldDimension", "WorldRegistrationError", "WorldRegistry",
 ]
+
+[[release.change]]
+from = "threetears.evals.contracts"
+to = "threetears.evals.schema"
+why = """The stored-document version is split by what it versions (#703): the evidence core every later release reads (`CORE_SCHEMA_VERSION`) and the documents the engine regenerates, whose version `EVAL_SCHEMA_VERSION` was and which keeps its value."""
+renamed = { EVAL_SCHEMA_VERSION = "REGENERABLE_SCHEMA_VERSION" }
+
+[[release.change]]
+from = "threetears.evals.analysis"
+to = "threetears.evals.analysis"
+why = """`CampaignDesign.controls` is `held_fixed`, one letter from `control` no longer, and the bundle's reading of it is renamed with it (#639)."""
+renamed = { ControlsReading = "HeldFixedReading" }
+
+[[release.change]]
+from = "threetears.evals.quick"
+to = "threetears.evals.quick"
+why = """The run summary's `MeasureSummary` is renamed so it no longer shares a name with the bundle's `MeasureSummary`, which `kernel` exports; one name in two roots meant two things (#702). `threetears.evals.quick.MeasureSummary` is not `kernel.MeasureSummary`."""
+renamed = { MeasureSummary = "RunMeasureSummary" }
+
+[[release.change]]
+from = "threetears.evals.ops"
+to = "threetears.evals.ops"
+why = """The run summary's `MeasureSummary` is renamed so it no longer shares a name with the bundle's `MeasureSummary`, which `kernel` exports; one name in two roots meant two things (#702). `threetears.evals.ops.MeasureSummary` is not `kernel.MeasureSummary`."""
+renamed = { MeasureSummary = "RunMeasureSummary" }
+
+[[release.change]]
+from = "threetears.evals.analysis"
+to = "removed"
+why = """No operation or action reached them, and `compare_runs` had no caller anywhere, tests included; it is deleted with its `ComparisonColumns` hook (#621). Comparing two runs is the `runs_compare` operation and action in `ops`."""
+names = ["ComparisonColumns", "compare_runs"]
+
+[[release.change]]
+from = "threetears.evals.analysis"
+to = "removed"
+why = """Leaves every `__all__`: no operation or action reached it (#621). Bisecting two runs is the `runs_bisect` operation and action in `ops`, which carries the lens's answer whole with the disclosures every comparison carries."""
+names = ["bisect_runs"]
+
+[[release.change]]
+from = "threetears.evals.analysis"
+to = "removed"
+why = """It disclosed that the frontier did not check guardrails, which stopped being true: the frontier now disqualifies a contestant that breaches one, naming the dimension (#613)."""
+names = ["TwoPillarDisclosure"]
