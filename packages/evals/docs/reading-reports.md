@@ -26,6 +26,25 @@ report_markdown(report)      # for an agent, or to paste as a memo
 report_html(report)          # a page that reads without a script
 ```
 
+## The words are served with the numbers
+
+A client renders a report from its JSON alone and prints only words this package wrote; it never formats a
+number or keeps its own copy of a heading. The JSON carries:
+
+| Where | Field | What it is |
+|---|---|---|
+| The report | `title`, `byline` | The line every serializer heads the report with, and the one under it. An analysis report's title is its headline, led by the campaign's name when the report carries it (`source.campaign_name`, which `analysis_report` and `campaign_report` set); a code-only report's names the campaign by its name, or else its id. |
+| Every block | `section_title` | The heading of its section (`SECTION_TITLES`), so a client groups blocks under the same words. |
+| Every block | `finding_number` | The finding it belongs to, counted from 1 as a reader counts (`finding` counts from 0); null when it belongs to none. |
+| A table block | `rows` | Each row keys every column, and each cell is `{"value": ..., "text": ...}`: the value to sort and draw by, the text to print — the number rule's spelling (`format_number`), a dash for an absent value, `yes`/`no` for a boolean. `TableBlock.values()` reads the rows as values alone. |
+| A chart block | `columns`, `rows` | Its values-as-drawn table, cells as above, its columns already chosen for printing (a distribution's `Shape` column is left out when no row knows a shape; the intent keeps it). The `intent` beside them is what a renderer draws from. |
+
+These are derived from the fields beside them: a report read back from its JSON re-derives them and discards what
+the document said, so a served word cannot drift from what it states, and the schema requires every one.
+
+A chart reaches a browser as the Vega-Lite adapter's compiled spec (`threetears.evals.vega`), whose axes carry
+their number formats: axis ticks are the one place a client formats a number, and the spec says how.
+
 ## The campaign's report
 
 **The campaign's report** is `campaign_report(host, campaign_id, scope_id)` — the one answer the CLI's
@@ -61,7 +80,7 @@ names it. A `thin` or `unswept` lever no step names reads "no next step names it
 no coverage row is a proposal, not a gap, and says so beside it. The methods count the levers no finding names;
 a measured lever with no finding may simply have had nothing to say, so nothing acts on the count.
 
-`Report.basis` says which a report is; `REPORT_VERSION` is 5.
+`Report.basis` says which a report is; `REPORT_VERSION` is 7.
 
 ## Reading the arm table
 
@@ -329,7 +348,10 @@ prompt lever alone (`ticket_router.prompt_version=v1` and `ticket_router.prompt_
 
 ## What the schema checks, and what only the model does
 
-`schema.json` holds the report's shape and every cross-field rule JSON Schema can state:
+`schema.json` ships in the package beside the model (`SCHEMA_PATH`; `published_report_schema()` reads it). It is
+generated from the model, a test holds it equal to the model's, and its `$id` names the report version it validates
+(`urn:threetears-evals:report:v7`), as its `report_version` const does. It holds the report's shape, every served
+word as required, and every cross-field rule JSON Schema can state:
 
 - a code-only report names no analysis or model and holds no headline, finding or text block;
 - an analysis report names both;
@@ -338,7 +360,7 @@ prompt lever alone (`ticket_router.prompt_version=v1` and `ticket_router.prompt_
 - a chart block carries exactly one of an intent and an error, the intent of its own type.
 
 Three rules compare a value with a sibling's, which JSON Schema cannot: a block's finding positions are
-below `finding_count`, a table's `total_rows` is at least the rows it shows, and a row keys only its
+below `finding_count`, a table's `total_rows` is at least the rows it shows, and a row keys exactly its
 table's columns. Those only `Report.model_validate` holds, so a host that validates against the schema
 alone accepts exactly those three malformations as well.
 
