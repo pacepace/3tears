@@ -222,9 +222,10 @@ def sweep_abandoned_runs(storage: ReclaimStore, scopes: Iterable[str]) -> Abando
 
     A row that cannot be *reconstructed* is a third case, and it is not a storage failure: the database answered,
     and the answer is a document this build's model cannot express. Tolerated per row in two places rather than
-    raising for the list — the scan itself, and this loop, because settling a run reads more than the run and the
-    completeness read still raises for a whole list. Both come back as ``unreadable``: counted, logged with their
-    ids, and inside ``scanned``.
+    raising for the list — the scan itself, and this loop, where writing a run lost may be refused by a model. Both
+    come back as ``unreadable``: counted, logged with their ids, and inside ``scanned``. A run whose RESULTS cannot
+    all be read is not one of them: it is written lost with its completeness unknown, since settling reads nothing
+    past the run that can fail it (:func:`~threetears.evals.kernel.job_leases.settle_tolerantly`).
 
     Args:
         storage: The runs' store.
@@ -254,9 +255,8 @@ def sweep_abandoned_runs(storage: ReclaimStore, scopes: Iterable[str]) -> Abando
             already_settled += 1
             continue
         except ValidationError:
-            # The run's OWN document read fine — the scan proved that — but writing it lost reads more than the
-            # run: its completeness is reconstructed from its stored results, and that read still raises for a
-            # whole list. Caught per row, so the runs already settled by this sweep are still reported.
+            # The run's OWN document read fine — the scan proved that — but a model refused a value while it was
+            # written lost. Caught per row, so the runs already settled by this sweep are still reported.
             unreadable += 1
             log.exception(
                 "Eval run %s (scope %s) was readable but writing it lost was not: a model rejected a value while "

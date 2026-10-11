@@ -565,8 +565,14 @@ class EvalStorage:
         read and a conditional write. The lease machinery's own reads (:meth:`load_job_record`, the reads that
         return an etag) and the boot reclaim's scan (:meth:`query_non_terminal_eval_runs`) are not settled here:
         they are what settling is made of, and the reclaim counts what it writes lost itself.
+
+        **One bad record never breaks the read.** Each is settled on its own
+        (:func:`~threetears.evals.kernel.job_leases.settle_tolerantly`): a record that cannot be written lost is
+        returned as stored and logged, and the rest of the list is still read. Settling a run reads nothing past the
+        run that can fail it: a result that cannot be read leaves the lost run's completeness unknown rather than
+        refusing the write.
         """
-        from threetears.evals.kernel.job_leases import lease_lapsed, leased_kind_of, settle_job_record
+        from threetears.evals.kernel.job_leases import lease_lapsed, leased_kind_of, settle_tolerantly
 
         kind = leased_kind_of(model_cls) if issubclass(model_cls, EvalDocumentModel) else None
         if kind is None:
@@ -579,7 +585,8 @@ class EvalStorage:
         for index in open_records:
             record: Any = records[index]
             if lease_lapsed(record, now):
-                current, _ = settle_job_record(self, kind, record.id, record.scope_id)
+                # Per record, as the boot reclaim settles its rows: one that cannot be settled reads as stored.
+                current = settle_tolerantly(self, kind, record.id, record.scope_id)
                 if current is not None:
                     settled[index] = cast(M, current)
         return settled

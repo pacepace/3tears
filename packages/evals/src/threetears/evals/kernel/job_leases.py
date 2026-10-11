@@ -46,6 +46,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Literal, cast
 
+from pydantic import ValidationError
+
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalSweep
 from threetears.evals.kernel.errors import ConflictError, JobFenced
 from threetears.evals.kernel.offload import run_blocking
@@ -119,10 +121,26 @@ def leased_kind_of(model: type[EvalDocumentModel]) -> LeasedJobKind[Any] | None:
 
 def _run_lost(run: EvalRun, loss: JobLoss, store: LeaseStore) -> EvalRun:
     """A run written lost: ``cancelled`` — the status a run that stopped without finishing has always taken — its
-    reason the loss, and its completeness reconstructed from the results it stored unless its loop recorded its own."""
-    completeness = run.completeness or reconstruct_completeness(
-        run, store.query_eval_results_by_run(run.id, run.scope_id)
-    )
+    reason the loss, and its completeness reconstructed from the results it stored unless its loop recorded its own.
+
+    **Settled from the run record, whatever its results hold.** The completeness is the one part read from anything
+    else, and a result this build cannot reconstruct (a corpus that outlived the model that wrote it) fails the
+    whole listing of them. That must not keep the run from settling — it would read ``running`` on every surface,
+    and break every list that settles it — so the run is written lost with its completeness unknown (``None``, which
+    every reader of the field reads as unknown), and the unreadable results are logged.
+    """
+    completeness = run.completeness
+    if completeness is None:
+        try:
+            completeness = reconstruct_completeness(run, store.query_eval_results_by_run(run.id, run.scope_id))
+        except ValidationError:
+            # NOSILENT: an unreadable result leaves what the run delivered unknown, recorded as None; the run settles
+            log.exception(
+                "eval run %s (scope %s) is written lost with its completeness unknown: a result it stored cannot "
+                "be read under the current model, so what it delivered cannot be counted",
+                run.id,
+                run.scope_id,
+            )
     return run.model_copy(
         update={
             "status": RUN_LOST_STATUS,
@@ -282,14 +300,53 @@ def _settle_named_runs[R: EvalDocumentModel](store: LeaseStore, kind: LeasedJobK
 
     A launch or a sweep holds its runs in the process that held it, so when its lease lapsed theirs did too, and a run
     it prepared but never started carries no lease at all; either reads lost. A run whose lease another process still
-    renews is left running. A run that keeps changing under its settle is left to its own next read.
+    renews is left running. One run that cannot be settled (:func:`settle_tolerantly`) is left to its own next read,
+    and never keeps the record that named it, or the next run it names, from settling.
     """
     for run_id in kind.named_runs(lost):
-        try:
-            settle_job_record(store, RUN_JOB, run_id, scope_id)
-        except ConflictError:
-            # NOSILENT: a run another writer keeps moving is live enough to be read again; its own next read settles it
-            log.warning("eval.job_lease run=%s scope=%s named by lost %s kept changing", run_id, scope_id, kind.name)
+        settle_tolerantly(store, RUN_JOB, run_id, scope_id)
+
+
+def settle_tolerantly[R: EvalDocumentModel](
+    store: LeaseStore, kind: LeasedJobKind[R], record_id: str, scope_id: str
+) -> R | None:
+    """:func:`settle_job_record` for a read of many records: one that cannot be settled is left as stored, and logged.
+
+    The boot reclaim's per-row tolerance (:func:`~threetears.evals.run.lifecycle.reclaim_abandoned_runs`), for every
+    read that settles records as it lists them: a record another writer keeps moving (``ConflictError``: live enough
+    to be read again, and settled by its own next read) or one a model refuses while it is written lost
+    (``ValidationError``) is one bad record, and one bad record must never break a list — of runs, of a sweep's arms,
+    of a launch's runs. A storage failure is not one record's: it propagates.
+
+    Args:
+        store: Where the record lives.
+        kind: Its type.
+        record_id: Its id.
+        scope_id: Its scope.
+
+    Returns:
+        The record as it now stands, or ``None`` where it could not be settled (or there is none): the caller keeps
+        what it read.
+
+    Raises:
+        StorageError: A read or write failed.
+    """
+    try:
+        current, _ = settle_job_record(store, kind, record_id, scope_id)
+    except ConflictError:
+        # NOSILENT: a record another writer keeps moving is live enough to be read again; its own next read settles it
+        log.warning("eval.job_lease %s=%s scope=%s kept changing while it was settled", kind.name, record_id, scope_id)
+        return None
+    except ValidationError:
+        # NOSILENT: the record read, but writing it lost did not validate; it stays as stored, and the list goes on
+        log.exception(
+            "eval.job_lease %s=%s scope=%s could not be written lost: a model refused a value while settling it",
+            kind.name,
+            record_id,
+            scope_id,
+        )
+        return None
+    return current
 
 
 def require_held[R: EvalDocumentModel](

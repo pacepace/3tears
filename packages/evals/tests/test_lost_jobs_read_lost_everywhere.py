@@ -35,8 +35,9 @@ from threetears.evals.run import (
 )
 from threetears.evals.schema import JobLease, SecondJudge
 from threetears.evals.schema.models import EvalRun
+from threetears.evals.schema.store_port import StoreConflict
 from threetears.evals.storage import InMemoryDocumentStore
-from packages.evals.tests.factories import make_analysis_attempt, make_eval_run
+from packages.evals.tests.factories import make_analysis_attempt, make_eval_result, make_eval_run
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture
 
 _SCOPE = "uni-1"
@@ -184,3 +185,80 @@ async def test_after_a_hard_kill_run_get_and_runs_list_alone_report_the_run_lost
     assert not listed.is_error and listed.structured is not None
     (line,) = [line for line in listed.structured["runs"] if line["id"] == run.id]
     assert line["status"] == "cancelled", line
+
+
+def _unreadable_result(storage: EvalStorage, store: InMemoryDocumentStore, run: EvalRun) -> None:
+    """Store one readable result of ``run`` and one this build cannot reconstruct (a corpus that outlived its model)."""
+    readable = make_eval_result(id="res-ok", scope_id=_SCOPE, eval_run_id=run.id)
+    storage.save_eval_result(readable)
+    store.upsert(readable.to_dict() | {"id": "res-bad", "turns_delivered": "several"})
+
+
+def test_a_lost_run_whose_result_cannot_be_read_settles_with_its_completeness_unknown() -> None:
+    """One unreadable result broke runs_list for the whole scope, run_get for its run, and the run never settled."""
+    store = InMemoryDocumentStore()
+    storage = EvalStorage(store)
+    run = make_eval_run(scope_id=_SCOPE, status="running")
+    beside = make_eval_run(scope_id=_SCOPE, status="completed")
+    for record in (run, beside):
+        storage.save_job_record(record.to_dict(), if_match=None)
+    _unreadable_result(storage, store, run)
+
+    got = storage.load_eval_run(run.id, _SCOPE)
+    assert got is not None and got.status == "cancelled" and got.lost is not None and got.completeness is None
+    assert {listed.id: listed.status for listed in storage.query_eval_runs(_SCOPE)} == {
+        run.id: "cancelled",
+        beside.id: "completed",
+    }
+    stored, _ = storage.load_job_record(EvalRun, run.id, _SCOPE)
+    assert stored is not None and stored.lost is not None, "the run was written lost, not merely read so"
+
+
+class _ContestedStore(InMemoryDocumentStore):
+    """Every conditional write of one record loses its race, as a record another writer keeps moving does."""
+
+    def __init__(self, contested: str) -> None:
+        super().__init__()
+        self.contested = contested
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        if document["id"] == self.contested and if_match is not None:
+            raise StoreConflict(f"document {self.contested!r} keeps moving")
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+def test_one_run_that_cannot_be_settled_never_breaks_a_list_or_its_neighbours() -> None:
+    """The boot reclaim's per-row tolerance, on every settling read: the contested run reads as stored, the rest lost."""
+    contested = make_eval_run(scope_id=_SCOPE, status="running")
+    store = _ContestedStore(contested.id)
+    storage = EvalStorage(store)
+    other = make_eval_run(scope_id=_SCOPE, status="running")
+    for record in (contested, other):
+        storage.save_job_record(record.to_dict(), if_match=None)
+
+    statuses = {listed.id: listed.status for listed in storage.query_eval_runs(_SCOPE)}
+    assert statuses == {contested.id: "running", other.id: "cancelled"}
+    got = storage.load_eval_run(contested.id, _SCOPE)
+    assert got is not None and got.status == "running"
+
+
+def test_a_launch_written_lost_settles_the_runs_it_can_and_leaves_the_rest() -> None:
+    """A run of a lost launch that cannot be settled does not keep the launch, or its other runs, from settling."""
+    contested = make_eval_run(scope_id=_SCOPE, status="pending")
+    store = _ContestedStore(contested.id)
+    storage = EvalStorage(store)
+    orphan = make_eval_run(scope_id=_SCOPE, status="pending")
+    unreadable = make_eval_run(scope_id=_SCOPE, status="running")
+    for run in (contested, orphan, unreadable):
+        storage.save_job_record(run.to_dict(), if_match=None)
+    _unreadable_result(storage, store, unreadable)
+    launch = _OPEN[EvalLaunch]().model_copy(update={"run_ids": [contested.id, unreadable.id, orphan.id]})
+    storage.save_job_record(launch.to_dict(), if_match=None)
+
+    settled, wrote_lost = settle_job_record(storage, LAUNCH_JOB, launch.id, _SCOPE)
+
+    assert wrote_lost and settled is not None and settled.lost is not None
+    read = {run.id: storage.load_job_record(EvalRun, run.id, _SCOPE)[0] for run in (contested, orphan, unreadable)}
+    assert read[contested.id] is not None and read[contested.id].lost is None  # type: ignore[union-attr]
+    assert read[orphan.id] is not None and read[orphan.id].lost is not None  # type: ignore[union-attr]
+    assert read[unreadable.id] is not None and read[unreadable.id].lost is not None  # type: ignore[union-attr]
