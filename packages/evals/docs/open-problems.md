@@ -9,14 +9,6 @@ sources in [prior art](prior-art.md).
 
 ## Measurement
 
-### The between-arm correlation is not reported
-
-Tracked in [#595](https://github.com/pacepace/3tears/issues/595).
-
-Pairing on the frozen case helps only as far as the arms' per-case results correlate; Miller recommends
-reporting the correlation so a reader sees what pairing bought. The engine pairs but reports none.
-
-
 ### Equivalence needs a declared range (accepted limit)
 
 Decided in [#695](https://github.com/pacepace/3tears/issues/695): a measure that declares a margin and no

@@ -14,6 +14,13 @@ packages (bumped in lock-step).
   expose the answer as a `remainder` property (typed `RemainderState`, exported from `threetears.evals.analysis`).
   The attribution chart's intent reads the property rather than either field. A blank sentence now explains nothing
   in both: the bundle used to accept an empty `unattributed_withheld` beside no number, which the chart refused.
+- **A paired comparison reports what pairing bought (#595).** Each `FamilyComparison` carries
+  `pairing_correlation` (`PairingCorrelation`, exported from `threetears.evals.analysis`): Pearson's r between the
+  control's and the contrast's per-case means over the cases the paired test read, with that count. It is `None`
+  for an unpaired test, when no test ran, below three paired cases, and where a side does not vary. The report's
+  "Contrasts against the control" table shows it as "Pairing r", and `analysis.stats.pairing_correlation` computes
+  it. The bundle shape is version 48 (was 47), so an analysis assembled at 47 reads its bundle as moved by the
+  package (`package_shape`). The open-problems entry is removed.
 
 ### 3tears-evals: what adopting .12 found (gaps 49–50)
 

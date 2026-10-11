@@ -1550,6 +1550,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`OpenAxisFamily`** · model · An open family of axes: a container whose members are declarable, though not enumerable.
 - **`OutOfRunSpendReport`** · model · The calls the engine made outside any run in a scope — case generations, rubric proposals and analysis generations — and their totals.
 - **`OutOfRunSpendTotals`** · model · What a set of out-of-run calls spent, summed — with what could not be summed counted beside it.
+- **`PairingCorrelation`** · model · How far the control's and the contrast's per-case results moved together, over the cases a paired test read.
 - **`PivotCell`** · model · One (row, column) cell: the number, and everything needed to trust it.
 - **`PivotTable`** · model · A two-factor pivot over one measure, with its disclosures attached.
 - **`PlannedCost`** · model · One planned model's predicted cost over its planned observations, as a cost pivot's plan reads it.
@@ -2536,7 +2537,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schema_version` | `int` | `47` | Bundle-shape version, for future evolution + fingerprint clarity. |
+| `schema_version` | `int` | `48` | Bundle-shape version, for future evolution + fingerprint clarity. |
 | `campaign_id` | `str` | required | The campaign this bundle summarises. |
 | `subject_id` | `str` | required | The analysed subject's stable id. |
 | `subject_kind` | `str` | `''` | Discriminator; data, never a code branch. |
