@@ -411,6 +411,9 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # names are the host's words carried as data, never declared here. A host noun in this module
     # would be one host's tool written into the record every kind keeps.
     "schema/call_ledger.py",
+    # The registry of stored document types and their facts, which a host partitions its storage by: the
+    # engine's own types only, so a host noun here would be one host's document written into every host's list.
+    "schema/doc_types.py",
     # The re-check that re-grades a stored run from the ledgers its cells stored, through the run's
     # own grading function. It reads no kind's trace shape, so a host noun here would be one kind's
     # replay written back into the engine.

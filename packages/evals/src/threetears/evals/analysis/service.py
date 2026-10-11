@@ -579,6 +579,8 @@ def running_analysis_attempt(
         scope_id=prepared.scope_id,
         campaign_id=prepared.campaign_id,
         outcome="running",
+        analysis_id=None,
+        error=None,
         generator_model=prepared.resolved_model,
         prompt_id=prompt_id,
         bundle_fingerprint=prepared.bundle.fingerprint(),

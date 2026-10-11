@@ -177,6 +177,22 @@
       "kind": "type alias",
       "signature": "Annotated[str, AfterValidator(_namespaced_dim_name)]"
     },
+    "threetears.evals.schema.DOC_TYPE_FACTS": {
+      "kind": "constant (mappingproxy)",
+      "signature": ""
+    },
+    "threetears.evals.schema.DocLifecycle": {
+      "kind": "literal",
+      "signature": "'kept'` | `'regenerable'"
+    },
+    "threetears.evals.schema.DocOrigin": {
+      "kind": "literal",
+      "signature": "'input'` | `'record'` | `'derived'"
+    },
+    "threetears.evals.schema.DocTypeFacts": {
+      "kind": "dataclass",
+      "signature": "DocTypeFacts(origin: DocOrigin, lifecycle: DocLifecycle, suppresses: str | None = None)"
+    },
     "threetears.evals.schema.DocumentStore": {
       "kind": "protocol",
       "signature": "DocumentStore{by_doc_type(self, doc_type: str, scope_id: str, *, order_by: str | None = None, descending: bool = True, limit: int | None = None, exclude: Sequence[str] = (), **field_eq: Any) -> list[dict[str, Any]]; delete(self, doc_id: str, scope_id: str) -> bool; get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None; get_many(self, doc_type: str, doc_ids: Sequence[str], scope_id: str, *, exclude: Sequence[str] = (), keep: Sequence[str] = ()) -> list[dict[str, Any]]; get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]; iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]; merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool; upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None}"
@@ -1011,15 +1027,15 @@
     },
     "threetears.evals.kernel.EvalAnalysisAttempt": {
       "kind": "model",
-      "signature": "EvalAnalysisAttempt(id: str = <lambda>(), doc_type: Literal['eval_analysis_attempt'] = 'eval_analysis_attempt', schema_version: SchemaVersion = 8, scope_id: str, campaign_id: str, outcome: AttemptOutcome, analysis_id: str | None = None, generator_model: str, reported_models: list[str] = list(), prompt_id: str, prompt_version: str | None = None, bundle_fingerprint: str, calls: int = 0, unpriced_calls: int = 0, token_cost: float = 0.0, refusals: list[str] = list(), error: str | None = None, started_at: str, created_at: str = utc_now_iso(), lease: LeaseField = None, cancel_requested_at: CancelRequestedAtField = None, cancel_request_reason: CancelRequestReasonField = None, lost: LostField = None)"
+      "signature": "EvalAnalysisAttempt(id: str = <lambda>(), doc_type: Literal['eval_analysis_attempt'] = 'eval_analysis_attempt', schema_version: CoreSchemaVersion = 10, scope_id: str, campaign_id: str, outcome: AttemptOutcome, analysis_id: str | None, generator_model: str, reported_models: list[str] = list(), prompt_id: str, prompt_version: str | None = None, bundle_fingerprint: str, calls: int = 0, unpriced_calls: int = 0, token_cost: float = 0.0, refusals: list[str] = list(), error: str | None, started_at: str, created_at: str = utc_now_iso(), lease: LeaseField = None, cancel_requested_at: CancelRequestedAtField = None, cancel_request_reason: CancelRequestReasonField = None, lost: LostField = None)"
     },
     "threetears.evals.kernel.EvalCampaign": {
       "kind": "model",
-      "signature": "EvalCampaign(id: str = <lambda>(), doc_type: Literal['eval_campaign'] = 'eval_campaign', schema_version: SchemaVersion = 8, scope_id: str, name: str, description: str = '', subject_id: str, subject_kind: str = '', behavior: str, template_id: str | None = None, run_ids: list[str] = list(), declared_design: CampaignDesign | None = None, archived: bool = False, created_at: str = utc_now_iso(), created_by: str)"
+      "signature": "EvalCampaign(id: str = <lambda>(), doc_type: Literal['eval_campaign'] = 'eval_campaign', schema_version: CoreSchemaVersion = 10, scope_id: str, name: str, description: str = '', subject_id: str, subject_kind: str = '', behavior: str, template_id: str | None = None, run_ids: list[str] = list(), declared_design: CampaignDesign | None = None, archived: bool = False, created_at: str = utc_now_iso(), created_by: str)"
     },
     "threetears.evals.kernel.EvalGenerationSlot": {
       "kind": "model",
-      "signature": "EvalGenerationSlot(id: str, doc_type: Literal['eval_generation_slot'] = 'eval_generation_slot', schema_version: SchemaVersion = 8, scope_id: str, campaign_id: str, attempt_id: str, claimed_at: str = utc_now_iso())"
+      "signature": "EvalGenerationSlot(id: str, doc_type: Literal['eval_generation_slot'] = 'eval_generation_slot', schema_version: CoreSchemaVersion = 10, scope_id: str, campaign_id: str, attempt_id: str, claimed_at: str = utc_now_iso())"
     },
     "threetears.evals.kernel.EvalInsight": {
       "kind": "model",
@@ -1039,7 +1055,7 @@
     },
     "threetears.evals.kernel.EvalSweep": {
       "kind": "model",
-      "signature": "EvalSweep(id: str = <lambda>(), doc_type: Literal['eval_sweep'] = 'eval_sweep', schema_version: SchemaVersion = 8, scope_id: str, campaign_id: str, template_id: str, subject_id: str, arms: list[SweepArmRecord], max_concurrent_arms: int, outcome: SweepOutcome = 'running', detail: str | None = None, created_at: str = utc_now_iso(), ended_at: str | None = None, lease: LeaseField = None, cancel_requested_at: CancelRequestedAtField = None, cancel_request_reason: CancelRequestReasonField = None, lost: LostField = None)"
+      "signature": "EvalSweep(id: str = <lambda>(), doc_type: Literal['eval_sweep'] = 'eval_sweep', schema_version: CoreSchemaVersion = 10, scope_id: str, campaign_id: str, template_id: str, subject_id: str, arms: list[SweepArmRecord], max_concurrent_arms: int, outcome: SweepOutcome = 'running', detail: str | None = None, created_at: str = utc_now_iso(), ended_at: str | None = None, lease: LeaseField = None, cancel_requested_at: CancelRequestedAtField = None, cancel_request_reason: CancelRequestReasonField = None, lost: LostField = None)"
     },
     "threetears.evals.kernel.EvidenceRef": {
       "kind": "model",
@@ -4105,9 +4121,29 @@
       "kind": "constant (int)",
       "signature": ""
     },
+    "threetears.evals.storage.DocTypeRoute": {
+      "kind": "dataclass",
+      "signature": "DocTypeRoute(by: Literal['origin', 'lifecycle'], to: Mapping[str, str], unregistered: str)"
+    },
     "threetears.evals.storage.InMemoryDocumentStore": {
       "kind": "class",
       "signature": "InMemoryDocumentStore() -> None"
+    },
+    "threetears.evals.storage.MisplacedDocument": {
+      "kind": "exception",
+      "signature": ""
+    },
+    "threetears.evals.storage.RouteChanged": {
+      "kind": "exception",
+      "signature": ""
+    },
+    "threetears.evals.storage.RoutedDocumentStore": {
+      "kind": "class",
+      "signature": "RoutedDocumentStore(children: Mapping[str, DocumentStore], route: DocTypeRoute) -> RoutedDocumentStore"
+    },
+    "threetears.evals.storage.ROUTING_SCOPE": {
+      "kind": "constant (str)",
+      "signature": ""
     },
     "threetears.evals.storage.SQLITE_STORE_LAYOUT": {
       "kind": "constant (int)",

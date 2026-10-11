@@ -255,9 +255,9 @@ scores, cost and what the kind reported. Its turn-by-turn trace is stored beside
 
 #### Evidence core
 The stored documents a later release always reads (`CORE_DOC_TYPES`): cases, runs, results and their traces,
-calibration ratings, out-of-run spend, case sets, and the templates, judge configs and rubric dims they name.
-An older one is upgraded as it is read. Campaigns, analyses, insights, sweeps and cassettes are outside it:
-a release that changes their format refuses them, and they are made again
+calibration ratings, out-of-run spend, case sets, the templates, judge configs and rubric dims they name,
+campaigns, sweeps, analysis attempts and generation slots. An older one is upgraded as it is read. Analyses, insights, judge
+profiles and cassettes are outside it: a release that changes their format refuses them, and they are made again
 ([what is kept](adopting-a-host.md#stored-data-what-is-kept)).
 
 #### Battery
