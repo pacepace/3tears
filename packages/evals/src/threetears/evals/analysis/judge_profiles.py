@@ -36,11 +36,19 @@ rubric whose scale moved, or runs of one judge asked two wordings — reads no p
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from pydantic import Field
 
-from threetears.evals.analysis.agreement import DimensionAgreement, JudgeKey, SelfAgreementDimension, judge_key
+from threetears.evals.analysis.agreement import (
+    DimensionAgreement,
+    JudgeKey,
+    SelfAgreementDimension,
+    judge_agreement,
+    judge_evidence_tiers,
+    judge_key,
+    judge_self_agreement,
+)
 from threetears.evals.analysis.judge_kind_readings import JudgeKindReading, JudgeKindReadings
 from threetears.evals.kernel.evidence_tiers import (
     JudgeEvidenceTier,
@@ -55,10 +63,13 @@ from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.models import OUTCOME_DIM_ID, TRANSCRIPT_DIM_ID, utc_now_iso
 
 if TYPE_CHECKING:
-    from threetears.evals.schema.models import EvalResult, EvalRun, EvalTemplate
+    from threetears.evals.schema.models import CalibrationRating, EvalResult, EvalRun, EvalTemplate
 
 __all__ = [
     "JudgeProfileDrafts",
+    "TierReadStore",
+    "judged_ratings",
+    "judges_tiers",
     "SkippedJudgeProfile",
     "judge_profiles_of",
     "judged_criteria",
@@ -292,3 +303,100 @@ def tiers_with_judge_profiles(
             )
         )
     return read
+
+
+class TierReadStore(Protocol):
+    """The reads deciding the evidence tiers of the judges behind some runs' scores need."""
+
+    def query_calibration_ratings(self, scope_id: str, /, *, run_id: str | None = None) -> list[CalibrationRating]:
+        """Calibration ratings in a scope, optionally of one run's results."""
+        ...
+
+    def query_judge_profiles(self, scope_id: str, /) -> list[EvalJudgeProfile]:
+        """Every stored judge profile in a scope."""
+        ...
+
+    def load_template(self, template_id: str, scope_id: str, /) -> EvalTemplate | None:
+        """One template, or None."""
+        ...
+
+
+def judged_ratings(
+    storage: TierReadStore, scope_id: str, runs: Sequence[EvalRun], results: Sequence[EvalResult]
+) -> list[CalibrationRating]:
+    """The ratings a judge agreement over ``runs`` reads: of their results, and of what their judges scored.
+
+    A rating anywhere in the scope whose label key — the judged output and the criterion — is a key one of the
+    results' judge scores carries is a person's label of an output these judges scored, and is read too (#628).
+    Read per run, in run order, then the scope's other ratings oldest first, so the list is deterministic; the scope
+    is read only when a score carries a key at all.
+
+    Args:
+        storage: The store.
+        scope_id: The scope.
+        runs: The runs, in order.
+        results: Their results.
+
+    Returns:
+        The ratings, each once.
+    """
+    ratings = [rating for run in runs for rating in storage.query_calibration_ratings(scope_id, run_id=run.id)]
+    keys = {
+        key
+        for result in results
+        for score in (*result.rubric_scores, result.transcript_score, result.outcome_score)
+        if score is not None and (key := score.label_key) is not None
+    }
+    if not keys:
+        return ratings
+    held = {rating.id for rating in ratings}
+    ratings += [
+        rating
+        for rating in storage.query_calibration_ratings(scope_id)
+        if rating.id not in held and rating.label_key in keys
+    ]
+    return ratings
+
+
+def judges_tiers(
+    storage: TierReadStore, scope_id: str, runs: Sequence[EvalRun], results: Sequence[EvalResult]
+) -> list[JudgeEvidenceTier]:
+    """The evidence tier of every judge behind ``runs``' judged scores, decided as a campaign's bundle decides them.
+
+    The two agreements over these results (with people's ratings, :func:`judged_ratings`, and with the judges' own
+    repeats), and, for a judge they leave undetermined, its stored profile (:func:`tiers_with_judge_profiles`). What
+    reads a judged figure outside a campaign — a scope's frontier — reads its judges' tiers here, so it says the tier
+    a campaign over the same runs would.
+
+    Args:
+        storage: The store.
+        scope_id: The scope.
+        runs: The runs, in order.
+        results: Their results.
+
+    Returns:
+        One tier per judge and dimension.
+    """
+    keys = {
+        key
+        for result in results
+        for score in (*result.rubric_scores, result.transcript_score, result.outcome_score)
+        if score is not None and (key := judge_key(result, score.dim)) is not None
+    }
+    results_by_run: dict[str, list[EvalResult]] = {}
+    for result in results:
+        results_by_run.setdefault(result.eval_run_id, []).append(result)
+    templates = {
+        template_id: template
+        for template_id in sorted({run.template_id for run in runs if run.template_id})
+        if (template := storage.load_template(template_id, scope_id)) is not None
+    }
+    return tiers_with_judge_profiles(
+        judge_evidence_tiers(
+            judge_agreement(judged_ratings(storage, scope_id, runs, results), results),
+            judge_self_agreement(results),
+            keys,
+        ),
+        storage.query_judge_profiles(scope_id),
+        judged_criteria(runs, results_by_run, templates),
+    )

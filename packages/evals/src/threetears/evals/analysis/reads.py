@@ -52,6 +52,7 @@ from threetears.evals.analysis.lenses.aggregation import DEFAULT_WEIGHTING
 from threetears.evals.analysis.lenses.comparison_sets import compute_comparison_sets
 from threetears.evals.analysis.lenses.cost_estimate import CostEstimate, PlannedCost
 from threetears.evals.analysis.lenses.pivot import PivotError, PivotTable, compute_pivot
+from threetears.evals.analysis.judge_profiles import judges_tiers
 from threetears.evals.analysis.lenses.frontier import FrontierError, compute_frontier, normalize_bar
 from threetears.evals.analysis.lenses.history import HistoryError, HistoryResult, compute_history
 from threetears.evals.analysis.lenses.program_budget import compute_program_budget
@@ -82,7 +83,8 @@ from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_RUN
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
     from threetears.evals.kernel.campaign import EvalCampaign
-    from threetears.evals.schema.models import EvalResult, EvalRun, EvalTemplate
+    from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
+    from threetears.evals.schema.models import CalibrationRating, EvalResult, EvalRun, EvalTemplate
 
 log = get_logger(__name__)
 
@@ -186,6 +188,18 @@ class LensStore(Protocol):
 
     def load_campaign(self, campaign_id: str, scope_id: str, /) -> EvalCampaign | None:
         """Load one campaign within a scope, or ``None`` when it does not resolve there."""
+        ...
+
+    def query_calibration_ratings(self, scope_id: str, /, *, run_id: str | None = None) -> list[CalibrationRating]:
+        """Calibration ratings in a scope, optionally of one run's results — what a judge's tier is read from."""
+        ...
+
+    def query_judge_profiles(self, scope_id: str, /) -> list[EvalJudgeProfile]:
+        """Every stored judge profile in a scope."""
+        ...
+
+    def load_template(self, template_id: str, scope_id: str, /) -> EvalTemplate | None:
+        """One template, or None — whose criterion a judge's stored profile is keyed by."""
         ...
 
     def load_eval_run(self, run_id: str, scope_id: str, /) -> EvalRun | None:
@@ -597,10 +611,15 @@ def frontier(
         # own setting, so a run whose footing is read is read whole (`run_summary` does the same).
         runs = [(storage.load_eval_run(run.id, scope_id) or run) if run.elided_payload_paths else run for run in runs]
     results = storage.query_eval_results(scope_id)
+    # The judges behind every result's scores, tiered as a campaign over these runs would tier them: a verdict made on
+    # a judged pass^k names the tier it stands on (#679), which a scope's frontier read nowhere before.
+    ranked = {run.id for run in runs}
+    tiers = judges_tiers(storage, scope_id, runs, [result for result in results if result.eval_run_id in ranked])
     try:
         result = compute_frontier(
             runs,
             results,
+            tiers=tiers,
             bar=parsed_bar,
             subject_id=subject,
             known_run_ids={run.id for run in all_runs},

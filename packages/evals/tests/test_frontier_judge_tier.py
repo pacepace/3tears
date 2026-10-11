@@ -1,0 +1,122 @@
+"""A frontier verdict made on a judged pass^k names the evidence tier of the judges behind it (#679, gap 21).
+
+``scope_frontier(bar=0.5)`` answered "<pick> is the cheapest clearing the bar (only_cleared)", where the pass^k the
+bar was read on conjoined criteria a judge scored, and named no tier — #679 gave a judged bar's verdict on a
+campaign's decision surface its judges' tier, and never reached the frontier. A verdict is a recommendation, so the
+tier rides on it: the weakest tier among the judges that scored the pick's criteria, ``undetermined`` where nothing
+measured them, and none at all for a pick no judge scored.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from threetears.evals.analysis import frontier_text
+from threetears.evals.analysis.lenses.frontier import FrontierResult, compute_frontier
+from threetears.evals.analysis.reads import frontier
+from threetears.evals.kernel import EvalStorage
+from threetears.evals.kernel.evidence_tiers import (
+    CALIBRATION_MIN_AGREEMENT,
+    CALIBRATION_MIN_RESULTS,
+    SEPARATION_MIN_AGREEMENT,
+    SEPARATION_MIN_RESULTS,
+    JudgeEvidenceTier,
+    TierCriterion,
+)
+from threetears.evals.schema import EvalRun, GoalStateOutcome, RoleUsage, RubricScore
+from threetears.evals.storage import InMemoryDocumentStore
+from packages.evals.tests.factories import make_eval_result, make_eval_run
+
+_DIM = "reply.quality"
+_JUDGE = "judge/model"
+_CASES = 20
+
+
+def _corpus(*, judged: bool) -> tuple[EvalRun, list[Any]]:
+    """One contestant over twenty cases, every attempt passing — its criteria judged, or only goal-checked."""
+    run = make_eval_run(id="run-a", status="completed", k_runs=1, candidate_model="a")
+    results = [
+        make_eval_result(
+            id=f"res-{case}",
+            eval_run_id=run.id,
+            scope_id=run.scope_id,
+            model="a",
+            variant_key="vk-a",
+            test_case_id=f"tc{case}",
+            rubric_scores=(
+                [RubricScore(dim=_DIM, score=4, scale="ordinal", served_model=_JUDGE, judge_temperature=0.0)]
+                if judged
+                else []
+            ),
+            goal_state_outcomes=[GoalStateOutcome(expression="ok", passed=True)],
+            usage=[RoleUsage(role="candidate", cost_usd=0.01)],
+        )
+        for case in range(_CASES)
+    ]
+    return run, results
+
+
+def _calibrated() -> JudgeEvidenceTier:
+    return JudgeEvidenceTier(
+        rubric_dim=_DIM,
+        scale="ordinal",
+        judge_model=_JUDGE,
+        judge_config_id=None,
+        judge_temperature=0.0,
+        tier="calibrated",
+        calibration=TierCriterion(
+            state="met",
+            n=CALIBRATION_MIN_RESULTS,
+            results=CALIBRATION_MIN_RESULTS,
+            agreement=1.0,
+            lower=0.99,
+            upper=1.0,
+            threshold=CALIBRATION_MIN_AGREEMENT,
+            min_results=CALIBRATION_MIN_RESULTS,
+        ),
+        separation=TierCriterion(
+            state="insufficient",
+            n=0,
+            results=0,
+            agreement=None,
+            threshold=SEPARATION_MIN_AGREEMENT,
+            min_results=SEPARATION_MIN_RESULTS,
+        ),
+    )
+
+
+def _verdict(result: FrontierResult) -> Any:
+    (subject,) = result.subjects
+    assert subject.verdict is not None
+    return subject.verdict
+
+
+def test_a_verdict_on_a_judged_pass_k_carries_its_judges_tier() -> None:
+    run, results = _corpus(judged=True)
+    verdict = _verdict(compute_frontier([run], results, bar=0.5, archived_run_ids=None, tiers=[_calibrated()]))
+    assert verdict.judge_evidence_tier == "calibrated"
+
+
+def test_a_judge_nothing_measured_reads_undetermined_and_the_text_says_so() -> None:
+    run, results = _corpus(judged=True)
+    result = compute_frontier([run], results, bar=0.5, archived_run_ids=None)
+    assert _verdict(result).judge_evidence_tier == "undetermined"
+    assert "judge tier undetermined" in frontier_text(result)
+
+
+def test_a_pick_no_judge_scored_carries_no_tier() -> None:
+    run, results = _corpus(judged=False)
+    result = compute_frontier([run], results, bar=0.5, archived_run_ids=None)
+    assert _verdict(result).judge_evidence_tier is None
+    assert "judge tier" not in frontier_text(result)
+
+
+def test_the_scope_frontier_reads_its_judges_tiers_from_the_scope() -> None:
+    storage = EvalStorage(InMemoryDocumentStore())
+    run, results = _corpus(judged=True)
+    storage.save_eval_run(run)
+    for result in results:
+        storage.save_eval_result(result)
+    answered = frontier(storage, run.scope_id, list_runs=lambda scope_id, **_: [run], bar=0.5)
+    (subject,) = answered["subjects"]
+    assert subject["verdict"]["judge_evidence_tier"] == "undetermined"

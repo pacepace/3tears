@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 
 from threetears.evals.analysis.agreement import (
-    JudgeKey,
     judge_key,
     tier_for_judges,
 )
@@ -145,16 +144,6 @@ def _judged_rows(records: list[ScoreRecord]) -> Iterator[tuple[str, ScoreRecord]
                 yield record.rubric_dim, record
             elif record.metric in (METRIC_TRANSCRIPT, METRIC_OUTCOME):
                 yield record.metric, record
-
-
-def _judged_keys(results: list[EvalResult]) -> set[JudgeKey]:
-    """Every judge (:class:`~threetears.evals.analysis.agreement.JudgeKey`) a judged score among ``results`` was given by."""
-    return {
-        key
-        for result in results
-        for score in (*result.rubric_scores, result.transcript_score, result.outcome_score)
-        if score is not None and (key := judge_key(result, score.dim)) is not None
-    }
 
 
 def _judged_measures(
