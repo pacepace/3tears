@@ -24,12 +24,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
 import json
-from collections.abc import Iterator
 from contextlib import aclosing
 from datetime import timedelta
-from pathlib import Path
 from uuid import UUID
 
 import nats
@@ -49,6 +46,8 @@ from threetears.nats.subject_permissions import (
 )
 from threetears.nats.subjects import Subjects, get_default_namespace, set_default_namespace
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
+
+from .nats_support import running_nats
 
 pytestmark = pytest.mark.integration
 
@@ -131,32 +130,6 @@ def _server_config(users: list[dict[str, object]]) -> str:
     return f"jetstream {{ store_dir: /tmp/js-store }}\nport: 4222\nauthorization {json.dumps(authorization)}\n"
 
 
-@contextlib.contextmanager
-def _nats_with_auth(config_text: str, conf_dir: Path) -> Iterator[str]:
-    """start a JetStream nats-server with a custom ``authorization`` config; yield its URI.
-
-    :param config_text: the server configuration
-    :ptype config_text: str
-    :param conf_dir: a directory to mount the configuration from
-    :ptype conf_dir: Path
-    :return: the server's URI, yielded
-    :rtype: Iterator[str]
-    """
-    from testcontainers.nats import NatsContainer  # noqa: PLC0415
-
-    (conf_dir / "nats.conf").write_text(config_text)
-    container = (
-        NatsContainer(jetstream=False)
-        .with_volume_mapping(str(conf_dir), "/etc/nats", "ro")
-        .with_command(["-c", "/etc/nats/nats.conf"])
-    )
-    container.start()
-    try:
-        yield container.nats_uri()
-    finally:
-        container.stop()
-
-
 async def _connect(uri: str, *, user: str, password: str, inbox_prefix: str | None = None) -> NatsClient:
     """connect the wrapper client as one configured user.
 
@@ -203,7 +176,7 @@ def _create_body(stream: str, name: str | None, filter_subject: str, **extra: ob
     return json.dumps({"stream_name": stream, "config": config}).encode()
 
 
-async def test_a_pod_collects_its_own_deliveries_and_no_other_agents(tmp_path: Path) -> None:
+async def test_a_pod_collects_its_own_deliveries_and_no_other_agents() -> None:
     """the agent pod collects its reply; every route to another principal's messages is refused."""
     if not check_docker_available():
         pytest.skip("Docker not available")
@@ -232,7 +205,7 @@ async def test_a_pod_collects_its_own_deliveries_and_no_other_agents(tmp_path: P
     channels = f"{_NS}-channels-deliver"
     audit = f"{_NS}-audit"
 
-    with _nats_with_auth(config, tmp_path) as uri:
+    with running_nats(config) as uri:
         hub = await _connect(uri, user="admin", password=_ADMIN_PW)
         agent: NatsClient | None = None
         tool: NatsClient | None = None
@@ -354,7 +327,7 @@ async def test_a_pod_collects_its_own_deliveries_and_no_other_agents(tmp_path: P
                     await client.shutdown(drain_timeout=timedelta(seconds=2))
 
 
-async def test_an_agent_pod_reads_and_watches_its_own_config_and_writes_none(tmp_path: Path) -> None:
+async def test_an_agent_pod_reads_and_watches_its_own_config_and_writes_none() -> None:
     """the hub reconciles the cache to direct reads; the pod reads its own key and nothing more."""
     if not check_docker_available():
         pytest.skip("Docker not available")
@@ -372,7 +345,7 @@ async def test_an_agent_pod_reads_and_watches_its_own_config_and_writes_none(tmp
     own_key = str(_AGENT)
     other_key = str(_OTHER_AGENT)
 
-    with _nats_with_auth(config, tmp_path) as uri:
+    with running_nats(config) as uri:
         hub = await _connect(uri, user="admin", password=_ADMIN_PW)
         agent: NatsClient | None = None
         try:

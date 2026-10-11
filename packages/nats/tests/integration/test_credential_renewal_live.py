@@ -33,10 +33,8 @@ import json
 import logging
 import time
 from collections import Counter
-from collections.abc import Iterator
 from contextlib import aclosing
 from datetime import timedelta
-from pathlib import Path
 from typing import Any
 
 import nats
@@ -60,6 +58,8 @@ from threetears.nats import (
 )
 from threetears.nats.kv_watch import KvKeyUpdate
 from threetears.nats.subjects import get_default_namespace, set_default_namespace
+
+from .nats_support import running_nats
 
 pytestmark = pytest.mark.integration
 
@@ -172,33 +172,7 @@ def _server_config(account_pub: str) -> str:
     )
 
 
-@contextlib.contextmanager
-def _nats_with_config(config_text: str, conf_dir: Path) -> Iterator[str]:
-    """start a nats-server with ``config_text``; yield its URI.
-
-    :param config_text: the server configuration
-    :ptype config_text: str
-    :param conf_dir: a directory to mount the configuration from
-    :ptype conf_dir: Path
-    :return: the server's URI, yielded
-    :rtype: Iterator[str]
-    """
-    from testcontainers.nats import NatsContainer  # noqa: PLC0415
-
-    (conf_dir / "nats.conf").write_text(config_text)
-    container = (
-        NatsContainer(jetstream=False)
-        .with_volume_mapping(str(conf_dir), "/etc/nats", "ro")
-        .with_command(["-c", "/etc/nats/nats.conf"])
-    )
-    container.start()
-    try:
-        yield container.nats_uri()
-    finally:
-        container.stop()
-
-
-async def test_a_renewal_loses_nothing_in_flight(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+async def test_a_renewal_loses_nothing_in_flight(caplog: pytest.LogCaptureFixture) -> None:
     """requests, owed replies, subscriptions and a KV watch all ride through a renewal intact."""
     if not check_docker_available():
         pytest.skip("Docker not available")
@@ -216,7 +190,7 @@ async def test_a_renewal_loses_nothing_in_flight(tmp_path: Path, caplog: pytest.
     )
     previous_ns = get_default_namespace()
 
-    with _nats_with_config(_server_config(account_public_key(account_seed)), tmp_path) as uri:
+    with running_nats(_server_config(account_public_key(account_seed))) as uri:
         admin = await nats.connect(uri, user="admin", password=_ADMIN_PW, max_reconnect_attempts=0)
         pod: NatsClient | None = None
         tasks: list[asyncio.Task[Any]] = []
@@ -413,7 +387,7 @@ async def test_a_renewal_loses_nothing_in_flight(tmp_path: Path, caplog: pytest.
 _STRESS_RENEWALS = 100
 
 
-async def test_many_renewals_under_a_busy_subscription_lose_and_double_nothing(tmp_path: Path) -> None:
+async def test_many_renewals_under_a_busy_subscription_lose_and_double_nothing() -> None:
     """every renewal hands the subscription over while messages are streaming onto it.
 
     Each handover opens a moment when both connections are members of the subscription's group and
@@ -440,7 +414,7 @@ async def test_many_renewals_under_a_busy_subscription_lose_and_double_nothing(t
     )
     previous_ns = get_default_namespace()
 
-    with _nats_with_config(_server_config(account_public_key(account_seed)), tmp_path) as uri:
+    with running_nats(_server_config(account_public_key(account_seed))) as uri:
         admin = await nats.connect(uri, user="admin", password=_ADMIN_PW, max_reconnect_attempts=0)
         pod: NatsClient | None = None
         stream: asyncio.Task[None] | None = None

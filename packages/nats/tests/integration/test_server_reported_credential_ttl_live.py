@@ -24,11 +24,8 @@ Gated on docker: a checkout without docker skips cleanly.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
-from collections.abc import Iterator
 from datetime import timedelta
-from pathlib import Path
 from typing import Any
 
 import nats
@@ -50,6 +47,8 @@ from threetears.nats import (
     generate_account_seed,
 )
 from threetears.nats.subject_permissions import SERVER_USER_INFO_SUBJECT
+
+from .nats_support import running_nats
 
 pytestmark = pytest.mark.integration
 
@@ -137,33 +136,7 @@ def _server_config(account_pub: str) -> str:
     )
 
 
-@contextlib.contextmanager
-def _nats_with_config(config_text: str, conf_dir: Path) -> Iterator[str]:
-    """start a nats-server with ``config_text``; yield its URI.
-
-    :param config_text: the server configuration
-    :ptype config_text: str
-    :param conf_dir: a directory to mount the configuration from
-    :ptype conf_dir: Path
-    :return: the server's URI, yielded
-    :rtype: Iterator[str]
-    """
-    from testcontainers.nats import NatsContainer  # noqa: PLC0415
-
-    (conf_dir / "nats.conf").write_text(config_text)
-    container = (
-        NatsContainer(jetstream=False)
-        .with_volume_mapping(str(conf_dir), "/etc/nats", "ro")
-        .with_command(["-c", "/etc/nats/nats.conf"])
-    )
-    container.start()
-    try:
-        yield container.nats_uri()
-    finally:
-        container.stop()
-
-
-async def test_the_server_reports_the_minted_lifetime_and_the_renewal_runs_on_it(tmp_path: Path) -> None:
+async def test_the_server_reports_the_minted_lifetime_and_the_renewal_runs_on_it() -> None:
     """the pod believes a day, the hub mints 40s; the pod learns 40s and is still serving after it."""
     if not check_docker_available():
         pytest.skip("Docker not available")
@@ -179,7 +152,7 @@ async def test_the_server_reports_the_minted_lifetime_and_the_renewal_runs_on_it
         user_jwt_ttl_seconds=_MINTED_TTL_SECONDS,
     )
 
-    with _nats_with_config(_server_config(account_public_key(account_seed)), tmp_path) as uri:
+    with running_nats(_server_config(account_public_key(account_seed))) as uri:
         admin = await nats.connect(uri, user="admin", password=_ADMIN_PW, max_reconnect_attempts=0)
         pod: NatsClient | None = None
         try:

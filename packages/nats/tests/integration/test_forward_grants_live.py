@@ -37,9 +37,8 @@ import asyncio
 import base64
 import contextlib
 import json
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from datetime import timedelta
-from pathlib import Path
 
 import nats
 import pytest
@@ -49,6 +48,8 @@ from threetears.nats import NatsClient, Subjects, forward, serve_owner, set_defa
 from threetears.nats.subject_permissions import Principal, PrincipalPermissions, build_permissions, kv_key_scope_for
 from threetears.scrape.operator_session import operator_session_lease
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
+
+from .nats_support import running_nats
 
 pytestmark = pytest.mark.integration
 
@@ -135,24 +136,6 @@ def _server_config() -> str:
     return f"jetstream {{ store_dir: /tmp/js-store }}\nport: 4222\nauthorization {json.dumps(authorization)}\n"
 
 
-@contextlib.contextmanager
-def _nats_with_auth(conf_dir: Path) -> Iterator[str]:
-    """start a JetStream nats-server carrying the minted ``authorization``; yield its URI."""
-    from testcontainers.nats import NatsContainer  # noqa: PLC0415
-
-    (conf_dir / "nats.conf").write_text(_server_config())
-    container = (
-        NatsContainer(jetstream=False)
-        .with_volume_mapping(str(conf_dir), "/etc/nats", "ro")
-        .with_command(["-c", "/etc/nats/nats.conf"])
-    )
-    container.start()
-    try:
-        yield container.nats_uri()
-    finally:
-        container.stop()
-
-
 async def _connect_wrapped(uri: str, *, user: str, password: str, permissions: PrincipalPermissions) -> NatsClient:
     """connect the canonical wrapper on one principal's credential + its scoped inbox."""
     set_default_namespace(_NS)
@@ -202,7 +185,7 @@ async def _connect_raw(
         await nc.close()
 
 
-async def test_granted_family_round_trips_and_foreign_family_is_refused(tmp_path: Path) -> None:
+async def test_granted_family_round_trips_and_foreign_family_is_refused() -> None:
     if not check_docker_available():
         pytest.skip("Docker not available")
 
@@ -211,7 +194,7 @@ async def test_granted_family_round_trips_and_foreign_family_is_refused(tmp_path
     foreign_family = Subjects.hitl_forward_family(_FOREIGN_NODE)
     session_key = "session-42"
 
-    with _nats_with_auth(tmp_path) as uri:
+    with running_nats(_server_config()) as uri:
         # --- the granted family: the pod really serves it and the hub really reaches it ---
         pod = await _connect_wrapped(uri, user="pod", password=_POD_PW, permissions=_pod_permissions())
         hub = await _connect_wrapped(uri, user="hub", password=_HUB_PW, permissions=_hub_permissions())
@@ -268,7 +251,6 @@ async def test_granted_family_round_trips_and_foreign_family_is_refused(tmp_path
 
 
 async def test_tool_pod_can_open_the_bucket_its_display_claim_uses(
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     if not check_docker_available():
@@ -279,7 +261,7 @@ async def test_tool_pod_can_open_the_bucket_its_display_claim_uses(
     # deployed pod does; the wrapper then layers its own namespace prefix over it.
     monkeypatch.setenv("THREETEARS_NATS_SUBJECT_NAMESPACE", _NS)
 
-    with _nats_with_auth(tmp_path) as uri:
+    with running_nats(_server_config()) as uri:
         # the hub declares the shared pod buckets at startup (``PodBucketDeclarer.declare_shared``),
         # with exactly this shape; a pod only ever binds them.
         admin = await NatsClient.connect(
@@ -346,7 +328,7 @@ async def _violations_from(
     return on_allowed, on_refused
 
 
-async def test_pipe_stream_grants_admit_a_pods_own_half_and_refuse_every_other(tmp_path: Path) -> None:
+async def test_pipe_stream_grants_admit_a_pods_own_half_and_refuse_every_other() -> None:
     """the stream subjects a pod actually uses are admitted; a peer's and the caller's are not."""
     if not check_docker_available():
         pytest.skip("Docker not available")
@@ -358,7 +340,7 @@ async def test_pipe_stream_grants_admit_a_pods_own_half_and_refuse_every_other(t
     peer_down = Subjects.pipe(_GRANTED_NODE, "pod-beta", nonce, "down")
     foreign_down = Subjects.pipe(_FOREIGN_NODE, _POD_ID, nonce, "down")
 
-    with _nats_with_auth(tmp_path) as uri:
+    with running_nats(_server_config()) as uri:
         allowed, refused = await _violations_from(
             uri,
             user="pod",
@@ -381,7 +363,7 @@ async def test_pipe_stream_grants_admit_a_pods_own_half_and_refuse_every_other(t
         assert subject.path in joined, f"{subject.path} was not refused: {refused}"
 
 
-async def test_pipe_stream_grants_let_the_hub_front_every_pod_on_the_callers_half(tmp_path: Path) -> None:
+async def test_pipe_stream_grants_let_the_hub_front_every_pod_on_the_callers_half() -> None:
     """the hub reaches every pod's stream, and still only from the caller's side."""
     if not check_docker_available():
         pytest.skip("Docker not available")
@@ -392,7 +374,7 @@ async def test_pipe_stream_grants_let_the_hub_front_every_pod_on_the_callers_hal
     pod_up = Subjects.pipe(_GRANTED_NODE, _POD_ID, nonce, "up")
     other_pod_down = Subjects.pipe(_FOREIGN_NODE, "pod-beta", nonce, "down")
 
-    with _nats_with_auth(tmp_path) as uri:
+    with running_nats(_server_config()) as uri:
         allowed, refused = await _violations_from(
             uri,
             user="hub",

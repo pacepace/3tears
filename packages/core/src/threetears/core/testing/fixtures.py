@@ -151,6 +151,10 @@ def nats_system_account() -> bool:
 #: exactly as before.
 _POSTGRES_URL_ENV = "THREETEARS_TEST_POSTGRES_URL"
 _NATS_URL_ENV = "THREETEARS_TEST_NATS_URL"
+_SEARXNG_URL_ENV = "THREETEARS_TEST_SEARXNG_URL"
+
+#: an -alpine tag, for its shell: the session server's configuration is written inside the container
+_NATS_IMAGE = "nats:2.14.2-alpine"
 
 
 @pytest.fixture(scope="session")
@@ -201,9 +205,7 @@ def db_container(db_image: str) -> Iterator[str]:
 
 
 @pytest.fixture(scope="session")
-def nats_container(
-    nats_jetstream: bool, nats_system_account: bool, tmp_path_factory: pytest.TempPathFactory
-) -> Iterator[str]:
+def nats_container(nats_jetstream: bool, nats_system_account: bool) -> Iterator[str]:
     """session-scoped NATS testcontainer.
 
     yields the ``nats://`` connection URI from the container.
@@ -223,8 +225,6 @@ def nats_container(
     :ptype nats_jetstream: bool
     :param nats_system_account: whether to declare the SYSTEM account
     :ptype nats_system_account: bool
-    :param tmp_path_factory: where the server's configuration is written
-    :ptype tmp_path_factory: pytest.TempPathFactory
     :yield: NATS connection URI
     :rtype: Iterator[str]
     """
@@ -246,15 +246,19 @@ def nats_container(
     from testcontainers.core.container import DockerContainer  # noqa: PLC0415
     from testcontainers.core.wait_strategies import LogMessageWaitStrategy  # noqa: PLC0415
 
-    conf_dir = tmp_path_factory.mktemp("nats-conf")
-    (conf_dir / "nats.conf").write_text(
-        _nats_container_config(jetstream=nats_jetstream, system_account=nats_system_account), encoding="utf-8"
-    )
+    # The configuration travels in an environment variable and the container's shell writes it out,
+    # never through a bind mount: a mount's source path is resolved on the Docker HOST, and where the
+    # daemon runs elsewhere (Docker Desktop behind a dev container's socket, a remote DOCKER_HOST) a
+    # file written to this machine's temp dir is not there -- the server exits with "open
+    # /etc/nats/nats.conf: no such file or directory" and the wait below times out. That needs a
+    # shell, so the image is an -alpine tag: plain ``nats:<version>`` is built from scratch.
     container = (
-        DockerContainer("nats:latest")
+        DockerContainer(_NATS_IMAGE)
         .with_exposed_ports(4222, 8222)
-        .with_volume_mapping(str(conf_dir), "/etc/nats", "ro")
-        .with_command(["-c", "/etc/nats/nats.conf"])
+        .with_env("NATS_CONF", _nats_container_config(jetstream=nats_jetstream, system_account=nats_system_account))
+        .with_command(
+            ["sh", "-c", 'printf "%s" "$NATS_CONF" > /tmp/nats.conf || exit 1; exec nats-server -c /tmp/nats.conf']
+        )
         .waiting_for(LogMessageWaitStrategy("Server is ready").with_startup_timeout(120))
     )
     with container:
@@ -466,18 +470,28 @@ def searxng_container() -> Iterator[str]:
     never that a particular fusion occurred. See
     ``packages/search/tests/test_searxng_live_scoring.py``.
 
+    Set ``THREETEARS_TEST_SEARXNG_URL`` to use an already-running instance
+    instead of starting one. That instance must have JSON enabled in its
+    ``search.formats`` for the reason above; nothing here can turn it on.
+
     :yield: the container's base URL, e.g. ``http://localhost:32768``
     :rtype: Iterator[str]
     """
+    provided = os.environ.get(_SEARXNG_URL_ENV)
+    if provided:
+        # An externally-managed SearXNG (a LAN instance, a CI service container). JSON must
+        # already be among its formats -- the settings below cannot reconfigure a server this
+        # fixture did not start, and without it every caller sees a parse failure, not a skip.
+        yield provided.rstrip("/")
+        return
+
     if not check_docker_available():
         pytest.skip("Docker not available")
     stagger_container_start()
 
-    import tempfile  # noqa: PLC0415
     import time  # noqa: PLC0415
     import urllib.error  # noqa: PLC0415
     import urllib.request  # noqa: PLC0415
-    from pathlib import Path  # noqa: PLC0415
 
     from testcontainers.core.container import DockerContainer  # noqa: PLC0415
 
@@ -492,54 +506,64 @@ def searxng_container() -> Iterator[str]:
         "    - html\n"
         "    - json\n"
     )
-    with tempfile.TemporaryDirectory() as workdir:
-        path = Path(workdir) / "settings.yml"
-        path.write_text(settings, encoding="utf-8")
-        container = (
-            DockerContainer("searxng/searxng:latest")
-            .with_exposed_ports(8080)
-            .with_volume_mapping(str(path), "/etc/searxng/settings.yml", "ro")
+    # The settings travel in an environment variable and the image's shell writes them where the
+    # entrypoint looks before handing over to it -- never a bind mount, whose source is resolved
+    # on the Docker HOST: where the daemon runs elsewhere (Docker Desktop behind a dev container's
+    # socket, a remote DOCKER_HOST) a temp file on this machine is not there, and the entrypoint
+    # would quietly create default settings with JSON off.
+    container = (
+        DockerContainer("searxng/searxng:latest")
+        .with_exposed_ports(8080)
+        .with_env("SEARXNG_SETTINGS_YML", settings)
+        .with_kwargs(
+            entrypoint=[
+                "sh",
+                "-c",
+                'printf "%s" "$SEARXNG_SETTINGS_YML" > /etc/searxng/settings.yml'
+                " || exit 1; exec /usr/local/searxng/entrypoint.sh",
+            ]
         )
-        # Behind an egress proxy the container's engines have no route out, and
-        # a nested daemon's bridge cannot resolve the proxy's name, so it is
-        # handed the proxy by IP -- the same thing metallm's ``dev-up.sh --proxy``
-        # does for its own searxng. On a host with a route of its own no proxy
-        # is set and nothing is added.
-        outbound_proxy = _outbound_proxy_by_ip()
-        if outbound_proxy:
-            for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
-                container = container.with_env(name, outbound_proxy)
-        with container:
-            host = container.get_container_host_ip()
-            port = container.get_exposed_port(8080)
-            base_url = f"http://{host}:{port}"
-            # Readiness is "answers a search", not "logged a line". The image
-            # prints its listening banner before it will serve, so a log-match
-            # wait hands the first request a reset connection -- observed, not
-            # feared. Engines failing to register (a 403 from an upstream on
-            # init) is normal and must NOT block readiness: an instance with
-            # half its engines suspended still scores correctly, which is the
-            # only thing a caller of this fixture is asking it.
-            deadline = time.monotonic() + 180
-            # Straight to the container, never via the environment's proxy: the
-            # container is on this host's bridge, which a forward proxy cannot
-            # reach -- it answers 503 and the fixture waited out its deadline.
-            direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-            while True:
-                try:
-                    with direct.open(  # noqa: S310
-                        f"{base_url}/search?q=ready&format=json", timeout=10
-                    ) as probe:
-                        if probe.status == 200:
-                            break
-                except urllib.error.URLError, OSError:
-                    # NOSILENT: a refused or reset connection IS the not-ready
-                    # signal this loop exists to poll for, so each one is an
-                    # expected outcome rather than a fault worth reporting.
-                    # The failure that matters -- never becoming ready -- is
-                    # raised at the deadline below, naming the URL.
-                    pass
-                if time.monotonic() > deadline:
-                    pytest.fail(f"SearXNG container at {base_url} never answered a JSON search")
-                time.sleep(2)
-            yield base_url
+    )
+    # Behind an egress proxy the container's engines have no route out, and
+    # a nested daemon's bridge cannot resolve the proxy's name, so it is
+    # handed the proxy by IP -- the same thing metallm's ``dev-up.sh --proxy``
+    # does for its own searxng. On a host with a route of its own no proxy
+    # is set and nothing is added.
+    outbound_proxy = _outbound_proxy_by_ip()
+    if outbound_proxy:
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+            container = container.with_env(name, outbound_proxy)
+    with container:
+        host = container.get_container_host_ip()
+        port = container.get_exposed_port(8080)
+        base_url = f"http://{host}:{port}"
+        # Readiness is "answers a search", not "logged a line". The image
+        # prints its listening banner before it will serve, so a log-match
+        # wait hands the first request a reset connection -- observed, not
+        # feared. Engines failing to register (a 403 from an upstream on
+        # init) is normal and must NOT block readiness: an instance with
+        # half its engines suspended still scores correctly, which is the
+        # only thing a caller of this fixture is asking it.
+        deadline = time.monotonic() + 180
+        # Straight to the container, never via the environment's proxy: the
+        # container is on this host's bridge, which a forward proxy cannot
+        # reach -- it answers 503 and the fixture waited out its deadline.
+        direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        while True:
+            try:
+                with direct.open(  # noqa: S310
+                    f"{base_url}/search?q=ready&format=json", timeout=10
+                ) as probe:
+                    if probe.status == 200:
+                        break
+            except urllib.error.URLError, OSError:
+                # NOSILENT: a refused or reset connection IS the not-ready
+                # signal this loop exists to poll for, so each one is an
+                # expected outcome rather than a fault worth reporting.
+                # The failure that matters -- never becoming ready -- is
+                # raised at the deadline below, naming the URL.
+                pass
+            if time.monotonic() > deadline:
+                pytest.fail(f"SearXNG container at {base_url} never answered a JSON search")
+            time.sleep(2)
+        yield base_url
