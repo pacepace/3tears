@@ -35,7 +35,6 @@ from threetears.evals.analysis.report.model import (
     TableColumn,
     TextBlock,
 )
-from threetears.evals.analysis.report.words import positions
 
 #: The page's whole stylesheet: system fonts, a readable measure, light and dark from the reader's setting.
 _STYLE = """
@@ -118,7 +117,11 @@ def _block(block: ReportBlock) -> str:
 def _text(block: TextBlock) -> str:
     """An author's words, laid out by what they were written as, with code's facts beside them."""
     facts = _facts(block.facts)
-    rests = f'<p class="facts">Rests on finding {positions(block.rests_on)}.</p>' if block.rests_on else ""
+    rests = (
+        f'<p class="facts">Rests on finding {", ".join(map(str, block.rests_on_numbers))}.</p>'
+        if block.rests_on
+        else ""
+    )
     if block.role == "finding_title":
         heading = f"<h3>{block.finding_number}. {_inline(_one_line(block.body))}</h3>"
         return heading + (f'<p class="facts">{facts}</p>' if facts else "")

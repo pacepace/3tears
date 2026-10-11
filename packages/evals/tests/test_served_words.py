@@ -181,6 +181,36 @@ def test_a_block_carries_the_number_a_reader_counts_its_finding_by() -> None:
     assert TextBlock(section="summary", role="summary", body="t").finding_number is None
 
 
+@pytest.mark.parametrize(
+    "block",
+    [
+        TextBlock(section="findings", role="finding_body", finding=0, rests_on=[2, 0], body="t"),
+        DisclosureBlock(section="methods", source="generation", text="t", rests_on=[2, 0]),
+        ChartBlock(section="findings", rests_on=[2, 0], viz_type="frontier", error="cannot be drawn"),
+    ],
+    ids=["text", "disclosure", "chart"],
+)
+def test_a_block_carries_the_numbers_a_reader_counts_the_findings_it_rests_on_by(block: Any) -> None:
+    """Counted from 1 the way ``finding_number`` is, in ``rests_on``'s order, which itself stays 0-based."""
+    assert block.rests_on == [2, 0]
+    assert block.rests_on_numbers == [3, 1]
+    assert block.model_dump(mode="json")["rests_on_numbers"] == [3, 1]
+
+
+def test_a_block_resting_on_nothing_carries_no_numbers() -> None:
+    assert TextBlock(section="summary", role="summary", body="t").rests_on_numbers == []
+
+
+def test_the_serializers_print_the_served_rests_on_numbers() -> None:
+    report = minimal_report(
+        finding_count=3,
+        blocks=[{"kind": "text", "section": "decisions", "role": "decision", "body": "adopt b", "rests_on": [2, 0]}],
+    )
+    assert report.blocks[0].rests_on_numbers == [3, 1]
+    assert "Rests on finding 3, 1." in report_markdown(report)
+    assert "Rests on finding 3, 1." in report_html(report)
+
+
 def test_the_serializers_print_the_served_section_titles_and_finding_numbers() -> None:
     report = minimal_report(
         finding_count=2,
@@ -269,6 +299,7 @@ class TestTheServedWordsRoundTrip:
         document = json.loads(report.to_canonical_json())
         document["title"] = "another title"
         document["blocks"][0]["finding_number"] = 9
+        document["blocks"][0]["rests_on_numbers"] = [9]
         document["blocks"][1]["rows"][0]["mean"]["text"] = "a lie"
         assert Report.model_validate(document) == report
 
@@ -284,6 +315,7 @@ class TestTheServedWordsRoundTrip:
             lambda d: d.pop("byline"),
             lambda d: d["blocks"][0].pop("section_title"),
             lambda d: d["blocks"][0].pop("finding_number"),
+            lambda d: d["blocks"][0].pop("rests_on_numbers"),
             lambda d: d["blocks"][1]["rows"][0]["mean"].pop("text"),
             lambda d: d["blocks"][2].pop("columns"),
             lambda d: d["blocks"][2]["rows"][0]["label"].pop("text"),
@@ -293,6 +325,7 @@ class TestTheServedWordsRoundTrip:
             "byline",
             "section_title",
             "finding_number",
+            "rests_on_numbers",
             "table-cell-text",
             "chart-columns",
             "chart-cell-text",
@@ -307,7 +340,7 @@ class TestTheServedWordsRoundTrip:
         schema = published_report_schema()
         assert schema == report_json_schema()
         assert schema["$id"] == SCHEMA_ID == f"urn:threetears-evals:report:v{REPORT_VERSION}"
-        assert schema["properties"]["report_version"]["const"] == REPORT_VERSION == 7
+        assert schema["properties"]["report_version"]["const"] == REPORT_VERSION == 8
 
 
 # =============================================================================

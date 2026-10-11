@@ -37,6 +37,24 @@ packages (bumped in lock-step).
   launch refuse such an arm with one `ValidationFailedError`, naming the call, the cap one call needs and what
   lowers the ceiling. The estimate reports the figure as `ArmEstimate.call_ceiling_usd`. Kinds that do not price
   their calls before launch are not checked (`cost-and-budgets.md`).
+- **Gap 42: `format_number` takes a `prefix`, and a currency symbol goes on the number.** `format_number(value,
+  prefix="$")` writes `$1.23`, `-$1.23`, `$1234568`, `< $0.000001` and `> -$0.000001`: after the sign and inside a
+  bound, so a host's money formatter no longer takes the returned text apart to move the symbol. An absent value is
+  still `—`, without the prefix. The engine's own `$`-joined spellings (the cost lens, the paid-analysis notices,
+  the cost estimate) use it, so they no longer write `$< 0.000001` or `$-1.23`. The default is unchanged.
+  `tests/fixtures/number-format-cases.json` carries the prefixed cases under a `prefixed` key, apart from `cases`,
+  so a renderer that ignores the prefix keeps passing.
+- **Gap 43: `RoutedDocumentStore.holds_documents` says whether stores about to be adopted hold anything.**
+  `holds_documents(children, scope_ids, *, host_doc_types=())` asks every registered type and the host's own, in
+  every store and named scope, as `relocate` would move them, and stops at the first document. A host's start no
+  longer loops over `DOC_TYPE_FACTS`, the stores and `iter_by_doc_type` itself. The router's placement record is
+  not a document and is not counted. `adopting-a-host.md` shows it beside `relocate`.
+- **Gap 44: every report block serves `rests_on_numbers`; the report is version 8.** Beside `rests_on`, which
+  still counts findings from 0, each block carries the same findings counted from 1, as `finding_number` counts
+  them, so a page prints them rather than adding 1 itself. Re-derived on read like the other served words, and
+  required by the schema. The Markdown and HTML serializers print it. `REPORT_VERSION` moves to 8, since its rule
+  is that an added field moves it, and the schema (whose `$id` is now `urn:threetears-evals:report:v8`) refuses a
+  key it does not name: a client holding the version 7 schema would refuse a version 8 report.
 
 ### 3tears-evals: the judge temperature measurement and the prompt-comparison test set (#633)
 
