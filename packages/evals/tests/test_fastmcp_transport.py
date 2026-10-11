@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
 from fastmcp import Client, FastMCP
 
 from threetears.evals.actions import Caller, eval_catalogue, read_only_tools
@@ -153,3 +154,22 @@ async def test_a_cap_above_the_hosts_is_refused_through_the_transport() -> None:
         )
     assert is_error and "a launch may only lower the host's ceiling" in text
     assert fixture.host.launch.job_manager.admitted_count == 0
+
+
+async def test_every_call_is_held_to_the_one_fixed_call_timeout() -> None:
+    """A call outliving the server's one timeout is answered as an error saying so, never left holding the client."""
+    fixture = ops_fixture()
+
+    async def slow_caller() -> Caller:
+        await asyncio.sleep(1)
+        return CALLER
+
+    async with Client(_served(fixture, caller=slow_caller, call_timeout_s=0.05)) as client:
+        text, structured, is_error = await _text(client, "evals", {"action": "templates_list"})
+    assert is_error and structured is None
+    assert "outlived this server's 0.05s call timeout" in text and "No action's call waits on a model" in text
+
+
+def test_a_call_timeout_that_is_not_positive_is_refused_at_mount() -> None:
+    with pytest.raises(ValueError, match="call_timeout_s must be positive"):
+        _served(ops_fixture(), call_timeout_s=0)
