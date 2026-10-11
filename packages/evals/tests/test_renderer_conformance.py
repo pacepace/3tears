@@ -62,7 +62,7 @@ CASES: dict[str, tuple[str, dict[str, Any]]] = {
             "contained_by": "rate",
         },
     ),
-    # Values below 1e-4, which the shared formatter writes in scientific notation (`-4e-05 USD`).
+    # Values below 1e-4, which the shared formatter writes out in full (`-0.00004 USD`), never as an exponent.
     "attribution-tiny": (
         "attribution",
         EVERY_TYPE["attribution"]
@@ -262,10 +262,10 @@ def test_a_withheld_row_with_no_mark_is_not_a_disagreement() -> None:
 
 @pytest.mark.parametrize("case", ["attribution-percent", "attribution-tiny"])
 def test_a_table_spelled_by_its_own_formatter_agrees_with_the_marks(case: str) -> None:
-    """A percentage-point cell (`-12%` for -12) and a scientific one (`-4e-05 USD`) state what is drawn."""
+    """A percentage-point cell (`-12%` for -12) and a tiny one written out (`-0.00004 USD`) state what is drawn."""
     intent = _intent(case)
     assert any(
-        isinstance(cell, str) and ("%" in cell or "e-05" in cell) for row in intent.rows for cell in row.values()
+        isinstance(cell, str) and ("%" in cell or "0.00004" in cell) for row in intent.rows for cell in row.values()
     )
     assert check_intent(intent) == []
 

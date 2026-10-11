@@ -41,7 +41,7 @@ from threetears.evals.analysis.generator import (
     prompt_content_version,
     refuse_an_undescribable_arm_table,
 )
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.numbers import WRITTEN_FROM, format_number
 from threetears.evals.kernel.campaign import EvalAnalysis, EvalInsight
 from threetears.evals.kernel.declaration import BarOverride, refuse_an_undeclarable_design
 from threetears.evals.kernel.metrics import WITHHELD_PARTITION_INCOMPLETE
@@ -345,7 +345,11 @@ class TestTheLeverSpreadIsSpelledByTheNumberRule:
     def test_the_spread_reads_back_as_its_own_number_rule_spelling(self) -> None:
         (lever,) = _bundle().coverage
         assert lever.dispersion.startswith("±")
-        assert lever.dispersion == f"±{format_number(float(lever.dispersion[1:]))}"
+        spelled = lever.dispersion[1:]
+        # A spread below one millionth reads as the bound it is under, which the number rule writes for every
+        # value there; anything above it reads back as its own spelling.
+        bound = format_number(WRITTEN_FROM / 2)
+        assert spelled == bound or spelled == format_number(float(spelled))
 
 
 class TestARefusedBarIsQuotedAsDeclared:
