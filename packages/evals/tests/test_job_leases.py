@@ -442,6 +442,56 @@ async def test_a_generation_whose_renewals_fail_for_a_whole_lease_is_stopped_bef
     assert analyses_list(fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses == []
 
 
+class SlotClaimFailingStore(InMemoryDocumentStore):
+    """Fails the claim's read of a campaign's generation slot — its second read; the first is the early refusal."""
+
+    def __init__(self) -> None:
+        """Count the slot's reads."""
+        super().__init__()
+        self.slot_reads = 0
+
+    def get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]:
+        """Read, failing the second read of a generation slot."""
+        if doc_id.startswith("generation-slot:"):
+            self.slot_reads += 1
+            if self.slot_reads == 2:
+                raise RuntimeError("the store dropped the connection")
+        return super().get_with_etag(doc_id, scope_id)
+
+
+async def test_a_start_whose_slot_claim_fails_ends_its_attempt_and_releases_its_client() -> None:
+    fixture = ops_fixture(store=SlotClaimFailingStore())
+
+    with pytest.raises(RuntimeError, match="dropped the connection"):
+        await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
+
+    (attempt,) = fixture.host.eval_host.storage.list_analysis_attempts_by_campaign(fixture.campaign.id, TOYHOST_SCOPE)
+    assert attempt.outcome == "failed" and attempt.error is not None
+    assert "generation slot could not be claimed" in attempt.error, "nothing is left reading running"
+    (writer,) = fixture.writers
+    assert writer.closed == 1 and not writer.calls, "the client the start built was released, and never called"
+
+
+class AttemptRefusingStore(InMemoryDocumentStore):
+    """Refuses every write of a generation's attempt record."""
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Refuse an attempt record; write anything else."""
+        if document.get("doc_type") == "eval_analysis_attempt":
+            raise RuntimeError("the store refused the attempt")
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+async def test_a_start_whose_attempt_cannot_be_written_releases_its_client() -> None:
+    fixture = ops_fixture(store=AttemptRefusingStore())
+
+    with pytest.raises(StorageError, match="refused the attempt"):
+        await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
+
+    (writer,) = fixture.writers
+    assert writer.closed == 1 and not writer.calls
+
+
 # =============================================================================
 # Graceful shutdown
 # =============================================================================
