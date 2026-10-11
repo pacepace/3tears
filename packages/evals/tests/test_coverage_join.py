@@ -69,7 +69,7 @@ def _report() -> Report:
 
 def _coverage(report: Report) -> dict[str, dict[str, Any]]:
     (table,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "coverage"]
-    return {row["lever"]: row for row in table.rows}
+    return {row["lever"]: row for row in table.values()}
 
 
 def test_an_unswept_lever_a_step_names_sits_beside_that_step_and_one_no_step_names_says_so() -> None:

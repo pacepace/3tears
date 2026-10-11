@@ -11,6 +11,9 @@ picture here: how a chart looks is the host's.
 The author's words are Markdown; this renders the part of it a memo uses — paragraphs, bullet lists,
 ``**bold**`` and ``code`` — over text that is escaped first, so nothing an author wrote can become
 markup.
+
+Every word it prints is one the report serves — its title and byline, each block's section title and finding
+number, each cell's text — so the page says what the JSON says.
 """
 
 from __future__ import annotations
@@ -28,15 +31,11 @@ from threetears.evals.analysis.report.model import (
     Report,
     ReportBlock,
     TableBlock,
+    TableCell,
+    TableColumn,
     TextBlock,
-    chart_table_columns,
-    finding_number,
-    report_byline,
-    report_title,
 )
 from threetears.evals.analysis.report.words import positions
-from threetears.evals.analysis.viz.intent import Cell
-from threetears.evals.analysis.viz.quantities import render_cell
 
 #: The page's whole stylesheet: system fonts, a readable measure, light and dark from the reader's setting.
 _STYLE = """
@@ -74,7 +73,7 @@ def report_html(report: Report) -> str:
     Returns:
         The page.
     """
-    title = report_title(report)
+    title = report.title
     parts = [
         "<!doctype html>",
         '<html lang="en">',
@@ -87,14 +86,14 @@ def report_html(report: Report) -> str:
         "<body>",
         f'<article data-basis="{_escape(report.basis)}">',
         f"<h1>{_inline(_one_line(title))}</h1>",
-        f'<p class="source">{_escape(_one_line(report_byline(report)))}</p>',
+        f'<p class="source">{_escape(_one_line(report.byline))}</p>',
     ]
-    for section, heading in SECTION_TITLES.items():
+    for section in SECTION_TITLES:
         blocks = [block for block in report.blocks if block.section == section]
         if not blocks:
             continue
         parts.append(f'<section data-section="{section}">')
-        parts.append(f"<h2>{_escape(heading)}</h2>")
+        parts.append(f"<h2>{_escape(blocks[0].section_title)}</h2>")
         parts.extend(_block(block) for block in blocks)
         parts.append("</section>")
     parts += ["</article>", "</body>", "</html>"]
@@ -121,7 +120,7 @@ def _text(block: TextBlock) -> str:
     facts = _facts(block.facts)
     rests = f'<p class="facts">Rests on finding {positions(block.rests_on)}.</p>' if block.rests_on else ""
     if block.role == "finding_title":
-        heading = f"<h3>{finding_number(block)}. {_inline(_one_line(block.body))}</h3>"
+        heading = f"<h3>{block.finding_number}. {_inline(_one_line(block.body))}</h3>"
         return heading + (f'<p class="facts">{facts}</p>' if facts else "")
     if block.role == "caveat":
         return f'<div class="caveat"><strong>Caveat</strong> <span class="facts">({facts})</span> {_markdown(block.body)}</div>'
@@ -149,15 +148,11 @@ def _chart(block: ChartBlock) -> str:
             f"stored for this finding and cannot be drawn: {_escape(block.error)}</div>"
         )
     intent = block.intent
-    columns = chart_table_columns(intent)
     payload = json.dumps(intent.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
     caption = f" {_inline(_one_line(intent.caption))}" if intent.caption.strip() else ""
     notes = [line for line in (intent.footnote, *intent.disclosures) if line]
     listed = "<ul>" + "".join(f"<li>{_escape(note)}</li>" for note in notes) + "</ul>" if notes else ""
-    table = _grid(
-        [column.header for column in columns],
-        [[row.get(column.key) for column in columns] for row in intent.rows],
-    )
+    table = _grid(block.columns, block.rows)
     return (
         f'<figure class="chart" data-chart-type="{_escape(intent.type)}" data-chart-intent="{_escape(payload)}">'
         f"<figcaption><strong>{_escape(intent.title)}</strong>{caption}</figcaption>"
@@ -174,20 +169,17 @@ def _table(block: TableBlock) -> str:
     """A table block's rows, or a line saying it has none."""
     if not block.rows:
         return '<p class="order">(no rows)</p>'
-    grid = _grid(
-        [column.header for column in block.columns],
-        [[row.get(column.key) for column in block.columns] for row in block.rows],
-    )
+    grid = _grid(block.columns, block.rows)
     if block.total_rows > len(block.rows):
         grid += f'<p class="order">{len(block.rows)} of {block.total_rows} rows shown.</p>'
     return grid
 
 
-def _grid(headers: Sequence[str], rows: Sequence[Sequence[Cell]]) -> str:
-    """A table, scrolling inside its own box rather than widening the page."""
-    head = "".join(f'<th scope="col">{_escape(header)}</th>' for header in headers)
+def _grid(columns: Sequence[TableColumn], rows: Sequence[dict[str, TableCell]]) -> str:
+    """A table of served cells' text, scrolling inside its own box rather than widening the page."""
+    head = "".join(f'<th scope="col">{_escape(column.header)}</th>' for column in columns)
     body = "".join(
-        "<tr>" + "".join(f"<td>{_escape(render_cell(value))}</td>" for value in row) + "</tr>" for row in rows
+        "<tr>" + "".join(f"<td>{_escape(row[column.key].text)}</td>" for column in columns) + "</tr>" for row in rows
     )
     return f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
 

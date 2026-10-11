@@ -1036,7 +1036,10 @@ def analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> 
     Raises:
         NotFoundError: No analysis with that id in the scope.
     """
-    return build_report(get_analysis(storage, analysis_id, scope_id))
+    analysis = get_analysis(storage, analysis_id, scope_id)
+    # The campaign titles the report by name; an analysis outliving its campaign is still reported, by its headline.
+    campaign = storage.load_campaign(analysis.campaign_id, scope_id)
+    return build_report(analysis, campaign_name=campaign.name if campaign is not None else None)
 
 
 def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report:
@@ -1067,7 +1070,7 @@ def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report:
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
     live = [analysis for analysis in list_analyses(host.storage, campaign_id, scope_id) if not analysis.archived]
     if live:
-        return build_report(live[0])
+        return build_report(live[0], campaign_name=campaign.name)
     assembled_at = utc_now_iso()
     bundle = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
     return build_code_only_report(

@@ -196,7 +196,7 @@ class TestTheBundleCarriesItBesideTheJudge:
             str(value)
             for block in report.blocks
             if isinstance(block, TableBlock)
-            for row in block.rows
+            for row in block.values()
             for value in row.values()
             if isinstance(value, str) and "people's ratings" in value
         ]

@@ -121,13 +121,13 @@ class TestPerLabelStatisticsAreOneTable:
         assert set(held) == {"animal", "plant"}
 
         shown: dict[str, Counter[tuple[str | None, ...]]] = {}
-        for row in table.rows:
+        for row in table.values():
             triple = tuple(None if row[key] is None else str(row[key]) for key in ("precision", "recall", "f1"))
             shown.setdefault(str(row["label"]), Counter())[triple] += 1
         assert shown == held
 
         # Each label reads across both arms, the control first; label-major, so a label's arms sit together.
-        assert [(row["label"], row["arm"]) for row in table.rows] == [
+        assert [(row["label"], row["arm"]) for row in table.values()] == [
             ("animal", CONTROL_ARM),
             ("animal", CANDIDATE_ARM),
             ("plant", CONTROL_ARM),
@@ -139,7 +139,7 @@ class TestPerLabelStatisticsAreOneTable:
         comparison = await _classifier()
         table = _table(comparison.report, "labels")
         assert table is not None
-        (never_said,) = [row for row in table.rows if (row["label"], row["arm"]) == ("animal", CANDIDATE_ARM)]
+        (never_said,) = [row for row in table.values() if (row["label"], row["arm"]) == ("animal", CANDIDATE_ARM)]
         # Never predicted: no precision, and so no F1; recall is 0 of the 4 animals it met.
         assert never_said["precision"] is None and never_said["f1"] is None
         assert str(never_said["recall"]).startswith("0 [") and str(never_said["recall"]).endswith("(n=4 over 2 cases)")
@@ -182,6 +182,8 @@ class TestNoColumnThatSaysNothing:
         (chart,) = [block for block in report.blocks if isinstance(block, ChartBlock)]
         assert chart.intent is not None
         assert {row["shape"] for row in chart.intent.rows} == {SHAPE_UNKNOWN}, "the intent still says it, per row"
+        assert [column.key for column in chart.columns] == ["label", "mean", "low", "high", "n"], "served without it"
+        assert all("shape" not in row for row in chart.rows)
 
         markdown = report_markdown(report)
         assert "| Shape |" not in markdown and SHAPE_UNKNOWN not in markdown
@@ -244,7 +246,7 @@ class TestNoColumnThatSaysNothing:
         candidate.short_runs = {"run-a": "measured 3 of 5"}
         table = _table(build_report(analysis(noted)), "surface")
         assert table is not None and table.columns[-1].key == "notes"
-        assert sorted(row["notes"] or "" for row in table.rows) == ["", "short (run-a): measured 3 of 5"]
+        assert sorted(row["notes"] or "" for row in table.values()) == ["", "short (run-a): measured 3 of 5"]
 
 
 class TestTheArmsTableHasNoColumnNothingFilled:
@@ -253,7 +255,7 @@ class TestTheArmsTableHasNoColumnNothingFilled:
         arms = _table(report, "arms")
         assert arms is not None
         assert [column.key for column in arms.columns] == ["arm", "levers"]
-        assert [row["arm"] for row in arms.rows] == ["candidate=candidate", CONTROL_ARM]
+        assert [row["arm"] for row in arms.values()] == ["candidate=candidate", CONTROL_ARM]
         # With no status to order by, the caption names the order the rows are in, not one by status.
         assert arms.order == "by arm"
 
@@ -271,7 +273,7 @@ class TestTheArmsTableHasNoColumnNothingFilled:
         assert arms is not None
         assert [column.key for column in arms.columns] == ["arm", "status", "findings", "levers"]
         assert arms.order == "winner, then contradicted, then ruled out, then replaced incumbent, then unresolved"
-        by_status = {row["status"]: row["findings"] for row in arms.rows}
+        by_status = {row["status"]: row["findings"] for row in arms.values()}
         # The winner rests on the decision's finding; the incumbent it replaced rests on none, a dash.
         assert by_status == {"winner": "1", "replaced incumbent": None}
 

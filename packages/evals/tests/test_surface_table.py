@@ -337,7 +337,7 @@ class TestRowOrder:
         report = build_report(_four_arm_analysis())
         (surface,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "surface"]
         assert surface.order == SURFACE_ORDER
-        assert surface.rows[0]["arm"] == f"{AXIS}=model-z-incumbent {REFERENCE_MARK}"
+        assert surface.values()[0]["arm"] == f"{AXIS}=model-z-incumbent {REFERENCE_MARK}"
         assert f"**Decision surface** ({SURFACE_ORDER})" in report_markdown(report)
 
 

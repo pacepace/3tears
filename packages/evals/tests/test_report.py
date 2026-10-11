@@ -46,6 +46,7 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.analysis.report import SCHEMA_PATH
+from threetears.evals.analysis.report.model import table_row
 from threetears.evals.kernel.campaign import EvalAnalysis, Viz
 from threetears.evals.kernel.errors import NotFoundError
 from threetears.evals.kernel.host import EvalHost
@@ -87,7 +88,10 @@ class TestTheToyAnalysisSerializesThreeWays:
         markdown = report_markdown(report)
         finding = analysis.document.findings[0]
 
-        assert markdown.startswith(f"# {analysis.document.headline}\n")
+        # The campaign's name leads the author's headline: the report is read by it, as a code-only report is.
+        assert report.source.campaign_name == "chunk width sweep"
+        assert report.title == f"chunk width sweep: {analysis.document.headline}"
+        assert markdown.startswith(f"# {report.title}\n")
         assert f"### 1. {finding.title}" in markdown
         assert "**Evidence**" in markdown and "| Arm | Measure | Value | Cases | Spread |" in markdown
         chart = _chart(report)
@@ -165,8 +169,8 @@ class TestTheToyReportsContent:
         evidence = analysis.resolutions[0].evidence
 
         assert table.finding == 0
-        assert [row["value"] for row in table.rows] == [row.value for row in evidence]
-        assert [row["cases"] for row in table.rows] == [row.n_cases for row in evidence]
+        assert [row["value"] for row in table.values()] == [row.value for row in evidence]
+        assert [row["cases"] for row in table.values()] == [row.n_cases for row in evidence]
 
     async def test_the_delta_tables_n_is_the_smaller_arms_cases_never_its_observations(
         self, toy: tuple[Any, EvalAnalysis, Report]
@@ -323,7 +327,7 @@ class TestTheReportsRefusals:
                 name="arms",
                 title="Arms",
                 columns=[TableColumn(key="arm", header="Arm")],
-                rows=[{"arm": "a"}, {"arm": "b"}],
+                rows=[table_row({"arm": "a"}), table_row({"arm": "b"})],
                 order="as given",
                 total_rows=1,
             )
@@ -334,7 +338,7 @@ class TestTheReportsRefusals:
             name="arms",
             title="Arms",
             columns=[TableColumn(key="arm", header="Arm")],
-            rows=[{"arm": "a"}],
+            rows=[table_row({"arm": "a"})],
             order="as given",
             total_rows=4,
         )
@@ -347,7 +351,20 @@ class TestTheReportsRefusals:
                 name="arms",
                 title="Arms",
                 columns=[TableColumn(key="arm", header="Arm")],
-                rows=[{"arm": "a", "hidden": 1}],
+                rows=[table_row({"arm": "a", "hidden": 1})],
+                order="as given",
+                total_rows=1,
+            )
+
+    def test_a_row_missing_a_column_is_refused(self) -> None:
+        """A row keys every column, so a client prints each row as served and never invents a missing cell's text."""
+        with pytest.raises(ValueError, match="has rows missing levers; a row keys every column"):
+            TableBlock(
+                section="arms",
+                name="arms",
+                title="Arms",
+                columns=[TableColumn(key="arm", header="Arm"), TableColumn(key="levers", header="Levers")],
+                rows=[table_row({"arm": "a"})],
                 order="as given",
                 total_rows=1,
             )
@@ -438,8 +455,8 @@ class TestTheBasisIsRefusedWhenTheReportDisagreesWithIt:
 
     def test_the_schema_holds_the_version(self) -> None:
         document = json.loads(_code_only().to_canonical_json())
-        assert document["report_version"] == REPORT_VERSION == 6
-        document["report_version"] = 5
+        assert document["report_version"] == REPORT_VERSION == 7
+        document["report_version"] = 6
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.Draft202012Validator(published_report_schema()).validate(document)
 
@@ -488,9 +505,11 @@ _TABLE = {
     "name": "evidence",
     "title": "Evidence",
     "columns": [{"key": "arm", "header": "Arm"}],
-    "rows": [{"arm": "a"}, {"arm": "b"}],
+    "rows": [{"arm": {"value": "a", "text": "a"}}, {"arm": {"value": "b", "text": "b"}}],
     "order": "as listed",
     "total_rows": 2,
+    "section_title": "Methods and disclosures",
+    "finding_number": None,
 }
 
 
@@ -566,9 +585,20 @@ class TestTheSchemaHoldsTheCrossFieldRulesItCanState:
         [
             _with(_analysis_document(), lambda d: d["blocks"][0].update(finding=5)),
             _with(_code_only_document(), lambda d: d["blocks"].append(_TABLE | {"total_rows": 0})),
-            _with(_code_only_document(), lambda d: d["blocks"].append(_TABLE | {"rows": [{"stray": "x"}]})),
+            _with(
+                _code_only_document(),
+                lambda d: d["blocks"].append(
+                    _TABLE | {"rows": [{"arm": {"value": "a", "text": "a"}, "stray": {"value": "x", "text": "x"}}]}
+                ),
+            ),
+            _with(_code_only_document(), lambda d: d["blocks"].append(_TABLE | {"rows": [{}]})),
         ],
-        ids=["a-position-past-finding_count", "total_rows-below-rows-shown", "a-row-keyed-by-no-column"],
+        ids=[
+            "a-position-past-finding_count",
+            "total_rows-below-rows-shown",
+            "a-row-keyed-by-no-column",
+            "a-row-missing-a-column",
+        ],
     )
     def test_the_three_rules_that_compare_siblings_are_the_models_alone(self, document: dict[str, Any]) -> None:
         """What the README and the model's docstring name as the schema's superset, pinned so it cannot grow."""
@@ -691,8 +721,8 @@ def test_a_code_only_report_states_the_contrasts_code_tested_against_the_control
     (comparisons,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"]
     # The question in the words it was asked, never its id.
     asked = next(q.text for q in campaign.declared_design.questions if q.id == "q-chunk-width")
-    assert comparisons.rows and {row["question"] for row in comparisons.rows} == {asked}
-    by_reading = {row["reading"]: row["verdict"] for row in comparisons.rows}
+    assert comparisons.rows and {row["question"] for row in comparisons.values()} == {asked}
+    by_reading = {row["reading"]: row["verdict"] for row in comparisons.values()}
     assert by_reading["Field accuracy"] == "improved on the control"
     assert by_reading["Turn time"] == "regressed from the control"
     assert any(
@@ -700,7 +730,7 @@ def test_a_code_only_report_states_the_contrasts_code_tested_against_the_control
         for block in report.blocks
     )
     (arms,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "arms"]
-    assert sum(str(row["arm"]).endswith("(control)") for row in arms.rows) == 1
+    assert sum(str(row["arm"]).endswith("(control)") for row in arms.values()) == 1
 
 
 # =============================================================================

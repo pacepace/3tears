@@ -44,6 +44,7 @@ from threetears.evals.analysis.report.model import (
     TextBlock,
     Verdict,
     VerdictReason,
+    table_row,
 )
 from threetears.evals.analysis.report.words import (
     ARM_STATUS_WORDS,
@@ -95,11 +96,13 @@ from threetears.observe import get_logger
 log = get_logger(__name__)
 
 
-def build_report(analysis: EvalAnalysis) -> Report:
+def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None) -> Report:
     """Lay one stored analysis out as a report.
 
     Args:
         analysis: The analysis.
+        campaign_name: The campaign's name, which leads the report's title; ``None`` where the campaign is not
+            to hand, and the title is then the headline alone.
 
     Returns:
         The report.
@@ -207,6 +210,7 @@ def build_report(analysis: EvalAnalysis) -> Report:
         source=ReportSource(
             analysis_id=analysis.id,
             campaign_id=analysis.campaign_id,
+            campaign_name=campaign_name or None,
             scope_id=analysis.scope_id,
             subject_id=analysis.subject_id,
             subject_kind=analysis.subject_kind,
@@ -272,7 +276,7 @@ def _coverage_blocks(analysis: EvalAnalysis) -> list[ReportBlock]:
                 TableColumn(key="findings", header="Named by finding"),
                 TableColumn(key="next", header="Next step naming it"),
             ],
-            rows=rows,
+            rows=[table_row(row) for row in rows],
             order="as the coverage map lists the levers",
             total_rows=len(rows),
         )
@@ -366,7 +370,7 @@ def _finding_blocks(
                 name="evidence",
                 title="Evidence",
                 columns=[TableColumn(key=key, header=header) for key, header in EVIDENCE_COLUMNS],
-                rows=rows,
+                rows=[table_row(row) for row in rows],
                 order="as the author listed the readings",
                 total_rows=len(rows),
             )
@@ -671,7 +675,7 @@ def _guardrail_blocks(
                     TableColumn(key="margin", header="Margin"),
                     TableColumn(key="decision", header="Decision"),
                 ],
-                rows=rows,
+                rows=[table_row(row) for row in rows],
                 order="by guardrail, then rig, then arm",
                 total_rows=len(rows),
             )
@@ -756,7 +760,7 @@ def _arm_blocks(table: ArmTable) -> list[ReportBlock]:
                 *([TableColumn(key="findings", header="Rests on finding")] if founded else []),
                 TableColumn(key="levers", header="Every lever it ran"),
             ],
-            rows=rows,
+            rows=[table_row(row) for row in rows],
             order=(
                 "winner, then contradicted, then ruled out, then replaced incumbent, then unresolved"
                 if decided
@@ -855,7 +859,7 @@ def _surface_blocks(table: SurfaceTable, *, provenance: bool = True) -> list[Rep
                 name="surface",
                 title="Decision surface",
                 columns=columns,
-                rows=rows,
+                rows=[table_row(row) for row in rows],
                 order=table.order,
                 total_rows=len(rows),
             )
@@ -943,7 +947,7 @@ def _strata_blocks(surface: DecisionSurface, variant_index: Sequence[VariantInde
                 TableColumn(key="all", header="All cases"),
                 *(TableColumn(key=columns[name], header=_stratum_word(name)) for name in names),
             ],
-            rows=rows,
+            rows=[table_row(row) for row in rows],
             order=surface_order_sentence(has_control_row=any(cell.variant_key == control for cell in cells))
             + " Within each arm: its cases, then each measure by name, then each judged dimension.",
             total_rows=len(rows),
@@ -1264,7 +1268,7 @@ def _question_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
                     TableColumn(key="status", header="Status"),
                     TableColumn(key="answer", header="Answer"),
                 ],
-                rows=rows,
+                rows=[table_row(row) for row in rows],
                 order="as the campaign declared them",
                 total_rows=len(rows),
             )
@@ -1468,7 +1472,7 @@ def _comparison_blocks(
                 TableColumn(key="p_adjusted", header="p (Holm-adjusted)"),
                 TableColumn(key="verdict", header="Verdict"),
             ],
-            rows=rows,
+            rows=[table_row(row) for row in rows],
             order="by declared question, then as the bundle tested them",
             total_rows=len(rows),
         )
@@ -1733,7 +1737,7 @@ def _label_blocks(surface: DecisionSurface, variant_index: Sequence[VariantIndex
                 TableColumn(key="arm", header="Arm"),
                 *(TableColumn(key=statistic, header=header) for statistic, header in _LABEL_STATISTICS),
             ],
-            rows=rows,
+            rows=[table_row(row) for row in rows],
             order="by label, then the control's cells first and every other cell by arm and rig",
             total_rows=len(rows),
         ),

@@ -212,7 +212,7 @@ class Comparison:
             row
             for block in self.report.blocks
             if isinstance(block, TableBlock) and block.name == "comparisons"
-            for row in block.rows
+            for row in block.values()
         ]
         typed = [verdict for verdict in self.report.verdicts if verdict.kind == "contrast"]
         arms = self.contrast_arms if len(self.contrast_arms) == len(rows) else (None,) * len(rows)
@@ -290,7 +290,7 @@ class Comparison:
             row
             for block in self.report.blocks
             if isinstance(block, TableBlock) and block.name == "guardrails"
-            for row in block.rows
+            for row in block.values()
         ]
         checks = self.guardrail_readings.checks
         if len(checks) != len(rows):
