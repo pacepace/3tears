@@ -123,6 +123,7 @@ from threetears.evals.run import (
     LaunchGroup,
     LaunchSettings,
     RunJudge,
+    TemplateField,
     UnknownSubject,
     build_judge_service,
     default_job_timeout,
@@ -1363,9 +1364,28 @@ def _launch_host(
             return None
         return UnknownSubject(remedy=f"this call's arms measure {', '.join(sorted(held))}")
 
+    # A one-call template states its intent, its goal checks and, judged, its rubric; a world reaches a cell through
+    # each case's own seed. Every other field would be stated and never acted on.
+    ignored: set[TemplateField] = {
+        "tools_required",
+        "tools_allowed",
+        "variation_axes",
+        "conversation",
+        "world_seed",
+        "preconditions",
+        "goal_check_controls",
+    }
+    if judge is None:
+        ignored.add("rubric")
     launch_host = LaunchHost(
         eval_host=host,
-        kinds={kind_name: LaunchableKind(launch=launch, unhonoured_launch_arguments=frozenset(unhonoured))},
+        kinds={
+            kind_name: LaunchableKind(
+                launch=launch,
+                unhonoured_launch_arguments=frozenset(unhonoured),
+                ignored_template_fields=frozenset(ignored),
+            )
+        },
         settings=partial(_launch_settings, len(arms), max_cost_usd),
         resolve_subject=resolve_subject,
         job_timeout_factory=default_job_timeout,

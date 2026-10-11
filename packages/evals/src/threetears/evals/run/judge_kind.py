@@ -65,7 +65,14 @@ from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
 from threetears.evals.run.case_sets import mint_case_set
 from threetears.evals.run.judge import sent_temperature
 from threetears.evals.run.judge_service import JudgeContext, JudgeRequest, JudgeService
-from threetears.evals.run.launch import ArmPlan, KindWiring, LaunchableKind, launch_run, require_candidate_model
+from threetears.evals.run.launch import (
+    TEMPLATE_FIELDS,
+    ArmPlan,
+    KindWiring,
+    LaunchableKind,
+    launch_run,
+    require_candidate_model,
+)
 from threetears.evals.run.rejudge import reproducible_judge_inputs
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import (
@@ -859,5 +866,8 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
         unhonoured_launch_arguments=frozenset(
             {"n_variations", "judge_model", "judge_config_ids", "simulator_model", "cassette_mode"}
         ),
+        # A judge template is a kind and an intent: its cases carry what each trial reads, so a seed, a tool, a
+        # goal check or a rubric on it would be stated and never acted on.
+        ignored_template_fields=frozenset(TEMPLATE_FIELDS),
         plan_arm=plan,
     )

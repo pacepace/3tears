@@ -39,7 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.host.kinds import freeze
-from threetears.evals.schema.models import WorldPlacement
+from threetears.evals.schema.models import EvalTemplate, WorldPlacement
 
 from threetears.evals.kernel.arguments import normalize_blank
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
@@ -1014,6 +1014,26 @@ KindLauncher = Callable[[LaunchRequest], Awaitable[EvalRun]]
 #: might ignore it — a cassette mode ignored is a requested replay run live, and paid for.
 LaunchArgument = Literal["n_variations", "judge_model", "judge_config_ids", "simulator_model", "cassette_mode"]
 
+#: The fields of a template a kind may never act on: what it states about tools, the cases it generates, a
+#: conversation, the world (its seed, what it presumes, the checks graded against it) and the rubric a judge scores.
+#: A template carrying one its kind ignores would run as if it said nothing, so a kind's registry entry declares them
+#: (:attr:`LaunchableKind.ignored_template_fields`) and the dispatch refuses the template. Its identity, its intent and
+#: its kind spec — validated by the kind's own model — are every kind's.
+TemplateField = Literal[
+    "tools_required",
+    "tools_allowed",
+    "variation_axes",
+    "conversation",
+    "world_seed",
+    "preconditions",
+    "goal_state_checks",
+    "goal_check_controls",
+    "rubric",
+]
+
+#: Every :data:`TemplateField`, in the template's order.
+TEMPLATE_FIELDS: tuple[TemplateField, ...] = get_args(TemplateField)
+
 
 @dataclass(frozen=True)
 class LaunchableKind:
@@ -1048,6 +1068,9 @@ class LaunchableKind:
             every arm is unpriceable — refused under an inherited cap, saying the launch may also be missing
             something its kind needs, and run under one its launch named — and nothing holds its launcher to a
             plan.
+        ignored_template_fields: The template fields this kind never acts on (:data:`TemplateField`); a template
+            stating any of them — anything but the field's default — is refused at the dispatch, naming it, rather
+            than run as if it had said nothing. Empty for a kind that reads every one.
         apparatus_settings: The host-declared apparatus dimensions this kind's launcher sets its rig up
             from, each with the value its rig takes when a launch sets none — the kind's standing rig. A
             launch setting any other is refused at the dispatch; the :class:`LaunchHost` refuses a name the
@@ -1061,6 +1084,7 @@ class LaunchableKind:
 
     launch: KindLauncher
     unhonoured_launch_arguments: frozenset[LaunchArgument] = frozenset()
+    ignored_template_fields: frozenset[TemplateField] = frozenset()
     plan_arm: Callable[[LaunchRequest], ArmPlan] | None = None
     apparatus_settings: Mapping[str, ApparatusSettingValue] = field(default_factory=lambda: MappingProxyType({}))
 
@@ -1068,8 +1092,9 @@ class LaunchableKind:
         """Refuse a name that is not a launch argument, and a default no run could store.
 
         Raises:
-            ValueError: An entry of ``unhonoured_launch_arguments`` is not a :data:`LaunchArgument`, or an
-                apparatus default is not a string, a bool or a finite number.
+            ValueError: An entry of ``unhonoured_launch_arguments`` is not a :data:`LaunchArgument`, one of
+                ``ignored_template_fields`` is not a :data:`TemplateField`, or an apparatus default is not a string,
+                a bool or a finite number.
         """
         try:
             defaults = _APPARATUS_SETTINGS.validate_python(dict(self.apparatus_settings))
@@ -1084,6 +1109,11 @@ class LaunchableKind:
             raise ValueError(
                 f"unhonoured_launch_arguments names {', '.join(unknown)}, which are not launch arguments; "
                 f"the arguments a kind can decline are {', '.join(get_args(LaunchArgument))}"
+            )
+        if unknown := sorted(set(self.ignored_template_fields) - set(TEMPLATE_FIELDS)):
+            raise ValueError(
+                f"ignored_template_fields names {', '.join(unknown)}, which are not template fields a kind may "
+                f"ignore; those are {', '.join(TEMPLATE_FIELDS)}"
             )
 
 
@@ -1428,6 +1458,17 @@ def _launchable(
             f"template {template.id!r} is a {candidate_kind!r} template, and that kind cannot honour "
             + ", ".join(f"{name}={value!r}" for name, value in unusable.items())
             + "; launch it without them"
+        )
+    if stated := [
+        name
+        for name in sorted(launchable.ignored_template_fields)
+        if getattr(template, name) != EvalTemplate.model_fields[name].get_default(call_default_factory=True)
+    ]:
+        raise ValidationFailedError(
+            f"template {template.id!r} is a {candidate_kind!r} template, and that kind never acts on its "
+            + ", ".join(stated)
+            + " — it would run as if the template had not stated them; remove them from the template, or run it "
+            "as a kind that reads them"
         )
     _refuse_a_variation_model_the_launch_cannot_use(
         template, n_variations=n_variations, variation_model=variation_model
@@ -4325,6 +4366,8 @@ __all__ = [
     "KindWiring",
     "LaunchArgument",
     "LaunchHost",
+    "TEMPLATE_FIELDS",
+    "TemplateField",
     "SubjectResolver",
     "UnknownSubject",
     "LaunchGroup",
