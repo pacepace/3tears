@@ -576,6 +576,7 @@ async def test_a_run_not_ended_with_no_lease_reads_lost_and_cannot_be_cancelled(
     lost = await job_poll(fixture.host, run_job_id(run.id), TOYHOST_SCOPE)
     assert (lost.state, lost.status, lost.done) == ("lost", "cancelled", True)
     assert lost.detail is not None and "carries no lease" in lost.detail
+    assert "stop every worker, then upgrade" in lost.detail, "the lost cause names the upgrade rule it follows from"
     stored = _run(fixture.host, run.id)
     assert stored.completeness is not None and stored.completeness.counted_from == "stored_results"
     assert stored.cancellation_reason == f"lost: {lost.detail}"

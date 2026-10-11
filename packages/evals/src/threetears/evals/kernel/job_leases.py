@@ -161,6 +161,13 @@ def _document(record: EvalDocumentModel) -> dict[str, Any]:
 def lease_lapsed(record: LeasedRecord, now: datetime) -> bool:
     """Whether a record's lease has lapsed at ``now`` — or it has none, which no process can be renewing.
 
+    **No grace for a record with no lease.** One was written by a build before leases, which never renews one; a
+    grace measured from when it started, or was last written, would still read a live job lost once the grace ran
+    out, and would only hide that the two builds cannot share a store — the older one's own reclaim reads every
+    job it is not running as abandoned, the newer one's included. So the rule is stated rather than guessed at:
+    every process sharing a store runs a build that keeps leases before any job starts (stop every worker, then
+    upgrade — ``MIGRATIONS.toml``), and a lease-less record that has not ended is lost.
+
     Args:
         record: A job record.
         now: The time to read it at, in the store's time when the store keeps one.
@@ -176,7 +183,8 @@ def _lapse_cause(record: LeasedRecord) -> str:
     if record.lease is None:
         return (
             "it carries no lease, so no process can be running it — it was started by a build that kept a job's "
-            "liveness in its own process, which has since gone"
+            "liveness in its own process, which has since gone. Every process sharing a store must run a build "
+            "that keeps leases before any job starts: stop every worker, then upgrade"
         )
     return (
         f"its lease, held by process {record.lease.holder}, lapsed at {record.lease.expires_at} without renewal — "
