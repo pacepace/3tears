@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: what adopting .10 found (gaps 40–44)
+
+- **Gap 42: `format_number` takes a `prefix`, and a currency symbol goes on the number.** `format_number(value,
+  prefix="$")` writes `$1.23`, `-$1.23`, `$1234568`, `< $0.000001` and `> -$0.000001`: after the sign and inside a
+  bound, so a host's money formatter no longer takes the returned text apart to move the symbol. An absent value is
+  still `—`, without the prefix. The engine's own `$`-joined spellings (the cost lens, the paid-analysis notices,
+  the cost estimate) use it, so they no longer write `$< 0.000001` or `$-1.23`. The default is unchanged.
+  `tests/fixtures/number-format-cases.json` carries the prefixed cases under a `prefixed` key, apart from `cases`,
+  so a renderer that ignores the prefix keeps passing.
+
 ### 3tears-evals: the judge temperature measurement and the prompt-comparison test set (#633)
 
 - **The first judge temperature measurement is void.** The 2026-10-10 run on `openai/gpt-6-luna` compared the

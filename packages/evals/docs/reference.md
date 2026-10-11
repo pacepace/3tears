@@ -1306,7 +1306,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`first_request`** · function · The exact first request a generation sends: system prompt, user message and the contract.
   <br>`first_request(bundle: AnalysisContextBundle, prompt: str, profile: HostProfile) -> tuple[str, str, dict[str, Any]]`
 - **`format_number`** · function · Spell a number for a reader, the same way on every analysis surface.
-  <br>`format_number(value: float | None) -> str`
+  <br>`format_number(value: float | None, *, prefix: str = '') -> str`
 - **`format_signed`** · function · Spell a change, carrying its sign — the direction is half of what a delta says.
   <br>`format_signed(value: float | None) -> str`
 - **`format_significance`** · function · The read plus the statistics behind it, as one cell a surface prints verbatim.

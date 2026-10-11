@@ -3471,7 +3471,7 @@
     },
     "threetears.evals.analysis.format_number": {
       "kind": "function",
-      "signature": "format_number(value: float | None) -> str"
+      "signature": "format_number(value: float | None, *, prefix: str = '') -> str"
     },
     "threetears.evals.analysis.format_signed": {
       "kind": "function",
@@ -4967,7 +4967,7 @@
     },
     "threetears.evals.ops.format_number": {
       "kind": "function",
-      "signature": "format_number(value: float | None) -> str"
+      "signature": "format_number(value: float | None, *, prefix: str = '') -> str"
     },
     "threetears.evals.ops.frontier_text": {
       "kind": "function",
