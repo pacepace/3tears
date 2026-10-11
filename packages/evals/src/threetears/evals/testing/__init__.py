@@ -8,8 +8,9 @@ the rule. The reader conformance kit: every promise a host's readers make — JS
 order-independent, side-effect free, an open family's members its own, every run deriving a variant key —
 as a :class:`ReaderConformanceCase` over a :class:`ReaderSample` (the profile and runs it produced), in
 :data:`READER_CONFORMANCE_CASES`. The import check: :func:`nonpublic_evals_imports` reads a host's
-own source tree and reports every ``threetears.evals`` import that reaches below a public root, as a
-:class:`NonPublicImport`. The completion check: :func:`check_completion_conformance` takes an instance of a
+own source tree and reports every reach into ``threetears.evals`` that goes below a public root's declared
+names — static and dynamic imports, attribute chains, private names, patches — as a :class:`BoundaryFinding`
+naming the :data:`BoundaryRule` it breaks. The completion check: :func:`check_completion_conformance` takes an instance of a
 host's completion type and raises :class:`CompletionConformanceFailure` naming every attribute eval reads off a
 completion that it lacks — the usage ledger reads its own defensively, so a rename there is otherwise
 silent. All four are plain Python and import no test runner. See
@@ -26,7 +27,12 @@ from threetears.evals.testing.completion_conformance import (
     CompletionConformanceFailure,
     check_completion_conformance,
 )
-from threetears.evals.testing.import_boundary import NonPublicImport, nonpublic_evals_imports
+from threetears.evals.testing.import_boundary import (
+    BOUNDARY_RULES,
+    BoundaryFinding,
+    BoundaryRule,
+    nonpublic_evals_imports,
+)
 from threetears.evals.testing.reader_conformance import (
     READER_CONFORMANCE_CASES,
     ReaderConformanceCase,
@@ -40,10 +46,12 @@ from threetears.evals.testing.store_conformance import (
 )
 
 __all__ = [
+    "BOUNDARY_RULES",
     "READER_CONFORMANCE_CASES",
     "STORE_CONFORMANCE_CASES",
+    "BoundaryFinding",
+    "BoundaryRule",
     "CompletionConformanceFailure",
-    "NonPublicImport",
     "ReaderConformanceCase",
     "ReaderConformanceFailure",
     "ReaderSample",

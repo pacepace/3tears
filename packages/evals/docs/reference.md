@@ -1646,21 +1646,27 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 
 - **`check_completion_conformance`** · function · Fail, naming the attribute, when a host's completion does not carry what eval reads off it.
   <br>`check_completion_conformance(completion: object) -> None`
-- **`nonpublic_evals_imports`** · function · Every `threetears.evals` import under `sources` that reaches below a public root.
-  <br>`nonpublic_evals_imports(*sources: Path | str) -> tuple[NonPublicImport, ...]`
+- **`nonpublic_evals_imports`** · function · Every reach into `threetears.evals` under `sources` that goes below a public root's declared names.
+  <br>`nonpublic_evals_imports(*sources: Path | str) -> tuple[BoundaryFinding, ...]`
 
 **Classes**
 
+- **`BoundaryFinding`** · dataclass · One reach into `threetears.evals` that does not go through a public root's declared names.
 - **`CompletionConformanceFailure`** · exception · A host's completion lacks an attribute eval reads, or reports a stop reason outside eval's vocabulary.
-- **`NonPublicImport`** · dataclass · One import of a `threetears.evals` name that does not come from a public root.
 - **`ReaderConformanceCase`** · dataclass · One promise a reader makes, as a check over a sample.
 - **`ReaderConformanceFailure`** · exception · A host's reader broke a promise the engine relies on; the message names the case, the reader and the run.
 - **`ReaderSample`** · dataclass · What the kit checks a host's readers over: the host's profile and runs it produced.
 - **`StoreConformanceCase`** · dataclass · One rule of the port, as a check over a store.
 - **`StoreConformanceFailure`** · exception · A store broke a rule of the `DocumentStore` port; the message names the case and the rule.
 
+**Types**
+
+- **`BoundaryRule`** · literal · Which rule a `BoundaryFinding` breaks — a stable identifier a host may filter or count on. The module docstring states each.
+  <br>`'static_import'` | `'dynamic_import'` | `'attribute_reach'` | `'private_reach'` | `'patch'`
+
 **Constants**
 
+- **`BOUNDARY_RULES`** · constant (tuple) · Every `BoundaryRule`, in the order the module docstring states them.
 - **`READER_CONFORMANCE_CASES`** · constant (tuple) · Every promise, as a case. Parametrise over this tuple.
 - **`STORE_CONFORMANCE_CASES`** · constant (tuple) · Every case, in the order the port states its rules: scoping, the strip on read, projection, querying, optimistic concurrency (with the re-read that recovers a lost race), merge, delete — and last, that every `doc_type` the engine writes is one the store stores.
 

@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the import check sees dynamic imports, attribute chains, private names and patches
+
+`threetears.evals.testing.nonpublic_evals_imports` read only `import` and `from ... import`. It now also reports
+a literal `importlib.import_module`/`__import__` below a root (`dynamic_import`); an attribute chain or literal
+`getattr`/`hasattr` through a bound root that its `__all__` does not declare (`attribute_reach`); an `_name` on
+a chain rooted at a name bound from the package, dunders admitted (`private_reach`); and `monkeypatch`, `mock.patch`
+and its forms, `setattr`/`delattr` or attribute assignment whose target is a `"threetears.evals..."` string or an
+object bound from the package (`patch`). Each finding names its rule.
+
+- **Breaking:** `NonPublicImport` is now `BoundaryFinding`, with `rule` (a `BoundaryRule`, the stable identifiers
+  listed in `BOUNDARY_RULES`) and `target` (the dotted name reached) in place of `module` and `name`; its `str()`
+  reads `path:line: rule: target — reason`. A host suite that passed may now fail on the new rules.
+
 ### 3tears-evals: the font measurer ships, and a table that does not match its engine or its files is refused
 
 - **The measurer is part of the `[vega]` extra**: `python -m threetears.evals.vega.measure_font --family ...
