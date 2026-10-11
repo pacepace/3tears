@@ -566,11 +566,12 @@ class EvalStorage:
         return an etag) and the boot reclaim's scan (:meth:`query_non_terminal_eval_runs`) are not settled here:
         they are what settling is made of, and the reclaim counts what it writes lost itself.
 
-        **One bad record never breaks the read.** Each is settled on its own
-        (:func:`~threetears.evals.kernel.job_leases.settle_tolerantly`): a record that cannot be written lost is
-        returned as stored and logged, and the rest of the list is still read. Settling a run reads nothing past the
-        run that can fail it: a result that cannot be read leaves the lost run's completeness unknown rather than
-        refusing the write.
+        **A record another writer keeps moving never breaks the read.** Each is settled on its own
+        (:func:`~threetears.evals.kernel.job_leases.settle_tolerantly`): one whose lost write keeps losing its race is
+        returned as stored and logged, and the rest of the list is still read; one this build cannot read or write
+        lost raises its ``ValidationError``, as reading it does. Settling a run reads nothing past the run that can
+        fail it: a result that cannot be read leaves the lost run's completeness unknown, named in its
+        ``error_details``, rather than refusing the write.
         """
         from threetears.evals.kernel.job_leases import lease_lapsed, leased_kind_of, settle_tolerantly
 
@@ -585,7 +586,7 @@ class EvalStorage:
         for index in open_records:
             record: Any = records[index]
             if lease_lapsed(record, now):
-                # Per record, as the boot reclaim settles its rows: one that cannot be settled reads as stored.
+                # Per record, as the boot reclaim settles its rows: one another writer keeps moving reads as stored.
                 current = settle_tolerantly(self, kind, record.id, record.scope_id)
                 if current is not None:
                     settled[index] = cast(M, current)
@@ -1537,20 +1538,21 @@ class EvalStorage:
     def save_eval_result(self, result: EvalResult, trace: EvalTrace | None = None) -> None:
         """Persist an eval result, and its trace payload as a sibling document.
 
-        **Trace first, then the result, and ``has_trace`` records which of those
-        actually happened.** Writing the result first would leave a window where a
-        reader sees ``has_trace=True`` and no document to fetch; deriving the flag
-        from ``trace is not None`` would make the same claim from intent rather than
-        outcome. Setting it from the write's own return value is what keeps the
-        marker honest under a partial failure.
+        **Trace first, then the result, and ``has_trace`` records that the cell produced one.**
+        Writing the result first would leave a window where a reader sees ``has_trace=True``
+        and no document to fetch, so the payload is written first.
 
-        **A failed trace write does not fail the result.**
+        **A failed trace write does not fail the result, and is not hidden either.**
         :func:`~threetears.evals.run.runner.execute_run` treats a raise here as a lost cell
         and counts it against the run's completeness, so failing the whole write
         because a debug payload did not persist would trade the measurement for the
-        thing that exists to explain it. The result lands with ``has_trace=False``,
-        which is true — and a later re-judge of it refuses, since the judge evidence it
-        would resend was in the payload that did not land.
+        thing that exists to explain it. The result lands with ``has_trace=True`` all the
+        same: the cell produced a trace, and a marker written ``False`` would read on every
+        surface as a cell that produced none, with the failure in the log alone. A result
+        whose marker says a trace was produced and no document backs it reads ``missing``
+        (:func:`~threetears.evals.run.reads.get_result_trace`, ``result_get``) — the fault it is —
+        and a later re-judge of it refuses, since the judge evidence it would resend was in
+        the payload that did not land.
 
         Args:
             result: The result to persist. Never mutated — the marker is applied to
@@ -1562,22 +1564,28 @@ class EvalStorage:
 
         Raises:
             StorageError: The RESULT was not persisted. A trace-write failure is logged
-                by :meth:`_save` and reported through ``has_trace``, not raised.
+                by :meth:`_save` and reads as ``missing`` through ``has_trace``, not raised.
         """
-        stored = False
-        if trace is not None and (
+        produced = trace is not None and bool(
             trace.trace
             or trace.otel_trace
             or trace.judge_evidence is not None
             or trace.call_ledger is not None
             or trace.end_state is not None
-        ):
+        )
+        if trace is not None and produced:
             try:
                 self._save(trace.to_dict())
-                stored = True
-            except StorageError:
-                stored = False
-        self._save(result.model_copy(update={"has_trace": stored}).to_dict())
+            except StorageError as unstored:
+                log.error(
+                    "eval_result %s (run %s, scope %s) is stored with has_trace=True and its trace was NOT: it reads "
+                    "missing on every surface — %s",
+                    result.id,
+                    result.eval_run_id,
+                    result.scope_id,
+                    unstored,
+                )
+        self._save(result.model_copy(update={"has_trace": produced}).to_dict())
 
     def load_eval_result(self, result_id: str, scope_id: str) -> EvalResult | None:
         """Load an eval result by id + scope. Never carries the trace — see :meth:`load_eval_trace`.
@@ -1673,9 +1681,8 @@ class EvalStorage:
         """Delete an eval result and its trace sibling, refusing to orphan the trace.
 
         The trace is deleted first, and the result's own ``has_trace`` decides what that
-        delete's outcome means. ``save_eval_result`` stamps the marker from the trace
-        write's outcome, so it is the stored record of whether a trace document should be
-        there:
+        delete's outcome means. ``save_eval_result`` stamps the marker when the cell produced
+        a trace, so it is the stored record of whether a trace document should be there:
 
         - ``has_trace`` false (or a document predating the marker, which reads as
           false): no trace was written, a trace delete that removes nothing is the
@@ -1685,7 +1692,8 @@ class EvalStorage:
           would leave the largest row a result has unreachable for good (nothing finds
           a trace but its result's id), so the result is **kept** and this raises.
           Gone means the marker already disagreed with storage (the ``missing`` state
-          :func:`~threetears.evals.run.reads.get_result_trace` logs); there is nothing
+          :func:`~threetears.evals.run.reads.get_result_trace` logs: the trace write failed, or
+          the trace was deleted without its result); there is nothing
           to orphan, so the result is deleted and the disagreement logged, rather than
           leaving a result no delete can ever remove.
 

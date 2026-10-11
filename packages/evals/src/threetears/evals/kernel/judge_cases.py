@@ -267,21 +267,24 @@ class JudgeTrial(EvalBaseModel):
 
 
 def judge_trial_of(kind_payload: object) -> JudgeTrial | None:
-    """The judge trial a result's ``kind_payload`` carries, or ``None`` when it carries none this build can read.
+    """The judge trial a result's ``kind_payload`` carries, or ``None`` when it carries none.
 
     Args:
         kind_payload: A result's ``kind_payload``.
 
     Returns:
-        The trial, or ``None``.
+        The trial, or ``None`` when the result carries no ``kind_payload`` object at all.
+
+    Raises:
+        ValueError: It carries one that is not a judge trial this build can read — named apart from carrying none,
+            as :func:`judge_case_of` names an unreadable case, so a reader can say why it left the result out.
     """
     if not isinstance(kind_payload, dict):
         return None
     try:
         return JudgeTrial.model_validate(kind_payload)
-    except ValidationError:
-        # NOSILENT: None IS the answer -- a payload this build cannot read as a trial is not one, as documented
-        return None
+    except ValidationError as exc:
+        raise ValueError(f"its kind_payload is not a judge trial this build can read: {exc}") from exc
 
 
 class JudgeKindOverlays(BaseModel):

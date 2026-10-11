@@ -3258,7 +3258,8 @@ class EvalRun(CoreDocumentModel):
             "a harness failure, and a cancel that lands while the job is still queued for a slot, whose "
             "honest record is 0 of N. On a TERMINAL run None therefore means every attempt to write the "
             "record was refused, or the run was written lost while a result it stored could not be read, so "
-            "what it delivered could not be counted (rare, and loud in the log). A run "
+            "what it delivered could not be counted (rare; that case names the unreadable result's error in "
+            "``error_details``). A run "
             "that has not gone terminal yet simply has none — this field is readable at any status, so "
             "a surface reading across runs of mixed status cannot treat absence as either. Absence is "
             "never evidence that nothing was delivered: read it as unknown."
@@ -3298,7 +3299,8 @@ class EvalRun(CoreDocumentModel):
         default_factory=list,
         description=(
             "Things that BROKE — the run-terminal failure channel, written only by the job "
-            "manager's failure branches (a harness exception, an exhausted provider account). The "
+            "manager's failure branches (a harness exception, an exhausted provider account) and by a "
+            "run written lost while a result it stored cannot be read (its completeness unknown). The "
             "designed stops each have their own channel (``cancellation_reason`` for a cancel, "
             "``budget_stop_reason`` for the cost cap and the wall-clock budget), so a non-empty list "
             "means a fault, and its length is a count an operator can triage on."
@@ -4578,11 +4580,11 @@ class EvalResult(CoreDocumentModel):
     )
     subject_id: str | None = Field(default=None)
 
-    # Whether a sibling ``EvalTrace`` document was WRITTEN for this result — a fact about
-    # storage, not a loaded-ness flag, so it reads the same on every path. Set by
-    # ``EvalStorage.save_eval_result`` from the outcome of that write rather than from the
-    # intent to make it, so a trace write that failed leaves this False (true, and the
-    # result still persists) instead of promising detail no fetch can find.
+    # Whether the cell produced a trace, so a sibling ``EvalTrace`` document should back this
+    # result — a fact about the record, not a loaded-ness flag, so it reads the same on every
+    # path. Set by ``EvalStorage.save_eval_result``. A trace write that failed leaves this True
+    # with no document behind it, which every reader reports as ``missing`` (a fault), rather
+    # than False, which read as a cell that produced no trace and kept the failure in the log.
     #
     # The readers, and only one of them is display:
     #   * a host's result renderer — a ``full=false`` footer, advertising omitted detail

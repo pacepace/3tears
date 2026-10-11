@@ -231,7 +231,7 @@ async def generate_variations(
             raise ValidationFailedError(
                 f"variation axis {axis.name!r} ({axis.generator}) produced no values, so no case set can be "
                 "generated for it",
-                remedy="give the axis values, or for an llm axis launch again with another variation_model",
+                remedy=_LLM_AXIS_REMEDY,
             )
         per_axis_values.append(values)
 
@@ -338,6 +338,10 @@ def _values_for_axis(axis: VariationAxis, n_variations: int, *, rng: random.Rand
     raise ValueError(f"Unknown axis generator: {axis.generator!r}")
 
 
+#: What a caller does about an llm axis that produced nothing usable.
+_LLM_AXIS_REMEDY = "give the axis values, or for an llm axis launch again with another variation_model"
+
+
 def _parse_llm_axis_values(
     axis: VariationAxis, response: object, n_variations: int, existing_values: set[str]
 ) -> list[str]:
@@ -348,20 +352,30 @@ def _parse_llm_axis_values(
     code-fenced output and surrounding commentary, and to duplicate values within the response
     (kept once).
 
-    Returns an empty list when the response is not a JSON object or carries no ``values`` array,
-    logging what came back; the caller refuses an axis that yields nothing.
+    Returns an empty list when the reply's values are all blank, non-strings or already present; the caller refuses
+    an axis that yields nothing.
+
+    Raises:
+        ValidationFailedError: The reply is not a JSON object, or carries no ``values`` array — refused here, naming
+            which and what came back, rather than read as a reply that offered nothing new.
     """
     text = getattr(response, "content", "") or ""
 
     try:
         payload = extract_json(text)
-    except ValueError:
-        log.warning("LLM axis %r: response was not a JSON object. Raw preview: %r", axis.name, text[:200])
-        return []
+    except ValueError as unparsed:
+        raise ValidationFailedError(
+            f"variation axis {axis.name!r} (llm) produced no values: the model's reply is not a JSON object "
+            f"({unparsed})",
+            remedy=_LLM_AXIS_REMEDY,
+        ) from unparsed
     raw_values = payload.get("values")
     if not isinstance(raw_values, list):
-        log.warning("LLM axis %r: JSON object carried no 'values' array. Keys: %r", axis.name, sorted(payload))
-        return []
+        raise ValidationFailedError(
+            f"variation axis {axis.name!r} (llm) produced no values: the model's reply carries no 'values' array "
+            f"(its keys: {sorted(payload)})",
+            remedy=_LLM_AXIS_REMEDY,
+        )
 
     out: list[str] = []
     seen: set[str] = set(existing_values)

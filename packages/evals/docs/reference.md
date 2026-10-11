@@ -345,8 +345,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`extract_json(content: str) -> dict[str, Any]`
 - **`extract_json_array`** · function · Extract a JSON array from provider output, handling markdown code blocks.
   <br>`extract_json_array(text: str) -> list[dict[str, Any]]`
-- **`fold_phase_timings`** · function · Fold one delivery's carried phase timings into a result's accumulator.
-  <br>`fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> None`
+- **`fold_phase_timings`** · function · Fold one delivery's carried phase timings into a result's accumulator, and say what could not be folded.
+  <br>`fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> list[str]`
 - **`generation_slot_id`** · function · The id of a campaign's generation slot: one per campaign, so every process racing a start names one document.
   <br>`generation_slot_id(campaign_id: str) -> str`
 - **`goal_check_of`** · function · The check a measure name was minted for by `goal_check_measure`, or None.
@@ -359,7 +359,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`judge_criterion_digest(dim: str, scale: RubricScale, criterion: RubricDim | None) -> str`
 - **`judge_profile_id`** · function · The id of the one profile of a judge on a criterion: derived from both, so recording again replaces it.
   <br>`judge_profile_id(rubric_dim: str, scale: str, judge_model: str, judge_config_id: str | None, judge_temperature: JudgeTemperature, criterion_digest: str) -> str`
-- **`judge_trial_of`** · function · The judge trial a result's `kind_payload` carries, or `None` when it carries none this build can read.
+- **`judge_trial_of`** · function · The judge trial a result's `kind_payload` carries, or `None` when it carries none.
   <br>`judge_trial_of(kind_payload: object) -> JudgeTrial | None`
 - **`lease_lapsed`** · function · Whether a record's lease has lapsed at `now` — or it has none, which no process can be renewing.
   <br>`lease_lapsed(record: LeasedRecord, now: datetime) -> bool`
@@ -2223,7 +2223,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`'generator'` | `'judge'`
 - **`ResultPart`** · literal · Which part of a stored result `result_get` returns.
   <br>`'record'` | `'judge'` | `'spans'`
-- **`TraceState`** · literal · Whether a result's trace can be read: `stored`; `none` — the cell wrote none (its record says so); or `missing` — the record says one was written and no document backs it, which is a fault, never an ordinary absence (`get_result_trace` logs it).
+- **`TraceState`** · literal · Whether a result's trace can be read: `stored`; `none` — the cell produced none (its record says so); or `missing` — the record says the cell produced one and no document backs it (its write failed, or it was deleted since), which is a fault, never an ordinary absence (`get_result_trace` logs it).
   <br>`'stored'` | `'none'` | `'missing'`
 
 **Constants**

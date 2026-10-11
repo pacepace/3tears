@@ -324,7 +324,8 @@ async def test_an_llm_axis_whose_response_is_unparseable_refuses():
     template = _template(VariationAxis(name="x", generator="llm"))
     storage = _FakeStorage()
     llm = _FakeLLM(["I'm sorry but I cannot help with that request."])
-    with pytest.raises(ValidationFailedError, match="produced no values"):
+    # The refusal said only "produced no values", as for a reply that offered nothing new; the cause was logged.
+    with pytest.raises(ValidationFailedError, match="produced no values: the model's reply is not a JSON object"):
         await generate_variations(
             template,
             3,
@@ -340,7 +341,7 @@ async def test_an_llm_axis_whose_object_has_no_values_key_refuses():
     template = _template(VariationAxis(name="x", generator="llm"))
     storage = _FakeStorage()
     llm = _FakeLLM(['{"result": ["a", "b"]}'])  # valid object, wrong key
-    with pytest.raises(ValidationFailedError, match="produced no values"):
+    with pytest.raises(ValidationFailedError, match=r"carries no 'values' array \(its keys: \['result'\]\)"):
         await generate_variations(
             template,
             3,

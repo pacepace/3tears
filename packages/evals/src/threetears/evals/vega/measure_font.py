@@ -69,6 +69,7 @@ from threetears.evals.vega.text_metrics import (
     PROBE_FRAME,
     PROBE_SIZE,
     RUN_LENGTH,
+    TextMetricsError,
     resolving_files,
     write_font_metrics,
 )
@@ -148,8 +149,8 @@ def face_files(family: str, font_dir: Path | None) -> dict[str, str]:
         What :func:`resolving_files` finds; empty for the embedded face.
 
     Raises:
-        FontMeasureError: ``font_dir`` is not a directory, or no file in it declares the face, or there is
-            no ``font_dir`` and the face is not the one the rasteriser embeds.
+        FontMeasureError: ``font_dir`` is not a directory, or holds a font file that does not parse, or no file in it
+            declares the face, or there is no ``font_dir`` and the face is not the one the rasteriser embeds.
     """
     face = family.split(",")[0].strip()
     if font_dir is None:
@@ -162,7 +163,10 @@ def face_files(family: str, font_dir: Path | None) -> dict[str, str]:
         return {}
     if not font_dir.is_dir():
         raise FontMeasureError(f"--font-dir {font_dir} is not a directory")
-    files = resolving_files(face, font_dir)
+    try:
+        files = resolving_files(face, font_dir)
+    except TextMetricsError as unreadable:
+        raise FontMeasureError(str(unreadable)) from unreadable
     if not files:
         raise FontMeasureError(
             f"no font file under {font_dir} declares the family {face!r} in its name table, so whatever drew it "

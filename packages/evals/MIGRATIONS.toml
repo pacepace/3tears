@@ -34,10 +34,19 @@
 version = "unreleased"
 since = "v0.66.0-evaladopt.14"
 summary = """
-What adopting .12 found, continued (gap 51): a bisection asks the seats about apparatus only.
+No exception is swallowed: every handler in 3tears-evals that turned an error into a quiet None, default, skip or
+"no figure" now raises it, returns it as a failure the caller reports, or records it where the operator reads it; and a
+bisection asks the seats about apparatus only (gap 51), the seat methods refusing any other name.
 """
 notes = [
     "HostProfile.seats, HostProfile.apparatus_level and HostProfile.omits_apparatus refuse, with a ValueError naming the host's apparatus, a dimension that is not an apparatus dimension the host declares (a lever, a label, or an undeclared name), where they used to answer for it — omits_apparatus logging a false seat contradiction as it did. Seats describe the measuring rig only: a caller that passed every sweepable now asks these only for names whose declaration has role \"apparatus\", and compares the rest directly.",
+    "`threetears.evals.kernel.judge_trial_of` raises `ValueError` for a `kind_payload` that is not a judge trial this build can read, where it answered `None`. `None` now means only that the result carries no payload object; a caller that read `None` as \"not a trial\" catches the `ValueError` and reports its message.",
+    "A run written lost while a result it stored cannot be read carries an `EvalRun.error_details` entry naming the validation error, beside its unknown (`None`) completeness, where it carried none. A count of `error_details` reads that run as one fault.",
+    "`settle_tolerantly` (and so every settling read of job records: run, sweep, launch and attempt listings, and the runs a lost launch or sweep names) lets a `ValidationError` propagate for a record this build cannot read or cannot write lost, where it logged it and returned the record as stored, reading as still running. Drop or repair the document, or read it with a build whose model reads it.",
+    "`threetears.evals.vega.font_families` raises `ValueError` for bytes that do not parse as a font, where it answered an empty set; `resolving_files`, and so `check_font_files`, a `VegaRenderer` built over the directory and `render_svg` with a `font_dir`, raise `TextMetricsError` naming every file with a font's suffix (`.ttf`, `.otf`, `.ttc`, `.otc`) under the directory that does not parse. Remove or replace such files.",
+    "`KindContract` raises `KindContractError` at declaration for an overlay model whose own defaults do not validate (a default its field's constraint refuses, under `validate_default`, or a model validator refusing the defaults together), where it read the model as having no defaults and left every run's departure from production unchecked. A model with a required field still has no defaults. Correct the default, or make the field required.",
+    "`threetears.evals.kernel.fold_phase_timings` returns `list[str]`, one sentence per phase-timing entry it did not fold (a non-mapping carrier, a non-number, a negative duration), where it returned `None` and only logged them. A kind that calls it records what it returns where the cell's reader sees it (an infra error), or a malformed timing still reads as a phase the tool never measured.",
+    "`EvalResult.has_trace` records that the cell produced a trace, where it recorded that the trace document was written: a result whose trace write failed is stored with `has_trace=True` and no document, and reads `trace_state=\"missing\"` from `result_get` (and logs from `get_result_trace`), where it read `none`. A reader that took `has_trace` as proof a document exists checks for the document, as `get_result_trace` does.",
 ]
 
 [[release]]

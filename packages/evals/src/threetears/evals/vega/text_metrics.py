@@ -407,7 +407,11 @@ def font_families(data: bytes) -> frozenset[str]:
         data: The file's bytes.
 
     Returns:
-        The families, as declared. Empty for bytes that are not a font, or a font with no family name.
+        The families, as declared. Empty for a font with no family name.
+
+    Raises:
+        ValueError: The bytes end inside a structure they declare, so they are not a font this can read — named apart
+            from a font that declares no family, which is a font.
     """
     try:
         if data[:4] == b"ttcf":
@@ -416,10 +420,8 @@ def font_families(data: bytes) -> frozenset[str]:
         else:
             offsets = (0,)
         return frozenset(family for offset in offsets for family in _sfnt_families(data, offset))
-    # NOSILENT: bytes that do not parse as a font declare no family; the rasteriser's font database skips
-    # such a file too, so it cannot be what drew the face, and the caller refuses when no file declares it.
-    except struct.error:
-        return frozenset()
+    except struct.error as truncated:
+        raise ValueError(f"the bytes do not parse as an sfnt font or collection ({truncated})") from truncated
 
 
 def _sfnt_families(data: bytes, offset: int) -> list[str]:
@@ -469,15 +471,31 @@ def resolving_files(face: str, font_dir: Path) -> dict[str, str]:
 
     Returns:
         Each file's path relative to ``font_dir`` (``/``-separated) to the SHA-256 of its bytes.
+
+    Raises:
+        TextMetricsError: A file with a font's suffix does not parse as a font, so whether it declares the face cannot
+            be read; each is named. A file that cannot be read cannot be left out as declaring another family.
     """
     wanted = face.casefold()
-    return {
-        path.relative_to(font_dir).as_posix(): font_file_digest(path)
-        for path in sorted(font_dir.rglob("*"))
-        if path.is_file()
-        and path.suffix.lower() in FONT_SUFFIXES
-        and wanted in {family.casefold() for family in font_families(path.read_bytes())}
-    }
+    resolving: dict[str, str] = {}
+    unreadable: list[str] = []
+    for path in sorted(font_dir.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in FONT_SUFFIXES:
+            continue
+        name = path.relative_to(font_dir).as_posix()
+        try:
+            families = font_families(path.read_bytes())
+        except ValueError as refused:
+            unreadable.append(f"{name}: {refused}")
+            continue
+        if wanted in {family.casefold() for family in families}:
+            resolving[name] = font_file_digest(path)
+    if unreadable:
+        raise TextMetricsError(
+            f"{len(unreadable)} file(s) under {font_dir} carry a font's suffix and are not a font this can read, so "
+            f"whether they declare {face!r} cannot be told: " + "; ".join(unreadable) + ". Remove or replace them."
+        )
+    return resolving
 
 
 def check_font_files(font: ChartFont, font_dirs: Sequence[Path]) -> None:
@@ -506,7 +524,8 @@ def check_font_files(font: ChartFont, font_dirs: Sequence[Path]) -> None:
     Raises:
         TextMetricsError: A recorded file is in none of the directories, or hashes differently in every one that
             holds it, or a file the table did not record declares the face; each is named, with the command that
-            re-measures the face.
+            re-measures the face. Or a directory holds a file with a font's suffix that does not parse as a font
+            (:func:`resolving_files`).
     """
     face = font.family.split(",")[0].strip()
     present = [

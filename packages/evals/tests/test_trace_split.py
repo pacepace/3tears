@@ -21,7 +21,10 @@ from threetears.evals.run.reads import get_result_trace
 from threetears.evals.kernel.errors import StorageError
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.schema.store_port import omit_paths
+from threetears.evals.ops import result_get
+from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_result, make_eval_trace
+from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture
 
 
 class _RecordingRepo:
@@ -108,12 +111,13 @@ class TestTheWriteSplitsAndTheMarkerRecordsWhatHappened:
         assert [d["doc_type"] for d in repo.written] == ["eval_result"]
         assert repo.written[0]["has_trace"] is False
 
-    def test_a_failed_payload_write_still_persists_the_measurement(self):
-        """The runner counts a False here against run completeness.
+    def test_a_failed_payload_write_still_persists_the_measurement_and_reads_missing(self):
+        """Failing the whole write because a debug payload did not persist would trade the
+        measurement for the thing that exists to explain it.
 
-        Failing the whole write because a debug payload did not persist would trade the
-        measurement for the thing that exists to explain it — and the marker would then be
-        promising detail no fetch could find.
+        The marker was written False, so the result read on every surface as a cell that produced no
+        trace and the failed write lived in the log alone. It now says the cell produced one, and with
+        no document behind it every reader reports the trace ``missing``.
         """
         repo = _RecordingRepo(fail_doc_types=frozenset({"eval_trace"}))
         result, trace = _result_and_trace()
@@ -121,7 +125,7 @@ class TestTheWriteSplitsAndTheMarkerRecordsWhatHappened:
         _storage(repo).save_eval_result(result, trace)
 
         assert [d["doc_type"] for d in repo.written] == ["eval_result"]
-        assert repo.written[0]["has_trace"] is False, "the marker must record the write, not the intent"
+        assert repo.written[0]["has_trace"] is True, "the marker records that the cell produced a trace"
 
     def test_the_caller_s_result_is_not_mutated(self):
         """The marker is applied to a copy, so a caller holding this object is not surprised."""
@@ -284,3 +288,24 @@ class TestTheMarkerAndTheDocumentAreCheckedAgainstEachOther:
             assert get_result_trace(_storage(_RecordingRepo()), make_eval_result(id="res-1")) is None
 
         assert not caplog.records
+
+
+class _TraceRefusingStore(InMemoryDocumentStore):
+    """An in-memory store whose every trace write fails, as a store fault on the larger payload would."""
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        if document.get("doc_type") == "eval_trace":
+            raise RuntimeError("the store refused the trace")
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+def test_a_trace_whose_write_failed_reads_missing_on_the_result_surface_not_none() -> None:
+    """It read ``none`` — a cell that produced no trace — and the failed write was in the log alone."""
+    fixture = ops_fixture(store=_TraceRefusingStore())
+    storage = fixture.host.eval_host.storage
+    result = make_eval_result(scope_id=TOYHOST_SCOPE)
+    storage.save_eval_result(result, make_eval_trace(result_id=result.id, trace=[{"turn": 1, "content": "hi"}]))
+
+    detail = result_get(fixture.host.eval_host, result.id, TOYHOST_SCOPE)
+
+    assert detail.trace_state == "missing" and detail.result.has_trace

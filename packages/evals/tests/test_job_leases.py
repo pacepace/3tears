@@ -306,6 +306,35 @@ async def test_a_generation_whose_attempt_is_lost_while_it_stores_withdraws_what
     assert storage.query_insights(TOYHOST_SCOPE) == ledger, "the insights it restated are put back as they stood"
 
 
+class UnwithdrawableStore(LostOnStoreStore):
+    """Loses the attempt as :class:`LostOnStoreStore` does, and then refuses to delete any analysis."""
+
+    def delete(self, doc_id: str, scope_id: str) -> bool:
+        """Refuse an analysis's delete, as a store fault would; delete anything else."""
+        stored = self.get(doc_id, scope_id)
+        if stored is not None and stored.get("doc_type") == "eval_analysis":
+            raise RuntimeError("the store refused the delete")
+        return super().delete(doc_id, scope_id)
+
+
+async def test_a_withdrawal_that_fails_is_not_reported_as_done(caplog: pytest.LogCaptureFixture) -> None:
+    """The fence said the analysis "and its insights were withdrawn" when the withdrawal had failed part-way."""
+    store = UnwithdrawableStore()
+    fixture = ops_fixture(store=store)
+    store.lose_next = True
+    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    attempt_id = job.job_id.rsplit(":", 1)[1]
+    with caplog.at_level("WARNING"):
+        await _until(lambda: not fixture.host.launch.job_manager.is_task_active(attempt_id))
+
+    assert (await job_poll(fixture.host, job.job_id, TOYHOST_SCOPE)).state == "lost"
+    (left,) = analyses_list(fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
+    stopped = [record.getMessage() for record in caplog.records if "stopped:" in record.getMessage()]
+    assert stopped and "were withdrawn" not in stopped[0], stopped
+    assert "withdrawing what it stored failed part-way (RuntimeError: the store refused the delete)" in stopped[0]
+    assert f"analysis '{left.id}' may still be stored" in stopped[0]
+
+
 async def test_a_holder_whose_own_lease_lapsed_writes_itself_lost_at_renewal_and_stops() -> None:
     gate = asyncio.Event()
     store = ClockedStore()
