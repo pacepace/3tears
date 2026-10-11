@@ -1,0 +1,131 @@
+# Every name that left a public root of 3tears-evals, per release: its new home or "removed", and why.
+#
+# A public root is a module in threetears.evals.PUBLIC_ROOTS, and its public names are its __all__. When a name
+# leaves one (moved to another root, renamed, or removed) it is recorded here, and there is no compatibility shim:
+# a porter reads the release notes, which are printed from this file:
+#
+#     uv run python packages/evals/scripts/release_notes.py v<version>
+#
+# tests/test_api_surface.py fails while a name is missing from the checked-in snapshot (api/surface.json) without
+# being recorded in the FIRST section below, and scripts/generate_api_snapshot.py refuses to write a snapshot that
+# drops one. Sections run newest first; the first is the release being prepared. Older sections are history and are
+# not checked against today's surface.
+#
+# Each [[release.change]] is one move for one reason:
+#   from     the root the names left, in full
+#   to       the root that exports them now, in full, or "removed"
+#   names    names that keep their name in `to`
+#   renamed  { old = "new" } for names renamed on the way
+#   why      what a porter needs to understand the change
+# A section's `notes` carry breaking changes that are not a public name: a field, a submodule, a version.
+# A signature change alone needs no record here (the snapshot diff is its record); put it in `notes` when it breaks
+# callers.
+
+[[release]]
+version = "unreleased"
+summary = """
+A public name has one home: the root holding its defining module. A name another root also exported is dropped
+from that root, unless the root needs it and api/reexports.toml says why (`ops` keeps the analysis results the
+action catalogue names, since `actions` may reach `analysis` only through `ops`).
+"""
+
+[[release.change]]
+from = "threetears.evals.analysis.viz"
+to = "threetears.evals.kernel.host"
+why = """The palette slot counts are part of the host's style contract, defined in `kernel.host`; `analysis.viz` exported the same constants a second time."""
+names = ["SERIES_SLOTS", "VALIDATED_SLOTS"]
+
+[[release.change]]
+from = "threetears.evals.analysis.viz"
+to = "threetears.evals.analysis.viz"
+why = """Two different things were called `Cell`: the analysis root's cell (the observations sharing one variant and one apparatus class) and the chart vocabulary's JSON scalar in a data row or values table. The chart's is renamed."""
+renamed = { Cell = "ChartValue" }
+
+[[release.change]]
+from = "threetears.evals.quick"
+to = "threetears.evals.analysis"
+why = """The run summary and its parts are defined in `analysis`, which `quick` re-exported. Import them from `analysis`; `run_eval` and `compare` still return them."""
+names = [
+    "CaseOutcome", "CaseResult", "ConfusionCount", "DimensionSummary", "EvalSummary", "GoalCheckSummary",
+    "JudgeGrade", "LabelStatistics", "RunMeasureSummary", "summarize_run",
+]
+
+[[release.change]]
+from = "threetears.evals.ops"
+to = "threetears.evals.analysis"
+why = """Defined in `analysis`, and no operation's caller in the engine needs them from `ops`. `ops` keeps only the analysis names the action catalogue imports (api/reexports.toml)."""
+names = [
+    "CaseResult", "CostEstimate", "DimensionSummary", "JudgeGrade", "OutOfRunSpendTotals", "ReportFormat",
+    "RunMeasureSummary", "serialize_report", "summarize_run",
+]
+
+[[release]]
+version = "0.66.0-evaladopt.6"
+summary = """
+`threetears.evals.contracts` split into `schema` and `kernel`, and `contracts.host` became `kernel.host` (#702).
+This section covers only the names discodon used, as its port from .5 to .6 found them; every one was checked to
+be exported from the stated root at .6. CHANGELOG.md has the whole change.
+"""
+notes = [
+    "The submodule `threetears.evals.contracts.provider` is `threetears.evals.kernel.provider`.",
+    "`CampaignDesign.controls` is renamed `held_fixed` (#639).",
+    "`StyleProfile.locale` is removed (#680).",
+    "`CandidateTurn.actions` is removed (#671); a candidate's calls reach the engine through the call ledger.",
+    "`CampaignLine.status` is removed (#655).",
+    "`MetricDescriptor.reader_name` is required for a measure a host declares.",
+    "`RunMeasureSummary` gains `guardrail`; `JobStatus` gains `sweep_id`.",
+    "The report is version 6 (`REPORT_VERSION`), from 4: it gains the guardrails section and verdicts.",
+]
+
+[[release.change]]
+from = "threetears.evals.contracts"
+to = "threetears.evals.schema"
+why = """`contracts` split by concern (#702). `schema` holds the stored documents, the shapes embedded in them and the ports a host implements, and imports only pydantic and `threetears.observe`."""
+names = [
+    "ActorPolicy", "AsyncDelivery", "AsyncDeliveryStatus", "AsyncExternalSpend", "CallLedger", "CatalogRubricDim",
+    "ClientRequestSettings", "CompletionClient", "CompletionResult", "ControlEndState", "ConversationSpec",
+    "ConversationStopCause", "DocumentStore", "EvalResult", "EvalRun", "EvalTemplate", "EvalTestCase",
+    "GoalCheckControl", "JudgeConfig", "JudgedArtifact", "JudgeEvidence", "judges_sharing_a_candidate_model",
+    "NON_TERMINAL_RUN_STATUSES", "OutOfRunSpend", "Precondition", "PROSE_SCHEMA_KEY", "ProviderFailure",
+    "RESERVED_DIM_IDS", "RoleUsage", "RubricAxis", "RubricDim", "RubricProposal", "StopReason", "StoreConflict",
+    "utc_now_iso", "VariationAxis", "VariationCounts", "WorldSeed",
+]
+
+[[release.change]]
+from = "threetears.evals.contracts.host"
+to = "threetears.evals.schema"
+why = """These are stored or port shapes rather than the host contract, so the split (#702) put them in `schema` with the other stored shapes."""
+names = [
+    "CellIdentity", "CellTrace", "ExternalSpend", "nested_schemas", "SubjectSnapshot", "SweepableValue",
+]
+
+[[release.change]]
+from = "threetears.evals.contracts"
+to = "threetears.evals.kernel"
+why = """`contracts` split by concern (#702). `kernel` holds the engine's behaviour: identity, scoring, metrics, the goal-check evaluator, the world session, usage capture, `EvalStorage`, the campaign and analysis documents and the candidate kind."""
+names = [
+    "ACCURACY_MEASURE", "ActionSeam", "CampaignDesign", "CandidateKind", "CandidateOutput",
+    "CandidatePreparationFailed", "CandidateTelemetry", "CassetteMiss", "CellCassettes", "CellSink",
+    "CellSpanWindow", "classifier_label_measure", "confusion_cell", "ControlDeclaration", "count_substituted",
+    "DeliveryRecorder", "DeliveryReplay", "DeliverySeam", "DeliveryTicket", "ENGINE_FAMILIES", "EvalAnalysis",
+    "EvalCampaign", "EvalServiceError", "EvalStorage", "ExternalRateTable", "extract_json", "extract_json_array",
+    "fold_phase_timings", "INCOMPLETE_STOP_REASONS", "KIND_TEMPLATE", "KIND_TEXT", "MeasureFamily",
+    "MeasureSummary", "MeritAxis", "METRIC_DESCRIPTORS", "MetricDescriptor", "NotFoundError", "OutOfRunBudget",
+    "PlannedCall", "production_replicating_cost", "ProviderRefusedError", "Question", "Recordable",
+    "ReplayedDelivery", "resolve_variant_identity", "RoleUsageLedger", "SeedSection", "SeedTemplate",
+    "StorageError", "SweptAxis", "ToolWrap", "TURN_BUDGET_ENDED_KEY", "ValidationFailedError", "VariantConfig",
+    "VizType", "WorldSession", "WorldSessionError",
+]
+
+[[release.change]]
+from = "threetears.evals.contracts.host"
+to = "threetears.evals.kernel.host"
+why = """The host contract moved with the behaviour it is a contract for: `contracts.host` is `kernel.host` (#702)."""
+names = [
+    "ActsOn", "ApparatusError", "Bar", "BarRegistrationError", "BarRegistry", "CANDIDATE_MODEL_LEVER",
+    "ChartPalette", "check_seed", "check_world_conformance", "CompletionClients", "CompletionRole",
+    "default_cell_timeout", "EvalCellTimeout", "EvalHost", "HostProfile", "Interval", "KindContract",
+    "MeasureRegistrationError", "MeasureRegistry", "Ordinal", "ResolvesInto", "SeedRefused", "SHARED_CORE",
+    "StyleError", "StyleProfile", "Sweepable", "SweepableRegistry", "Triggered", "UnsupportedSchemaError",
+    "VALIDATED_SLOTS", "WorldConformanceReport", "WorldDimension", "WorldRegistry",
+]

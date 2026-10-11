@@ -149,4 +149,5 @@ in Concepts, the glossary of record.
 | A complete host | `EvalHost`, `HostProfile`, `CandidateKind` | [Adopting the engine](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/adopting-a-host.md#read-the-reference-hosts-in-this-order) | [`courierhost`](https://github.com/pacepace/3tears/blob/develop/packages/evals/tests/fixtures/courierhost/__init__.py), then [`toyhost`](https://github.com/pacepace/3tears/blob/develop/packages/evals/tests/fixtures/toyhost/README.md) |
 
 Import only from the public roots the [reference](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/reference.md#public-api)
-lists: a module below a root is internal and may move.
+lists: a module below a root is internal and may move. A public name that leaves a root is recorded with its new
+home in each release's notes ([Upgrading: names that move](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/adopting-a-host.md#upgrading-names-that-move)).

@@ -168,6 +168,48 @@ recomputes an identity key, so keys from different predicates never silently poo
 document written by a newer release is refused, never guessed at, so when two builds share one store,
 upgrade the older one. A core document from before the first release (below core v8) is refused too.
 
+## Upgrading: names that move
+
+**Every name that leaves a public root is written down, and nothing is kept for compatibility.** When a release
+moves a public name to another root, renames it, or removes it, `packages/evals/MIGRATIONS.toml` records it under
+that release: the old name, its new home or `removed`, and why. There is no shim at the old name. The release
+notes are printed from that record, so they hold the full old-to-new map:
+
+```bash
+uv run python packages/evals/scripts/release_notes.py v0.66.0-evaladopt.6
+```
+
+Each line reads `old → new`, grouped under the reason for the move. Changes that are not a public name, such as
+a renamed field, a moved submodule or a new report version, are listed after the map. To port, find each old name
+you import in that list and import it from its new root.
+
+**A name has one home.** It is exported from the root that holds its defining module. A second root exports it
+only when that root needs it, and `packages/evals/api/reexports.toml` says why. For example, `ops` re-exports the
+analysis results the action catalogue names, because `actions` may reach `analysis` only through `ops`. Import a
+name from its home, which is the root the reference lists it under first.
+
+**How the package holds this (for contributors).** `packages/evals/api/surface.json` is a checked-in snapshot of
+every public root's `__all__`, one entry per `root.name` with its kind and signature. The same walk that renders
+the [reference](reference.md) writes it. `tests/test_api_surface.py` compares the installed package with the
+snapshot:
+
+- **A name added, or a kind or signature changed.** The test fails until you regenerate the snapshot, so the
+  change shows up as a diff in review. A signature change needs no record in `MIGRATIONS.toml`. When it breaks
+  callers, add it to the newest section's `notes`.
+- **A name moved, renamed or removed.** The test fails until `MIGRATIONS.toml`'s first section (the release being
+  prepared) records it. The generator refuses to write a snapshot that drops an unrecorded name.
+- **A name exported from two roots.** The test fails unless it is one object and `api/reexports.toml` declares
+  it. Two different objects under one name always fail: rename one.
+
+```bash
+uv run python packages/evals/scripts/generate_api_snapshot.py          # regenerate (refused while a removal is unrecorded)
+uv run python packages/evals/scripts/generate_api_snapshot.py --check  # report every finding, write nothing
+```
+
+**When a version is tagged**, rename the `unreleased` section of `MIGRATIONS.toml` to the version, without the
+leading `v`. Then paste the output of `release_notes.py v<version>` into the release description. The next change
+that moves a name starts a new `unreleased` section at the top.
+
 ## The kind: what you are evaluating
 
 **A kind is what you are evaluating.** You implement the candidate-kind seam: `prepare` builds a

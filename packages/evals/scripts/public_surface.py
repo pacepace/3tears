@@ -19,8 +19,10 @@ import dataclasses
 import enum
 import importlib
 import inspect
+import json
 import re
 import textwrap
+import tomllib
 import types
 import typing
 from collections.abc import Callable, Iterator
@@ -28,7 +30,7 @@ from functools import cache
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import PydanticUndefined
 
 #: The package directory: what a path in a rendered default is written relative to.
@@ -507,3 +509,375 @@ def exported_twice() -> dict[str, list[str]]:
     for root, name, _ in public_names():
         roots.setdefault(name, []).append(root)
     return {name: where for name, where in sorted(roots.items()) if len(where) > 1}
+
+
+def exports_by_name() -> dict[str, list[tuple[str, Any]]]:
+    """Each public name → (root, object) for every root that exports it, in ``PUBLIC_ROOTS`` order."""
+    found: dict[str, list[tuple[str, Any]]] = {}
+    for root, name, obj in public_names():
+        found.setdefault(name, []).append((root, obj))
+    return found
+
+
+def home_root(root: str, name: str) -> str:
+    """The public root that holds the module defining ``root.name``: the root the name belongs to, wherever else it
+    is exported from. The longest root the defining module sits under, so ``kernel.host`` wins over ``kernel``.
+
+    A class or function says where it was defined; a constant or alias does not, and is followed through the
+    ``from … import`` statements that re-export it to the module that assigns it.
+    """
+    from threetears.evals import PUBLIC_ROOTS
+
+    obj = getattr(importlib.import_module(root), name)
+    module = getattr(obj, "__module__", None) if isinstance(obj, type) or inspect.isroutine(obj) else None
+    if not module or not module.startswith("threetears.evals."):
+        found = defining_module(root, name)
+        module = found[0] if found is not None else root
+    under = [r for r in PUBLIC_ROOTS if module == r or module.startswith(f"{r}.")]
+    return max(under, key=len) if under else root
+
+
+# --- the record: what left the surface, and what is exported twice on purpose -------------------------------------
+
+#: The checked-in snapshot of the public surface. Generated; never edited by hand.
+SNAPSHOT_PATH = PACKAGE_ROOT / "api" / "surface.json"
+
+#: The hand-written record of every name that left a public root: per release, its new home or ``removed``, and why.
+MIGRATIONS_PATH = PACKAGE_ROOT / "MIGRATIONS.toml"
+
+#: The hand-written declarations of the names exported from more than one root on purpose.
+REEXPORTS_PATH = PACKAGE_ROOT / "api" / "reexports.toml"
+
+#: The command that regenerates the snapshot, as every finding that regenerating fixes tells a reader.
+REGENERATE_SNAPSHOT = "uv run python packages/evals/scripts/generate_api_snapshot.py"
+
+#: What a change's ``to`` says when a name has no new home.
+REMOVED = "removed"
+
+#: The snapshot file's own format version, so a reader of an older layout is refused rather than misread.
+SNAPSHOT_FORMAT = 1
+
+
+class _Record(BaseModel):
+    """Strict, as every stored shape in the package is: a misspelt key in a hand-written record is refused, never
+    silently dropped, because a dropped ``why`` or ``names`` would let a removal pass unrecorded."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+
+def _qualified(text: str) -> str:
+    if not text.startswith("threetears.evals."):
+        raise ValueError(f"{text!r} is not a module under threetears.evals; write the root in full")
+    return text
+
+
+class Migration(_Record):
+    """One name that left a public root, as release notes list it: ``old`` → ``new`` (or ``removed``), and why."""
+
+    old: str
+    new: str
+    why: str
+
+
+class NameChange(_Record):
+    """One ``[[release.change]]``: names that left one root together, for one reason.
+
+    ``names`` keep their name in ``to``; ``renamed`` maps an old name to its new one. ``to`` is a root, or
+    ``"removed"`` when the names have no new home (and then nothing can be renamed).
+    """
+
+    source: str = Field(alias="from", description="The root the names left, in full: threetears.evals.<root>.")
+    to: str = Field(description="The root they live in now, in full, or 'removed'.")
+    names: list[str] = Field(default_factory=list, description="Names that keep their name in their new home.")
+    renamed: dict[str, str] = Field(default_factory=dict, description="Old name → new name, for a name renamed.")
+    why: str = Field(min_length=1, description="Why they left: what a porter needs to understand the change.")
+
+    @model_validator(mode="after")
+    def _coherent(self) -> NameChange:
+        _qualified(self.source)
+        if self.to != REMOVED:
+            _qualified(self.to)
+        if not self.names and not self.renamed:
+            raise ValueError(f"a change from {self.source} names nothing: list `names` or `renamed`")
+        if self.to == REMOVED and self.renamed:
+            raise ValueError(f"a name removed from {self.source} has no new name: move it to `names`")
+        if both := set(self.names) & set(self.renamed):
+            raise ValueError(f"{sorted(both)} listed in both `names` and `renamed` of a change from {self.source}")
+        if self.source == self.to and self.names:
+            raise ValueError(f"{self.names} are listed as moving from {self.source} to itself; rename or drop them")
+        return self
+
+    def migrations(self) -> list[Migration]:
+        """One per name, in the order written."""
+        out = []
+        for name in self.names:
+            new = REMOVED if self.to == REMOVED else f"{self.to}.{name}"
+            out.append(Migration(old=f"{self.source}.{name}", new=new, why=self.why))
+        for old, new_name in self.renamed.items():
+            out.append(Migration(old=f"{self.source}.{old}", new=f"{self.to}.{new_name}", why=self.why))
+        return out
+
+
+class Release(_Record):
+    """One ``[[release]]``: what one version moved or removed from the public roots, and anything else a porter
+    must change that is not a public name (a field, a submodule)."""
+
+    version: str = Field(min_length=1, description="The version, as its tag reads without the leading 'v'.")
+    summary: str = Field(default="", description="What this section covers, in a paragraph.")
+    changes: list[NameChange] = Field(default_factory=list, alias="change")
+    notes: list[str] = Field(default_factory=list, description="Breaking changes that are not a public name.")
+
+    @model_validator(mode="after")
+    def _each_name_once(self) -> Release:
+        seen: set[str] = set()
+        for migration in self.migrations():
+            if migration.old in seen:
+                raise ValueError(f"release {self.version} records {migration.old} twice")
+            seen.add(migration.old)
+        return self
+
+    def migrations(self) -> list[Migration]:
+        """Every name this release moved or removed, in the order written."""
+        return [m for change in self.changes for m in change.migrations()]
+
+
+class Migrations(_Record):
+    """``MIGRATIONS.toml``: a release per section, newest first. The first section is the release being prepared,
+    and is where a name leaving a root now must be recorded."""
+
+    releases: list[Release] = Field(alias="release", min_length=1)
+
+    @model_validator(mode="after")
+    def _versions_unique(self) -> Migrations:
+        versions = [r.version for r in self.releases]
+        if dupes := sorted({v for v in versions if versions.count(v) > 1}):
+            raise ValueError(f"MIGRATIONS.toml has more than one section for {dupes}")
+        return self
+
+    def release(self, version: str) -> Release | None:
+        """The section for ``version`` (a leading ``v``, as a tag has, is ignored), if there is one."""
+        wanted = version.removeprefix("v")
+        return next((r for r in self.releases if r.version == wanted), None)
+
+
+class ReExport(_Record):
+    """One ``[[reexport]]``: names whose home is one root and which another root exports too, on purpose."""
+
+    home: str = Field(description="The root holding the names' defining modules, in full.")
+    also: list[str] = Field(min_length=1, description="Every other root exporting them, in full.")
+    names: list[str] = Field(min_length=1)
+    why: str = Field(min_length=1, description="Why the other roots need the names: what dropping them would break.")
+
+
+class ReExports(_Record):
+    """``api/reexports.toml``: every name exported from more than one root on purpose."""
+
+    reexports: list[ReExport] = Field(default_factory=list, alias="reexport")
+
+    def roots_of(self, name: str) -> tuple[str, frozenset[str]] | None:
+        """(home, every root exporting it) as declared for ``name``, or ``None`` when it is not declared."""
+        for entry in self.reexports:
+            if name in entry.names:
+                return entry.home, frozenset({entry.home, *entry.also})
+        return None
+
+
+def load_migrations(path: Path = MIGRATIONS_PATH) -> Migrations:
+    """Read and validate ``MIGRATIONS.toml``."""
+    return Migrations.model_validate(tomllib.loads(path.read_text(encoding="utf-8")))
+
+
+def load_reexports(path: Path = REEXPORTS_PATH) -> ReExports:
+    """Read and validate ``api/reexports.toml``."""
+    return ReExports.model_validate(tomllib.loads(path.read_text(encoding="utf-8")))
+
+
+def load_snapshot(path: Path = SNAPSHOT_PATH) -> dict[str, SurfaceEntry]:
+    """The checked-in snapshot, or an empty one when there is none yet (every name then reads as added)."""
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if data.get("format") != SNAPSHOT_FORMAT:
+        raise SystemExit(f"{path} is format {data.get('format')!r}, not {SNAPSHOT_FORMAT}; regenerate it")
+    return {name: SurfaceEntry(**entry) for name, entry in data["names"].items()}
+
+
+def render_snapshot(surface: dict[str, SurfaceEntry]) -> str:
+    """The snapshot file: one entry per ``root.name``, in walk order, so a change is a small, readable diff."""
+    names = {name: {"kind": e.kind, "signature": e.signature} for name, e in surface.items()}
+    return json.dumps({"format": SNAPSHOT_FORMAT, "names": names}, indent=2, ensure_ascii=False) + "\n"
+
+
+# --- findings ----------------------------------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class Finding:
+    """One way the installed surface and its record disagree.
+
+    Attributes:
+        problem: What is wrong and what to do about it.
+        regenerating_fixes: Whether regenerating the snapshot is the whole remedy. A name added, or a kind or
+            signature changed, is: the diff the regeneration makes is the record. A name that left a root is not
+            until ``MIGRATIONS.toml`` records it, and the generator refuses to write while any finding is not.
+    """
+
+    problem: str
+    regenerating_fixes: bool
+
+
+def snapshot_findings(
+    installed: dict[str, SurfaceEntry], recorded: dict[str, SurfaceEntry], newest: Release
+) -> list[Finding]:
+    """How the installed surface differs from the snapshot, each difference with its remedy.
+
+    Args:
+        installed: The surface the package exports now.
+        recorded: The checked-in snapshot.
+        newest: ``MIGRATIONS.toml``'s first section, where a name leaving a root now is recorded.
+
+    Returns:
+        The findings: removals in snapshot order, then additions and changes in walk order.
+    """
+    findings: list[Finding] = []
+    moved = {m.old: m for m in newest.migrations()}
+    for name in [n for n in recorded if n not in installed]:
+        if name in moved:
+            findings.append(
+                Finding(f"{name} left the surface ({_destination(moved[name])}): run `{REGENERATE_SNAPSHOT}`.", True)
+            )
+        else:
+            findings.append(
+                Finding(
+                    f"{name} left the public surface, and MIGRATIONS.toml's newest section ({newest.version}) does "
+                    f"not record it. Add it to a [[release.change]] there with its new home (or 'removed') and why, "
+                    f"then run `{REGENERATE_SNAPSHOT}`. No compatibility shim: a porter reads the release notes.",
+                    False,
+                )
+            )
+    for name in [n for n in installed if n not in recorded]:
+        findings.append(Finding(f"{name} is new on the public surface: run `{REGENERATE_SNAPSHOT}`.", True))
+    for name in [n for n in installed if n in recorded]:
+        now, was = installed[name], recorded[name]
+        if now != was:
+            findings.append(
+                Finding(
+                    f"{name} changed: was {was.kind} `{was.signature}`, now {now.kind} `{now.signature}`. Run "
+                    f"`{REGENERATE_SNAPSHOT}`; a breaking change that is not a name leaving goes in the newest "
+                    f"section's `notes`.",
+                    True,
+                )
+            )
+    return findings
+
+
+def _destination(migration: Migration) -> str:
+    return "removed" if migration.new == REMOVED else f"now {migration.new}"
+
+
+def record_findings(installed: dict[str, SurfaceEntry], newest: Release) -> list[Finding]:
+    """Where the newest section of ``MIGRATIONS.toml`` disagrees with the package: a name it says left a root is
+    still exported there, or the new home it names exports no such name. Older sections are history, written
+    against the surface of their own release, and are not checked against today's."""
+    findings = []
+    for migration in newest.migrations():
+        if migration.old in installed:
+            findings.append(
+                Finding(
+                    f"MIGRATIONS.toml ({newest.version}) records {migration.old} as gone, but it is still exported: "
+                    f"drop the export or the record.",
+                    False,
+                )
+            )
+        if migration.new != REMOVED and migration.new not in installed:
+            findings.append(
+                Finding(
+                    f"MIGRATIONS.toml ({newest.version}) sends {migration.old} to {migration.new}, which is not "
+                    f"exported: name the root that exports it now.",
+                    False,
+                )
+            )
+    return findings
+
+
+def duplicate_findings(
+    exports: dict[str, list[tuple[str, Any]]], homes: dict[str, str], reexports: ReExports
+) -> list[Finding]:
+    """Names exported from more than one root that are not declared re-exports, and declarations that no longer
+    match what is exported.
+
+    A name has one home, so a reader and a porter know where it lives and a move is one record. A second root may
+    export it only when it is the same object and ``api/reexports.toml`` says why that root needs it (``ops``
+    re-exports the analysis results its operations hand back, because ``actions`` may reach analysis only
+    through ``ops``). Two different objects under one name is never a re-export: rename one.
+
+    Args:
+        exports: Each public name → (root, object) for every root that exports it.
+        homes: Each name exported twice → the root holding its defining module.
+        reexports: The declarations.
+
+    Returns:
+        The findings, by name. None of them is fixed by regenerating the snapshot.
+    """
+    findings = []
+    for name, where in sorted(exports.items()):
+        if len(where) < 2:
+            continue
+        roots = [root for root, _ in where]
+        if len({id(obj) for _, obj in where}) > 1:
+            findings.append(
+                Finding(
+                    f"{name} names different objects in {', '.join(roots)}: a name means one thing on the "
+                    f"surface. Rename one, and record the rename in MIGRATIONS.toml's newest section.",
+                    False,
+                )
+            )
+            continue
+        declared = reexports.roots_of(name)
+        home = homes.get(name, roots[0])
+        if declared is None:
+            findings.append(
+                Finding(
+                    f"{name} is exported from {', '.join(roots)}; its home is {home}. Drop it from the other "
+                    f"roots and record each drop in MIGRATIONS.toml's newest section, or declare it in "
+                    f"api/reexports.toml with why the other roots need it.",
+                    False,
+                )
+            )
+        elif declared != (home, frozenset(roots)):
+            findings.append(
+                Finding(
+                    f"api/reexports.toml declares {name} at home in {declared[0]} and exported from "
+                    f"{', '.join(sorted(declared[1]))}, but its home is {home} and it is exported from "
+                    f"{', '.join(roots)}: correct the declaration.",
+                    False,
+                )
+            )
+    for entry in reexports.reexports:
+        for name in entry.names:
+            if len(exports.get(name, [])) < 2:
+                findings.append(
+                    Finding(
+                        f"api/reexports.toml declares {name} a re-export, but it is exported from "
+                        f"{len(exports.get(name, []))} root(s): drop the declaration.",
+                        False,
+                    )
+                )
+    return findings
+
+
+def all_findings(
+    installed: dict[str, SurfaceEntry],
+    recorded: dict[str, SurfaceEntry],
+    migrations: Migrations,
+    reexports: ReExports,
+) -> list[Finding]:
+    """Every finding over the installed package: the snapshot, the newest record and the duplicates."""
+    exports = exports_by_name()
+    homes = {name: home_root(where[0][0], name) for name, where in exports.items() if len(where) > 1}
+    newest = migrations.releases[0]
+    return [
+        *duplicate_findings(exports, homes, reexports),
+        *record_findings(installed, newest),
+        *snapshot_findings(installed, recorded, newest),
+    ]

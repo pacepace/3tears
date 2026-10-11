@@ -6,6 +6,32 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the public surface is snapshotted, and every name that leaves it is recorded (breaking)
+
+A name could leave a public root with nothing failing, and a porter learned the new home from an `ImportError`.
+Now the package's own tests hold the surface. Nothing is kept for compatibility: the release notes carry the
+old-to-new map instead.
+
+- **The snapshot.** `packages/evals/api/surface.json` lists each `root.name` in `threetears.evals.PUBLIC_ROOTS`
+  with its kind and signature. It is written by `scripts/generate_api_snapshot.py` over the walk that renders the
+  reference. `tests/test_api_surface.py` fails on any difference. An addition or a signature change is fixed by
+  regenerating the snapshot. A name that moved, was renamed or was removed is fixed only by recording it in
+  `packages/evals/MIGRATIONS.toml` (its new home or `removed`, and why). The generator refuses to write until that
+  record exists.
+- **Release notes.** `scripts/release_notes.py <tag>` prints a release's section of `MIGRATIONS.toml`. The
+  section for `v0.66.0-evaladopt.6` (the `contracts` split) is seeded with the names discodon used.
+- **One home per name.** A name exported from two roots fails unless `api/reexports.toml` declares it a
+  re-export. Two different objects under one name always fail. Resolving the duplicates already on the surface:
+  - `analysis.viz` no longer exports `VALIDATED_SLOTS` or `SERIES_SLOTS`; import them from `kernel.host`.
+  - `analysis.viz.Cell`, the chart vocabulary's JSON scalar, is `ChartValue`, so it no longer shares a name with
+    `analysis.Cell`.
+  - `quick` no longer re-exports the run summary. Import `EvalSummary`, `summarize_run`, `CaseResult`,
+    `CaseOutcome`, `DimensionSummary`, `GoalCheckSummary`, `JudgeGrade`, `RunMeasureSummary`, `ConfusionCount` and
+    `LabelStatistics` from `analysis`.
+  - `ops` keeps only the fourteen analysis names the action catalogue imports, because `actions` may reach
+    `analysis` only through `ops`. It drops `CaseResult`, `CostEstimate`, `DimensionSummary`, `JudgeGrade`,
+    `OutOfRunSpendTotals`, `ReportFormat`, `RunMeasureSummary`, `serialize_report` and `summarize_run`.
+
 ### 3tears-evals: the context bundle and the reporting projection are split by concern (#612)
 
 `analysis/bundle.py` (about 10,400 lines) and `analysis/reporting.py` (about 8,000) each held a dozen concerns
