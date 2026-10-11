@@ -34,6 +34,7 @@ from packages.evals.tests.factories import (
 )
 from threetears.evals.kernel.campaign import EvalGenerationSlot, EvalSweep, SweepArmRecord, generation_slot_id
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileAgreement
+from threetears.evals.run import EvalActionJob, EvalJudgeTemperatureCheck, EvalLaunch, EvalSecondJudgePass
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import (
     CaseSet,
@@ -44,6 +45,7 @@ from threetears.evals.schema.models import (
     RubricDim,
     RubricDimTombstone,
     RubricScore,
+    SecondJudge,
     label_key_of,
 )
 from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
@@ -166,6 +168,28 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
         parse_valid=2,
         parse_validity=1.0,
         measured_at="2026-10-10T00:00:00+00:00",
+    ),
+    "EvalLaunch": lambda: EvalLaunch(
+        id="launch-1", scope_id="uni-1", template_id="t-1", subject_id="s-1", models=["m"], k_runs=1, n_variations=0
+    ),
+    "EvalSecondJudgePass": lambda: EvalSecondJudgePass(
+        scope_id="uni-1",
+        run_id="run-1",
+        asked_by="judge_second",
+        judge=SecondJudge(model="judge/b"),
+        sample_fraction=0.5,
+        sample_seed=0,
+    ),
+    "EvalJudgeTemperatureCheck": lambda: EvalJudgeTemperatureCheck(
+        scope_id="uni-1", run_id="run-1", selection="borderline", repeats=2
+    ),
+    "EvalActionJob": lambda: EvalActionJob(
+        scope_id="uni-1",
+        action="rubric_propose",
+        outcome="completed",
+        result={"draft": "tone"},
+        result_model="Draft",
+        ended_at="2026-10-11T00:00:00+00:00",
     ),
     "CaseSet": lambda: CaseSet(scope_id="uni-1", name="smoke", version=1, template_id="t-1", test_case_ids=["c-1"]),
     "CatalogRubricDim": make_rubric_dim,

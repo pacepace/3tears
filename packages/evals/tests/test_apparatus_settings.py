@@ -54,7 +54,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_REVIEWER_POOL, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
-from packages.evals.tests.ops_support import CALLER, ops_fixture
+from packages.evals.tests.ops_support import CALLER, launched_runs, ops_fixture
 
 #: The toy host's one launch-settable apparatus dimension: who reviews the extractions.
 POOL = "reviewer_pool"
@@ -295,9 +295,8 @@ async def test_run_launch_hands_the_launch_its_apparatus_settings():
 
     started = await run_launch(fixture.host, launched, TOYHOST_SCOPE)
 
-    (job,) = started.jobs
-    await _settled(fixture.host.launch, [job.target_id])
-    stored = fixture.host.eval_host.storage.load_eval_run(job.target_id, TOYHOST_SCOPE)
+    (run_id,) = await launched_runs(fixture.host, started)
+    stored = fixture.host.eval_host.storage.load_eval_run(run_id, TOYHOST_SCOPE)
     assert stored is not None and stored.apparatus_settings == {POOL: "pool-d"}
 
 

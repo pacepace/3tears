@@ -4352,7 +4352,7 @@ class SecondJudge(EvalDocumentModel):
     """A judge other than the one a run was scored by: a model, the prompt per dimension, and a temperature.
 
     The three things a judge's identity is made of (:class:`~threetears.evals.analysis.JudgeKey`), named for a
-    second opinion on stored evidence (:func:`~threetears.evals.run.ask_second_judge`). Every dimension is sent to
+    second opinion on stored evidence (:func:`~threetears.evals.run.second_judge_work`). Every dimension is sent to
     ``model``, whatever model a prompt's config names: the second judge is the one named here.
     """
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
 from fastmcp import Client, FastMCP
 
 from threetears.evals.actions import Caller, eval_catalogue, read_only_tools
@@ -60,10 +61,12 @@ async def test_an_agent_lists_launches_polls_and_reads_a_report() -> None:
         }
         started, jobs, is_error = await _text(client, "evals", launch)
         assert not is_error and jobs is not None and started.startswith("started 1 job(s):")
-        run_status = await _done(client, jobs["jobs"][0]["job_id"])
-        assert run_status["state"] == "completed"
-        summary, _, _ = await _text(client, "evals", {"action": "run_get", "run_id": run_status["run_id"]})
-        assert f"run {run_status['run_id']} completed: {RUN_MODELS[0]}" in summary
+        assert jobs["jobs"][0]["kind"] == "launch"
+        launch_status = await _done(client, jobs["jobs"][0]["job_id"])
+        assert launch_status["state"] == "completed"
+        (run_id,) = launch_status["run_ids"]
+        summary, _, _ = await _text(client, "evals", {"action": "run_get", "run_id": run_id})
+        assert f"run {run_id} completed: {RUN_MODELS[0]}" in summary
 
         _, generation, _ = await _text(
             client, "evals", {"action": "analysis_generate", "campaign_id": fixture.campaign.id}
@@ -151,3 +154,22 @@ async def test_a_cap_above_the_hosts_is_refused_through_the_transport() -> None:
         )
     assert is_error and "a launch may only lower the host's ceiling" in text
     assert fixture.host.launch.job_manager.admitted_count == 0
+
+
+async def test_every_call_is_held_to_the_one_fixed_call_timeout() -> None:
+    """A call outliving the server's one timeout is answered as an error saying so, never left holding the client."""
+    fixture = ops_fixture()
+
+    async def slow_caller() -> Caller:
+        await asyncio.sleep(1)
+        return CALLER
+
+    async with Client(_served(fixture, caller=slow_caller, call_timeout_s=0.05)) as client:
+        text, structured, is_error = await _text(client, "evals", {"action": "templates_list"})
+    assert is_error and structured is None
+    assert "outlived this server's 0.05s call timeout" in text and "No action's call waits on a model" in text
+
+
+def test_a_call_timeout_that_is_not_positive_is_refused_at_mount() -> None:
+    with pytest.raises(ValueError, match="call_timeout_s must be positive"):
+        _served(ops_fixture(), call_timeout_s=0)

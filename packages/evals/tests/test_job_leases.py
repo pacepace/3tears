@@ -121,16 +121,23 @@ def _held_extraction(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
     return gate
 
 
-async def _running_run(host: OpsHost) -> str:
-    """Launch one arm on ``host`` and wait until it reads running."""
+async def _running_launch(host: OpsHost) -> tuple[str, str]:
+    """Launch one arm on ``host`` and wait until its run reads running; the launch's job id and the run's id."""
     arguments = LaunchArguments(
         template_id=toyhost_template().id, subject_id=TOYHOST_SUBJECT.subject_id, models=[RUN_MODELS[0]]
     )
     (job,) = (await run_launch(host, arguments, TOYHOST_SCOPE)).jobs
     async with asyncio.timeout(10):
-        while (await job_poll(host, job.job_id, TOYHOST_SCOPE)).status != "running":
+        while not (run_ids := (await job_poll(host, job.job_id, TOYHOST_SCOPE)).run_ids):
             await asyncio.sleep(0.01)
-    return job.target_id
+        while (await job_poll(host, run_job_id(run_ids[0]), TOYHOST_SCOPE)).status != "running":
+            await asyncio.sleep(0.01)
+    return job.job_id, run_ids[0]
+
+
+async def _running_run(host: OpsHost) -> str:
+    """Launch one arm on ``host`` and wait until its run reads running; the run's id."""
+    return (await _running_launch(host))[1]
 
 
 # =============================================================================
@@ -269,11 +276,11 @@ async def test_a_graceful_shutdown_writes_every_held_job_lost_at_once(monkeypatc
     holder = ops_fixture(gate=gate)
     elsewhere = _other_process(holder.host)
     (generation,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
-    run_id = await _running_run(holder.host)
+    launch_id, run_id = await _running_launch(holder.host)
 
     await holder.host.launch.job_manager.shutdown()
 
-    for job_id in (generation.job_id, run_job_id(run_id)):
+    for job_id in (generation.job_id, run_job_id(run_id), launch_id):
         status = await job_poll(elsewhere, job_id, TOYHOST_SCOPE)
         assert (status.state, status.detail) == ("lost", SHUTDOWN_CAUSE), job_id
     assert _attempt(holder.host, generation.job_id).lease is None, "the lease was released"

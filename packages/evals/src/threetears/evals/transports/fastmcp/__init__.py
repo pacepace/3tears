@@ -21,11 +21,17 @@ asked once per call::
 A refused call is an MCP error result (``isError``) carrying the refusal's teaching text; a result
 carries its text and the result model's JSON as structured content.
 
+**One fixed call timeout.** No action's call waits on a model — work that calls one runs as a job the caller
+polls — so a call is a few store round-trips, and every call is held to one fixed timeout
+(:data:`DEFAULT_CALL_TIMEOUT_S`, or the ``call_timeout_s`` a host mounts with), never one computed from what the
+call might spend. A call that outlives it is answered as an error saying so, rather than holding the client.
+
 **This module is a public root.** A host imports from here and from no module below it.
 """
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
@@ -37,6 +43,10 @@ from pydantic import ConfigDict, Field
 
 from threetears.evals.actions import ActionCatalogue, Caller, MountedTool, ToolSpec, standard_tools
 from threetears.evals.ops import OpsHost
+
+#: How long one call may take, in seconds, unless a host mounts with another: every call, whatever its action. No call
+#: waits on a model, so this bounds store round-trips and a host's own caller resolution, never a model's latency.
+DEFAULT_CALL_TIMEOUT_S = 60.0
 
 #: Resolves who is calling, and their scope, for one call — sync or async. The host reads its own
 #: request context (an access token, a session) to answer it.
@@ -50,17 +60,30 @@ class ToolBinding:
     walks the host's types to describe it.
     """
 
-    def __init__(self, mounted: MountedTool, host: OpsHost, caller: CallerResolver) -> None:
+    def __init__(
+        self,
+        mounted: MountedTool,
+        host: OpsHost,
+        caller: CallerResolver,
+        call_timeout_s: float = DEFAULT_CALL_TIMEOUT_S,
+    ) -> None:
         """Bind a mounted tool to the host and caller resolver its calls run under.
 
         Args:
             mounted: The tool cut from the catalogue.
             host: The host its actions work in.
             caller: Resolves who is calling, per call.
+            call_timeout_s: The one timeout every call is held to, in seconds.
+
+        Raises:
+            ValueError: ``call_timeout_s`` is not positive.
         """
+        if not call_timeout_s > 0:
+            raise ValueError(f"call_timeout_s must be positive; got {call_timeout_s!r}")
         self.mounted = mounted
         self.host = host
         self.caller = caller
+        self.call_timeout_s = call_timeout_s
 
 
 class CatalogueTool(Tool):
@@ -76,13 +99,21 @@ class CatalogueTool(Tool):
     binding: ToolBinding = Field(exclude=True)
 
     @classmethod
-    def over(cls, mounted: MountedTool, *, host: OpsHost, caller: CallerResolver) -> CatalogueTool:
+    def over(
+        cls,
+        mounted: MountedTool,
+        *,
+        host: OpsHost,
+        caller: CallerResolver,
+        call_timeout_s: float = DEFAULT_CALL_TIMEOUT_S,
+    ) -> CatalogueTool:
         """The FastMCP tool for one mounted tool.
 
         Args:
             mounted: The tool cut from the catalogue.
             host: The host its actions work in.
             caller: Resolves who is calling, per call.
+            call_timeout_s: The one timeout every call is held to, in seconds.
 
         Returns:
             The tool, ready for :meth:`fastmcp.FastMCP.add_tool`.
@@ -101,7 +132,7 @@ class CatalogueTool(Tool):
                     "idempotentHint": False,
                     "openWorldHint": hints.open_world,
                 },
-                "binding": ToolBinding(mounted, host, caller),
+                "binding": ToolBinding(mounted, host, caller, call_timeout_s),
             }
         )
 
@@ -113,11 +144,23 @@ class CatalogueTool(Tool):
 
         Returns:
             The result: text always, the result model's JSON when the call succeeded, and the error
-            flag when it was refused.
+            flag when it was refused or outlived the call timeout.
         """
-        resolved = self.binding.caller()
-        caller = await resolved if inspect.isawaitable(resolved) else resolved
-        outcome = await self.binding.mounted.call(arguments, host=self.binding.host, caller=caller)
+        binding = self.binding
+        try:
+            async with asyncio.timeout(binding.call_timeout_s):
+                resolved = binding.caller()
+                caller = await resolved if inspect.isawaitable(resolved) else resolved
+                outcome = await binding.mounted.call(arguments, host=binding.host, caller=caller)
+        except TimeoutError:
+            return ToolResult(
+                content=(
+                    f"the call outlived this server's {binding.call_timeout_s:g}s call timeout and was stopped. No "
+                    "action's call waits on a model — work that does runs as a job — so this is a fault of the "
+                    "server's store or of the action, not something to wait out: report it"
+                ),
+                is_error=True,
+            )
         return ToolResult(content=outcome.text, structured_content=outcome.structured, is_error=outcome.is_error)
 
 
@@ -128,6 +171,7 @@ def mount_fastmcp(
     host: OpsHost,
     caller: CallerResolver,
     tools: Sequence[ToolSpec] | None = None,
+    call_timeout_s: float = DEFAULT_CALL_TIMEOUT_S,
 ) -> tuple[str, ...]:
     """Add the catalogue's tools to a FastMCP server.
 
@@ -139,17 +183,19 @@ def mount_fastmcp(
         tools: The tools to cut; ``None`` for :func:`~threetears.evals.actions.standard_tools` under the
             default prefix. Pass :func:`~threetears.evals.actions.read_only_tools` for an agent that may
             only read, or either with the host's own prefix.
+        call_timeout_s: The one timeout every call is held to, in seconds.
 
     Returns:
         The names of the tools added.
 
     Raises:
-        ValueError: The catalogue refuses a tool (see :meth:`~threetears.evals.actions.ActionCatalogue.mount`).
+        ValueError: The catalogue refuses a tool (see :meth:`~threetears.evals.actions.ActionCatalogue.mount`), or
+            ``call_timeout_s`` is not positive.
     """
     mounted = catalogue.mount_all(tools if tools is not None else standard_tools())
     for tool in mounted:
-        server.add_tool(CatalogueTool.over(tool, host=host, caller=caller))
+        server.add_tool(CatalogueTool.over(tool, host=host, caller=caller, call_timeout_s=call_timeout_s))
     return tuple(tool.name for tool in mounted)
 
 
-__all__ = ["CallerResolver", "CatalogueTool", "ToolBinding", "mount_fastmcp"]
+__all__ = ["DEFAULT_CALL_TIMEOUT_S", "CallerResolver", "CatalogueTool", "ToolBinding", "mount_fastmcp"]

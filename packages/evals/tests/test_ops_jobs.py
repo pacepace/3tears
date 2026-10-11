@@ -3,7 +3,8 @@
 A launch and an analysis generation both start long work and return jobs; :func:`job_poll` reads each
 job from the record its work writes, and :func:`job_cancel` asks it to stop. Pinned here:
 
-- **A launch is one job per arm**, polled to ``completed`` with the run's progress, then summarised.
+- **A launch is one job**, its record naming the runs it started, polled to ``completed`` once every run has
+  ended; each run is a job of its own, summarised; one cancel of the launch stops every run it started.
 - **A generation is one job**, polled to ``completed`` naming the analysis it stored, whose report reads
   three ways.
 - **A job outlives the process that ran it as an answer**: a run that reads ``running`` with no lease reads
@@ -35,6 +36,7 @@ from threetears.evals.ops import (
     analysis_archive,
     analysis_generate,
     analysis_job_id,
+    await_job,
     campaign_archive,
     campaign_create,
     campaigns_list,
@@ -48,6 +50,7 @@ from threetears.evals.ops import (
     run_launch,
 )
 from threetears.evals.analysis import judge_agreement
+from threetears.evals.run import LAUNCH_CANCEL_REASON
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
 from packages.evals.tests.fixtures.toyhost.kind import ScriptedExtractionClient
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
@@ -68,23 +71,75 @@ def _launch(*models: str) -> LaunchArguments:
 
 
 # =============================================================================
-# Launch: one job per arm
+# Launch: one job, its runs named on its record
 # =============================================================================
 
 
-async def test_a_launch_is_a_job_per_arm_polled_to_completed() -> None:
+async def test_a_launch_is_one_job_naming_its_runs_polled_to_completed() -> None:
     fixture = ops_fixture()
     started = await run_launch(fixture.host, _launch(*RUN_MODELS), TOYHOST_SCOPE)
 
-    assert [job.label for job in started.jobs] == list(RUN_MODELS)
-    for job in started.jobs:
-        assert job.kind == "run" and job.job_id == run_job_id(job.target_id)
-        status = await settled(fixture.host, job.job_id)
+    (job,) = started.jobs
+    assert job.kind == "launch" and job.job_id.startswith("launch:") and job.target_id == toyhost_template().id
+    assert job.label == ", ".join(RUN_MODELS)
+    launched = await settled(fixture.host, job.job_id)
+    assert (launched.state, launched.status, launched.done, launched.detail) == ("completed", "completed", True, None)
+    assert len(launched.run_ids) == len(RUN_MODELS)
+    assert launched.progress["runs_started"] == launched.progress["runs_finished"] == len(RUN_MODELS)
+    for run_id in launched.run_ids:
+        status = await settled(fixture.host, run_job_id(run_id))
         assert (status.state, status.status, status.done) == ("completed", "completed", True)
         assert status.progress["completed"] == status.progress["total"] > 0
         assert status.detail is None
-        summary = run_get(fixture.host.eval_host, job.target_id, TOYHOST_SCOPE)
+        summary = run_get(fixture.host.eval_host, run_id, TOYHOST_SCOPE)
         assert summary.status == "completed" and summary.n_results > 0
+        assert summary.run_id == run_id
+    run = fixture.host.eval_host.storage.load_eval_run(launched.run_ids[0], TOYHOST_SCOPE)
+    assert run is not None and job.job_id == f"launch:{run.launch_group_id}", "the launch is its runs' group"
+
+
+async def test_a_launch_awaited_in_the_foreground_returns_its_final_status() -> None:
+    fixture = ops_fixture()
+    started = await run_launch(fixture.host, _launch(RUN_MODELS[0]), TOYHOST_SCOPE)
+
+    (status,) = await await_job(fixture.host, started, TOYHOST_SCOPE)
+
+    assert status.state == "completed" and len(status.run_ids) == 1
+
+
+async def test_cancelling_a_launch_stops_every_run_it_started(monkeypatch: pytest.MonkeyPatch) -> None:
+    gate = asyncio.Event()
+    extract = ScriptedExtractionClient.extract
+
+    async def held(self: ScriptedExtractionClient, request: Any) -> Any:
+        await gate.wait()
+        return await extract(self, request)
+
+    monkeypatch.setattr(ScriptedExtractionClient, "extract", held)
+    fixture = ops_fixture()
+    (job,) = (await run_launch(fixture.host, _launch(*RUN_MODELS), TOYHOST_SCOPE)).jobs
+    async with asyncio.timeout(10):
+        while not (await job_poll(fixture.host, job.job_id, TOYHOST_SCOPE)).run_ids:
+            await asyncio.sleep(0.01)
+
+    await job_cancel(fixture.host, job.job_id, TOYHOST_SCOPE, reason="wrong template")
+    cancelled = await settled(fixture.host, job.job_id)
+
+    assert (cancelled.state, cancelled.status) == ("cancelled", "cancelled")
+    assert cancelled.detail is not None and "wrong template" in cancelled.detail
+    for run_id in cancelled.run_ids:
+        run = await settled(fixture.host, run_job_id(run_id))
+        assert run.state == "cancelled" and run.detail == LAUNCH_CANCEL_REASON
+    assert not gate.is_set()
+
+
+async def test_a_launch_refused_in_its_call_starts_no_job_and_holds_no_room() -> None:
+    fixture = ops_fixture()
+    with pytest.raises(NotFoundError):
+        await run_launch(
+            fixture.host, LaunchArguments(template_id="no-such", subject_id="s", models=["m"]), TOYHOST_SCOPE
+        )
+    assert fixture.host.launch.job_manager.admitted_count == 0
 
 
 async def test_a_run_reading_running_with_no_lease_is_written_lost_and_its_cancel_is_refused() -> None:
@@ -211,13 +266,16 @@ async def test_a_live_run_is_cancelled_through_the_job_contract_and_converges(mo
 
     monkeypatch.setattr(ScriptedExtractionClient, "extract", held)
     fixture = ops_fixture()
-    (job,) = (await run_launch(fixture.host, _launch(RUN_MODELS[0]), TOYHOST_SCOPE)).jobs
+    (launch,) = (await run_launch(fixture.host, _launch(RUN_MODELS[0]), TOYHOST_SCOPE)).jobs
     async with asyncio.timeout(10):
-        while (await job_poll(fixture.host, job.job_id, TOYHOST_SCOPE)).status != "running":
+        while not (run_ids := (await job_poll(fixture.host, launch.job_id, TOYHOST_SCOPE)).run_ids):
+            await asyncio.sleep(0.01)
+        job_id = run_job_id(run_ids[0])
+        while (await job_poll(fixture.host, job_id, TOYHOST_SCOPE)).status != "running":
             await asyncio.sleep(0.01)
 
-    await job_cancel(fixture.host, job.job_id, TOYHOST_SCOPE, reason="operator stop")
-    cancelled = await settled(fixture.host, job.job_id)
+    await job_cancel(fixture.host, job_id, TOYHOST_SCOPE, reason="operator stop")
+    cancelled = await settled(fixture.host, job_id)
 
     assert (cancelled.state, cancelled.status) == ("cancelled", "cancelled")
     assert cancelled.detail is not None and "operator stop" in cancelled.detail
@@ -278,6 +336,11 @@ def test_generation_settings_that_cannot_bound_a_generation_are_refused(fields: 
     ("job_id", "parsed"),
     [
         ("run:r-1", ("run", "r-1", None)),
+        ("launch:l-1", ("launch", "l-1", None)),
+        ("sweep:s-1", ("sweep", "s-1", None)),
+        ("second-judge:p-1", ("second_judge", "p-1", None)),
+        ("judge-temperature:t-1", ("judge_temperature", "t-1", None)),
+        ("action:a-1", ("action", "a-1", None)),
         ("analysis:c-1:a-1", ("analysis", "c-1", "a-1")),
         ("analysis:c:with:colons:a-1", ("analysis", "c:with:colons", "a-1")),
     ],
@@ -286,7 +349,20 @@ def test_a_job_id_reads_back_into_what_it_names(job_id: str, parsed: tuple[str, 
     assert parse_job_id(job_id) == parsed
 
 
-@pytest.mark.parametrize("job_id", ["r-1", "run:", "analysis:", "analysis:c-1", "analysis::a-1", "analysis:c-1:"])
+@pytest.mark.parametrize(
+    "job_id",
+    [
+        "r-1",
+        "run:",
+        "launch:",
+        "action:",
+        "second-judge:",
+        "analysis:",
+        "analysis:c-1",
+        "analysis::a-1",
+        "analysis:c-1:",
+    ],
+)
 def test_a_job_id_of_neither_shape_is_refused(job_id: str) -> None:
     with pytest.raises(ValidationFailedError, match="names no job"):
         parse_job_id(job_id)

@@ -5,8 +5,9 @@ core (:data:`CORE_DOC_TYPES`, the ``kept`` entries of :data:`~threetears.evals.s
 the evidence a run produced (its test cases, the run, its results and traces, human calibration ratings, the
 out-of-run spend ledger), the launch inputs those documents name by id (the template, the judge config, the
 rubric dim, their tombstones, and the case set), the campaign a person declared and gathered runs into, and
-the records of what a sweep and each analysis generation came to, and which attempt holds a campaign's
-generation slot. A core document is read
+the records of what a sweep and each analysis generation came to, which attempt holds a campaign's
+generation slot, and the records of every other job — a launch, a second judge's pass, a judge temperature
+comparison, a host action. A core document is read
 forever from :data:`CORE_BASELINE_VERSION` on: a read of an older core document upgrades it in memory, one
 version at a time, through :data:`CORE_UPGRADERS`, and the result is validated as strictly as a document
 written today. The stored bytes are not touched; the next write of that document (a rescore, an archive
@@ -65,7 +66,8 @@ CORE_BASELINE_VERSION: Final[int] = 8
 #:   be renewing it: the build that started it kept liveness in its own process), which is how a restart left it.
 #:   ``EvalCampaign``, ``EvalSweep`` and ``EvalAnalysisAttempt`` join the core at v10 (see below), the sweep and
 #:   the attempt with the same four lease fields; the v8 step reads a v8 campaign without what v8 retired.
-#:   ``EvalGenerationSlot``, new at v10, is core from the start.
+#:   ``EvalGenerationSlot``, new at v10, is core from the start, and so are the four job records new at v10:
+#:   ``EvalLaunch``, ``EvalSecondJudgePass``, ``EvalJudgeTemperatureCheck`` and ``EvalActionJob``.
 CORE_SCHEMA_VERSION: int = 10
 """The core version this build writes, and the newest a read of a core document accepts.
 
@@ -159,6 +161,13 @@ before the sweep existed holds none.
 build that could not read one would block every generation of its campaign, and one that read it as free would start
 a second beside a live one held by an older process mid upgrade, so it is kept. It has no corpus before v10, and a
 store written before it holds none: no generation was claimed through a slot.
+
+``EvalLaunch``, ``EvalSecondJudgePass``, ``EvalJudgeTemperatureCheck`` and ``EvalActionJob`` are new at v10 and core
+from the start, each carrying the job lease: the records of a launch run as one job (the runs it started), of a second
+judge's pass (what it asked and spent), of a judge temperature comparison (every answer, recorded nowhere else) and
+of a host action's job (the result it produced). Each records what nothing stored can make again, so it is kept. None
+has a corpus before v10, and a store written before them holds none: a launch, a pass and a comparison were made
+inside the call that asked for them, and left no record of their own.
 """
 
 #: The version every regenerable document is written under, and the only one a read of one accepts.
@@ -312,6 +321,11 @@ CORE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
         # The store reads a slot by id alone, and the id is generation_slot_id(campaign_id); the claim is
         # attempt_id. A step that moved either would move or reassign a live claim, so neither is a step's to touch.
         "eval_generation_slot": _ADDRESSED_EVERYWHERE | {"campaign_id", "attempt_id"},
+        # The four job records are read by id alone; a cancel request is merged into them in place.
+        "eval_launch": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
+        "eval_second_judge_pass": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
+        "eval_judge_temperature_check": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
+        "eval_action_job": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
     }
 )
 

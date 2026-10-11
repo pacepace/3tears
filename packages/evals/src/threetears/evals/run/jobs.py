@@ -17,6 +17,10 @@ work that already writes its OWN durable record (an analysis generation writes a
 ``EvalAnalysisAttempt`` however it ends), so the manager gives it only what a background job needs
 from a process — tracking, a timeout, and cancellation at shutdown — and never a status of its own.
 
+**Every job's work runs marked as a job's** (:func:`~threetears.evals.kernel.job_context.job_running`): a run's work
+and a task's alike, so a completion request made in it reads as a job's (:func:`~threetears.evals.kernel.running_job`),
+and one made in the call that started it does not — which the jobs conformance kit holds every action to.
+
 **Every job's record carries its lease** (:mod:`threetears.evals.kernel.job_leases`), held through the manager's
 :class:`~threetears.evals.kernel.job_leases.JobLeases`: a run's from its first save to its terminal write, a task's
 record from its start to its end. Which process runs a job is the record's answer, never this manager's memory,
@@ -39,6 +43,7 @@ from threetears.evals.schema.models import TERMINAL_RUN_STATUSES, EvalRun
 from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.kernel.storage import JobStore
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
+from threetears.evals.kernel.job_context import job_running
 from threetears.evals.kernel.job_leases import RUN_JOB, JobLeases, LeasedJobKind
 from threetears.evals.run.run_document import update_eval_run
 from threetears.observe import get_logger
@@ -565,6 +570,9 @@ class EvalJobManager:
         # Exclusivity keys held by work running in its CALLER's frame rather than as a task (see
         # hold), keyed by holder id. Read beside ``_task_keys`` wherever a key's holders are asked for.
         self._held_keys: dict[str, str] = {}
+        # Releases of what a task's work was handed, for a task that ended before its work began (start_task's
+        # ``discard``): held so none is collected while it runs.
+        self._discarding: set[asyncio.Future[None]] = set()
 
     def _safe_broadcast(self, job_id: str, payload: dict[str, Any]) -> None:
         """Invoke ``self._on_progress`` defensively.
@@ -666,12 +674,13 @@ class EvalJobManager:
         return [jid for jid, t in self._tasks.items() if not t.done()]
 
     async def wait_for(self, job_ids: Sequence[str]) -> None:
-        """Wait until every named run's job has ended, however it ended.
+        """Wait until every named job has ended, however it ended: a run's, or a :meth:`start_task` task's.
 
-        The awaitable a caller that launched runs and must read their results holds — a script, a
-        CLI, a test. It returns when each job has written its terminal status, so the run's stored
-        ``status`` is the answer to how it went; nothing is re-raised here, because a job records
-        its own ending and a failed run is a result, not an error of the wait.
+        The awaitable a caller that started work and must read what it recorded holds — a script, a
+        CLI, a test, an operation awaited in the foreground. It returns when each job has written its
+        terminal record, so the record (a run's stored ``status``, a task's own record) is the answer to
+        how it went; nothing is re-raised here, because a job records its own ending and a failed run is a
+        result, not an error of the wait.
 
         **Waiting is not owning.** Cancelling the waiter leaves the jobs running, exactly as an
         operator's view that stops polling does; a caller that owns the runs and must not leave
@@ -682,9 +691,11 @@ class EvalJobManager:
         is the authority either way.
 
         Args:
-            job_ids: The runs' ids, as :meth:`start_group` returned them.
+            job_ids: The runs' ids, as :meth:`start_group` returned them, or tasks' ids, as :meth:`start_task` did.
         """
-        tasks = [task for job_id in job_ids if (task := self._tasks.get(job_id)) is not None]
+        tasks = [
+            task for job_id in job_ids if (task := self._tasks.get(job_id) or self._detached.get(job_id)) is not None
+        ]
         if tasks:
             await asyncio.wait(tasks)
 
@@ -779,6 +790,7 @@ class EvalJobManager:
         budget_s: float,
         key: str | None = None,
         record: tuple[LeasedJobKind[Any], str] | None = None,
+        discard: Callable[[], Awaitable[None]] | None = None,
     ) -> str:
         """Run ``work`` in the background under a timeout, tracked until it ends.
 
@@ -806,6 +818,10 @@ class EvalJobManager:
                 <threetears.evals.kernel.job_leases.JobLeases.grant>`: held until the task ends, so a cancel asked
                 of it on the record from any process cancels the task, and a lease lost stops it. ``None``
                 for work with no record of its own here.
+            discard: Releases what ``work`` was handed and would have released itself (an admission's reserved
+                room, the clients a priced call was admitted on), awaited when the task ends without ``work``
+                having begun — cancelled before its first step, which runs none of its body. ``None`` when
+                ``work`` holds nothing it must release.
 
         Returns:
             ``job_id``.
@@ -818,7 +834,17 @@ class EvalJobManager:
             self._refuse_held(key)
         if record is not None and self._leases is None:
             raise ValueError(f"task {job_id!r} names a leased record, but this manager holds no leases")
-        task = asyncio.create_task(self._run_task(job_id, work, budget_s), name=f"eval-task-{job_id[:8]}")
+        began: list[bool] = []
+
+        async def begun() -> None:
+            began.append(True)
+            await work()
+
+        task = asyncio.create_task(self._run_task(job_id, begun, budget_s), name=f"eval-task-{job_id[:8]}")
+        if discard is not None:
+            # On the TASK's end, not in the coroutine: a task cancelled before its first step runs none of its
+            # body, so nothing in it could hand back what its work was given.
+            task.add_done_callback(lambda _task: None if began else self._discard(job_id, discard))
         self._detached[job_id] = task
         if key is not None:
             self._task_keys[job_id] = key
@@ -832,6 +858,20 @@ class EvalJobManager:
                 stop=lambda: self.cancel_task(job_id),
             )
         return job_id
+
+    def _discard(self, job_id: str, discard: Callable[[], Awaitable[None]]) -> None:
+        """Release what a task's work was handed, the task having ended before the work began; logged if it fails."""
+
+        async def release() -> None:
+            try:
+                await discard()
+            # prawduct:ok-broad-except — a release that fails is logged; the task it belonged to has already ended
+            except Exception:
+                log.exception("eval.task %s ended before its work began, and releasing what it held failed", job_id)
+
+        releasing = asyncio.ensure_future(release())
+        self._discarding.add(releasing)
+        releasing.add_done_callback(self._discarding.discard)
 
     def is_task_active(self, job_id: str) -> bool:
         """Whether a :meth:`start_task` task is tracked and not yet done."""
@@ -898,7 +938,8 @@ class EvalJobManager:
         """Execute one detached task under its budget; log how it ended if it did not end cleanly."""
         try:
             async with self._job_timeout_factory(budget_s):
-                await work()
+                with job_running(job_id):
+                    await work()
         except asyncio.CancelledError:
             raise
         except EvalJobTimeout as timed_out:
@@ -1064,7 +1105,8 @@ class EvalJobManager:
 
                     async with self._job_timeout_factory(budget_s):
                         self._work_ran[run_id] = True
-                        await work(progress_fn)
+                        with job_running(run_id):
+                            await work(progress_fn)
                     await self._set_status(run_id, scope_id, "completed")
                 finally:
                     self._executing.discard(run_id)

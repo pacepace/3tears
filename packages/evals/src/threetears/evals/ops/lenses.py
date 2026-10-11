@@ -616,7 +616,7 @@ class LaunchEstimate(EvalBaseModel):
         """Each priced arm as a cost pivot's plan: its model, its template, its observations and its prediction.
 
         Args:
-            run_ids: The runs the launch made, once it has (the run ids its jobs name); empty before, when the
+            run_ids: The runs the launch made, once it has (the run ids its launch job names, as run_ids); empty before, when the
                 cost a pivot sets beside each prediction is history the launch did not make.
 
         Returns:

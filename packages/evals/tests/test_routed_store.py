@@ -339,7 +339,10 @@ def test_a_rule_moving_one_type_refuses_to_start_naming_it() -> None:
     """By origin and by lifecycle differ only in the cassette, the one regenerable record; that one type is named."""
     _, stores = _router(route=_BY_LIFECYCLE)
 
-    with pytest.raises(RouteChanged, match=r"keeps \['eval_cassette'\] in another store"):
+    with pytest.raises(
+        RouteChanged,
+        match=r"keeps \['eval_cassette'\] in another store",
+    ):
         RoutedDocumentStore(stores, _BY_ORIGIN)
 
 

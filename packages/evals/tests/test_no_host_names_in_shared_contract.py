@@ -335,7 +335,9 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # so with it gone they are scanned like the rest.
     "run/curation.py",
     "gen/variation_gen.py",
+    "run/job_work.py",
     "run/jobs.py",
+    "run/launch_job.py",
     # A person's score for a judged dimension, written after the run: the write reads the result
     # and stores a rating, in the engine's own words. Shared contract from the day it existed, and
     # scanned because the noun that would most plausibly arrive here is a host's name for its people.
@@ -431,6 +433,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # Job leases: which process runs a job, written on its record. Engine vocabulary only — a lease, a holder,
     # a cancel request, a loss — over the engine's own job records, so a host noun here would be one host's
     # process model written into every host's liveness answer.
+    "kernel/job_context.py",
     "kernel/job_leases.py",
     "schema/job_lease.py",
     # The generic trial loop and the per-result covariate derivation, both importing nothing of the

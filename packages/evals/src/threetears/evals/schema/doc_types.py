@@ -1,6 +1,6 @@
 """What each stored document type is: where it comes from, whether it is kept, and what it suppresses.
 
-The engine stores twenty document types through one :class:`~threetears.evals.schema.store_port.DocumentStore`,
+The engine stores twenty-four document types through one :class:`~threetears.evals.schema.store_port.DocumentStore`,
 and three questions about each one decide how it may be kept: **where it comes from** (an input a run reads as given,
 a record of what happened, or a document computed from other stored documents), **whether a later release reads it**
 (kept, and upgraded across core versions; or regenerable, refused after a regenerable bump and made again), and, for a
@@ -102,6 +102,10 @@ DOC_TYPE_FACTS: Final[Mapping[str, DocTypeFacts]] = MappingProxyType(
         "eval_analysis_attempt": DocTypeFacts(origin="record", lifecycle="kept"),
         "eval_cassette": DocTypeFacts(origin="record", lifecycle="regenerable"),
         "eval_generation_slot": DocTypeFacts(origin="record", lifecycle="kept"),
+        "eval_launch": DocTypeFacts(origin="record", lifecycle="kept"),
+        "eval_second_judge_pass": DocTypeFacts(origin="record", lifecycle="kept"),
+        "eval_judge_temperature_check": DocTypeFacts(origin="record", lifecycle="kept"),
+        "eval_action_job": DocTypeFacts(origin="record", lifecycle="kept"),
         # Computed from the documents above.
         "eval_analysis": DocTypeFacts(origin="derived", lifecycle="regenerable"),
         "eval_insight": DocTypeFacts(origin="derived", lifecycle="regenerable"),

@@ -35,7 +35,7 @@ import pytest
 
 from threetears.evals.analysis import inter_judge_agreement, judge_drift
 from threetears.evals.analysis.agreement import KAPPA_UNDEFINED_ONE_SCORE
-from threetears.evals.kernel import EvalCampaign
+from threetears.evals.kernel import EvalCampaign, JobLeases
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink, CellSpanWindow, VariantConfig
 from threetears.evals.kernel.cassettes import CellCassettes
 from threetears.evals.kernel.errors import ValidationFailedError
@@ -53,7 +53,14 @@ from threetears.evals.schema.models import (
 from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.summary import summarize_run
-from threetears.evals.run import ask_second_judge, estimate_second_judge
+from threetears.evals.run import (
+    SECOND_JUDGE_JOB,
+    EvalSecondJudgePass,
+    SecondJudgeReport,
+    estimate_second_judge,
+    run_job_work,
+    second_judge_work,
+)
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService
 from threetears.evals.run.launch import build_judge_service
@@ -105,6 +112,8 @@ class _ScriptedJudge:
     constant: int | None = None
     calls: list[tuple[str, str]] = field(default_factory=list)
     temperatures: list[float | None] = field(default_factory=list)
+    #: Whether a client built over this judge was released.
+    closed: bool = False
 
     def price_ceiling(self, *, system: str, user: str, response_format: Any = None) -> float | None:
         """The most one call costs."""
@@ -120,7 +129,8 @@ class _ScriptedJudge:
         return _Completion(content=body, model=self.model_name, served_model=self.model_name)
 
     async def aclose(self) -> None:
-        """Nothing to release."""
+        """Nothing to release; noted, so a test can see the client was."""
+        self.closed = True
 
 
 class _Kind:
@@ -220,6 +230,19 @@ def _results(host: EvalHost, run_id: str) -> list[EvalResult]:
     return sorted(host.storage.query_eval_results_by_run(run_id, _SCOPE), key=lambda result: result.id)
 
 
+async def _asked(host: EvalHost, run_id: str, scope_id: str, **options: Any) -> SecondJudgeReport:
+    """A second judge's pass awaited in the foreground, as a script runs it: admitted, run to its end, its report
+    read off the pass's own record."""
+    leases = JobLeases(host.storage, blocking_executor=host.blocking_executor)
+    try:
+        work = await second_judge_work(host, run_id, scope_id, **options)
+        ended = await run_job_work(work, store=host.storage, executor=host.blocking_executor, leases=leases)
+    finally:
+        await leases.shut_down()
+    assert ended.outcome == "completed" and ended.report is not None, ended.detail
+    return ended.report
+
+
 class TestASecondJudgeOnHalfTheResults:
     """#646's Done-when: per-dimension n, agreement and kappa beside the scores, and the spend on its own line."""
 
@@ -229,7 +252,7 @@ class TestASecondJudgeOnHalfTheResults:
         before = _results(host, run_id)
         summary_before = summarize_run(host, run_id, _SCOPE)
 
-        report = await ask_second_judge(
+        report = await _asked(
             host, run_id, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=10.0, sample_fraction=0.5
         )
 
@@ -267,7 +290,7 @@ class TestASecondJudgeOnHalfTheResults:
         judges = _Judges(first=_ScriptedJudge(_FIRST), second=_ScriptedJudge(_SECOND))
         host, run_id = await _judged_run(judges)
 
-        first = await ask_second_judge(
+        first = await _asked(
             host, run_id, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=10.0, sample_fraction=0.5, seed=7
         )
         again = await estimate_second_judge(
@@ -284,7 +307,7 @@ class TestASecondJudgeOnHalfTheResults:
         judges = _Judges(first=_ScriptedJudge(_FIRST, constant=4), second=_ScriptedJudge(_SECOND, constant=4))
         host, run_id = await _judged_run(judges, cases=6)
 
-        report = await ask_second_judge(host, run_id, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=10.0)
+        report = await _asked(host, run_id, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=10.0)
 
         agreement = inter_judge_agreement(_results(host, run_id), pass_id=report.pass_id)
         for row in agreement.dimensions:
@@ -295,12 +318,49 @@ class TestASecondJudgeOnHalfTheResults:
         judges = _Judges(first=_ScriptedJudge(_FIRST), second=_ScriptedJudge(_SECOND))
         host, run_id = await _judged_run(judges, cases=2)
 
-        await ask_second_judge(
-            host, run_id, _SCOPE, judge=SecondJudge(model=_SECOND, temperature=0.7), out_of_run_cap_usd=10.0
-        )
+        await _asked(host, run_id, _SCOPE, judge=SecondJudge(model=_SECOND, temperature=0.7), out_of_run_cap_usd=10.0)
 
         assert judges.second.temperatures == [0.7]
         assert {dim for dim, _ in judges.second.calls} == {_SHIFTED, _STEADY}
+
+
+class TestThePassIsItsOwnRecord:
+    """The pass's work is admitted in one half and run in the other, and writes its record either way."""
+
+    async def test_admission_prices_and_refuses_and_the_work_writes_the_pass_under_its_id(self) -> None:
+        judges = _Judges(first=_ScriptedJudge(_FIRST), second=_ScriptedJudge(_SECOND))
+        host, run_id = await _judged_run(judges, cases=2)
+
+        work = await second_judge_work(
+            host,
+            run_id,
+            _SCOPE,
+            judge=SecondJudge(model=_SECOND),
+            out_of_run_cap_usd=10.0,
+            asked_by="judge_drift_check",
+        )
+        assert judges.second.calls == [], "admission prices every call and makes none"
+        assert work.kind is SECOND_JUDGE_JOB and work.record.outcome == "running"
+        report = await _asked(host, run_id, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=10.0)
+
+        stored, _ = host.storage.load_job_record(EvalSecondJudgePass, report.pass_id, _SCOPE)
+        assert stored is not None and stored.outcome == "completed" and stored.report == report
+        assert stored.lease is not None and stored.ended_at is not None
+        assert {judging.pass_id for result in _results(host, run_id) for judging in result.judge_seconds} == {
+            report.pass_id
+        }
+        await work.discard()  # an admitted pass never run releases the clients it was admitted on
+
+    async def test_a_refused_admission_spends_nothing_and_releases_its_clients(self) -> None:
+        judges = _Judges(first=_ScriptedJudge(_FIRST), second=_ScriptedJudge(_SECOND))
+        host, run_id = await _judged_run(judges, cases=2)
+
+        with pytest.raises(ValidationFailedError):
+            await second_judge_work(host, run_id, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=1e-9)
+
+        assert judges.second.calls == []
+        assert judges.second.closed, "the clients the refused pass was built over are released"
+        assert host.storage.query_out_of_run_spend(_SCOPE, purpose="second_judge") == []
 
 
 class TestNothingIsPaidForThatCannotBeRead:
@@ -310,9 +370,7 @@ class TestNothingIsPaidForThatCannotBeRead:
         priced = 2 * 2 * JUDGE_CALL_ATTEMPTS * _CEILING
 
         with pytest.raises(ValidationFailedError):
-            await ask_second_judge(
-                host, run_id, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=priced - 0.001
-            )
+            await _asked(host, run_id, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=priced - 0.001)
 
         assert judges.second.calls == []
         assert host.storage.query_out_of_run_spend(_SCOPE, purpose="second_judge") == []
@@ -322,14 +380,14 @@ class TestNothingIsPaidForThatCannotBeRead:
         host, run_id = await _judged_run(judges, cases=2)
 
         with pytest.raises(ValidationFailedError, match="judge repeat"):
-            await ask_second_judge(host, run_id, _SCOPE, judge=SecondJudge(model=_FIRST), out_of_run_cap_usd=10.0)
+            await _asked(host, run_id, _SCOPE, judge=SecondJudge(model=_FIRST), out_of_run_cap_usd=10.0)
 
     async def test_a_fraction_outside_zero_to_one_is_refused(self) -> None:
         judges = _Judges(first=_ScriptedJudge(_FIRST), second=_ScriptedJudge(_SECOND))
         host, run_id = await _judged_run(judges, cases=2)
 
         with pytest.raises(ValidationFailedError, match="sample_fraction"):
-            await ask_second_judge(
+            await _asked(
                 host, run_id, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=10.0, sample_fraction=0.0
             )
 
@@ -342,7 +400,7 @@ class TestDriftAcrossAJudgeChange:
         host, run_id = await _judged_run(judges)
         before = _results(host, run_id)
 
-        report = await ask_second_judge(host, run_id, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=10.0)
+        report = await _asked(host, run_id, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=10.0)
 
         drift = {row.rubric_dim: row for row in judge_drift(_results(host, run_id), pass_id=report.pass_id).dimensions}
         moved, steady = drift[_SHIFTED], drift[_STEADY]
@@ -371,7 +429,7 @@ class TestDriftAcrossAJudgeChange:
         )
 
         unlinked = assemble_context_bundle(campaign, storage=storage, profile=host.profile).judge_change
-        await ask_second_judge(host, before_id, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=10.0)
+        await _asked(host, before_id, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=10.0)
         linked = assemble_context_bundle(campaign, storage=storage, profile=host.profile).judge_change
 
         assert [level.judge_model for level in unlinked.levels] == [_FIRST, _SECOND]
