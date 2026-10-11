@@ -40,6 +40,10 @@ packages (bumped in lock-step).
   field", so a default its own constraint refuses left every run of the kind with its departure from production
   unchecked and nothing saying why. A required field still means no default; any other refusal of the defaults is
   now a `KindContractError` naming the validation error.
+- **An llm variation axis whose reply cannot be read is refused saying so.** The reply that was not a JSON object,
+  or carried no `values` array, was logged and read as an empty list, and the generation refused with "produced no
+  values", the words for a reply that offered nothing new. The refusal now names which, with the parse error or the
+  keys the reply carried.
 
 ### 3tears-evals: backlog while Discodon adopts .13
 
