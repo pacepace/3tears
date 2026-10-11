@@ -23,9 +23,10 @@ capture ran. A ``derived`` document is computed from other stored documents, and
 reading.
 
 **Lifecycle follows from whether the document can be made again**, not from its origin. A ``derived`` document is
-always regenerable. An input or a record is kept unless the engine can make it again without loss: two records are
-regenerable: the cassette, whose replacement is a fresh capture under a new corpus, and a campaign's generation
-slot, a claim the next start makes again (its holder's attempt, which is kept, says whether the claim still stands) (see
+always regenerable. An input or a record is kept unless the engine can make it again without loss: the one record
+that is regenerable is the cassette, whose replacement is a fresh capture under a new corpus. A campaign's
+generation slot is kept though nothing is lost without it: a build that could not read it would either block every
+generation of the campaign or, reading it as free, start a second beside a live one (see
 :mod:`threetears.evals.schema.versioning`).
 """
 
@@ -100,7 +101,7 @@ DOC_TYPE_FACTS: Final[Mapping[str, DocTypeFacts]] = MappingProxyType(
         "eval_sweep": DocTypeFacts(origin="record", lifecycle="kept"),
         "eval_analysis_attempt": DocTypeFacts(origin="record", lifecycle="kept"),
         "eval_cassette": DocTypeFacts(origin="record", lifecycle="regenerable"),
-        "eval_generation_slot": DocTypeFacts(origin="record", lifecycle="regenerable"),
+        "eval_generation_slot": DocTypeFacts(origin="record", lifecycle="kept"),
         # Computed from the documents above.
         "eval_analysis": DocTypeFacts(origin="derived", lifecycle="regenerable"),
         "eval_insight": DocTypeFacts(origin="derived", lifecycle="regenerable"),

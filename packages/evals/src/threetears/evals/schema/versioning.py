@@ -5,7 +5,8 @@ core (:data:`CORE_DOC_TYPES`, the ``kept`` entries of :data:`~threetears.evals.s
 the evidence a run produced (its test cases, the run, its results and traces, human calibration ratings, the
 out-of-run spend ledger), the launch inputs those documents name by id (the template, the judge config, the
 rubric dim, their tombstones, and the case set), the campaign a person declared and gathered runs into, and
-the records of what a sweep and each analysis generation came to. A core document is read
+the records of what a sweep and each analysis generation came to, and which attempt holds a campaign's
+generation slot. A core document is read
 forever from :data:`CORE_BASELINE_VERSION` on: a read of an older core document upgrades it in memory, one
 version at a time, through :data:`CORE_UPGRADERS`, and the result is validated as strictly as a document
 written today. The stored bytes are not touched; the next write of that document (a rescore, an archive
@@ -64,6 +65,7 @@ CORE_BASELINE_VERSION: Final[int] = 8
 #:   be renewing it: the build that started it kept liveness in its own process), which is how a restart left it.
 #:   ``EvalCampaign``, ``EvalSweep`` and ``EvalAnalysisAttempt`` join the core at v10 (see below), the sweep and
 #:   the attempt with the same four lease fields; the v8 step reads a v8 campaign without what v8 retired.
+#:   ``EvalGenerationSlot``, new at v10, is core from the start.
 CORE_SCHEMA_VERSION: int = 10
 """The core version this build writes, and the newest a read of a core document accepts.
 
@@ -152,6 +154,11 @@ and reads its design's ``controls`` as ``held_fixed`` at the v8 step (both retir
 before ``measure_latency``, ``guardrail_margins``, ``crossing`` or ``skipped_cells`` declares nothing about them, and a
 sweep or attempt stored before the job lease carries none (read as the lease note there says). A store written
 before the sweep existed holds none.
+
+``EvalGenerationSlot`` is new at v10 and core from the start: which attempt holds a campaign's one generation. A
+build that could not read one would block every generation of its campaign, and one that read it as free would start
+a second beside a live one held by an older process mid upgrade, so it is kept. It has no corpus before v10, and a
+store written before it holds none: no generation was claimed through a slot.
 """
 
 #: The version every regenerable document is written under, and the only one a read of one accepts.
@@ -265,10 +272,6 @@ profiled": every campaign's tiers are its own evidence alone, as they were.
 lost — which is what it was, its liveness having lived only in the process that ran it — and an attempt, which was
 written only as it ended, has ended and reads as it says. ``AttemptOutcome`` gained ``running``, the attempt a
 background generation now writes as it starts; no stored attempt carries it, so none reads differently.
-
-**Within v8, not a bump**: ``EvalGenerationSlot`` joined as a new stored type — which attempt holds a campaign's one
-generation, the document two processes racing a start both write. A store written before it holds none, which reads
-as "no generation has claimed the campaign": the first start creates it.
 """
 
 #: The kept documents, by ``doc_type``: the ``kept`` entries of
@@ -306,6 +309,9 @@ CORE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
         "eval_sweep": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
         "eval_analysis_attempt": _ADDRESSED_EVERYWHERE
         | {"campaign_id", "created_at", "cancel_requested_at", "cancel_request_reason"},
+        # The store reads a slot by id alone, and the id is generation_slot_id(campaign_id); the claim is
+        # attempt_id. A step that moved either would move or reassign a live claim, so neither is a step's to touch.
+        "eval_generation_slot": _ADDRESSED_EVERYWHERE | {"campaign_id", "attempt_id"},
     }
 )
 

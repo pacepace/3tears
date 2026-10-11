@@ -324,11 +324,11 @@ def test_a_different_rule_with_the_same_placements_starts() -> None:
     RoutedDocumentStore(stores, by_origin)
 
 
-def test_a_rule_moving_some_types_refuses_to_start_naming_them() -> None:
-    """By origin and by lifecycle differ only in the regenerable records, the cassette and the generation slot."""
+def test_a_rule_moving_one_type_refuses_to_start_naming_it() -> None:
+    """By origin and by lifecycle differ only in the cassette, the one regenerable record; that one type is named."""
     _, stores = _router(route=_BY_LIFECYCLE)
 
-    with pytest.raises(RouteChanged, match=r"keeps \['eval_cassette', 'eval_generation_slot'\] in another store"):
+    with pytest.raises(RouteChanged, match=r"keeps \['eval_cassette'\] in another store"):
         RoutedDocumentStore(stores, _BY_ORIGIN)
 
 

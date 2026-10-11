@@ -164,7 +164,9 @@ types the engine stores, and says three things about each:
 what the engine cannot regenerate and an audit needs: test cases, runs, results, traces, calibration ratings,
 the out-of-run spend ledger, case sets, and the templates, judge configs and rubric dims (with their
 tombstones) those documents name by id; and the campaigns people declared and gathered runs into, and the
-records of how each sweep ended and what each analysis generation spent. `CORE_DOC_TYPES` lists them.
+records of how each sweep ended, what each analysis generation spent, and which generation holds a campaign's
+slot (a later build that could not read a slot would block the campaign's generations, or start a second beside
+a live one). `CORE_DOC_TYPES` lists them.
 
 **A release that changes a core shape ships an upgrader, and your store needs no migration.** Every change
 to a core shape bumps `CORE_SCHEMA_VERSION`, an added optional field included. Each bump comes with one
@@ -174,8 +176,8 @@ next writes that document, at the current version. So one scope can hold documen
 A step never changes a field the store filters, sorts or projects on (`CORE_ADDRESSING_FIELDS`), so an index
 your adapter keeps on those fields stays valid.
 
-**Everything else is regenerated.** Analyses, insights and judge profiles are built over the core, a
-cassette is re-captured, and a campaign's generation slot is claimed again by the next generation. When one of their shapes changes, `REGENERABLE_SCHEMA_VERSION` is bumped and a
+**Everything else is regenerated.** Analyses, insights and judge profiles are built over the core, and a
+cassette is re-captured. When one of their shapes changes, `REGENERABLE_SCHEMA_VERSION` is bumped and a
 document written under another version is refused: make it again over the kept runs (generate the analysis,
 profile the judge), or re-capture the cassette (a new capture run, so a new corpus). After a bump, `analyses_undescribable` (operation and action) lists the scope's analyses holding
 an arm this build can no longer describe.

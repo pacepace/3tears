@@ -1137,7 +1137,7 @@ def generation_slot_id(campaign_id: str) -> str:
     return f"generation-slot:{campaign_id}"
 
 
-class EvalGenerationSlot(EvalDocumentModel):
+class EvalGenerationSlot(CoreDocumentModel):
     """Which analysis attempt holds a campaign's one generation: the document two starts race to claim.
 
     One per campaign and scope, at :func:`generation_slot_id`, so a start in any process writes the same document:
@@ -1145,11 +1145,15 @@ class EvalGenerationSlot(EvalDocumentModel):
     that has ended. Of two processes racing a start exactly one write lands; the other re-reads, finds the winner's
     attempt live, and is refused naming it. Never released — the attempt's own record says whether it still runs
     (its lease), so a process that dies holding the slot frees it when its lease lapses.
+
+    **Kept** (:mod:`threetears.evals.schema.versioning`): every build must read the slot. One a later build
+    refused would block every generation of its campaign, and one it read as free would let a second generation
+    start while an older process, mid rolling upgrade, still holds it live. So it is upgraded, never dropped.
     """
 
     id: str = Field(min_length=1, description="generation_slot_id(campaign_id): one slot per campaign.")
     doc_type: Literal["eval_generation_slot"] = "eval_generation_slot"
-    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     campaign_id: str = Field(min_length=1, description="The campaign whose generations the slot admits one at a time.")
