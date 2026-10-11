@@ -1195,7 +1195,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`build_code_only_report`** · function · Lay a campaign's assembled evidence out as a report, when no analysis exists to report through.
   <br>`build_code_only_report(bundle: AnalysisContextBundle, *, measures: MeasureRegistry, assembled_at: str, campaign_name: str | None = None) -> Report`
 - **`build_report`** · function · Lay one stored analysis out as a report.
-  <br>`build_report(analysis: EvalAnalysis) -> Report`
+  <br>`build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None) -> Report`
 - **`campaign_report`** · function · The campaign's report — THE answer to "what is this campaign's report", for every caller.
   <br>`campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report`
 - **`campaign_verdicts`** · function · Every verdict code reaches on the campaign's evidence as it stands now, typed — what a CI gate reads.
@@ -1219,7 +1219,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`difference_was_declared_at_launch`** · function · Whether every one of these runs got its value from its own launch declaration.
   <br>`difference_was_declared_at_launch(origins: Iterable[str | None]) -> bool`
 - **`dollars_text`** · function · Spend as a person reads it: dollars and cents from ten cents up, three significant figures below.
-  <br>`dollars_text(amount: float) -> str`
+  <br>`dollars_text(amount: float | None) -> str`
 - **`estimate_analysis_generation`** · async function · Price a generation's first call against the cap it would be held to, and make no call.
   <br>`estimate_analysis_generation(host: EvalHost, campaign_id: str, scope_id: str, *, model: str | None, resolve_prompt: Callable[[], Awaitable[str]], out_of_run_cap_usd: float | None) -> AnalysisGenerationEstimate`
 - **`export_results`** · function · Serialize the projection's flat rows for a scope as CSV or JSON.
@@ -1461,6 +1461,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`LatencyPartition`** · model · One result's `total_ms` split into its named parts and a named remainder.
 - **`LensStore`** · protocol · The storage reads the lenses make — results by scope and by run, campaigns, and one whole run.
 - **`LeverCoverageInput`** · model · Structural coverage of one lever, as the bundle computes it.
+- **`MeasureLine`** · model · One measure's state over a run, and the line `EvalSummary.render` prints for it.
 - **`MeasurementWindow`** · model · The wall-clock span a run's cells were actually measured over — DERIVED.
 - **`MeasureMovement`** · model · How one measure moved between two levels of a lever, and whether that movement separates from noise.
 - **`MeasureSeries`** · model · One contestant's measure over time, within a subject.
@@ -1512,6 +1513,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`SurfaceUnadjudicatedBar`** · model · A bar no cell could be read against — listed below the table, never drawn as a column of misses.
 - **`SurfaceValue`** · model · One cell's number in one column, already in the column's unit.
 - **`TableBlock`** · model · A table code laid out — its columns, its rows in their stated order, and how much of it is shown.
+- **`TableCell`** · model · One cell of a report table: its value, and the text a reader is shown for it.
 - **`TableColumn`** · model · One column of a report table.
 - **`TelemetryRollup`** · model · Campaign-wide descriptive telemetry — the trustworthy-signal layer.
 - **`TemperatureCase`** · model · One result's dimension, judged `repeats` times at one setting: its answers and their spread.
@@ -1563,6 +1565,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`'held'` | `'breached'` | `'undecided'`
 - **`LabelDirection`** · literal · Where a person reading a memo places it on a rubric dimension, low to high.
   <br>`'low'` | `'low_mid'` | `'mid'` | `'mid_high'` | `'high'`
+- **`MeasureState`** · literal · How one measure came out over a run, as the summary states it: `measured` (a mean), `not_a_number` (it is carried, as words, and never averaged), `in_confusion_matrix` (a classifier's cells, counted in the matrix), `no_successful_results` (every result carrying it took no turn), `all_excluded` (every result carrying it was excluded as a fault of the rig) or `not_carried` (no result carries it).
+  <br>`'measured'` | `'not_a_number'` | `'in_confusion_matrix'` | `'no_successful_results'` | `'all_excluded'` | `'not_carried'`
 - **`MechanismUncheckedReason`** · literal · Why a swept lever's mechanism could not be checked: `not_declared` = the lever names no measure it acts on; `not_swept` = it was observed at one level, so there is nothing to compare; `levels_unobserved` = some level observed none of the measure, so no pair of levels separated and whether it held still at every level cannot be shown; `too_few_observations` = every level observed it, but some pair of levels has too few cases on a side for the separation test to run; `uniform_move_needs_range` = no pair separated, and some pair shifted every case alike on a measure that declares no range, where no test of the mean can call the shift (declare `value_range` on the measure).
   <br>`'not_declared'` | `'not_swept'` | `'levels_unobserved'` | `'too_few_observations'` | `'uniform_move_needs_range'`
 - **`ReportBasis`** · literal · What a report is of: a generated analysis, or the campaign's evidence alone with no analysis.
@@ -1638,14 +1642,16 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`READ_TIER_ROW_BUDGET`** · constant (int) · How many projected score records one read-tier call may carry before its observer line is logged at WARNING instead of INFO (#652).
   <br>`= 50000`
 - **`REPORT_VERSION`** · constant (int) · The report shape's version.
-  <br>`= 6`
+  <br>`= 7`
 - **`REPORTER_KIND`** · constant (str) · The `candidate_kind` a reporter template declares.
   <br>`= 'analysis_reporter'`
 - **`REPORTER_KIND_CONTRACT`** · constant (KindContract) · The reporter kind's contract, for a profile's `kinds`: its overlay is the prompt preset, and it seats the judge and the spend ceiling. `reporter_kind_contract` builds it with a host's own seats added.
 - **`SCOPED_METRICS_HELP`** · constant (str) · How each scoped metric must be read, in one sentence per metric, for every surface's help text (REST and MCP alike) — rendered from the table rather than written beside it, so no surface can describe a subset.
-- **`SECTION_TITLES`** · constant (dict) · Each section's heading, in reading order — the order every serializer lays the sections out in.
+- **`SECTION_TITLES`** · constant (dict) · Each section's heading, in reading order — the order every serializer lays the sections out in, and the heading every block carries as its `section_title`.
 - **`SERVED_MODEL_UNRECORDED`** · constant (str) · The token a served-model coordinate (`ScoreRecord.served_model`) carries for candidate calls whose response named no model, or that were stored before served models were recorded.
   <br>`= 'unrecorded'`
+- **`UNPRICED`** · constant (str) · What an amount no client could price reads as. Never `$0`: an unpriced call may have been billed.
+  <br>`= 'unpriced'`
 - **`WEIGHTING_EQUAL_PER_SCENARIO`** · constant (str) · Weighting mode: every scenario (case) gets an equal vote in a cell's number, however many observations it has.
   <br>`= 'equal_per_scenario'`
 
@@ -2330,7 +2336,7 @@ One analysis, as a document every surface renders. See the module docstring for 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `report_version` | `Literal[6]` | `6` | This shape's version. |
+| `report_version` | `Literal[7]` | `7` | This shape's version. |
 | `basis` | `ReportBasis` | required | `analysis` when the report renders a generated analysis; `code_only` when no analysis exists and the report is the campaign's evidence as code computed it — no headline, no findings, no author's words. |
 | `headline` | `ModelProse` | required | The author's headline, as written; empty when the author wrote none, and on a code-only report. |
 | `finding_count` | `int` | required | How many findings the document holds — the range every position is in. |
@@ -2348,7 +2354,7 @@ What the report is a report of, and how that analysis was generated — or that 
 |---|---|---|---|
 | `analysis_id` | `str \| None` | `None` | The analysis the report renders; None on a code-only report. |
 | `campaign_id` | `str` | required | The campaign the analysis is of. |
-| `campaign_name` | `str \| None` | `None` | The campaign's name, which a code-only report's title reads by; None where the report was built without it, and the title then names the campaign by its id. |
+| `campaign_name` | `str \| None` | `None` | The campaign's name, which the report's title names it by; None where the report was built without it, and a code-only report's title then names the campaign by its id. |
 | `scope_id` | `str` | required | The scope both live in. |
 | `subject_id` | `str` | required | The analysed subject. |
 | `subject_kind` | `str` | required | The subject's kind; empty when the campaign declared none. |
@@ -2384,7 +2390,7 @@ A table code laid out — its columns, its rows in their stated order, and how m
 | `name` | `str` | required | Which table this is: `evidence`, `arms`, `surface`, `unadjudicated_bars`, `comparisons` (the contrasts against the control, as code tested them), `questions` (the declared questions, on a code-only report), `strata` (each arm's figures per stratum of its cases, beside its pooled figure, when its cases declare strata), `labels` (a classifier's per-label precision, recall and F1, a row per label and arm, on a code-only report) or `coverage` (each lever of an analysis's coverage map, the findings naming it and the next steps that would measure it). |
 | `title` | `str` | required | The table's heading. |
 | `columns` | `list[TableColumn]` | required | The columns, in display order. |
-| `rows` | `list[dict[str, ChartValue]]` | required | The rows shown, in the stated order, keyed by column key. |
+| `rows` | `list[dict[str, TableCell]]` | required | The rows shown, in the stated order, each keyed by every column's key: each cell its value and its text, an absent value a cell whose value is null. |
 | `order` | `str` | required | The order the rows are in, in words. |
 | `total_rows` | `int` | required | How many rows the table has; more than are shown when it is truncated. |
 

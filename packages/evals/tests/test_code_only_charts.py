@@ -92,7 +92,7 @@ class TestReadingsWithNoChart:
         (table,) = [
             block for block in comparison.report.blocks if isinstance(block, TableBlock) and block.name == "labels"
         ]
-        assert {row["label"] for row in table.rows} == {"animal", "plant"}
+        assert {row["label"] for row in table.values()} == {"animal", "plant"}
 
     async def test_match_is_not_charted_beside_the_accuracy_derived_from_it(self) -> None:
         titles = _chart_titles(await _compare(right, guess))

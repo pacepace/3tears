@@ -105,7 +105,15 @@ ones it accepts. `read_only_tools(prefix)` mounts a tool an agent can only read 
 
 ## Reading one result
 
-`run_get` says how a run came out; it does not say what one cell did. Two read actions do:
+`run_get` says how a run came out; it does not say what one cell did. Its structured result (an `EvalSummary`)
+carries the words its text prints beside the numbers, so a client shows them rather than re-spelling them:
+`headline`, `results_text`, `stopped_text` (beside `stopped_because`), `spend_cap_text`, `measure_lines` (each
+measure's `state` — `measured`, `not_a_number`, `in_confusion_matrix`, `no_successful_results`, `all_excluded`
+or `not_carried` — and its line), `confusion_lines`, `label_lines`, `intent_text`, `dimension_lines`,
+`self_judging_warning`, `judge_spend_text`, `candidate_spend_text`, `goal_check_lines`, and `text`, the whole of it
+as `render()` prints it. A field with nothing to say is null or empty, and the summary prints no line for it.
+
+Two read actions do say what one cell did:
 
 - `results_list` pages one run's results as light rows (ordered by case, then repeat): each row's case,
   repeat, model, variant, condition (`ok`, `candidate_fail` or `infra_exclude`), cost, `total_ms`, goal checks as every

@@ -308,6 +308,15 @@
         ]
       },
       "properties": {
+        "columns": {
+          "description": "The values-as-drawn table's columns as printed, in display order: the intent's, less a distribution's `shape` when no row knows one. Empty when the chart cannot be drawn.",
+          "items": {
+            "$ref": "#/$defs/TableColumn"
+          },
+          "readOnly": true,
+          "title": "Columns",
+          "type": "array"
+        },
         "error": {
           "default": "",
           "description": "Why the stored chart cannot be drawn, naming the offending field; empty when it can. Served rather than omitted: a chart missing from a report is otherwise indistinguishable from a finding that carried none.",
@@ -327,6 +336,19 @@
           "default": null,
           "description": "The finding this block belongs to, by its position in the document (0 is the first); None when it belongs to none.",
           "title": "Finding"
+        },
+        "finding_number": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The finding this block belongs to as a reader counts findings \u2014 from 1, where `finding` counts from 0; None when it belongs to none.",
+          "readOnly": true,
+          "title": "Finding Number"
         },
         "intent": {
           "anyOf": [
@@ -355,6 +377,18 @@
           "title": "Rests On",
           "type": "array"
         },
+        "rows": {
+          "description": "The values-as-drawn rows, in drawn order, keyed by `columns`: each cell its value (in the drawn unit) and its text. Empty when the chart cannot be drawn.",
+          "items": {
+            "additionalProperties": {
+              "$ref": "#/$defs/TableCell"
+            },
+            "type": "object"
+          },
+          "readOnly": true,
+          "title": "Rows",
+          "type": "array"
+        },
         "section": {
           "description": "The section the block sits in.",
           "enum": [
@@ -369,6 +403,12 @@
             "methods"
           ],
           "title": "Section",
+          "type": "string"
+        },
+        "section_title": {
+          "description": "The section's heading, as every serializer prints it (`SECTION_TITLES`).",
+          "readOnly": true,
+          "title": "Section Title",
           "type": "string"
         },
         "viz_type": {
@@ -389,7 +429,16 @@
       },
       "required": [
         "section",
-        "viz_type"
+        "finding",
+        "rests_on",
+        "kind",
+        "viz_type",
+        "intent",
+        "error",
+        "section_title",
+        "finding_number",
+        "columns",
+        "rows"
       ],
       "then": {
         "properties": {
@@ -815,6 +864,19 @@
           "description": "The finding this block belongs to, by its position in the document (0 is the first); None when it belongs to none.",
           "title": "Finding"
         },
+        "finding_number": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The finding this block belongs to as a reader counts findings \u2014 from 1, where `finding` counts from 0; None when it belongs to none.",
+          "readOnly": true,
+          "title": "Finding Number"
+        },
         "kind": {
           "const": "disclosure",
           "default": "disclosure",
@@ -846,6 +908,12 @@
           "title": "Section",
           "type": "string"
         },
+        "section_title": {
+          "description": "The section's heading, as every serializer prints it (`SECTION_TITLES`).",
+          "readOnly": true,
+          "title": "Section Title",
+          "type": "string"
+        },
         "source": {
           "description": "What the disclosure speaks for.",
           "enum": [
@@ -874,8 +942,13 @@
       },
       "required": [
         "section",
+        "finding",
+        "rests_on",
+        "kind",
         "source",
-        "text"
+        "text",
+        "section_title",
+        "finding_number"
       ],
       "title": "DisclosureBlock",
       "type": "object"
@@ -951,7 +1024,7 @@
             }
           ],
           "default": null,
-          "description": "The campaign's name, which a code-only report's title reads by; None where the report was built without it, and the title then names the campaign by its id.",
+          "description": "The campaign's name, which the report's title names it by; None where the report was built without it, and a code-only report's title then names the campaign by its id.",
           "title": "Campaign Name"
         },
         "generated_at": {
@@ -993,12 +1066,15 @@
         }
       },
       "required": [
+        "analysis_id",
         "campaign_id",
+        "campaign_name",
         "scope_id",
         "subject_id",
         "subject_kind",
         "behavior",
         "generated_at",
+        "generator_model",
         "bundle_fingerprint"
       ],
       "title": "ReportSource",
@@ -1031,6 +1107,19 @@
           "description": "The finding this block belongs to, by its position in the document (0 is the first); None when it belongs to none.",
           "title": "Finding"
         },
+        "finding_number": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The finding this block belongs to as a reader counts findings \u2014 from 1, where `finding` counts from 0; None when it belongs to none.",
+          "readOnly": true,
+          "title": "Finding Number"
+        },
         "kind": {
           "const": "table",
           "default": "table",
@@ -1059,26 +1148,10 @@
           "type": "array"
         },
         "rows": {
-          "description": "The rows shown, in the stated order, keyed by column key.",
+          "description": "The rows shown, in the stated order, each keyed by every column's key: each cell its value and its text, an absent value a cell whose value is null.",
           "items": {
             "additionalProperties": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "number"
-                },
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ]
+              "$ref": "#/$defs/TableCell"
             },
             "type": "object"
           },
@@ -1101,6 +1174,12 @@
           "title": "Section",
           "type": "string"
         },
+        "section_title": {
+          "description": "The section's heading, as every serializer prints it (`SECTION_TITLES`).",
+          "readOnly": true,
+          "title": "Section Title",
+          "type": "string"
+        },
         "title": {
           "description": "The table's heading.",
           "minLength": 1,
@@ -1116,14 +1195,58 @@
       },
       "required": [
         "section",
+        "finding",
+        "rests_on",
+        "kind",
         "name",
         "title",
         "columns",
         "rows",
         "order",
-        "total_rows"
+        "total_rows",
+        "section_title",
+        "finding_number"
       ],
       "title": "TableBlock",
+      "type": "object"
+    },
+    "TableCell": {
+      "additionalProperties": false,
+      "description": "One cell of a report table: its value, and the text a reader is shown for it.\n\nThe value is what a client sorts by and draws from; the text is what it prints, spelled here by the one\nnumber rule (:func:`~threetears.evals.analysis.viz.quantities.render_cell`: an absent value is a dash, never a\nzero; a boolean is yes or no), so a client never formats a number of its own.",
+      "properties": {
+        "text": {
+          "description": "The value as a reader is shown it: a number spelled by the number rule, null as `\u2014`, a boolean as yes or no.",
+          "readOnly": true,
+          "title": "Text",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The cell's value: a number, words, a boolean, or null where there is none.",
+          "title": "Value"
+        }
+      },
+      "required": [
+        "value",
+        "text"
+      ],
+      "title": "TableCell",
       "type": "object"
     },
     "TableColumn": {
@@ -1196,6 +1319,19 @@
           "description": "The finding this block belongs to, by its position in the document (0 is the first); None when it belongs to none.",
           "title": "Finding"
         },
+        "finding_number": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The finding this block belongs to as a reader counts findings \u2014 from 1, where `finding` counts from 0; None when it belongs to none.",
+          "readOnly": true,
+          "title": "Finding Number"
+        },
         "kind": {
           "const": "text",
           "default": "text",
@@ -1243,12 +1379,24 @@
           ],
           "title": "Section",
           "type": "string"
+        },
+        "section_title": {
+          "description": "The section's heading, as every serializer prints it (`SECTION_TITLES`).",
+          "readOnly": true,
+          "title": "Section Title",
+          "type": "string"
         }
       },
       "required": [
         "section",
+        "finding",
+        "rests_on",
+        "kind",
         "role",
-        "body"
+        "body",
+        "facts",
+        "section_title",
+        "finding_number"
       ],
       "then": {
         "properties": {
@@ -1563,18 +1711,32 @@
         "kind",
         "outcome",
         "reason",
+        "reason_detail",
         "reading",
         "name",
         "heading",
         "arm",
         "variant_key",
         "apparatus_class_id",
+        "control",
+        "question_id",
+        "delta",
+        "interval",
+        "interval_level",
+        "p_adjusted",
+        "value",
+        "threshold",
+        "margin",
+        "margin_source",
+        "materiality",
+        "guardrail",
         "words"
       ],
       "title": "Verdict",
       "type": "object"
     }
   },
+  "$id": "urn:threetears-evals:report:v7",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "allOf": [
@@ -1713,6 +1875,12 @@
       "title": "Blocks",
       "type": "array"
     },
+    "byline": {
+      "description": "What the report is of and how it was made, as every serializer prints it under the title; it names the campaign by its id either way.",
+      "readOnly": true,
+      "title": "Byline",
+      "type": "string"
+    },
     "finding_count": {
       "description": "How many findings the document holds \u2014 the range every position is in.",
       "minimum": 0,
@@ -1725,8 +1893,8 @@
       "type": "string"
     },
     "report_version": {
-      "const": 6,
-      "default": 6,
+      "const": 7,
+      "default": 7,
       "description": "This shape's version.",
       "title": "Report Version",
       "type": "integer"
@@ -1734,6 +1902,12 @@
     "source": {
       "$ref": "#/$defs/ReportSource",
       "description": "What this is a report of."
+    },
+    "title": {
+      "description": "The report's title, as every serializer prints it: an analysis report's headline (`(blank headline)` when the author wrote none), led by the campaign's name where the report carries it; a code-only report's names the campaign, by its name or else its id, and says there is no analysis.",
+      "readOnly": true,
+      "title": "Title",
+      "type": "string"
     },
     "verdicts": {
       "description": "Every verdict the report states, typed \u2014 the source each printed verdict is rendered from: the guardrails (for each arm against the control), then each bar on each cell, then the contrasts against the control, each group in its table's row order. A code-only report carries all three; an analysis report carries the guardrails and bars its frozen decision surface holds, and no contrast, as it prints no contrasts table.",
@@ -1745,11 +1919,15 @@
     }
   },
   "required": [
+    "report_version",
     "basis",
     "headline",
     "finding_count",
     "source",
-    "blocks"
+    "blocks",
+    "verdicts",
+    "title",
+    "byline"
   ],
   "title": "Report",
   "type": "object"

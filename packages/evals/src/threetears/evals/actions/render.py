@@ -240,11 +240,6 @@ def render_summary(summary: EvalSummary) -> str:
     return summary.render()
 
 
-def _usd(amount: float | None) -> str:
-    """Spend as a run's summary prints it (:func:`~threetears.evals.ops.dollars_text`); unpriced says so, never $0."""
-    return "unpriced" if amount is None else dollars_text(amount)
-
-
 def _compact(value: Any) -> str:
     """A stored JSON value on one line, keys sorted, as written — never re-typed or summarised."""
     return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
@@ -254,7 +249,7 @@ def _result_line(line: ResultLine) -> str:
     """One result on one line: where it sits, its condition, and its headline measures."""
     parts = [
         f"{line.condition.value} ({line.termination})",
-        f"cost {_usd(line.cost_usd)}",
+        f"cost {dollars_text(line.cost_usd)}",
         f"total_ms {_ms(line.total_ms)}",
     ]
     if line.goal_checks:
@@ -350,7 +345,7 @@ def _record_lines(detail: ResultDetail) -> list[str]:
         )
         if error
     ]
-    lines.append(f"cost {_usd(result.cost_usd)} over {', '.join(result.cost_roles) or 'no role'}")
+    lines.append(f"cost {dollars_text(result.cost_usd)} over {', '.join(result.cost_roles) or 'no role'}")
     lines += _latency_lines(detail)
     lines.append(f"usage ({len(result.usage)} row(s)):")
     lines += [f"- {_compact(row.model_dump(mode='json', exclude_none=True))}" for row in result.usage]
@@ -734,7 +729,7 @@ def _bounds(interval: tuple[float, float] | None) -> str:
 def render_second_judge(read: SecondJudgeRead) -> str:
     """A second judge's pass: what it asked and spent apart from the candidate, then agreement and drift per dim."""
     report = read.report
-    cost = _usd(report.cost_usd) if report.cost_usd is not None else "unpriced"
+    cost = dollars_text(report.cost_usd)
     lines = [
         f"second judge {report.judge.model} on run {report.run_id} (pass {report.pass_id}): asked about "
         f"{len(report.judged)} of {report.eligible} judgeable result(s) (fraction {report.sample_fraction:g}, seed "
@@ -765,8 +760,8 @@ def render_second_judge(read: SecondJudgeRead) -> str:
 
 def render_second_judge_estimate(estimate: SecondJudgeEstimate) -> str:
     """A second judge's price before it starts, against the cap, and whether it would start."""
-    ceiling = _usd(estimate.ceiling_usd) if estimate.ceiling_usd is not None else "unpriceable"
-    cap = _usd(estimate.cap_usd) if estimate.cap_usd is not None else "none enforced"
+    ceiling = dollars_text(estimate.ceiling_usd) if estimate.ceiling_usd is not None else "unpriceable"
+    cap = dollars_text(estimate.cap_usd) if estimate.cap_usd is not None else "none enforced"
     verdict = "would start" if estimate.would_start else f"would be refused: {estimate.refusal}"
     return (
         f"estimate: second judge {estimate.judge.model} on run {estimate.run_id} — {len(estimate.sampled)} of "

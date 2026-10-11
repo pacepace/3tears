@@ -3003,7 +3003,7 @@
     },
     "threetears.evals.analysis.build_report": {
       "kind": "function",
-      "signature": "build_report(analysis: EvalAnalysis) -> Report"
+      "signature": "build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None) -> Report"
     },
     "threetears.evals.analysis.BundleInspection": {
       "kind": "model",
@@ -3219,7 +3219,7 @@
     },
     "threetears.evals.analysis.dollars_text": {
       "kind": "function",
-      "signature": "dollars_text(amount: float) -> str"
+      "signature": "dollars_text(amount: float | None) -> str"
     },
     "threetears.evals.analysis.DriftVerdict": {
       "kind": "literal",
@@ -3601,6 +3601,10 @@
       "kind": "function",
       "signature": "measure_movement(descriptor: MetricDescriptor, at_a: Mapping[str, Fraction], at_b: Mapping[str, Fraction]) -> MeasureMovement"
     },
+    "threetears.evals.analysis.MeasureLine": {
+      "kind": "model",
+      "signature": "MeasureLine(name: str, state: MeasureState, text: str)"
+    },
     "threetears.evals.analysis.MeasurementWindow": {
       "kind": "model",
       "signature": "MeasurementWindow(run_id: str, start: str, end: str)"
@@ -3612,6 +3616,10 @@
     "threetears.evals.analysis.MeasureSeries": {
       "kind": "model",
       "signature": "MeasureSeries(subject_id: str, subject_label: str = '', variant_key: str, variant_identity_version: int, identity_version_disclosure: str | None = None, model: str, points: list[SeriesPoint] = [], served_models: ServedModelReading | None = None)"
+    },
+    "threetears.evals.analysis.MeasureState": {
+      "kind": "literal",
+      "signature": "'measured'` | `'not_a_number'` | `'in_confusion_matrix'` | `'no_successful_results'` | `'all_excluded'` | `'not_carried'"
     },
     "threetears.evals.analysis.MechanismCheck": {
       "kind": "model",
@@ -3791,7 +3799,7 @@
     },
     "threetears.evals.analysis.Report": {
       "kind": "model",
-      "signature": "Report(report_version: Literal[6] = 6, basis: ReportBasis, headline: ModelProse, finding_count: int, source: ReportSource, blocks: list[ReportBlock], verdicts: list[Verdict] = list())"
+      "signature": "Report(report_version: Literal[7] = 7, basis: ReportBasis, headline: ModelProse, finding_count: int, source: ReportSource, blocks: list[ReportBlock], verdicts: list[Verdict] = list())"
     },
     "threetears.evals.analysis.report_html": {
       "kind": "function",
@@ -4031,7 +4039,11 @@
     },
     "threetears.evals.analysis.TableBlock": {
       "kind": "model",
-      "signature": "TableBlock(section: ReportSection, finding: int | None = None, rests_on: list[int] = list(), kind: Literal['table'] = 'table', name: str, title: str, columns: list[TableColumn], rows: list[dict[str, ChartValue]], order: str, total_rows: int)"
+      "signature": "TableBlock(section: ReportSection, finding: int | None = None, rests_on: list[int] = list(), kind: Literal['table'] = 'table', name: str, title: str, columns: list[TableColumn], rows: list[dict[str, TableCell]], order: str, total_rows: int)"
+    },
+    "threetears.evals.analysis.TableCell": {
+      "kind": "model",
+      "signature": "TableCell(value: ChartValue)"
     },
     "threetears.evals.analysis.TableColumn": {
       "kind": "model",
@@ -4096,6 +4108,10 @@
     "threetears.evals.analysis.UnpairedSecondScore": {
       "kind": "model",
       "signature": "UnpairedSecondScore(result_id: str, rubric_dim: str, pass_id: str, reason: UnpairedSecondReason)"
+    },
+    "threetears.evals.analysis.UNPRICED": {
+      "kind": "constant (str)",
+      "signature": ""
     },
     "threetears.evals.analysis.UnreadJudgeTrial": {
       "kind": "model",
@@ -4719,7 +4735,7 @@
     },
     "threetears.evals.ops.dollars_text": {
       "kind": "function",
-      "signature": "dollars_text(amount: float) -> str"
+      "signature": "dollars_text(amount: float | None) -> str"
     },
     "threetears.evals.ops.DrawnChart": {
       "kind": "dataclass",

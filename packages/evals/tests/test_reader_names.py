@@ -99,7 +99,7 @@ async def test_no_surface_table_or_compiled_chart_of_a_toy_campaign_heads_anythi
             if isinstance(block, TableBlock):
                 texts += [column.header for column in block.columns]
                 texts += [
-                    str(row[key]) for row in block.rows for key in ("measure", "reading", "guardrail") if key in row
+                    str(row[key]) for row in block.values() for key in ("measure", "reading", "guardrail") if key in row
                 ]
             if isinstance(block, ChartBlock) and block.intent is not None:
                 charts += 1
@@ -216,7 +216,7 @@ def test_a_declared_level_name_labels_the_arm_on_every_surface_and_moves_no_key(
 
     report = build_code_only_report(bundle, measures=profile.measures, assembled_at="2026-10-10T00:00:00Z")
     surface = next(b for b in report.blocks if isinstance(b, TableBlock) and b.name == "surface")
-    assert {str(row["arm"]).removesuffix(" (control)").strip() for row in surface.rows} >= {
+    assert {str(row["arm"]).removesuffix(" (control)").strip() for row in surface.values()} >= {
         f"{TOYHOST_AXIS}=current width",
         f"{TOYHOST_AXIS}=proposed width",
     }

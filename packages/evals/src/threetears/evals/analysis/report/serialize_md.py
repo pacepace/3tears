@@ -4,6 +4,9 @@ Every block is rendered, chart blocks included: a chart is its title, the author
 as drawn as a table, and its disclosures, so an agent reading Markdown can check every claim a picture
 would have made. Sections follow :data:`~threetears.evals.analysis.report.model.SECTION_TITLES`; a
 section with no blocks is left out. Deterministic: one report renders to one string.
+
+Every word it prints is one the report serves — its title and byline, each block's section title and finding
+number, each cell's text — so this reads the JSON a browser reads, and the two cannot disagree.
 """
 
 from __future__ import annotations
@@ -18,12 +21,11 @@ from threetears.evals.analysis.report.model import (
     Report,
     ReportBlock,
     TableBlock,
+    TableCell,
+    TableColumn,
     TextBlock,
 )
-from threetears.evals.analysis.report.model import chart_table_columns, finding_number, report_byline, report_title
 from threetears.evals.analysis.report.words import positions
-from threetears.evals.analysis.viz.intent import ChartValue
-from threetears.evals.analysis.viz.quantities import render_cell
 
 
 def report_markdown(report: Report) -> str:
@@ -35,12 +37,12 @@ def report_markdown(report: Report) -> str:
     Returns:
         The Markdown text, ending in a newline.
     """
-    lines = [f"# {_one_line(report_title(report))}", "", f"_{_one_line(report_byline(report))}_"]
-    for section, title in SECTION_TITLES.items():
+    lines = [f"# {_one_line(report.title)}", "", f"_{_one_line(report.byline)}_"]
+    for section in SECTION_TITLES:
         blocks = [block for block in report.blocks if block.section == section]
         if not blocks:
             continue
-        lines += ["", f"## {title}"]
+        lines += ["", f"## {blocks[0].section_title}"]
         for block in blocks:
             lines += ["", *_block(block)]
     return "\n".join(lines) + "\n"
@@ -63,7 +65,7 @@ def _text(block: TextBlock) -> list[str]:
     rests = f" Rests on finding {positions(block.rests_on)}." if block.rests_on else ""
     facts = _facts(block.facts)
     if block.role == "finding_title":
-        heading = f"### {finding_number(block)}. {_one_line(body)}"
+        heading = f"### {block.finding_number}. {_one_line(body)}"
         return [heading, "", facts] if facts else [heading]
     if block.role in ("answer", "decision", "next_step"):
         lead = f"**{_one_line(body)}**" if block.role != "answer" else _one_line(body)
@@ -83,17 +85,10 @@ def _chart(block: ChartBlock) -> list[str]:
     if block.intent is None:
         return [f"_A {block.viz_type} chart is stored for this finding and cannot be drawn: {block.error}_"]
     intent = block.intent
-    columns = chart_table_columns(intent)
     lines = [f"**Chart: {intent.title}** ({intent.type})"]
     if intent.caption.strip():
         lines += ["", _one_line(intent.caption)]
-    lines += [
-        "",
-        *markdown_table(
-            [column.header for column in columns],
-            [[row.get(column.key) for column in columns] for row in intent.rows],
-        ),
-    ]
+    lines += ["", *markdown_table([column.header for column in block.columns], _texts(block.columns, block.rows))]
     notes = [line for line in (intent.footnote, *intent.disclosures) if line]
     if notes:
         lines += ["", *(f"- {_one_line(note)}" for note in notes)]
@@ -109,28 +104,31 @@ def _table(block: TableBlock) -> list[str]:
     """A table block's rows, or a line saying it has none."""
     if not block.rows:
         return ["_(no rows)_"]
-    lines = markdown_table(
-        [column.header for column in block.columns],
-        [[row.get(column.key) for column in block.columns] for row in block.rows],
-    )
+    lines = markdown_table([column.header for column in block.columns], _texts(block.columns, block.rows))
     if block.total_rows > len(block.rows):
         lines += ["", f"_{len(block.rows)} of {block.total_rows} rows shown._"]
     return lines
 
 
-def markdown_table(headers: Sequence[str], rows: Iterable[Sequence[ChartValue]]) -> list[str]:
+def markdown_table(headers: Sequence[str], rows: Iterable[Sequence[str]]) -> list[str]:
     """A GitHub-flavoured Markdown table: one line per row, each cell on one line with its pipes escaped.
 
     Args:
         headers: The column headers.
-        rows: Each row's cells, in header order; a cell renders as :func:`~threetears.evals.analysis.viz.quantities.render_cell` renders it.
+        rows: Each row's cells as text, in header order — a report cell's served
+            :attr:`~threetears.evals.analysis.report.model.TableCell.text`.
 
     Returns:
         The table's lines.
     """
     lines = ["| " + " | ".join(_cell(header) for header in headers) + " |", "|" + "---|" * len(headers)]
-    lines += ["| " + " | ".join(_cell(render_cell(value)) for value in row) + " |" for row in rows]
+    lines += ["| " + " | ".join(_cell(text) for text in row) + " |" for row in rows]
     return lines
+
+
+def _texts(columns: Sequence[TableColumn], rows: Sequence[dict[str, TableCell]]) -> list[list[str]]:
+    """Each row's served text, in column order."""
+    return [[row[column.key].text for column in columns] for row in rows]
 
 
 def _facts(facts: Sequence[Fact]) -> str:

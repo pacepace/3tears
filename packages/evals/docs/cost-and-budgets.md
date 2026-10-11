@@ -8,7 +8,8 @@ defined in [Concepts](concepts.md).
 ## The rules, in plain words
 
 **The engine never pretends a cost it could not count was zero.** A call nobody could price is recorded as
-**unpriced**, not as $0.
+**unpriced**, not as $0. Every surface spells an amount through `dollars_text`, which reads `None` as `unpriced`
+(`UNPRICED`), so the word is the same wherever a spend is printed.
 
 **Caps bind only on a host that enforces them** (`LaunchSettings.enforcement_enabled`, which every host sets).
 There, the engine does not spend money it has not priced first:

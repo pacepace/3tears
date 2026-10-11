@@ -199,7 +199,7 @@ async def test_a_generation_is_a_job_polled_to_the_analysis_it_stored() -> None:
     assert line.id == status.analysis_id
     markdown = report_read(fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="markdown")
     assert (markdown.basis, markdown.analysis_id) == ("analysis", line.id)
-    assert markdown.body.startswith(f"# {line.headline}")
+    assert markdown.body.startswith(f"# {fixture.campaign.name}: {line.headline}")
     html = report_read(fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="html")
     assert "<script" not in html.body.lower() and line.headline in html.body
     canonical = report_read(fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="json")

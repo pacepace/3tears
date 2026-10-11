@@ -177,7 +177,7 @@ def _strata_table(report: Report) -> TableBlock:
 def _row(table: TableBlock, model: str, reading: str) -> dict[str, Any]:
     """The row of one arm — named, in this fixture, by its variant key's digest — and one reading."""
     digest = short_digest(fixture_variant_key(model))
-    return next(row for row in table.rows if digest in str(row["arm"]) and row["reading"] == reading)
+    return next(row for row in table.values() if digest in str(row["arm"]) and row["reading"] == reading)
 
 
 def _column(table: TableBlock, header: str) -> str:
@@ -318,7 +318,7 @@ class TestTheReportCarriesStrata:
         """No control here, so no reference row: the arms alphabetically by name (#645)."""
         table = _strata_table(_code_only(_bundle(*_mixed())))
 
-        arms = [str(row["arm"]) for row in table.rows if row["reading"] == "cases"]
+        arms = [str(row["arm"]) for row in table.values() if row["reading"] == "cases"]
         assert arms == sorted(arms, key=str.casefold) and len(arms) == 2
         assert table.order.startswith(SURFACE_ORDER_NO_CONTROL)
 
@@ -329,7 +329,7 @@ class TestTheReportCarriesStrata:
         assert cases["all"] == "16 cases, 16 obs"
         assert cases[_column(table, "lookalike")] == f"3 cases, 3 obs — {TOO_FEW_CASES}"
         assert cases[_column(table, "plain")] == "12 cases, 12 obs"
-        assert table.rows.index(cases) < table.rows.index(_row(table, "sonnet", "Accuracy"))
+        assert table.values().index(cases) < table.values().index(_row(table, "sonnet", "Accuracy"))
 
     def test_the_confusion_matrix_and_per_label_rows_are_per_stratum(self) -> None:
         table = _strata_table(_code_only(_bundle(*_mixed())))

@@ -262,7 +262,7 @@ def _row(table: TableBlock, model: str, **match: str) -> dict[str, Any]:
     digest = short_digest(fixture_variant_key(model))
     return next(
         row
-        for row in table.rows
+        for row in table.values()
         if digest in str(row["arm"]) and all(row.get(key) == value for key, value in match.items())
     )
 
