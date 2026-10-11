@@ -25,7 +25,10 @@ These hooks are what a multi-tenant host needs, so no host rebuilds :meth:`Catal
   read from the request context like the caller is. Exactly one of the two is given. **A resolver may refuse**:
   one that raises an :class:`~threetears.evals.kernel.EvalServiceError` — a host still booting, a tenant
   suspended — answers the call as a refusal with that error's kind, status and remedy, exactly as an action's
-  refusal is answered; anything else it raises is a defect.
+  refusal is answered; anything else it raises is a defect. **A resolver may hand state on**: one that answers a
+  :class:`HostResolution` in place of the bare host carries a ``context`` of the host's own — the tenant it
+  resolved, a span, an audit record — to both hooks as :attr:`ToolCall.context`, beside the host as
+  :attr:`ToolCall.host`, so no per-call state passes through context variables the resolver must reset.
 - **One ``around`` hook** wraps every call for the host's tracing, metrics or audit log
   (:data:`CallHook`). It sees the call and its outcome and cannot change either — a host resolver's refusal among
   them, handed to the hook as its outcome exactly as an action's is, so "no host could serve this call" reaches the
@@ -117,15 +120,38 @@ class CallTimedOut(Exception):
 #: request context (an access token, a session) to answer it.
 CallerResolver = Callable[[], Caller | Awaitable[Caller]]
 
+
+@dataclass(frozen=True)
+class HostResolution:
+    """What a host resolver may answer in place of the bare host: the host, and state of the host's own for the hooks.
+
+    The resolver is where a multi-tenant host learns which tenant a call is for; what it learned there — the tenant,
+    a span it opened, the audit record it started — is what its ``around`` and ``annotate`` hooks need too. Answered
+    here, it reaches both as :attr:`ToolCall.context` for this call alone, rather than through a context variable the
+    resolver must set and reset on every call.
+
+    Attributes:
+        host: The host this call works in, exactly as a resolver answering an
+            :class:`~threetears.evals.ops.OpsHost` gives it.
+        context: Anything of the host's own, handed to the hooks unread and unchanged; ``None`` for nothing.
+    """
+
+    host: OpsHost
+    context: Any = None
+
+
 #: Resolves the host one call works in — sync or async — for a server that serves more than one: a
 #: tenant's storage, job manager and settings, read from the same request context as the caller. It is
-#: asked after the caller, once per call.
-HostResolver = Callable[[], OpsHost | Awaitable[OpsHost]]
+#: asked after the caller, once per call. It answers the :class:`~threetears.evals.ops.OpsHost`, or a
+#: :class:`HostResolution` carrying it with a ``context`` for the hooks (:attr:`ToolCall.context`).
+HostResolver = Callable[[], OpsHost | HostResolution | Awaitable[OpsHost | HostResolution]]
 
 
 @dataclass(frozen=True, kw_only=True)
 class ToolCall:
-    """One call, as an ``around`` hook sees it before the catalogue carries it out.
+    """One call, as the ``around`` and ``annotate`` hooks see it once its caller and host are known.
+
+    It is built once the host is resolved, or has refused, so it never changes while a hook holds it.
 
     Attributes:
         tool: The tool called.
@@ -133,11 +159,17 @@ class ToolCall:
             may name no action at all; ``None`` when the call gave none or a non-string. The outcome's
             ``action`` is the action the catalogue resolved.
         caller: Who is calling, and their scope, as the caller resolver answered.
+        host: The host the call works in — the one mounted, or the one the host resolver answered; ``None`` when
+            the host resolver refused the call, so none was resolved.
+        context: The ``context`` of the :class:`HostResolution` the host resolver answered; ``None`` when it
+            answered a bare host, when the binding has one host and no resolver, or when the resolver refused.
     """
 
     tool: str
     action: str | None
     caller: Caller
+    host: OpsHost | None
+    context: Any = None
 
 
 #: Wraps every call for a host's tracing, metrics or audit log, seeing the call and its outcome and
@@ -158,9 +190,13 @@ class ToolCall:
 #:
 #: **A host resolver's refusal enters the hook too.** The caller is known, so the :class:`ToolCall` exists: the hook
 #: runs to its yield and is then handed the refusal as its outcome, exactly as an action's — no action runs between,
-#: and an audit log written from the hook records "no host could serve this call" like any other refused call. A call
-#: refused while its *caller* was being resolved never enters the hook, since there is no :class:`ToolCall` without a
-#: caller. A call that raises — a defect, not a refusal — is thrown in at the yield, so a ``with`` or
+#: and an audit log written from the hook records "no host could serve this call" like any other refused call. Its
+#: :class:`ToolCall` has ``host`` and ``context`` ``None``, since no host was resolved. A call refused while its
+#: *caller* was being resolved never enters the hook, since there is no :class:`ToolCall` without a caller.
+#:
+#: **State the host resolver found reaches the hook on the call.** A resolver answering a :class:`HostResolution`
+#: hands its ``context`` to the hook as :attr:`ToolCall.context`, beside the host it resolved as
+#: :attr:`ToolCall.host` — the tenant, an audit record — for this call alone. A call that raises — a defect, not a refusal — is thrown in at the yield, so a ``with`` or
 #: ``finally`` closes; the hook cannot catch it on the call's behalf, since it propagates whatever the
 #: hook does. **It cannot change the outcome**: what it yields is discarded, and the outcome is frozen.
 #:
@@ -195,7 +231,9 @@ CallHook = Callable[[ToolCall], AsyncGenerator[None, ActionOutcome]]
 #:
 #: It sees every outcome a call reaches once its caller is known — a result, a refusal the engine or the catalogue
 #: made, and one the host resolver made — but not a call refused while its caller was being resolved, since there is
-#: no :class:`ToolCall` without one, nor a call that raised or outlived its timeout, which has no outcome. **An
+#: no :class:`ToolCall` without one, nor a call that raised or outlived its timeout, which has no outcome. Its
+#: :class:`ToolCall` carries the resolved host and the resolver's ``context`` (:class:`HostResolution`) as ``around``'s
+#: does — both ``None`` for a host resolver's refusal. **An
 #: annotator that raises, answers something other than a string, or overruns** :data:`HOOK_TAIL_TIMEOUT_S` **is
 #: logged, and the call returns as if there were no hook**: as with ``around``, the outcome is already the caller's,
 #: and a note that failed must not turn a launch that spent into an error the agent repeats. Like ``around``'s code
@@ -296,7 +334,8 @@ class ToolBinding:
                 and the hook closed. It reports the timeout this call read.
             ValueError: ``call_timeout_s`` is a function and answered anything but a positive number; nothing ran.
             TypeError: A resolver answered with something other than a
-                :class:`~threetears.evals.actions.Caller` or an :class:`~threetears.evals.ops.OpsHost`.
+                :class:`~threetears.evals.actions.Caller`, or an :class:`~threetears.evals.ops.OpsHost` or a
+                :class:`HostResolution` holding one.
             Exception: Whatever else a resolver raises — anything but an
                 :class:`~threetears.evals.kernel.EvalServiceError` — before the hook is entered and before any action
                 runs; and whatever the catalogue lets propagate (a defect). A refusal is an outcome, not an exception.
@@ -338,22 +377,25 @@ async def _answered(binding: ToolBinding, arguments: dict[str, Any]) -> tuple[Ac
                 return binding.mounted.refused_by_host(refused, action=action), None
             if not isinstance(caller, Caller):
                 raise TypeError(f"tool {binding.mounted.name!r}: the caller resolver answered {caller!r}, not a Caller")
-            observed = ToolCall(
-                tool=binding.mounted.name, action=action if isinstance(action, str) else None, caller=caller
-            )
             host = binding.host
+            context: Any = None
             host_refusal: ActionOutcome | None = None
             if binding.host_resolver is not None:
                 try:
-                    host = await _resolved(binding.host_resolver())
+                    resolved = await _resolved(binding.host_resolver())
                 except EvalServiceError as refused:
                     # The caller is known, so the hook is entered and handed this refusal as its outcome.
                     host_refusal = binding.mounted.refused_by_host(refused, action=action)
                 else:
-                    if not isinstance(host, OpsHost):
-                        raise TypeError(
-                            f"tool {binding.mounted.name!r}: the host resolver answered {host!r}, not an OpsHost"
-                        )
+                    host, context = _resolution(binding, resolved)
+            # Built once the host is known, so the call the hooks hold carries it and never changes under them.
+            observed = ToolCall(
+                tool=binding.mounted.name,
+                action=action if isinstance(action, str) else None,
+                caller=caller,
+                host=host,
+                context=context,
+            )
             if binding.around is not None:
                 hook = await _entered(binding.around, observed)
             if host_refusal is not None:
@@ -376,6 +418,27 @@ async def _answered(binding: ToolBinding, arguments: dict[str, Any]) -> tuple[Ac
     if hook is not None:
         await _finished_within(hook, observed, outcome)
     return outcome, observed
+
+
+def _resolution(binding: ToolBinding, resolved: object) -> tuple[OpsHost, Any]:
+    """The host a host resolver answered, and the context it carried for the hooks (``None`` with a bare host).
+
+    Raises:
+        TypeError: It answered neither an :class:`~threetears.evals.ops.OpsHost` nor a :class:`HostResolution`
+            holding one.
+    """
+    if isinstance(resolved, HostResolution):
+        if not isinstance(resolved.host, OpsHost):
+            raise TypeError(
+                f"tool {binding.mounted.name!r}: the host resolver answered a HostResolution whose host is "
+                f"{resolved.host!r}, not an OpsHost"
+            )
+        return resolved.host, resolved.context
+    if not isinstance(resolved, OpsHost):
+        raise TypeError(
+            f"tool {binding.mounted.name!r}: the host resolver answered {resolved!r}, not an OpsHost or a HostResolution"
+        )
+    return resolved, None
 
 
 async def _note(annotate: CallAnnotator, call: ToolCall, outcome: ActionOutcome) -> str | None:
@@ -666,6 +729,7 @@ __all__ = [
     "CallTimeout",
     "CallerResolver",
     "CatalogueTool",
+    "HostResolution",
     "HostResolver",
     "ToolBinding",
     "ToolCall",

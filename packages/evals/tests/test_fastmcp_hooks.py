@@ -21,11 +21,15 @@ What a host gets without rebuilding :meth:`CatalogueTool.over`:
   it is held to and the one its timeout reports, and a value that is not positive fails that call naming it.
 - **One ``annotate`` hook adds a note** as a text block after the outcome's, changing nothing else; one that
   raises, answers no string or overruns is logged, and the call returns as if there were no hook.
+- **The host resolver hands per-call state to both hooks**: answering a ``HostResolution`` puts its ``context`` on
+  the ``ToolCall`` beside the resolved ``host``; a bare host still works, with no context; a host resolver's refusal
+  shows both as ``None``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from collections.abc import AsyncGenerator, Callable, Iterator
 from contextlib import contextmanager
@@ -53,6 +57,7 @@ from threetears.evals.transports.fastmcp import (
     CallAnnotator,
     CallHook,
     CallTimedOut,
+    HostResolution,
     ToolBinding,
     ToolCall,
     mount_fastmcp,
@@ -288,14 +293,15 @@ async def test_the_hook_sees_the_call_and_its_outcome_and_wraps_the_action() -> 
         finally:
             _SPAN.reset(token)
 
-    server = _served(_Host(), around=around)
+    host = ops_fixture().host
+    server = _served(_Host(), around=around, host=host)
     _, result, _ = await _call(server, {"action": "note_take", "note": "ok"})
     _, refused, _ = await _call(server, {"action": "note_take", "note": "ConflictError"})
     _, unknown, _ = await _call(server, {"action": 7})
 
     assert result is not None and result["span"] == "span:note_take", "the hook's context is current in the action"
     (ok_call, ok), (no_call, no), (bad_call, bad) = seen
-    assert ok_call == ToolCall(tool="host", action="note_take", caller=CALLER)
+    assert ok_call == ToolCall(tool="host", action="note_take", caller=CALLER, host=host)
     assert (ok.structured, ok.refusal, ok.action) == (result, None, "note_take")
     assert no_call.action == "note_take" and no.refusal == Refusal(kind="conflict", status=409)
     assert bad_call.action is None, "an action argument that is no string is shown as none"
@@ -644,14 +650,15 @@ async def test_a_note_is_a_block_after_the_outcome_s_and_changes_nothing_else() 
         seen.append((call, outcome))
         return "the pricing catalogue is stale, so every model is unpriced" if outcome.refusal else None
 
-    server = _served(_Host(), annotate=annotate)
+    host = ops_fixture().host
+    server = _served(_Host(), annotate=annotate, host=host)
     for note in ("ok", "AdmissionRefusedError"):
         plain = await _blocks(_served(_Host()), {"action": "note_take", "note": note})
         blocks, structured, is_error = await _blocks(server, {"action": "note_take", "note": note})
         assert (blocks[:1], structured, is_error) == plain, "the outcome's own block, data and flag are untouched"
         assert blocks[1:] == ([] if note == "ok" else ["the pricing catalogue is stale, so every model is unpriced"])
     assert [(call.action, outcome.is_error) for call, outcome in seen] == [("note_take", False), ("note_take", True)]
-    assert seen[0][0] == ToolCall(tool="host", action="note_take", caller=CALLER)
+    assert seen[0][0] == ToolCall(tool="host", action="note_take", caller=CALLER, host=host)
 
 
 async def test_an_async_annotator_and_an_empty_note() -> None:
@@ -762,3 +769,101 @@ async def test_what_a_hook_sets_before_its_yield_is_the_action_s_and_its_tail_un
             assert outcome.structured is not None and outcome.structured["span"] == expected
             assert _SPAN.get() is None, "the tail undid it in the task that called"
     assert [record for record in caplog.records if record.name == _LOGGER] == [], "no reset failed"
+
+
+# =============================================================================
+# State the host resolver hands the hooks
+# =============================================================================
+
+
+class _Seen:
+    """The ToolCall each hook was handed, in the order they were handed it."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, ToolCall]] = []
+
+    async def around(self, call: ToolCall) -> AsyncGenerator[None, ActionOutcome]:
+        self.calls.append(("around", call))
+        yield
+
+    def annotate(self, call: ToolCall, outcome: ActionOutcome) -> None:
+        self.calls.append(("annotate", call))
+
+
+async def test_a_host_resolution_s_context_reaches_both_hooks_beside_its_host() -> None:
+    """Discodon passed this through two ContextVars its resolver reset on every call."""
+    tenants = {"tenant-a": ops_fixture().host, "tenant-b": ops_fixture().host}
+    asked = iter(["tenant-a", "tenant-b"])
+    actions = _Host()
+    seen = _Seen()
+
+    async def host_resolver() -> HostResolution:
+        tenant = next(asked)
+        return HostResolution(tenants[tenant], context={"tenant": tenant})
+
+    server = _served(actions, host_resolver=host_resolver, around=seen.around, annotate=seen.annotate)
+    for _ in range(2):
+        _, _, is_error = await _call(server, {"action": "note_take", "note": "ok"})
+        assert not is_error
+    assert actions.ran_in == [tenants["tenant-a"], tenants["tenant-b"]], "the action ran in the resolution's host"
+    assert [(hook, call.host, call.context) for hook, call in seen.calls] == [
+        ("around", tenants["tenant-a"], {"tenant": "tenant-a"}),
+        ("annotate", tenants["tenant-a"], {"tenant": "tenant-a"}),
+        ("around", tenants["tenant-b"], {"tenant": "tenant-b"}),
+        ("annotate", tenants["tenant-b"], {"tenant": "tenant-b"}),
+    ]
+    assert seen.calls[0][1] is seen.calls[1][1], "both hooks of one call hold the one ToolCall"
+
+
+@pytest.mark.parametrize("given", ["host", "bare-resolver", "sync-resolution"])
+async def test_a_bare_host_still_serves_and_carries_no_context(given: str) -> None:
+    tenant = ops_fixture().host
+    mount: dict[str, Any] = {
+        "host": {"host": tenant},
+        "bare-resolver": {"host_resolver": lambda: tenant},
+        "sync-resolution": {"host_resolver": lambda: HostResolution(tenant)},
+    }[given]
+    actions = _Host()
+    seen = _Seen()
+    _, _, is_error = await _call(
+        _served(actions, around=seen.around, annotate=seen.annotate, **mount), {"action": "note_take", "note": "ok"}
+    )
+    assert not is_error and actions.ran_in == [tenant]
+    assert [(hook, call.host, call.context) for hook, call in seen.calls] == [
+        ("around", tenant, None),
+        ("annotate", tenant, None),
+    ]
+
+
+async def test_a_host_resolver_s_refusal_shows_the_hooks_no_host_and_no_context() -> None:
+    seen = _Seen()
+    _, structured, _ = await _call(
+        _served(_Host(), host_resolver=_booting, around=seen.around, annotate=seen.annotate),
+        {"action": "note_take", "note": "ok"},
+    )
+    assert structured == {"refusal": {"kind": "refused", "status": 503}}
+    assert [(hook, call.host, call.context) for hook, call in seen.calls] == [
+        ("around", None, None),
+        ("annotate", None, None),
+    ]
+
+
+async def test_a_host_resolution_holding_no_host_is_named() -> None:
+    binding = ToolBinding(
+        _Host().catalogue().mount(_TOOLS[0]),
+        host_resolver=lambda: HostResolution("tenant-a", context=1),  # type: ignore[arg-type]
+        caller=lambda: CALLER,
+    )
+    with pytest.raises(TypeError, match="answered a HostResolution whose host is 'tenant-a', not an OpsHost"):
+        await binding.call({"action": "note_take", "note": "ok"})
+
+
+def test_a_host_resolution_and_a_tool_call_are_frozen() -> None:
+    resolution = HostResolution(ops_fixture().host, context="ctx")
+    call = ToolCall(tool="host", action=None, caller=CALLER, host=None)
+    assert call.context is None
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        resolution.context = "changed"  # type: ignore[misc]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        call.context = "changed"  # type: ignore[misc]
+    assert "HostResolution" in fastmcp_transport.__all__

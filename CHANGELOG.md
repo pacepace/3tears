@@ -13,6 +13,12 @@ packages (bumped in lock-step).
   records "no host could serve this call" from the hook that writes every other call's line, not from `annotate`. A
   caller resolver's refusal still enters no hook, since there is no `ToolCall` without a caller. A behaviour change
   for a host's hook: see `MIGRATIONS.toml`.
+- **The host resolver hands per-call state to both hooks (gap 41).** A `host_resolver` may answer a
+  `HostResolution(host, context=...)` in place of the bare `OpsHost`, and its `context` reaches `around` and
+  `annotate` as `ToolCall.context`, beside the resolved host as `ToolCall.host`, so a host no longer passes per-call
+  state through context variables its resolver resets on every call. A resolver answering a bare `OpsHost` works as
+  before, with `context` `None`. The `ToolCall` is built once the host is known, and stays frozen; for a host
+  resolver's refusal both fields are `None`. `HostResolution` is exported from `threetears.evals.transports.fastmcp`.
 
 ### 3tears-evals: the judge temperature measurement and the prompt-comparison test set (#633)
 
