@@ -16,6 +16,11 @@ packages (bumped in lock-step).
 - **A run written lost with its completeness unknown says why on its own record.** When a result it stored cannot
   be read under the current model, the lost run's `completeness` stays `None` as before, and the validation error,
   which only reached the log, is now an `EvalRun.error_details` entry: a fault an operator triages on the run.
+- **A job record this build cannot read, or cannot write lost, raises on the read that settles it (breaking for a
+  store holding one).** `settle_tolerantly`, which every settling read and a lost launch's or sweep's named runs go
+  through, caught the `ValidationError` and left the record as stored, so it read as a job still running with nothing
+  saying it could not be read. It now propagates, as every other read of that record raises it; a record another
+  writer keeps moving is still left to its own next read.
 
 ### 3tears-evals: backlog while Discodon adopts .13
 

@@ -306,8 +306,9 @@ def _settle_named_runs[R: EvalDocumentModel](store: LeaseStore, kind: LeasedJobK
 
     A launch or a sweep holds its runs in the process that held it, so when its lease lapsed theirs did too, and a run
     it prepared but never started carries no lease at all; either reads lost. A run whose lease another process still
-    renews is left running. One run that cannot be settled (:func:`settle_tolerantly`) is left to its own next read,
-    and never keeps the record that named it, or the next run it names, from settling.
+    renews is left running. One run another writer keeps moving (:func:`settle_tolerantly`) is left to its own next
+    read, and never keeps the record that named it, or the next run it names, from settling. A run this build cannot
+    read raises, once the record that named it is written lost, as any read of that run does.
     """
     for run_id in kind.named_runs(lost):
         settle_tolerantly(store, RUN_JOB, run_id, scope_id)
@@ -316,13 +317,13 @@ def _settle_named_runs[R: EvalDocumentModel](store: LeaseStore, kind: LeasedJobK
 def settle_tolerantly[R: EvalDocumentModel](
     store: LeaseStore, kind: LeasedJobKind[R], record_id: str, scope_id: str
 ) -> R | None:
-    """:func:`settle_job_record` for a read of many records: one that cannot be settled is left as stored, and logged.
+    """:func:`settle_job_record` for a read of many records: one another writer keeps moving is left as stored.
 
-    The boot reclaim's per-row tolerance (:func:`~threetears.evals.run.lifecycle.reclaim_abandoned_runs`), for every
-    read that settles records as it lists them: a record another writer keeps moving (``ConflictError``: live enough
-    to be read again, and settled by its own next read) or one a model refuses while it is written lost
-    (``ValidationError``) is one bad record, and one bad record must never break a list — of runs, of a sweep's arms,
-    of a launch's runs. A storage failure is not one record's: it propagates.
+    For every read that settles records as it lists them: a record another writer keeps moving (``ConflictError``)
+    is live enough to be read again, and its own next read settles it, so it never breaks a list — of runs, of a
+    sweep's arms, of a launch's runs — and is logged. Nothing else is tolerated. A storage failure is not one
+    record's, and a record this build cannot read, or cannot write lost (``ValidationError``), raises here as every
+    other read of it does: left as stored, it read as a job still running, with nothing saying it was unreadable.
 
     Args:
         store: Where the record lives.
@@ -331,26 +332,20 @@ def settle_tolerantly[R: EvalDocumentModel](
         scope_id: Its scope.
 
     Returns:
-        The record as it now stands, or ``None`` where it could not be settled (or there is none): the caller keeps
-        what it read.
+        The record as it now stands, or ``None`` where another writer kept moving it (or there is none): the caller
+        keeps what it read.
 
     Raises:
         StorageError: A read or write failed.
+        ValidationError: The record cannot be read under the current model, or a model refused a value while it was
+            written lost.
     """
     try:
         current, _ = settle_job_record(store, kind, record_id, scope_id)
     except ConflictError:
-        # NOSILENT: a record another writer keeps moving is live enough to be read again; its own next read settles it
+        # NOSILENT: a race whose loser re-reads -- a record another writer keeps moving is live, and its own next
+        # read settles it; the caller keeps the record as it read it, which is the record as last written.
         log.warning("eval.job_lease %s=%s scope=%s kept changing while it was settled", kind.name, record_id, scope_id)
-        return None
-    except ValidationError:
-        # NOSILENT: the record read, but writing it lost did not validate; it stays as stored, and the list goes on
-        log.exception(
-            "eval.job_lease %s=%s scope=%s could not be written lost: a model refused a value while settling it",
-            kind.name,
-            record_id,
-            scope_id,
-        )
         return None
     return current
 

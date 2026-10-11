@@ -566,11 +566,12 @@ class EvalStorage:
         return an etag) and the boot reclaim's scan (:meth:`query_non_terminal_eval_runs`) are not settled here:
         they are what settling is made of, and the reclaim counts what it writes lost itself.
 
-        **One bad record never breaks the read.** Each is settled on its own
-        (:func:`~threetears.evals.kernel.job_leases.settle_tolerantly`): a record that cannot be written lost is
-        returned as stored and logged, and the rest of the list is still read. Settling a run reads nothing past the
-        run that can fail it: a result that cannot be read leaves the lost run's completeness unknown rather than
-        refusing the write.
+        **A record another writer keeps moving never breaks the read.** Each is settled on its own
+        (:func:`~threetears.evals.kernel.job_leases.settle_tolerantly`): one whose lost write keeps losing its race is
+        returned as stored and logged, and the rest of the list is still read; one this build cannot read or write
+        lost raises its ``ValidationError``, as reading it does. Settling a run reads nothing past the run that can
+        fail it: a result that cannot be read leaves the lost run's completeness unknown, named in its
+        ``error_details``, rather than refusing the write.
         """
         from threetears.evals.kernel.job_leases import lease_lapsed, leased_kind_of, settle_tolerantly
 
@@ -585,7 +586,7 @@ class EvalStorage:
         for index in open_records:
             record: Any = records[index]
             if lease_lapsed(record, now):
-                # Per record, as the boot reclaim settles its rows: one that cannot be settled reads as stored.
+                # Per record, as the boot reclaim settles its rows: one another writer keeps moving reads as stored.
                 current = settle_tolerantly(self, kind, record.id, record.scope_id)
                 if current is not None:
                     settled[index] = cast(M, current)
