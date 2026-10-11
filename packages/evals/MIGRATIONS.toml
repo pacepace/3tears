@@ -42,7 +42,15 @@ notes = [
     "`actions.ActionOutcome` takes `refusal: Refusal | None` in place of `is_error: bool`; `is_error` is now a property (`refusal is not None`). A host constructing an outcome passes `refusal=Refusal(kind=..., status=...)`, or `Refusal.of(error)` for an engine error.",
     "`transports.fastmcp.ToolBinding` takes everything after `mounted` by keyword, and exactly one of `host` and `host_resolver`; `around` and `call_timeout_s` are keyword too. A refused call's structured content is `{\"refusal\": {\"kind\": ..., \"status\": ...}}`.",
     "`threetears.evals.vega.palette.load_palette()` (the packaged artifact, read as a dict) is `packaged_artifact()`; `vega.load_palette(path, theme)` now reads a host's own palette artifact as a `ChartPalette`. A palette artifact whose `series_slots` is not `SERIES_SLOTS`, or whose `validated_slots` is below `VALIDATED_SLOTS`, is refused.",
+    "`testing.BoundaryFinding` (was `NonPublicImport`) carries `rule` (a `BoundaryRule`, one of `BOUNDARY_RULES`) and `target` (the dotted name reached) in place of `module` and `name`, and its `str()` reads `path:line: rule: target — reason`. `nonpublic_evals_imports` now also reports dynamic imports, undeclared attribute chains, private reach and patches into the package, so a host suite that passed may fail.",
+    "Font metric tables are format 2 and record `font_files` (the SHA-256 of each file declaring the family); `load_chart_font` refuses a format-1 table, so re-measure every host table with `python -m threetears.evals.vega.measure_font` (the `[vega]` extra; `packages/evals/scripts/measure_font_metrics.py` is gone). `vega.write_font_metrics` takes a required `font_files`, and `ChartFont` gains `font_files`. A renderer built with a `font_dir` refuses a font whose recorded files are missing or changed.",
 ]
+
+[[release.change]]
+from = "threetears.evals.testing"
+to = "threetears.evals.testing"
+why = """The import check reports more than imports now — attribute chains, private reach, patches — so its finding is renamed, and names the rule it breaks (see the notes for its fields)."""
+renamed = { NonPublicImport = "BoundaryFinding" }
 
 [[release.change]]
 from = "threetears.evals.analysis.viz"

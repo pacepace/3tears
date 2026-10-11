@@ -33,6 +33,35 @@ old-to-new map instead.
   - `ops` keeps only the fourteen analysis names the action catalogue imports, because `actions` may reach
     `analysis` only through `ops`. It drops `CaseResult`, `CostEstimate`, `DimensionSummary`, `JudgeGrade`,
     `OutOfRunSpendTotals`, `ReportFormat`, `RunMeasureSummary`, `serialize_report` and `summarize_run`.
+### 3tears-evals: the import check sees dynamic imports, attribute chains, private names and patches
+
+`threetears.evals.testing.nonpublic_evals_imports` read only `import` and `from ... import`. It now also reports
+a literal `importlib.import_module`/`__import__` below a root (`dynamic_import`); an attribute chain or literal
+`getattr`/`hasattr` through a bound root that its `__all__` does not declare (`attribute_reach`); an `_name` on
+a chain rooted at a name bound from the package, dunders admitted (`private_reach`); and `monkeypatch`, `mock.patch`
+and its forms, `setattr`/`delattr` or attribute assignment whose target is a `"threetears.evals..."` string or an
+object bound from the package (`patch`). Each finding names its rule. Names are resolved per scope, as Python
+resolves them: a parameter, local assignment, comprehension target or `global`/`nonlocal` rebinding shadows an
+import, so `def f(run): run._x` is not reported, while a nested function that does not rebind it still is.
+
+- **Breaking:** `NonPublicImport` is now `BoundaryFinding`, with `rule` (a `BoundaryRule`, the stable identifiers
+  listed in `BOUNDARY_RULES`) and `target` (the dotted name reached) in place of `module` and `name`; its `str()`
+  reads `path:line: rule: target — reason`. A host suite that passed may now fail on the new rules.
+
+### 3tears-evals: the font measurer ships, and a table that does not match its engine or its files is refused
+
+- **The measurer is part of the `[vega]` extra**: `python -m threetears.evals.vega.measure_font --family ...
+  --font-dir ... --out ...`, writing through the same `write_font_metrics` gate. `packages/evals/scripts/
+  measure_font_metrics.py` is gone.
+- **A table records its metrics format and its files.** `format` (now 2) and `font_files`: the SHA-256 of each
+  file under `--font-dir` whose name table declares the measured family, and only those, so another face in the
+  same directory can change without invalidating the table. `ChartFont` gains `font_files`.
+- **`load_chart_font` refuses a table of another format, and a renderer refuses changed files.** `VegaRenderer`
+  built with a `font_dir`, and `render_png`/`render_svg`, refuse a font whose recorded files are missing or
+  hash differently (`TextMetricsError`). Each refusal names the command that re-measures the face.
+- **Breaking:** every host table written before this release is format 1 and is refused on load; re-measure it.
+  `write_font_metrics` takes a required `font_files`. Measuring a face other than the embedded Liberation Sans
+  now needs `--font-dir`, and is refused when no file in the directory declares the family.
 
 ### 3tears-evals: the context bundle and the reporting projection are split by concern (#612)
 

@@ -11,8 +11,9 @@ That is enforced structurally rather than promised:
 2. **Neither non-enum field can carry an instruction to a model.** ``chart_palette`` holds colours
    and nothing else: every value is checked to be resolved sRGB hex (:func:`require_resolved_colour`)
    when the palette is built, so it has no room for a word. ``chart_font`` names a typeface, so its
-   family list is shape-checked (:data:`_FONT_FAMILY_RE`) and bounded in length; the rest of it is
-   numbers. And it is structural besides:
+   family list is shape-checked (:data:`_FONT_FAMILY_RE`) and bounded in length, as is each font file
+   name it records (:data:`_FONT_FILE_RE`); the rest of it is numbers and hex digests. And it is
+   structural besides:
    :func:`prompt_fragment` is the only function in this module that returns prompt text, it takes
    no argument but the register, and :func:`assert_no_style_text` proves no value from either
    field reaches a given prompt.
@@ -195,6 +196,18 @@ _FONT_FAMILY_RE = re.compile(r"^[A-Za-z0-9_-]+(?: [A-Za-z0-9_-]+)*(?:, ?[A-Za-z0
 #: The longest family list a :class:`ChartFont` may name, in characters.
 _FONT_FAMILY_MAX = 120
 
+#: A font file's path relative to the directory a renderer registers: ``/``-separated segments of letters,
+#: digits, spaces and ``._()+-``. Relative because the directory moves between a developer's checkout and the
+#: image that renders; shape-checked and bounded (:data:`_FONT_FILE_MAX`) for the reason the family list is —
+#: a file name is a string the host wrote, and this contract carries no free text.
+_FONT_FILE_RE = re.compile(r"^[A-Za-z0-9 ._()+-]+(?:/[A-Za-z0-9 ._()+-]+)*$")
+
+#: The longest font file path a :class:`ChartFont` may name, in characters.
+_FONT_FILE_MAX = 255
+
+#: A SHA-256 digest, as lowercase hex: what :attr:`ChartFont.font_files` records for each file.
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
 #: The characters a :class:`ChartFont`'s metrics must cover: printable ASCII, space to tilde.
 #:
 #: Every model ID, measure name, number and unit a chart lays out is made of these. A character outside
@@ -215,8 +228,14 @@ class ChartFont:
     renderer refuses a font that is not one of these.
 
     The table is produced by measuring the face through the renderer itself — for the Vega-Lite
-    renderer, ``packages/evals/scripts/measure_font_metrics.py`` writes one, and
+    renderer, ``python -m threetears.evals.vega.measure_font`` writes one, and
     ``threetears.evals.vega.load_chart_font`` reads it back as a :class:`ChartFont`.
+
+    **The table names the files it was measured from** (:attr:`font_files`), because the advances are a
+    property of those bytes and not of the family name: a face updated in place keeps its name and changes
+    its widths. A renderer that registers a font directory refuses a font whose files there no longer hash
+    as measured, so a stale table is a refusal naming the command that re-measures it, not a label that
+    quietly truncates.
 
     Numeric ticks are set in this face too, and line up only if its figures are tabular — every digit one
     advance — since a renderer cannot ask a face for tabular figures it does not draw by default.
@@ -230,11 +249,16 @@ class ChartFont:
             measuring tool should keep each character's widest measured context so the estimate leans long.
         fallback_advance: The advance for a character the table does not hold — at least its widest entry,
             so an unmeasured character errs toward "does not fit" rather than toward truncation.
+        font_files: Each font file that provided the measured face, by its path relative to the font directory
+            it was measured from, to the SHA-256 (lowercase hex) of its bytes when measured. Only the files that
+            resolved :attr:`measured_face` — not the whole directory, which may hold other faces whose changes say
+            nothing about this one. Empty for a face no directory provides: one embedded in the renderer.
     """
 
     family: str
     advances: Mapping[str, float] = field(hash=False)
     fallback_advance: float
+    font_files: Mapping[str, str] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
         """Refuse a font a renderer could not lay out against.
@@ -258,7 +282,7 @@ class ChartFont:
             raise StyleError(
                 f"chart_font {self.family!r} declares no metrics — a renderer lays chart text out from measured "
                 "advance widths, and without them it would fit every label against another face's widths. Measure "
-                "the face (packages/evals/scripts/measure_font_metrics.py) and declare the table with it"
+                "the face (python -m threetears.evals.vega.measure_font) and declare the table with it"
             )
         frozen = dict(self.advances)
         missing = [character for character in CHART_FONT_CHARACTERS if character not in frozen]
@@ -284,7 +308,26 @@ class ChartFont:
                 f"its widest measured advance ({widest}) — an unmeasured character would be laid out as fitting "
                 "where it may not"
             )
+        files = dict(self.font_files)
+        for name, digest in files.items():
+            if (
+                not isinstance(name, str)
+                or len(name) > _FONT_FILE_MAX
+                or not _FONT_FILE_RE.match(name)
+                or any(segment in {".", ".."} for segment in name.split("/"))
+            ):
+                raise StyleError(
+                    f"chart_font {self.family!r} names font file {name!r}, which is not a relative path of at most "
+                    f"{_FONT_FILE_MAX} characters ('/'-separated names of letters, digits, spaces and ._()+-, no '.' "
+                    "or '..' segment) — a file is named relative to the font directory a renderer registers"
+                )
+            if not isinstance(digest, str) or not _SHA256_RE.match(digest):
+                raise StyleError(
+                    f"chart_font {self.family!r} records {digest!r} for {name!r}; a font file is recorded by the "
+                    "SHA-256 of its bytes, as 64 lowercase hex digits"
+                )
         object.__setattr__(self, "advances", frozen)
+        object.__setattr__(self, "font_files", files)
 
     @property
     def measured_face(self) -> str:
@@ -353,7 +396,7 @@ def assert_no_style_text(prompt: str, style: StyleProfile) -> None:
 
     **Scoped to the values a host writes**, which is what makes it safe to point at a whole assembled
     prompt rather than only at :func:`prompt_fragment`'s output: every colour of ``chart_palette``, each
-    held to ``#rrggbb``, and ``chart_font``'s family list, held to a bounded CSS family shape. The closed
+    held to ``#rrggbb``, and ``chart_font``'s family list and font file names, each held to a bounded shape. The closed
     enums are out — see
     :func:`_host_supplied_strings` for why matching them reports the engine's own words as a leak.
 
@@ -377,7 +420,7 @@ def _host_supplied_strings(style: StyleProfile) -> list[str]:
 
     Returns:
         Every colour of ``chart_palette`` (none when it declares no palette), and ``chart_font``'s family
-        list (none when it declares no font).
+        list and the names of its font files (none when it declares no font).
 
         ``tone_register`` is deliberately absent: it is a CLOSED engine-owned enum, so a host picks
         a key from a list and cannot hold a sentence in it, and a value that cannot carry an
@@ -386,7 +429,7 @@ def _host_supplied_strings(style: StyleProfile) -> list[str]:
     """
     return [
         *(style.chart_palette.colours() if style.chart_palette is not None else []),
-        *([style.chart_font.family] if style.chart_font is not None else []),
+        *([style.chart_font.family, *style.chart_font.font_files] if style.chart_font is not None else []),
     ]
 
 

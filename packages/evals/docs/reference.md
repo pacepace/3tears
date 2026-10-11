@@ -1753,18 +1753,18 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
   <br>`check_completion_conformance(completion: object) -> None`
 - **`jobs_conformance_cases`** · function · Every case the catalogue's actions are held to: each action's call, and each spend action's happy path.
   <br>`jobs_conformance_cases(catalogue: ActionCatalogue, *, job_timeout_s: float = 60.0) -> tuple[JobsConformanceCase, ...]`
-- **`nonpublic_evals_imports`** · function · Every `threetears.evals` import under `sources` that reaches below a public root.
-  <br>`nonpublic_evals_imports(*sources: Path | str) -> tuple[NonPublicImport, ...]`
+- **`nonpublic_evals_imports`** · function · Every reach into `threetears.evals` under `sources` that goes below a public root's declared names.
+  <br>`nonpublic_evals_imports(*sources: Path | str) -> tuple[BoundaryFinding, ...]`
 
 **Classes**
 
+- **`BoundaryFinding`** · dataclass · One reach into `threetears.evals` that does not go through a public root's declared names.
 - **`CompletionConformanceFailure`** · exception · A host's completion lacks an attribute eval reads, or reports a stop reason outside eval's vocabulary.
 - **`CompletionGuard`** · dataclass · The kit's watch on a host's completion clients: what was asked outside a job, and how often inside one.
 - **`CompletionOutsideJob`** · exception · A completion request made outside any job's work, refused by the kit's guarded client before it was sent.
 - **`JobsConformanceCase`** · dataclass · One action held to one rule.
 - **`JobsConformanceFailure`** · exception · An action broke the job rule, or its happy path proved nothing. The message names the action and the rule.
 - **`JobsConformanceHost`** · dataclass · What a host hands the kit for one case: its operations host, who calls, and its sample launch.
-- **`NonPublicImport`** · dataclass · One import of a `threetears.evals` name that does not come from a public root.
 - **`ReaderConformanceCase`** · dataclass · One promise a reader makes, as a check over a sample.
 - **`ReaderConformanceFailure`** · exception · A host's reader broke a promise the engine relies on; the message names the case, the reader and the run.
 - **`ReaderSample`** · dataclass · What the kit checks a host's readers over: the host's profile and runs it produced.
@@ -1773,11 +1773,14 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 
 **Types**
 
+- **`BoundaryRule`** · literal · Which rule a `BoundaryFinding` breaks — a stable identifier a host may filter or count on. The module docstring states each.
+  <br>`'static_import'` | `'dynamic_import'` | `'attribute_reach'` | `'private_reach'` | `'patch'`
 - **`BuildConformanceHost`** · type alias · Builds a fresh host for one case, its completion clients wrapped by the guard it is handed.
   <br>`Callable[[CompletionGuard], JobsConformanceHost]`
 
 **Constants**
 
+- **`BOUNDARY_RULES`** · constant (tuple) · Every `BoundaryRule`, in the order the module docstring states them.
 - **`DEFAULT_JOB_CONFORMANCE_TIMEOUT_S`** · constant (float) · How long a happy path's jobs are polled for before the case gives up on them, in seconds.
   <br>`= 60.0`
 - **`READER_CONFORMANCE_CASES`** · constant (tuple) · Every promise, as a case. Parametrise over this tuple.
@@ -2255,7 +2258,7 @@ The Vega-Lite chart renderer — an optional adapter over eval's chart intent.
 - **`vega_config`** · function · Build the Vega-Lite config that themes a compiled spec in `palette`, set in `font`.
   <br>`vega_config(palette: ChartPalette, font: ChartFont | None = None) -> dict[str, Any]`
 - **`write_font_metrics`** · function · Commit a fresh measurement as a table `text_width` reads.
-  <br>`write_font_metrics(advances: dict[str, float], *, fallback_advance: float, worst_label: str, worst_ratio: float, font: str, measured_with: str, probe_size: int, weights: list[int], path: Path = Path('<package>/src/threetears/evals/vega/font_metrics.json')) -> Path`
+  <br>`write_font_metrics(advances: dict[str, float], *, fallback_advance: float, worst_label: str, worst_ratio: float, font: str, measured_with: str, probe_size: int, weights: list[int], font_files: Mapping[str, str], path: Path = Path('<package>/src/threetears/evals/vega/font_metrics.json')) -> Path`
 
 **Classes**
 

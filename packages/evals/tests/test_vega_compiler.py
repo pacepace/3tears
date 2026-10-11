@@ -52,6 +52,7 @@ from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.vega.spec_policy import RANKING_SPEC_NAME, check_spec
 from threetears.evals.vega.render import render_svg
 from threetears.evals.vega.text_metrics import (
+    METRICS_FORMAT,
     TextMetricsError,
     fits,
     load_chart_font,
@@ -4461,6 +4462,7 @@ class TestAHostMeasuresItsOwnFace:
             "measured_with": "vl-convert-python test",
             "probe_size": 1000,
             "weights": [400, 600],
+            "font_files": {},
         }
 
     def test_a_written_table_reads_back_as_the_font(self, tmp_path):
@@ -4476,7 +4478,10 @@ class TestAHostMeasuresItsOwnFace:
 
     def test_a_metrics_file_with_no_advances_is_refused_on_load(self, tmp_path):
         path = tmp_path / "host.json"
-        path.write_text(json.dumps({"font": "Host Face", "advances": {}, "fallback_advance": 1.0}), encoding="utf-8")
+        path.write_text(
+            json.dumps({"format": METRICS_FORMAT, "font": "Host Face", "advances": {}, "fallback_advance": 1.0}),
+            encoding="utf-8",
+        )
         with pytest.raises(TextMetricsError, match="declares no metrics"):
             load_chart_font(path)
 

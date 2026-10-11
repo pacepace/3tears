@@ -274,6 +274,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "vega/arms/sweep_ranking.py": {},
     "vega/arms/timeseries.py": {},
     "vega/compiler.py": {},
+    "vega/measure_font.py": {},
     "vega/palette.py": {},
     "vega/render.py": {},
     "vega/renderer.py": {},

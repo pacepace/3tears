@@ -155,7 +155,7 @@ TOYHOST_PALETTE = ChartPalette(
 #: table, wider than the packaged face's lowercase, so a layout taken from it differs visibly from one
 #: taken from the packaged table — which is what lets a test tell which table a chart was laid out in.
 #: The family is no real face, so a raster falls through to the generic family; a real host measures
-#: its face with ``packages/evals/scripts/measure_font_metrics.py`` and ships the directory beside it.
+#: its face with ``python -m threetears.evals.vega.measure_font`` and ships the directory beside it.
 TOYHOST_FONT = ChartFont(
     family="Toyface Grotesk, sans-serif",
     advances=dict.fromkeys(CHART_FONT_CHARACTERS, 0.7),

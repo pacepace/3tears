@@ -1827,7 +1827,7 @@
     },
     "threetears.evals.kernel.host.ChartFont": {
       "kind": "dataclass",
-      "signature": "ChartFont(family: str, advances: Mapping[str, float], fallback_advance: float)"
+      "signature": "ChartFont(family: str, advances: Mapping[str, float], fallback_advance: float, font_files: Mapping[str, str] = dict())"
     },
     "threetears.evals.kernel.host.ChartPalette": {
       "kind": "dataclass",
@@ -4289,6 +4289,18 @@
       "kind": "class",
       "signature": "SqliteDocumentStore(path: str | os.PathLike[str]) -> None"
     },
+    "threetears.evals.testing.BOUNDARY_RULES": {
+      "kind": "constant (tuple)",
+      "signature": ""
+    },
+    "threetears.evals.testing.BoundaryFinding": {
+      "kind": "dataclass",
+      "signature": "BoundaryFinding(path: Path, line: int, rule: BoundaryRule, target: str, reason: str)"
+    },
+    "threetears.evals.testing.BoundaryRule": {
+      "kind": "literal",
+      "signature": "'static_import'` | `'dynamic_import'` | `'attribute_reach'` | `'private_reach'` | `'patch'"
+    },
     "threetears.evals.testing.BuildConformanceHost": {
       "kind": "type alias",
       "signature": "Callable[[CompletionGuard], JobsConformanceHost]"
@@ -4331,11 +4343,7 @@
     },
     "threetears.evals.testing.nonpublic_evals_imports": {
       "kind": "function",
-      "signature": "nonpublic_evals_imports(*sources: Path | str) -> tuple[NonPublicImport, ...]"
-    },
-    "threetears.evals.testing.NonPublicImport": {
-      "kind": "dataclass",
-      "signature": "NonPublicImport(path: Path, line: int, module: str, name: str | None, reason: str)"
+      "signature": "nonpublic_evals_imports(*sources: Path | str) -> tuple[BoundaryFinding, ...]"
     },
     "threetears.evals.testing.READER_CONFORMANCE_CASES": {
       "kind": "constant (tuple)",
@@ -5431,7 +5439,7 @@
     },
     "threetears.evals.vega.write_font_metrics": {
       "kind": "function",
-      "signature": "write_font_metrics(advances: dict[str, float], *, fallback_advance: float, worst_label: str, worst_ratio: float, font: str, measured_with: str, probe_size: int, weights: list[int], path: Path = Path('<package>/src/threetears/evals/vega/font_metrics.json')) -> Path"
+      "signature": "write_font_metrics(advances: dict[str, float], *, fallback_advance: float, worst_label: str, worst_ratio: float, font: str, measured_with: str, probe_size: int, weights: list[int], font_files: Mapping[str, str], path: Path = Path('<package>/src/threetears/evals/vega/font_metrics.json')) -> Path"
     }
   }
 }

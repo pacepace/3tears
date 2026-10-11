@@ -13,10 +13,11 @@ intents and adds a picture, and decides nothing a reader is told.
 - :mod:`compiler` draws through one arm per chart type (:mod:`arms`); :mod:`spec_policy` is this
   renderer's own gate on the spec; :mod:`palette`, :mod:`text_metrics` and :mod:`render` are its
   theme, its measurements and its rasteriser. A host drawing in its own typeface measures it with
-  ``packages/evals/scripts/measure_font_metrics.py`` and declares it with :func:`load_chart_font`;
-  :func:`packaged_font` is the default face, Liberation Sans. A host drawing in its own colours declares a
-  palette read from an artifact of the packaged one's shape with :func:`load_palette`, which holds it to the
-  slot widths the chart vocabulary assigns; :func:`packaged_palette` is the default.
+  ``python -m threetears.evals.vega.measure_font`` (:mod:`measure_font`, a command rather than an import)
+  and declares it with :func:`load_chart_font`; :func:`packaged_font` is the default face, Liberation Sans. A
+  host drawing in its own colours declares a palette read from an artifact of the packaged one's shape with
+  :func:`load_palette`, which holds it to the slot widths the chart vocabulary assigns; :func:`packaged_palette`
+  is the default.
 
 **This module is the package's public root.** A host imports from here and from no module below it,
 and only the names in ``__all__``; ``tests/test_package_matrix.py`` holds that, and holds that nothing
