@@ -268,7 +268,9 @@ mount_fastmcp(
   `HOOK_TAIL_TIMEOUT_S` is logged, and the call returns as if there were no note.
 - **The one call timeout holds the whole call**, the caller and host resolvers and the hook with it. A call it
   stops is closed in the hook at its yield, so the hook's `finally` runs, and the client gets the timeout's
-  error result, naming the timeout that call read. `call_timeout_s` takes a number, checked positive at mount,
+  error result, naming the timeout that call read and saying the action may have completed, or begun a
+  write, before it was stopped: read before calling again (`job_poll` for a job it may have started, or the list
+  for what it was writing), or a retried launch is paid for twice. `call_timeout_s` takes a number, checked positive at mount,
   or a function, read once as each call starts: one answering anything but a positive number fails that call
   with a `ValueError` naming the value, before anything runs.
 

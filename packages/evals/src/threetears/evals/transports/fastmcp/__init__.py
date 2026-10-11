@@ -95,6 +95,16 @@ HOOK_TAIL_TIMEOUT_S = 10.0
 CallTimeout = float | Callable[[], float]
 
 
+#: What a caller does about a call the timeout stopped: the action may have finished, or begun a write, before it was
+#: stopped, so a call retried blind can launch — and pay for — the same work twice. Every action it names is in the
+#: engine's catalogue, which ``test_refusal_remedies.py`` reads it against, as it reads every remedy.
+_TIMED_OUT_REMEDY = (
+    "the action may have completed, or begun a write, before it was stopped, so read before calling it again: "
+    "job_poll for a job it may have started (run_launch, sweep_launch, analysis_generate), or the list for what it "
+    "was writing (runs_list, campaigns_list, case_sets_list)"
+)
+
+
 class CallTimedOut(Exception):
     """A call outlived the call timeout and was stopped before its action finished.
 
@@ -112,7 +122,7 @@ class CallTimedOut(Exception):
         Args:
             timeout_s: The timeout, in seconds.
         """
-        super().__init__(f"the call outlived its {timeout_s:g}s call timeout and was stopped")
+        super().__init__(f"the call outlived its {timeout_s:g}s call timeout and was stopped; {_TIMED_OUT_REMEDY}")
         self.timeout_s = timeout_s
 
 
@@ -634,7 +644,8 @@ class CatalogueTool(Tool):
         Returns:
             The result: text always; as structured content, the result model's JSON when the call
             succeeded, or ``{"refusal": {"kind": ..., "status": ...}}`` with the error flag when it was
-            refused; and the error flag alone, with text saying so, when it outlived the call timeout. A note the
+            refused; and the error flag alone, with text saying so and to read what it may have done before calling it
+            again, when it outlived the call timeout. A note the
             ``annotate`` hook answered follows the outcome's text as a text block of its own, and changes nothing
             else (:data:`CallAnnotator`).
         """
@@ -648,7 +659,7 @@ class CatalogueTool(Tool):
                 content=(
                     f"the call outlived this server's {stopped.timeout_s:g}s call timeout and was stopped. No "
                     "action's call waits on a model — work that does runs as a job — so this is a fault of the "
-                    "server's store or of the action, not something to wait out: report it"
+                    f"server's store or of the action, not something to wait out: report it. But {_TIMED_OUT_REMEDY}"
                 ),
                 is_error=True,
             )

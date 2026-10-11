@@ -6,7 +6,7 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### 3tears-evals: what adopting .10 found (gaps 40–44)
+### 3tears-evals: what adopting .10 found (gaps 40–47)
 
 - **A host resolver's refusal enters the `around` hook (gap 40).** The caller is known, so the `ToolCall` exists: the
   hook runs to its yield and is handed the refusal as its outcome, exactly as an action's, so a host's audit log
@@ -19,6 +19,11 @@ packages (bumped in lock-step).
   state through context variables its resolver resets on every call. A resolver answering a bare `OpsHost` works as
   before, with `context` `None`. The `ToolCall` is built once the host is known, and stays frozen; for a host
   resolver's refusal both fields are `None`. `HostResolution` is exported from `threetears.evals.transports.fastmcp`.
+- **A timed-out call says to read before calling again (gap 46).** `CallTimedOut`'s message, and the error result
+  `CatalogueTool.run` answers it with, say the action may have completed, or begun a write, before it was stopped,
+  and to read before calling it again: `job_poll` for a job it may have started, or the list for what it was
+  writing. A `run_launch` stopped after its job record was written, retried blind, was a second paid launch. The
+  text is read by the refusal-remedy reach check, so every action it names is one the catalogue has.
 
 ### 3tears-evals: the judge temperature measurement and the prompt-comparison test set (#633)
 
