@@ -48,7 +48,7 @@ from threetears.evals.ops.jobs import JobHandle, JobsStarted, sweep_job_id, swee
 from threetears.evals.ops.runs import LaunchArguments
 from threetears.evals.run.jobs import JOB_TIMEOUT_CAP_S
 from threetears.evals.run.launch import quote_launch, start_run
-from threetears.evals.kernel.job_leases import SWEEP_JOB, write_held_record
+from threetears.evals.kernel.job_leases import SWEEP_JOB, require_held, write_held_record
 from threetears.evals.run.lifecycle import get_run
 from threetears.observe import get_logger
 
@@ -251,8 +251,9 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep)
     The sweep's record is written as each arm's run is created and when the sweep ends, however it ends: a
     cancel — here, or asked on the record from another process — stops the arms in flight (each records
     ``cancelled``) and launches none after. Every write is the job's own guarded write
-    (:func:`~threetears.evals.kernel.job_leases.write_held_record`): once the record reads lost — the lease lapsed and a
-    reader somewhere wrote so, or this process shut down — the sweep launches nothing more and writes nothing
+    (:func:`~threetears.evals.kernel.job_leases.write_held_record`), and every arm's launch is preceded by the same
+    check (:func:`~threetears.evals.kernel.job_leases.require_held`): once the record reads lost — the lease lapsed and
+    a reader somewhere wrote so, or this process shut down — the sweep launches nothing more and writes nothing
     more, leaving the arms it launched to their own jobs.
 
     Args:
@@ -288,6 +289,15 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep)
             if failure:
                 slots.release()
                 break
+            # Fenced BEFORE the arm is launched, not only at the write after it: a sweep whose record reads lost
+            # would otherwise pay for one more arm that nothing records, whose run no sweep and no campaign names.
+            try:
+                await run_blocking(
+                    eval_host.blocking_executor, require_held, eval_host.storage, SWEEP_JOB, sweep.id, scope_id
+                )
+            except JobFenced:
+                slots.release()
+                raise
             judge = spec.judge_model or (judge_pin if judge_pin != spec.model else None)
             simulator = spec.simulator_model or simulator_pin
             try:

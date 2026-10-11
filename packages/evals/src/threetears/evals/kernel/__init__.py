@@ -143,6 +143,7 @@ from threetears.evals.kernel.job_leases import (
     RenewalVerdict,
     lease_lapsed,
     request_job_cancel,
+    require_held,
     settle_job_record,
     write_held_record,
 )
@@ -344,6 +345,7 @@ __all__ = [
     "RenewalVerdict",
     "lease_lapsed",
     "request_job_cancel",
+    "require_held",
     "settle_job_record",
     "write_held_record",
     "running_job",

@@ -37,14 +37,17 @@ from threetears.evals.kernel import (
     ConflictError,
     RUN_JOB,
     SHUTDOWN_CAUSE,
+    SWEEP_JOB,
     EvalAnalysisAttempt,
     EvalStorage,
     EvalSweep,
+    JobFenced,
     JobLeases,
     NotFoundError,
     StorageError,
     SweepArmRecord,
     ValidationFailedError,
+    require_held,
     settle_job_record,
 )
 from threetears.evals.ops import OpsHost, analyses_list, analysis_generate, job_cancel, job_poll, run_job_id, run_launch
@@ -520,6 +523,34 @@ async def _first_arm_running(host: OpsHost, job_id: str) -> None:
             await asyncio.sleep(0.005)
 
 
+def test_a_job_asks_whether_it_still_holds_its_record_before_it_spends_again() -> None:
+    """``require_held``: a live record passes, a lapsed one is written lost and refused, an ended one is refused."""
+    fixture = ops_fixture(store=ClockedStore())
+    storage = fixture.host.eval_host.storage
+    sweep = EvalSweep(
+        scope_id=TOYHOST_SCOPE,
+        campaign_id=fixture.campaign.id,
+        template_id=toyhost_template().id,
+        subject_id=TOYHOST_SUBJECT.subject_id,
+        arms=[SweepArmRecord(label="a", model=RUN_MODELS[0])],
+        max_concurrent_arms=1,
+        lease=JobLease(holder="this-process", expires_at=(T0 + timedelta(seconds=1)).isoformat()),
+    )
+    storage.save_sweep(sweep)
+
+    require_held(storage, SWEEP_JOB, sweep.id, TOYHOST_SCOPE)  # live: nothing raised, nothing written
+    assert storage.load_job_record(EvalSweep, sweep.id, TOYHOST_SCOPE)[0] == sweep
+
+    storage.save_sweep(sweep.model_copy(update={"lease": JobLease(holder="x", expires_at=T0.isoformat())}))
+    with pytest.raises(JobFenced, match="was lost; it starts nothing more"):
+        require_held(storage, SWEEP_JOB, sweep.id, TOYHOST_SCOPE)
+    lost, _ = storage.load_job_record(EvalSweep, sweep.id, TOYHOST_SCOPE)
+    assert lost is not None and lost.lost is not None, "the lapse was written, as any reader writes it"
+    with pytest.raises(JobFenced):
+        require_held(storage, SWEEP_JOB, sweep.id, TOYHOST_SCOPE)
+    require_held(storage, SWEEP_JOB, "never-stored", TOYHOST_SCOPE)
+
+
 async def test_a_sweep_another_process_runs_is_cancelled_from_there() -> None:
     holder = _sweeping_host(InMemoryDocumentStore(), job_lease_s=0.3)
     elsewhere = _other_process(holder)
@@ -549,7 +580,12 @@ async def test_a_sweep_whose_lease_lapsed_reads_lost_and_launches_nothing_more()
 
     await _until(lambda: not holder.launch.job_manager.is_task_active(sweep_id))
     after = await job_poll(elsewhere, job.job_id, TOYHOST_SCOPE)
-    assert after.state == "lost" and after.progress["arms_launched"] == 1, "the fenced sweep launched no further arm"
+    assert after.state == "lost"
+    # Counted in the store, not off the sweep's record: the fence makes that record unwritable, so an arm launched
+    # after the loss is exactly the one it could never name.
+    runs = holder.eval_host.storage.query_eval_runs(TOYHOST_SCOPE)
+    assert len(runs) == 1, f"the fenced sweep launched no further arm; the store holds {len(runs)} run(s)"
+    assert runs[0].overlays.get("prompt_style") == STYLES[0]
     sweep, _ = holder.eval_host.storage.load_job_record(EvalSweep, sweep_id, TOYHOST_SCOPE)
     assert sweep is not None and sweep.outcome == "cancelled" and sweep.lost is not None
 

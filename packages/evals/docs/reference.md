@@ -369,6 +369,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`refuse_an_undeclarable_design(design: CampaignDesign, *, behavior: str, template: EvalTemplate | None, profile: HostProfile) -> None`
 - **`request_job_cancel`** · function · Ask a job to stop by writing the request on its record, from any process.
   <br>`request_job_cancel(store: LeaseStore, record_id: str, scope_id: str, *, reason: str | None) -> bool`
+- **`require_held`** · function · Refuse to go on with a job whose record has ended under it: the check a job makes before it spends again.
+  <br>`require_held(store: LeaseStore, kind: LeasedJobKind[R], record_id: str, scope_id: str) -> None`
 - **`resolve_bar_name`** · function · Say what a bar names and where a result carries it, or why no result can.
   <br>`resolve_bar_name(name: str, *, rubric_dimensions: Mapping[str, RubricScale], goal_state_checks: Collection[str], measures: MeasureRegistry) -> BarName | UnreadableBarName`
 - **`resolve_context_identity`** · function · Return the identity a read surface should show for `run`.

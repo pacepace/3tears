@@ -1493,6 +1493,10 @@
       "kind": "function",
       "signature": "request_job_cancel(store: LeaseStore, record_id: str, scope_id: str, *, reason: str | None) -> bool"
     },
+    "threetears.evals.kernel.require_held": {
+      "kind": "function",
+      "signature": "require_held(store: LeaseStore, kind: LeasedJobKind[R], record_id: str, scope_id: str) -> None"
+    },
     "threetears.evals.kernel.resolve_bar_name": {
       "kind": "function",
       "signature": "resolve_bar_name(name: str, *, rubric_dimensions: Mapping[str, RubricScale], goal_state_checks: Collection[str], measures: MeasureRegistry) -> BarName | UnreadableBarName"

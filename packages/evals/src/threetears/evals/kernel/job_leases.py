@@ -234,6 +234,33 @@ def settle_job_record[R: EvalDocumentModel](
     )
 
 
+def require_held[R: EvalDocumentModel](
+    store: LeaseStore, kind: LeasedJobKind[R], record_id: str, scope_id: str
+) -> None:
+    """Refuse to go on with a job whose record has ended under it: the check a job makes before it spends again.
+
+    A job's own writes are fenced (:func:`write_held_record`), but a job that spends between two writes — a sweep
+    launching its next arm — would pay for work no write of its ever records once its record has ended elsewhere.
+    So it asks first: the record is read as every process reads it (:func:`settle_job_record`, which writes it lost
+    when its lease has lapsed), and one that has ended is refused. A record never stored is not refused.
+
+    Args:
+        store: Where the record lives.
+        kind: Its type.
+        record_id: Its id.
+        scope_id: Its scope.
+
+    Raises:
+        JobFenced: The record has ended — written lost by a reader, by a shutdown, or here because its lease lapsed.
+        ConflictError: The record kept changing while its lapse was being written; nothing was decided.
+        StorageError: A read or write failed.
+    """
+    record, _ = settle_job_record(store, kind, record_id, scope_id)
+    if record is not None and kind.ended(record):
+        how = "was lost" if _leased(record).lost is not None else "has ended"
+        raise JobFenced(f"{kind.name} job '{record_id}' {how}; it starts nothing more")
+
+
 def request_job_cancel(store: LeaseStore, record_id: str, scope_id: str, *, reason: str | None) -> bool:
     """Ask a job to stop by writing the request on its record, from any process.
 
@@ -573,6 +600,7 @@ __all__ = [
     "RenewalVerdict",
     "lease_lapsed",
     "request_job_cancel",
+    "require_held",
     "settle_job_record",
     "write_held_record",
 ]
