@@ -65,7 +65,12 @@ def _listing_status_filter(status: str | None) -> EvalRunStatus | None:
 
 
 def list_runs(
-    host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False
+    host: EvalHost,
+    scope_id: str,
+    *,
+    status: str | None = None,
+    include_archived: bool = False,
+    label: str | None = None,
 ) -> list[EvalRun]:
     """List eval runs in a scope, optionally filtered by status.
 
@@ -109,6 +114,8 @@ def list_runs(
         status: Optional run status filter (e.g. ``"completed"``). Unspecified,
             blank, or ``"all"`` (any case) lists every run.
         include_archived: Include operator-archived runs (default: exclude).
+        label: Only runs an operator gave this label (``EvalRun.labels``), compared after stripping it; None lists
+            every run. Like the archive predicate, it runs in Python over what the store returns.
 
     Returns:
         Eval runs in the scope matching the filters.
@@ -120,6 +127,8 @@ def list_runs(
     runs = host.storage.query_eval_runs(
         scope_id, status=_listing_status_filter(status), elide_payload=host.profile.listing_elisions
     )
+    if label is not None:
+        runs = [run for run in runs if label.strip() in run.labels]
     if include_archived:
         return runs
     return [run for run in runs if not run.archived]

@@ -2619,6 +2619,30 @@ class MeasureDeclaration(EvalBaseModel):
     value_range: tuple[float, float] | None = None
 
 
+#: The most labels one run carries, and the longest a label may be (#648). A label is a short name for a run, not
+#: a note about it: a sentence belongs in a campaign's insight or a report.
+RUN_LABELS_MAX = 16
+RUN_LABEL_MAX_LENGTH = 64
+
+
+def run_label_problem(label: str) -> str | None:
+    """Why ``label`` cannot name a run, or None when it can.
+
+    Args:
+        label: A candidate label, as given.
+
+    Returns:
+        The reason, as a clause, or None.
+    """
+    if not label.strip():
+        return "is blank"
+    if label != label.strip():
+        return "has leading or trailing whitespace"
+    if len(label) > RUN_LABEL_MAX_LENGTH:
+        return f"is {len(label)} characters, longer than {RUN_LABEL_MAX_LENGTH}"
+    return None
+
+
 class EvalRun(CoreDocumentModel):
     """One execution of a template (or explicit test case set) against one candidate model.
 
@@ -3292,6 +3316,17 @@ class EvalRun(CoreDocumentModel):
             "this says whether an operator still wants it counted, and only an operator writes it."
         ),
     )
+    labels: list[str] = Field(
+        default_factory=list,
+        max_length=RUN_LABELS_MAX,
+        description=(
+            "Names an operator gave the run (a baseline, a production snapshot), sorted and each once, so it can be "
+            "referred to by something other than its id and listed by name (`runs_list` with `label`). Curation "
+            "like `archived`, and like it in no identity key: setting or clearing one moves no variant key, "
+            "context key or fingerprint, and no lens reads it. Each label is 1 to 64 characters with no leading or "
+            "trailing whitespace. Empty on a run no one has labelled, and on a run stored before core v12."
+        ),
+    )
 
     # The run's job: which process runs it, a cancel asked of it, and how it was lost (core v10).
     lease: LeaseField = None
@@ -3344,6 +3379,24 @@ class EvalRun(CoreDocumentModel):
         if v != "eval_run":
             raise ValueError(f"doc_type must be 'eval_run', got '{v}'")
         return v
+
+    @field_validator("labels")
+    @classmethod
+    def _labels_are_short_names_each_once_in_order(cls, labels: list[str]) -> list[str]:
+        """Refuse a label that cannot name a run, a label given twice, and labels out of order.
+
+        Stored sorted and once each, so two runs carrying the same names carry the same list.
+
+        Raises:
+            ValueError: A label is blank, padded or too long, or the list repeats one or is unsorted.
+        """
+        for label in labels:
+            problem = run_label_problem(label)
+            if problem is not None:
+                raise ValueError(f"run label {label!r} {problem}")
+        if labels != sorted(set(labels)):
+            raise ValueError(f"run labels are stored sorted and each once; got {labels!r}")
+        return labels
 
     @model_validator(mode="after")
     def _replay_names_its_corpus(self) -> Self:
@@ -5135,6 +5188,9 @@ __all__ = [
     "EvalCassette",
     "EvalResult",
     "EvalRun",
+    "RUN_LABELS_MAX",
+    "RUN_LABEL_MAX_LENGTH",
+    "run_label_problem",
     "MeasureDeclaration",
     "EvalRunStatus",
     "EvalTemplate",

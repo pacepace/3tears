@@ -30,6 +30,14 @@ packages (bumped in lock-step).
   fixed lever's `read_residual` used to be refused at registration; it is now refused only without
   `resolves_into`. The `unverified_fold` sentence names the reader as a second way to test the fold. The
   open-problems entry is removed.
+- **A run can be labelled (#648); core schema v12.** `EvalRun.labels` holds the short names an operator gave a run
+  (a baseline, a production snapshot): sorted, each once, 1 to 64 characters, at most 16, and in no identity key, so
+  setting or clearing one moves no variant key, context key or bundle fingerprint. `ops.run_label(host, run_id,
+  scope_id, *, labels)` replaces them (an empty list clears them), written through the run document's conditional
+  read-modify-write so a writer moving the run keeps its edit; the `run_label` action takes them as `run_labels`.
+  `runs_list` (operation and action) and `run.list_runs` take `label=` to list only runs carrying one, and each
+  `RunLine` carries its `labels`. The v11 step is the identity, so a v11 run reads with none; a build before this one
+  refuses a v12 run as newer, so every process sharing a store upgrades together (MIGRATIONS.toml).
 
 ### 3tears-evals: what adopting .12 found (gaps 49–50)
 

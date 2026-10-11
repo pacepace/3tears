@@ -262,7 +262,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 8`
 - **`CORE_DOC_TYPES`** · constant (frozenset) · The kept documents, by `doc_type`: the `kept` entries of `DOC_TYPE_FACTS`, derived so the registry is the one place a type's lifecycle is decided.
 - **`CORE_SCHEMA_VERSION`** · constant (int) · The core version this build writes. Every bump appends one line here and one `CoreUpgrader`.
-  <br>`= 11`
+  <br>`= 12`
 - **`CORE_UPGRADERS`** · constant (tuple) · The registered steps, oldest first: `[s.from_version for s in CORE_UPGRADERS]` is `range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION)`.
 - **`DEFAULT_JUDGE_TEMPERATURE`** · constant (float) · The temperature every judge call is requested at unless a `JudgeConfig` for its dimension says otherwise, and that config's own default (#633).
   <br>`= 0.0`
@@ -1014,7 +1014,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`list_rubric_dims`** · function · List catalog rubric dims in a scope.
   <br>`list_rubric_dims(storage: DefinitionStore, scope_id: str, *, axis: str | None = None, universal: bool | None = None, archived: bool = False) -> list[CatalogRubricDim]`
 - **`list_runs`** · function · List eval runs in a scope, optionally filtered by status.
-  <br>`list_runs(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False) -> list[EvalRun]`
+  <br>`list_runs(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False, label: str | None = None) -> list[EvalRun]`
 - **`list_templates`** · function · List templates in a scope.
   <br>`list_templates(storage: DefinitionStore, scope_id: str, *, archived: bool = False, required_tool: str | None = None, universal: bool | None = None) -> list[EvalTemplate]`
 - **`load_run_as_listed`** · function · Load one run the way a listing loads it: without the payload paths the host declares a listing leaves out.
@@ -2101,6 +2101,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`run_get(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary`
 - **`run_job_id`** · function · The job id of a launched run.
   <br>`run_job_id(run_id: str) -> str`
+- **`run_label`** · function · Set a run's labels, replacing any it has; an empty list clears them (#648).
+  <br>`run_label(host: EvalHost, run_id: str, scope_id: str, *, labels: list[str]) -> RunLine`
 - **`run_launch`** · async function · Admit a template's launch — one run per model — and start its arms and runs as one job.
   <br>`run_launch(host: OpsHost, arguments: LaunchArguments, scope_id: str) -> JobsStarted`
 - **`runs_bisect`** · function · Split two runs' versioned inputs into those that differ, agree and cannot be decided, with each disclosure.
@@ -2112,7 +2114,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`runs_compared_text`** · function · Two runs compared as text: the arms, each reading with its delta and test, then every disclosure.
   <br>`runs_compared_text(compared: RunsCompared) -> str`
 - **`runs_list`** · function · The scope's runs.
-  <br>`runs_list(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False) -> RunListing`
+  <br>`runs_list(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False, label: str | None = None) -> RunListing`
 - **`scope_export`** · function · The scope's observations as flat rows, in CSV or JSON, for analysis elsewhere.
   <br>`scope_export(host: EvalHost, scope_id: str, *, format: str | None = None, status: str | None = 'completed', run_ids: list[str] | None = None) -> ScoreExport`
 - **`scope_frontier`** · function · Each subject's variants ranked on quality, cost and latency, and the cheapest that clears `bar`.
@@ -2831,7 +2833,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | Action | Class | Parameters | Description |
 |---|---|---|---|
 | `templates_list` | `read` | — | List the scope's active templates — what a launch can run. |
-| `runs_list` | `read` | `status?`, `include_archived?` | List the scope's runs, newest first. |
+| `runs_list` | `read` | `status?`, `include_archived?`, `label?` | List the scope's runs, newest first. |
 | `case_sets_list` | `read` | `case_set_filter?` | List the scope's named case sets, every version — what a launch can target by name. |
 | `campaigns_list` | `read` | `include_archived?` | List the scope's campaigns — the sets of runs an analysis reads. |
 
@@ -2886,6 +2888,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | Action | Class | Parameters | Description |
 |---|---|---|---|
 | `run_archive` | `write` | `run_id`, `archived?` | Archive a run (or restore it): out of every cohort, nothing destroyed. |
+| `run_label` | `write` | `run_id`, `run_labels` | Name a run with labels (or clear them): runs_list lists runs by one, no key moves. |
 | `campaign_archive` | `write` | `campaign_id`, `archived?` | Archive a campaign (or restore it): out of listings, nothing destroyed. |
 | `result_rate` | `write` | `result_id`, `rubric_dim`, `score`, `rating_reason` | Rate one judged dimension of one result, as an agent — kept beside people's ratings, never pooled. |
 | `analysis_archive` | `write` | `analysis_id`, `archived`, `archive_reason?` | Archive a stored analysis (or restore it): marked, its insights retracted, nothing destroyed. |
@@ -2939,6 +2942,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `judged_result_ids` | array of `string` or `null` | The results to freeze; omitted freezes every result of the runs. |
 | `judged_run_ids` | array of `string` | The judged runs whose stored results to freeze, as runs_list names them. |
 | `k_runs` | `integer` | Repeats of every case, for pass^k. |
+| `label` | `string` or `null` | List only runs carrying this label (run_label sets them); every run if unset. |
 | `labels` | array of `object` | Reader verdicts on the recorded memo, each {dimension, direction, quote, note?}: a dimension the template scores, a direction of low\|low_mid\|mid\|mid_high\|high, and the reader's words verbatim. They need recorded_analysis_id; the freeze stamps each with the template's criterion for its dimension. |
 | `launch_group_filter` | `string` or `null` | Only the calls one launch's case generation made; its runs carry this id. |
 | `launched_run_ids` | array of `string` or `null` | The runs the estimated launch made (the run ids its launch job names, as run_ids), with predicted_cost: each predicted cell then says how many of its observations came from other runs. |
@@ -2970,6 +2974,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `rubric_dim` | `string` | The judged dimension rated, spelled as the result's score spells it. |
 | `run_id` | `string` | A run's id, as runs_list or a launch's job names it. |
 | `run_ids` | array of `string` | The runs to put in the campaign, all in the caller's scope. |
+| `run_labels` | array of `string` | The run's labels, replacing any it has; [] clears them. Each 1 to 64 characters, stored sorted and each once. A label names the run (a baseline, a production snapshot) and moves no key or fingerprint. |
 | `run_status` | `'pending'` \| `'running'` \| `'completed'` \| `'failed'` \| `'cancelled'` \| `'budget_stopped'` \| `'exhausted'` or `string` | Read only runs with this status, or 'all'. Completed unless named: a run still going is still adding results. |
 | `sample_fraction` | `number` | The share of the run's judged results the second judge is asked about. |
 | `sample_seed` | `integer` | The seed the share is drawn with; the same seed draws the same results. |
