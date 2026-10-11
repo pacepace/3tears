@@ -48,7 +48,6 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.reporting import ScoreProjection
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.ops import (
-    job_poll,
     LaunchArguments,
     LaunchEstimate,
     history_launch_pricer,
@@ -64,7 +63,14 @@ from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_COST_CEILING_USD
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_REVIEWER_POOL
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template, toyhost_test_cases
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, TOYHOST_SUBJECT, OpsFixture, ops_fixture
+from packages.evals.tests.ops_support import (
+    CALLER,
+    TOYHOST_SCOPE,
+    TOYHOST_SUBJECT,
+    OpsFixture,
+    launched_runs,
+    ops_fixture,
+)
 
 #: The model the priced history is for, and the costs its three results record.
 PRICED_MODEL = "extractor-v2"
@@ -300,10 +306,10 @@ async def test_after_the_launch_each_predicted_cell_says_how_much_of_it_the_laun
     template_id = toyhost_template().id
     launching = _launching(template_id, PRICED_MODEL, k_runs=1)
     estimated = await _call(evals, fixture, {"action": "launch_estimate", **launching})
-    (job,) = (await run_launch(fixture.host, LaunchArguments(**launching), TOYHOST_SCOPE)).jobs
     async with asyncio.timeout(10):
-        while (await job_poll(fixture.host, job.job_id, TOYHOST_SCOPE)).state == "running":
-            await asyncio.sleep(0.01)
+        (run_id,) = await launched_runs(
+            fixture.host, await run_launch(fixture.host, LaunchArguments(**launching), TOYHOST_SCOPE)
+        )
     arguments = {"row_factor": "template_id", "column_factor": "model", "metric": "cost_usd"}
 
     outcome = await _call(
@@ -313,7 +319,7 @@ async def test_after_the_launch_each_predicted_cell_says_how_much_of_it_the_laun
             "action": "scope_pivot",
             **arguments,
             "predicted_cost": estimated.structured,
-            "launched_run_ids": [job.target_id],
+            "launched_run_ids": [run_id],
         },
     )
 
@@ -324,7 +330,7 @@ async def test_after_the_launch_each_predicted_cell_says_how_much_of_it_the_laun
     assert cell.n_unplanned == len(PRICED_COSTS), "the priced history pools in beside the launch's own results"
     assert f"{len(PRICED_COSTS)} observation(s) here are from runs the plan did not make" in outcome.text
     with pytest.raises(ValidationFailedError, match="no predicted_cost was given"):
-        scope_pivot(fixture.host.eval_host, TOYHOST_SCOPE, **arguments, launched_run_ids=[job.target_id])
+        scope_pivot(fixture.host.eval_host, TOYHOST_SCOPE, **arguments, launched_run_ids=[run_id])
 
 
 # =============================================================================

@@ -16,7 +16,7 @@ from threetears.evals.actions import Caller
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.kernel import DEFAULT_JOB_LEASE_S, EvalCampaign, EvalStorage
 from threetears.evals.kernel.host import EvalHost, HostProfile
-from threetears.evals.ops import AnalysisGeneration, JobStatus, OpsHost, job_poll
+from threetears.evals.ops import AnalysisGeneration, JobsStarted, JobStatus, OpsHost, await_job, job_poll
 from threetears.evals.run import LaunchSettings
 from threetears.evals.schema import DocumentStore
 from threetears.evals.storage import InMemoryDocumentStore
@@ -34,6 +34,7 @@ from packages.evals.tests.toyhost_memo import (
 
 __all__ = [
     "CALLER",
+    "launched_runs",
     "RUN_MODELS",
     "TOYHOST_SCOPE",
     "TOYHOST_SUBJECT",
@@ -153,3 +154,9 @@ async def settled(host: OpsHost, job_id: str, scope_id: str = TOYHOST_SCOPE) -> 
         while not (status := await job_poll(host, job_id, scope_id)).done:
             await asyncio.sleep(0.01)
     return status
+
+
+async def launched_runs(host: OpsHost, started: JobsStarted, scope_id: str = TOYHOST_SCOPE) -> list[str]:
+    """A launch's runs, once its job has ended: awaited in the foreground, and read off its final status."""
+    (status,) = await await_job(host, started, scope_id)
+    return list(status.run_ids)

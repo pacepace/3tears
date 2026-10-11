@@ -1,6 +1,6 @@
 """Read a judge temperature comparison's answers: per-dimension score variance and self-agreement at each setting (#633).
 
-:func:`~threetears.evals.run.judge_at_two_temperatures` re-judges a finished run's borderline cases at the pinned
+:func:`~threetears.evals.run.judge_temperature_work` re-judges a finished run's borderline cases at the pinned
 temperature and at the provider's default and hands back every answer
 (:class:`~threetears.evals.kernel.JudgeTemperatureAnswers`). :func:`read_judge_temperatures` reads them, by code that
 spends nothing:
@@ -281,7 +281,7 @@ def read_judge_temperatures(answers: JudgeTemperatureAnswers) -> JudgeTemperatur
     Spends nothing and reads nothing but ``answers``, so the same answers always read the same.
 
     Args:
-        answers: What :func:`~threetears.evals.run.judge_at_two_temperatures` asked and was answered.
+        answers: What :func:`~threetears.evals.run.judge_temperature_work` asked and was answered.
 
     Returns:
         The comparison: per dimension the two settings side by side, per setting every case, whether the two sides

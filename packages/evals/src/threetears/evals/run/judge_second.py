@@ -11,7 +11,7 @@ need a SECOND judge's answer to the same evidence, and this module asks it:
   and each dimension's movement read with an interval over the run's cases
   (:func:`~threetears.evals.analysis.judge_drift`). It detects movement; it cannot say which judge is right.
 
-Both are one operation, :func:`ask_second_judge`, over the machinery a judge repeat uses
+Both are one operation, :func:`second_judge_work`, over the machinery a judge repeat uses
 (:mod:`threetears.evals.run.judge_repeat`):
 
 - **The evidence the first judge read, or no second opinion.** Each result's judge input is rebuilt from what its
@@ -37,11 +37,17 @@ import random
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import ValidationError as PydanticValidationError
 
-from threetears.evals.schema.base import EvalBaseModel
+from pydantic import Field, field_validator
+
+from threetears.evals.kernel.job_leases import LeasedJobKind
+from threetears.evals.run.job_work import JobOutcome, JobRecorder, JobWork, end_record, leased_job_kind
+from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
+from threetears.evals.schema.job_lease import CancelRequestedAtField, CancelRequestReasonField, LeaseField, LostField
+from threetears.evals.schema.versioning import REGENERABLE_SCHEMA_VERSION
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
 from threetears.evals.schema.models import (
     NON_TERMINAL_RUN_STATUSES,
@@ -49,7 +55,9 @@ from threetears.evals.schema.models import (
     EvalRun,
     SecondJudge,
     SecondJudgeScore,
+    SchemaVersion,
     SecondJudging,
+    utc_now_iso,
 )
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.out_of_run import OutOfRunBudget, PlannedCall
@@ -374,7 +382,7 @@ async def estimate_second_judge(
 ) -> SecondJudgeEstimate:
     """Price asking a second judge about a run against the cap it would be held to, and make no call.
 
-    The same collection, sample, calls and admission :func:`ask_second_judge` makes, so ``would_start`` is its answer.
+    The same collection, sample, calls and admission :func:`second_judge_work` makes, so ``would_start`` is its answer.
 
     Args:
         host: The host: the run's store and the judge clients.
@@ -391,7 +399,7 @@ async def estimate_second_judge(
 
     Raises:
         NotFoundError: No run with that id, or a record it names does not load.
-        ValidationFailedError: The run cannot be asked about (see :func:`ask_second_judge`).
+        ValidationFailedError: The run cannot be asked about (see :func:`second_judge_work`).
         ValueError: The host supplies no completion clients.
     """
     prepared = await _prepare(
@@ -432,25 +440,85 @@ async def estimate_second_judge(
     )
 
 
-async def ask_second_judge(
+#: Which operation asked for a second judge's pass: a seeded share's agreement (``judge_second``) or every judged
+#: result's drift under a changed judge (``judge_drift_check``).
+SecondJudgeAskedBy = Literal["judge_second", "judge_drift_check"]
+
+
+class EvalSecondJudgePass(EvalDocumentModel):
+    """One second judge's pass over a finished run: what was asked, how it ended, and its report — the record its job writes.
+
+    The pass's scores are recorded on the results it asked about (:class:`~threetears.evals.schema.models.SecondJudging`,
+    each naming this record's id as its ``pass_id``), so what they say — agreement and drift — is read off the stored
+    results whenever it is asked. This is the record of the pass itself: written as it starts (``running``, carrying the
+    job's lease) and again as it ends, with the :class:`SecondJudgeReport` once it has run, so a pass started from a
+    transport is answered by polling its job, in any process.
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid7()))
+    doc_type: Literal["eval_second_judge_pass"] = "eval_second_judge_pass"
+    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
+    scope_id: str = Field(min_length=1)
+
+    run_id: str = Field(min_length=1, description="The finished run whose stored evidence the second judge read.")
+    asked_by: SecondJudgeAskedBy = Field(description="The operation that asked: judge_second or judge_drift_check.")
+    judge: SecondJudge = Field(description="The second judge: its model, its prompts, its temperature.")
+    sample_fraction: float = Field(gt=0.0, le=1.0, description="The share of the run's judgeable results asked about.")
+    sample_seed: int = Field(description="The seed the share was drawn with.")
+    result_ids: list[str] | None = Field(
+        default=None, description="The results the share was drawn from; None for every result of the run."
+    )
+    outcome: JobOutcome = "running"
+    report: SecondJudgeReport | None = Field(
+        default=None, description="What the pass asked, left out and spent; set once it has run to its end."
+    )
+    detail: str | None = Field(default=None, description="Why it ended other than completed.")
+    created_at: str = Field(default_factory=utc_now_iso)
+    ended_at: str | None = None
+    lease: LeaseField = None
+    cancel_requested_at: CancelRequestedAtField = None
+    cancel_request_reason: CancelRequestReasonField = None
+    lost: LostField = None
+
+    @field_validator("doc_type")
+    @classmethod
+    def check_doc_type(cls, v: str) -> str:
+        """Reject documents loaded into the wrong model class."""
+        if v != "eval_second_judge_pass":
+            raise ValueError(f"doc_type must be 'eval_second_judge_pass', got '{v}'")
+        return v
+
+
+#: A second judge's pass record.
+SECOND_JUDGE_JOB: LeasedJobKind[EvalSecondJudgePass] = leased_job_kind("second judge", EvalSecondJudgePass)
+
+#: A pass's wall-clock ceiling as a job: generous, since every call is bounded by its client and the pass stops on an
+#: account refusal; it exists so a pass whose provider hangs is ended rather than held forever.
+SECOND_JUDGE_BUDGET_S = 6 * 3600.0
+
+
+async def second_judge_work(
     host: EvalHost,
     run_id: str,
     scope_id: str,
     *,
     judge: SecondJudge,
     out_of_run_cap_usd: float | None,
+    asked_by: SecondJudgeAskedBy = "judge_second",
     sample_fraction: float = 1.0,
     seed: int = DEFAULT_SECOND_JUDGE_SEED,
     result_ids: Sequence[str] | None = None,
-) -> SecondJudgeReport:
-    """Ask a second judge to score a seeded share of a finished run's judged results, and record each beside its scores.
+) -> JobWork[EvalSecondJudgePass]:
+    """Admit a second judge's pass over a finished run — every call priced and admitted, none made — as work to run.
 
-    Every call is priced and admitted against ``out_of_run_cap_usd`` before the first is sent, so a pass the cap
-    refuses has spent nothing. Results are asked one after another, each one's record written as soon as its calls
-    return, so a pass cut off partway keeps what it paid for. What the pairs say — agreement
-    (:func:`~threetears.evals.analysis.inter_judge_agreement`) and drift (:func:`~threetears.evals.analysis.judge_drift`)
-    — is read off the stored pairs, by the same code wherever the results are read
-    (:func:`~threetears.evals.ops.judge_second` reads both over the pass it ran).
+    The call half of the pass: the run is collected and refused here, the second judge built over budgeted clients,
+    and every call, parse retries included, priced on the client it will be made on and admitted against
+    ``out_of_run_cap_usd``, so a pass the cap refuses is refused here with nothing spent. The returned work makes the
+    calls, one result after another, writing each result's :class:`~threetears.evals.schema.models.SecondJudging` as
+    soon as its calls return (so a pass cut off part-way keeps what it paid for), and ends its record with the
+    :class:`SecondJudgeReport`. Each call is ledgered under purpose ``second_judge``, stamped with the run: measurement
+    cost on its own line, never the candidate's. Run it as a job (:func:`~threetears.evals.run.start_job_work`) or in
+    the foreground (:func:`~threetears.evals.run.run_job_work`).
 
     Args:
         host: The host: the run's store, its judge clients, and how a judge call that raised reads.
@@ -459,13 +527,14 @@ async def ask_second_judge(
         judge: The second judge: the model every dim is sent to, the prompts, the temperature.
         out_of_run_cap_usd: The most the pass's calls may be priced at together; ``None`` when the host enforces
             no out-of-run cap.
+        asked_by: The operation asking, recorded on the pass.
         sample_fraction: The share of the run's judgeable results to ask about, in ``(0, 1]``; 1 asks about every
             one, as a drift check does.
         seed: The seed the share is drawn with.
         result_ids: The results to draw from; ``None`` for every result of the run.
 
     Returns:
-        What was asked, and what it cost apart from the candidate.
+        The admitted work; its record is the pass, whose id every entry it records names.
 
     Raises:
         NotFoundError: No run with that id, or a record it names does not load.
@@ -486,15 +555,62 @@ async def ask_second_judge(
         sample_fraction=sample_fraction,
         seed=seed,
     )
+    try:
+        for client, calls in prepared.calls:
+            client.admit(calls)
+    except BaseException:
+        await prepared.service.aclose()
+        raise
+    record = EvalSecondJudgePass(
+        scope_id=scope_id,
+        run_id=prepared.collected.run.id,
+        asked_by=asked_by,
+        judge=judge,
+        sample_fraction=sample_fraction,
+        sample_seed=seed,
+        result_ids=None if result_ids is None else list(result_ids),
+    )
+
+    async def ask(recorder: JobRecorder[EvalSecondJudgePass]) -> EvalSecondJudgePass:
+        report = await _ask(
+            host,
+            prepared,
+            scope_id,
+            pass_id=record.id,
+            judge=judge,
+            fraction=sample_fraction,
+            seed=seed,
+            cap_usd=out_of_run_cap_usd,
+        )
+        return end_record(recorder.record, "completed", report=report)
+
+    return JobWork(
+        kind=SECOND_JUDGE_JOB, record=record, run=ask, budget_s=SECOND_JUDGE_BUDGET_S, discard=prepared.service.aclose
+    )
+
+
+async def _ask(
+    host: EvalHost,
+    prepared: _Prepared,
+    scope_id: str,
+    *,
+    pass_id: str,
+    judge: SecondJudge,
+    fraction: float,
+    seed: int,
+    cap_usd: float | None,
+) -> SecondJudgeReport:
+    """Make an admitted pass's calls, result by result, recording each result's entry as its calls return.
+
+    Returns:
+        What was asked, and what it cost apart from the candidate.
+    """
     collected = prepared.collected
-    pass_id = str(uuid.uuid7())
     judged: list[str] = []
     unwritten: list[str] = []
     paired = unanswered = 0
     stopped: str | None = None
     async with prepared.service:
-        for client, calls in prepared.calls:
-            client.admit(calls)
         for planned, context in zip(collected.planned, prepared.contexts, strict=True):
             outcomes = await judge_dims(
                 template=planned.inputs.template,
@@ -502,9 +618,7 @@ async def ask_second_judge(
                 context=context,
                 only=frozenset(planned.dims),
             )
-            entry = _judging_of(
-                planned.result, outcomes, pass_id=pass_id, judge=judge, fraction=sample_fraction, seed=seed
-            )
+            entry = _judging_of(planned.result, outcomes, pass_id=pass_id, judge=judge, fraction=fraction, seed=seed)
             paired += sum(1 for score in entry.scores if score.second is not None)
             unanswered += sum(1 for score in entry.scores if score.second is None)
             if await run_blocking(host.blocking_executor, _record, host.storage, planned.result.id, scope_id, entry):
@@ -523,7 +637,7 @@ async def ask_second_judge(
         run_id=collected.run.id,
         pass_id=pass_id,
         judge=judge,
-        sample_fraction=sample_fraction,
+        sample_fraction=fraction,
         sample_seed=seed,
         eligible=collected.eligible,
         sampled=sorted(planned.result.id for planned in collected.planned),
@@ -535,7 +649,7 @@ async def ask_second_judge(
         stopped=stopped,
         calls_made=len(spends),
         cost_usd=None if None in costs else math.fsum(c for c in costs if c is not None),
-        cap_usd=out_of_run_cap_usd,
+        cap_usd=cap_usd,
     )
     log.info(
         "eval.judge_second run=%s pass=%s model=%s sampled=%d judged=%d paired=%d unanswered=%d calls=%d cost=%s",
@@ -629,9 +743,13 @@ def _record(storage: EvalStorage, result_id: str, scope_id: str, entry: SecondJu
 
 __all__ = [
     "DEFAULT_SECOND_JUDGE_SEED",
+    "SECOND_JUDGE_BUDGET_S",
+    "SECOND_JUDGE_JOB",
+    "EvalSecondJudgePass",
+    "SecondJudgeAskedBy",
     "SecondJudgeEstimate",
     "SecondJudgeReport",
     "SecondJudgeSkip",
     "estimate_second_judge",
-    "ask_second_judge",
+    "second_judge_work",
 ]

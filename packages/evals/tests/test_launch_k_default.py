@@ -36,7 +36,15 @@ from packages.evals.tests.fixtures.courierhost import (
     courier_launch_host,
 )
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
-from packages.evals.tests.ops_support import CALLER, RUN_MODELS, TOYHOST_SCOPE, TOYHOST_SUBJECT, OpsFixture, ops_fixture
+from packages.evals.tests.ops_support import (
+    CALLER,
+    RUN_MODELS,
+    TOYHOST_SCOPE,
+    TOYHOST_SUBJECT,
+    OpsFixture,
+    launched_runs,
+    ops_fixture,
+)
 
 
 def test_the_default_is_more_than_one_observation() -> None:
@@ -53,9 +61,9 @@ def evals() -> MountedTool:
     return eval_catalogue().mount_all(standard_tools())[0]
 
 
-def _stored_k(fixture: OpsFixture, started: JobsStarted) -> set[int]:
+async def _stored_k(fixture: OpsFixture, started: JobsStarted) -> set[int]:
     storage = fixture.host.eval_host.storage
-    runs = [storage.load_eval_run(job.target_id, TOYHOST_SCOPE) for job in started.jobs]
+    runs = [storage.load_eval_run(run_id, TOYHOST_SCOPE) for run_id in await launched_runs(fixture.host, started)]
     assert runs and all(run is not None for run in runs)
     return {run.k_runs for run in runs if run is not None}
 
@@ -68,7 +76,7 @@ async def test_ops_run_launch_stores_the_default_when_the_arguments_name_none() 
 
     started = await run_launch(fixture.host, arguments, TOYHOST_SCOPE)
 
-    assert _stored_k(fixture, started) == {DEFAULT_LAUNCH_K_RUNS}
+    assert await _stored_k(fixture, started) == {DEFAULT_LAUNCH_K_RUNS}
 
 
 async def test_the_run_launch_action_stores_the_default_when_the_call_names_none(evals: MountedTool) -> None:
@@ -83,7 +91,7 @@ async def test_the_run_launch_action_stores_the_default_when_the_call_names_none
     outcome = await evals.call(arguments, host=fixture.host, caller=CALLER)
 
     assert not outcome.is_error, outcome.text
-    assert _stored_k(fixture, JobsStarted.model_validate(outcome.structured)) == {DEFAULT_LAUNCH_K_RUNS}
+    assert await _stored_k(fixture, JobsStarted.model_validate(outcome.structured)) == {DEFAULT_LAUNCH_K_RUNS}
 
 
 async def test_ops_launch_estimate_prices_the_default_when_the_call_names_none() -> None:

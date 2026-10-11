@@ -33,6 +33,7 @@ import pytest
 
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink, CellSpanWindow, VariantConfig
 from threetears.evals.kernel.cassettes import CellCassettes
+from threetears.evals.kernel import JobLeases
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.identity import resolve_variant_identity
@@ -42,8 +43,10 @@ from threetears.evals.analysis import JudgeTemperatureComparison, read_judge_tem
 from threetears.evals.run import (
     borderline_dims,
     estimate_judge_repeat,
+    EvalJudgeTemperatureCheck,
     estimate_judge_temperature_comparison,
-    judge_at_two_temperatures,
+    judge_temperature_work,
+    run_job_work,
 )
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService
@@ -240,8 +243,21 @@ async def _judged_run(judge: _Judge, *, cases: int = 4, **run_fields: Any) -> tu
 async def compare_judge_temperatures(
     host: EvalHost, run_id: str, scope_id: str, **options: Any
 ) -> JudgeTemperatureComparison:
-    """Ask at the two temperatures and read the answers — what the ``judge_temperature`` operation does."""
-    return read_judge_temperatures(await judge_at_two_temperatures(host, run_id, scope_id, **options))
+    """Ask at the two temperatures in the foreground and read the answers off the comparison's own record.
+
+    What the ``judge_temperature`` operation's job does, awaited here as a script awaits it; the record is also
+    checked to hold what was read, so every comparison these tests make shows it was kept.
+    """
+    leases = JobLeases(host.storage, blocking_executor=host.blocking_executor)
+    try:
+        work = await judge_temperature_work(host, run_id, scope_id, **options)
+        ended = await run_job_work(work, store=host.storage, executor=host.blocking_executor, leases=leases)
+    finally:
+        await leases.shut_down()
+    stored, _ = host.storage.load_job_record(EvalJudgeTemperatureCheck, ended.id, scope_id)
+    assert stored is not None and stored.outcome == "completed" and stored.answers is not None, ended.detail
+    assert stored.answers == ended.answers
+    return read_judge_temperatures(stored.answers)
 
 
 def _results(host: EvalHost, run_id: str) -> list[EvalResult]:

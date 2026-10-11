@@ -33,7 +33,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import partial
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NamedTuple, Protocol, TypeVar, get_args
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NamedTuple, Protocol, TypeVar, cast, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
@@ -1662,10 +1662,82 @@ async def start_run(
             a margin on a measure that is not a core rate measure or that is not between 0 and 1, or any
             refusal the kind's launcher makes.
     """
-    # The host's settings, read ONCE for the whole launch: every refusal below and every arm's tail
-    # reads this snapshot, so a hot reload part-way cannot refuse, after its generation was paid for, a
-    # launch admitted under the figures it started with.
-    return await _start_run(
+    # Admitted, then started: the host's settings are read ONCE for the whole launch (in admit_launch), so a hot
+    # reload part-way cannot refuse, after its generation was paid for, a launch admitted under the figures it
+    # started with.
+    return await (
+        await admit_launch(
+            host,
+            template_id=template_id,
+            subject_id=subject_id,
+            models=models,
+            k_runs=k_runs,
+            n_variations=n_variations,
+            variation_model=variation_model,
+            judge_model=judge_model,
+            judge_config_ids=judge_config_ids,
+            simulator_model=simulator_model,
+            cassette_mode=cassette_mode,
+            cassette_corpus_id=cassette_corpus_id,
+            overlays=overlays,
+            apparatus_settings=apparatus_settings,
+            max_cost_usd=max_cost_usd,
+            max_metered_calls=max_metered_calls,
+            scope_id=scope_id,
+            launch_group=launch_group,
+            admission=admission,
+            cell_timeout_s=cell_timeout_s,
+            case_set=case_set,
+            margins=margins,
+            measure_latency=measure_latency,
+        )
+    ).start()
+
+
+async def admit_launch(
+    host: LaunchHost,
+    *,
+    template_id: str,
+    subject_id: str,
+    models: list[str],
+    k_runs: int = DEFAULT_LAUNCH_K_RUNS,
+    n_variations: int = 0,
+    variation_model: str | None = None,
+    judge_model: str | None = None,
+    judge_config_ids: dict[str, str] | None = None,
+    simulator_model: str | None = None,
+    cassette_mode: str | None = "off",
+    cassette_corpus_id: str | None = None,
+    overlays: Mapping[str, Any] | None = None,
+    apparatus_settings: Mapping[str, Any] | None = None,
+    max_cost_usd: float | None = None,
+    max_metered_calls: int | None = None,
+    scope_id: str,
+    launch_group: LaunchGroup | None = None,
+    admission: AdmissionTicket | None = None,
+    cell_timeout_s: float | None = None,
+    case_set: CaseSetRef | None = None,
+    margins: Mapping[str, float] | None = None,
+    measure_latency: bool = False,
+) -> AdmittedLaunch:
+    """The first half of :func:`start_run`: every refusal it makes and every arm priced — no launcher run, nothing spent.
+
+    Takes :func:`start_run`'s arguments, reads the host's settings once, admits the launch against the host's
+    admission ceiling (holding the room until it is started or discarded), loads and refuses the template, and plans
+    and prices every arm by the launch's one rule. What it returns starts the launch
+    (:meth:`AdmittedLaunch.start`): the kinds' launchers run there — a generating launch's case generation is
+    paid for there — and the runs start together. A transport admits in its call and starts in a job
+    (:func:`~threetears.evals.ops.run_launch`), so its call waits on no model.
+
+    Args and Raises:
+        As :func:`start_run`, but for the refusals a kind's launcher makes, which :meth:`AdmittedLaunch.start`
+        raises.
+
+    Returns:
+        The admitted launch.
+    """
+    # The host's settings, read ONCE for the whole launch: every refusal and every arm's tail reads this snapshot.
+    return await _admit_run(
         host,
         host.settings(),
         template_id=template_id,
@@ -1842,7 +1914,16 @@ def _refuse_launch_arguments(
     return mode
 
 
-async def _start_run(
+async def _start_run(host: LaunchHost, settings: LaunchSettings, **arguments: Any) -> list[EvalRun]:
+    """:func:`start_run` under a settings snapshot its caller read: :func:`_admit_run`, then the admitted launch started.
+
+    Raises:
+        See :func:`start_run`.
+    """
+    return await (await _admit_run(host, settings, **arguments)).start()
+
+
+async def _admit_run(
     host: LaunchHost,
     settings: LaunchSettings,
     *,
@@ -1864,18 +1945,21 @@ async def _start_run(
     scope_id: str,
     launch_group: LaunchGroup | None,
     admission: AdmissionTicket | None,
-    priced: _PricedArms | None = None,
+    priced_arms: _PricedArms | None = None,
     cell_timeout_s: float | None = None,
     case_set: CaseSetRef | None = None,
     margins: Mapping[str, float] | None = None,
     measure_latency: bool = False,
-) -> list[EvalRun]:
-    """:func:`start_run` under a settings snapshot its caller read — the launch's own, or a battery's.
+) -> AdmittedLaunch:
+    """:func:`admit_launch` under a settings snapshot its caller read — the launch's own, or a battery's.
 
-    Args and Returns as :func:`start_run`; ``settings`` is the one read every refusal and every arm's
-    tail is made under. ``priced`` is the battery's: its arms as its pre-flight already planned and priced
-    them under the same snapshot, which this launch then carries rather than pricing a second time —
-    ``None`` for a launch that prices its own arms.
+    Args as :func:`start_run`; ``settings`` is the one read every refusal and every arm's tail is made under.
+    ``priced_arms`` is the battery's: its arms as its pre-flight already planned and priced them under the same
+    snapshot, which this launch then carries rather than pricing a second time — ``None`` for a launch that prices
+    its own arms.
+
+    Returns:
+        The admitted launch: every refusal made and every arm priced, no launcher run.
 
     Raises:
         See :func:`start_run`.
@@ -1911,15 +1995,15 @@ async def _start_run(
         case_set=case_set,
     )
 
-    async def prepare(group: LaunchGroup, dispatched: _Dispatched) -> list[EvalRun]:
-        """Price every arm, then hand each arm, one per model, to the kind's launcher.
+    async def priced(group: LaunchGroup, dispatched: _Dispatched) -> list[LaunchRequest]:
+        """Every arm's request, planned and priced — no launcher has run, nothing is built and nothing spent.
 
         Args:
             group: The launch the runs are prepared into.
             dispatched: What the dispatch resolved.
 
         Returns:
-            The prepared runs, one per model in the order given.
+            The priced requests, one per model in the order given.
         """
         requests = _arm_requests(
             host,
@@ -1948,9 +2032,14 @@ async def _start_run(
         # pays for the generation the arms share and what builds an arm's clients, so pricing an arm after
         # it would refuse a launch already billed. Priced exactly once — here, or by the battery's
         # pre-flight, whose plans the arms then carry.
-        requests = (
-            await price_arms(host, dispatched.launchable, requests) if priced is None else priced.carried_by(requests)
+        return (
+            await price_arms(host, dispatched.launchable, requests)
+            if priced_arms is None
+            else (priced_arms.carried_by(requests))
         )
+
+    async def launched(dispatched: _Dispatched, requests: list[LaunchRequest]) -> list[EvalRun]:
+        """Hand each priced arm, one per model, to the kind's launcher — where a generating launch's calls are made."""
         return [await dispatched.launchable.launch(request) for request in requests]
 
     async def dispatched_once() -> _Dispatched:
@@ -1961,26 +2050,31 @@ async def _start_run(
         """
         # A battery's launch runs the template its pre-flight loaded and priced, never one re-read since:
         # a template edited mid-battery would otherwise launch under plans made for another.
-        return priced.dispatched if priced is not None else await dispatch()
+        return priced_arms.dispatched if priced_arms is not None else await dispatch()
+
+    async def prepare(_group: LaunchGroup, formed: tuple[_Dispatched, list[LaunchRequest]]) -> list[EvalRun]:
+        return await launched(*formed)
 
     # Preparing arms into a caller's group: that caller admitted the launch, and it starts the
-    # group once every arm is prepared or abandons it on a refusal, so this call only prepares.
+    # group once every arm is prepared or abandons it on a refusal, so this launch only prepares.
     if launch_group is not None:
-        return await prepare(launch_group, await dispatched_once())
+        dispatched = await dispatched_once()
+        return AdmittedLaunch.into(launch_group, (dispatched, await priced(launch_group, dispatched)), prepare)
 
-    async def form() -> tuple[LaunchGroup, _Dispatched]:
-        """Make the template's refusals, then form the launch's group: one arm per model.
+    async def form() -> tuple[LaunchGroup, tuple[_Dispatched, list[LaunchRequest]]]:
+        """Make the template's refusals, form the launch's group — one arm per model — and price every arm.
 
         Returns:
-            The group, and what the dispatch resolved.
+            The group, and what the dispatch resolved with the priced requests.
         """
         dispatched = await dispatched_once()
-        return LaunchGroup(candidate_models=models), dispatched
+        group = LaunchGroup(candidate_models=models)
+        return group, (dispatched, await priced(group, dispatched))
 
     # This call is the whole launch. A caller holding a ticket for several launches (the battery)
     # hands this one its share rather than letting it compete for room with launches that arrived
     # after the caller was admitted.
-    return await launch_as_group(
+    return await admit_group(
         host,
         max(1, len(models)),
         settings=settings,
@@ -2664,6 +2758,208 @@ class _PricedArms:
         ]
 
 
+class AdmittedLaunch:
+    """A launch admitted, refused where it would be and priced — every arm's launcher not yet run, nothing spent.
+
+    The two halves of a launch, apart. :func:`admit_group` (and :func:`admit_launch` over it) makes everything a
+    launch checks before it spends: the arm count, the admission ceiling (the room it reserves is held here), the
+    template's refusals and every arm's price. :meth:`start` makes everything that spends: each arm's launcher —
+    which pays for a generating launch's cases and builds the arm's clients — and the group's start. A transport
+    admits in its call and starts in a job, so no call it serves waits on a model; a script does both in a row
+    (:func:`start_run`).
+
+    One that will not be started is :meth:`discard`-ed, which hands its reserved room back.
+    """
+
+    def __init__(
+        self,
+        host: LaunchHost | None,
+        group: LaunchGroup,
+        formed: Any,
+        prepare: Callable[[LaunchGroup, Any], Awaitable[list[EvalRun]]],
+        *,
+        event: str,
+        ticket: AdmissionTicket | None,
+        owns_group: bool,
+        attach: Callable[[list[EvalRun]], Awaitable[None]] | None = None,
+        detach: Callable[[list[EvalRun]], Awaitable[None]] | None = None,
+    ) -> None:
+        """Hold an admitted launch; built by :func:`admit_group` and :meth:`into`, never directly.
+
+        Args:
+            host: The host; its job manager starts the group. ``None`` only for arms prepared into a caller's group.
+            group: The launch's group, formed.
+            formed: What the caller's ``form`` returned beside the group, for ``prepare``.
+            prepare: Prepares every arm into the group — the half that spends.
+            event: How the group's log lines begin.
+            ticket: The admission reservation held for the launch; ``None`` when a caller holds it.
+            owns_group: Whether :meth:`start` starts the group, or only prepares into a caller's.
+            attach: Records the prepared runs before they start.
+            detach: Undoes ``attach`` when the group is abandoned after it landed.
+        """
+        self._host = host
+        self._group = group
+        self._formed = formed
+        self._prepare = prepare
+        self._event = event
+        self._ticket = ticket
+        self._owns_group = owns_group
+        self._attach = attach
+        self._detach = detach
+        self._used = False
+
+    @classmethod
+    def into(
+        cls, group: LaunchGroup, formed: Any, prepare: Callable[[LaunchGroup, Any], Awaitable[list[EvalRun]]]
+    ) -> AdmittedLaunch:
+        """Arms admitted into a caller's group: :meth:`start` prepares them, and the caller starts the group.
+
+        Args:
+            group: The caller's group, which the caller admitted and starts.
+            formed: What the arms' admission resolved, for ``prepare``.
+            prepare: Prepares the arms into the group.
+
+        Returns:
+            The admitted arms.
+        """
+        return cls(None, group, formed, prepare, event="", ticket=None, owns_group=False)
+
+    @property
+    def group(self) -> LaunchGroup:
+        """The launch's group: its id is every run's ``launch_group_id``."""
+        return self._group
+
+    def _use(self) -> None:
+        if self._used:
+            raise RuntimeError(f"launch group {self._group.id} was already started or discarded")
+        self._used = True
+
+    async def start(self) -> list[EvalRun]:
+        """Prepare every arm — the launchers run, a generating launch's calls are made — and start them together.
+
+        A failure anywhere, a cancel included, abandons the group — every prepared member's clients are released —
+        and undoes ``attach`` through ``detach`` if it had landed. The reservation is released however it ends:
+        started runs are live tasks that count on their own, and a refused launch's share goes back.
+
+        Returns:
+            The started runs (prepared only, into a caller's group), as ``prepare`` returned them.
+
+        Raises:
+            RuntimeError: Already started or discarded.
+            ValidationFailedError: Any refusal ``prepare`` makes.
+        """
+        self._use()
+        if not self._owns_group or self._host is None:
+            return await self._prepare(self._group, self._formed)
+        group, job_manager = self._group, self._host.job_manager
+        try:
+            runs: list[EvalRun] = []
+            attached = False
+            try:
+                runs = await self._prepare(group, self._formed)
+                if self._attach is not None:
+                    attaching = asyncio.ensure_future(self._attach(runs))
+                    cancelled_while_attaching = await wait_through_cancellation(attaching)
+                    attaching.result()
+                    attached = True
+                    if cancelled_while_attaching:
+                        raise asyncio.CancelledError
+                await job_manager.start_group(group.members, measure_latency=bool(group.measure_latency))
+            except BaseException:
+                log.warning("%s group=%s abandoned before starting", self._event, group.id)
+                await group.abandon()
+                if attached and self._detach is not None:
+                    # The runs never started, so whatever recorded them must not list them.
+                    await self._detach(runs)
+                raise
+            log.info("%s group=%s started runs=%s", self._event, group.id, [run.id for run in runs])
+            return runs
+        finally:
+            if self._ticket is not None:
+                self._ticket.release()
+
+    async def discard(self) -> None:
+        """Give the launch up unstarted: its reserved room handed back, whatever its arms built released. Idempotent."""
+        if self._used:
+            return
+        self._used = True
+        if self._ticket is not None:
+            self._ticket.release()
+        await self._group.abandon()
+
+
+async def admit_group(
+    host: LaunchHost,
+    n_runs: int,
+    *,
+    settings: LaunchSettings,
+    form: Callable[[], Awaitable[tuple[LaunchGroup, _Formed]]],
+    prepare: Callable[[LaunchGroup, _Formed], Awaitable[list[EvalRun]]],
+    event: str,
+    admission: AdmissionTicket | None = None,
+    attach: Callable[[list[EvalRun]], Awaitable[None]] | None = None,
+    detach: Callable[[list[EvalRun]], Awaitable[None]] | None = None,
+) -> AdmittedLaunch:
+    """Admit one group of runs: refuse what cannot start, reserve its room and form it — preparing and spending nothing.
+
+    The first half of :func:`launch_as_group`, in this order:
+
+    1. Refuse a launch of more runs than one launch may start together. It reads only the run
+       count, and it is the more specific refusal, so it comes before admission.
+    2. Reserve room for the runs against the host's admission ceiling, or take their share of a
+       reservation the caller already holds — before anything is read, so a launch this process
+       has no room for costs nothing.
+    3. ``form``: the caller's own reads, refusals and pricing, which form the group.
+
+    The rest — ``prepare``, ``attach`` and the start — is :meth:`AdmittedLaunch.start`.
+
+    Args:
+        host: The host; its job manager admits the launch.
+        n_runs: How many runs the launch starts, one per arm.
+        settings: The launch's settings snapshot, read once by the caller when the launch began; its arm
+            and admission ceilings are applied here, and the caller's arms are prepared under the same read.
+        form: Makes the caller's refusals under the reservation and returns the group, with
+            whatever ``prepare`` needs of what it read.
+        prepare: Prepares every arm into the group and returns the prepared runs.
+        event: How the group's log lines begin, e.g. ``eval.start_run``.
+        admission: A reservation the caller holds, of which this launch takes ``n_runs``.
+        attach: Records the prepared runs before they start.
+        detach: Undoes ``attach`` when the group is abandoned after it landed.
+
+    Returns:
+        The admitted launch, holding its reservation until it is started or discarded.
+
+    Raises:
+        ValidationFailedError: ``n_runs`` is more than one launch may start together, or any refusal ``form`` makes.
+        AdmissionRefusedError: The runs would pass the host's admission ceiling.
+    """
+    job_manager = host.job_manager
+    _refuse_oversized_launch(n_runs, settings.max_launch_arms, settings.name_of("max_launch_arms"))
+    ticket = (
+        admission.split(n_runs)
+        if admission is not None
+        else job_manager.admit(
+            n_runs, limit=settings.max_admitted_runs, limit_name=settings.name_of("max_admitted_runs")
+        )
+    )
+    try:
+        group, formed = await form()
+    except BaseException:
+        ticket.release()
+        raise
+    return AdmittedLaunch(
+        host,
+        group,
+        formed,
+        cast(Callable[[LaunchGroup, Any], Awaitable[list[EvalRun]]], prepare),
+        event=event,
+        ticket=ticket,
+        owns_group=True,
+        attach=attach,
+        detach=detach,
+    )
+
+
 async def launch_as_group(
     host: LaunchHost,
     n_runs: int,
@@ -2678,10 +2974,10 @@ async def launch_as_group(
 ) -> list[EvalRun]:
     """Launch one group of runs: admit it, prepare every arm, and start them together — or start none.
 
-    The one sequence every launch that owns its group goes through, in this order:
+    :func:`admit_group`, then :meth:`AdmittedLaunch.start`: the one sequence every launch that owns its group goes
+    through, in this order:
 
-    1. Refuse a launch of more runs than one launch may start together. It reads only the run
-       count, and it is the more specific refusal, so it comes before admission.
+    1. Refuse a launch of more runs than one launch may start together.
     2. Reserve room for the runs against the host's admission ceiling, or take their share of a
        reservation the caller already holds — before anything is read, so a launch this process
        has no room for costs nothing.
@@ -2692,20 +2988,18 @@ async def launch_as_group(
        ``detach`` must know whether it landed.
     6. Start every member in one concurrency slot.
 
-    **It prices nothing: a ``prepare`` composing its own arms prices them through :func:`price_arms`** before
-    calling any launcher, as :func:`start_run`'s does. Under an enforced cap the launch tail refuses an arm that
-    did not come through it, so this primitive cannot run an arm nobody priced.
+    **It prices nothing: a ``form`` or ``prepare`` composing its own arms prices them through :func:`price_arms`**
+    before calling any launcher, as :func:`start_run`'s does. Under an enforced cap the launch tail refuses an arm
+    that did not come through it, so this primitive cannot run an arm nobody priced.
 
     A failure anywhere in 4-6, a cancel included, abandons the group — every prepared member's
     clients are released — and undoes ``attach`` through ``detach`` if it had landed. The
-    reservation is released however the launch ends: started runs are live tasks that count on
-    their own, and a refused launch's share goes back.
+    reservation is released however the launch ends.
 
     Args:
         host: The host; its job manager admits the launch.
-        settings: The launch's settings snapshot, read once by the caller when the launch began; its arm
-            and admission ceilings are applied here, and the caller's arms are prepared under the same read.
         n_runs: How many runs the launch starts, one per arm.
+        settings: The launch's settings snapshot (see :func:`admit_group`).
         form: Makes the caller's refusals under the reservation and returns the group, with
             whatever ``prepare`` needs of what it read.
         prepare: Prepares every arm into the group and returns the prepared runs.
@@ -2722,40 +3016,18 @@ async def launch_as_group(
             refusal ``form`` or ``prepare`` makes.
         AdmissionRefusedError: The runs would pass the host's admission ceiling.
     """
-    job_manager = host.job_manager
-    _refuse_oversized_launch(n_runs, settings.max_launch_arms, settings.name_of("max_launch_arms"))
-    ticket = (
-        admission.split(n_runs)
-        if admission is not None
-        else job_manager.admit(
-            n_runs, limit=settings.max_admitted_runs, limit_name=settings.name_of("max_admitted_runs")
-        )
+    admitted = await admit_group(
+        host,
+        n_runs,
+        settings=settings,
+        form=form,
+        prepare=prepare,
+        event=event,
+        admission=admission,
+        attach=attach,
+        detach=detach,
     )
-    try:
-        group, formed = await form()
-        runs: list[EvalRun] = []
-        attached = False
-        try:
-            runs = await prepare(group, formed)
-            if attach is not None:
-                attaching = asyncio.ensure_future(attach(runs))
-                cancelled_while_attaching = await wait_through_cancellation(attaching)
-                attaching.result()
-                attached = True
-                if cancelled_while_attaching:
-                    raise asyncio.CancelledError
-            await job_manager.start_group(group.members, measure_latency=bool(group.measure_latency))
-        except BaseException:
-            log.warning("%s group=%s abandoned before starting", event, group.id)
-            await group.abandon()
-            if attached and detach is not None:
-                # The runs never started, so whatever recorded them must not list them.
-                await detach(runs)
-            raise
-        log.info("%s group=%s started runs=%s", event, group.id, [run.id for run in runs])
-        return runs
-    finally:
-        ticket.release()
+    return await admitted.start()
 
 
 def resolve_judge_pin(request: LaunchRequest, role_default: str, *, candidate_model: str) -> str:
@@ -3710,7 +3982,7 @@ async def start_universal_battery(
                     # Prepare only: the battery admitted every run above, and starts the groups itself.
                     launch_group=group,
                     admission=None,
-                    priced=priced[template.id],
+                    priced_arms=priced[template.id],
                     measure_latency=measure_latency,
                 )
                 prepared_runs[template.id] = [run.id for run in runs]

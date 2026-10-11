@@ -60,10 +60,12 @@ async def test_an_agent_lists_launches_polls_and_reads_a_report() -> None:
         }
         started, jobs, is_error = await _text(client, "evals", launch)
         assert not is_error and jobs is not None and started.startswith("started 1 job(s):")
-        run_status = await _done(client, jobs["jobs"][0]["job_id"])
-        assert run_status["state"] == "completed"
-        summary, _, _ = await _text(client, "evals", {"action": "run_get", "run_id": run_status["run_id"]})
-        assert f"run {run_status['run_id']} completed: {RUN_MODELS[0]}" in summary
+        assert jobs["jobs"][0]["kind"] == "launch"
+        launch_status = await _done(client, jobs["jobs"][0]["job_id"])
+        assert launch_status["state"] == "completed"
+        (run_id,) = launch_status["run_ids"]
+        summary, _, _ = await _text(client, "evals", {"action": "run_get", "run_id": run_id})
+        assert f"run {run_id} completed: {RUN_MODELS[0]}" in summary
 
         _, generation, _ = await _text(
             client, "evals", {"action": "analysis_generate", "campaign_id": fixture.campaign.id}

@@ -36,14 +36,17 @@ name them:
 * ``transports`` -- one adapter per server -- may import schema, kernel, ops, actions and itself; pydantic, and
   each adapter its own server alone (``transports.fastmcp``: ``fastmcp``, the package's ``fastmcp`` extra).
 
-Nothing in the engine imports any of the three, ``quick`` included: the run summary it prints, the
+Nothing in the engine imports any of the three, ``quick`` included, but ``testing``, whose jobs conformance kit
+runs ``ops`` and ``actions`` from above them (see below): the run summary it prints, the
 report it serializes and the spend it totals live in ``analysis``, below both. None of the three
 imports ``vega``.
 
 ``storage`` holds adapters behind the one port and ``testing`` the conformance kits an adopter runs
 against its own adapter, and nothing in the engine may reach either. ``storage`` needs nothing but
 the port it implements, in ``schema``. ``testing`` reaches ``kernel`` too: the store kit needs only the
-port, but the reader kit derives identities and reads a host profile.
+port, but the reader kit derives identities and reads a host profile. And it reaches ``ops`` and ``actions``, above
+the engine, because the jobs conformance kit runs a catalogue's actions and polls their jobs as a transport does;
+nothing reaches ``testing``, so this adds no edge into the engine.
 
 ``quick`` is the batteries: ``run_eval`` and the command line. It is the one package that COMPOSES
 the others -- a launch from ``run``, a report from ``analysis``, the reference store from ``storage``
@@ -113,7 +116,7 @@ ALLOWED_PACKAGES: dict[str, frozenset[str]] = {
     "analysis": frozenset({"schema", "kernel", "analysis"}),
     "gen": frozenset({"schema", "kernel", "gen"}),
     "storage": frozenset({"schema", "storage"}),
-    "testing": frozenset({"schema", "kernel", "testing"}),
+    "testing": frozenset({"schema", "kernel", "ops", "actions", "testing"}),
     "quick": frozenset({"schema", "kernel", "run", "analysis", "storage", "quick"}),
     "vega": frozenset({"schema", "kernel", "analysis", "vega"}),
     "ops": frozenset({"schema", "kernel", "run", "analysis", "ops"}),

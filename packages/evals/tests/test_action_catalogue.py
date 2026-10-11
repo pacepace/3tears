@@ -138,7 +138,13 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "run_launch",
         "sweep_launch",
         "analysis_generate",
+        "judge_second",
+        "judge_drift_check",
+        "judge_temperature",
     }
+    assert {action.name for action in engine_actions() if action.permission == "spend"} == {
+        action.name for action in engine_actions() if action.long_running
+    }, "no engine spend action waits on a model in its call"
 
 
 def test_the_standard_tools_split_on_class_and_take_the_hosts_prefix() -> None:

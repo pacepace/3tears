@@ -241,6 +241,14 @@ one judge to be on one criterion, which other campaigns' evidence tiers read. Re
 the judge campaign's stored runs and results. A store written before it holds none, which reads as "no judge was
 profiled": every campaign's tiers are its own evidence alone, as they were.
 
+**Within v8, not a bump**: four job records joined as new stored types, each carrying the job lease
+(:mod:`~threetears.evals.schema.job_lease`): ``EvalLaunch`` (a launch run as one job: its arms prepared, its runs
+started and waited for), ``EvalSecondJudgePass`` (a second judge's pass over a run, or a drift check, with its
+report), ``EvalJudgeTemperatureCheck`` (a judge temperature comparison, with every answer) and ``EvalActionJob`` (a
+host action's job, with its typed result). A store written before them holds none, which reads as "no such job was
+started": a launch, a pass and a comparison were made inside the call that asked for them, and left no record of
+their own.
+
 **Within v8, not a bump**: ``EvalSweep`` and ``EvalAnalysisAttempt`` joined the job lease as OPTIONAL fields
 (:mod:`~threetears.evals.schema.job_lease`): ``lease``, ``cancel_requested_at``, ``cancel_request_reason`` and
 ``lost``. A record stored before them carries none of them: a sweep reading ``running`` then has no lease, and reads

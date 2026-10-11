@@ -130,6 +130,7 @@ from threetears.evals.kernel.errors import (
     StorageError,
     ValidationFailedError,
 )
+from threetears.evals.kernel.job_context import running_job
 from threetears.evals.kernel.job_leases import (
     ANALYSIS_JOB,
     DEFAULT_JOB_LEASE_S,
@@ -345,6 +346,7 @@ __all__ = [
     "request_job_cancel",
     "settle_job_record",
     "write_held_record",
+    "running_job",
     "JobFenced",
     "JobRecordStore",
     "LeaseClock",

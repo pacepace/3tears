@@ -58,6 +58,9 @@ from threetears.evals.run.jobs import (
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_MAX_TOKENS, JUDGE_REQUEST_SETTINGS, run_judge_llm
 from threetears.evals.run.judge_service import JudgeRequest, JudgeService
 from threetears.evals.run.launch import (
+    AdmittedLaunch,
+    admit_group,
+    admit_launch,
     ArmOutcome,
     ArmPlan,
     ArmPrice,
@@ -123,17 +126,36 @@ from threetears.evals.run.judge_repeat import (
     repeat_judge_scores,
 )
 from threetears.evals.run.judge_temperature import (
+    JUDGE_TEMPERATURE_JOB,
+    EvalJudgeTemperatureCheck,
     JudgeTemperatureEstimate,
     borderline_dims,
     estimate_judge_temperature_comparison,
-    judge_at_two_temperatures,
+    judge_temperature_work,
 )
 from threetears.evals.run.judge_second import (
+    SECOND_JUDGE_JOB,
+    EvalSecondJudgePass,
+    SecondJudgeAskedBy,
     SecondJudgeEstimate,
     SecondJudgeReport,
     SecondJudgeSkip,
     estimate_second_judge,
-    ask_second_judge,
+    second_judge_work,
+)
+from threetears.evals.run.launch_job import LAUNCH_CANCEL_REASON, LAUNCH_JOB, EvalLaunch, launch_job_work
+from threetears.evals.run.job_work import (
+    ACTION_JOB,
+    DEFAULT_ACTION_JOB_BUDGET_S,
+    EvalActionJob,
+    JobOutcome,
+    JobRecorder,
+    JobWork,
+    action_job_work,
+    end_record,
+    leased_job_kind,
+    run_job_work,
+    start_job_work,
 )
 from threetears.evals.run.rejudge import reproducible_judge_inputs
 from threetears.evals.run.judge_kind import (
@@ -367,9 +389,32 @@ __all__ = [
     "SecondJudgeReport",
     "SecondJudgeSkip",
     "estimate_second_judge",
-    "ask_second_judge",
+    "second_judge_work",
+    "SECOND_JUDGE_JOB",
+    "EvalSecondJudgePass",
+    "SecondJudgeAskedBy",
     "JudgeTemperatureEstimate",
     "borderline_dims",
     "estimate_judge_temperature_comparison",
-    "judge_at_two_temperatures",
+    "judge_temperature_work",
+    "JUDGE_TEMPERATURE_JOB",
+    "EvalJudgeTemperatureCheck",
+    "ACTION_JOB",
+    "DEFAULT_ACTION_JOB_BUDGET_S",
+    "EvalActionJob",
+    "JobOutcome",
+    "JobRecorder",
+    "JobWork",
+    "action_job_work",
+    "end_record",
+    "leased_job_kind",
+    "run_job_work",
+    "start_job_work",
+    "AdmittedLaunch",
+    "admit_group",
+    "admit_launch",
+    "LAUNCH_CANCEL_REASON",
+    "LAUNCH_JOB",
+    "EvalLaunch",
+    "launch_job_work",
 ]

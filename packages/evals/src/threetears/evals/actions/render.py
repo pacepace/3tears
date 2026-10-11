@@ -443,11 +443,27 @@ def render_job_status(status: JobStatus) -> str:
         lines.append("progress: " + json.dumps(status.progress, sort_keys=True))
     if status.detail:
         lines.append(f"detail: {status.detail}")
-    if status.state == "completed" and status.analysis_id and status.campaign_id:
+    if status.run_ids:
+        lines.append("runs: " + ", ".join(status.run_ids))
+    if status.result is not None:
+        lines.append(_render_result(status))
+    elif status.state == "completed" and status.analysis_id and status.campaign_id:
         lines.append(f"Read it with action='report_read', campaign_id='{status.campaign_id}'.")
-    elif status.done and status.run_id:
+    elif status.done and status.run_ids:
+        lines.append("Read each with action='run_get', run_id='<id>'.")
+    elif status.done and status.run_id and status.kind == "run":
         lines.append(f"Read it with action='run_get', run_id='{status.run_id}'.")
     return "\n".join(lines)
+
+
+def _render_result(status: JobStatus) -> str:
+    """A completed job's result as its own action renders it: a second judge's read, a comparison, or JSON."""
+    assert status.result is not None  # only called with a result
+    if status.kind == "second_judge":
+        return render_second_judge(SecondJudgeRead.model_validate(status.result))
+    if status.kind == "judge_temperature":
+        return render_judge_temperature(JudgeTemperatureComparison.model_validate(status.result))
+    return "result: " + json.dumps(status.result, sort_keys=True)
 
 
 def render_campaign(campaign: CampaignLine) -> str:
