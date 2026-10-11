@@ -293,6 +293,7 @@ async def _finished_within(hook: AsyncGenerator[None, ActionOutcome], call: Tool
             try:
                 await hook.asend(outcome)
             except StopAsyncIteration:
+                # NOSILENT: the hook took its outcome and finished — the one way a hook is meant to end
                 return
             except Exception:
                 log.exception("around hook failed after its yield on %s/%s; the outcome stands", call.tool, call.action)
