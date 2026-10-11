@@ -41,6 +41,7 @@ from threetears.evals.actions.catalogue import (
     standard_tools,
 )
 from threetears.evals.actions.engine import engine_actions, eval_catalogue
+from threetears.evals.actions.render import render_jobs_started
 
 __all__ = [
     "ACTION_NAME",
@@ -67,5 +68,6 @@ __all__ = [
     "engine_actions",
     "eval_catalogue",
     "read_only_tools",
+    "render_jobs_started",
     "standard_tools",
 ]

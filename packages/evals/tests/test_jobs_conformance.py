@@ -95,7 +95,6 @@ def _host_action(handler: Any) -> Action:
         params=_DraftParams,
         result=JobsStarted,
         handler=handler,
-        render=lambda started: str(started),
         example={"subject_area": "tone"},
         long_running=True,
         happy_path=_topic,
@@ -189,7 +188,6 @@ def test_a_spend_action_without_a_happy_path_is_refused_where_it_is_declared() -
             params=_DraftParams,
             result=JobsStarted,
             handler=_draft_in_job,
-            render=str,
             example={},
             long_running=True,
         )

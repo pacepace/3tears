@@ -15,6 +15,9 @@ packages (bumped in lock-step).
 - **The host names a routed store's routing scope (breaking).** `RoutedDocumentStore` and `relocate` take a
   required `routing_scope`, so partitions of one database (row-level security over a global key) each keep their
   own placement record instead of only the first being able to write it; `ROUTING_SCOPE` is gone.
+- **Long work reads back as the jobs it started, with no render declared.** An `Action` returning `JobsStarted`
+  defaults its `render` to `render_jobs_started`, now exported from `threetears.evals.actions`; an action returning
+  anything else must still declare its own, and is refused using that one.
 
 ### 3tears-evals: what a consumer's end-to-end test of .6 found (gaps 16–27)
 

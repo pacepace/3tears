@@ -2195,6 +2195,8 @@ The action catalogue: every eval action, declared once, for any transport to mou
   <br>`eval_catalogue(host_actions: tuple[Action, ...] = ()) -> ActionCatalogue`
 - **`read_only_tools`** · function · One tool carrying only the `read` actions, for an agent that may look but not act.
   <br>`read_only_tools(prefix: str = 'evals') -> tuple[ToolSpec]`
+- **`render_jobs_started`** · function · What a start returned: each job, and how to poll it.
+  <br>`render_jobs_started(started: JobsStarted) -> str`
 - **`standard_tools`** · function · The two tools a host mounts by default: `<prefix>` and `<prefix>_admin`.
   <br>`standard_tools(prefix: str = 'evals') -> tuple[ToolSpec, ToolSpec]`
 

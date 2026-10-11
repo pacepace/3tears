@@ -199,7 +199,9 @@ class Action:
             A ``destructive`` action's model declares a required ``confirm``.
         result: The model its handler returns.
         handler: Carries it out.
-        render: Its result as the text an agent reads.
+        render: Its result as the text an agent reads. Long work need not declare one: every action returning
+            :class:`~threetears.evals.ops.JobsStarted` reads back the same way, so it defaults to
+            :func:`~threetears.evals.actions.render.render_jobs_started`, which only such an action may use.
         example: A call's parameters (without ``action``) that validate against ``params`` — shown in help
             and in every refusal of a bad call.
         long_running: Whether its work outlives the call; such an action returns
@@ -216,8 +218,8 @@ class Action:
     params: type[BaseModel]
     result: type[BaseModel]
     handler: ActionHandler
-    render: Callable[[Any], str]
     example: Mapping[str, Any]
+    render: Callable[[Any], str] = render.render_jobs_started
     long_running: bool = False
     detail: str = ""
     happy_path: HappyPath | None = None
@@ -229,8 +231,9 @@ class Action:
             ValueError: The name is not ``noun_verb``; the summary is blank or more than one line; the
                 class is not one of :data:`PERMISSION_CLASSES`; a parameter is reserved, undescribed or a
                 nested model; a destructive action declares no required ``confirm``; ``long_running``
-                disagrees with whether the result is ``JobsStarted``; a spend action declares no
-                ``happy_path``; or the example does not validate.
+                disagrees with whether the result is ``JobsStarted``; an action whose result is anything else
+                declares no ``render`` of its own; a spend action declares no ``happy_path``; or the example
+                does not validate.
         """
         where = f"action {self.name!r}"
         if not ACTION_NAME.fullmatch(self.name):
@@ -257,6 +260,11 @@ class Action:
             raise ValueError(
                 f"{where}: long work returns JobsStarted for the caller to poll, and only long work does; "
                 f"long_running={self.long_running} with result {self.result.__name__}"
+            )
+        if not self.long_running and self.render is render.render_jobs_started:
+            raise ValueError(
+                f"{where}: an action whose result is {self.result.__name__} declares its render — the text an agent "
+                "reads it as; only long work, which returns JobsStarted, reads back as the jobs it started"
             )
         if self.permission == "spend" and self.happy_path is None:
             raise ValueError(

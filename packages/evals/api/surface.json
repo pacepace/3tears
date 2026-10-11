@@ -5339,7 +5339,7 @@
     },
     "threetears.evals.actions.Action": {
       "kind": "dataclass",
-      "signature": "Action(name: str, summary: str, workflow: str, permission: PermissionClass, params: type[BaseModel], result: type[BaseModel], handler: ActionHandler, render: Callable[[Any], str], example: Mapping[str, Any], long_running: bool = False, detail: str = '', happy_path: HappyPath | None = None)"
+      "signature": "Action(name: str, summary: str, workflow: str, permission: PermissionClass, params: type[BaseModel], result: type[BaseModel], handler: ActionHandler, example: Mapping[str, Any], render: Callable[[Any], str] = …, long_running: bool = False, detail: str = '', happy_path: HappyPath | None = None)"
     },
     "threetears.evals.actions.ACTION_NAME": {
       "kind": "constant (Pattern)",
@@ -5416,6 +5416,10 @@
     "threetears.evals.actions.RefusalKind": {
       "kind": "literal",
       "signature": "'refused'` | `'not_found'` | `'conflict'` | `'validation_failed'` | `'storage_failed'` | `'provider_refused'` | `'admission_refused'"
+    },
+    "threetears.evals.actions.render_jobs_started": {
+      "kind": "function",
+      "signature": "render_jobs_started(started: JobsStarted) -> str"
     },
     "threetears.evals.actions.RESERVED_PARAMETERS": {
       "kind": "constant (frozenset)",
