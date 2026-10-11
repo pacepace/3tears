@@ -695,6 +695,11 @@ class JudgeKind:
         else:
             outcome_kind = "invalid"
         score = outcome.score
+        try:
+            sent = score.judge_temperature if score is not None else (sent_temperature(last) if last is not None else None)
+        except TypeError as refused:
+            # Refused after the call was billed: the cell's telemetry carries its spend all the same.
+            return CandidateOutput(infra_errors=[f"apparatus: judge: {refused}"], telemetry=telemetry)
         trial = JudgeTrial(
             test_case_id=test_case.id,
             dim=case.dim,
@@ -710,9 +715,7 @@ class JudgeKind:
             error=outcome.error,
             served_model=(score.served_model if score is not None else (getattr(last, "served_model", None) or None)),
             judge_config_id=request.config.id if request.config is not None else None,
-            judge_temperature=(
-                score.judge_temperature if score is not None else (sent_temperature(last) if last is not None else None)
-            ),
+            judge_temperature=sent,
         )
         payload = trial.model_dump(mode="json")
         if outcome_kind == "no_reply":

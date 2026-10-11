@@ -10,6 +10,8 @@ labels, agreement with the judge's own repeats and parse validity, and every cen
 
 from __future__ import annotations
 
+import types
+
 import json
 from collections.abc import Sequence
 from typing import Any
@@ -403,6 +405,57 @@ async def test_a_judge_trial_holds_its_call_against_the_runs_cap_and_counts_what
     refused = await kind.invoke(prepared, stored, sink=full)
     assert len(campaign.judge.calls) == calls, "a call the cap has no room for is not sent"
     assert not refused.output and not refused.candidate_errors and not refused.telemetry.usage
+
+
+class _Untempered:
+    """Hands back the judge's replies stripped of ``temperature``: a host completion type short of the protocol."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
+        reply = await self.inner.generate(system=system, user=user, response_format=response_format)
+        kept = {name: getattr(reply, name) for name in dir(reply) if not name.startswith("_") and name != "temperature"}
+        return types.SimpleNamespace(**{name: value for name, value in kept.items() if not callable(value)})
+
+
+async def test_a_trial_whose_completion_carries_no_temperature_still_counts_what_its_call_cost() -> None:
+    """The temperature was read after the billed call and raised: the cap never saw the spend, nor the result."""
+    campaign = await _campaign()
+    stored = campaign.host.storage.load_test_case(campaign.case_ids[0], TOYHOST_SCOPE)
+    assert stored is not None
+    untempered = _Untempered(campaign.judge)
+    kind = JudgeKind(
+        clients=lambda role, model, *, temperature=None: untempered,
+        model=TOY_JUDGE_MODEL,
+        failure_describer=withhold_failure_detail,
+    )
+
+    class _Window:
+        def identity(self) -> Any:
+            import contextlib
+
+            return contextlib.nullcontext()
+
+        collecting = identity
+
+    from threetears.evals.kernel import VariantConfig
+
+    prepared = await kind.prepare(
+        subject_snapshot=None,
+        variant_config=VariantConfig(candidate_model=TOY_JUDGE_MODEL),
+        world_seed=None,
+        span_window=_Window(),
+        cassettes=None,
+        world=None,
+    )
+    room = FakeCellSink(cap_usd=10.0)
+    answered = await kind.invoke(prepared, stored, sink=room)
+
+    spent = sum(row.cost_usd or 0.0 for row in answered.telemetry.usage)
+    assert spent > 0, "the call's spend is on the cell"
+    assert room.spent == {"candidate": pytest.approx(spent)} and room.held == [], "and the cap counted it"
+    assert answered.infra_errors and "check_completion_conformance" in answered.infra_errors[0]
 
 
 def test_a_config_pinning_another_model_than_the_arm_is_refused() -> None:

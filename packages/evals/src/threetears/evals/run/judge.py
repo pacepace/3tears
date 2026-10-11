@@ -391,7 +391,9 @@ async def run_judge_llm(
         ``cost_usd`` is ``None`` when any attempt reported no price — the dim's dollars are then
         unknown, never the priced attempts' partial sum. A reply the
         provider cut short fails with an error naming that cause and its token
-        counts, after one call. A finished reply that will not parse — including one
+        counts, after one call. A reply whose completion carries no ``temperature`` (its type does not meet the
+        protocol, :func:`sent_temperature`) fails with an error naming the conformance check, after one call and
+        with its spend. A finished reply that will not parse — including one
         scoring a criterion with anything but an integer on the scale — fails with
         "Failed to parse" after the bounded retries. Each caller
         composites the per-dimension scores itself (``judge_service`` across its
@@ -541,6 +543,14 @@ async def run_judge_llm(
                 "judge_usage": _cumulative_usage(),
             }
 
+        # The temperature is read before the reply is, and its refusal returned with the spend: a completion whose type
+        # carries none was still billed, and raising here would lose every attempt's usage, and the cost cap with it.
+        try:
+            temperature = sent_temperature(result)
+        except TypeError as refused:
+            log.error("%s reply for case %s cannot be recorded: %s", label, case_id, refused)
+            return {"error": f"{label} reply cannot be recorded: {refused}", "judge_usage": _cumulative_usage()}
+
         parsed = _process_criteria_response(result, criteria_dicts, cannot_tell_offered=cannot_tell_offered)
         if parsed is not None:
             # Thread CUMULATIVE spend (incl. any failed attempts) onto the result
@@ -552,7 +562,7 @@ async def run_judge_llm(
             parsed["judge_served_model"] = result.served_model or None
             # And the temperature that attempt was sent at, as the client reports it — the rest of the
             # scorer's identity, since a model that refuses a temperature is sent none.
-            parsed["judge_temperature"] = sent_temperature(result)
+            parsed["judge_temperature"] = temperature
             return parsed
 
         last_preview = (getattr(result, "content", "") or "")[:200]
