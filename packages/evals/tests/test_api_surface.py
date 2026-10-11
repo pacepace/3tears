@@ -272,10 +272,10 @@ def test_the_release_notes_of_a_tag_are_what_it_shipped_and_the_next_release_hol
     assert code == 0 and tagged.startswith("## 3tears-evals 0.66.0-evaladopt.7")
     assert "`threetears.evals.run.EvalJobTimeout` → `threetears.evals.kernel.EvalJobTimeout`" in tagged
     assert "NonPublicImport" not in tagged and "Report version 7" not in tagged
-    code, unreleased, _ = _notes(capsys, "unreleased")
-    assert code == 0 and unreleased.startswith("## 3tears-evals unreleased")
-    assert "`threetears.evals.testing.NonPublicImport` → `threetears.evals.testing.BoundaryFinding`" in unreleased
-    assert "Report version 7" in unreleased and "EvalJobTimeout" not in unreleased
+    code, following, _ = _notes(capsys, "v0.66.0-evaladopt.8")
+    assert code == 0 and following.startswith("## 3tears-evals 0.66.0-evaladopt.8")
+    assert "`threetears.evals.testing.NonPublicImport` → `threetears.evals.testing.BoundaryFinding`" in following
+    assert "Report version 7" in following and "EvalJobTimeout" not in following
 
 
 def test_the_release_notes_show_a_rename_and_a_removal() -> None:
@@ -362,9 +362,10 @@ def test_the_0_66_0_evaladopt_7_section_records_exactly_what_left_between_its_ta
     )
 
 
-def test_the_unreleased_section_is_checked_against_the_working_tree() -> None:
-    release = _section("unreleased")
-    assert release.since == "v0.66.0-evaladopt.7"
+def test_the_newest_section_is_checked_against_its_tag_or_the_working_tree() -> None:
+    """The newest section is "unreleased" between releases and named for its version once a release is cut."""
+    release = surface.load_migrations().releases[0]
+    assert release.since is not None
     assert surface.history_findings(release) == []
 
 

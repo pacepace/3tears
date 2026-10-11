@@ -31,7 +31,7 @@
 # callers.
 
 [[release]]
-version = "unreleased"
+version = "0.66.0-evaladopt.8"
 since = "v0.66.0-evaladopt.7"
 summary = """
 Every refusal names a remedy its caller can reach, and a run's spend, figures and comparisons say what they
