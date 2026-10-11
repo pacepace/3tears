@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: backlog while Discodon adopts .13
+
+- **The writer prompt states the per-sentence pruning test (#682).** The seed `eval_analysis_gen` prompt
+  (`EVAL_ANALYSIS_GEN_DEFAULT`) now says, under "WRITE LESS", who the reader is (the person deciding what to change
+  next) and the test every sentence must pass: does it change what that reader does or believes? If not, cut it.
+  Rule 13's cut points back at that test and lists its usual failures (a repeat, an idle caveat or next step, a
+  restated method, a narrated chart, a hedge in a finding's body) as applications of it rather than as the whole of
+  it. **A shipped prompt changed**: its `seed_digest` moved, so `prompt_drift` reports a host's uncustomized stored
+  copy as `stale` until it is reseeded, and every generation sent the new text records a new
+  `prompt_content_version`. Scoring the test is the host's: the engine ships no reporter rubric, so a host adds the
+  criterion (or anchors its decision-usefulness dimension on it) in its own seeded reporter rubric.
 ### 3tears-evals: what adopting .12 found (gaps 49–50)
 
 - **A host resolver's refusal reaches both hooks as the error it raised (gap 49).** `ToolCall.refused` is the very
