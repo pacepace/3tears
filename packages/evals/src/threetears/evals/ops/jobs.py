@@ -55,6 +55,7 @@ from pydantic import Field
 
 from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.schema.refusal import JobRefusal
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalSweep
 from threetears.evals.schema.models import EvalRun
 from threetears.evals.ops.host import OpsHost
@@ -217,6 +218,15 @@ class JobStatus(EvalBaseModel):
     analysis_id: str | None = Field(default=None, description="The analysis a completed generation stored.")
     sweep_id: str | None = Field(default=None, description="The sweep a sweep job runs.")
     detail: str | None = Field(default=None, description="Why it ended other than completed, when the record says.")
+    refusal: JobRefusal | None = Field(
+        default=None,
+        description=(
+            "The engine refusal the job ended on, as data — its kind and status, the same pair a refused call's "
+            "structured refusal carries — so a host branches on the kind, never on `detail`'s words. Set when the "
+            "job's work was refused (a provider refusing its account is `provider_refused`); None otherwise, and "
+            "for a run, whose `status` is its own ending's word (`exhausted` for an account the provider refused)."
+        ),
+    )
     result: dict[str, Any] | None = Field(
         default=None,
         description="What the work came to, once it completed: a second judge's read (its report, agreement and "
@@ -292,6 +302,7 @@ def _sweep_status(sweep: EvalSweep, runs: dict[str, EvalRun]) -> JobStatus:
         campaign_id=sweep.campaign_id,
         sweep_id=sweep.id,
         detail=detail if state != "completed" else None,
+        refusal=sweep.refusal,
     )
 
 
@@ -407,6 +418,7 @@ def _attempt_status(job_id: str, attempt: EvalAnalysisAttempt) -> JobStatus:
         campaign_id=attempt.campaign_id,
         analysis_id=attempt.analysis_id,
         detail=attempt.lost.cause if attempt.lost is not None else (attempt.error if state != "running" else None),
+        refusal=attempt.refusal,
     )
 
 
@@ -456,6 +468,7 @@ def _record_status(
         run_ids=run_ids or [],
         detail=detail if state != "completed" else None,
         result=result if state == "completed" else None,
+        refusal=record.refusal,
     )
 
 

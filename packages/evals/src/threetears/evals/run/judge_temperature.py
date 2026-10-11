@@ -71,6 +71,7 @@ from threetears.evals.kernel.job_leases import LeasedJobKind
 from threetears.evals.run.job_work import JobOutcome, JobRecorder, JobWork, end_record, leased_job_kind
 from threetears.evals.schema.base import CoreDocumentModel, EvalBaseModel
 from threetears.evals.schema.job_lease import CancelRequestedAtField, CancelRequestReasonField, LeaseField, LostField
+from threetears.evals.schema.refusal import RefusalField
 from threetears.evals.schema.models import MODEL_DEFAULT_TEMPERATURE, SCALES, CoreSchemaVersion, EvalResult, utc_now_iso
 from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
@@ -443,6 +444,7 @@ class EvalJudgeTemperatureCheck(CoreDocumentModel):
     cancel_requested_at: CancelRequestedAtField = None
     cancel_request_reason: CancelRequestReasonField = None
     lost: LostField = None
+    refusal: RefusalField = None
 
     @field_validator("doc_type")
     @classmethod

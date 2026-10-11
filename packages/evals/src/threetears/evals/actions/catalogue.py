@@ -47,14 +47,11 @@ from pydantic import BaseModel, ValidationError
 
 from threetears.evals.actions import render
 from threetears.evals.kernel.errors import (
-    AdmissionRefusedError,
-    ConflictError,
     EvalServiceError,
-    NotFoundError,
-    ProviderRefusedError,
-    StorageError,
     ValidationFailedError,
 )
+from threetears.evals.kernel.refusals import refusal_kind
+from threetears.evals.schema.refusal import REFUSAL_KINDS, RefusalKind
 from threetears.evals.ops import JobsStarted, OpsHost
 from threetears.evals.run import start_run
 
@@ -350,38 +347,6 @@ def read_only_tools(prefix: str = DEFAULT_PREFIX) -> tuple[ToolSpec]:
     )
 
 
-#: What refused a call: the public engine error it was, by kind. One kind per
-#: :class:`~threetears.evals.kernel.EvalServiceError` class in :mod:`threetears.evals.kernel.errors` (``JobFenced``,
-#: which no caller is told, is none) — ``refused`` for :class:`~threetears.evals.kernel.EvalServiceError`
-#: itself, raised with a status of its own — so the set is closed: an error class a host derives maps to
-#: the kind of its nearest public ancestor, and adding a kind means adding a public error class.
-RefusalKind = Literal[
-    "refused",
-    "not_found",
-    "conflict",
-    "validation_failed",
-    "storage_failed",
-    "provider_refused",
-    "admission_refused",
-]
-
-#: Every refusal kind.
-REFUSAL_KINDS: tuple[RefusalKind, ...] = get_args(RefusalKind)
-
-#: The kind each public error class refuses as. ``tests/test_action_refusals.py`` holds every
-#: :class:`~threetears.evals.kernel.EvalServiceError` class :mod:`threetears.evals.kernel.errors` exports to a kind of
-#: its own, together covering :data:`REFUSAL_KINDS`.
-_KIND_OF_ERROR: Mapping[type[EvalServiceError], RefusalKind] = {
-    EvalServiceError: "refused",
-    NotFoundError: "not_found",
-    ConflictError: "conflict",
-    ValidationFailedError: "validation_failed",
-    StorageError: "storage_failed",
-    ProviderRefusedError: "provider_refused",
-    AdmissionRefusedError: "admission_refused",
-}
-
-
 @dataclass(frozen=True, kw_only=True)
 class Refusal:
     """Why a call was refused, as data: the kind of error and the status it carries.
@@ -419,8 +384,7 @@ class Refusal:
             The refusal. A host's own subclass of a public error takes that error's kind, and keeps the
             status it was raised with.
         """
-        kind = next(_KIND_OF_ERROR[base] for base in type(error).__mro__ if base in _KIND_OF_ERROR)
-        return cls(kind=kind, status=error.status_code)
+        return cls(kind=refusal_kind(error), status=error.status_code)
 
 
 #: The refusal of a call the catalogue itself turns away — no action, one the tool lacks, an undeclared

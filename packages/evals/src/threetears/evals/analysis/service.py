@@ -59,12 +59,15 @@ from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt
 from threetears.evals.kernel.errors import (
     ConflictError,
+    EvalServiceError,
     JobFenced,
     NotFoundError,
     ProviderRefusedError,
     StorageError,
     ValidationFailedError,
 )
+from threetears.evals.kernel.refusals import job_refusal
+from threetears.evals.schema.refusal import JobRefusal
 from threetears.evals.kernel.job_leases import ANALYSIS_JOB, JobLeases, write_held_record
 from threetears.evals.kernel.job_timeout import EvalJobTimeout, timed_out_detail
 from threetears.evals.kernel.storage import JobRecordStore
@@ -759,14 +762,25 @@ async def run_analysis_generation(
     tally = GenerationTally()
     started_at = utc_now_iso()
 
-    async def record(outcome: AttemptOutcome, *, error: str | None = None, analysis_id: str | None = None) -> bool:
+    async def record(
+        outcome: AttemptOutcome,
+        *,
+        error: str | None = None,
+        analysis_id: str | None = None,
+        refused_by: EvalServiceError | None = None,
+    ) -> bool:
         # On the host's blocking executor, and waited for through a cancellation: the record is how the
         # attempt ended, so a cancel arriving while it is written must not leave it half-known. Returns
-        # whether a cancellation arrived meanwhile, which the caller delivers once it has finished.
-        return (await recorded(outcome, error=error, analysis_id=analysis_id))[1]
+        # whether a cancellation arrived meanwhile, which the caller delivers once it has finished. An engine
+        # error the ending raises to its caller is kept on the record as data (its kind and status).
+        return (await recorded(outcome, error=error, analysis_id=analysis_id, refused_by=refused_by))[1]
 
     async def recorded(
-        outcome: AttemptOutcome, *, error: str | None = None, analysis_id: str | None = None
+        outcome: AttemptOutcome,
+        *,
+        error: str | None = None,
+        analysis_id: str | None = None,
+        refused_by: EvalServiceError | None = None,
     ) -> tuple[_AttemptRecorded, bool]:
         # :func:`record`, saying too whether the ending landed, or was refused because the attempt had ended.
         return await _offloaded_result(
@@ -785,6 +799,7 @@ async def run_analysis_generation(
             analysis_id=analysis_id,
             attempt_id=prepared.attempt_id,
             leases=leases,
+            refusal=None if refused_by is None else job_refusal(refused_by),
         )
 
     calls = prepared.calls
@@ -811,13 +826,14 @@ async def run_analysis_generation(
     except GenerationError as e:
         # Both calls' output refused is `refused`; every other generation-contract failure (a
         # call cut short, a precondition refused before any call) is `failed`.
-        await record("refused" if isinstance(e, SoundnessRefusal) else "failed", error=str(e))
         # A generation-contract violation is caller-restatable (retry, or edit
         # the prompt), not a server fault — surface it as a 422, like the
         # proposer surfaces its own draft-validation failures.
-        raise ValidationFailedError(
+        contract = ValidationFailedError(
             f"analysis generation failed: {e}", remedy="start the generation again, or edit the prompt it reads"
-        ) from e
+        )
+        await record("refused" if isinstance(e, SoundnessRefusal) else "failed", error=str(e), refused_by=contract)
+        raise contract from e
     except asyncio.CancelledError:
         # A caller's budget or disconnect, or a shutdown cancelling a background generation.
         # Recorded synchronously, before the cancellation propagates, because this is the
@@ -835,12 +851,15 @@ async def run_analysis_generation(
         # The budget refused a call before it was sent — only the repair round-trip can reach this, since
         # the first call was admitted when the generation was prepared. Nothing was sent for it, so the
         # tally counts only what was; what the first call cost is on the record.
-        await record("failed", error=f"the repair round-trip was refused before it was sent: {e}")
-        raise ValidationFailedError(
+        unrepaired = ValidationFailedError(
             f"analysis generation failed: its output was refused and the one repair round-trip was refused before "
             f"it was sent ({e}); ${format_number(tally.token_cost)} was billed on the first call and nothing was stored",
             remedy="start the generation again, under a cap with room for its repair round-trip",
-        ) from e
+        )
+        await record(
+            "failed", error=f"the repair round-trip was refused before it was sent: {e}", refused_by=unrepaired
+        )
+        raise unrepaired from e
     # prawduct:ok-broad-except — eval names no provider exception type; the host describer classifies what the call raised
     except Exception as e:
         # The exception's own text is not stored on the record: a provider status error stringifies
@@ -850,8 +869,14 @@ async def run_analysis_generation(
         # propagated, because an exception escaping a REST route reaches the web server, which logs
         # its whole traceback; otherwise it propagates as itself and whoever catches it logs it.
         failure = describe_failure(failure_describer, e, logger=log, where="eval.generate_analysis")
-        await record("failed", error=failure.description)
-        if traceback_is_safe(failure):
+        # The provider's refusal, when its payload was withheld: what the caller is raised, and what the record keeps.
+        provider = (
+            None
+            if traceback_is_safe(failure)
+            else ProviderRefusedError(f"analysis generation failed: {failure.description}")
+        )
+        await record("failed", error=failure.description, refused_by=provider)
+        if provider is None:
             # Nothing a traceback would print is withheld, so no provider status error is in the
             # chain: most often a defect in the generation itself. It propagates as itself, so its
             # status and code name no provider, and whatever logs it keeps the diagnosing traceback.
@@ -864,7 +889,7 @@ async def run_analysis_generation(
             prepared.attempt_id,
             campaign_id,
         )
-        raise ProviderRefusedError(f"analysis generation failed: {failure.description}") from None
+        raise provider from None
 
     # A failed persist of the just-paid artifact is re-raised with what it cost, so
     # the operator reading the 503 knows the spend happened and nothing is stored.
@@ -883,11 +908,12 @@ async def run_analysis_generation(
     try:
         cancelled = await _offloaded(executor, storage.save_analysis, analysis)
     except StorageError as e:
-        await record("failed", error=f"the generated analysis could not be stored: {e}")
-        raise StorageError(
+        unstored = StorageError(
             f"failed to persist generated analysis '{analysis.id}' for campaign '{campaign_id}' "
             f"(the generation cost ${format_number(analysis.generation.token_cost)} was already incurred)"
-        ) from e
+        )
+        await record("failed", error=f"the generated analysis could not be stored: {e}", refused_by=unstored)
+        raise unstored from e
     # A restated claim replaces the live insight that states it rather than adding a row beside it, so
     # regenerating over the same evidence leaves the ledger its size. Read now, not at assembly: the ledger
     # the bundle read is capped, and another generation may have written since.
@@ -971,6 +997,7 @@ def _record_analysis_attempt(
     analysis_id: str | None,
     attempt_id: str,
     leases: JobLeases | None,
+    refusal: JobRefusal | None = None,
 ) -> _AttemptRecorded:
     """Store how one generation attempt ended, from the tally the generator kept.
 
@@ -995,6 +1022,7 @@ def _record_analysis_attempt(
         attempt_id: The attempt's id, minted when the generation was prepared — a background
             generation's job id, so its poller can find this record once the job is gone.
         leases: The leases the attempt is held under; once they let go of it, this ending is refused.
+        refusal: The engine refusal the attempt ended on, as data; None for any other ending.
 
     Returns:
         ``recorded``; ``fenced`` when the stored attempt had already ended — written lost — so this ending was
@@ -1017,6 +1045,7 @@ def _record_analysis_attempt(
         refusals=tally.refusals,
         error=error,
         started_at=started_at,
+        refusal=refusal,
     )
     try:
         write_held_record(storage, ANALYSIS_JOB, attempt, leases=leases)

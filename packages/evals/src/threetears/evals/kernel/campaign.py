@@ -34,6 +34,7 @@ from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
 from threetears.evals.schema.base import CoreDocumentModel, EvalDocumentModel
 from threetears.evals.schema.job_lease import CancelRequestReasonField, CancelRequestedAtField, LeaseField, LostField
+from threetears.evals.schema.refusal import RefusalField
 from threetears.evals.schema.models import CoreSchemaVersion, SchemaVersion, utc_now_iso
 from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION, REGENERABLE_SCHEMA_VERSION
 from threetears.evals.schema.prose import ModelProse
@@ -1099,6 +1100,7 @@ class EvalAnalysisAttempt(CoreDocumentModel):
     cancel_requested_at: CancelRequestedAtField = None
     cancel_request_reason: CancelRequestReasonField = None
     lost: LostField = None
+    refusal: RefusalField = None
 
     @field_validator("doc_type")
     @classmethod
@@ -1230,6 +1232,7 @@ class EvalSweep(CoreDocumentModel):
     cancel_requested_at: CancelRequestedAtField = None
     cancel_request_reason: CancelRequestReasonField = None
     lost: LostField = None
+    refusal: RefusalField = None
 
     @field_validator("doc_type")
     @classmethod

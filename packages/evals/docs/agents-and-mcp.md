@@ -165,6 +165,13 @@ declared input, so they are `validation_failed`. A call that succeeded, and help
 
 A handler that raises anything else has a bug. It is not a refusal, and it propagates to the transport.
 
+A job can be refused too, after its call returned the job's id: a provider refusing the account its work calls on,
+a store failing, a cap refusing a call. The job ends `failed`, and its record keeps the refusal as data
+(`schema.JobRefusal`: the same `kind` and `status` as above), which `job_poll` serves as `JobStatus.refusal` —
+`{"refusal": {"kind": "provider_refused", "status": 502}}` in its JSON, and a `refusal:` line in its text. Branch on
+that kind, never on `detail`'s words. A job broken by a defect carries none; a run's `status` is its own ending's
+word (`exhausted` when its provider account refused it).
+
 ## FastMCP
 
 The FastMCP transport (`threetears.evals.transports.fastmcp`) needs the extra; the core does not:
