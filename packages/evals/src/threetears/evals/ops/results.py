@@ -54,9 +54,10 @@ from threetears.evals.run import get_result, get_result_trace, get_run, list_res
 #: the harvested spans.
 ResultPart = Literal["record", "judge", "spans"]
 
-#: Whether a result's trace can be read: ``stored``; ``none`` — the cell wrote none (its record says so);
-#: or ``missing`` — the record says one was written and no document backs it, which is a fault, never an
-#: ordinary absence (:func:`~threetears.evals.run.get_result_trace` logs it).
+#: Whether a result's trace can be read: ``stored``; ``none`` — the cell produced none (its record says so);
+#: or ``missing`` — the record says the cell produced one and no document backs it (its write failed, or it was
+#: deleted since), which is a fault, never an ordinary absence (:func:`~threetears.evals.run.get_result_trace`
+#: logs it).
 TraceState = Literal["stored", "none", "missing"]
 
 
@@ -87,7 +88,10 @@ class ResultLine(EvalBaseModel):
         "condition says whether it counts."
     )
     host_measures: dict[str, bool | float | str] = Field(description="The host's own measures, as stored.")
-    has_trace: bool = Field(description="Whether a trace was stored, which result_get reads in parts.")
+    has_trace: bool = Field(
+        description="Whether the cell produced a trace, which result_get reads in parts — as missing when its write "
+        "failed."
+    )
 
 
 class ResultListing(EvalBaseModel):
@@ -141,8 +145,8 @@ class ResultDetail(EvalBaseModel):
     result: EvalResult
     condition: ResultCondition
     trace_state: TraceState = Field(
-        description="stored; none — the cell wrote no trace; or missing — its record says one was written and "
-        "no document backs it."
+        description="stored; none — the cell produced no trace; or missing — its record says it produced one and "
+        "no document backs it (its write failed, or it was deleted since)."
     )
     record: TraceRecord | None = Field(
         default=None, description="With part record: what the kind stored about the cell."

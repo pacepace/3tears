@@ -88,42 +88,43 @@ class WindowGap(NamedTuple):
     #: Seconds between ``earlier.end`` and ``later.start``, or ``None`` when the
     #: recorded stamps cannot be read as instants. See :func:`_gap_seconds`.
     seconds: float | None
+    #: Why ``seconds`` is ``None`` — the stamp that would not parse, the naive/aware mix, or
+    #: the order that contradicts the recorded one; ``None`` when there is a gap.
+    uncomputable: str | None = None
 
 
-def _gap_seconds(earlier_end: str, later_start: str) -> float | None:
-    """How long a run's span sat idle before the next one began, if that is knowable.
+def _gap_seconds(earlier_end: str, later_start: str) -> tuple[float | None, str | None]:
+    """How long a run's span sat idle before the next one began, if that is knowable, and why not when it is not.
 
     **The lexicographic discipline is unchanged and this does not weaken it.** Ordering
     and the disjointness predicate still compare the ISO-8601 strings directly, so a
     malformed stamp cannot make a comparison raise. What is added is a *guarded*
     parse used for magnitude only: a stamp that will not parse, or a pair that mixes an
-    offset-aware stamp with a naive one, yields no duration and the disclosure says so
-    rather than failing.
+    offset-aware stamp with a naive one, yields no duration, and the disclosure says so
+    and why rather than failing.
 
     Args:
         earlier_end: The last ``scored_at`` of the run that finished first.
         later_start: The first ``scored_at`` of the run that began after it.
 
     Returns:
-        The non-negative gap in seconds, or ``None`` when it cannot be computed
-        honestly — an unparseable stamp, a naive/aware mix, or a parsed order that
-        contradicts the lexicographic one (which means the two stamps are not on a
-        shared clock and no duration between them is meaningful).
+        ``(seconds, None)`` with the non-negative gap; or ``(None, why)`` when it cannot
+        be computed honestly — an unparseable stamp, a naive/aware mix, or a parsed order that
+        contradicts the lexicographic one (which means the two stamps are not on a shared clock
+        and no duration between them is meaningful) — ``why`` naming which.
     """
     try:
         end = datetime.fromisoformat(earlier_end)
         start = datetime.fromisoformat(later_start)
-    except TypeError, ValueError:
-        # NOSILENT: None IS the report -- format_window_gap renders it as the uncomputable-gap clause
-        return None
+    except (TypeError, ValueError) as unparsed:
+        return None, f"a stamp is not an ISO-8601 instant: {unparsed}"
     try:
         delta = (start - end).total_seconds()
     except TypeError:
-        # NOSILENT: One stamp carried a UTC offset and the other did not. Subtracting those is
-        # not a duration anybody measured, so it is reported as uncomputable (None renders as
-        # the uncomputable-gap clause).
-        return None
-    return delta if delta >= 0 else None
+        return None, f"{earlier_end!r} and {later_start!r} mix a stamp with a UTC offset and one without"
+    if delta < 0:
+        return None, f"{later_start!r} parses as earlier than {earlier_end!r}, against their recorded order"
+    return delta, None
 
 
 class OverlappingWindows(NamedTuple):
@@ -209,7 +210,8 @@ def classify_window_pairs(windows: Sequence[MeasurementWindow]) -> WindowPairs:
             else:
                 overlapping.append(OverlappingWindows(first=a, second=b))
                 continue
-            disjoint.append(WindowGap(earlier=earlier, later=later, seconds=_gap_seconds(earlier.end, later.start)))
+            seconds, uncomputable = _gap_seconds(earlier.end, later.start)
+            disjoint.append(WindowGap(earlier=earlier, later=later, seconds=seconds, uncomputable=uncomputable))
     return WindowPairs(disjoint=disjoint, overlapping=overlapping)
 
 
@@ -296,7 +298,8 @@ def format_window_gap(seconds: float | None) -> str:
 def _gap_phrase(gap: WindowGap) -> str:
     """Name one non-overlapping pair and how far apart it was."""
     if gap.seconds is None:
-        return f"{gap.earlier.run_id} and {gap.later.run_id}, {UNCOMPUTABLE_GAP_CLAUSE}"
+        why = f" ({gap.uncomputable})" if gap.uncomputable else ""
+        return f"{gap.earlier.run_id} and {gap.later.run_id}, {UNCOMPUTABLE_GAP_CLAUSE}{why}"
     return f"{gap.earlier.run_id} and {gap.later.run_id}, {format_window_gap(gap.seconds)} apart"
 
 

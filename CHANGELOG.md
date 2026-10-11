@@ -6,6 +6,73 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: what adopting .12 found, continued (gap 51)
+
+- **A bisection no longer logs a false seat contradiction for every lever and label (breaking for a host asking the
+  seats about a non-apparatus name).** `runs_bisect` asked `HostProfile.omits_apparatus` about every field the two
+  runs carried, so on a kind with a seats allow-list each lever and label (the model, a persona member, the app
+  version) logged "has no seat for apparatus dimension" on every bisection, and a blank one could be dropped or read
+  as unseated. It now asks only about apparatus, and compares levers and labels as recorded. `HostProfile.seats`,
+  `apparatus_level` and `omits_apparatus` refuse a name that is not an apparatus dimension the host declares with a
+  `ValueError` naming the host's apparatus, so the question cannot be asked of a lever again without a word.
+
+### 3tears-evals: no exception is swallowed
+
+- **`judge_trial_of` raises `ValueError` for a `kind_payload` that is not a judge trial this build can read
+  (breaking for a direct caller).** It answered `None`, the answer for a result carrying no trial at all, so
+  `judge_kind_readings` listed an unreadable trial as "it carries no judge trial" and the validation error behind
+  it was lost. `None` now means only that the result carries no payload object; the readout lists an unreadable
+  trial as unread with the validation error as its reason.
+- **A run written lost with its completeness unknown says why on its own record.** When a result it stored cannot
+  be read under the current model, the lost run's `completeness` stays `None` as before, and the validation error,
+  which only reached the log, is now an `EvalRun.error_details` entry: a fault an operator triages on the run.
+- **A job record this build cannot read, or cannot write lost, raises on the read that settles it (breaking for a
+  store holding one).** `settle_tolerantly`, which every settling read and a lost launch's or sweep's named runs go
+  through, caught the `ValidationError` and left the record as stored, so it read as a job still running with nothing
+  saying it could not be read. It now propagates, as every other read of that record raises it; a record another
+  writer keeps moving is still left to its own next read.
+- **Font bytes that do not parse are refused by name, not read as declaring no family (breaking for a font
+  directory holding one).** `font_families` answered an empty set for bytes that are not a font, the answer for a font
+  naming no family, so `resolving_files` left a broken `.ttf` out as if it declared another face, and a truncated
+  copy of the measured face went unnoticed. `font_families` now raises `ValueError`; `resolving_files` raises
+  `TextMetricsError` naming every such file, which `check_font_files` (and so a renderer built over the directory)
+  and the measurer's `--font-dir` (as `FontMeasureError`) report.
+- **A measurement-window gap that cannot be computed says why.** `WindowGap` gains `uncomputable`, the reason its
+  `seconds` is `None` — a stamp that is not an ISO-8601 instant, a naive stamp beside an aware one, or a parsed
+  order that contradicts the recorded one — and the disclosure prints it after "gap not computable from the recorded
+  stamps"; the three causes used to read alike, and the parse error was dropped.
+- **The import-boundary check names a public root it could not import.** A finding's suggestion passed over a root
+  whose import raised `ImportError` (an extra not installed, or a broken import), so "no public root exports it"
+  could be said without asking that root. The finding now ends "not counting <root> (<error>), which could not be
+  imported to check".
+- **A kind's overlay model that refuses its own defaults is refused at declaration (breaking for such a model).**
+  `KindContract` read any `ValidationError` from validating the overlay model's defaults as "the model has a required
+  field", so a default its own constraint refuses left every run of the kind with its departure from production
+  unchecked and nothing saying why. A required field still means no default; any other refusal of the defaults is
+  now a `KindContractError` naming the validation error.
+- **An llm variation axis whose reply cannot be read is refused saying so.** The reply that was not a JSON object,
+  or carried no `values` array, was logged and read as an empty list, and the generation refused with "produced no
+  values", the words for a reply that offered nothing new. The refusal now names which, with the parse error or the
+  keys the reply carried.
+- **`fold_phase_timings` returns what it could not fold.** A delivery's phase timings that were not a mapping, or
+  an entry that was not a number or was negative, were logged and left out, so the phase read as one the tool never
+  measured. The fold now returns one sentence per entry left out (empty when all folded), for the kind to record
+  where the cell's reader sees it; it still never folds a malformed value, and still logs.
+- **The memo the reporter judge reads says when a finding's chart cannot be drawn.** `render_memo_as_written`
+  caught the chart's `PayloadError`/`IntentPolicyError` and printed nothing under its caption, so the judge read an
+  undrawable chart as a drawn one while the report printed why it was not. The memo now prints the report's own line,
+  "A <type> chart is stored for this finding and cannot be drawn: <reason>".
+- **A lost generation whose withdrawal fails says so.** When another process wrote a generation's attempt lost
+  after its analysis was stored, a withdrawal that failed part-way was logged and swallowed, and the fence that
+  stops the job then said the analysis "and its insights were withdrawn". The fence now says the withdrawal failed,
+  with the store's error, and names the analysis and the insights left to remove by hand.
+- **A trace whose write failed reads `missing`, not `none` (breaking for a reader of `has_trace`).**
+  `save_eval_result` caught the trace write's `StorageError` and stored the result with `has_trace=False`, so the
+  cell read on every surface as one that produced no trace, and the failed write lived in the log alone.
+  `has_trace` now records that the cell produced a trace; with no document behind it, `result_get` reports
+  `trace_state="missing"` and `get_result_trace` logs the disagreement, as for a trace deleted without its result.
+  The result is still stored, and a re-judge of it still refuses.
+
 ### 3tears-evals: backlog while Discodon adopts .13
 
 - **A judge case this build cannot read is refused by name, not dropped (breaking for a judge template holding

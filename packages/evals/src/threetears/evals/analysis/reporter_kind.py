@@ -987,23 +987,29 @@ _CHART_NOTES_LABEL = "Printed with the chart:"
 
 
 def _chart_notes(viz: Viz) -> list[str]:
-    """The prose code writes beside a chart, in the order the report prints it: its footnote, then its disclosures.
+    """What the report prints under a chart, as memo lines: code's footnote and disclosures, or why it cannot be drawn.
 
-    The report prints these under every drawn chart (``serialize_md``, ``serialize_html``), so they reach
-    every reader as surely as the model's caption does; the memo the judge reads carries them for the same
-    reason. A chart this build cannot draw prints none: the report shows why it was not drawn instead.
+    The report prints the footnote, then the disclosures, under every drawn chart (``serialize_md``,
+    ``serialize_html``), so they reach every reader as surely as the model's caption does; the memo the judge reads
+    carries them for the same reason. A chart this build cannot draw prints no compiler lines, and the report prints
+    why it was not drawn instead — so the memo prints that too, rather than leaving the chart's caption reading as a
+    chart that was drawn.
 
     Args:
         viz: A finding's compiled chart.
 
     Returns:
-        Each line, footnote first; empty when code wrote none or the chart cannot be drawn.
+        The lines to append after the chart's caption, each section opened by a blank line; empty when code wrote
+        none.
     """
     try:
         intent = chart_intent(viz.type, viz.payload)
-    except PayloadError, IntentPolicyError:
+    except (PayloadError, IntentPolicyError) as undrawable:
+        return ["", f"A {viz.type} chart is stored for this finding and cannot be drawn: {undrawable}"]
+    printed = [line for line in (intent.footnote, *intent.disclosures) if line.strip()]
+    if not printed:
         return []
-    return [line for line in (intent.footnote, *intent.disclosures) if line.strip()]
+    return ["", _CHART_NOTES_LABEL, *(f"- {_one_line(line)}" for line in printed)]
 
 
 def render_memo_as_written(analysis: EvalAnalysis) -> str:
@@ -1089,9 +1095,8 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
                     caption = f": {_one_line(finding.chart.caption)}" if finding.chart.caption.strip() else ""
                     note = f" — {_one_line(finding.chart.note)}" if finding.chart.note.strip() else ""
                     findings += ["", f"Chart ({finding.chart.type}){caption}{note}"]
-                    printed = _chart_notes(resolution.chart) if resolution is not None and resolution.chart else []
-                    if printed:
-                        findings += ["", _CHART_NOTES_LABEL, *(f"- {_one_line(line)}" for line in printed)]
+                    if resolution is not None and resolution.chart:
+                        findings += _chart_notes(resolution.chart)
             if finding.caveats:
                 findings += ["", "Caveats:", *(f"- {caveat.kind}: {caveat.text}" for caveat in finding.caveats)]
             if finding.durable.strip():

@@ -288,7 +288,7 @@ def test_a_face_recording_no_files_is_refused_where_a_directory_provides_it(tmp_
 
 def test_one_matching_directory_among_several_is_enough(tmp_path: Path) -> None:
     font = _host_font(tmp_path / "measured")
-    _write(tmp_path / "stale" / "host.ttf", b"another face entirely")
+    _write(tmp_path / "stale" / "host.ttf", _font("Another Face Entirely"))
 
     check_font_files(font, [tmp_path / "stale", tmp_path / "measured"])
 
@@ -301,7 +301,7 @@ def test_a_renderer_built_over_changed_files_is_refused_when_built(tmp_path: Pat
     font = _host_font(tmp_path)
     VegaRenderer(palette=packaged_palette("dark"), font=font, font_dir=tmp_path)
 
-    (tmp_path / "host.ttf").write_bytes(b"replaced")
+    (tmp_path / "host.ttf").write_bytes(_font("Host Face", typographic="Host Face Replaced"))
 
     with pytest.raises(TextMetricsError, match="hashes differently"):
         VegaRenderer(palette=packaged_palette("dark"), font=font, font_dir=tmp_path)
@@ -329,15 +329,27 @@ def test_a_font_s_families_are_read_from_its_name_table() -> None:
 
 
 @pytest.mark.parametrize("data", [b"", b"not a font at all", b"ttcf\x00\x01\x00\x00\x00\x00\x00\x05"])
-def test_bytes_that_are_not_a_font_declare_no_family(data: bytes) -> None:
-    assert font_families(data) == frozenset()
+def test_bytes_that_are_not_a_font_are_refused_not_read_as_declaring_no_family(data: bytes) -> None:
+    """They answered an empty set, the answer for a font naming no family: the parse failure was swallowed."""
+    with pytest.raises(ValueError, match="do not parse as an sfnt font"):
+        font_families(data)
+
+
+def test_a_font_file_that_does_not_parse_is_refused_by_name_where_the_face_is_resolved(tmp_path: Path) -> None:
+    """A broken .ttf was left out as if it declared another family, so a truncated copy of the face went unnoticed."""
+    _write(tmp_path / "HostFace-Regular.ttf", _font("Host Face"))
+    _write(tmp_path / "nested" / "Broken.ttf", b"garbage")
+
+    with pytest.raises(TextMetricsError, match="nested/Broken.ttf: the bytes do not parse"):
+        resolving_files("Host Face", tmp_path)
+    with pytest.raises(FontMeasureError, match="nested/Broken.ttf"):
+        face_files("Host Face", tmp_path)
 
 
 def test_only_the_files_declaring_the_face_are_recorded(tmp_path: Path) -> None:
     regular = _write(tmp_path / "HostFace-Regular.ttf", _font("Host Face"))
     _write(tmp_path / "bold" / "HostFace-Bold.OTF", _font("host face"))
     _write(tmp_path / "Other-Regular.ttf", _font("Other Face"))
-    _write(tmp_path / "Broken.ttf", b"garbage")
     _write(tmp_path / "HostFace.woff2", _font("Host Face"))
     _write(tmp_path / "Family.ttc", _collection("Other Face", "Host Face"))
 

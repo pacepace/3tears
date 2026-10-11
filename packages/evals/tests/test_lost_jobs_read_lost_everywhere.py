@@ -21,6 +21,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from threetears.evals import PUBLIC_ROOTS
 from threetears.evals.actions import eval_catalogue, standard_tools
@@ -214,6 +215,22 @@ def test_a_lost_run_whose_result_cannot_be_read_settles_with_its_completeness_un
     assert stored is not None and stored.lost is not None, "the run was written lost, not merely read so"
 
 
+def test_a_lost_run_whose_completeness_is_unknown_says_why_on_its_own_record() -> None:
+    """The unreadable result was only logged: the record read as an unknown completeness with no fault named on it."""
+    store = InMemoryDocumentStore()
+    storage = EvalStorage(store)
+    run = make_eval_run(scope_id=_SCOPE, status="running")
+    storage.save_job_record(run.to_dict(), if_match=None)
+    _unreadable_result(storage, store, run)
+
+    assert storage.load_eval_run(run.id, _SCOPE) is not None  # the read that settles it
+    stored, _ = storage.load_job_record(EvalRun, run.id, _SCOPE)
+
+    assert stored is not None and stored.completeness is None
+    (detail,) = stored.error_details
+    assert "completeness unknown" in detail and "turns_delivered" in detail, detail
+
+
 class _ContestedStore(InMemoryDocumentStore):
     """Every conditional write of one record loses its race, as a record another writer keeps moving does."""
 
@@ -262,3 +279,23 @@ def test_a_launch_written_lost_settles_the_runs_it_can_and_leaves_the_rest() -> 
     assert read[contested.id] is not None and read[contested.id].lost is None  # type: ignore[union-attr]
     assert read[orphan.id] is not None and read[orphan.id].lost is not None  # type: ignore[union-attr]
     assert read[unreadable.id] is not None and read[unreadable.id].lost is not None  # type: ignore[union-attr]
+
+
+def test_a_run_this_build_cannot_read_is_not_settled_as_if_it_were_still_running() -> None:
+    """A named run whose document would not validate was left as stored and logged; the launch read as all settled."""
+    store = InMemoryDocumentStore()
+    storage = EvalStorage(store)
+    orphan = make_eval_run(scope_id=_SCOPE, status="pending")
+    storage.save_job_record(orphan.to_dict(), if_match=None)
+    unreadable = make_eval_run(scope_id=_SCOPE, status="running")
+    store.upsert(unreadable.to_dict() | {"k_runs": "several"})
+    launch = _OPEN[EvalLaunch]().model_copy(update={"run_ids": [orphan.id, unreadable.id]})
+    storage.save_job_record(launch.to_dict(), if_match=None)
+
+    with pytest.raises(ValidationError, match="k_runs"):
+        settle_job_record(storage, LAUNCH_JOB, launch.id, _SCOPE)
+
+    settled, wrote_lost = settle_job_record(storage, LAUNCH_JOB, launch.id, _SCOPE)
+    assert settled is not None and settled.lost is not None and not wrote_lost, "the launch's own loss was written"
+    read, _ = storage.load_job_record(EvalRun, orphan.id, _SCOPE)
+    assert read is not None and read.lost is not None, "the run named before it was settled"

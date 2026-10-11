@@ -386,30 +386,40 @@ class TestFoldPhaseTimings:
         fold_phase_timings(acc, source_tool="lookup", timings=None)
         assert acc == {"lookup_synthesis_ms": 7.0}
 
-    def test_a_non_mapping_payload_is_dropped_loudly(self, caplog):
+    def test_a_non_mapping_payload_is_refused_to_the_caller(self, caplog):
         """Metadata crosses an untyped process-internal boundary; a malformed carrier
-        must not wedge the cell, but it must not vanish silently either."""
+        must not wedge the cell, and it must not vanish into a log either: the kind is told."""
         acc: dict[str, float] = {}
         with caplog.at_level("WARNING"):
-            fold_phase_timings(acc, source_tool="lookup", timings=[1, 2, 3])
+            refused = fold_phase_timings(acc, source_tool="lookup", timings=[1, 2, 3])
         assert acc == {}
-        assert "non-mapping" in caplog.text
+        assert refused == ["delivery from lookup carried phase timings that are not a mapping ([1, 2, 3])"]
+        assert "not a mapping" in caplog.text
 
-    def test_an_unparseable_duration_is_dropped_loudly(self, caplog):
+    def test_an_unparseable_duration_is_refused_to_the_caller(self, caplog):
+        """It was logged and left out, reading to every reader as a phase the tool never measured."""
         acc: dict[str, float] = {}
         with caplog.at_level("WARNING"):
-            fold_phase_timings(acc, source_tool="lookup", timings={"synthesis": "fast"})
-        assert acc == {}
+            refused = fold_phase_timings(acc, source_tool="lookup", timings={"synthesis": "fast", "grounding": 4.0})
+        assert acc == {"lookup_grounding_ms": 4.0}
+        (sentence,) = refused
+        assert sentence.startswith("phase timing lookup.synthesis is not a number ('fast'")
         assert "not a number" in caplog.text
 
-    def test_a_negative_duration_is_not_a_measurement(self, caplog):
+    def test_a_negative_duration_is_not_a_measurement_and_is_refused_to_the_caller(self, caplog):
         """Nothing takes negative time; folding it would silently subtract from a real
         phase total on the next delivery."""
         acc: dict[str, float] = {}
         with caplog.at_level("WARNING"):
-            fold_phase_timings(acc, source_tool="lookup", timings={"synthesis": -5.0})
+            refused = fold_phase_timings(acc, source_tool="lookup", timings={"synthesis": -5.0})
         assert acc == {}
+        assert refused == ["phase timing lookup.synthesis is negative (-5.0), which no phase takes"]
         assert "negative" in caplog.text
+
+    def test_a_well_formed_delivery_refuses_nothing(self):
+        acc: dict[str, float] = {}
+        assert fold_phase_timings(acc, source_tool="lookup", timings={"synthesis": None, "grounding": 1}) == []
+        assert fold_phase_timings(acc, source_tool="lookup", timings=None) == []
 
 
 # ---------------------------------------------------------------------------

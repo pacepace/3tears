@@ -273,7 +273,11 @@ def judge_kind_readings(results: Iterable[EvalResult]) -> JudgeKindReadings:
     groups: dict[_GroupKey, list[tuple[EvalResult, JudgeTrial]]] = {}
     unread: list[UnreadJudgeTrial] = []
     for result in results:
-        trial = judge_trial_of(result.kind_payload)
+        try:
+            trial = judge_trial_of(result.kind_payload)
+        except ValueError as unreadable:
+            unread.append(UnreadJudgeTrial(result_id=result.id, reason=str(unreadable)))
+            continue
         if trial is None:
             unread.append(UnreadJudgeTrial(result_id=result.id, reason="it carries no judge trial"))
             continue

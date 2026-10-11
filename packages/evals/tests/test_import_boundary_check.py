@@ -7,6 +7,7 @@ is driven here: static imports, dynamic imports, attribute chains, private reach
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -79,6 +80,19 @@ def test_a_name_no_root_exports_is_refused_saying_so(tmp_path: Path) -> None:
     _write(tmp_path, "deep.py", "from threetears.evals.schema.models import SCALE_LEVELS\n")
 
     assert "no public root exports it" in _only(nonpublic_evals_imports(tmp_path)).reason
+
+
+def test_a_root_that_cannot_be_imported_is_named_rather_than_counted_as_not_exporting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A root that failed to import dropped out of the suggestion unnamed: "no public root exports it" was unasked."""
+    monkeypatch.setitem(sys.modules, "threetears.evals.vega", None)
+    _write(tmp_path, "deep.py", "from threetears.evals.schema.models import SCALE_LEVELS\n")
+
+    reason = _only(nonpublic_evals_imports(tmp_path)).reason
+
+    assert "no public root exports it; not counting threetears.evals.vega (ModuleNotFoundError" in reason
+    assert reason.endswith("which could not be imported to check")
 
 
 def test_a_name_a_root_does_not_declare_is_refused(tmp_path: Path) -> None:

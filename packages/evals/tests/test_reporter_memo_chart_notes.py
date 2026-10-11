@@ -82,9 +82,12 @@ async def test_a_chart_whose_compiler_wrote_nothing_prints_no_label(toy) -> None
     assert _LABEL not in render_memo_as_written(analysis)
 
 
-async def test_a_chart_this_build_cannot_draw_prints_no_compiler_lines(toy) -> None:
+async def test_a_chart_this_build_cannot_draw_prints_why_as_the_report_does(toy) -> None:
+    """It printed nothing under the caption, so the judge read an undrawable chart as one that was drawn."""
     _, analysis, _ = toy
     memo = render_memo_as_written(_with_chart(analysis, Viz(type="distribution", payload={}, ref={})))
 
     assert "\nChart (delta_table): the wide chunk is the slower one" in memo
     assert _LABEL not in memo
+    after = _chart_section(memo).split("\n\n", 2)[1]
+    assert after.startswith("A distribution chart is stored for this finding and cannot be drawn: "), after

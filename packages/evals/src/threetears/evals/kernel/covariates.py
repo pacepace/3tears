@@ -375,8 +375,8 @@ def fold_phase_timings(
     *,
     source_tool: str,
     timings: Any,
-) -> None:
-    """Fold one delivery's carried phase timings into a result's accumulator.
+) -> list[str]:
+    """Fold one delivery's carried phase timings into a result's accumulator, and say what could not be folded.
 
     Keys land as ``<source_tool>_<phase>_ms`` so two tools reporting a ``synthesis`` phase
     stay distinct, and repeat deliveries SUM: a cell that ran that tool twice spent both
@@ -384,33 +384,45 @@ def fold_phase_timings(
     the cell.
 
     ``timings`` arrives as whatever the background tool reported, so a malformed entry is
-    dropped with a warning rather than wedging the cell — but it is dropped LOUDLY, because a
-    bad value silently becoming a plausible duration is exactly the conflation this capture
-    exists to prevent. A negative duration is not a measurement.
+    not folded rather than wedging the cell — but it is never dropped quietly, because a bad
+    value silently becoming a plausible duration, or silently becoming "unmeasured", is
+    exactly the conflation this capture exists to prevent. Each entry left out is returned as
+    a sentence naming the tool, the phase and the value, for the kind to record where the cell's
+    reader sees it (an infra error, beside the cell's measures), and is logged. A negative
+    duration is not a measurement. A phase reported as ``None`` is one the tool did not
+    measure, which is an answer, and is neither folded nor returned.
 
     Public, because the caller is a kind, not the runner: the key form is the engine's, so any
     kind whose candidate hands work to a detached tool reports that work's phases through this
     one fold.
+
+    Returns:
+        One sentence per entry not folded; empty when every entry folded or the tool measured none.
     """
     if timings is None:
-        return
+        return []
     if not isinstance(timings, dict):
-        log.warning("Delivery from %s carried non-mapping phase timings (%r); ignoring", source_tool, timings)
-        return
+        refused = f"delivery from {source_tool} carried phase timings that are not a mapping ({timings!r})"
+        log.warning("%s; not folded", refused)
+        return [refused]
+    refusals: list[str] = []
     for phase, value in timings.items():
         if value is None:
             # The tool measured no such phase on this run — the trace field was None.
             continue
         try:
             ms = float(value)
-        except TypeError, ValueError:
-            log.warning("Phase timing %s.%s is not a number (%r); recording as unmeasured", source_tool, phase, value)
+        except (TypeError, ValueError) as unread:
+            refusals.append(f"phase timing {source_tool}.{phase} is not a number ({value!r}: {unread})")
             continue
         if ms < 0:
-            log.warning("Phase timing %s.%s is negative (%r); recording as unmeasured", source_tool, phase, value)
+            refusals.append(f"phase timing {source_tool}.{phase} is negative ({value!r}), which no phase takes")
             continue
         key = f"{source_tool}_{phase}_ms"
         accumulator[key] = round(accumulator.get(key, 0.0) + ms, 3)
+    for refused in refusals:
+        log.warning("%s; not folded", refused)
+    return refusals
 
 
 __all__ = [

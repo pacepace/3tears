@@ -956,16 +956,28 @@ async def run_analysis_generation(
     ending, cancelled_now = await recorded("stored", analysis_id=analysis.id)
     cancelled = cancelled_now or cancelled
     if ending == "fenced":
-        cancelled = (
+        lost = (
+            f"analysis attempt '{prepared.attempt_id}' was written lost by another process before its ending was "
+            "recorded"
+        )
+        try:
             await _offloaded(
                 executor, _withdraw_generation, storage, analysis, stored_insights, overwritten, scope_id=scope_id
             )
-            or cancelled
-        )
-        raise JobFenced(
-            f"analysis attempt '{prepared.attempt_id}' was written lost by another process before its ending was "
-            f"recorded; analysis '{analysis.id}' and its insights were withdrawn"
-        )
+        # prawduct:ok-broad-except — a store's write raises its own types; re-raised as the fence, naming it
+        except Exception as unwithdrawn:
+            log.exception(
+                "eval.generate_analysis analysis %s was stored for an attempt written lost, and withdrawing it failed "
+                "part-way — delete it and restore its insights by hand: insights=%s",
+                analysis.id,
+                [insight.id for insight in stored_insights],
+            )
+            raise JobFenced(
+                f"{lost}, and withdrawing what it stored failed part-way ({type(unwithdrawn).__name__}: "
+                f"{unwithdrawn}): analysis '{analysis.id}' may still be stored — delete it, and put back or delete "
+                f"insights {[insight.id for insight in stored_insights]} by hand"
+            ) from unwithdrawn
+        raise JobFenced(f"{lost}; analysis '{analysis.id}' and its insights were withdrawn")
     if unfinished is not None:
         raise unfinished
 
@@ -1084,8 +1096,8 @@ def _withdraw_generation(
 
     Each insight it wrote is put back as the ledger held it (a restatement written over a live insight) or
     deleted (a new one); then the analysis is deleted, so the lost attempt is left with nothing it did not record.
-    Blocking. A withdrawal that fails part-way is logged with what it left, and not raised: the caller raises the
-    fence that made it necessary.
+    Blocking. A withdrawal that fails part-way raises what the store raised; the caller raises the fence that made
+    it necessary, saying the withdrawal failed and what is left to remove by hand, rather than that it happened.
 
     Args:
         storage: Where the analysis and the insights were written.
@@ -1093,23 +1105,16 @@ def _withdraw_generation(
         insights: The insights written, in order.
         overwritten: The ledger rows those insights were written over, by id, as they stood.
         scope_id: The scope they live in.
+
+    Raises:
+        Exception: Whatever the store raised, part-way.
     """
-    try:
-        for insight in insights:
-            if (prior := overwritten.get(insight.id)) is not None:
-                storage.save_insight(prior)
-            else:
-                storage.delete_insight(insight.id, scope_id)
-        storage.delete_analysis(analysis.id, scope_id)
-    # prawduct:ok-broad-except — a store's delete raises its own types; the fence the caller raises must still be raised
-    except Exception:
-        log.exception(
-            "eval.generate_analysis analysis %s was stored for an attempt written lost, and withdrawing it failed "
-            "part-way — delete it and restore its insights by hand: insights=%s",
-            analysis.id,
-            [insight.id for insight in insights],
-        )
-        return
+    for insight in insights:
+        if (prior := overwritten.get(insight.id)) is not None:
+            storage.save_insight(prior)
+        else:
+            storage.delete_insight(insight.id, scope_id)
+    storage.delete_analysis(analysis.id, scope_id)
     log.warning(
         "eval.generate_analysis analysis %s withdrawn: its attempt was written lost before its ending was recorded "
         "(%d insight(s) put back or deleted)",

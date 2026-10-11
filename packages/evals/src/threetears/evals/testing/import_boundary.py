@@ -954,9 +954,9 @@ def _from_import_defect(module: str, name: str, exported: dict[str, frozenset[st
     if module == _PACKAGE:
         return None if name in _exports(_PACKAGE, exported) else _undeclared(module, name, exported)
     if module not in PUBLIC_ROOTS:
-        homes = _public_homes(name, exported)
+        homes, unread = _public_homes(name, exported)
         where = f"import it from {' or '.join(homes)}" if homes else "no public root exports it"
-        return f"{module} is below a public root; {where}"
+        return f"{module} is below a public root; {where}{_unread_roots(unread)}"
     if name == "*" or name not in _exports(module, exported):
         return _undeclared(module, name, exported)
     return None
@@ -975,9 +975,10 @@ def _undeclared(module: str, name: str, exported: dict[str, frozenset[str]]) -> 
     """
     if name == "*":
         return f"a star import binds whatever {module} happens to hold; import the names its __all__ declares"
-    homes = [home for home in _public_homes(name, exported) if home != module]
+    found, unread = _public_homes(name, exported)
+    homes = [home for home in found if home != module]
     where = f"; it is public from {' or '.join(homes)}" if homes else "; no public root exports it"
-    return f"{name} is not in {module}.__all__{where}"
+    return f"{name} is not in {module}.__all__{where}{_unread_roots(unread)}"
 
 
 def _exports(root: str, exported: dict[str, frozenset[str]]) -> frozenset[str]:
@@ -995,29 +996,37 @@ def _exports(root: str, exported: dict[str, frozenset[str]]) -> frozenset[str]:
     return exported[root]
 
 
-def _public_homes(name: str, exported: dict[str, frozenset[str]]) -> list[str]:
-    """Every public root whose ``__all__`` declares ``name``.
+def _public_homes(name: str, exported: dict[str, frozenset[str]]) -> tuple[list[str], list[str]]:
+    """Every public root whose ``__all__`` declares ``name``, and every root that could not be imported to look.
 
-    A root whose extra is not installed cannot be read and is passed over: it is a suggestion, and the
-    finding stands either way.
+    A root that cannot be imported (its extra is not installed, or importing it fails) cannot be read, so whether it
+    declares the name is unknown; it is returned beside the homes rather than passed over, so a suggestion that
+    reads "no public root exports it" says which roots it could not ask.
 
     Args:
         name: The name.
         exported: The cache.
 
     Returns:
-        The roots, in :data:`~threetears.evals.PUBLIC_ROOTS` order.
+        The roots declaring it, and each root that could not be imported with why, both in
+        :data:`~threetears.evals.PUBLIC_ROOTS` order.
     """
-    homes = []
+    homes: list[str] = []
+    unread: list[str] = []
     for root in PUBLIC_ROOTS:
         try:
             names = _exports(root, exported)
-        # NOSILENT: a root whose extra is not installed drops out of the suggestion only; the finding stands.
-        except ImportError:
+        except ImportError as missing:
+            unread.append(f"{root} ({type(missing).__name__}: {missing})")
             continue
         if name in names:
             homes.append(root)
-    return homes
+    return homes, unread
+
+
+def _unread_roots(unread: list[str]) -> str:
+    """The clause naming the roots a suggestion could not ask, or nothing when it asked every one."""
+    return f"; not counting {'; '.join(unread)}, which could not be imported to check" if unread else ""
 
 
 def _root_above(module: str) -> str:
