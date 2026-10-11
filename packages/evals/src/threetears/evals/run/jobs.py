@@ -707,7 +707,8 @@ class EvalJobManager:
             job_id: The task's id; the caller's record of the work should carry the same id, so
                 the two can be joined once the task is gone.
             work: The coroutine function to run. Whatever it raises ends the task and is logged,
-                never re-raised — the work's own record is where its ending is stated.
+                never re-raised — the work's own record is where its ending is stated; a ``record`` the work
+                left unended is written lost, its cause what the work raised.
             budget_s: The wall-clock ceiling, entered through this manager's timeout factory. The
                 caller derives it from the work's own inner ceilings. ``None`` for work that enters its own
                 (:attr:`job_timeout_factory`), because how it ends when that fires is the work's to record: a
@@ -839,7 +840,13 @@ class EvalJobManager:
             )
 
     async def _run_task(self, job_id: str, work: Callable[[], Awaitable[None]], budget_s: float | None) -> None:
-        """Execute one detached task under its budget, if it has one; log how it ended if it did not end cleanly."""
+        """Execute one detached task under its budget, if it has one; log how it ended if it did not end cleanly.
+
+        The work records its own ending. One that raised past it — or ran out of the budget given here — leaves its
+        record unended: a task holding a leased record has it written lost here, its cause what ended the task
+        (:meth:`JobLeases.end_lost`), rather than left to read lost once its lease lapses with a cause saying the
+        process went away. A record the work did end keeps its ending, and a task holding no record only logs.
+        """
         try:
             if budget_s is None:
                 with job_running(job_id):
@@ -854,9 +861,11 @@ class EvalJobManager:
             log.error(
                 "Task %s timed out after %.0fs (attribution=%s)", job_id, timed_out.elapsed_s, timed_out.attribution
             )
-        # prawduct:ok-broad-except — top-level task boundary: the work records its own ending, so this only logs
-        except Exception:
+            await self._end_task_record(job_id, f"its task ran out of its {timed_out.elapsed_s:.0f}s budget")
+        # prawduct:ok-broad-except — top-level task boundary: the work records its own ending; one it did not is written lost
+        except Exception as broke:
             log.exception("Task %s failed", job_id)
+            await self._end_task_record(job_id, f"its task raised past its own ending: {type(broke).__name__}: {broke}")
         finally:
             # Only after the work has returned or raised: a caller reading "not active" must find
             # the work's own record already written.
@@ -865,6 +874,24 @@ class EvalJobManager:
             if self._leases is not None:
                 self._leases.release(job_id)
                 self._leases.forget(job_id)
+
+    async def _end_task_record(self, job_id: str, cause: str) -> None:
+        """Write a failed task's record lost with ``cause`` when this process holds one; a failed write is logged."""
+        if self._leases is None:
+            return
+        try:
+            written = await self._leases.end_lost(job_id, cause)
+        # prawduct:ok-broad-except — the task has already failed; this write is logged beside that failure, never raised
+        except Exception:
+            log.exception(
+                "Task %s: its record could not be written lost either — it reads lost once its lease lapses. "
+                "What ended the task: %s",
+                job_id,
+                cause,
+            )
+            return
+        if written:
+            log.warning("Task %s: its record written lost: %s", job_id, cause)
 
     async def start_group(
         self, members: Sequence[tuple[EvalRun, WorkFn, float | None]], *, measure_latency: bool = False

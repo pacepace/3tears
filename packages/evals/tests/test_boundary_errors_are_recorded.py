@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -19,10 +20,12 @@ from pydantic import BaseModel
 
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink, VariantConfig
 from threetears.evals.kernel.cassettes import ActionSeam, CellCassettes, DeliverySeam, ToolWrap
+from threetears.evals.kernel import RUN_JOB, SWEEP_JOB, EvalSweep, JobLeases, SweepArmRecord
 from threetears.evals.kernel.errors import ConflictError, StorageError
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.scoring import CellSummary
 from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.run.jobs import EvalJobManager
 from threetears.evals.run.lifecycle import record_completeness
 from threetears.evals.run.runner import RunnerOptions, execute_run
 from threetears.evals.schema.models import EvalCassette, EvalRun, JudgedArtifact
@@ -250,3 +253,149 @@ async def test_a_run_whose_loop_contained_nothing_carries_no_entry() -> None:
     stored = await _execute(host, run, RunnerOptions(candidate_kinds={DEFAULT_KIND: lambda _cell: _FakeRollingKind()}))
 
     assert stored.error_details == []
+
+
+# =============================================================================
+# Job leases: a holder whose renewals fail says why on the run; a failed task's record says what ended it
+# =============================================================================
+
+#: When the store's clock starts; the tests move it inside the lease and hold it there, so only the holder's own
+#: count can find its lease gone.
+_T0 = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
+
+
+class _RenewalRefusingStore(InMemoryDocumentStore):
+    """A clocked store that refuses, once told to, every write moving a record's lease — or, told so, every write.
+
+    Its clock is moved inside the lease and held there, so no reader, and no renewal, finds the lease lapsed: only
+    the holder's own count can tell it its lease is gone.
+    """
+
+    def __init__(self) -> None:
+        """Accept every write, at a clock that does not move."""
+        super().__init__()
+        self.at = _T0
+        self.refusing = False
+        self.unreachable = False
+
+    def now(self) -> datetime:
+        """The store's time, as the test set it."""
+        return self.at
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Refuse a renewal while refusing, and every write while unreachable; write anything else."""
+        if self.unreachable:
+            raise RuntimeError("the store is unreachable")
+        if self.refusing and document.get("lease") is not None:
+            stored = self.get(str(document["id"]), str(document["scope_id"]))
+            if stored is not None and stored.get("lease") != document["lease"]:
+                raise RuntimeError("the store refused the renewal")
+        super().upsert(document, if_match=if_match, create_only=create_only)
+
+
+async def _held_run(store: _RenewalRefusingStore) -> tuple[EvalStorage, JobLeases, EvalRun, asyncio.Event]:
+    storage = EvalStorage(store)
+    leases = JobLeases(storage, lease_s=0.3)
+    run = make_eval_run(status="running")
+    run.lease = leases.grant()
+    storage.save_eval_run(run)
+    stopped = asyncio.Event()
+    leases.hold(RUN_JOB, run.id, run.scope_id, cancel=lambda _reason: None, stop=stopped.set)
+    store.at = _T0 + timedelta(seconds=0.1)  # inside the lease, so every renewal moves it, for the whole test
+    return storage, leases, run, stopped
+
+
+async def test_a_run_whose_renewals_fail_for_a_whole_lease_is_told_why_on_its_record() -> None:
+    """Before: the holder stopped the run and logged; the run later read lost as a process that went away."""
+    store = _RenewalRefusingStore()
+    storage, _leases, run, stopped = await _held_run(store)
+    store.refusing = True
+
+    await asyncio.wait_for(stopped.wait(), timeout=5)
+
+    record, _ = storage.load_job_record(EvalRun, run.id, run.scope_id)
+    assert record is not None and (record.status, record.lost) == ("running", None), "no ending of its own"
+    [entry] = record.error_details
+    assert entry.startswith("job lease: its holder, process ")
+    assert "could not renew it for 0.3s, its whole lease, and stopped the job" in entry
+    assert "— the last renewal failed: StorageError: " in entry and "the store refused the renewal" in entry
+
+
+async def test_a_run_whose_renewals_fail_and_whose_record_cannot_be_written_logs_both_errors(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = _RenewalRefusingStore()
+    storage, _leases, run, stopped = await _held_run(store)
+    store.unreachable = True
+
+    with caplog.at_level(logging.ERROR):
+        await asyncio.wait_for(stopped.wait(), timeout=5)
+
+    [line] = [r for r in caplog.records if "could not be written on its record either" in r.getMessage()]
+    assert line.levelno == logging.ERROR
+    assert "the renewal failure: the last renewal failed: StorageError: " in line.getMessage()
+    assert line.exc_info is not None and "the store is unreachable" in str(line.exc_info[1])
+    store.unreachable = False
+    record, _ = storage.load_job_record(EvalRun, run.id, run.scope_id)
+    assert record is not None and record.error_details == []
+
+
+def _sweep(scope_id: str = "scope-1") -> EvalSweep:
+    return EvalSweep(
+        scope_id=scope_id,
+        campaign_id="campaign-1",
+        template_id="tpl-1",
+        subject_id="subject-1",
+        arms=[SweepArmRecord(label="a", model="m1")],
+        max_concurrent_arms=1,
+    )
+
+
+async def test_a_task_that_raises_past_its_own_ending_has_its_record_written_lost_naming_the_error() -> None:
+    """Before: the task's error was logged and its record read running until its lease lapsed, then lost, causeless."""
+    storage = EvalStorage(InMemoryDocumentStore())
+    leases = JobLeases(storage)
+    manager = EvalJobManager(storage, leases=leases)
+    sweep = _sweep()
+    sweep.lease = leases.grant()
+    storage.save_sweep(sweep)
+
+    async def work() -> None:
+        raise RuntimeError("the arm list could not be read")
+
+    manager.start_task(sweep.id, work, budget_s=None, record=(SWEEP_JOB, sweep.scope_id))
+    await asyncio.wait_for(_task_ended(manager, sweep.id), timeout=5)
+
+    record, _ = storage.load_job_record(EvalSweep, sweep.id, sweep.scope_id)
+    assert record is not None and record.lost is not None
+    assert record.lost.cause == "its task raised past its own ending: RuntimeError: the arm list could not be read"
+    assert (record.outcome, record.detail) == ("cancelled", f"lost: {record.lost.cause}")
+    assert record.lease is None
+
+
+async def test_a_task_whose_work_recorded_its_own_ending_keeps_it() -> None:
+    storage = EvalStorage(InMemoryDocumentStore())
+    leases = JobLeases(storage)
+    manager = EvalJobManager(storage, leases=leases)
+    sweep = _sweep()
+    sweep.lease = leases.grant()
+    storage.save_sweep(sweep)
+
+    async def work() -> None:
+        storage.save_sweep(sweep.model_copy(update={"outcome": "failed", "detail": "arm 'a' was refused"}))
+        raise RuntimeError("raised after the ending was written")
+
+    manager.start_task(sweep.id, work, budget_s=None, record=(SWEEP_JOB, sweep.scope_id))
+    await asyncio.wait_for(_task_ended(manager, sweep.id), timeout=5)
+
+    record, _ = storage.load_job_record(EvalSweep, sweep.id, sweep.scope_id)
+    assert record is not None and (record.outcome, record.detail, record.lost) == (
+        "failed",
+        "arm 'a' was refused",
+        None,
+    )
+
+
+async def _task_ended(manager: EvalJobManager, job_id: str) -> None:
+    while manager.is_task_active(job_id):
+        await asyncio.sleep(0.01)

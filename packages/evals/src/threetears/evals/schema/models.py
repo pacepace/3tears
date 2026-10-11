@@ -3303,7 +3303,7 @@ class EvalRun(CoreDocumentModel):
             "run written lost while a result it stored cannot be read (its completeness unknown), and by "
             "a boundary that contained an error so it could not change the run's outcome: its completeness "
             "record not written, a capture recording not written (the corpus incomplete), a concurrency probe "
-            "that raised. Each such entry names where it happened, then the error (its type and message). The "
+            "that raised, or the holder's renewals of its lease failing for a whole lease, which stopped it. Each such entry names where it happened, then the error (its type and message). The "
             "designed stops each have their own channel (``cancellation_reason`` for a cancel, "
             "``budget_stop_reason`` for the cost cap and the wall-clock budget), so a non-empty list "
             "means a fault, and its length is a count an operator can triage on."
