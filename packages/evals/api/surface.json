@@ -1203,7 +1203,7 @@
     },
     "threetears.evals.kernel.fold_phase_timings": {
       "kind": "function",
-      "signature": "fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> None"
+      "signature": "fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> list[str]"
     },
     "threetears.evals.kernel.FRONTIER_RANKING_MEASURE": {
       "kind": "constant (str)",

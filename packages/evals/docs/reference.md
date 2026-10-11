@@ -345,8 +345,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`extract_json(content: str) -> dict[str, Any]`
 - **`extract_json_array`** · function · Extract a JSON array from provider output, handling markdown code blocks.
   <br>`extract_json_array(text: str) -> list[dict[str, Any]]`
-- **`fold_phase_timings`** · function · Fold one delivery's carried phase timings into a result's accumulator.
-  <br>`fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> None`
+- **`fold_phase_timings`** · function · Fold one delivery's carried phase timings into a result's accumulator, and say what could not be folded.
+  <br>`fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> list[str]`
 - **`generation_slot_id`** · function · The id of a campaign's generation slot: one per campaign, so every process racing a start names one document.
   <br>`generation_slot_id(campaign_id: str) -> str`
 - **`goal_check_of`** · function · The check a measure name was minted for by `goal_check_measure`, or None.

@@ -44,6 +44,10 @@ packages (bumped in lock-step).
   or carried no `values` array, was logged and read as an empty list, and the generation refused with "produced no
   values", the words for a reply that offered nothing new. The refusal now names which, with the parse error or the
   keys the reply carried.
+- **`fold_phase_timings` returns what it could not fold.** A delivery's phase timings that were not a mapping, or
+  an entry that was not a number or was negative, were logged and left out, so the phase read as one the tool never
+  measured. The fold now returns one sentence per entry left out (empty when all folded), for the kind to record
+  where the cell's reader sees it; it still never folds a malformed value, and still logs.
 
 ### 3tears-evals: backlog while Discodon adopts .13
 
