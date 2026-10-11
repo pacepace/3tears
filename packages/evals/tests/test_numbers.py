@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from threetears.evals.analysis import latency_partition, numbers, references, significance, surface_table
-from threetears.evals.analysis.numbers import ABSENT, WHOLE_FROM, format_number, format_signed
+from threetears.evals.analysis.numbers import ABSENT, WHOLE_FROM, WRITTEN_FROM, format_number, format_signed
 from threetears.evals.analysis.viz import quantities
 from threetears.evals.schema.models import LatencyMetrics
 
@@ -47,14 +47,40 @@ class TestTheLargeEnd:
 
 
 class TestTheSmallEnd:
-    @pytest.mark.parametrize("value", [0.000042, 1e-9, -3.3e-7, 5e-324])
+    @pytest.mark.parametrize("value", [0.000042, 1e-9, -3.3e-7, 5e-324, 3.6e-169])
     def test_a_small_non_zero_value_never_reads_as_zero(self, value):
         text = format_number(value)
-        assert float(text) != 0.0, text
+        assert text not in {"0", "-0"} and float(text.lstrip("<> ")) != 0.0, text
+
+    @pytest.mark.parametrize(
+        ("value", "text"), [(3.6e-169, "< 0.000001"), (-3.3e-7, "> -0.000001"), (9.9999e-7, "< 0.000001")]
+    )
+    def test_below_a_millionth_a_value_reads_as_the_bound_it_is_under(self, value, text):
+        """A p of 3.6e-169 written out is a line of zeros no reader counts; the bound is what a reader acts on."""
+        assert format_number(value) == text
+        assert WRITTEN_FROM == 1e-6
 
     def test_it_is_four_significant_figures_in_the_middle(self):
         assert format_number(0.0123456) == "0.01235"
         assert format_number(12.3456) == "12.35"
+
+    @pytest.mark.parametrize("value", [0.000042, 5.165e-05, 1.2345e-05, 1e-9, -3.3e-7, 9.99996e-5, 3.6e-169])
+    def test_a_small_value_never_takes_an_exponent(self, value):
+        """A mean beside its sem read ``0.0005306 ± 5.165e-05``: two spellings of one magnitude on one line."""
+        assert "e" not in format_number(value)
+
+    @pytest.mark.parametrize(
+        ("value", "text"),
+        [
+            (5.165e-05, "0.00005165"),
+            (0.0005306, "0.0005306"),
+            (1.2345e-05, "0.00001234"),
+            (-0.000042, "-0.000042"),
+            (9.99996e-5, "0.0001"),
+        ],
+    )
+    def test_a_small_value_is_four_significant_figures_written_out(self, value, text):
+        assert format_number(value) == text
 
 
 class TestWholeAndAbsent:
@@ -77,7 +103,8 @@ class TestTheSignedForm:
             (-1.5, "-1.5"),
             (0.0, "0"),
             (12345.6, "+12346"),
-            (-0.000042, "-4.2e-05"),
+            (-0.000042, "-0.000042"),
+            (3.6e-169, "< 0.000001"),
             (None, "—"),
             (math.nan, "—"),
         ],
