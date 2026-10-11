@@ -10,12 +10,13 @@ unchanged; and a changed rule refuses to start until ``relocate`` has moved ever
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
 from threetears.evals.kernel.storage import EvalStorage
-from threetears.evals.schema import DOC_TYPE_FACTS, DocTypeFacts, StoreConflict
+from threetears.evals.schema import DOC_TYPE_FACTS, DocTypeFacts, StoreClock, StoreConflict
 from threetears.evals.storage import (
     ROUTING_SCOPE,
     DocTypeRoute,
@@ -443,3 +444,45 @@ def test_relocate_refuses_two_different_documents_under_one_id() -> None:
     assert _held(stores["evidence"]) == {"a1"}, "nothing of that id was moved"
     with pytest.raises(RouteChanged):
         RoutedDocumentStore(stores, _BY_LIFECYCLE)
+
+
+# --- a store's clock -----------------------------------------------------------------------------
+
+
+class _ClockedStore(InMemoryDocumentStore):
+    """An in-memory store that keeps a clock of its own, fixed so a test can tell whose clock answered."""
+
+    def __init__(self, at: datetime) -> None:
+        super().__init__()
+        self._at = at
+
+    def now(self) -> datetime:
+        return self._at
+
+
+_EVIDENCE_TIME = datetime(2026, 10, 1, tzinfo=UTC)
+_SCRATCH_TIME = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def test_the_router_keeps_a_clock_when_every_store_does_and_reads_the_job_records_store() -> None:
+    router, _ = _router({"evidence": _ClockedStore(_EVIDENCE_TIME), "scratch": _ClockedStore(_SCRATCH_TIME)})
+
+    assert isinstance(router, StoreClock) and isinstance(router, RoutedDocumentStore)
+    assert router.placements["eval_run"] == "evidence"
+    assert router.now() == _EVIDENCE_TIME
+
+
+def test_the_router_keeps_no_clock_when_any_store_has_none() -> None:
+    router, _ = _router({"evidence": _ClockedStore(_EVIDENCE_TIME), "scratch": InMemoryDocumentStore()})
+
+    assert not isinstance(router, StoreClock)
+    assert not hasattr(router, "now")
+
+
+def test_every_job_record_type_is_kept_with_runs_under_every_rule() -> None:
+    """The clocked router reads the runs' store; every leased record must be stamped by that same clock."""
+    for by, values in (("origin", ("input", "record", "derived")), ("lifecycle", ("kept", "regenerable"))):
+        for split in values:
+            route = DocTypeRoute(by=by, to={v: ("b" if v == split else "a") for v in values}, unregistered="a")  # type: ignore[arg-type]
+            placements = route.placements(DOC_TYPE_FACTS)
+            assert placements["eval_sweep"] == placements["eval_analysis_attempt"] == placements["eval_run"]

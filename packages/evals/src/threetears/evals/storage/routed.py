@@ -33,6 +33,14 @@ document of the scopes its host names to its placement, then writes the record. 
 (new in this release) is read where the record's store for unregistered types is, so a new type changes nothing
 unless it is placed elsewhere.
 
+**A store's clock passes through when every store has one.** A store offering
+:class:`~threetears.evals.schema.StoreClock` keeps time every process sharing it reads alike, and job leases are
+stamped in it. The router offers ``now()`` exactly when every one of its stores does, and answers from the store
+job records (runs, sweeps, analysis attempts) are kept in, so every process stamps and compares leases on one clock.
+When any store has none, neither has the router, and the engine reads each process's own clock, as it would over
+that store alone: a router that answered from one store's clock while another could not keep time would promise an
+agreement it cannot keep.
+
 The record is the router's bookkeeping about the stores, not an engine document: it is not routed by facts, it
 is written to every store alike, and it is not in :data:`~threetears.evals.schema.models.EVAL_DOC_TYPES` because
 no operator wipe should remove it and no adapter's conformance run should be asked to store it. It lives in its
@@ -45,12 +53,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from types import MappingProxyType
 from typing import Any, Final, Literal, get_args
 
 from threetears.evals.schema.doc_types import DOC_TYPE_FACTS, DocLifecycle, DocOrigin, DocTypeFacts
 from threetears.evals.schema.hashing import canonical_digest
-from threetears.evals.schema.store_port import DocumentStore
+from threetears.evals.schema.store_port import DocumentStore, StoreClock
 
 __all__ = ["ROUTING_SCOPE", "DocTypeRoute", "MisplacedDocument", "RouteChanged", "RoutedDocumentStore"]
 
@@ -195,6 +204,12 @@ class RoutedDocumentStore:
         ValueError: The route or the stores are refused (see :class:`DocTypeRoute` and :meth:`relocate`).
         RouteChanged: The stores were written under other placements, or under none.
     """
+
+    def __new__(cls, children: Mapping[str, DocumentStore], route: DocTypeRoute) -> RoutedDocumentStore:
+        """Build the clocked router when every store offers a clock, so ``isinstance(router, StoreClock)`` says so."""
+        if cls is RoutedDocumentStore and children and all(isinstance(s, StoreClock) for s in children.values()):
+            return super().__new__(_ClockedRoutedDocumentStore)
+        return super().__new__(cls)
 
     def __init__(self, children: Mapping[str, DocumentStore], route: DocTypeRoute) -> None:
         """Resolve the route, and refuse to start unless every store was written under these placements."""
@@ -465,3 +480,23 @@ class RoutedDocumentStore:
         for name, store in children.items():
             store.upsert(_record(name, placements, route.unregistered))
         return moved
+
+
+#: The job record whose store's clock a clocked router reads: runs, sweeps and analysis attempts carry leases,
+#: and every fact rule keeps them together (each is a kept record), so the store keeping runs keeps them all.
+_JOB_RECORD_DOC_TYPE: Final[str] = "eval_run"
+
+
+class _ClockedRoutedDocumentStore(RoutedDocumentStore):
+    """A :class:`RoutedDocumentStore` whose every store offers a clock: it offers one too (the module docstring)."""
+
+    def now(self) -> datetime:
+        """The clock of the store job records are kept in.
+
+        Returns:
+            That store's current time.
+        """
+        store = self._routed(_JOB_RECORD_DOC_TYPE)
+        if not isinstance(store, StoreClock):
+            raise TypeError("a clocked router is built only over stores that each keep a clock")
+        return store.now()

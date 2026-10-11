@@ -222,6 +222,10 @@ once when you adopt the router and again whenever you change the route, with the
 interrupted, run it again. A release that adds a type needs no relocation unless your route places the new type
 somewhere other than your `unregistered` store.
 
+**A store's clock passes through when every store has one.** When each of your stores offers `StoreClock`
+(its own `now()`), so does the router, answering from the store your runs are kept in, so every process stamps
+job leases on one clock. If any store has none, neither has the router, and each process reads its own clock.
+
 Prove the router as you prove any store: the conformance kit runs over a `RoutedDocumentStore` of your stores.
 
 ## The kind: what you are evaluating
