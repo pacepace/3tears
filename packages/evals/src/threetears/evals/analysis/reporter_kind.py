@@ -42,6 +42,7 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.errors import GenerationError
 from threetears.evals.analysis.generator import (
     build_user_message,
+    first_request,
     generate_analysis,
     generation_ceiling_s,
     refuse_an_undescribable_arm_table,
@@ -68,7 +69,7 @@ from threetears.evals.kernel.candidate_kind import (
     CostCapReached,
     VariantConfig,
 )
-from threetears.evals.kernel.capped_completion import CappedCompletion
+from threetears.evals.kernel.capped_completion import CappedCompletion, call_ceiling
 from threetears.evals.kernel.cassettes import CellCassettes
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.kernel.host.eval_host import EvalHost
@@ -621,6 +622,37 @@ def _unusable_bundle(test_case: EvalTestCase, exc: ValueError) -> str:
     return f"apparatus: test case {test_case.id}'s frozen bundle cannot be used: {exc}"
 
 
+def _generation_input(test_case: EvalTestCase) -> tuple[ReporterCase, AnalysisContextBundle] | str:
+    """The case and the bundle a cell generates over, or the infra error that excludes it with no call made.
+
+    The one reading of a case a generator is sent, shared by :meth:`ReporterKind.invoke`, which generates over it,
+    and :meth:`ReporterKind.price_case`, which prices the call before launch, so the two cannot read one case two
+    ways. The request built from the bundle is :func:`~threetears.evals.analysis.generator.first_request`, which
+    the generation sends.
+
+    Args:
+        test_case: The cell's stored case.
+
+    Returns:
+        ``(case, bundle)``, or the infra error to report.
+    """
+    case = _read_case(test_case)
+    if isinstance(case, str):
+        return case
+    try:
+        bundle = rebuild_bundle(case)
+    except ValueError as exc:
+        return _unusable_bundle(test_case, exc)
+    try:
+        # The generator's own precondition, asked before the candidate is: a bundle in which no arm can be
+        # described fails EVERY candidate identically, so it is the case's fault and must not be scored against
+        # the candidate.
+        refuse_an_undescribable_arm_table(bundle)
+    except GenerationError as exc:
+        return f"apparatus: test case {test_case.id} cannot be generated over: {exc}"
+    return case, bundle
+
+
 @dataclass
 class PreparedReporter:
     """One cell's reporter candidate: the model it binds, and the cell's tracing windows.
@@ -814,6 +846,35 @@ class ReporterKind:
         _refuse_a_model_mismatch(variant_config, self._model, what="the reporter's generator client")
         return PreparedReporter(model=self._model, span_window=span_window)
 
+    def price_case(self, test_case: EvalTestCase) -> float | None:
+        """The ceiling :meth:`invoke` reserves for ``test_case``'s first generator call, built and priced as it is.
+
+        What a launch prices an arm's largest call by before anything is spent
+        (:func:`~threetears.evals.ops.price_largest_reporter_call`): a call whose ceiling is above the run's cap
+        on its own is one the run could never make. The request is the one the generation sends first
+        (:func:`~threetears.evals.analysis.generator.first_request`, over the bundle :meth:`invoke` reads), priced
+        on this kind's client as :class:`~threetears.evals.kernel.capped_completion.CappedCompletion` prices it.
+
+        The repair round-trip a refused output buys is not priced here: its message carries the first call's
+        output, which does not exist before launch, so it stays held to the cap when it is reserved.
+
+        Args:
+            test_case: The cell's case, carrying the reporter case in its ``host_payload``.
+
+        Returns:
+            The ceiling in dollars; ``None`` for a case :meth:`invoke` makes no call for (it is excluded as the
+            harness's) or one this kind's client cannot price.
+
+        Raises:
+            ValueError: The client priced the call at an amount no reservation could hold.
+        """
+        generation_input = _generation_input(test_case)
+        if isinstance(generation_input, str):
+            return None
+        _case, bundle = generation_input
+        system, user, contract = first_request(bundle, self._prompt, self._host.profile)
+        return call_ceiling(self._client, system=system, user=user, response_format=contract)
+
     async def invoke(self, instance: PreparedReporter, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         """Generate one memo over the case's frozen bundle and hand the judge both.
 
@@ -838,25 +899,11 @@ class ReporterKind:
         """
         scopes = instance.span_window
         with scopes.identity():
-            case = _read_case(test_case)
-            if isinstance(case, str):
-                log.error("Reporter cell has no usable case: %s", case)
-                return CandidateOutput(infra_errors=[case])
-            try:
-                bundle = rebuild_bundle(case)
-            except ValueError as exc:
-                log.error("Reporter cell's frozen bundle cannot be used: %s", exc)
-                return CandidateOutput(infra_errors=[_unusable_bundle(test_case, exc)])
-            try:
-                # The generator's own precondition, asked before the candidate is: a bundle in
-                # which no arm can be described fails EVERY candidate identically, so it is the
-                # case's fault and must not be scored against the candidate.
-                refuse_an_undescribable_arm_table(bundle)
-            except GenerationError as exc:
-                log.error("Reporter cell's case cannot be generated over: %s", exc)
-                return CandidateOutput(
-                    infra_errors=[f"apparatus: test case {test_case.id} cannot be generated over: {exc}"]
-                )
+            generation_input = _generation_input(test_case)
+            if isinstance(generation_input, str):
+                log.error("Reporter cell cannot generate: %s", generation_input)
+                return CandidateOutput(infra_errors=[generation_input])
+            case, bundle = generation_input
 
             # Every generator call is held against the run's cost cap as it is sent — a generation is up to two
             # calls, and the repair's prompt exists only once the first has returned — and one the cap has no

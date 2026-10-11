@@ -21,6 +21,7 @@ decides nothing, and it is how an operator finds that case, so it lists it rathe
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal, Protocol, get_args
@@ -39,15 +40,25 @@ from threetears.evals.analysis.reporter_kind import (
     REPORTER_KIND,
     LabelDirection,
     ReporterCase,
+    ReporterKind,
     reporter_case_of,
 )
+from threetears.evals.analysis.generator import MAX_GENERATION_CALLS
 from threetears.evals.analysis.service import freeze_reporter_case
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.prompts.catalogue import ANALYSIS_GEN_PROMPT
 from threetears.evals.kernel.storage import EvalStorage
-from threetears.evals.run.launch import ArmPlan, LaunchArgument, LaunchRequest, plan_judge, resolve_judge_pin
+from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.run.launch import (
+    ArmPlan,
+    CallCeiling,
+    LaunchArgument,
+    LaunchRequest,
+    plan_judge,
+    resolve_judge_pin,
+)
 from threetears.evals.schema.models import EvalTemplate, EvalTestCase, JudgedArtifact
 from threetears.evals.ops.runs import LaunchArguments
 from threetears.evals.run.authoring import get_template
@@ -482,6 +493,86 @@ def plan_reporter_arm(
     )
 
 
+async def price_largest_reporter_call(
+    host: EvalHost,
+    request: LaunchRequest,
+    *,
+    prompts: ReporterPrompts,
+    resolve_model: ReporterModelResolver,
+) -> CallCeiling | None:
+    """A reporter arm's largest generator call, priced before launch, for its ``LaunchableKind.price_largest_call``.
+
+    A generator call's input is known whole at plan time — each case's frozen bundle, the preset's text and the
+    admitted model — so the arm is priced here rather than refused only when its run reaches the call, after the
+    cases before it were paid for. Each case's first generator request is built as its cell builds it
+    (:meth:`~threetears.evals.analysis.ReporterKind.price_case`, over the one reading of a case
+    :meth:`~threetears.evals.analysis.ReporterKind.invoke` generates over) and priced on a client the host builds
+    in the ``analysis`` role for the admitted model: the same factory call a launcher builds the run's generator
+    with, so pass the same ``host`` your launcher does (one whose clients are pinned to the run's policy, if yours
+    are). The largest is kept.
+
+    **What stays unpriced.** The memo's judge call, whose prompt carries a memo that does not exist before launch,
+    and the generation's repair round-trip, whose message carries the first call's output. Each is still held to
+    the run's cap when it is reserved. The as-recorded replay calls no generator, so it prices nothing.
+
+    Admits the arm again (:func:`admit_reporter_launch`, off the event loop) with the same hooks the plan is made
+    with, so the plan and the price cannot be built from different reads.
+
+    Args:
+        host: The host the launcher builds the generator client on.
+        request: The arm, as planned.
+        prompts: The host's prompt registry, as just loaded.
+        resolve_model: The host's model resolution.
+
+    Returns:
+        The largest generator call's ceiling, naming its case and what lowers it; ``None`` for the replay, or when
+        no case's call could be priced (the client has no ``price_ceiling``, or answers ``None``).
+
+    Raises:
+        ValidationFailedError: Anything :func:`admit_reporter_launch` refuses.
+        ValueError: The host supplies no completion clients, or its client priced a call at an amount no
+            reservation could hold.
+    """
+    admitted = await run_blocking(
+        host.blocking_executor,
+        functools.partial(admit_reporter_launch, storage=host.storage, prompts=prompts, resolve_model=resolve_model),
+        request,
+    )
+    if not admitted.generates:
+        return None
+    client = host.completion_clients("pricing a reporter arm")("analysis", admitted.candidate_model)
+    try:
+        kind = ReporterKind(
+            prompt=admitted.prompt,
+            prompt_id=ANALYSIS_GEN_PROMPT,
+            prompt_version=None,
+            client=client,
+            model=admitted.candidate_model,
+            host=host,
+        )
+        priced = await run_blocking(
+            host.blocking_executor,
+            lambda: [(ceiling, case.id) for case in admitted.cases if (ceiling := kind.price_case(case)) is not None],
+        )
+    finally:
+        await client.aclose()
+    if not priced:
+        return None
+    usd, case_id = max(priced)
+    return CallCeiling(
+        usd=usd,
+        call=(
+            f"the generator call on case {case_id!r} (the first request of up to {MAX_GENERATION_CALLS}: the memo, "
+            f"then one repair if its output is refused) on {admitted.candidate_model!r}"
+        ),
+        lowered_by=(
+            "a cheaper generator model; a smaller frozen bundle on the largest case (re-freeze it, or launch a case "
+            "set without it); or, on the host, a generator-role client that re-sends a request fewer times (its "
+            "retry policy multiplies every request's ceiling) or whose price_ceiling prices a smaller output cap"
+        ),
+    )
+
+
 __all__ = [
     "REPORTER_UNHONOURED_LAUNCH_ARGUMENTS",
     "AmbiguousReporterPair",
@@ -495,6 +586,7 @@ __all__ = [
     "UnreadableReporterCase",
     "admit_reporter_launch",
     "plan_reporter_arm",
+    "price_largest_reporter_call",
     "reporter_case_archive",
     "reporter_case_freeze",
     "reporter_cases_list",

@@ -13,6 +13,14 @@ packages (bumped in lock-step).
   host's own subclass's attributes: one 503 class covering a host still booting and one that failed to boot is told
   apart without a context variable set before the raise. It is `None` in every other case, and defaults to `None`,
   so code constructing a `ToolCall` is unaffected.
+- **A reporter arm's generator call is priced before launch (gap 50).** Its input is known whole at plan time (the
+  frozen bundle, the preset's text, the admitted model), so a host now composes
+  `ops.price_largest_reporter_call(eval_host, request, *, prompts, resolve_model)` into its reporter entry's
+  `price_largest_call`. It builds each case's first generator request as the cell builds it (one shared reading
+  of the case, then `first_request`; `ReporterKind.price_case`), prices it on the host's `analysis`-role client,
+  and keeps the largest, so the estimate and the launch refuse an arm whose generator call is reserved above its
+  cap before any case is paid for. The memo's judge call and the repair round-trip stay unpriced, since neither
+  prompt exists before launch. `cost-and-budgets.md` and `adopting-a-host.md` show the wiring.
 
 ### 3tears-evals: what adopting .11 found (gap 48)
 
