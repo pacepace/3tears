@@ -620,6 +620,7 @@ class JudgeKind:
         try:
             case = judge_case_of(test_case)
         except ValueError:
+            # NOSILENT: an unreadable judge case gets no call from invoke, which reports it when the run reaches it
             return None
         if case is None:
             return None
@@ -631,6 +632,7 @@ class JudgeKind:
         try:
             request = self._request(service, case, _context_of(test_case, case))
         except ValueError:
+            # NOSILENT: invoke reports a request it cannot build as that cell's error at run time; nothing to price here
             return None
         return service.price_ceiling(request)
 
