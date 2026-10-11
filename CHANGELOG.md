@@ -17,10 +17,13 @@ packages (bumped in lock-step).
   measure's figures in one unit on every table, and each contrast cell carries it (`TableCell.unit`).
 - **`runs_compare` pairs only over cases that exist.** Two runs with no judged composite read "no paired cases", and
   pass^k is stated over its own cases and under the criteria its attempts had.
-- **Every not-found and conflict names a remedy its caller can reach (breaking for a host raising either).**
-  `NotFoundError` and `ConflictError` require `remedy`, a refused call states it, and a test holds every one the
-  engine raises to it and to actions the catalogue has. `campaign_create` takes `template_id`, and infers it from
-  runs that all ran one template.
+- **Every refusal names a remedy its caller can reach (breaking for a host raising or catching one).** Every
+  `EvalServiceError` requires `remedy` (storage, provider and admission refusals supply their own), a lower layer's
+  refusal is a `RefusedInput` carrying `fault` and `remedy` that its surface hands on, and a refused call states the
+  remedy. A test holds every refusal the engine raises to it, and every action a remedy names to the catalogue.
+  `campaign_create` takes `template_id`, and infers it from runs that all ran one template.
+- **A judge temperature comparison that measured nothing is not comparable** — every call failing no longer reads
+  as comparable.
 - **A frontier verdict made on a judged pass^k names its judges' evidence tier**, on a scope's frontier as on a
   campaign's.
 - **`judge_template_create`** writes the judge template a judge campaign freezes into and launches.

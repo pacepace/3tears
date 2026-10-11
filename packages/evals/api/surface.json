@@ -1033,6 +1033,10 @@
       "kind": "function",
       "signature": "describe_and_log_failure(describer: ProviderFailureDescriber, exc: BaseException, *, logger: logging.Logger, where: str, message: str, args: tuple[object, ...] = (), level: int = 40) -> ProviderFailure"
     },
+    "threetears.evals.kernel.DesignRefused": {
+      "kind": "exception",
+      "signature": "DesignRefused(fault: str, *, remedy: str) -> None"
+    },
     "threetears.evals.kernel.DROPPED_TOOL_CALLS_KEY": {
       "kind": "constant (str)",
       "signature": ""
@@ -1071,7 +1075,7 @@
     },
     "threetears.evals.kernel.EvalServiceError": {
       "kind": "exception",
-      "signature": "EvalServiceError(message: str, status_code: int = 400, details: dict[str, Any] = <factory>, remedy: str | None = None) -> None"
+      "signature": "EvalServiceError(message: str, status_code: int = 400, details: dict[str, Any] = <factory>, *, remedy: str) -> None"
     },
     "threetears.evals.kernel.EvalStorage": {
       "kind": "class",
@@ -1513,6 +1517,10 @@
       "kind": "constant (str)",
       "signature": ""
     },
+    "threetears.evals.kernel.RefusedInput": {
+      "kind": "exception",
+      "signature": "RefusedInput(fault: str, *, remedy: str) -> None"
+    },
     "threetears.evals.kernel.RenewalVerdict": {
       "kind": "literal",
       "signature": "'renewed'` | `'cancel'` | `'ended'` | `'fenced'` | `'contended'"
@@ -1751,7 +1759,7 @@
     },
     "threetears.evals.kernel.UndeclarableAxisError": {
       "kind": "exception",
-      "signature": ""
+      "signature": "UndeclarableAxisError(fault: str, *, remedy: str) -> None"
     },
     "threetears.evals.kernel.UnknownCandidateKind": {
       "kind": "exception",
@@ -1763,7 +1771,7 @@
     },
     "threetears.evals.kernel.ValidationFailedError": {
       "kind": "exception",
-      "signature": "ValidationFailedError(message: str, details: dict[str, Any] | None = None, *, remedy: str | None = None)"
+      "signature": "ValidationFailedError(message: str, details: dict[str, Any] | None = None, *, remedy: str)"
     },
     "threetears.evals.kernel.VariantConfig": {
       "kind": "model",
@@ -2183,7 +2191,7 @@
     },
     "threetears.evals.run.ArmVerdict": {
       "kind": "dataclass",
-      "signature": "ArmVerdict(described: str, candidate_model: str | None, plan: ArmPlan | None, price: ArmPrice, cap_usd: float | None, cap_origin: Literal['chosen', 'inherited'] | None, outcome: ArmOutcome, refusal: str | None)"
+      "signature": "ArmVerdict(described: str, candidate_model: str | None, plan: ArmPlan | None, price: ArmPrice, cap_usd: float | None, cap_origin: Literal['chosen', 'inherited'] | None, outcome: ArmOutcome, refusal: str | None, remedy: str | None = None)"
     },
     "threetears.evals.run.assert_preconditions": {
       "kind": "function",
@@ -2227,7 +2235,7 @@
     },
     "threetears.evals.run.CeilingRaisedError": {
       "kind": "exception",
-      "signature": ""
+      "signature": "CeilingRaisedError(fault: str, *, remedy: str) -> None"
     },
     "threetears.evals.run.CellContext": {
       "kind": "dataclass",
@@ -4703,7 +4711,7 @@
     },
     "threetears.evals.ops.ArmEstimate": {
       "kind": "model",
-      "signature": "ArmEstimate(described: str, candidate_model: str | None, case_count: int | None, case_source: Literal['stored', 'generated'], n_observations: int | None, predicted_usd: float | None, central_usd: float | None, low_usd: float | None, method_id: str | None, basis: str, outcome: ArmOutcome, refusal: str | None)"
+      "signature": "ArmEstimate(described: str, candidate_model: str | None, case_count: int | None, case_source: Literal['stored', 'generated'], n_observations: int | None, predicted_usd: float | None, central_usd: float | None, low_usd: float | None, method_id: str | None, basis: str, outcome: ArmOutcome, refusal: str | None, remedy: str | None = None)"
     },
     "threetears.evals.ops.await_job": {
       "kind": "async function",

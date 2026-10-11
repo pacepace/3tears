@@ -451,6 +451,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`DeliveryTicket`** · protocol · One piece of background work being captured, from its start to however it ends.
 - **`DerivedContextIdentity`** · model · A run's context key as a value, never written back onto the run.
 - **`DerivedVariantIdentity`** · model · A computed variant key plus what it was computable from.
+- **`DesignRefused`** · exception · A declaration this host cannot honour, as what is wrong with it and what to declare instead.
 - **`EvalAnalysis`** · model · A generated, stored analysis of one campaign — the productized "Analysis" lens.
 - **`EvalAnalysisAttempt`** · model · One run of the analysis generator for a campaign, whatever it came to.
 - **`EvalCampaign`** · model · A curated set of eval runs under one subject×behavior — the analysis hub.
@@ -510,6 +511,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`QuestionAnswer`** · model · Where one declared question stands on this evidence.
 - **`Recordable`** · protocol · The two members the cassette layer uses on whatever it records: an action result or a delivered payload.
 - **`RecordedCompletion`** · class · What an admitted call returned, and the ledger row written for it.
+- **`RefusedInput`** · exception · A lower layer's refusal of what a caller asked for, held as its fault and its remedy apart.
 - **`ReplayedDelivery`** · dataclass · One recorded piece of background work, served in place of running it.
 - **`ResolvedUsage`** · model · The per-role usage a read surface should show for one result, and how it got there.
 - **`ResultCondition`** · model · The condition one result is in, on every axis that is a property of the result.
