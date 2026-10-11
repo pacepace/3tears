@@ -943,7 +943,8 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
             ),
             lowered_by=(
                 "a cheaper judge model; shorter frozen evidence on the largest case (re-freeze it, or launch a case "
-                "set without it); or, on the host, a judge-role client whose price_ceiling prices the "
+                "set without it); or, on the host, a judge-role client that re-sends a request fewer times (its "
+                "retry policy multiplies every request's ceiling) or whose price_ceiling prices the "
                 f"{JUDGE_MAX_TOKENS}-token output cap the judge asks for rather than a larger one"
             ),
         )
