@@ -552,7 +552,12 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
     async def work() -> None:
         try:
             await run_analysis_generation(
-                eval_host, prepared, prompt_id=generation.prompt_id, max_output_tokens=generation.max_output_tokens
+                eval_host,
+                prepared,
+                prompt_id=generation.prompt_id,
+                max_output_tokens=generation.max_output_tokens,
+                deadline=manager.job_timeout_factory(generation.budget_s),
+                leases=leases,
             )
         except JobFenced as fenced:
             # Another process wrote the attempt lost (its lease lapsed): its record is the answer, and the
@@ -560,9 +565,9 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
             log.warning("eval.generate_analysis campaign=%s scope=%s stopped: %s", campaign_id, scope_id, fenced)
 
     try:
-        manager.start_task(
-            prepared.attempt_id, work, budget_s=generation.budget_s, key=key, record=(ANALYSIS_JOB, scope_id)
-        )
+        # The generation enters its own budget (``deadline``), so its attempt can say it timed out: one entered
+        # around the task would reach the generation as a cancel.
+        manager.start_task(prepared.attempt_id, work, budget_s=None, key=key, record=(ANALYSIS_JOB, scope_id))
     except ConflictError as lost_race:
         # Another start in this process took the key while this one prepared.
         await refuse(str(lost_race))

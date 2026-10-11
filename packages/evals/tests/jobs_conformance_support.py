@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from threetears.evals.kernel import default_job_timeout
 from threetears.evals.actions import Caller, ConformanceSample
 from threetears.evals.kernel.host import CompletionClients
 from threetears.evals.ops import AnalysisGeneration, OpsHost
@@ -27,7 +28,6 @@ from threetears.evals.run import (
     LaunchRequest,
     LaunchSettings,
     build_judge_service,
-    default_job_timeout,
     launch_run,
 )
 from threetears.evals.schema import (

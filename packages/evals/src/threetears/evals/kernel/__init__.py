@@ -131,6 +131,7 @@ from threetears.evals.kernel.errors import (
     ValidationFailedError,
 )
 from threetears.evals.kernel.job_context import running_job
+from threetears.evals.kernel.job_timeout import EvalJobTimeout, JobTimeoutFactory, default_job_timeout, timed_out_detail
 from threetears.evals.kernel.job_leases import (
     ANALYSIS_JOB,
     DEFAULT_JOB_LEASE_S,
@@ -350,6 +351,10 @@ __all__ = [
     "write_held_record",
     "running_job",
     "JobFenced",
+    "EvalJobTimeout",
+    "JobTimeoutFactory",
+    "default_job_timeout",
+    "timed_out_detail",
     "JobRecordStore",
     "LeaseClock",
     "LeaseStore",

@@ -43,7 +43,8 @@ from threetears.evals.kernel.errors import ConflictError, EvalServiceError, JobF
 from threetears.evals.kernel.job_leases import JobLeases, LeasedJobKind, write_held_record
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
 from threetears.evals.kernel.storage import JobRecordStore, LeaseStore
-from threetears.evals.run.jobs import EvalJobManager, EvalJobTimeout, JobTimeoutFactory
+from threetears.evals.kernel.job_timeout import EvalJobTimeout, JobTimeoutFactory, timed_out_detail
+from threetears.evals.run.jobs import EvalJobManager
 from threetears.evals.schema.base import CoreDocumentModel, EvalDocumentModel
 from threetears.evals.schema.job_lease import (
     CancelRequestedAtField,
@@ -124,7 +125,15 @@ class JobRecorder[R: EvalDocumentModel]:
     the work recorded on the way.
     """
 
-    def __init__(self, store: JobRecordStore, executor: Executor | None, kind: LeasedJobKind[R], record: R) -> None:
+    def __init__(
+        self,
+        store: JobRecordStore,
+        executor: Executor | None,
+        kind: LeasedJobKind[R],
+        record: R,
+        *,
+        leases: JobLeases | None,
+    ) -> None:
         """Bind the writes to the record's store.
 
         Args:
@@ -132,11 +141,13 @@ class JobRecorder[R: EvalDocumentModel]:
             executor: Where the store round-trips run; ``None`` for the loop's default executor.
             kind: The record's type.
             record: The record as it was started.
+            leases: The leases the record is held under: a record they have let go of takes no write from here.
         """
         self._store = store
         self._executor = executor
         self._kind = kind
         self._record = record
+        self._leases = leases
 
     @property
     def kind(self) -> LeasedJobKind[R]:
@@ -159,11 +170,15 @@ class JobRecorder[R: EvalDocumentModel]:
 
         Raises:
             JobFenced: The stored record has ended — written lost, by a reader that found the lease lapsed or by a
-                shutdown — so the job writes nothing more.
+                shutdown — or this process let go of its lease, so the job writes nothing more.
             ConflictError: Every attempt lost its race.
             StorageError: A read or write failed.
         """
-        written = await run_blocking(self._executor, write_held_record, self._store, self._kind, record)
+
+        def write() -> R:
+            return write_held_record(self._store, self._kind, record, leases=self._leases)
+
+        written = await run_blocking(self._executor, write)
         self._record = written
         return written
 
@@ -220,22 +235,6 @@ class JobWork[R: EvalDocumentModel]:
         return str(getattr(self.record, "scope_id"))
 
 
-def _timed_out_detail(timed_out: EvalJobTimeout) -> str:
-    """Why a job's work was stopped by its time budget, in a poll's words.
-
-    Args:
-        timed_out: The budget's firing.
-
-    Returns:
-        The record's ``detail``.
-    """
-    named = f"; the host named {timed_out.attribution!r} as running when it fired" if timed_out.attribution else ""
-    return (
-        f"timed out: its {timed_out.budget_s:.0f}s wall-clock budget ran out after {timed_out.elapsed_s:.0f}s"
-        f"{named}; what it recorded before then is kept"
-    )
-
-
 def _failure_detail(broke: BaseException) -> str:
     """Why a job's work failed, in a poll's words: an engine refusal as it was said, anything else by its class too."""
     if isinstance(broke, EvalServiceError):
@@ -267,7 +266,7 @@ async def _run_to_end[R: EvalDocumentModel](
                 ended = await work.run(recorder)
     except EvalJobTimeout as timed_out:
         log.warning("eval.job %s=%s scope=%s timed out: %s", name, record_id, scope_id, timed_out)
-        ended = end_record(recorder.record, "timed_out", _timed_out_detail(timed_out))
+        ended = end_record(recorder.record, "timed_out", timed_out_detail(timed_out))
     except asyncio.CancelledError:
         # The ending is written to its end even through a second cancel, then the cancel is re-raised.
         writing = asyncio.ensure_future(recorder.save(end_record(recorder.record, "cancelled", CANCELLED_DETAIL)))
@@ -407,7 +406,7 @@ async def start_job_work[R: EvalDocumentModel](
         if work.discard is not None:
             await work.discard()
         raise
-    recorder = JobRecorder(store, executor, work.kind, started)
+    recorder = JobRecorder(store, executor, work.kind, started, leases=leases)
 
     async def run() -> None:
         await _run_to_end(work, recorder, deadline=manager.job_timeout_factory)
@@ -473,9 +472,10 @@ async def run_job_work[R: EvalDocumentModel](
 
     leases.hold(work.kind, work.record_id, work.scope_id, cancel=stop, stop=stop)
     try:
-        return await _run_to_end(work, JobRecorder(store, executor, work.kind, started), deadline=None)
+        return await _run_to_end(work, JobRecorder(store, executor, work.kind, started, leases=leases), deadline=None)
     finally:
         leases.release(work.record_id)
+        leases.forget(work.record_id)
 
 
 # --- the generic record ---------------------------------------------------------------------------

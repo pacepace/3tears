@@ -19,10 +19,11 @@ from typing import Any
 
 import pytest
 
+from threetears.evals.kernel import default_job_timeout
 from threetears.evals.actions import Caller, eval_catalogue, standard_tools
 from threetears.evals.ops import OpsHost, frontier_text, scope_frontier
 from threetears.evals.quick import Answer, Judge, compare, run_cli
-from threetears.evals.run import LaunchHost, LaunchSettings, default_job_timeout
+from threetears.evals.run import LaunchHost, LaunchSettings
 
 CASES = [{"n": index} for index in range(24)]
 

@@ -16,14 +16,17 @@ must change.
 - **A lost job writes nothing more.** A run another process wrote lost refuses its old holder's own `cancelled`
   ending, which used to overwrite the loss's `completed_at` and reason and then broadcast and call `on_run_end`. A
   shutdown records only the loss, in store time, and tells nobody. A holder whose renewals fail for a whole lease
-  stops its work as lost instead of spending past its expiry. A sweep asks whether it still holds its record before
+  stops its work as lost instead of spending past its expiry, and one rule (`JobLeases.let_go` / `fenced`) then
+  refuses every own write of every job kind from that process, even once the store recovers. A sweep asks whether it still holds its record before
   each arm (`kernel.require_held`), so a lost sweep launches no arm nothing records.
 - **A lost generation keeps no analysis.** The attempt's conditional ending is the commit: when it finds the
   attempt already written lost, the analysis and insights just stored are withdrawn (`AnalysisStore` gains
   `delete_analysis` and `delete_insight`). A start whose slot claim fails ends its attempt and releases its client.
 - **A store is upgraded with no job running.** A lease-less running record is lost, with no grace: a grace cannot
   tell a live older-build job from a dead one, and the older build's reclaim cancels the newer build's jobs.
-- **A job stopped by its time budget reads `timed_out`** (state `stopped`), never `cancelled`. A launch's budget
+- **A job stopped by its time budget reads `timed_out`** (state `stopped`), never `cancelled` — every kind alike:
+  runs' work, launches, judge passes, actions, sweeps and analysis generations, worded by `kernel.timed_out_detail`.
+  The budget's types move to `kernel` (`EvalJobTimeout`, `JobTimeoutFactory`, `default_job_timeout`). A launch's budget
   covers its preparation only (`run.LAUNCH_PREPARATION_BUDGET_S`); its runs bound their own wait, so time queued for a
   slot no longer cancels healthy runs.
 - **A generating launch prices its generation in the call**, as the battery does, so `run_launch` refuses one the

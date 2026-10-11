@@ -244,7 +244,7 @@ def settle_job_record[R: EvalDocumentModel](
 
 
 def require_held[R: EvalDocumentModel](
-    store: LeaseStore, kind: LeasedJobKind[R], record_id: str, scope_id: str
+    store: LeaseStore, kind: LeasedJobKind[R], record_id: str, scope_id: str, *, leases: JobLeases | None = None
 ) -> None:
     """Refuse to go on with a job whose record has ended under it: the check a job makes before it spends again.
 
@@ -258,16 +258,31 @@ def require_held[R: EvalDocumentModel](
         kind: Its type.
         record_id: Its id.
         scope_id: Its scope.
+        leases: The leases of the process asking; a record it has let go of is refused (see :func:`write_held_record`).
 
     Raises:
-        JobFenced: The record has ended — written lost by a reader, by a shutdown, or here because its lease lapsed.
+        JobFenced: The record has ended — written lost by a reader, by a shutdown, or here because its lease lapsed —
+            or this process let go of it.
         ConflictError: The record kept changing while its lapse was being written; nothing was decided.
         StorageError: A read or write failed.
     """
+    _refuse_let_go(leases, kind, record_id)
     record, _ = settle_job_record(store, kind, record_id, scope_id)
     if record is not None and kind.ended(record):
         how = "was lost" if _leased(record).lost is not None else "has ended"
         raise JobFenced(f"{kind.name} job '{record_id}' {how}; it starts nothing more")
+
+
+def _refuse_let_go(leases: JobLeases | None, kind: LeasedJobKind[Any], record_id: str) -> None:
+    """Refuse a job's own write or spend once its process has let go of its lease — the one rule every kind keeps.
+
+    Raises:
+        JobFenced: ``leases`` has let go of ``record_id``.
+    """
+    if leases is not None and leases.fenced(record_id):
+        raise JobFenced(
+            f"{kind.name} job '{record_id}': this process let go of its lease; it writes and starts nothing more"
+        )
 
 
 def request_job_cancel(store: LeaseStore, record_id: str, scope_id: str, *, reason: str | None) -> bool:
@@ -292,7 +307,9 @@ def request_job_cancel(store: LeaseStore, record_id: str, scope_id: str, *, reas
     return store.merge_job_record_fields(record_id, scope_id, fields)
 
 
-def write_held_record[R: EvalDocumentModel](store: JobRecordStore, kind: LeasedJobKind[R], record: R) -> R:
+def write_held_record[R: EvalDocumentModel](
+    store: JobRecordStore, kind: LeasedJobKind[R], record: R, *, leases: JobLeases | None = None
+) -> R:
     """The job's own write of its record: lands only while the stored record has not ended, keeping its lease fields.
 
     Reads the stored record and writes ``record`` over it with ``if_match``, carrying the stored lease, cancel
@@ -305,15 +322,20 @@ def write_held_record[R: EvalDocumentModel](store: JobRecordStore, kind: LeasedJ
         store: Where the record lives.
         kind: Its type.
         record: The record as the job would write it.
+        leases: The leases of the process writing it. A record this process has let go of
+            (:meth:`JobLeases.fenced`) is refused here before anything is read: the store may not say so yet — no
+            reader has written the loss, or the store's clock has not reached the expiry — and the process that
+            let go is the one that knows. ``None`` for a write no process holds a lease for.
 
     Returns:
         The record as written.
 
     Raises:
-        JobFenced: The stored record has already ended; nothing was written.
+        JobFenced: The stored record has already ended, or this process let go of it; nothing was written.
         ConflictError: Every attempt lost its race.
         StorageError: A read or write failed.
     """
+    _refuse_let_go(leases, kind, _leased(record).id)
     for _ in range(LEASE_WRITE_ATTEMPTS):
         stored, etag = store.load_job_record(kind.model, _leased(record).id, _leased(record).scope_id)
         if stored is not None and kind.ended(stored):
@@ -402,6 +424,9 @@ class JobLeases:
         self._executor = blocking_executor
         self._holder_id = str(uuid.uuid7())
         self._held: dict[str, _Held] = {}
+        # Records this process let go of — a renewal found them ended by another writer, or the lease lapsed by
+        # this process's own count — whose jobs have not yet ended. See fenced.
+        self._let_go: set[str] = set()
         self._renewer: asyncio.Task[None] | None = None
 
     @property
@@ -466,6 +491,29 @@ class JobLeases:
         """Stop renewing a record's lease: its job has written its own ending. Idempotent."""
         self._held.pop(record_id, None)
 
+    def let_go(self, record_id: str) -> None:
+        """Give a record's lease up as lost: stop renewing it, and refuse every later write of it from this process.
+
+        Done here when a renewal finds the record ended by another writer or its lease lapsed by this process's own
+        count, and by a job that finds its record lost at its own write. From then until the job ends
+        (:meth:`forget`), :meth:`fenced` answers ``True``, and every job kind's own writes — a run's status, a
+        held record's write (:func:`write_held_record`), a check before spending (:func:`require_held`) — are
+        refused by it. Idempotent.
+
+        Args:
+            record_id: The record.
+        """
+        self._held.pop(record_id, None)
+        self._let_go.add(record_id)
+
+    def fenced(self, record_id: str) -> bool:
+        """Whether this process let go of ``record_id``'s lease (:meth:`let_go`) and its job has not yet ended."""
+        return record_id in self._let_go
+
+    def forget(self, record_id: str) -> None:
+        """Forget a record this process let go of: its job has ended, and writes nothing more. Idempotent."""
+        self._let_go.discard(record_id)
+
     async def _renew_while_held(self) -> None:
         """Renew every held lease each interval, until none is held."""
         while self._held:
@@ -501,9 +549,10 @@ class JobLeases:
 
         Every reader may already read it lost, and the next one to look writes so — so the holder stops at once
         rather than spend past an expiry it cannot extend. It writes the loss itself when it can (the store may be
-        what failed), so its job's own ending is refused by the record as any fenced job's is.
+        what failed); either way the job's own writes are refused from here on (:meth:`let_go`), even once the
+        store recovers.
         """
-        self.release(held.record_id)
+        self.let_go(held.record_id)
         log.error(
             "eval.job_lease %s=%s scope=%s could not be renewed for %.0fs, its whole lease — stopping it as lost",
             held.kind.name,
@@ -539,7 +588,7 @@ class JobLeases:
         elif verdict == "ended":
             self.release(held.record_id)
         elif verdict == "fenced":
-            self.release(held.record_id)
+            self.let_go(held.record_id)
             log.warning(
                 "eval.job_lease %s=%s scope=%s lost its lease — stopping it; its record answers how it ended",
                 held.kind.name,

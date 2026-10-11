@@ -58,7 +58,7 @@ PINNED_CORE_SCHEMA_VERSION = 10
 CORE_SHAPE_DIGESTS: dict[str, str] = {
     "calibration_rating": "a543edb034dbeb7a7956d697939f665cc5c9f6c380419dbcf70e95e27f343772",
     "case_set": "67cd75fe2dcb16a85fe8ecbda3ee0890addf6913d64ac1b95a93a64b06625d52",
-    "eval_analysis_attempt": "5fcf17735d8a4791fa8b1cb9eed7a59458c67cc0c787f39d210ebf5b343085e8",
+    "eval_analysis_attempt": "0ac4b69aa9996db713175d921d85036a357f93847bcd14ac813898c260b4104d",
     "eval_campaign": "c33c6dc1d6c9fba98d9887bc20c395eac5ca6245302eb0fb32d696b155fab8d5",
     "eval_generation_slot": "ad3f47db82a197b3a28ee46b348f8af6d6e372b5ee6fa49afa2401acaeb6d335",
     "eval_launch": "16c9ce9100c8d7b8ca84fef1cf6859a60f9018d3b01198229b3fc0faa95e563b",
@@ -68,7 +68,7 @@ CORE_SHAPE_DIGESTS: dict[str, str] = {
     "eval_out_of_run_spend": "f1d51ffd4cb2447bc1ca32c67ac20a184a6fa17665c3f22bae7ba73bb0f46f43",
     "eval_result": "84be2b0ee738171611a7173793061d06a7297d952b5a0aba41ecdb3207487cb5",
     "eval_run": "32fdaebc9f3eaca01c2ead896dede4cd9a2a9283980b9338961578e77c3bf1c5",
-    "eval_sweep": "17f38b8fb24fb416695a5ed2c4ef7f6a4702a18e0a0a1e470dd0f15769640c90",
+    "eval_sweep": "bcb495338809f5a29ee1166387c560c2257c52b37b370cd2048c16e792e79c06",
     "eval_template": "8f9ae4cc32fe1a11fcf08007b7c6ef96767c475e3d7f220222f92b7cd9763231",
     "eval_test_case": "1e928fb0d3d646aa8c7451385d04417d0f42b70239da88ae4929d23f0f8de87f",
     "eval_trace": "fb24fe2a75c0ebe5586510326023406c98ee0a0fb701fc9db4988020b4a7b084",

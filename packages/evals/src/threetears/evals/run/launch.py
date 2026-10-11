@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, NamedTuple, Protocol,
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
+from threetears.evals.kernel import JobTimeoutFactory
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.host.kinds import freeze
 from threetears.evals.schema.models import WorldPlacement
@@ -72,7 +73,6 @@ from threetears.evals.kernel.cassettes import CassetteMode
 from threetears.evals.run.jobs import (
     MAX_CONCURRENT_JOBS,
     EvalJobManager,
-    JobTimeoutFactory,
     RunEndHook,
     adaptive_job_timeout_s,
 )
@@ -424,7 +424,7 @@ class LaunchHost:
         settings: Reads the host's :class:`LaunchSettings` — a callable because they hot-reload.
         job_timeout_factory: What bounds each run's job, as
             :class:`~threetears.evals.run.jobs.EvalJobManager` takes it. No default, for the reason the
-            host's cell timeout has none: :func:`~threetears.evals.run.jobs.default_job_timeout` is
+            host's cell timeout has none: :func:`~threetears.evals.kernel.default_job_timeout` is
             right for a host with no timeout layer of its own and silently wrong for one with.
         world_placements: What one assembled run did with every world dimension the host declares,
             stamped on the run before the identity that hashes it. Required exactly when the

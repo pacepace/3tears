@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from threetears.evals.kernel import default_job_timeout
 from threetears.evals.kernel import DEFAULT_JOB_LEASE_S
 from threetears.evals.schema import EvalRun, WorldSeed
 from threetears.evals.kernel import EvalStorage, NotFoundError
@@ -36,7 +37,6 @@ from threetears.evals.run import (
     LaunchHost,
     LaunchRequest,
     LaunchSettings,
-    default_job_timeout,
     launch_run,
     require_candidate_model,
 )

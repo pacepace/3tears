@@ -50,10 +50,7 @@ from threetears.evals.run.fidelity import FidelityContract, callers_missing_the_
 from threetears.evals.run.jobs import (
     AdmissionTicket,
     EvalJobManager,
-    EvalJobTimeout,
-    JobTimeoutFactory,
     RunEndHook,
-    default_job_timeout,
 )
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_MAX_TOKENS, JUDGE_REQUEST_SETTINGS, run_judge_llm
 from threetears.evals.run.judge_service import JudgeRequest, JudgeService
@@ -260,12 +257,10 @@ __all__ = [
     "CurationStore",
     "ErrorLedger",
     "EvalJobManager",
-    "EvalJobTimeout",
     "EveryCellApparatusFailedError",
     "FidelityContract",
     "GoalCheckUnevaluable",
     "InProcessCellExecutor",
-    "JobTimeoutFactory",
     "RunEndHook",
     "FrozenJudgeCase",
     "JudgeCaseFreezeReport",
@@ -323,7 +318,6 @@ __all__ = [
     "create_judge_config",
     "create_rubric_dim",
     "create_template",
-    "default_job_timeout",
     "delete_analysis",
     "delete_insight",
     "delete_judge_config",

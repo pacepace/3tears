@@ -703,7 +703,7 @@
     },
     "threetears.evals.kernel.AttemptOutcome": {
       "kind": "literal",
-      "signature": "'running'` | `'stored'` | `'refused'` | `'failed'` | `'cancelled'"
+      "signature": "'running'` | `'stored'` | `'refused'` | `'failed'` | `'cancelled'` | `'timed_out'"
     },
     "threetears.evals.kernel.AttributionScope": {
       "kind": "literal",
@@ -961,6 +961,10 @@
       "kind": "constant (float)",
       "signature": ""
     },
+    "threetears.evals.kernel.default_job_timeout": {
+      "kind": "function",
+      "signature": "default_job_timeout(budget_s: float) -> AsyncIterator[float]"
+    },
     "threetears.evals.kernel.DEFAULT_TEMPERATURE_REPEATS": {
       "kind": "constant (int)",
       "signature": ""
@@ -1040,6 +1044,10 @@
     "threetears.evals.kernel.EvalInsight": {
       "kind": "model",
       "signature": "EvalInsight(id: str = <lambda>(), doc_type: Literal['eval_insight'] = 'eval_insight', schema_version: SchemaVersion = 8, scope_id: str, subject_id: str, subject_kind: str, statement: ModelProse, scope: _LLMProse = '', confidence: ConfidenceTier, evidence_run_ids: _LLMList[str] = list(), evidence_result_ids: _LLMList[str] = list(), observed_at: str = utc_now_iso(), model_versions: dict[str, str] = dict(), invalidation_trigger: _LLMProse = '', source_campaign_id: str = '', source_analysis_id: str = '')"
+    },
+    "threetears.evals.kernel.EvalJobTimeout": {
+      "kind": "exception",
+      "signature": "EvalJobTimeout(budget_s: float, elapsed_s: float, attribution: str | None = None) -> None"
     },
     "threetears.evals.kernel.EvalJudgeProfile": {
       "kind": "model",
@@ -1168,6 +1176,10 @@
     "threetears.evals.kernel.JobStore": {
       "kind": "protocol",
       "signature": "JobStore{load_eval_run_with_etag(self, run_id: str, scope_id: str, /) -> tuple[EvalRun | None, str | None]; save_eval_run(self, run: EvalRun, /, *, if_match: str | None = None) -> None}"
+    },
+    "threetears.evals.kernel.JobTimeoutFactory": {
+      "kind": "protocol",
+      "signature": "JobTimeoutFactory{__call__(self, budget_s: float) -> AbstractAsyncContextManager[Any]}"
     },
     "threetears.evals.kernel.JUDGE_CASE_KEY": {
       "kind": "constant (str)",
@@ -1495,7 +1507,7 @@
     },
     "threetears.evals.kernel.require_held": {
       "kind": "function",
-      "signature": "require_held(store: LeaseStore, kind: LeasedJobKind[R], record_id: str, scope_id: str) -> None"
+      "signature": "require_held(store: LeaseStore, kind: LeasedJobKind[R], record_id: str, scope_id: str, *, leases: JobLeases | None = None) -> None"
     },
     "threetears.evals.kernel.resolve_bar_name": {
       "kind": "function",
@@ -1631,7 +1643,7 @@
     },
     "threetears.evals.kernel.SweepOutcome": {
       "kind": "literal",
-      "signature": "'running'` | `'completed'` | `'failed'` | `'cancelled'"
+      "signature": "'running'` | `'completed'` | `'failed'` | `'cancelled'` | `'timed_out'"
     },
     "threetears.evals.kernel.SweptAxis": {
       "kind": "model",
@@ -1692,6 +1704,10 @@
     "threetears.evals.kernel.TimeAxisBasis": {
       "kind": "literal",
       "signature": "'release'` | `'date'"
+    },
+    "threetears.evals.kernel.timed_out_detail": {
+      "kind": "function",
+      "signature": "timed_out_detail(timed_out: EvalJobTimeout) -> str"
     },
     "threetears.evals.kernel.TimePosition": {
       "kind": "model",
@@ -1767,7 +1783,7 @@
     },
     "threetears.evals.kernel.write_held_record": {
       "kind": "function",
-      "signature": "write_held_record(store: JobRecordStore, kind: LeasedJobKind[R], record: R) -> R"
+      "signature": "write_held_record(store: JobRecordStore, kind: LeasedJobKind[R], record: R, *, leases: JobLeases | None = None) -> R"
     },
     "threetears.evals.kernel.host.ActionParameterReader": {
       "kind": "type alias",
@@ -2229,10 +2245,6 @@
       "kind": "constant (float)",
       "signature": ""
     },
-    "threetears.evals.run.default_job_timeout": {
-      "kind": "function",
-      "signature": "default_job_timeout(budget_s: float) -> AsyncIterator[float]"
-    },
     "threetears.evals.run.DEFAULT_MAX_CONCURRENT_CELLS": {
       "kind": "constant (int)",
       "signature": ""
@@ -2292,10 +2304,6 @@
     "threetears.evals.run.EvalJobManager": {
       "kind": "class",
       "signature": "EvalJobManager(storage: JobStore, max_concurrent: int = 2, on_progress: Callable[[str, dict[str, Any]], None] | None = None, job_timeout_s: float = 3600, *, job_timeout_factory: JobTimeoutFactory | None = None, blocking_executor: Executor | None = None, on_run_end: RunEndHook | None = None, leases: JobLeases | None = None)"
-    },
-    "threetears.evals.run.EvalJobTimeout": {
-      "kind": "exception",
-      "signature": "EvalJobTimeout(budget_s: float, elapsed_s: float, attribution: str | None = None) -> None"
     },
     "threetears.evals.run.EvalJudgeTemperatureCheck": {
       "kind": "model",
@@ -2383,11 +2391,7 @@
     },
     "threetears.evals.run.JobRecorder": {
       "kind": "class",
-      "signature": "JobRecorder(store: JobRecordStore, executor: Executor | None, kind: LeasedJobKind[R], record: R) -> None"
-    },
-    "threetears.evals.run.JobTimeoutFactory": {
-      "kind": "protocol",
-      "signature": "JobTimeoutFactory{__call__(self, budget_s: float) -> AbstractAsyncContextManager[Any]}"
+      "signature": "JobRecorder(store: JobRecordStore, executor: Executor | None, kind: LeasedJobKind[R], record: R, *, leases: JobLeases | None) -> None"
     },
     "threetears.evals.run.JobWork": {
       "kind": "dataclass",
@@ -3863,7 +3867,7 @@
     },
     "threetears.evals.analysis.run_analysis_generation": {
       "kind": "async function",
-      "signature": "run_analysis_generation(host: EvalHost, prepared: PreparedGeneration, *, prompt_id: str, max_output_tokens: int) -> tuple[EvalAnalysis, list[EvalInsight]]"
+      "signature": "run_analysis_generation(host: EvalHost, prepared: PreparedGeneration, *, prompt_id: str, max_output_tokens: int, deadline: AbstractAsyncContextManager[Any] | None = None, leases: JobLeases | None = None) -> tuple[EvalAnalysis, list[EvalInsight]]"
     },
     "threetears.evals.analysis.run_summary": {
       "kind": "function",

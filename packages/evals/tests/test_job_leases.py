@@ -438,8 +438,36 @@ async def test_a_generation_whose_renewals_fail_for_a_whole_lease_is_stopped_bef
     await _until(lambda: not fixture.host.launch.job_manager.is_task_active(attempt_id), timeout=5)
 
     assert not gate.is_set() and all(not writer.calls for writer in fixture.writers), "no call was paid for"
-    assert _attempt(fixture.host, job.job_id).outcome != "stored"
+    attempt = _attempt(fixture.host, job.job_id)
+    assert (attempt.outcome, attempt.lost) == ("running", None), (
+        "it wrote no ending of its own, though the store took every write but a renewal: it no longer held the attempt"
+    )
     assert analyses_list(fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses == []
+    store.refusing = False
+    store.at = T0 + timedelta(seconds=1)
+    lost = await job_poll(_other_process(fixture.host), job.job_id, TOYHOST_SCOPE)
+    assert (lost.state, lost.status) == ("lost", "cancelled"), "the next reader writes the loss, as for any lapse"
+
+
+async def test_a_sweep_whose_renewals_fail_for_a_whole_lease_writes_nothing_more_and_launches_nothing_more(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _held_extraction(monkeypatch)  # its first arm runs until the sweep has let go
+    store = RenewalRefusingStore()
+    holder = _sweeping_host(store, job_lease_s=0.3)
+    (job,) = (await sweep_launch(holder, _three_arm_sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
+    sweep_id = job.job_id.removeprefix("sweep:")
+    await _first_arm_running(holder, job.job_id)
+    store.at = T0 + timedelta(seconds=0.1)
+    store.refusing = True
+
+    await _until(lambda: not holder.launch.job_manager.is_task_active(sweep_id), timeout=5)
+
+    sweep, _ = holder.eval_host.storage.load_job_record(EvalSweep, sweep_id, TOYHOST_SCOPE)
+    assert sweep is not None and (sweep.outcome, sweep.lost) == ("running", None), (
+        "it wrote no cancelled ending of its own, though the store took every write but a renewal"
+    )
+    assert len(holder.eval_host.storage.query_eval_runs(TOYHOST_SCOPE)) == 1, "it launched no further arm"
 
 
 class SlotClaimFailingStore(InMemoryDocumentStore):

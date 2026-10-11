@@ -27,9 +27,11 @@ this package may not import, so that composition is the host's.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
 from threetears.evals.analysis.bundle.assemble import CampaignReadStore, assemble_context_bundle
@@ -63,7 +65,8 @@ from threetears.evals.kernel.errors import (
     StorageError,
     ValidationFailedError,
 )
-from threetears.evals.kernel.job_leases import ANALYSIS_JOB, write_held_record
+from threetears.evals.kernel.job_leases import ANALYSIS_JOB, JobLeases, write_held_record
+from threetears.evals.kernel.job_timeout import EvalJobTimeout, timed_out_detail
 from threetears.evals.kernel.storage import JobRecordStore
 from threetears.evals.schema.models import EvalTestCase, utc_now_iso
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
@@ -600,14 +603,19 @@ def running_analysis_attempt(
     )
 
 
-def _still_held(storage: AnalysisStore, prepared: PreparedGeneration) -> None:
-    """Refuse to go on with a generation whose attempt record has ended under it — written lost by another reader.
+def _still_held(storage: AnalysisStore, prepared: PreparedGeneration, leases: JobLeases | None) -> None:
+    """Refuse to go on with a generation whose attempt record has ended under it, or whose lease this process let go.
 
     A generation run inline has no stored attempt until it ends, and is never refused here.
 
     Raises:
-        JobFenced: The stored attempt has ended.
+        JobFenced: The stored attempt has ended, or ``leases`` let go of it.
     """
+    if leases is not None and leases.fenced(prepared.attempt_id):
+        raise JobFenced(
+            f"analysis attempt '{prepared.attempt_id}': this process let go of its lease; the generation stores "
+            "nothing more"
+        )
     stored, _ = storage.load_job_record(EvalAnalysisAttempt, prepared.attempt_id, prepared.scope_id)
     if stored is not None and ANALYSIS_JOB.ended(stored):
         raise JobFenced(
@@ -658,6 +666,8 @@ async def run_analysis_generation(
     *,
     prompt_id: str,
     max_output_tokens: int,
+    deadline: AbstractAsyncContextManager[Any] | None = None,
+    leases: JobLeases | None = None,
 ) -> tuple[EvalAnalysis, list[EvalInsight]]:
     """Make the paid generator call(s) for a prepared generation, then store and record the result.
 
@@ -682,6 +692,14 @@ async def run_analysis_generation(
         prompt_id: The registry key the prompt was resolved under — provenance the generator
             cannot derive, because reading the registry is the host's.
         max_output_tokens: The output cap the client was built with, for the pre-spend log line.
+        deadline: A background generation's wall-clock budget, not yet entered — the host's job timeout built for
+            it (:class:`~threetears.evals.kernel.JobTimeoutFactory`). Entered here around the generator calls, so
+            when it runs out the attempt is recorded ``timed_out`` (:func:`~threetears.evals.kernel.timed_out_detail`)
+            and :class:`~threetears.evals.kernel.EvalJobTimeout` raised, as every job kind's budget reads; storing what
+            the calls paid for is not cut short. ``None`` for a generation its caller bounds.
+        leases: The leases a background generation's attempt is held under: once they have let go of it, the
+            generation stores and records nothing more (:meth:`~threetears.evals.kernel.JobLeases.let_go`), even
+            when the store would still take the write. ``None`` for a generation no process holds a lease for.
 
     Returns:
         The stored analysis and the insights it minted.
@@ -689,8 +707,9 @@ async def run_analysis_generation(
     Raises:
         ValidationFailedError: The generator's output failed the generation contract, or the repair
             round-trip it bought was refused by the generation's budget before it was sent.
-        JobFenced: The generation's attempt was written lost by another process before its analysis was stored;
-            nothing was stored.
+        JobFenced: The generation's attempt was written lost by another process, or this process let go of its
+            lease, before its analysis was stored; nothing was stored.
+        EvalJobTimeout: ``deadline`` ran out while the generator was being called; the attempt reads ``timed_out``.
         StorageError: The analysis or one of its insights could not be stored. An insight that fails
             leaves the attempt recorded ``stored`` all the same — the analysis is — so a background
             generation's poll reports the memo stored while its insight ledger is incomplete; the
@@ -756,6 +775,7 @@ async def run_analysis_generation(
             error=error,
             analysis_id=analysis_id,
             attempt_id=prepared.attempt_id,
+            leases=leases,
         )
 
     calls = prepared.calls
@@ -763,7 +783,7 @@ async def run_analysis_generation(
         # The client owns an httpx pool and this generation is its whole
         # lifetime; `async with` releases it on the raising path too, which
         # is a path this call reaches often enough to have its own handler.
-        async with client:
+        async with client, deadline if deadline is not None else contextlib.nullcontext():
             analysis, insights = await _generate_analysis(
                 bundle,
                 prompt=prompt,
@@ -775,6 +795,10 @@ async def run_analysis_generation(
                 admit=calls.admit,
                 profile=host.profile,
             )
+    except EvalJobTimeout as timed_out:
+        # Its own budget ran out mid-flight: not someone deciding to stop it, so not `cancelled`.
+        await record("timed_out", error=timed_out_detail(timed_out))
+        raise
     except GenerationError as e:
         # Both calls' output refused is `refused`; every other generation-contract failure (a
         # call cut short, a precondition refused before any call) is `failed`.
@@ -843,7 +867,7 @@ async def run_analysis_generation(
     # ended — lost — what this generation stored is withdrawn (:func:`_withdraw_generation`): the analysis
     # deleted, each insight it wrote deleted or put back as it stood. A lost attempt never keeps an analysis.
     # The ending stays last because a poll reading ``completed`` must find the ledger already written.
-    await _offloaded(executor, _still_held, storage, prepared)
+    await _offloaded(executor, _still_held, storage, prepared, leases)
     try:
         cancelled = await _offloaded(executor, storage.save_analysis, analysis)
     except StorageError as e:
@@ -934,6 +958,7 @@ def _record_analysis_attempt(
     error: str | None,
     analysis_id: str | None,
     attempt_id: str,
+    leases: JobLeases | None,
 ) -> _AttemptRecorded:
     """Store how one generation attempt ended, from the tally the generator kept.
 
@@ -957,6 +982,7 @@ def _record_analysis_attempt(
         analysis_id: The analysis it stored; None unless it was.
         attempt_id: The attempt's id, minted when the generation was prepared — a background
             generation's job id, so its poller can find this record once the job is gone.
+        leases: The leases the attempt is held under; once they let go of it, this ending is refused.
 
     Returns:
         ``recorded``; ``fenced`` when the stored attempt had already ended — written lost — so this ending was
@@ -981,7 +1007,7 @@ def _record_analysis_attempt(
         started_at=started_at,
     )
     try:
-        write_held_record(storage, ANALYSIS_JOB, attempt)
+        write_held_record(storage, ANALYSIS_JOB, attempt, leases=leases)
     except JobFenced as fenced:
         log.warning(
             "eval.generate_analysis attempt %s campaign=%s outcome=%s NOT recorded: %s",

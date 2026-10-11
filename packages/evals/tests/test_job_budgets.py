@@ -5,6 +5,8 @@
   ``cancelled``.
 - **A launch's budget is its preparation's**: a launch whose run waits for a concurrency slot longer than that
   budget is not cancelled for it, and a preparation that hangs past it ends ``timed_out`` with nothing started.
+- **Every job kind reads a timeout alike**: a sweep and an analysis generation whose own budget runs out end
+  ``timed_out`` (state ``stopped``), never ``cancelled``; the sweep's arms in flight are stopped and none launched after.
 - **A job's ending is not lost to a store that fails for a moment**: the write is tried again, and the result lands;
   one the store refuses every time is logged whole, so what the job paid for can be recovered.
 """
@@ -18,9 +20,21 @@ from typing import Any
 import pytest
 from pydantic import Field
 
+import threetears.evals.ops.sweeps as sweeps
 import threetears.evals.run.job_work as job_work
 import threetears.evals.run.launch_job as launch_job
-from threetears.evals.ops import LaunchArguments, job_cancel, run_launch, start_action_job
+from threetears.evals.kernel import EvalAnalysisAttempt, EvalSweep
+from threetears.evals.ops import (
+    LaunchArguments,
+    SweepArguments,
+    SweepArm,
+    analysis_generate,
+    job_cancel,
+    job_poll,
+    run_launch,
+    start_action_job,
+    sweep_launch,
+)
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.storage import InMemoryDocumentStore
 import packages.evals.tests.fixtures.toyhost.launch as toyhost_launch
@@ -159,3 +173,52 @@ async def test_a_job_whose_ending_is_never_written_logs_it_whole(
 
     (logged,) = [record for record in caplog.records if "its ending was NOT written after 3 attempts" in record.message]
     assert "the paid-for draft" in logged.message and '"outcome":"completed"' in logged.message
+
+
+async def test_a_sweep_whose_budget_runs_out_reads_timed_out_and_stops_its_arms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _held_extraction(monkeypatch)
+    monkeypatch.setattr(sweeps, "SWEEP_ARM_BUDGET_S", 0.1)
+    fixture = ops_fixture()
+    arguments = SweepArguments(
+        template_id=toyhost_template().id,
+        subject_id=TOYHOST_SUBJECT.subject_id,
+        campaign_name="prompt styles",
+        campaign_behavior="extraction accuracy",
+        k_runs=1,
+        arms=[
+            SweepArm(model=RUN_MODELS[0], label=style, overlays={"prompt_style": style})
+            for style in ("terse", "verbose")
+        ],
+    )
+
+    (job,) = (await sweep_launch(fixture.host, arguments, TOYHOST_SCOPE, created_by="agent:test")).jobs
+    status = await settled(fixture.host, job.job_id)
+
+    assert (status.state, status.status) == ("stopped", "timed_out")
+    assert status.detail is not None and status.detail.startswith("timed out: its 0s wall-clock budget ran out")
+    storage = fixture.host.eval_host.storage
+    sweep, _ = storage.load_job_record(EvalSweep, job.job_id.removeprefix("sweep:"), TOYHOST_SCOPE)
+    assert sweep is not None and sweep.arms[0].run_id is not None and sweep.arms[1].run_id is None
+    run = storage.load_eval_run(sweep.arms[0].run_id, TOYHOST_SCOPE)
+    assert run is not None and (run.status, run.cancellation_reason) == ("cancelled", sweeps.SWEEP_TIMEOUT_REASON)
+    assert status.progress["arms"]["verbose"] == "not_launched"
+
+
+async def test_a_generation_whose_budget_runs_out_reads_timed_out() -> None:
+    gate = asyncio.Event()
+    fixture = ops_fixture(gate=gate)
+    assert fixture.host.generation is not None
+    host = dataclasses.replace(fixture.host, generation=dataclasses.replace(fixture.host.generation, budget_s=0.1))
+
+    (job,) = (await analysis_generate(host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    status = await settled(host, job.job_id)
+
+    assert (status.state, status.status) == ("stopped", "timed_out")
+    attempt, _ = host.eval_host.storage.load_job_record(
+        EvalAnalysisAttempt, job.job_id.rsplit(":", 1)[1], TOYHOST_SCOPE
+    )
+    assert attempt is not None and attempt.error is not None
+    assert attempt.error.startswith("timed out: its 0s wall-clock budget ran out")
+    assert (await job_poll(host, job.job_id, TOYHOST_SCOPE)).done

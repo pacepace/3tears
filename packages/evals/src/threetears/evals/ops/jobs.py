@@ -162,6 +162,16 @@ _ATTEMPT_STATES: dict[str, JobState] = {
     "refused": "failed",
     "failed": "failed",
     "cancelled": "cancelled",
+    "timed_out": "stopped",
+}
+
+#: A sweep's recorded outcome, as the job state it is.
+_SWEEP_STATES: dict[str, JobState] = {
+    "running": "running",
+    "completed": "completed",
+    "failed": "failed",
+    "cancelled": "cancelled",
+    "timed_out": "stopped",
 }
 
 
@@ -267,7 +277,7 @@ def _sweep_status(sweep: EvalSweep, runs: dict[str, EvalRun]) -> JobStatus:
     Returns:
         The status, its progress counting the arms launched and finished.
     """
-    state: JobState = "lost" if sweep.lost is not None else ("running" if sweep.outcome == "running" else sweep.outcome)
+    state: JobState = "lost" if sweep.lost is not None else _SWEEP_STATES[sweep.outcome]
     detail = sweep.detail
     if sweep.lost is not None:
         detail = f"{sweep.lost.cause}; its launched arms are campaign members, and no further arm will be launched"

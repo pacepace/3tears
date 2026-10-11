@@ -184,6 +184,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "schema/job_lease.py": {},
     "kernel/job_context.py": {},
     "kernel/job_leases.py": {},
+    "kernel/job_timeout.py": {},
     "kernel/surface.py": {},
     "kernel/evidence_tiers.py": {},
     "kernel/judge_cases.py": {},

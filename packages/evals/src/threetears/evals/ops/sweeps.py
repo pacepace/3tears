@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from functools import partial
 from typing import Annotated, Any
 
 from pydantic import Field, model_validator
@@ -40,6 +41,7 @@ from threetears.evals.analysis.campaigns import add_runs_to_campaign
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import EvalSweep, SweepArmRecord
 from threetears.evals.kernel.errors import JobFenced, ValidationFailedError
+from threetears.evals.kernel.job_timeout import EvalJobTimeout, timed_out_detail
 from threetears.evals.schema.models import DEFAULT_LAUNCH_K_RUNS, CaseSetRef, utc_now_iso
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.ops.analysis import CampaignDefinition, campaign_create
@@ -56,6 +58,13 @@ log = get_logger(__name__)
 
 #: The reason recorded on an arm's run a sweep's cancel stopped.
 SWEEP_CANCEL_REASON = "its sweep was cancelled"
+
+#: The reason recorded on an arm's run a sweep's time budget stopped.
+SWEEP_TIMEOUT_REASON = "its sweep's time budget ran out"
+
+#: Each arm's share of a sweep's wall-clock budget, in seconds: the engine's cap on one run's job. A sweep's budget is
+#: one more share than it has arms, since its arms may run one after another and launching them takes time too.
+SWEEP_ARM_BUDGET_S = JOB_TIMEOUT_CAP_S
 
 
 class SweepArm(EvalBaseModel):
@@ -232,20 +241,17 @@ async def sweep_launch(host: OpsHost, arguments: SweepArguments, scope_id: str, 
     await run_blocking(eval_host.blocking_executor, save_started)
 
     async def work() -> None:
-        await _run_sweep(host, arguments, sweep)
+        await _run_sweep(host, arguments, sweep, budget_s=(len(arguments.arms) + 1) * SWEEP_ARM_BUDGET_S)
 
-    # The task's own ceiling sits above every arm's: each arm's job is bounded by the engine's job cap, and the
-    # arms may run one after another.
-    budget_s = (len(arguments.arms) + 1) * JOB_TIMEOUT_CAP_S
-    manager.start_task(
-        sweep.id, work, budget_s=budget_s, key=sweep_key(sweep.id, scope_id), record=(SWEEP_JOB, scope_id)
-    )
+    # The sweep enters its own budget (_run_sweep), so its record can say it timed out: one entered around the task
+    # would reach the sweep as a cancel.
+    manager.start_task(sweep.id, work, budget_s=None, key=sweep_key(sweep.id, scope_id), record=(SWEEP_JOB, scope_id))
     return JobsStarted(
         jobs=[JobHandle(job_id=sweep_job_id(sweep.id), kind="sweep", target_id=campaign.id, label=campaign.name)]
     )
 
 
-async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep) -> None:
+async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep, *, budget_s: float) -> None:
     """Launch each arm in order, at most ``max_concurrent_arms`` at once, joining each run to the campaign.
 
     The sweep's record is written as each arm's run is created and when the sweep ends, however it ends: a
@@ -253,13 +259,18 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep)
     ``cancelled``) and launches none after. Every write is the job's own guarded write
     (:func:`~threetears.evals.kernel.job_leases.write_held_record`), and every arm's launch is preceded by the same
     check (:func:`~threetears.evals.kernel.job_leases.require_held`): once the record reads lost — the lease lapsed and
-    a reader somewhere wrote so, or this process shut down — the sweep launches nothing more and writes nothing
-    more, leaving the arms it launched to their own jobs.
+    a reader somewhere wrote so, or this process shut down, or this process let go of its lease — the sweep
+    launches nothing more and writes nothing more, leaving the arms it launched to their own jobs.
+
+    **Its own budget.** ``budget_s`` is entered here, around the launching and the wait, through the host's job
+    timeout; when it runs out the arms in flight are stopped (:data:`SWEEP_TIMEOUT_REASON`), none is launched after,
+    and the sweep ends ``timed_out``, its detail naming the budget — never ``cancelled``, which is someone deciding.
 
     Args:
         host: The launching host.
         arguments: The sweep.
         sweep: Its record, as started.
+        budget_s: The sweep's wall-clock budget.
     """
     eval_host, manager = host.eval_host, host.launch.job_manager
     scope_id = sweep.scope_id
@@ -268,8 +279,19 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep)
     failure: list[str] = []
     judge_pin, simulator_pin = arguments.judge_model, arguments.simulator_model
 
+    leases = host.launch.job_leases
+
     async def save() -> None:
-        await run_blocking(eval_host.blocking_executor, write_held_record, eval_host.storage, SWEEP_JOB, sweep)
+        await run_blocking(
+            eval_host.blocking_executor, partial(write_held_record, leases=leases), eval_host.storage, SWEEP_JOB, sweep
+        )
+
+    async def stop_arms(reason: str) -> None:
+        for run_id, waiter in in_flight.items():
+            manager.cancel_job(run_id, reason=reason)
+            waiter.cancel()
+        await manager.wait_for(list(in_flight))
+        await asyncio.gather(*in_flight.values(), return_exceptions=True)
 
     def fenced(why: JobFenced) -> None:
         log.warning("eval.sweep sweep=%s scope=%s stopped: %s", sweep.id, scope_id, why)
@@ -284,73 +306,84 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep)
             slots.release()
 
     try:
-        for spec, record in zip(arguments.arms, sweep.arms, strict=True):
-            await slots.acquire()
-            if failure:
-                slots.release()
-                break
-            # Fenced BEFORE the arm is launched, not only at the write after it: a sweep whose record reads lost
-            # would otherwise pay for one more arm that nothing records, whose run no sweep and no campaign names.
-            try:
+        async with manager.job_timeout_factory(budget_s):
+            for spec, record in zip(arguments.arms, sweep.arms, strict=True):
+                await slots.acquire()
+                if failure:
+                    slots.release()
+                    break
+                # Fenced BEFORE the arm is launched, not only at the write after it: a sweep whose record reads lost
+                # would otherwise pay for one more arm that nothing records, whose run no sweep and no campaign names.
+                try:
+                    await run_blocking(
+                        eval_host.blocking_executor,
+                        partial(require_held, leases=leases),
+                        eval_host.storage,
+                        SWEEP_JOB,
+                        sweep.id,
+                        scope_id,
+                    )
+                except JobFenced:
+                    slots.release()
+                    raise
+                judge = spec.judge_model or (judge_pin if judge_pin != spec.model else None)
+                simulator = spec.simulator_model or simulator_pin
+                try:
+                    (run,) = await start_run(
+                        host.launch,
+                        template_id=arguments.template_id,
+                        subject_id=arguments.subject_id,
+                        models=[spec.model],
+                        k_runs=arguments.k_runs,
+                        judge_model=judge,
+                        simulator_model=simulator,
+                        overlays=spec.overlays,
+                        apparatus_settings=spec.apparatus_settings,
+                        max_cost_usd=arguments.max_cost_usd,
+                        cell_timeout_s=arguments.cell_timeout_s,
+                        case_set=arguments.case_set,
+                        measure_latency=arguments.measure_latency,
+                        scope_id=scope_id,
+                    )
+                # prawduct:ok-broad-except — any refusal of one arm ends the sweep, recorded on its record
+                except Exception as refused:
+                    slots.release()
+                    failure.append(
+                        f"arm {record.label!r} was refused at its launch, so no further arm was launched: {refused}"
+                    )
+                    break
+                in_flight[run.id] = asyncio.create_task(settle(record.label, run.id))
+                record.run_id = run.id
                 await run_blocking(
-                    eval_host.blocking_executor, require_held, eval_host.storage, SWEEP_JOB, sweep.id, scope_id
+                    eval_host.blocking_executor,
+                    add_runs_to_campaign,
+                    eval_host.storage,
+                    sweep.campaign_id,
+                    scope_id,
+                    [run.id],
                 )
-            except JobFenced:
-                slots.release()
-                raise
-            judge = spec.judge_model or (judge_pin if judge_pin != spec.model else None)
-            simulator = spec.simulator_model or simulator_pin
-            try:
-                (run,) = await start_run(
-                    host.launch,
-                    template_id=arguments.template_id,
-                    subject_id=arguments.subject_id,
-                    models=[spec.model],
-                    k_runs=arguments.k_runs,
-                    judge_model=judge,
-                    simulator_model=simulator,
-                    overlays=spec.overlays,
-                    apparatus_settings=spec.apparatus_settings,
-                    max_cost_usd=arguments.max_cost_usd,
-                    cell_timeout_s=arguments.cell_timeout_s,
-                    case_set=arguments.case_set,
-                    measure_latency=arguments.measure_latency,
-                    scope_id=scope_id,
-                )
-            # prawduct:ok-broad-except — any refusal of one arm ends the sweep, recorded on its record
-            except Exception as refused:
-                slots.release()
-                failure.append(
-                    f"arm {record.label!r} was refused at its launch, so no further arm was launched: {refused}"
-                )
-                break
-            in_flight[run.id] = asyncio.create_task(settle(record.label, run.id))
-            record.run_id = run.id
-            await run_blocking(
-                eval_host.blocking_executor,
-                add_runs_to_campaign,
-                eval_host.storage,
-                sweep.campaign_id,
-                scope_id,
-                [run.id],
-            )
-            await save()
-            # The first arm's resolved instruments hold for every later arm that names none of its own.
-            judge_pin = judge_pin or run.judge_model
-            simulator_pin = simulator_pin or run.simulator_model
-        await asyncio.gather(*in_flight.values())
+                await save()
+                # The first arm's resolved instruments hold for every later arm that names none of its own.
+                judge_pin = judge_pin or run.judge_model
+                simulator_pin = simulator_pin or run.simulator_model
+            await asyncio.gather(*in_flight.values())
     except asyncio.CancelledError:
-        for run_id, waiter in in_flight.items():
-            manager.cancel_job(run_id, reason=SWEEP_CANCEL_REASON)
-            waiter.cancel()
-        await manager.wait_for(list(in_flight))
-        await asyncio.gather(*in_flight.values(), return_exceptions=True)
+        await stop_arms(SWEEP_CANCEL_REASON)
         sweep.outcome, sweep.detail, sweep.ended_at = "cancelled", "cancelled before every arm ran", utc_now_iso()
         try:
             await save()
         except JobFenced as why:
             fenced(why)
         raise
+    except EvalJobTimeout as timed_out:
+        log.warning("eval.sweep sweep=%s scope=%s timed out: %s", sweep.id, scope_id, timed_out)
+        await stop_arms(SWEEP_TIMEOUT_REASON)
+        sweep.outcome, sweep.detail, sweep.ended_at = "timed_out", timed_out_detail(timed_out), utc_now_iso()
+        try:
+            await save()
+        except JobFenced as why:
+            fenced(why)
+        return
     except JobFenced as why:
         # The record reads lost: this process no longer holds the sweep. Launch nothing more and write nothing
         # more; the arms already launched are their own jobs, and finish or are lost as their own records say.
@@ -372,7 +405,9 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep)
 
 
 __all__ = [
+    "SWEEP_ARM_BUDGET_S",
     "SWEEP_CANCEL_REASON",
+    "SWEEP_TIMEOUT_REASON",
     "SweepArguments",
     "SweepArm",
     "sweep_launch",

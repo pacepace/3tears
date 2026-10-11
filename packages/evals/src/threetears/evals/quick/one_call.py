@@ -61,6 +61,7 @@ from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any, cast
 
+from threetears.evals.kernel import default_job_timeout
 from threetears.evals.kernel import (
     CandidateKind,
     ACCURACY_MEASURE,
@@ -122,7 +123,6 @@ from threetears.evals.run import (
     LaunchSettings,
     RunJudge,
     build_judge_service,
-    default_job_timeout,
     get_result_trace,
     launch_as_group,
     launch_run,
