@@ -28,10 +28,13 @@ results' ``judge`` usage rows — unknown, never zero, when any judge call went 
 template's intent, which the judge reads beside every answer: an unjudged run's is read by nothing that
 grades it, so its summary leaves it out.
 
-**So is what the candidate reported spending.** A kind's own ``candidate`` usage rows — a
-:func:`~threetears.evals.quick.run_eval` candidate's :class:`~threetears.evals.quick.Answer` — are summed
-the same way, unknown rather than zero when any went unpriced. A run whose candidate reported nothing
-carries none of it.
+**So is what every role spent.** Each role a result's usage rows name — the candidate, the judge, a simulator,
+an inner agent the candidate called, a paid external API — is summed on its own line (:class:`RoleSpend`), unknown
+rather than zero when any of its calls went unpriced, with an external API's own units (search credits, quota
+units) beside it per provider, and the results' blended cost below as the total. A line per role rather than a
+line for the candidate and one for a judge: a run whose inner agent spent most of its money printed the
+other two and hid it, and a judge campaign — every trial bills the ``judge`` role — printed no spend at all. A run
+whose results reported nothing carries none of it.
 
 **So are its goal-state checks.** Each check the results carry is counted as every per-check rate counts
 it (:func:`~threetears.evals.kernel.counted_goal_verdicts`): passed as it evaluated, failed on every
@@ -40,7 +43,7 @@ check of a result the candidate failed, and in no count for a result excluded as
 **Its words are served with it.** Every line :meth:`EvalSummary.render` prints is a field of the summary's JSON
 (each a ``computed_field``): the run's line, its results line, why it stopped, its spend cap, each measure's
 state and line, the confusion and per-label lines, the intent, each judged dimension, the self-judging warning,
-the judge's and the candidate's spend and each goal check (each error is ``errors`` itself, printed as written) —
+each role's spend and the total, and each goal check (each error is ``errors`` itself, printed as written) —
 and ``text``, all of it as one string.
 So a browser shows the words this package wrote, and ``render`` is those fields joined, never a second spelling.
 A summary read back from its JSON re-derives them and discards what the document said.
@@ -52,7 +55,7 @@ import math
 
 from collections import Counter
 from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, JsonValue, computed_field, model_validator
 
@@ -483,6 +486,56 @@ class CaseResult(BaseModel):
         return "\n".join(lines)
 
 
+class ProviderUnits(BaseModel):
+    """What an external API metered over a run, in its own unit, for one provider.
+
+    Attributes:
+        provider: Who was called, as the host names it; ``None`` where the caller could not say.
+        unit: The provider's unit (``credits``, ``quota_units``).
+        units: How many the results' rows report, summed within this provider and unit only — two providers'
+            units are never added together.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider: str | None
+    unit: str
+    units: int
+
+
+class RoleSpend(BaseModel):
+    """What one role spent over a run, summed from its results' usage rows.
+
+    Attributes:
+        role: The role (:data:`~threetears.evals.schema.UsageRole`).
+        calls: How many calls its rows count.
+        cost_usd: What they cost, as priced when they were made; ``None`` when any went unpriced — for the
+            ``external`` role, when no rate was declared for its calls, which is its ordinary state.
+        units: The ``external`` role's own metering, per provider and unit; empty for every other role.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    role: UsageRole
+    calls: int
+    cost_usd: float | None
+    units: list[ProviderUnits] = []
+
+    def line(self) -> str:
+        """The role's spend line: what it cost (or why that is unknown) and over how many calls."""
+        if self.role != "external":
+            return f"{self.role} spend: {_spend(self.cost_usd, f'a {self.role} call went unpriced')} over {self.calls} call(s)"
+        metered = ", ".join(
+            f"{units.units} {units.unit}" + (f" ({units.provider})" if units.provider else "") for units in self.units
+        )
+        cost = (
+            dollars_text(self.cost_usd)
+            if self.cost_usd is not None
+            else "unpriced: no rate was declared for them"
+        )
+        return f"external spend: {metered or 'no units counted'} over {self.calls} call(s), {cost}"
+
+
 def _shown_value(value: Any) -> str:
     """A value as a result's line prints it: a string quoted, anything else as written."""
     return repr(value) if isinstance(value, str) or value is None else str(value)
@@ -524,15 +577,13 @@ class EvalSummary(BaseModel):
             default); ``None`` for an intent stated outright, and for a summary read back from the store,
             which keeps the intent but not its source.
         second_judge_calls: How many calls second judges asked about this run made, as the out-of-run ledger records
-            them under purpose ``second_judge``. Measurement cost: never in :attr:`judge_calls` or the candidate's.
+            them under purpose ``second_judge``. Measurement cost: never in :attr:`spend` or :attr:`total_cost_usd`.
         second_judge_cost_usd: What those calls cost; ``None`` when any went unpriced, and when none was made.
-        judge_calls: How many judge calls the results' ``judge`` usage rows count.
-        judge_cost_usd: What those calls cost, as their client priced them; ``None`` when any went
-            unpriced, and for a run no judge was called in.
-        candidate_calls: How many calls the results' ``candidate`` usage rows count; 0 when the candidate
-            reported no spend.
-        candidate_cost_usd: What those calls cost, as the candidate priced them; ``None`` when any went
-            unpriced, and for a run whose candidate reported no spend.
+        spend: What each role spent (:class:`RoleSpend`), in :data:`~threetears.evals.schema.UsageRole`'s order, for
+            every role the results' usage rows name; empty for a run whose results reported none.
+        total_cost_usd: The results' cost summed (each result's blended ``cost_usd``) — the total the role lines
+            add up to, external units aside; ``None`` when any result's cost is unknown, and for a run whose
+            results reported no spend.
         errors: Each failed or excluded result's error, prefixed by its case, then the run's own. A case is named
             as the caller that summarised the run named it (:func:`~threetears.evals.quick.run_eval`: its own
             ``id``, else its position), else by its stored test case id.
@@ -572,12 +623,10 @@ class EvalSummary(BaseModel):
     confusion: list[ConfusionCount]
     labels: list[LabelStatistics]
     judged: list[DimensionSummary] = []
-    judge_calls: int = 0
-    judge_cost_usd: float | None = None
+    spend: list[RoleSpend] = []
+    total_cost_usd: float | None = None
     second_judge_calls: int = 0
     second_judge_cost_usd: float | None = None
-    candidate_calls: int = 0
-    candidate_cost_usd: float | None = None
     goal_checks: list[GoalCheckSummary] = []
     intent: str | None = None
     intent_source: str | None = None
@@ -622,6 +671,17 @@ class EvalSummary(BaseModel):
         """
         return [result for result in self.results() if result.missed]
 
+    def role_spend(self, role: UsageRole) -> RoleSpend | None:
+        """What one role spent over the run, or ``None`` when its results name no row of it.
+
+        Args:
+            role: The role.
+
+        Returns:
+            Its :class:`RoleSpend`, or ``None``.
+        """
+        return next((spend for spend in self.spend if spend.role == role), None)
+
     @model_validator(mode="before")
     @classmethod
     def _discard_served_words(cls, data: Any) -> Any:
@@ -635,7 +695,8 @@ class EvalSummary(BaseModel):
         With neither a judge nor a cap in play, the rig's exclusions and the cap say nothing a newcomer can act on,
         so they print only when they do.
         """
-        return bool(self.judged) or self.judge_calls > 0
+        judge = self.role_spend("judge")
+        return bool(self.judged) or (judge is not None and judge.calls > 0)
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description="The run's first line: its id, how it ended, the candidate (or arm), its cases and repeats."
@@ -673,13 +734,13 @@ class EvalSummary(BaseModel):
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description=(
             "The spend ceiling the run was held to, or that nothing bounded it; null when the summary prints no cap "
-            "line — no cap recorded, or none of a cap, a judge or the candidate's spend in play."
+            "line — no cap recorded, or none of a cap, a judge or any role's spend in play."
         )
     )
     @property
     def spend_cap_text(self) -> str | None:
         """The spend-cap line, without indentation, or None."""
-        if self.max_cost_usd is None and not self._judged_in_play and not self.candidate_calls:
+        if self.max_cost_usd is None and not self._judged_in_play and not self.spend:
             return None
         return _spend_cap_line(self)
 
@@ -760,27 +821,28 @@ class EvalSummary(BaseModel):
         return self_judging_text(self.judge_shares_candidate_model, "the candidate")
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
-        description="The judge's spend and calls; null for a run with no judged dimension."
+        description=(
+            "Each role's spend line, in `spend` order: what it cost, or why that is unknown, over how many calls — an "
+            "external API's units per provider beside it. Empty for a run whose results reported no spend."
+        )
     )
     @property
-    def judge_spend_text(self) -> str | None:
-        """The judge-spend line, without indentation, or None."""
-        if not self.judged:
-            return None
-        return (
-            f"judge spend: {_spend(self.judge_cost_usd, 'a judge call went unpriced')} over {self.judge_calls} call(s)"
-        )
+    def spend_lines(self) -> list[str]:
+        """Each role's spend line (:meth:`RoleSpend.line`)."""
+        return [spend.line() for spend in self.spend]
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
-        description="The candidate's reported spend and calls; null when the candidate reported none."
+        description=(
+            "The results' total cost — what the role lines add up to — or that it is unknown and why; null for a "
+            "run whose results reported no spend."
+        )
     )
     @property
-    def candidate_spend_text(self) -> str | None:
-        """The candidate-spend line, without indentation, or None."""
-        if not self.candidate_calls:
+    def total_spend_text(self) -> str | None:
+        """The total-spend line, without indentation, or None."""
+        if not self.spend:
             return None
-        spend = _spend(self.candidate_cost_usd, "a candidate call went unpriced")
-        return f"candidate spend: {spend} over {self.candidate_calls} call(s)"
+        return f"total spend: {_spend(self.total_cost_usd, 'a call went unpriced')}, the results' cost"
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description="Each goal check's pass count and, unless proven, why it is not a measurement."
@@ -802,7 +864,7 @@ class EvalSummary(BaseModel):
         """The summary as a few lines of text for a terminal: the served lines, in order, indented.
 
         The results line counts the failures and the rig's exclusions only when there are some, or a judge is in
-        play; the spend-cap line prints only when a cap bounded the run, a judge ran, or the candidate reported
+        play; the spend-cap line prints only when a cap bounded the run, a judge ran, or any role reported
         spend — a first run of a free function is not handed the vocabulary of a rig it does not have.
 
         Returns:
@@ -819,9 +881,11 @@ class EvalSummary(BaseModel):
         if self.intent_text is not None:
             lines.append(f"  {self.intent_text}")
         lines += [f"  {line}" for line in self.dimension_lines]
-        lines += [f"  {line}" for line in (self.self_judging_warning, self.judge_spend_text) if line is not None]
-        if self.candidate_spend_text is not None:
-            lines.append(f"  {self.candidate_spend_text}")
+        if self.self_judging_warning is not None:
+            lines.append(f"  {self.self_judging_warning}")
+        lines += [f"  {line}" for line in self.spend_lines]
+        if self.total_spend_text is not None:
+            lines.append(f"  {self.total_spend_text}")
         lines += [f"  {line}" for line in self.goal_check_lines]
         lines += [f"  error: {error}" for error in self.errors]
         return "\n".join(lines)
@@ -873,16 +937,16 @@ def _self_judging(run: EvalRun, results: list[EvalResult]) -> list[str]:
 def _spend_cap_line(summary: EvalSummary) -> str | None:
     """The spend ceiling the run was held to, or that it had none; nothing for a run that recorded neither.
 
-    A cap counts the spend results report, so a capped run none of whose candidate calls reported any says
-    that its cap counted only what else was spent (a judge's calls, say).
+    A cap counts the spend results report, so a capped run none of whose results reported any says that its cap
+    had nothing to count.
     """
     if summary.max_cost_usd_origin == "uncapped":
         return f"spend cap: {UNCAPPED_SPEND}"
     if summary.max_cost_usd is None:
         return None
     line = f"spend cap: {dollars_text(summary.max_cost_usd)} for this run"
-    if summary.candidate_calls == 0:
-        line += "; it counts only spend a result reports, and the candidate reported none"
+    if not summary.spend:
+        line += "; it counts only spend a result reports, and no result reported any"
     return line
 
 
@@ -1022,11 +1086,9 @@ def summarize_run(
         for result in results
         if isinstance(cell := result.host_measures.get(CONFUSION_CELL_MEASURE), str)
     ]
-    judge_rows = [row for result in results for row in result.usage if row.role == "judge"]
     template = None
     if run.judge_model is not None and run.template_id is not None:
         template = host.storage.load_template(run.template_id, scope_id)
-    candidate_rows = [row for result in results for row in result.usage if row.role == "candidate"]
     # A second judge's spend is the out-of-run ledger's, stamped with the run — never a result's usage row.
     second_rows = [
         row for row in host.storage.query_out_of_run_spend(scope_id, purpose="second_judge") if row.run_id == run.id
@@ -1048,16 +1110,14 @@ def summarize_run(
         confusion=confusion,
         labels=label_statistics(classifications),
         judged=_judged_dimensions(results),
-        judge_calls=sum(row.call_count or 0 for row in judge_rows),
-        judge_cost_usd=blended_cost(judge_rows, _JUDGE_ROLE) if judge_rows else None,
+        spend=_role_spend(results),
+        total_cost_usd=_total_cost(results),
         second_judge_calls=len(second_rows),
         second_judge_cost_usd=(
             math.fsum(cost for cost in second_costs if cost is not None)
             if second_rows and None not in second_costs
             else None
         ),
-        candidate_calls=sum(row.call_count or 0 for row in candidate_rows),
-        candidate_cost_usd=blended_cost(candidate_rows, _CANDIDATE_ROLE) if candidate_rows else None,
         goal_checks=_goal_checks(results, run),
         # Templates are edited in place: one edited since the launch no longer holds what the judge read.
         intent=template.intent if template is not None and template.updated_at <= run.created_at else None,
@@ -1069,11 +1129,49 @@ def summarize_run(
     )
 
 
-#: The one role a run's judge spends under, which the summary's judge spend sums.
-_JUDGE_ROLE: tuple[UsageRole, ...] = ("judge",)
+def _role_spend(results: list[EvalResult]) -> list[RoleSpend]:
+    """What each role the results' usage rows name spent, in :data:`~threetears.evals.schema.UsageRole`'s order.
 
-#: The role a kind's own calls spend under, which the summary's candidate spend sums.
-_CANDIDATE_ROLE: tuple[UsageRole, ...] = ("candidate",)
+    A model-metered role's cost is :func:`~threetears.evals.kernel.usage_capture.blended_cost` over its rows —
+    unknown when any went unpriced. The ``external`` role's rows carry dollars only where the run declared a rate
+    for them, so its cost is the sum when every row is priced and unknown otherwise, and its units are summed per
+    provider and unit, never across two.
+    """
+    spent: list[RoleSpend] = []
+    for role in get_args(UsageRole):
+        rows = [row for result in results for row in result.usage if row.role == role]
+        if not rows:
+            continue
+        calls = sum(row.call_count or 0 for row in rows)
+        if role != "external":
+            spent.append(RoleSpend(role=role, calls=calls, cost_usd=blended_cost(rows, (role,))))
+            continue
+        metered: dict[tuple[str | None, str], int] = {}
+        for row in rows:
+            if row.provider_unit is not None and row.provider_units is not None:
+                key = (row.provider, row.provider_unit)
+                metered[key] = metered.get(key, 0) + row.provider_units
+        costs = [row.cost_usd for row in rows]
+        spent.append(
+            RoleSpend(
+                role=role,
+                calls=calls,
+                cost_usd=None if None in costs else math.fsum(cost for cost in costs if cost is not None),
+                units=[
+                    ProviderUnits(provider=provider, unit=unit, units=units)
+                    for (provider, unit), units in sorted(metered.items(), key=lambda item: (item[0][0] or "", item[0][1]))
+                ],
+            )
+        )
+    return spent
+
+
+def _total_cost(results: list[EvalResult]) -> float | None:
+    """The results' cost summed, or ``None`` when any result's is unknown or no result's rows observed spend."""
+    if not any(row.cost_usd is not None for result in results for row in result.usage):
+        return None
+    costs = [result.cost_usd for result in results]
+    return None if None in costs else math.fsum(cost for cost in costs if cost is not None)
 
 
 def _judged_dimensions(results: list[EvalResult]) -> list[DimensionSummary]:
@@ -1145,6 +1243,8 @@ __all__ = [
     "JudgeGrade",
     "MeasureLine",
     "MeasureState",
+    "ProviderUnits",
+    "RoleSpend",
     "RunMeasureSummary",
     "dollars_text",
     "self_judging_text",

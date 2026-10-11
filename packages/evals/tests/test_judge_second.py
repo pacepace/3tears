@@ -276,14 +276,7 @@ class TestASecondJudgeOnHalfTheResults:
         assert {(row.run_id, row.purpose) for row in rows} == {(run_id, "second_judge")}
         assert summary.second_judge_calls == len(rows)
         assert summary.second_judge_cost_usd == pytest.approx(sum(row.cost_usd or 0 for row in rows))
-        assert (summary.judge_calls, summary.judge_cost_usd) == (
-            summary_before.judge_calls,
-            summary_before.judge_cost_usd,
-        )
-        assert (summary.candidate_calls, summary.candidate_cost_usd) == (
-            summary_before.candidate_calls,
-            summary_before.candidate_cost_usd,
-        )
+        assert (summary.spend, summary.total_cost_usd) == (summary_before.spend, summary_before.total_cost_usd)
         assert host.storage.query_out_of_run_spend(_SCOPE, purpose="judge") == []
 
     async def test_the_sample_is_seeded_recorded_and_drawn_again_by_the_same_seed(self) -> None:

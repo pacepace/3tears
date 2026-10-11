@@ -37,8 +37,8 @@ async def test_a_tool_using_candidate_reports_its_spend_with_an_answer() -> None
 
     summary = await run_eval(CASES, doubling, [exact], tools={"double": double}, scope_id=SCOPE, k=1)
     assert mean_exact(summary) == 1
-    assert summary.candidate_calls == 3
-    assert summary.candidate_cost_usd == 0.003
+    assert summary.role_spend("candidate").calls == 3
+    assert summary.role_spend("candidate").cost_usd == 0.003
 
 
 async def test_compare_runs_tool_using_arms_on_two_factors() -> None:

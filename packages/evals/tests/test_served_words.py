@@ -30,6 +30,7 @@ from threetears.evals.analysis import (
     ChartBlock,
     DisclosureBlock,
     EvalSummary,
+    RoleSpend,
     MeasureLine,
     Report,
     RunMeasureSummary,
@@ -60,13 +61,18 @@ from packages.evals.tests.report_support import minimal_report
 
 @pytest.mark.parametrize(
     ("value", "text"),
-    [(None, "—"), (True, "yes"), (False, "no"), (3, "3"), (12345.678, "12346"), (0.000012345, "1.234e-05"), ("a", "a")],
+    [(None, "—"), (True, "yes"), (False, "no"), (3, "3"), (12345.678, "12346"), (0.000012345, "0.00001234"), ("a", "a")],
 )
 def test_a_cells_text_is_the_number_rules_spelling_of_its_value(value: Any, text: str) -> None:
     cell = TableCell(value=value)
     assert cell.value == value and type(cell.value) is type(value)
     assert cell.text == text == render_cell(value)
-    assert cell.model_dump(mode="json") == {"value": value, "text": text}
+    assert cell.model_dump(mode="json") == {"value": value, "unit": "", "text": text}
+
+
+def test_a_cells_number_is_joined_to_its_unit() -> None:
+    assert TableCell(value=1.42, unit="s").text == "1.42 s"
+    assert TableCell(value=0.42, unit="%").text == "0.42%"
 
 
 def test_a_cells_text_is_rederived_on_read_and_what_the_document_said_is_discarded() -> None:
@@ -90,8 +96,8 @@ class TestATableServesItsCells:
     def test_each_cell_carries_its_value_and_its_text(self) -> None:
         dumped = _table().model_dump(mode="json")
         assert dumped["rows"] == [
-            {"arm": {"value": "b", "text": "b"}, "mean": {"value": 1234.5, "text": "1234"}},
-            {"arm": {"value": "a", "text": "a"}, "mean": {"value": None, "text": "—"}},
+            {"arm": {"value": "b", "unit": "", "text": "b"}, "mean": {"value": 1234.5, "unit": "", "text": "1234"}},
+            {"arm": {"value": "a", "unit": "", "text": "a"}, "mean": {"value": None, "unit": "", "text": "—"}},
         ]
 
     def test_values_reads_the_rows_as_values_alone(self) -> None:
@@ -339,8 +345,13 @@ class TestTheRunSummaryServesItsLines:
 
     def test_the_spend_cap(self) -> None:
         assert _summary().spend_cap_text is None
-        assert _summary(max_cost_usd=2.5, candidate_calls=3).spend_cap_text == "spend cap: $2.50 for this run"
-        assert _summary(max_cost_usd_origin="uncapped", judge_calls=1).spend_cap_text is not None
+        candidate = RoleSpend(role="candidate", calls=3, cost_usd=0.01)
+        assert _summary(max_cost_usd=2.5, spend=[candidate]).spend_cap_text == "spend cap: $2.50 for this run"
+        assert _summary(max_cost_usd=2.5).spend_cap_text == (
+            "spend cap: $2.50 for this run; it counts only spend a result reports, and no result reported any"
+        )
+        judge = RoleSpend(role="judge", calls=1, cost_usd=0.01)
+        assert _summary(max_cost_usd_origin="uncapped", spend=[judge]).spend_cap_text is not None
 
     def test_every_measure_state(self) -> None:
         summary = _summary(
@@ -367,17 +378,24 @@ class TestTheRunSummaryServesItsLines:
         assert texts[3] == f"latency_ms: {NO_SUCCESSFUL_RESULTS}, left out: 2 refused or errored with no turn taken"
         assert summary.confusion_lines == ["a → b: 2"]
 
-    def test_the_judge_and_candidate_spend(self) -> None:
+    def test_each_roles_spend_and_the_total(self) -> None:
         from threetears.evals.analysis import DimensionSummary
 
         judged = [
             DimensionSummary(name="helpful", scale="ordinal", n=2, mean=4.0, minimum=3.0, maximum=5.0, cannot_tell=0)
         ]
-        summary = _summary(judged=judged, judge_calls=2, candidate_calls=3, candidate_cost_usd=0.0123)
-        assert summary.judge_spend_text == "judge spend: unknown: a judge call went unpriced over 2 call(s)"
-        assert summary.candidate_spend_text == "candidate spend: $0.0123 over 3 call(s)"
+        spend = [
+            RoleSpend(role="candidate", calls=3, cost_usd=0.0123),
+            RoleSpend(role="judge", calls=2, cost_usd=None),
+        ]
+        summary = _summary(judged=judged, spend=spend)
+        assert summary.spend_lines == [
+            "candidate spend: $0.0123 over 3 call(s)",
+            "judge spend: unknown: a judge call went unpriced over 2 call(s)",
+        ]
+        assert summary.total_spend_text == "total spend: unknown: a call went unpriced, the results' cost"
         assert summary.dimension_lines == ["helpful (judged 1-5): mean 4 (n=2, min 3, max 5)"]
-        assert _summary().judge_spend_text is None and _summary().candidate_spend_text is None
+        assert _summary().spend_lines == [] and _summary().total_spend_text is None
 
     def test_the_intent_and_the_self_judging_warning(self) -> None:
         summary = _summary(intent="Answer  the\nquestion.", intent_source="from f's docstring")
@@ -416,8 +434,8 @@ class TestTheRunSummaryServesItsLines:
             "intent_text",
             "dimension_lines",
             "self_judging_warning",
-            "judge_spend_text",
-            "candidate_spend_text",
+            "spend_lines",
+            "total_spend_text",
             "goal_check_lines",
             "text",
         ):

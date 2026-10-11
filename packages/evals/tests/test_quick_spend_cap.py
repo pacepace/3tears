@@ -66,7 +66,7 @@ async def test_a_cap_the_run_stays_under_lets_it_finish() -> None:
 async def test_a_cap_over_a_candidate_that_reports_no_spend_says_it_counts_none_of_it() -> None:
     summary = await run_eval(CASES, silent, [even], scope_id=SCOPE, k=1, max_cost_usd=0.5)
     assert summary.status == "completed"
-    assert "it counts only spend a result reports, and the candidate reported none" in summary.render()
+    assert "it counts only spend a result reports, and no result reported any" in summary.render()
 
 
 async def test_an_unpriced_answer_stops_a_capped_run_rather_than_counting_as_free() -> None:
