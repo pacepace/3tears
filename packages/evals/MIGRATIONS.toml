@@ -40,6 +40,7 @@ run_eval and compare take a stratum key; the analysis prompt states its pruning 
 compiler prose; a fold with one arm per knob level can be checked by the host's residual reader.
 """
 notes = [
+    "The judge kind refuses an arm holding a judge case this build cannot read, or one with no criterion to ask, naming every one, where it used to drop the case from the arm without a word. A judge template holding such a case is now refused at its estimate and launch: re-freeze the case with judge_cases_freeze, or launch a case set without it.",
     "Core schema v12: a run carries the labels an operator gave it — `EvalRun.labels`, a sorted list of short names, empty by default and in no identity key — set and cleared by `ops.run_label` (the `run_label` action, whose parameter is `run_labels`) and listed by with `runs_list(label=...)`. The v11 step is the identity, and a v11 run reads with none. A build before this one refuses a v12 record as newer: stop every process sharing a store, then upgrade them together.",
 ]
 

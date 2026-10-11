@@ -611,30 +611,22 @@ class JudgeKind:
             test_case: The cell's case, carrying the judge case in its ``host_payload``.
 
         Returns:
-            The ceiling in dollars, every attempt included; ``None`` for a case :meth:`invoke` makes no call for
-            (it carries no readable judge case) or one whose client cannot price the call.
+            The ceiling in dollars, every attempt included; ``None`` when the client cannot price the call.
 
         Raises:
-            ValueError: The client priced the call at an amount no reservation could hold.
+            ValueError: The case carries no readable judge case, or its criterion cannot be asked — the plan refuses
+                every such case before this is asked (:func:`launchable_judge_kind`), so reaching one is a defect —
+                or the client priced the call at an amount no reservation could hold.
         """
-        try:
-            case = judge_case_of(test_case)
-        except ValueError:
-            # NOSILENT: an unreadable judge case gets no call from invoke, which reports it when the run reaches it
-            return None
+        case = judge_case_of(test_case)
         if case is None:
-            return None
+            raise ValueError(f"test case {test_case.id!r} carries no judge case to price")
         service = JudgeService(
             client_factory=lambda _model, temperature: self._client(temperature),
             configs=self._configs,
             failure_describer=self._failure_describer,
         )
-        try:
-            request = self._request(service, case, _context_of(test_case, case))
-        except ValueError:
-            # NOSILENT: invoke reports a request it cannot build as that cell's error at run time; nothing to price here
-            return None
-        return service.price_ceiling(request)
+        return service.price_ceiling(self._request(service, case, _context_of(test_case, case)))
 
     def _request(self, service: JudgeService, case: JudgeCase, context: JudgeContext) -> JudgeRequest:
         """The call the case's criterion is asked in, built by the judge service exactly as a run's judge builds it."""
@@ -643,7 +635,7 @@ class JudgeKind:
         if case.dim == OUTCOME_DIM_ID:
             return service.outcome_request(context)
         if case.criterion is None:
-            raise ValueError(f"judge case on {case.dim!r} carries no criterion to ask")
+            raise ValueError(_NO_CRITERION.format(dim=case.dim))
         return service.dimension_request(case.criterion, context)
 
     async def invoke(self, instance: PreparedJudge, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
@@ -846,21 +838,43 @@ def judge_kind(
         ) from exc
 
 
+#: Why a judge case on a dimension other than the transcript and outcome cannot be asked: it names no criterion.
+_NO_CRITERION = "judge case on {dim!r} carries no criterion to ask"
+
+
 def _template_cases(storage: EvalStorage, template: EvalTemplate, scope_id: str) -> list[EvalTestCase]:
-    """The judge template's stored live cases, in storage order — what an arm runs when its launch names no set."""
-    return [
-        case
-        for case in storage.query_test_cases(scope_id, template_id=template.id)
-        if not case.archived and _carries_a_judge_case(case)
-    ]
+    """The judge template's stored live cases, in storage order — what an arm runs when its launch names no set.
+
+    Every live case, readable or not: one this build cannot read is refused by the plan (:func:`_refuse_unaskable`),
+    naming it, rather than dropped from the arm without a word — a dropped case is a set nobody chose.
+    """
+    return [case for case in storage.query_test_cases(scope_id, template_id=template.id) if not case.archived]
 
 
-def _carries_a_judge_case(case: EvalTestCase) -> bool:
-    """Whether a stored case carries a judge case this build can read; an unreadable one is not run."""
+def _unaskable(case: EvalTestCase) -> str | None:
+    """Why the judge kind could not ask ``case``'s criterion — no readable judge case, or no criterion — or ``None``."""
     try:
-        return judge_case_of(case) is not None
-    except ValueError:
-        return False
+        judge = judge_case_of(case)
+    except ValueError as exc:
+        return str(exc)
+    if judge is None:
+        return f"test case {case.id!r} carries no judge case under host_payload[{JUDGE_CASE_KEY!r}]"
+    if judge.dim not in (TRANSCRIPT_DIM_ID, OUTCOME_DIM_ID) and judge.criterion is None:
+        return f"test case {case.id!r}: " + _NO_CRITERION.format(dim=judge.dim)
+    return None
+
+
+def _refuse_unaskable(template: EvalTemplate, cases: list[EvalTestCase]) -> None:
+    """Refuse an arm any of whose cases the judge kind could not ask, naming every one — before anything is spent.
+
+    Raises:
+        ValidationFailedError: A case carries no readable judge case, or no criterion to ask.
+    """
+    if reasons := [reason for case in cases if (reason := _unaskable(case)) is not None]:
+        raise ValidationFailedError(
+            f"template {template.id!r} holds {len(reasons)} case(s) the judge kind cannot ask: " + "; ".join(reasons),
+            remedy="re-freeze them with judge_cases_freeze, or launch a case set without them (case_set_mint)",
+        )
 
 
 def _judge_subject(subject_id: str, _scope_id: str) -> UnknownSubject | None:
@@ -906,6 +920,7 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
                 f"template {request.template.id!r} holds no judge case to run",
                 remedy="freeze some with judge_cases_freeze",
             )
+        _refuse_unaskable(request.template, cases)
         return ArmPlan(
             case_count=len(cases),
             candidate_model=require_candidate_model(request, None),

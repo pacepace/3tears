@@ -8,6 +8,11 @@ packages (bumped in lock-step).
 
 ### 3tears-evals: backlog while Discodon adopts .13
 
+- **A judge case this build cannot read is refused by name, not dropped (breaking for a judge template holding
+  one).** The judge kind left a stored case it could not read out of the arm without a word, and its pricing answered
+  "no figure" for one, both by swallowing the `ValueError`. The plan now refuses an arm holding a case with no
+  readable judge case, or no criterion to ask, naming every one, before anything is spent, so the estimate and the
+  launch say so alike; `JudgeKind.price_case` no longer catches anything.
 - **`run_eval` and `compare` take `stratum_key=` (#704).** The key each case carries its kind under
   (`stratum_key="kind"`): its value is stored as the test case's `EvalTestCase.stratum`, and the key is taken out of
   the case before the candidate, a scorer, `expected=`, `seed=` or the judge is handed it, and out of what
