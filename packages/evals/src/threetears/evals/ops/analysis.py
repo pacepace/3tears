@@ -31,7 +31,6 @@ from threetears.evals.analysis.service import (
     get_analysis,
     list_analyses,
     list_insights,
-    list_analysis_attempts,
     prepare_analysis_generation,
     run_analysis_generation,
     running_analysis_attempt,
@@ -39,7 +38,13 @@ from threetears.evals.analysis.service import (
 from threetears.evals.schema.base import EvalBaseModel, VerbatimText
 from threetears.evals.kernel.campaign import ConfidenceTier, EvalAnalysis, EvalCampaign, EvalInsight
 from threetears.evals.kernel.errors import ConflictError, JobFenced, NotFoundError, ValidationFailedError
-from threetears.evals.kernel.job_leases import ANALYSIS_JOB, settle_job_record, write_held_record
+from threetears.evals.kernel.campaign import EvalGenerationSlot, generation_slot_id
+from threetears.evals.kernel.job_leases import (
+    ANALYSIS_JOB,
+    LEASE_WRITE_ATTEMPTS,
+    settle_job_record,
+    write_held_record,
+)
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops.host import AnalysisGeneration, OpsHost
@@ -458,24 +463,23 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
             prompt does not resolve, the writer model is not one the host allows
             (``HostProfile.analysis_writer_models``, checked before any provider request), or the first call cannot be priced under the enforced cap or is priced
             above it.
-        ConflictError: A generation of this campaign is already running — in this process, or in another one
-            whose attempt's lease is live.
+        ConflictError: A generation of this campaign is already running — in this process, or in any process:
+            the campaign's generation slot names an attempt whose lease is live. The refusal names that attempt's
+            job.
         NotFoundError: No campaign with that id in the scope.
     """
     generation = _generation_settings(host)
     manager = host.launch.job_manager
     key = generation_key(campaign_id, scope_id)
-    running = manager.active_task_ids(key)
     eval_host = host.eval_host
-    if not running:
-        running = await run_blocking(
-            eval_host.blocking_executor, _attempts_running_elsewhere, eval_host, campaign_id, scope_id
-        )
-    if running:
-        raise ConflictError(
-            f"a generation of campaign '{campaign_id}' is already running "
-            f"(job {analysis_job_id(campaign_id, running[0])}); poll it rather than starting another"
-        )
+    held = manager.active_task_ids(key)
+    holder = (
+        held[0]
+        if held
+        else await run_blocking(eval_host.blocking_executor, _live_slot_holder, eval_host, campaign_id, scope_id)
+    )
+    if holder is not None:
+        raise _already_running(campaign_id, holder)
     prepared = await prepare_analysis_generation(
         eval_host,
         campaign_id,
@@ -495,6 +499,26 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
 
     await run_blocking(eval_host.blocking_executor, save_started)
 
+    async def refuse(why: str) -> None:
+        # Another start won: release the client this one built, which only the generation itself would
+        # otherwise have entered and released, and end the attempt it recorded — it made no call.
+        async with prepared.client:
+            pass
+        refused = started.model_copy(
+            update={"outcome": "failed", "error": f"refused before any call: {why}", "created_at": utc_now_iso()}
+        )
+        await run_blocking(eval_host.blocking_executor, write_held_record, eval_host.storage, ANALYSIS_JOB, refused)
+
+    # The one step that decides between processes: a conditional write of the campaign's generation slot. The
+    # attempt is recorded first, so a start that loses this race finds the winner's attempt to name.
+    holder = await run_blocking(
+        eval_host.blocking_executor, _claim_generation_slot, eval_host, campaign_id, scope_id, prepared.attempt_id
+    )
+    if holder is not None:
+        refusal = _already_running(campaign_id, holder)
+        await refuse(str(refusal))
+        raise refusal
+
     async def work() -> None:
         try:
             await run_analysis_generation(
@@ -510,14 +534,8 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
             prepared.attempt_id, work, budget_s=generation.budget_s, key=key, record=(ANALYSIS_JOB, scope_id)
         )
     except ConflictError as lost_race:
-        # Another start won the race while this one prepared: release the client it built, which only
-        # the generation itself would otherwise have entered and released, and end the attempt it recorded.
-        async with prepared.client:
-            pass
-        refused = started.model_copy(
-            update={"outcome": "failed", "error": f"refused before any call: {lost_race}", "created_at": utc_now_iso()}
-        )
-        await run_blocking(eval_host.blocking_executor, write_held_record, eval_host.storage, ANALYSIS_JOB, refused)
+        # Another start in this process took the key while this one prepared.
+        await refuse(str(lost_race))
         raise
     return JobsStarted(
         jobs=[
@@ -531,25 +549,65 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
     )
 
 
-def _attempts_running_elsewhere(host: EvalHost, campaign_id: str, scope_id: str) -> list[str]:
-    """The campaign's attempts still running in some process: each read as every process reads it, settled first.
+def _already_running(campaign_id: str, attempt_id: str) -> ConflictError:
+    """The refusal of a second generation of a campaign, naming the live one's job."""
+    return ConflictError(
+        f"a generation of campaign '{campaign_id}' is already running "
+        f"(job {analysis_job_id(campaign_id, attempt_id)}); poll it rather than starting another"
+    )
+
+
+def _live_attempt(host: EvalHost, attempt_id: str, scope_id: str) -> bool:
+    """Whether an attempt still runs in some process: read as every process reads it, settled first."""
+    attempt, _ = settle_job_record(host.storage, ANALYSIS_JOB, attempt_id, scope_id)
+    return attempt is not None and not ANALYSIS_JOB.ended(attempt)
+
+
+def _live_slot_holder(host: EvalHost, campaign_id: str, scope_id: str) -> str | None:
+    """The attempt holding the campaign's generation slot while it still runs; ``None`` when the slot is free.
+
+    A read before anything is prepared or spent, so a start that would lose is refused at once; the claim
+    (:func:`_claim_generation_slot`) is what decides.
+    """
+    slot, _ = host.storage.load_generation_slot_with_etag(campaign_id, scope_id)
+    if slot is None or not _live_attempt(host, slot.attempt_id, scope_id):
+        return None
+    return slot.attempt_id
+
+
+def _claim_generation_slot(host: EvalHost, campaign_id: str, scope_id: str, attempt_id: str) -> str | None:
+    """Claim the campaign's generation slot for ``attempt_id`` — atomically, against every process.
+
+    The slot is created with a create-only write when the campaign has none, and taken over with ``if_match`` from
+    an attempt that has ended (its lease lapsed counts: it is settled first). Of two starts racing, one write
+    lands; the other's is refused, re-reads, and finds the winner's attempt — recorded before its claim — live.
 
     Args:
-        host: Where the attempts live.
+        host: Where the slot and the attempts live.
         campaign_id: The campaign.
         scope_id: Its scope.
+        attempt_id: The attempt claiming it, already recorded ``running`` with its lease.
 
     Returns:
-        The ids of attempts whose lease is live, newest first.
+        ``None`` when the slot is claimed; otherwise the live attempt that holds it.
+
+    Raises:
+        ConflictError: The slot kept changing under every attempt to claim it.
     """
-    live: list[str] = []
-    for attempt in list_analysis_attempts(host.storage, campaign_id, scope_id):
-        if attempt.outcome != "running":
+    for _ in range(LEASE_WRITE_ATTEMPTS):
+        slot, etag = host.storage.load_generation_slot_with_etag(campaign_id, scope_id)
+        if slot is not None and slot.attempt_id != attempt_id and _live_attempt(host, slot.attempt_id, scope_id):
+            return slot.attempt_id
+        claim = EvalGenerationSlot(
+            id=generation_slot_id(campaign_id), scope_id=scope_id, campaign_id=campaign_id, attempt_id=attempt_id
+        )
+        try:
+            host.storage.claim_generation_slot(claim, if_match=etag)
+        except ConflictError:
+            # NOSILENT: another start wrote the slot first; the re-read names its attempt
             continue
-        settled, _ = settle_job_record(host.storage, ANALYSIS_JOB, attempt.id, scope_id)
-        if settled is not None and not ANALYSIS_JOB.ended(settled):
-            live.append(attempt.id)
-    return live
+        return None
+    raise ConflictError(f"campaign '{campaign_id}''s generation slot kept changing; start the generation again")
 
 
 def report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat) -> ReportDocument:

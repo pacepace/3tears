@@ -199,6 +199,16 @@ def test_a_conditional_write_reaches_the_owning_store_with_its_etag_unchanged() 
         router.upsert(_doc("r1", "eval_run"), if_match=etag)
 
 
+def test_a_create_only_write_reaches_the_owning_store() -> None:
+    router, stores = _router()
+    router.upsert(_doc("a1", "eval_analysis", v=1), create_only=True)
+
+    assert stores["scratch"].get("a1", _SCOPE) == _doc("a1", "eval_analysis", v=1)
+    with pytest.raises(StoreConflict):
+        router.upsert(_doc("a1", "eval_analysis", v=2), create_only=True)
+    assert router.get("a1", _SCOPE) == _doc("a1", "eval_analysis", v=1)
+
+
 def test_a_document_without_a_doc_type_cannot_be_placed() -> None:
     router, _ = _router()
     with pytest.raises(ValueError, match="by its doc_type"):
@@ -314,11 +324,11 @@ def test_a_different_rule_with_the_same_placements_starts() -> None:
     RoutedDocumentStore(stores, by_origin)
 
 
-def test_a_rule_moving_one_type_refuses_to_start_naming_it() -> None:
-    """By origin and by lifecycle differ only in the cassette, a regenerable record; that one type is named."""
+def test_a_rule_moving_some_types_refuses_to_start_naming_them() -> None:
+    """By origin and by lifecycle differ only in the regenerable records, the cassette and the generation slot."""
     _, stores = _router(route=_BY_LIFECYCLE)
 
-    with pytest.raises(RouteChanged, match=r"keeps \['eval_cassette'\] in another store"):
+    with pytest.raises(RouteChanged, match=r"keeps \['eval_cassette', 'eval_generation_slot'\] in another store"):
         RoutedDocumentStore(stores, _BY_ORIGIN)
 
 

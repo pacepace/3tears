@@ -108,9 +108,14 @@ because every stored model reads strictly.
 
 **Prove your store with the conformance kit.** `threetears.evals.testing.STORE_CONFORMANCE_CASES`
 states every rule of the port — scoping, the strip on read, `exclude`/`keep` projection, ordering,
-etag conflicts and the re-read that recovers one, merge and delete — as a case you hand a fresh,
-empty store. Every case is mandatory: in particular a store must implement conditional writes,
-because several writers share a run document as it finishes. Parametrise your test runner over it:
+etag conflicts and the re-read that recovers one, create-only writes, merge and delete — as a case you
+hand a fresh, empty store. Every case is mandatory: in particular a store must implement both write
+preconditions — `if_match` (the stored document still carries this etag), because several writers share a
+run document as it finishes, and `create_only` (nothing is stored under this scope and id, of any type),
+because two processes racing to start one campaign's analysis generation both create its one generation
+slot and exactly one may land. A store that forwards writes to a backend passes both through. A store
+may also offer `StoreClock` (`now()`, the store's own time), which job leases are then stamped in; offer it
+only when the time is the store's, not the calling process's. Parametrise your test runner over it:
 
 ```python
 @pytest.mark.parametrize("case", STORE_CONFORMANCE_CASES, ids=lambda case: case.name)
@@ -146,7 +151,7 @@ types the engine stores, and says three things about each:
 
 - **origin**: `input` (what runs read as given, whoever wrote it: templates, judge configs, rubric dims, case
   sets, test cases, campaigns), `record` (what happened: runs, results, traces, calibration ratings, the
-  out-of-run spend ledger, sweeps, analysis attempts, cassettes) or `derived` (computed from other stored
+  out-of-run spend ledger, sweeps, analysis attempts, cassettes, generation slots) or `derived` (computed from other stored
   documents: analyses, insights, judge profiles).
 - **lifecycle**: `kept` (read by every later release, below) or `regenerable` (refused after a format change,
   and made again).
@@ -169,8 +174,8 @@ next writes that document, at the current version. So one scope can hold documen
 A step never changes a field the store filters, sorts or projects on (`CORE_ADDRESSING_FIELDS`), so an index
 your adapter keeps on those fields stays valid.
 
-**Everything else is regenerated.** Analyses, insights and judge profiles are built over the core, and
-a cassette is re-captured. When one of their shapes changes, `REGENERABLE_SCHEMA_VERSION` is bumped and a
+**Everything else is regenerated.** Analyses, insights and judge profiles are built over the core, a
+cassette is re-captured, and a campaign's generation slot is claimed again by the next generation. When one of their shapes changes, `REGENERABLE_SCHEMA_VERSION` is bumped and a
 document written under another version is refused: make it again over the kept runs (generate the analysis,
 profile the judge), or re-capture the cassette (a new capture run, so a new corpus). After a bump, `analyses_undescribable` (operation and action) lists the scope's analyses holding
 an arm this build can no longer describe.
@@ -208,7 +213,7 @@ mistake a route can hold is refused when the router is built: a fact value left 
 not among `stores`, one store passed under two names, a tombstone kept apart from the type it suppresses.
 
 **Typed calls go to one store; id-only calls ask every store.** A write, `get_many`, `by_doc_type` and
-`iter_by_doc_type` go to the store the type is kept in, and a conditional write's `if_match` reaches that store
+`iter_by_doc_type` go to the store the type is kept in, and a conditional write's `if_match` or `create_only` reaches that store
 unchanged. `get`, `get_with_etag`, `merge_fields` and `delete` carry only an id, so they ask every store. A store
 that does not hold the id answers "not here", as the port says. One id lives in one store: a read that finds an
 id in two stores, or in a store its type is not kept in, raises `MisplacedDocument` rather than picking one.

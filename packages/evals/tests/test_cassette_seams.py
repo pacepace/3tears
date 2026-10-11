@@ -726,10 +726,10 @@ class _FailingWritesStore(InMemoryDocumentStore):
         super().__init__()
         self.fail_writes = False
 
-    def upsert(self, document: dict[str, Any], *, if_match: str | None = None) -> None:
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
         if self.fail_writes:
             raise RuntimeError("simulated write failure")
-        super().upsert(document, if_match=if_match)
+        super().upsert(document, if_match=if_match, create_only=create_only)
 
 
 def _failing_storage() -> tuple[EvalStorage, _FailingWritesStore]:

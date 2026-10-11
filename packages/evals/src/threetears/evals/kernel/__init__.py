@@ -46,8 +46,10 @@ from threetears.evals.kernel.campaign import (
     EvalAnalysisAttempt,
     EvalCampaign,
     EvalInsight,
+    EvalGenerationSlot,
     EvalSweep,
     SweepArmRecord,
+    generation_slot_id,
     SweepOutcome,
     GenerationProvenance,
     CampaignWindow,
@@ -328,6 +330,8 @@ from threetears.evals.kernel.usage_capture import (
 from threetears.evals.kernel.world_session import WorldSession, WorldSessionError
 
 __all__ = [
+    "EvalGenerationSlot",
+    "generation_slot_id",
     "ANALYSIS_JOB",
     "DEFAULT_JOB_LEASE_S",
     "LEASE_WRITE_ATTEMPTS",

@@ -197,26 +197,32 @@ class InMemoryDocumentStore:
             ]
         yield from ids
 
-    def upsert(self, document: dict[str, Any], *, if_match: str | None = None) -> None:
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
         """Write a document under the scope and id it carries, creating or replacing it.
 
         Args:
             document: The document to store; it supplies its own ``scope_id`` and ``id``.
             if_match: A token from :meth:`get_with_etag`; when given, the write lands only if the
                 stored document still carries it.
+            create_only: When True, the write lands only if nothing is stored under its scope and id.
 
         Raises:
             StoreConflict: ``if_match`` was given and the stored document no longer carries it,
-                or is gone.
+                or is gone; or ``create_only`` was set and a document is stored there.
+            ValueError: Both ``if_match`` and ``create_only`` were given.
             KeyError: The document carries no ``scope_id`` or no ``id``. The store reads the scope
                 as the key it is and never judges its value: every eval model refuses an empty one.
         """
+        if if_match is not None and create_only:
+            raise ValueError("a write is conditional on an etag or on absence, never both")
         scope_id, doc_id = document["scope_id"], document["id"]
         key = (scope_id, doc_id)
         stored = copy.deepcopy(document)
         with self._lock:
             if if_match is not None and self._etags.get(key) != if_match:
                 raise StoreConflict(f"document {doc_id!r} in scope {scope_id!r} no longer carries etag {if_match!r}")
+            if create_only and key in self.documents:
+                raise StoreConflict(f"document {doc_id!r} in scope {scope_id!r} already exists")
             self.documents[key] = stored
             self._mint_etag(key)
 

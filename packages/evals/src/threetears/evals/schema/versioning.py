@@ -265,6 +265,10 @@ profiled": every campaign's tiers are its own evidence alone, as they were.
 lost — which is what it was, its liveness having lived only in the process that ran it — and an attempt, which was
 written only as it ended, has ended and reads as it says. ``AttemptOutcome`` gained ``running``, the attempt a
 background generation now writes as it starts; no stored attempt carries it, so none reads differently.
+
+**Within v8, not a bump**: ``EvalGenerationSlot`` joined as a new stored type — which attempt holds a campaign's one
+generation, the document two processes racing a start both write. A store written before it holds none, which reads
+as "no generation has claimed the campaign": the first start creates it.
 """
 
 #: The kept documents, by ``doc_type``: the ``kept`` entries of

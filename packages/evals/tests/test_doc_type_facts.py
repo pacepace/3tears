@@ -76,6 +76,7 @@ def test_the_placements_the_registry_records() -> None:
         "eval_sweep": ("record", "kept"),
         "eval_analysis_attempt": ("record", "kept"),
         "eval_cassette": ("record", "regenerable"),
+        "eval_generation_slot": ("record", "regenerable"),
         "eval_analysis": ("derived", "regenerable"),
         "eval_insight": ("derived", "regenerable"),
         "eval_judge_profile": ("derived", "regenerable"),

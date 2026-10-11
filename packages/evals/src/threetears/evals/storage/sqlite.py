@@ -18,7 +18,8 @@ kit (``threetears.evals.testing``) proves it case by case:
 - **Optimistic concurrency** is one statement: a conditional write is an ``UPDATE ... WHERE etag = ?``
   that lands or touches no row, so its compare and its write cannot be split, between threads or between
   processes. Every write mints a random etag, so a document deleted and written again never honours a
-  token from before.
+  token from before. A create-only write is a plain ``INSERT`` the ``(scope_id, id)`` key refuses, one
+  statement too.
 
 **Threads and processes.** The port is synchronous; the engine calls it from a blocking-I/O executor, so
 one connection is shared across threads under a lock. The file is opened in WAL mode with a busy timeout,
@@ -284,23 +285,39 @@ class SqliteDocumentStore:
             ]
         yield from ids
 
-    def upsert(self, document: dict[str, Any], *, if_match: str | None = None) -> None:
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
         """Write a document under the scope and id it carries, creating or replacing it.
 
         Args:
             document: The document to store; it supplies its own ``scope_id`` and ``id``.
             if_match: A token from :meth:`get_with_etag`; when given, the write lands only if the
                 stored document still carries it.
+            create_only: When True, the write lands only if nothing is stored under its scope and id: a
+                plain ``INSERT``, which the table's unique key refuses, so the check and the write are one
+                statement between threads and between processes.
 
         Raises:
-            StoreConflict: ``if_match`` was given and the stored document no longer carries it, or is gone.
+            StoreConflict: ``if_match`` was given and the stored document no longer carries it, or is gone;
+                or ``create_only`` was set and a document is stored there.
+            ValueError: Both ``if_match`` and ``create_only`` were given.
             KeyError: The document carries no ``scope_id`` or no ``id``.
             TypeError: The document holds a value JSON cannot.
         """
+        if if_match is not None and create_only:
+            raise ValueError("a write is conditional on an etag or on absence, never both")
         scope_id, doc_id = document["scope_id"], document["id"]
         body = json.dumps(document)
         etag = uuid.uuid7().hex
         with self._lock:
+            if create_only:
+                try:
+                    self._db.execute(
+                        "INSERT INTO documents (scope_id, id, doc_type, etag, body) VALUES (?, ?, ?, ?, ?)",
+                        (scope_id, doc_id, document.get("doc_type"), etag, body),
+                    )
+                except sqlite3.IntegrityError as exists:
+                    raise StoreConflict(f"document {doc_id!r} in scope {scope_id!r} already exists") from exists
+                return
             if if_match is not None:
                 written = self._db.execute(
                     "UPDATE documents SET doc_type = ?, etag = ?, body = ? WHERE scope_id = ? AND id = ? AND etag = ?",

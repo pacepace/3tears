@@ -337,6 +337,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`extract_json_array(text: str) -> list[dict[str, Any]]`
 - **`fold_phase_timings`** · function · Fold one delivery's carried phase timings into a result's accumulator.
   <br>`fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> None`
+- **`generation_slot_id`** · function · The id of a campaign's generation slot: one per campaign, so every process racing a start names one document.
+  <br>`generation_slot_id(campaign_id: str) -> str`
 - **`goal_check_of`** · function · The check a measure name was minted for by `goal_check_measure`, or None.
   <br>`goal_check_of(name: str) -> str | None`
 - **`judge_case_of`** · function · The judge case a test case carries, or `None` when it carries none.
@@ -380,7 +382,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`run_margin_refusal`** · function · Why a launch cannot declare `margin` on core measure `name` for its runs, or None when it can.
   <br>`run_margin_refusal(name: str, margin: object) -> str | None`
 - **`save_document`** · function · Upsert `document` through `repo`, raising on any failure.
-  <br>`save_document(repo: DocumentStore, document: dict[str, Any], *, if_match: str | None = None) -> None`
+  <br>`save_document(repo: DocumentStore, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None`
 - **`separation_criterion`** · function · The separation criterion over `n` first-score/repeat pairs covering `results` results, at `agreement`.
   <br>`separation_criterion(n: int, results: int, agreement: float | None, interval: tuple[float, float] | None = None) -> TierCriterion`
 - **`settle_job_record`** · function · Read a job record as every process reads it: written lost first, when it has not ended and its lease has lapsed.
@@ -445,6 +447,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`EvalAnalysis`** · model · A generated, stored analysis of one campaign — the productized "Analysis" lens.
 - **`EvalAnalysisAttempt`** · model · One run of the analysis generator for a campaign, whatever it came to.
 - **`EvalCampaign`** · model · A curated set of eval runs under one subject×behavior — the analysis hub.
+- **`EvalGenerationSlot`** · model · Which analysis attempt holds a campaign's one generation: the document two starts race to claim.
 - **`EvalInsight`** · model · A durable, subject-scoped insight extracted from an analysis.
 - **`EvalJudgeProfile`** · model · What one judge was measured to be on one criterion, over frozen cases, by a judge campaign — stored for reuse.
 - **`EvalServiceError`** · exception · Structured error from the eval service layer.

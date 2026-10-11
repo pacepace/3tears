@@ -16,7 +16,7 @@ key back).
 
 **Typed calls route; id-only calls fan out.** ``upsert`` (by the document's ``doc_type``), ``get_many``,
 ``by_doc_type`` and ``iter_by_doc_type`` go to the one store their type is placed in, and a conditional write's
-``if_match`` reaches that store unchanged, so each store's etags mean what they always meant. ``get``,
+``if_match`` (or ``create_only``) reaches that store unchanged, so each store's etags mean what they always meant. ``get``,
 ``get_with_etag``, ``merge_fields`` and ``delete`` carry only an id, so they ask every store. **One id, one
 store**: a read that finds the id in two stores, or in a store its type is not placed in, raises
 :class:`MisplacedDocument` rather than picking one, because whichever it picked, a typed read of the same type
@@ -378,8 +378,11 @@ class RoutedDocumentStore:
         """Yield the id of every document of one type within a scope, from the store the type is kept in."""
         return self._routed(doc_type).iter_by_doc_type(doc_type, scope_id)
 
-    def upsert(self, document: dict[str, Any], *, if_match: str | None = None) -> None:
-        """Write a document to the store its ``doc_type`` is kept in, passing ``if_match`` through unchanged.
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Write a document to the store its ``doc_type`` is kept in, passing ``if_match`` and ``create_only`` through.
+
+        A create-only write is decided by the store the type is kept in, which is the one store that may hold the id:
+        a copy of it in another store is misplaced, and an id-only read reports it.
 
         Raises:
             ValueError: The document carries no ``doc_type``, which is what places it.
@@ -388,7 +391,7 @@ class RoutedDocumentStore:
         doc_type = document.get("doc_type")
         if not isinstance(doc_type, str):
             raise ValueError("a routed store places a document by its doc_type, and this one carries none")
-        self._routed(doc_type).upsert(document, if_match=if_match)
+        self._routed(doc_type).upsert(document, if_match=if_match, create_only=create_only)
 
     def merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool:
         """Set top-level fields on the one document ``doc_id`` names, in whichever store holds it.
@@ -469,7 +472,7 @@ class RoutedDocumentStore:
                             continue
                         there = target.get(doc_id, scope_id)
                         if there is None:
-                            target.upsert(document)
+                            target.upsert(document, create_only=True)
                         elif there != document:
                             raise MisplacedDocument(
                                 f"document {doc_id!r} in scope {scope_id!r} is held by {name!r} and by "

@@ -44,6 +44,13 @@ A lost conditional write is the one failure the port names: an implementation ra
 :class:`StoreConflict` for it, because a lost race has a remedy the core owns (re-read
 and re-apply) and every other failure does not.
 
+**Two preconditions, and only two.** A write may be conditional on the document still carrying an
+etag (``if_match``: it was read, and nothing wrote since) or on there being no document at all
+(``create_only``: nothing is stored under its ``(scope_id, id)``, of any type). The second is how two
+processes racing to create one deterministic document learn which of them won: without it, two
+unconditional creates both land and the later silently replaces the earlier. ``if_match`` never means
+"absent": a conditional write to a document that is not stored is refused.
+
 **An optional clock.** A store that keeps a clock of its own may also offer :class:`StoreClock` — its
 ``now()``. Job leases (:mod:`~threetears.evals.schema.job_lease`) are stamped and compared in that time when it
 is offered, so processes whose clocks disagree still agree on whether a lease has lapsed; a store that does not
@@ -269,7 +276,7 @@ class DocumentStore(Protocol):
         """
         ...
 
-    def upsert(self, document: dict[str, Any], *, if_match: str | None = None) -> None:
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
         """Write a document, creating or replacing it.
 
         The document supplies its own ``scope_id`` and ``id``; the store derives the
@@ -279,11 +286,17 @@ class DocumentStore(Protocol):
         Args:
             document: The document to store.
             if_match: A token from :meth:`get_with_etag`. When given, the write
-                lands only if the stored document still carries that token.
+                lands only if the stored document still carries that token; a
+                document that is not stored carries none, and refuses it.
+            create_only: When True, the write lands only if no document is stored
+                under the document's ``(scope_id, id)`` — of any ``doc_type``. The
+                check and the write are one step, so of several racing creates
+                exactly one lands. Never together with ``if_match``.
 
         Raises:
             StoreConflict: ``if_match`` was given and the stored document no longer
-                carries it.
+                carries it, or ``create_only`` was set and a document is stored there.
+            ValueError: Both ``if_match`` and ``create_only`` were given.
             Exception: Any other backend failure.
         """
         ...
