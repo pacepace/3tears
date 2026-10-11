@@ -34,7 +34,8 @@
 version = "unreleased"
 since = "v0.66.0-evaladopt.10"
 summary = """
-What adopting .10 found (gaps 42–44): `format_number` takes a `prefix` that goes on the number.
+What adopting .10 found (gaps 42–44): `format_number` takes a `prefix` that goes on the number, and
+`RoutedDocumentStore.holds_documents` says whether stores about to be adopted hold any document.
 """
 
 [[release]]

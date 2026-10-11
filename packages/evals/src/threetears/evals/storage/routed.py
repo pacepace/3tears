@@ -502,6 +502,42 @@ class RoutedDocumentStore:
 
     # --- changing the rule -----------------------------------------------------------------------
 
+    @staticmethod
+    def holds_documents(
+        children: Mapping[str, DocumentStore],
+        scope_ids: Iterable[str],
+        *,
+        host_doc_types: Iterable[str] = (),
+    ) -> bool:
+        """Whether any of these stores holds any document in the named scopes, asked before :meth:`relocate`.
+
+        The question a host's start asks of tables it is about to adopt: an empty set of stores can take a fresh
+        record, and one with documents in it has to be relocated first. It asks the way :meth:`relocate` moves,
+        every registered type (:data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`) and the host's own, in
+        every store and every named scope, and stops at the first document it finds. Like :meth:`relocate`, it
+        reaches only the scopes and host types it is told of: the port has no scope-free read.
+
+        It ignores the router's own placement record. That record is kept in the routing scope, which is not a
+        document scope and is never among ``scope_ids``, under a ``doc_type`` no registry holds; it is the
+        router's bookkeeping about the stores, not a document, so a store holding only a record answers ``False``
+        here. Whether a record exists is the router's own check when it is built.
+
+        Args:
+            children: The stores, by name.
+            scope_ids: Every scope documents may be kept in.
+            host_doc_types: The host's own ``doc_type`` values in these stores.
+
+        Returns:
+            ``True`` at the first document found; ``False`` when no store holds one in any named scope.
+        """
+        known = (set(DOC_TYPE_FACTS) | set(host_doc_types)) - {_RECORD_DOC_TYPE}
+        for scope_id in scope_ids:
+            for doc_type in sorted(known):
+                for store in children.values():
+                    for _doc_id in store.iter_by_doc_type(doc_type, scope_id):
+                        return True
+        return False
+
     @classmethod
     def relocate(
         cls,

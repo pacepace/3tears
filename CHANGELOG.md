@@ -15,6 +15,11 @@ packages (bumped in lock-step).
   the cost estimate) use it, so they no longer write `$< 0.000001` or `$-1.23`. The default is unchanged.
   `tests/fixtures/number-format-cases.json` carries the prefixed cases under a `prefixed` key, apart from `cases`,
   so a renderer that ignores the prefix keeps passing.
+- **Gap 43: `RoutedDocumentStore.holds_documents` says whether stores about to be adopted hold anything.**
+  `holds_documents(children, scope_ids, *, host_doc_types=())` asks every registered type and the host's own, in
+  every store and named scope, as `relocate` would move them, and stops at the first document. A host's start no
+  longer loops over `DOC_TYPE_FACTS`, the stores and `iter_by_doc_type` itself. The router's placement record is
+  not a document and is not counted. `adopting-a-host.md` shows it beside `relocate`.
 
 ### 3tears-evals: the judge temperature measurement and the prompt-comparison test set (#633)
 

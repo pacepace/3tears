@@ -10,6 +10,7 @@ unchanged; and a changed rule refuses to start until ``relocate`` has moved ever
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -467,6 +468,64 @@ def test_an_interrupted_relocation_is_finished_by_running_it_again() -> None:
         "eval_analysis": 1
     }
     assert _held(stores["evidence"]) == set() and _held(stores["scratch"]) == {"a1"}
+
+
+def test_empty_stores_hold_no_documents() -> None:
+    assert RoutedDocumentStore.holds_documents(_stores(), [_SCOPE, "scope-b"]) is False
+
+
+def test_stores_holding_only_a_placement_record_hold_no_documents() -> None:
+    """The record is the router's bookkeeping in the routing scope, not a document, even when that scope is asked."""
+    _, stores = _router()
+
+    assert RoutedDocumentStore.holds_documents(stores, [_SCOPE]) is False
+    assert RoutedDocumentStore.holds_documents(stores, [_ROUTING], host_doc_types=["eval_routing_record"]) is False
+
+
+@pytest.mark.parametrize("store", ["evidence", "scratch"])
+def test_a_registered_document_in_any_store_is_found(store: str) -> None:
+    stores = _stores()
+    stores[store].upsert(_doc("a1", "eval_analysis"))
+
+    assert RoutedDocumentStore.holds_documents(stores, ["scope-b", _SCOPE]) is True
+
+
+def test_a_document_in_a_scope_not_named_is_not_found() -> None:
+    stores = _stores()
+    stores["evidence"].upsert(_doc("r1", "eval_run"))
+
+    assert RoutedDocumentStore.holds_documents(stores, ["scope-b"]) is False
+
+
+def test_a_host_type_is_found_only_when_named() -> None:
+    stores = _stores()
+    stores["evidence"].upsert(_doc("n1", "host_note"))
+
+    assert RoutedDocumentStore.holds_documents(stores, [_SCOPE]) is False
+    assert RoutedDocumentStore.holds_documents(stores, [_SCOPE], host_doc_types=["host_note"]) is True
+
+
+def test_every_registered_type_is_asked() -> None:
+    for doc_type in DOC_TYPE_FACTS:
+        stores = _stores()
+        stores["scratch"].upsert(_doc("d1", doc_type))
+        assert RoutedDocumentStore.holds_documents(stores, [_SCOPE]) is True, doc_type
+
+
+def test_holds_documents_stops_at_the_first_document() -> None:
+    asked: list[str] = []
+
+    class _CountingStore(InMemoryDocumentStore):
+        def iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]:
+            asked.append(doc_type)
+            return super().iter_by_doc_type(doc_type, scope_id)
+
+    stores = {"evidence": _CountingStore(), "scratch": _CountingStore()}
+    first = sorted(DOC_TYPE_FACTS)[0]
+    stores["evidence"].upsert(_doc("d1", first))
+
+    assert RoutedDocumentStore.holds_documents(stores, [_SCOPE, "scope-b"]) is True
+    assert asked == [first]
 
 
 def test_relocate_refuses_two_different_documents_under_one_id() -> None:
