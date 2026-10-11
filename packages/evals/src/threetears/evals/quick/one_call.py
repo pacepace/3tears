@@ -1383,12 +1383,12 @@ def _launch_host(
         kinds={
             kind_name: LaunchableKind(
                 launch=launch,
+                resolve_subject=resolve_subject,
                 unhonoured_launch_arguments=frozenset(unhonoured),
                 ignored_template_fields=frozenset(ignored),
             )
         },
         settings=partial(_launch_settings, len(arms), max_cost_usd),
-        resolve_subject=resolve_subject,
         job_timeout_factory=default_job_timeout,
         world_placements=place if declared is not None else None,
     )

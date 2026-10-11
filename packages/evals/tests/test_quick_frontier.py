@@ -106,7 +106,6 @@ async def test_the_action_and_the_cli_return_the_python_call_s_frontier(capsys: 
             eval_host=host,
             kinds={},
             settings=lambda: settings,
-            resolve_subject=lambda _subject, _scope: None,
             job_timeout_factory=default_job_timeout,
         )
     )

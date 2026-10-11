@@ -227,8 +227,7 @@ def test_run_exits_one_when_a_run_does_not_complete(capsys: pytest.CaptureFixtur
 
     launch_host = LaunchHost(
         eval_host=eval_host,
-        resolve_subject=lambda _subject, _scope: None,
-        kinds={COURIER_KIND: LaunchableKind(launch=launch)},
+        kinds={COURIER_KIND: LaunchableKind(launch=launch, resolve_subject=lambda _subject, _scope: None)},
         settings=lambda: COURIER_LAUNCH_SETTINGS,
         job_timeout_factory=default_job_timeout,
         world_placements=lambda _run: world.place(seeded=(), carriers=()),
@@ -311,8 +310,7 @@ def _launch_host_whose_launcher_raises() -> LaunchHost:
 
     return LaunchHost(
         eval_host=eval_host,
-        resolve_subject=lambda _subject, _scope: None,
-        kinds={COURIER_KIND: LaunchableKind(launch=launch)},
+        kinds={COURIER_KIND: LaunchableKind(launch=launch, resolve_subject=lambda _subject, _scope: None)},
         settings=lambda: COURIER_LAUNCH_SETTINGS,
         job_timeout_factory=default_job_timeout,
         world_placements=lambda _run: world.place(seeded=(), carriers=()),

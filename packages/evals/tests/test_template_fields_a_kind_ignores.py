@@ -44,7 +44,6 @@ def _judge_host() -> LaunchHost:
         eval_host=eval_host,
         kinds={JUDGE_KIND: launchable_judge_kind(lambda: holder[0])},
         settings=lambda: TOYHOST_LAUNCH_SETTINGS,
-        resolve_subject=lambda _subject, _scope: None,
         job_timeout_factory=default_job_timeout,
         world_placements=lambda _run: {},
     )
@@ -91,4 +90,9 @@ def test_the_judge_kind_declares_every_field_but_what_it_reads() -> None:
 
 def test_a_kind_declaring_a_name_no_template_has_is_refused() -> None:
     with pytest.raises(ValueError, match="not template fields"):
-        LaunchableKind(launch=lambda _request: None, ignored_template_fields=frozenset({"world_sed"}))  # type: ignore[arg-type,return-value]
+        LaunchableKind(
+            launch=lambda _request: None,  # type: ignore[arg-type,return-value]
+            resolve_subject=lambda _subject, _scope: None,
+            ignored_template_fields=frozenset({"world_sed"}),
+        )
+

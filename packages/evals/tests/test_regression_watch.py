@@ -66,7 +66,6 @@ def _launch_host(storage: EvalStorage, watch: RegressionWatch) -> LaunchHost:
     eval_host = toyhost_host(storage=storage)
     return LaunchHost(
         eval_host=eval_host,
-        resolve_subject=lambda _subject, _scope: None,
         kinds={},
         settings=lambda: TOYHOST_LAUNCH_SETTINGS,
         job_timeout_factory=default_job_timeout,

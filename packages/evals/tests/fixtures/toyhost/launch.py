@@ -226,12 +226,12 @@ def toyhost_launch_host(
 
     launch_host = LaunchHost(
         eval_host=eval_host,
-        resolve_subject=resolve_subject,
         # The extractor honours no simulated user, no judge and no cassette, so a launch naming one
         # is refused at the dispatch rather than handed to this launcher to ignore.
         kinds={
             TOY_EXTRACTOR_KIND: LaunchableKind(
                 launch=launch,
+                resolve_subject=resolve_subject,
                 unhonoured_launch_arguments=frozenset(
                     {"simulator_model", "judge_model", "judge_config_ids", "cassette_mode", "n_variations"}
                 ),

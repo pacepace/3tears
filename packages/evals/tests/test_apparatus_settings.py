@@ -231,7 +231,7 @@ def test_a_kind_defaulting_a_setting_to_a_value_no_run_could_record_is_refused(d
         raise AssertionError("never launched")
 
     with pytest.raises(ValueError, match="defaults a setting to a value no run could record"):
-        LaunchableKind(launch=launch, apparatus_settings={POOL: default})
+        LaunchableKind(launch=launch, resolve_subject=lambda _subject, _scope: None, apparatus_settings={POOL: default})
 
 
 def test_the_settable_apparatus_is_the_hosts_own_and_none_of_the_engines():
@@ -357,4 +357,4 @@ def test_a_kind_reads_nothing_unless_it_says_so():
     async def launch(_request: LaunchRequest) -> EvalRun:
         raise AssertionError("never launched")
 
-    assert LaunchableKind(launch=launch).apparatus_settings == {}
+    assert LaunchableKind(launch=launch, resolve_subject=lambda _subject, _scope: None).apparatus_settings == {}

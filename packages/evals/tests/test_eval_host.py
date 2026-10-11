@@ -235,7 +235,6 @@ def test_a_launch_host_holds_its_eval_host_whole_and_builds_its_jobs_over_that_h
     eval_host = replace(toyhost_host(), clients=lambda role, model, *, temperature=None: None)  # type: ignore[arg-type,return-value]
     launch_host = LaunchHost(
         eval_host=eval_host,
-        resolve_subject=lambda _subject, _scope: None,
         kinds={},
         settings=lambda: TOYHOST_LAUNCH_SETTINGS,
         job_timeout_factory=default_job_timeout,
@@ -248,7 +247,6 @@ def test_a_launch_host_holds_its_eval_host_whole_and_builds_its_jobs_over_that_h
     with pytest.raises(TypeError, match="job_manager"):
         LaunchHost(  # type: ignore[call-arg]
             eval_host=eval_host,
-            resolve_subject=lambda _subject, _scope: None,
             kinds={},
             settings=lambda: TOYHOST_LAUNCH_SETTINGS,
             job_timeout_factory=default_job_timeout,
@@ -305,6 +303,7 @@ def _launching_with(
         kinds={
             TOY_EXTRACTOR_KIND: LaunchableKind(
                 launch=launch,
+                resolve_subject=lambda _subject, _scope: None,
                 unhonoured_launch_arguments=unhonoured,
                 plan_arm=None if "n_variations" in unhonoured else plan,
             )
@@ -421,7 +420,11 @@ async def test_a_launch_argument_the_kind_cannot_honour_is_refused_before_its_la
 
 def test_a_kind_cannot_decline_an_argument_that_is_not_a_launch_argument():
     with pytest.raises(ValueError, match="cassete_mode"):
-        LaunchableKind(launch=lambda _request: None, unhonoured_launch_arguments=frozenset({"cassete_mode"}))  # type: ignore[arg-type,return-value]
+        LaunchableKind(
+            launch=lambda _request: None,  # type: ignore[arg-type,return-value]
+            resolve_subject=lambda _subject, _scope: None,
+            unhonoured_launch_arguments=frozenset({"cassete_mode"}),
+        )
 
 
 async def test_the_reference_launcher_captures_the_subject_the_launch_names():

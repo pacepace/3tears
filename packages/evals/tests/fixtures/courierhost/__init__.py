@@ -490,10 +490,10 @@ def courier_launch_host() -> LaunchHost:
 
     launch_host = LaunchHost(
         eval_host=eval_host,
-        resolve_subject=resolve_subject,
         kinds={
             COURIER_KIND: LaunchableKind(
                 launch=launch,
+                resolve_subject=resolve_subject,
                 unhonoured_launch_arguments=frozenset(
                     {"simulator_model", "judge_model", "judge_config_ids", "cassette_mode", "n_variations"}
                 ),

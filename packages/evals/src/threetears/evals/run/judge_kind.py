@@ -70,6 +70,7 @@ from threetears.evals.run.launch import (
     ArmPlan,
     KindWiring,
     LaunchableKind,
+    UnknownSubject,
     launch_run,
     require_candidate_model,
 )
@@ -820,6 +821,24 @@ def _carries_a_judge_case(case: EvalTestCase) -> bool:
         return False
 
 
+def _judge_subject(subject_id: str, _scope_id: str) -> UnknownSubject | None:
+    """The judge kind's subject resolver: any non-blank label names the judge an arm measures.
+
+    A judge arm's subject is not something the host holds — the snapshot is built from the label itself — so there
+    is nothing to look up, and only a blank label, which no run could group by, is refused.
+
+    Args:
+        subject_id: The label the launch names its judge by.
+        _scope_id: Unused; a label is a label in every scope.
+
+    Returns:
+        ``None`` for a non-blank label; an :class:`~threetears.evals.run.UnknownSubject` for a blank one.
+    """
+    if subject_id.strip():
+        return None
+    return UnknownSubject(remedy="name the judge being measured with a non-blank label, such as 'the matrix judge'")
+
+
 def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKind:
     """The judge kind's entry in a host's launch registry: each arm one judge over the template's frozen cases.
 
@@ -882,6 +901,7 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
 
     return LaunchableKind(
         launch=launch,
+        resolve_subject=_judge_subject,
         unhonoured_launch_arguments=frozenset(
             {"n_variations", "judge_model", "judge_config_ids", "simulator_model", "cassette_mode"}
         ),

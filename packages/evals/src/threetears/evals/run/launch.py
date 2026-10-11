@@ -430,9 +430,11 @@ class UnknownSubject:
             raise ValueError("an unknown subject's remedy says how to find a subject the host holds; it is blank")
 
 
-#: How a host answers whether it holds the subject a launch names, before anything is priced:
-#: ``(subject_id, scope_id) -> None`` when it does, :class:`UnknownSubject` when it does not. Called off the event
-#: loop, through the host's blocking executor, so it may read the host's own store.
+#: How a kind answers whether its host holds the subject a launch of it names, before anything is priced:
+#: ``(subject_id, scope_id) -> None`` when it does, :class:`UnknownSubject` when it does not. A kind's, not the
+#: host's: one subject id means a live entity to one kind, a fixed prompt key to another and a free label to a third,
+#: so a resolver asked without the kind could only refuse one of them or admit any string for all. Called off the
+#: event loop, through the host's blocking executor, so it may read the host's own store.
 SubjectResolver = Callable[[str, str], UnknownSubject | None]
 
 
@@ -452,11 +454,6 @@ class LaunchHost:
             template declares, with its launcher. A template naming a kind with no entry is refused
             before anything is read.
         settings: Reads the host's :class:`LaunchSettings` — a callable because they hot-reload.
-        resolve_subject: Whether the host holds the subject a launch names (:data:`SubjectResolver`). Asked at
-            admission — by :func:`quote_launch` and by every launch, before any arm is priced — so an estimate and
-            a launch refuse one unknown subject alike, and a launcher never meets one. No default: what a subject
-            is is the host's, and a host that does not say would have every launch's estimate price a subject its
-            launch then refuses.
         job_timeout_factory: What bounds each run's job, as
             :class:`~threetears.evals.run.jobs.EvalJobManager` takes it. No default, for the reason the
             host's cell timeout has none: :func:`~threetears.evals.kernel.default_job_timeout` is
@@ -499,7 +496,6 @@ class LaunchHost:
     eval_host: EvalHost
     kinds: Mapping[str, LaunchableKind]
     settings: Callable[[], LaunchSettings]
-    resolve_subject: SubjectResolver
     job_timeout_factory: JobTimeoutFactory
     world_placements: Callable[[EvalRun], dict[str, WorldPlacement]] | None = None
     launch_pricer: LaunchPricer | None = None
@@ -705,13 +701,16 @@ def _refuse_a_corpus_that_cannot_serve(
         )
 
 
-async def _refuse_an_unknown_subject(host: LaunchHost, subject_id: str, scope_id: str) -> None:
-    """Refuse a launch naming a subject the host does not hold — at admission, before anything is priced.
+async def _refuse_an_unknown_subject(
+    host: LaunchHost, launchable: LaunchableKind, subject_id: str, scope_id: str
+) -> None:
+    """Refuse a launch naming a subject its kind's host does not hold — at admission, before anything is priced.
 
     Raises:
-        NotFoundError: The host's :attr:`LaunchHost.resolve_subject` holds no such subject; its remedy is the host's.
+        NotFoundError: The kind's :attr:`LaunchableKind.resolve_subject` holds no such subject; its remedy is the
+            kind's.
     """
-    unknown = await run_blocking(host.eval_host.blocking_executor, host.resolve_subject, subject_id, scope_id)
+    unknown = await run_blocking(host.eval_host.blocking_executor, launchable.resolve_subject, subject_id, scope_id)
     if unknown is not None:
         raise NotFoundError("subject", subject_id, remedy=unknown.remedy)
 
@@ -1059,6 +1058,12 @@ class LaunchableKind:
 
     Attributes:
         launch: The kind's launcher.
+        resolve_subject: Whether the host holds the subject a launch of this kind names (:data:`SubjectResolver`).
+            Asked at admission — by :func:`quote_launch` and by every launch, once the template's kind is known and
+            before any arm is priced — so an estimate and a launch refuse one unknown subject alike, and a launcher
+            never meets one. The kind's, because what a subject id names is: a live entity for one kind, a prompt
+            key for another, any label for a third. No default: a kind that does not say would have every launch's
+            estimate price a subject its launch then refuses.
         unhonoured_launch_arguments: The engine's launch arguments a run of this kind cannot honour; a
             launch supplying one is refused at the dispatch, naming it. Empty for a kind that honours
             every one.
@@ -1093,6 +1098,7 @@ class LaunchableKind:
     """
 
     launch: KindLauncher
+    resolve_subject: SubjectResolver
     unhonoured_launch_arguments: frozenset[LaunchArgument] = frozenset()
     ignored_template_fields: frozenset[TemplateField] = frozenset()
     plan_arm: Callable[[LaunchRequest], ArmPlan] | None = None
@@ -1547,6 +1553,7 @@ async def _dispatch(
     template_id: str,
     scope_id: str,
     *,
+    subject_id: str,
     models: list[str],
     n_variations: int,
     variation_model: str | None,
@@ -1565,6 +1572,7 @@ async def _dispatch(
         host: The host, whose launch registry names the kind's launcher.
         template_id: The template to run.
         scope_id: The scope the template is read in.
+        subject_id: The subject the launch measures, asked of the template's kind.
         models: The launch's candidate models.
         n_variations: New cases the launch asked to generate.
         variation_model: The model the launch named to write the template's ``llm`` axes' values.
@@ -1583,7 +1591,7 @@ async def _dispatch(
         with its cases.
 
     Raises:
-        NotFoundError: The template is not found.
+        NotFoundError: The template is not found, or its kind's host holds no such subject.
         ValidationFailedError: The template names a kind with no launcher, the launch supplies an
             argument the kind cannot honour, an overlay the kind's model refuses, a template kind spec
             the kind's spec model refuses, a negative ``n_variations``, a variation model the generation
@@ -1629,6 +1637,9 @@ async def _dispatch(
         overlays=overlays,
         apparatus_settings=apparatus_settings,
     )
+    # The subject is the kind's to know, so it is refused here, the moment the kind is — at admission, where the
+    # estimate refuses it too — rather than by a launcher inside the launch's job, after every arm was priced.
+    await _refuse_an_unknown_subject(host, resolved.launchable, subject_id, scope_id)
     if cassette_corpus_id is not None:
         corpus_run = await run_blocking(
             eval_host.blocking_executor, eval_host.storage.load_eval_run, cassette_corpus_id, scope_id
@@ -2125,15 +2136,13 @@ async def _admit_run(
         cassette_corpus_id=cassette_corpus_id,
         cell_timeout_s=cell_timeout_s,
     )
-    # The subject is the host's to know, and is refused here, at admission — where the estimate refuses it too —
-    # rather than by a launcher inside the launch's job, after every arm was priced.
-    await _refuse_an_unknown_subject(host, subject_id, scope_id)
     declared_margins = MappingProxyType(_refused_margins_or(margins))
     dispatch = partial(
         _dispatch,
         host,
         template_id,
         scope_id,
+        subject_id=subject_id,
         models=models,
         n_variations=n_variations,
         variation_model=variation_model,
@@ -2876,11 +2885,11 @@ async def quote_launch(
         cell_timeout_s=cell_timeout_s,
     )
     _refuse_oversized_launch(max(1, len(models)), settings.max_launch_arms, settings.name_of("max_launch_arms"))
-    await _refuse_an_unknown_subject(host, subject_id, scope_id)
     dispatched = await _dispatch(
         host,
         template_id,
         scope_id,
+        subject_id=subject_id,
         models=models,
         n_variations=n_variations,
         variation_model=variation_model,
@@ -4035,7 +4044,6 @@ async def start_universal_battery(
         _refuse_oversized_launch(max(1, len(models)), settings.max_launch_arms, settings.name_of("max_launch_arms"))
     except ValidationFailedError as refused:
         raise ValidationFailedError(_battery_refusal(refused.message), remedy=refused.remedy) from refused
-    await _refuse_an_unknown_subject(host, subject_id, scope_id)
     ticket = host.job_manager.admit(
         len(templates) * max(1, len(models)),
         limit=settings.max_admitted_runs,
@@ -4091,6 +4099,7 @@ async def start_universal_battery(
         # The writer is the host's, built in the role each launch builds it in; here it is asked its prices
         # and never called.
         priced: dict[str, _PricedArms] = {}
+        subject_resolved_for: set[str] = set()
         async with contextlib.AsyncExitStack() as pricing:
             writer: PricedCompletion | None = None
             for universal_template in templates:
@@ -4109,6 +4118,11 @@ async def start_universal_battery(
                         overlays=None,
                         apparatus_settings=apparatus_settings,
                     )
+                    # Asked of each kind the set launches, once, as each launch would ask it — a battery mixing
+                    # kinds whose subjects mean different things refuses the subject one of them does not hold.
+                    if resolved.kind not in subject_resolved_for:
+                        await _refuse_an_unknown_subject(host, resolved.launchable, subject_id, scope_id)
+                        subject_resolved_for.add(resolved.kind)
                     # Through the functions each launch builds and prices its arms with. The group is
                     # provisional: nothing joins it, and its id stamps only a budget nothing is admitted to.
                     dispatched = _Dispatched(
