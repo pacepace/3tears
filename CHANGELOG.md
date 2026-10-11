@@ -56,6 +56,12 @@ packages (bumped in lock-step).
   after its analysis was stored, a withdrawal that failed part-way was logged and swallowed, and the fence that
   stops the job then said the analysis "and its insights were withdrawn". The fence now says the withdrawal failed,
   with the store's error, and names the analysis and the insights left to remove by hand.
+- **A trace whose write failed reads `missing`, not `none` (breaking for a reader of `has_trace`).**
+  `save_eval_result` caught the trace write's `StorageError` and stored the result with `has_trace=False`, so the
+  cell read on every surface as one that produced no trace, and the failed write lived in the log alone.
+  `has_trace` now records that the cell produced a trace; with no document behind it, `result_get` reports
+  `trace_state="missing"` and `get_result_trace` logs the disagreement, as for a trace deleted without its result.
+  The result is still stored, and a re-judge of it still refuses.
 
 ### 3tears-evals: backlog while Discodon adopts .13
 

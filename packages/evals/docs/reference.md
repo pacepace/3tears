@@ -2223,7 +2223,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`'generator'` | `'judge'`
 - **`ResultPart`** · literal · Which part of a stored result `result_get` returns.
   <br>`'record'` | `'judge'` | `'spans'`
-- **`TraceState`** · literal · Whether a result's trace can be read: `stored`; `none` — the cell wrote none (its record says so); or `missing` — the record says one was written and no document backs it, which is a fault, never an ordinary absence (`get_result_trace` logs it).
+- **`TraceState`** · literal · Whether a result's trace can be read: `stored`; `none` — the cell produced none (its record says so); or `missing` — the record says the cell produced one and no document backs it (its write failed, or it was deleted since), which is a fault, never an ordinary absence (`get_result_trace` logs it).
   <br>`'stored'` | `'none'` | `'missing'`
 
 **Constants**

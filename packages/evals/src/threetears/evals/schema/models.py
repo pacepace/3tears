@@ -4580,11 +4580,11 @@ class EvalResult(CoreDocumentModel):
     )
     subject_id: str | None = Field(default=None)
 
-    # Whether a sibling ``EvalTrace`` document was WRITTEN for this result — a fact about
-    # storage, not a loaded-ness flag, so it reads the same on every path. Set by
-    # ``EvalStorage.save_eval_result`` from the outcome of that write rather than from the
-    # intent to make it, so a trace write that failed leaves this False (true, and the
-    # result still persists) instead of promising detail no fetch can find.
+    # Whether the cell produced a trace, so a sibling ``EvalTrace`` document should back this
+    # result — a fact about the record, not a loaded-ness flag, so it reads the same on every
+    # path. Set by ``EvalStorage.save_eval_result``. A trace write that failed leaves this True
+    # with no document behind it, which every reader reports as ``missing`` (a fault), rather
+    # than False, which read as a cell that produced no trace and kept the failure in the log.
     #
     # The readers, and only one of them is display:
     #   * a host's result renderer — a ``full=false`` footer, advertising omitted detail
