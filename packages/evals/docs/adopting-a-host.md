@@ -566,7 +566,9 @@ A stored copy reads `current` when it is the shipped default, `customized` when 
 or you say it is deliberately yours (`customized=True`), and `stale` otherwise: untouched since seeding, or with
 no record of its seeding, and not the default. Pass a template's stored copy as
 `SeedTemplate.from_dict(payload)` and a text prompt's as its string. The digest names content, not the revision
-number. A copy you tune is never reported stale.
+number. A copy you tune is never reported stale. A provenance stamp does the same job as a recorded digest: if your registry marks a slot as
+the system's seed until someone edits it, pass `customized=True` for an edited slot and `seeded_digest=None`, and an
+untouched slot the package has moved past reads `stale`.
 
 ### Launching the analysis reporter
 

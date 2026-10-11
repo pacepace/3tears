@@ -66,10 +66,14 @@ from threetears.evals.schema.doc_types import DOC_TYPE_FACTS, DocLifecycle, DocO
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.store_port import DocumentStore, StoreClock, StoreConflict
 
-__all__ = ["DocTypeRoute", "MisplacedDocument", "RouteChanged", "RoutedDocumentStore"]
+__all__ = ["ROUTING_RECORD_DOC_TYPE", "DocTypeRoute", "MisplacedDocument", "RouteChanged", "RoutedDocumentStore"]
 
-#: The ``doc_type`` and ``id`` of a store's placement record, inside the routing scope its host names.
-_RECORD_DOC_TYPE: Final[str] = "eval_routing_record"
+#: The ``doc_type`` of the placement record the router writes into every store, inside the routing scope its host
+#: names. Public so a host that registers or audits what its tables hold names the router's own record rather than a
+#: copy of the string; it is not an engine document and is in no ``DOC_TYPE_FACTS`` entry.
+ROUTING_RECORD_DOC_TYPE: Final[str] = "eval_routing_record"
+
+#: The ``id`` of that record.
 _RECORD_ID: Final[str] = "placements"
 
 #: The facts a rule may key on, and the values each takes.
@@ -190,7 +194,7 @@ def _record(child: str, placements: Mapping[str, str], unregistered: str, routin
     return {
         "id": _RECORD_ID,
         "scope_id": routing_scope,
-        "doc_type": _RECORD_DOC_TYPE,
+        "doc_type": ROUTING_RECORD_DOC_TYPE,
         "child": child,
         "placements": dict(sorted(placements.items())),
         "unregistered": unregistered,
@@ -530,7 +534,7 @@ class RoutedDocumentStore:
         Returns:
             ``True`` at the first document found; ``False`` when no store holds one in any named scope.
         """
-        known = (set(DOC_TYPE_FACTS) | set(host_doc_types)) - {_RECORD_DOC_TYPE}
+        known = (set(DOC_TYPE_FACTS) | set(host_doc_types)) - {ROUTING_RECORD_DOC_TYPE}
         for scope_id in scope_ids:
             for doc_type in sorted(known):
                 for store in children.values():
