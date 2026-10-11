@@ -339,7 +339,10 @@ async def rejudge_result(
     if result is None:
         raise NotFoundError("result", result_id, remedy=FIND_RESULT)
     if result.judge_error is None:
-        raise ValidationFailedError(f"result '{result_id}' has no judge_error — no judge dimension failed to re-judge")
+        raise ValidationFailedError(
+            f"result '{result_id}' has no judge_error — no judge dimension failed to re-judge",
+            remedy="re-judge only a result whose judging failed; to measure its judge again, use a judge repeat",
+        )
     run = get_run(storage, result.eval_run_id, scope_id)
     failed = failed_judge_dims(result, list(run.effective_judges or {}))
     inputs = reproducible_judge_inputs(storage, result, run, scope_id, request_settings="today", config_dims=failed)
@@ -349,7 +352,8 @@ async def rejudge_result(
     if not failed:
         raise ValidationFailedError(
             f"result '{result_id}' carries a judge_error but holds a score or a can't-tell for every dim its run "
-            "judged, so there is no dimension to re-judge"
+            "judged, so there is no dimension to re-judge",
+            remedy="read its scores as they are; to measure its judge again, use a judge repeat",
         )
     template = inputs.template
 

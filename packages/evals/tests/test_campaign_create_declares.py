@@ -115,7 +115,7 @@ async def test_the_control_is_resolved_from_a_run_as_set_campaign_control_resolv
                     axes=[{"axis_id": "no_such_lever", "values": [{"content": "x", "display": "x"}]}]
                 )
             },
-            "`declarable_axes()` lists every axis this host accepts",
+            "remedy: declare only axes declarable_axes() lists",
             id="an-axis-the-host-does-not-declare",
         ),
         pytest.param({"control_from_run_id": "{run}"}, "declare a design", id="a-control-run-with-no-design"),

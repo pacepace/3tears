@@ -53,6 +53,24 @@ FIND_JUDGE_CONFIG = "the host's catalogue lists this scope's judge configs (run.
 #: How a host finds a rubric dim's id. No action authors or lists them: they are the host's catalogue.
 FIND_RUBRIC_DIM = "the host's catalogue lists this scope's rubric dims (run.list_rubric_dims)"
 
+#: What a template's author does when its world seed states world state a goal check's control cannot be built over.
+SEED_REMEDY = "seed only dimensions this host's world declares as seedable, at values its registry accepts"
+
+#: What a caller does when a run's judging cannot be reproduced from what it recorded — evidence, attribution, a
+#: config set, request settings, a temperature or a template the run no longer matches. The run's own judging cannot
+#: be sent again, so the reachable step is a run whose judging is recorded in full.
+RELAUNCH_TO_REJUDGE = (
+    "this run's judging cannot be reproduced as it was made; launch its template again with run_launch for a judged "
+    "run that records it in full, and re-judge or repeat that one"
+)
+
+#: What a caller does when a document it sent does not validate against its schema: the validator's own words name
+#: the field and the rule, so the remedy is to correct what they name.
+SCHEMA_REMEDY = "correct the field the validation error names, and send it again"
+
+#: What a caller does when a writer model the host does not allow was asked for an analysis.
+WRITER_REMEDY = "name as model a writer this host allows, or ask the host's operator to allow this one"
+
 #: What a caller does when a record changed under its write.
 REREAD_AND_RETRY = "re-read it and make the change again"
 
@@ -69,5 +87,9 @@ __all__ = [
     "FIND_RUN",
     "FIND_TEMPLATE",
     "FIND_TEST_CASE",
+    "RELAUNCH_TO_REJUDGE",
     "REREAD_AND_RETRY",
+    "SCHEMA_REMEDY",
+    "SEED_REMEDY",
+    "WRITER_REMEDY",
 ]

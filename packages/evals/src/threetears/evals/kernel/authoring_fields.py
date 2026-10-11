@@ -51,8 +51,8 @@ def reject_unknown_authoring_fields(
     if unknown := sorted(set(fields) - declared - set(server_fields)):
         accepted = ", ".join(sorted(declared - set(server_fields)))
         raise ValidationFailedError(
-            f"{action}: not a field of {model.__name__}: {', '.join(unknown)}. Accepted: {accepted}. "
-            f"Ignored if sent (server-owned): {', '.join(sorted(server_fields))}"
+            f"{action}: not a field of {model.__name__}: {', '.join(unknown)}",
+            remedy=(f"send only {accepted}; the server-owned {', '.join(sorted(server_fields))} are ignored if sent"),
         )
 
 

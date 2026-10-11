@@ -17,6 +17,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, ValidationError
 
+from threetears.evals.kernel.remedies import SCHEMA_REMEDY
 from threetears.evals.actions import render
 from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller, ConformanceStage
 from threetears.evals.schema import EvalRunStatus
@@ -722,7 +723,9 @@ async def _sweep_launch(host: OpsHost, caller: Caller, params: SweepLaunchParams
     try:
         arguments = SweepArguments.model_validate(params.model_dump())
     except ValidationError as e:
-        raise ValidationFailedError(f"invalid sweep: {e.errors()[0]['msg']} ({e.errors()[0]['loc']})") from e
+        raise ValidationFailedError(
+            f"invalid sweep: {e.errors()[0]['msg']} ({e.errors()[0]['loc']})", remedy=SCHEMA_REMEDY
+        ) from e
     return await sweep_launch(host, arguments, caller.scope_id, created_by=caller.identity)
 
 

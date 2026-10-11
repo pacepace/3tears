@@ -379,7 +379,8 @@ def seed_eval_definitions(
     if refusals:
         raise ValidationFailedError(
             f"the seed corpus for scope {corpus.scope_id!r} carries templates authoring would refuse, so nothing "
-            f"was seeded: {'; '.join(refusals)}"
+            f"was seeded: {'; '.join(refusals)}",
+            remedy="correct each template the refusals name in the seed corpus, and seed again",
         )
 
     storage = host.storage

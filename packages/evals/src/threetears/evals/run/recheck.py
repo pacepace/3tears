@@ -347,7 +347,8 @@ def recheck_goal_states(
         raise NotFoundError("run", run_id, remedy=FIND_RUN)
     if run.status in NON_TERMINAL_RUN_STATUSES:
         raise ValidationFailedError(
-            f"run '{run_id}' is {run.status}: its cells are still being written, so re-check it once it has finished"
+            f"run '{run_id}' is {run.status}: its cells are still being written",
+            remedy=f"re-check it once it has finished (job_poll run:{run_id})",
         )
     variations: dict[str, Mapping[str, Any] | None] = {}
     reports: list[ResultRecheck] = []

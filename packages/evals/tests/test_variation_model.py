@@ -428,7 +428,9 @@ async def test_a_battery_prepares_the_templates_a_model_writes_last_so_an_earlie
     async def refuses_enumerated(request: LaunchRequest) -> EvalRun:
         if request.template.id == "enumerated":
             handed.append(request)
-            raise ValidationFailedError("the enumerated template's subject cannot be captured")
+            raise ValidationFailedError(
+                "the enumerated template's subject cannot be captured", remedy="launch another subject"
+            )
         return await launchable.launch(request)
 
     refusing = replace(host, kinds={TOY_EXTRACTOR_KIND: replace(launchable, launch=refuses_enumerated)})
@@ -578,7 +580,9 @@ async def test_launch_estimate_prices_the_cases_a_launch_would_generate():
     _nothing_was_paid_for(host, storage, clients)
     with pytest.raises(ValidationFailedError) as refused:
         await run_launch(OpsHost(launch=host), arguments, TOYHOST_SCOPE)
-    assert str(refused.value) == arm.refusal, "the estimate reports the launch's own refusal, word for word"
+    assert (refused.value.message, refused.value.remedy) == (arm.refusal, arm.remedy), (
+        "the estimate reports the launch's own refusal, word for word"
+    )
 
 
 # =============================================================================

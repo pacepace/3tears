@@ -61,7 +61,7 @@ def _listing_status_filter(status: str | None) -> EvalRunStatus | None:
     try:
         return validate_status_filter(status)
     except StatusFilterError as e:
-        raise ValidationFailedError(str(e)) from e
+        raise ValidationFailedError(e.fault, remedy=e.remedy) from e
 
 
 def list_runs(

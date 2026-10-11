@@ -110,7 +110,10 @@ def refuse_undeliverable_reporter_template(template: EvalTemplate) -> None:
     if not template.rubric:
         asked.append("no rubric (a reporter's memo is judged, so its template must say on what)")
     if asked:
-        raise ValidationFailedError(f"reporter template {template.name!r} declares " + "; ".join(asked))
+        raise ValidationFailedError(
+            f"reporter template {template.name!r} declares " + "; ".join(asked),
+            remedy="author the template with what each of those names",
+        )
 
 
 def live_reporter_cases(
@@ -145,14 +148,15 @@ def live_reporter_cases(
         )
         raise ValidationFailedError(
             f"template {template.id!r} holds more than one live case for {pairs}. Launching would judge each "
-            "campaign's memo twice and count it twice in every denominator, so nothing was launched or priced; "
-            "freeze the pair once more with supersedes naming every live case of it"
+            "campaign's memo twice and count it twice in every denominator, so nothing was launched or priced",
+            remedy="freeze the pair once more with supersedes naming every live case of it",
         )
     cases = bank.live
     if not cases:
         raise ValidationFailedError(
             f"template {template.id!r} has no live reporter case in scope {scope_id!r}, so there is nothing to run; "
-            "a reporter case is frozen from a campaign's analysis bundle, never generated — freeze one first"
+            "a reporter case is frozen from a campaign's analysis bundle, never generated",
+            remedy="freeze one first with reporter_case_freeze",
         )
     return sorted(cases, key=lambda pair: (pair[0].created_at, pair[0].id))
 

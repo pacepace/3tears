@@ -410,7 +410,11 @@ def _generation_settings(host: OpsHost) -> AnalysisGeneration:
     if host.generation is None:
         raise ValidationFailedError(
             "this host does not generate analyses here: it was mounted without generation settings "
-            "(OpsHost.generation), so a generation has no prompt, output cap or budget to run under"
+            "(OpsHost.generation), so a generation has no prompt, output cap or budget to run under",
+            remedy=(
+                "read the campaign's code-only report with report_read; a generation needs the host's operator to "
+                "mount it with OpsHost.generation"
+            ),
         )
     return host.generation
 

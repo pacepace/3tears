@@ -468,7 +468,8 @@ def courier_launch_host() -> LaunchHost:
         feed = FEEDS.get(request.candidate_model or "")
         if feed is None:
             raise ValidationFailedError(
-                f"the courier plans with {', '.join(COURIER_MODELS)}; {request.candidate_model!r} is none of them"
+                f"the courier plans with {', '.join(COURIER_MODELS)}; {request.candidate_model!r} is none of them",
+                remedy=f"launch one of {', '.join(COURIER_MODELS)}",
             )
         payload = {"search_depth": 3, "traffic_feed": feed}
         return await launch_run(

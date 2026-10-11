@@ -12,6 +12,7 @@ from collections.abc import Hashable, Iterable, Mapping, Sequence
 from fractions import Fraction
 from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple
 
+from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.analysis.agreement import judge_key, tier_for_judges
 from threetears.evals.analysis.contention import (
     contended_latency_sentence,
@@ -113,7 +114,7 @@ if TYPE_CHECKING:
 # variant by money the operator would never spend in production, which is a defect.
 
 
-class FrontierError(ValueError):
+class FrontierError(RefusedInput):
     """A frontier was requested that cannot be answered honestly.
 
     Raised rather than returned, the way :class:`PivotError` is, so a bad request
@@ -152,7 +153,9 @@ def normalize_bar(value: float | str | None) -> float | None:
         try:
             return float(stripped)
         except ValueError as e:
-            raise FrontierError(f"bar {value!r} is not a number in [0, 1]") from e
+            raise FrontierError(
+                f"bar {value!r} is not a number", remedy="pass bar as a number in [0, 1], or omit it for no verdict"
+            ) from e
     return float(value)
 
 
@@ -1428,7 +1431,10 @@ def compute_frontier(
             surfaces refuse identically rather than one clamping it.
     """
     if bar is not None and not (0.0 <= bar <= 1.0):
-        raise FrontierError(f"bar {bar!r} is outside the pass^k range [0, 1] — pass^k is a probability")
+        raise FrontierError(
+            f"bar {bar!r} is outside the pass^k range — pass^k is a probability",
+            remedy="pass bar as a number in [0, 1], or omit it for no verdict",
+        )
 
     # Latency read under concurrency is never ranked: removed before any point is built, so the latency
     # axis, every dominance test and every "fastest" read only latency taken serially (#701).

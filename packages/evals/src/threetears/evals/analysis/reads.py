@@ -278,7 +278,7 @@ def _status_filter(status: str | None) -> str | None:
     try:
         return normalize_status_filter(status)
     except StatusFilterError as e:
-        raise ValidationFailedError(str(e)) from e
+        raise ValidationFailedError(e.fault, remedy=e.remedy) from e
 
 
 def _corpus_and_cohort(list_runs: RunLister, scope_id: str) -> tuple[list[EvalRun], list[EvalRun], set[str]]:
@@ -403,8 +403,9 @@ def comparison_sets(
         # ambiguous question, and answering a narrower question than the one asked is
         # the whole failure class this surface exists to end.
         raise ValidationFailedError(
-            "comparison_sets takes campaign_id OR run_ids, not both — they are two different "
-            "scopes, and answering one would silently drop the other"
+            "comparison_sets was given campaign_id and run_ids — they are two different scopes, and answering one "
+            "would silently drop the other",
+            remedy="pass campaign_id or run_ids, not both",
         )
     # The campaign load raises NotFoundError before the scope-wide reads below, so an
     # unknown campaign costs one lookup rather than a full corpus scan answered empty.
@@ -492,7 +493,10 @@ def pivot(
         else:
             estimate = CostEstimate.model_validate(predicted_cost)
     except ValidationError as e:
-        raise ValidationFailedError(f"predicted_cost is not a cost estimate: {e}") from e
+        raise ValidationFailedError(
+            f"predicted_cost is not a cost estimate: {e}",
+            remedy="pass a launch_estimate answer, or a cost estimate of planned arms",
+        ) from e
     metric = normalize_blank(metric, METRIC_COMPOSITE)
     weighting = normalize_blank(weighting, DEFAULT_WEIGHTING)
     filters = {"subject_id": subject_id} if subject_id else None
@@ -540,7 +544,7 @@ def pivot(
         # so a 500 would misattribute it and an empty table would read as
         # "no data" — the one answer that is definitely wrong.
         _observe_read("pivot", scope_id, started, *observed, cells_out="refused")
-        raise ValidationFailedError(str(e)) from e
+        raise ValidationFailedError(e.fault, remedy=e.remedy) from e
     _observe_read("pivot", scope_id, started, *observed, cells_out=len(table.cells))
     return table
 
@@ -598,7 +602,7 @@ def frontier(
     try:
         parsed_bar = normalize_bar(bar)
     except FrontierError as e:
-        raise ValidationFailedError(str(e)) from e
+        raise ValidationFailedError(e.fault, remedy=e.remedy) from e
     subject = (subject_id or "").strip() or None
     status = _status_filter(status)
 
@@ -628,7 +632,7 @@ def frontier(
             control_variant_key=(control_variant_key or "").strip() or None,
         )
     except FrontierError as e:
-        raise ValidationFailedError(str(e)) from e
+        raise ValidationFailedError(e.fault, remedy=e.remedy) from e
     return result.model_dump(mode="json")
 
 
@@ -699,7 +703,7 @@ def history(
             profile=profile,
         )
     except HistoryError as e:
-        raise ValidationFailedError(str(e)) from e
+        raise ValidationFailedError(e.fault, remedy=e.remedy) from e
     return result
 
 
@@ -871,7 +875,7 @@ def export_results(
         export = export_projection(projection, fmt=fmt)
     except ExportError as e:
         _observe_read("export_results", scope_id, started, *observed)
-        raise ValidationFailedError(str(e)) from e
+        raise ValidationFailedError(e.fault, remedy=e.remedy) from e
     _observe_read("export_results", scope_id, started, *observed)
     return export
 

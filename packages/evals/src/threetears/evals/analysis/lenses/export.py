@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from pydantic import Field
 
+from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.schema.base import EvalBaseModel, VerbatimText
 from threetears.evals.analysis.reporting import ProjectionExclusions, ScoreProjection, ScoreRecord
 
@@ -77,7 +78,7 @@ def _csv_safe(value: str) -> str:
     return value
 
 
-class ExportError(ValueError):
+class ExportError(RefusedInput):
     """An export was requested in a format this surface cannot emit.
 
     Raised rather than defaulted to CSV: a caller who asked for ``parquet`` or
@@ -182,7 +183,7 @@ def export_format(fmt: str) -> ExportFormat:
     for known in EXPORT_FORMATS:
         if fmt == known:
             return known
-    raise ExportError(f"unknown export format {fmt!r} — one of {', '.join(EXPORT_FORMATS)}")
+    raise ExportError(f"unknown export format {fmt!r}", remedy=f"pass one of {', '.join(EXPORT_FORMATS)}")
 
 
 class ScoreExport(EvalBaseModel):

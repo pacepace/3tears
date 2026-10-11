@@ -72,7 +72,7 @@ from threetears.evals.run.rejudge import (
 )
 from threetears.evals.run.runner import build_judge_context, judge_dims, judge_requests
 from threetears.observe import get_logger
-from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_RUN
+from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_RESULT, FIND_RUN, RELAUNCH_TO_REJUDGE
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.eval_host import EvalHost
@@ -231,19 +231,24 @@ def _collect(
     if run is None:
         raise NotFoundError("run", run_id, remedy=FIND_RUN)
     if run.status in NON_TERMINAL_RUN_STATUSES:
-        raise ValidationFailedError(f"run '{run_id}' is {run.status} — its results are still being written")
+        raise ValidationFailedError(
+            f"run '{run_id}' is {run.status} — its results are still being written",
+            remedy=f"wait for it to end (job_poll run:{run_id}), then ask again",
+        )
     # The run's judge is the FIRST judge, so its apparatus must be recorded; a second judge may be sampled at another
     # temperature (that is part of its identity), but not asked with other request settings, which it does not name.
     recorded_judge_pins(run, request_settings="as_recorded")
     if run.judge_request_settings != JUDGE_REQUEST_SETTINGS:
         raise ValidationFailedError(
             f"run '{run_id}' was judged with request settings {run.judge_request_settings!r} and a judge call now "
-            f"sends {JUDGE_REQUEST_SETTINGS!r}; the second judge would differ from the first by more than it names"
+            f"sends {JUDGE_REQUEST_SETTINGS!r}; the second judge would differ from the first by more than it names",
+            remedy=RELAUNCH_TO_REJUDGE,
         )
     if _same_judge(run, judge):
         raise ValidationFailedError(
             f"the second judge names run '{run_id}''s own judge ({judge.model}, its recorded prompts and sampling); "
-            "asking it again measures the judge against itself — that is a judge repeat"
+            "asking it again measures the judge against itself",
+            remedy="name another model or prompt as the second judge, or measure this one against itself with a judge repeat",
         )
     judged_template(storage, run, scope_id)
     configs: dict[str, JudgeConfig] = {}
@@ -255,14 +260,18 @@ def _collect(
             if config.rubric_dim_id != dim:
                 raise ValidationFailedError(
                     f"judge config '{config_id}' asks for {config.rubric_dim_id!r}, not {dim!r}, so it cannot ask the "
-                    "second judge for that dimension"
+                    "second judge for that dimension",
+                    remedy=f"name it under {config.rubric_dim_id!r}, or name a config authored for {dim!r}",
                 )
             configs[dim] = config
     results = storage.query_eval_results_by_run(run.id, scope_id)
     if result_ids is not None:
         known = {result.id for result in results}
         if stray := sorted(set(result_ids) - known):
-            raise ValidationFailedError(f"result(s) {stray} are not results of run '{run_id}' in this scope")
+            raise ValidationFailedError(
+                f"result(s) {stray} are not results of run '{run_id}' in this scope",
+                remedy=f"name results of run '{run_id}' ({FIND_RESULT})",
+            )
         wanted = set(result_ids)
         results = [result for result in results if result.id in wanted]
     eligible: list[_Planned] = []
@@ -286,7 +295,10 @@ def _collect(
         eligible.append(_Planned(result=result, inputs=inputs, dims=dims))
     if not eligible:
         why = "; ".join(f"{skip.result_id}: {skip.reason}" for skip in skipped) or "it has no results"
-        raise ValidationFailedError(f"no result of run '{run_id}' can be asked about — {why}")
+        raise ValidationFailedError(
+            f"no result of run '{run_id}' can be asked about — {why}",
+            remedy="name a judged run whose results recorded their judging",
+        )
     drawn = set(_sample([planned.result.id for planned in eligible], fraction, seed))
     planned = [one for one in eligible if one.result.id in drawn]
     if judge.config_ids is None:
@@ -326,7 +338,10 @@ async def _prepare(
         ValueError: The host supplies no completion clients.
     """
     if not 0.0 < sample_fraction <= 1.0:
-        raise ValidationFailedError(f"sample_fraction {sample_fraction!r} is outside (0, 1]")
+        raise ValidationFailedError(
+            f"sample_fraction {sample_fraction!r} is outside (0, 1]",
+            remedy="pass a sample_fraction above 0 and at most 1",
+        )
     clients = host.completion_clients("a second judge")
     collected = await run_blocking(
         host.blocking_executor, _collect, host.storage, run_id, scope_id, judge, result_ids, sample_fraction, seed

@@ -5,9 +5,13 @@ found"), a cancel of a job that had already ended — and one whose remedy no ca
 on a template's rubric dimension was refused because "this campaign names no template that could be read", from
 an action that took no template. So, over every refusal the engine raises:
 
-- **A not-found and a conflict carry a remedy** (:class:`~threetears.evals.kernel.NotFoundError` and
-  :class:`~threetears.evals.kernel.ConflictError` require one), read here from the source of every construction,
-  so a new refusal written without one fails here rather than in a consumer's agent loop.
+- **Every refusal carries a structured remedy.** Every :class:`~threetears.evals.kernel.EvalServiceError` requires
+  one (:class:`~threetears.evals.kernel.StorageError`, :class:`~threetears.evals.kernel.ProviderRefusedError` and
+  :class:`~threetears.evals.kernel.AdmissionRefusedError` supply their own), and so does every lower layer's
+  :class:`~threetears.evals.kernel.RefusedInput` a surface translates into one. Read here from the source of every
+  construction, so a refusal written without one fails here rather than in a consumer's agent loop.
+- **A translation keeps the lower layer's remedy.** A refusal built from a caught :class:`RefusedInput` or a caught
+  refusal hands its remedy on, never its words alone.
 - **Every action a remedy names is in the engine's catalogue**, read from every remedy the engine writes, so no
   remedy points at a call that does not exist.
 - **A refused call states its remedy**, and where the remedy names an action the tool does not carry, it says
@@ -22,31 +26,69 @@ from pathlib import Path
 
 import pytest
 
+import threetears.evals.kernel.errors as errors
 import threetears.evals.kernel.remedies as remedies
 from threetears.evals.actions import ToolSpec
 from threetears.evals.actions.engine import eval_catalogue
 from threetears.evals.actions.render import refuse_by_engine
-from threetears.evals.kernel import ConflictError, NotFoundError, StorageError, ValidationFailedError
+from threetears.evals.analysis.lenses.export import ExportError
+from threetears.evals.analysis.lenses.frontier import FrontierError
+from threetears.evals.analysis.lenses.history import HistoryError
+from threetears.evals.analysis.lenses.pivot import PivotError
+from threetears.evals.kernel import (
+    AdmissionRefusedError,
+    ConflictError,
+    DesignRefused,
+    EvalServiceError,
+    NotFoundError,
+    ProviderRefusedError,
+    RefusedInput,
+    StorageError,
+    UndeclarableAxisError,
+    ValidationFailedError,
+)
 from threetears.evals.kernel.errors import PROVIDER_REMEDY, STORAGE_REMEDY
+from threetears.evals.kernel.status_filter import StatusFilterError
+from threetears.evals.run import CeilingRaisedError
 
 _SOURCE = Path(__file__).resolve().parents[1] / "src" / "threetears" / "evals"
 
-#: The refusals whose construction must name a remedy.
-_REMEDY_REQUIRED = {"NotFoundError", "ConflictError"}
+#: Every refusal class whose construction names its remedy at the call: the service layer's, and every lower
+#: layer's refusal a surface translates into one.
+_REMEDY_AT_THE_CALL: dict[str, type[Exception]] = {
+    cls.__name__: cls
+    for cls in (
+        EvalServiceError,
+        NotFoundError,
+        ConflictError,
+        ValidationFailedError,
+        RefusedInput,
+        DesignRefused,
+        UndeclarableAxisError,
+        CeilingRaisedError,
+        PivotError,
+        HistoryError,
+        ExportError,
+        FrontierError,
+        StatusFilterError,
+    )
+}
+
+#: The refusal classes that supply their own remedy, so their constructions name none.
+_REMEDY_OF_THEIR_OWN = {StorageError, ProviderRefusedError, AdmissionRefusedError}
 
 #: A word that could name an action: lowercase parts joined by underscores.
 _TOKEN = re.compile(r"\b[a-z]+(?:_[a-z]+)+\b")
 
 
 def _calls() -> list[tuple[str, ast.Call]]:
-    """Every construction of an engine refusal in the package's source, by where it is."""
+    """Every construction of a refusal in the package's source, by where it is."""
     found = []
     for path in sorted(_SOURCE.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                if node.func.id in {*_REMEDY_REQUIRED, "ValidationFailedError"}:
-                    found.append((f"{path.relative_to(_SOURCE)}:{node.lineno}", node))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _REMEDY_AT_THE_CALL:
+                found.append((f"{path.relative_to(_SOURCE)}:{node.lineno}", node))
     return found
 
 
@@ -60,6 +102,8 @@ def _remedy_text(node: ast.expr) -> str:
         return " ".join(
             _remedy_text(part.value if isinstance(part, ast.FormattedValue) else part) for part in node.values
         )
+    if isinstance(node, ast.BinOp):
+        return f"{_remedy_text(node.left)} {_remedy_text(node.right)}"
     return ""
 
 
@@ -68,30 +112,82 @@ def _action_like(token: str, verbs: set[str]) -> bool:
 
 
 class TestEveryRefusalNamesARemedy:
-    def test_every_not_found_and_conflict_the_engine_raises_names_one(self) -> None:
+    def test_every_refusal_the_engine_raises_names_one_at_the_call(self) -> None:
         missing = [
             where
             for where, call in _calls()
-            if call.func.id in _REMEDY_REQUIRED  # type: ignore[attr-defined]
-            and not any(
+            if not any(
                 keyword.arg == "remedy" and not (isinstance(keyword.value, ast.Constant) and not keyword.value.value)
                 for keyword in call.keywords
             )
         ]
         assert missing == [], f"refusals naming no remedy: {missing}"
 
-    def test_a_not_found_and_a_conflict_cannot_be_built_without_one(self) -> None:
+    def test_a_translated_refusal_hands_on_its_remedy_never_its_words_alone(self) -> None:
+        """``ValidationFailedError(str(e))`` over a caught refusal puts the remedy in the message: refused."""
+        flattened = [
+            where
+            for where, call in _calls()
+            if call.args
+            and isinstance(call.args[0], ast.Call)
+            and isinstance(call.args[0].func, ast.Name)
+            and call.args[0].func.id == "str"
+            and any(keyword.arg == "remedy" and isinstance(keyword.value, ast.Attribute) for keyword in call.keywords)
+        ]
+        assert flattened == [], f"translations repeating the remedy inside the message: {flattened}"
+
+    def test_every_public_refusal_class_requires_one_or_supplies_its_own(self) -> None:
+        public = {getattr(errors, name) for name in errors.__all__}
+        refusals = {cls for cls in public if isinstance(cls, type) and issubclass(cls, EvalServiceError)}
+        assert refusals == {*(cls for cls in _REMEDY_AT_THE_CALL.values() if issubclass(cls, EvalServiceError))} | (
+            _REMEDY_OF_THEIR_OWN
+        ), "a refusal class was added: decide whether it names its remedy at the call or supplies its own"
+
+    @pytest.mark.parametrize(
+        "build",
+        [
+            lambda: NotFoundError("template", "t-1"),  # type: ignore[call-arg]
+            lambda: ConflictError("busy"),  # type: ignore[call-arg]
+            lambda: ValidationFailedError("bad"),  # type: ignore[call-arg]
+            lambda: EvalServiceError("no"),  # type: ignore[call-arg]
+            lambda: PivotError("no such axis"),  # type: ignore[call-arg]
+            lambda: DesignRefused("no such bar"),  # type: ignore[call-arg]
+        ],
+    )
+    def test_a_refusal_cannot_be_built_without_one(self, build) -> None:  # type: ignore[no-untyped-def]
         with pytest.raises(TypeError):
-            NotFoundError("template", "t-1")  # type: ignore[call-arg]
-        with pytest.raises(TypeError):
-            ConflictError("busy")  # type: ignore[call-arg]
+            build()
+
+    @pytest.mark.parametrize(
+        "build",
+        [
+            lambda: ValidationFailedError("bad", remedy=" "),
+            lambda: NotFoundError("template", "t-1", remedy=""),
+            lambda: RefusedInput("bad", remedy=""),
+        ],
+    )
+    def test_a_blank_remedy_is_refused(self, build) -> None:  # type: ignore[no-untyped-def]
+        with pytest.raises(ValueError, match="names its remedy"):
+            build()
 
     def test_an_unknown_template_says_how_to_find_one(self) -> None:
         refused = NotFoundError("template", "t-1", remedy=remedies.FIND_TEMPLATE)
         assert str(refused) == "template 't-1' not found; templates_list names this scope's templates"
 
-    def test_a_storage_refusal_carries_its_class_remedy(self) -> None:
+    def test_the_refusals_with_a_remedy_of_their_own_carry_it(self) -> None:
         assert StorageError("down").remedy == STORAGE_REMEDY
+        assert ProviderRefusedError("rate limited").remedy == PROVIDER_REMEDY
+        admission = AdmissionRefusedError(requested=3, admitted=4, limit=5, limit_name="EVAL_MAX")
+        assert admission.remedy.startswith("wait for runs to finish") and "EVAL_MAX" in admission.remedy
+        assert "wait for runs" not in admission.message.lower()
+
+    def test_a_lower_layers_refusal_reads_as_both_halves(self) -> None:
+        refused = PivotError("unknown factor 'x'", remedy="pivot on a lever")
+        assert (refused.fault, refused.remedy, str(refused)) == (
+            "unknown factor 'x'",
+            "pivot on a lever",
+            "unknown factor 'x'; pivot on a lever",
+        )
 
 
 class TestEveryRemedyIsReachable:

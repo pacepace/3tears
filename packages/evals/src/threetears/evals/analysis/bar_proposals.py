@@ -110,11 +110,12 @@ def propose_bars(host: EvalHost, baseline_campaign_id: str, *, scope_id: str) ->
         raise ValidationFailedError(
             f"campaign {baseline_campaign_id!r} measured {len(bundle.cell_measures)} cells, and a baseline is one "
             "configuration under one rig — which of several is the incumbent is the choice a proposal leaves to a "
-            "person, so propose from a campaign of the incumbent alone",
+            "person",
             details={
                 "campaign_id": baseline_campaign_id,
                 "cells": [[cell.variant_key, cell.apparatus_class_id] for cell in bundle.cell_measures],
             },
+            remedy="propose from a campaign of the incumbent alone",
         )
     (cell,) = bundle.cell_measures
     measures = host.profile.measures

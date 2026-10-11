@@ -44,7 +44,7 @@ from threetears.evals.schema.models import EvalTemplate, WorldPlacement
 from threetears.evals.kernel.arguments import normalize_blank
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.sweepables import CORE_SWEEPABLES
-from threetears.evals.kernel.metrics import declaration_of, run_margin_refusal
+from threetears.evals.kernel.metrics import RUN_MARGIN_MEASURES, declaration_of, run_margin_refusal
 from threetears.evals.kernel.identity import derive_context_identity, variant_levers_of_run
 from threetears.evals.schema.models import (
     DEFAULT_JUDGE_TEMPERATURE,
@@ -94,7 +94,7 @@ from threetears.evals.run.runner import (
 )
 from threetears.evals.run.simulator import SIMULATOR_REQUEST_SETTINGS
 from threetears.observe import get_logger
-from threetears.evals.kernel.remedies import FIND_TEMPLATE
+from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_RUN, FIND_TEMPLATE
 
 if TYPE_CHECKING:
     from threetears.evals.schema.subject import SubjectSnapshot
@@ -611,8 +611,8 @@ def _refuse_oversized_launch(n_runs: int, ceiling: int, setting: str) -> None:
     if n_runs > ceiling:
         raise ValidationFailedError(
             f"this launch would start {n_runs} arms (one run each: every model at every setting), more than one "
-            f"launch may start together ({ceiling}, {setting}); launch fewer models or settings at "
-            "once, or raise the ceiling"
+            f"launch may start together ({ceiling}, {setting})",
+            remedy=f"launch fewer models or settings at once, or raise {setting}",
         )
 
 
@@ -637,7 +637,7 @@ def _normalized_cassette_mode(cassette_mode: str | None) -> CassetteMode:
         if mode == known:
             return known
     raise ValidationFailedError(
-        f"cassette_mode={cassette_mode!r} is not a mode: expected 'off', 'capture' or 'replay'."
+        f"cassette_mode={cassette_mode!r} is not a mode", remedy="name one of 'off', 'capture' or 'replay'"
     )
 
 
@@ -658,13 +658,14 @@ def _refuse_a_corpus_the_mode_cannot_use(cassette_mode: CassetteMode, cassette_c
     """
     if cassette_mode == "replay" and cassette_corpus_id is None:
         raise ValidationFailedError(
-            "cassette_mode='replay' names no corpus: pass cassette_corpus_id=<the id of the capture run whose "
-            "recording this launch replays>"
+            "cassette_mode='replay' names no corpus",
+            remedy="pass cassette_corpus_id=<the id of the capture run whose recording this launch replays>",
         )
     if cassette_mode != "replay" and cassette_corpus_id is not None:
         raise ValidationFailedError(
             f"cassette_corpus_id={cassette_corpus_id!r} is a corpus to replay, and this launch's cassette_mode is "
-            f"{cassette_mode!r}; name a corpus only with cassette_mode='replay'"
+            f"{cassette_mode!r}",
+            remedy="name a corpus only with cassette_mode='replay'",
         )
 
 
@@ -687,17 +688,20 @@ def _refuse_a_corpus_that_cannot_serve(
     if corpus_run is None:
         raise ValidationFailedError(
             f"cassette_corpus_id={cassette_corpus_id!r} names no run in scope {scope_id!r}; a replay serves the "
-            "corpus of a capture run in its own scope"
+            "corpus of a capture run in its own scope",
+            remedy=f"name a capture run of this scope ({FIND_RUN})",
         )
     if corpus_run.cassette_mode != "capture":
         raise ValidationFailedError(
             f"run {cassette_corpus_id!r} ran with cassette_mode={corpus_run.cassette_mode!r}, so it recorded no "
-            "corpus to replay; name a capture run"
+            "corpus to replay",
+            remedy="name a run launched with cassette_mode='capture'",
         )
     if corpus_run.template_id != template.id:
         raise ValidationFailedError(
             f"run {cassette_corpus_id!r} captured template {corpus_run.template_id!r}, and this launch runs "
-            f"{template.id!r}; its corpus holds no recording of this template's cases"
+            f"{template.id!r}; its corpus holds no recording of this template's cases",
+            remedy=f"name a capture run of template {template.id!r}",
         )
 
 
@@ -1238,9 +1242,12 @@ def no_launcher_for(template_id: str, candidate_kind: str, launchable: Mapping[s
     """
     return ValidationFailedError(
         f"template {template_id!r} declares candidate_kind={candidate_kind!r}, which this "
-        f"host has no launcher for; launchable kinds: {', '.join(launchable)}. "
-        "A kind the runner can be wired with still needs a launch that builds its collaborators, "
-        "because the runner cannot build a client it has never heard of."
+        "host has no launcher for. A kind the runner can be wired with still needs a launch that builds its "
+        "collaborators, because the runner cannot build a client it has never heard of",
+        remedy=(
+            f"launch a template of a kind this host launches ({', '.join(launchable) or 'it launches none'}), or "
+            f"register a launcher for {candidate_kind!r} in the LaunchHost's kinds"
+        ),
     )
 
 
@@ -1320,21 +1327,23 @@ def _refuse_a_variation_model_the_launch_cannot_use(
         if n_variations > 0 and llm_axes:
             raise ValidationFailedError(
                 f"template {template.id!r} has its {', '.join(repr(name) for name in llm_axes)} axis values written "
-                f"by a model, and this launch asks for {n_variations} generated case(s) without naming one: pass "
-                "variation_model=<the model that writes them>. It is its own role (the host's 'variation' client, "
-                "never the simulator's), and the runs record it beside their generation counts"
+                f"by a model, and this launch asks for {n_variations} generated case(s) without naming one. It is "
+                "its own role (the host's 'variation' client, never the simulator's), and the runs record it beside "
+                "their generation counts",
+                remedy="pass variation_model=<the model that writes them>",
             )
         return
     if n_variations == 0:
         raise ValidationFailedError(
             f"variation_model={variation_model!r} names the model that writes generated cases, and this launch "
-            "generates none (n_variations=0); launch it without variation_model, or ask for n_variations"
+            "generates none (n_variations=0)",
+            remedy="launch it without variation_model, or ask for n_variations",
         )
     if not llm_axes:
         raise ValidationFailedError(
             f"variation_model={variation_model!r} names the model that writes a template's llm-generated axis "
-            f"values, and template {template.id!r} has no llm axis, so no model writes its cases; launch it "
-            "without variation_model"
+            f"values, and template {template.id!r} has no llm axis, so no model writes its cases",
+            remedy="launch it without variation_model",
         )
 
 
@@ -1366,15 +1375,17 @@ def _validated_apparatus_settings(
         honoured = ", ".join(sorted(launchable.apparatus_settings)) or "none"
         raise ValidationFailedError(
             f"template {template.id!r} is a {template.candidate_kind!r} template, and that kind's launcher sets its rig "
-            f"up from no apparatus setting named {', '.join(repr(name) for name in unhonoured)} (it reads: {honoured}); "
-            "a setting nothing reads would be recorded as a rig nobody built"
+            f"up from no apparatus setting named {', '.join(repr(name) for name in unhonoured)}; "
+            "a setting nothing reads would be recorded as a rig nobody built",
+            remedy=f"set only what it reads: {honoured}",
         )
     try:
         # Resolved against the kind's standing rig: what the run records is the rig as it was set up.
         return {**launchable.apparatus_settings, **_APPARATUS_SETTINGS.validate_python(dict(apparatus_settings))}
     except ValidationError as e:
         raise ValidationFailedError(
-            f"invalid apparatus_settings: {e.errors()[0]['msg']} ({e.errors()[0]['loc']})"
+            f"invalid apparatus_settings: {e.errors()[0]['msg']} ({e.errors()[0]['loc']})",
+            remedy="give each apparatus setting a string, a bool or a finite number",
         ) from e
 
 
@@ -1439,7 +1450,10 @@ def _launchable(
     if n_variations < 0:
         # Every surface reaches here; one without a wire-level bound would otherwise read a negative as
         # "generate nothing" and run the stored cases while the caller believed it asked for new ones.
-        raise ValidationFailedError(f"n_variations must be 0 (reuse the stored cases) or more; got {n_variations}")
+        raise ValidationFailedError(
+            f"n_variations must be 0 (reuse the stored cases) or more; got {n_variations}",
+            remedy="pass 0, or the number of new cases to generate",
+        )
     candidate_kind = template.candidate_kind
     launchable = host.kinds.get(candidate_kind)
     if launchable is None:
@@ -1456,8 +1470,8 @@ def _launchable(
     ):
         raise ValidationFailedError(
             f"template {template.id!r} is a {candidate_kind!r} template, and that kind cannot honour "
-            + ", ".join(f"{name}={value!r}" for name, value in unusable.items())
-            + "; launch it without them"
+            + ", ".join(f"{name}={value!r}" for name, value in unusable.items()),
+            remedy="launch it without them",
         )
     if stated := [
         name
@@ -1467,8 +1481,8 @@ def _launchable(
         raise ValidationFailedError(
             f"template {template.id!r} is a {candidate_kind!r} template, and that kind never acts on its "
             + ", ".join(stated)
-            + " — it would run as if the template had not stated them; remove them from the template, or run it "
-            "as a kind that reads them"
+            + " — it would run as if the template had not stated them",
+            remedy="remove them from the template, or run it as a kind that reads them",
         )
     _refuse_a_variation_model_the_launch_cannot_use(
         template, n_variations=n_variations, variation_model=variation_model
@@ -1517,7 +1531,8 @@ def _refuse_repeated_models(models: Sequence[str]) -> None:
     if repeated := sorted({model for model in models if models.count(model) > 1}):
         raise ValidationFailedError(
             f"{', '.join(repr(model) for model in repeated)} named more than once; each model is one arm, so "
-            "a second mention would measure that arm twice — raise k_runs for more repeats"
+            "a second mention would measure that arm twice",
+            remedy="name each model once, and raise k_runs for more repeats",
         )
 
 
@@ -1619,7 +1634,8 @@ async def _dispatch(
         if n_variations > 0:
             raise ValidationFailedError(
                 f"case_set={case_set.label!r} names the cases to run and n_variations={n_variations} asks for new "
-                "ones; a launch runs one or the other"
+                "ones; a launch runs one or the other",
+                remedy="drop case_set to generate new cases, or n_variations to run the set",
             )
         stored, cases = await run_blocking(
             eval_host.blocking_executor,
@@ -1884,7 +1900,13 @@ def _refused_margins_or(margins: Mapping[str, float] | None) -> dict[str, float]
     """
     declared = dict(margins or {})
     if refusals := [refusal for name, margin in declared.items() if (refusal := run_margin_refusal(name, margin))]:
-        raise ValidationFailedError("; ".join(refusals))
+        raise ValidationFailedError(
+            "; ".join(refusals),
+            remedy=(
+                f"declare a run margin only on {', '.join(sorted(RUN_MARGIN_MEASURES))}, as a number between 0 "
+                "and 1 in its units"
+            ),
+        )
     return {name: float(margin) for name, margin in sorted(declared.items())}
 
 
@@ -1921,7 +1943,7 @@ def _refuse_raised_ceilings(
                 configured_name=settings.name_of("max_metered_calls"),
             )
     except CeilingRaisedError as refused:
-        raise ValidationFailedError(str(refused)) from refused
+        raise ValidationFailedError(refused.fault, remedy=refused.remedy) from refused
 
 
 def _refuse_cell_timeout(settings: LaunchSettings, cell_timeout_s: float | None, *, ceiling: float | None) -> None:
@@ -1944,7 +1966,8 @@ def _refuse_cell_timeout(settings: LaunchSettings, cell_timeout_s: float | None,
     if not (math.isfinite(cell_timeout_s) and cell_timeout_s > 0):
         raise ValidationFailedError(
             f"cell_timeout_s must be a finite number of seconds above 0 (got {cell_timeout_s}); a cell with no time "
-            "to run measures nothing"
+            "to run measures nothing",
+            remedy="pass one, or omit it for the kind's own deadline",
         )
     if ceiling is not None and cell_timeout_s > ceiling:
         declared = settings.max_cell_timeout_s is not None
@@ -1956,7 +1979,8 @@ def _refuse_cell_timeout(settings: LaunchSettings, cell_timeout_s: float | None,
                 if declared
                 else f"; the host declares no {settings.name_of('max_cell_timeout_s')}, so a launch may only lower "
                 "the kind's own deadline"
-            )
+            ),
+            remedy=f"pass a cell_timeout_s at or below {ceiling:g}",
         )
 
 
@@ -1997,18 +2021,23 @@ def _refuse_launch_arguments(
     # run before the first result — reject it as a run-parameter error up
     # front, before any snapshot / generation spend.
     if max_cost_usd is not None and max_cost_usd <= 0:
-        raise ValidationFailedError(f"max_cost_usd must be > 0 (got {max_cost_usd})")
+        raise ValidationFailedError(
+            f"max_cost_usd must be > 0 (got {max_cost_usd})", remedy="pass one above 0, or omit it for the host's"
+        )
     # Same reasoning one currency over: a ceiling of zero or less would refuse the
     # candidate's first metered call and measure a candidate that could not search.
     if max_metered_calls is not None and max_metered_calls <= 0:
-        raise ValidationFailedError(f"max_metered_calls must be > 0 (got {max_metered_calls})")
+        raise ValidationFailedError(
+            f"max_metered_calls must be > 0 (got {max_metered_calls})",
+            remedy="pass one above 0, or omit it for the host's",
+        )
     # A host that declares no metered tools has nothing for a ceiling to bound, and recording one would
     # claim a bound the run never had.
     if max_metered_calls is not None and settings.max_metered_calls is None:
         raise ValidationFailedError(
             f"max_metered_calls={max_metered_calls} names a metered-call ceiling, and host "
-            f"{host.eval_host.profile.host_id!r} declares no metered tools, so it would bound nothing; launch "
-            "without max_metered_calls"
+            f"{host.eval_host.profile.host_id!r} declares no metered tools, so it would bound nothing",
+            remedy="launch without max_metered_calls",
         )
     _refuse_raised_ceilings(settings, max_cost_usd=max_cost_usd, max_metered_calls=max_metered_calls)
     _refuse_cell_timeout(settings, cell_timeout_s, ceiling=settings.max_cell_timeout_s)
@@ -2019,7 +2048,10 @@ def _refuse_launch_arguments(
     try:
         TypeAdapter(Annotated[int, *k_field.metadata]).validate_python(k_runs)
     except ValidationError as e:
-        raise ValidationFailedError(f"invalid k_runs: {e.errors()[0]['msg']} (got {k_runs})") from e
+        raise ValidationFailedError(
+            f"invalid k_runs: {e.errors()[0]['msg']} (got {k_runs})",
+            remedy="pass k_runs as a whole number of repeats within its bounds, or omit it for the default",
+        ) from e
     mode = _normalized_cassette_mode(cassette_mode)
     _refuse_a_corpus_the_mode_cannot_use(mode, cassette_corpus_id)
     return mode
@@ -2474,6 +2506,7 @@ class ArmVerdict:
         cap_origin: ``chosen`` when the launch named the cap, ``inherited`` from the host's; ``None`` uncapped.
         outcome: What the rule made of it (:data:`ArmOutcome`).
         refusal: The refusal the launch makes of it, word for word; ``None`` unless ``outcome`` is ``refused``.
+        remedy: What brings the arm under its cap, or names one; set exactly when ``refusal`` is.
     """
 
     described: str
@@ -2484,6 +2517,7 @@ class ArmVerdict:
     cap_origin: Literal["chosen", "inherited"] | None
     outcome: ArmOutcome
     refusal: str | None
+    remedy: str | None = None
 
 
 def _cap_of(request: LaunchRequest) -> tuple[float | None, Literal["chosen", "inherited"] | None]:
@@ -2530,7 +2564,7 @@ def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
     plan = request.arm_plan
     model = plan.candidate_model if plan is not None else request.candidate_model
 
-    def verdict(outcome: ArmOutcome, refusal: str | None = None) -> ArmVerdict:
+    def verdict(outcome: ArmOutcome, refusal: str | None = None, remedy: str | None = None) -> ArmVerdict:
         return ArmVerdict(
             described=what,
             candidate_model=model,
@@ -2540,6 +2574,7 @@ def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
             cap_origin=origin,
             outcome=outcome,
             refusal=refusal,
+            remedy=remedy,
         )
 
     if cap is None:
@@ -2562,10 +2597,11 @@ def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
         return verdict(
             "refused",
             f"{what} cannot be priced: {price.basis}. Its cost is unknown, not $0, and its ${cap:.2f} cap is "
-            f"inherited from {request.settings.name_of('max_cost_usd')}, which nobody chose for it. Launch it naming "
-            f"max_cost_usd (at most ${request.settings.max_cost_usd:.2f}; a launch may only lower the host's "
-            "ceiling) — the most you will risk on a run nobody can price; what it costs then prices the next "
-            f"launch.{unplanned} {refused}",
+            f"inherited from {request.settings.name_of('max_cost_usd')}, which nobody chose for it.{unplanned} "
+            f"{refused}",
+            f"launch it naming max_cost_usd (at most ${request.settings.max_cost_usd:.2f}; a launch may only lower "
+            "the host's ceiling) — the most you will risk on a run nobody can price; what it costs then prices the "
+            "next launch",
         )
     if price.predicted_usd > cap:
         ceiling = request.settings.max_cost_usd
@@ -2578,7 +2614,8 @@ def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
         return verdict(
             "refused",
             f"{what} is predicted to cost ${price.predicted_usd:.2f} ({price.basis}), above its ${cap:.2f} cap. "
-            f"Fewer cases, a smaller k_runs or a cheaper model brings it under; {raise_it}. {refused}",
+            f"{refused}",
+            f"fewer cases, a smaller k_runs or a cheaper model brings it under; {raise_it}",
         )
     return verdict("admitted")
 
@@ -2644,7 +2681,8 @@ async def price_arms(
         price = await _arm_price(host, request)
         judged = _judged(request, price)
         if judged.refusal is not None:
-            raise ValidationFailedError(judged.refusal)
+            assert judged.remedy is not None  # set with every refusal
+            raise ValidationFailedError(judged.refusal, remedy=judged.remedy)
         priced.append(replace(request, arm_price=price))
     return priced
 
@@ -2742,7 +2780,10 @@ async def quote_launch(
         ValueError: The kind planned an arm contradicting what it named.
     """
     if case_count is not None and case_count < 1:
-        raise ValidationFailedError(f"case_count prices a grid of at least one case; got {case_count}")
+        raise ValidationFailedError(
+            f"case_count prices a grid of at least one case; got {case_count}",
+            remedy="pass one of at least 1, or omit it to price each arm at its plan",
+        )
     settings = host.settings()
     mode = _refuse_launch_arguments(
         host,
@@ -3228,7 +3269,7 @@ def require_candidate_model(request: LaunchRequest, default: str | None) -> str:
     """
     model = request.candidate_model or default
     if model is None:
-        raise ValidationFailedError(f"kind {request.kind!r} has no default candidate model; name one")
+        raise ValidationFailedError(f"kind {request.kind!r} has no default candidate model", remedy="name one")
     return model
 
 
@@ -3568,7 +3609,9 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 ),
             )
         except ValidationError as e:
-            raise ValidationFailedError(f"invalid run parameters: {e}") from e
+            raise ValidationFailedError(
+                f"invalid run parameters: {e}", remedy="correct the run parameter the error names"
+            ) from e
 
         # What this run did with every dimension the host's world declares, derived from the
         # assembled run for the same reason the context key is: the run is the thing the record
@@ -3756,8 +3799,8 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
     return run
 
 
-def _battery_refusal(refused: Exception) -> str:
-    """Render a per-template refusal as a battery refusal.
+def _battery_refusal(refused: str) -> str:
+    """Render a per-template refusal's message as a battery refusal's.
 
     The per-run message cannot know that nothing was launched, and an operator reading a
     battery failure has to. Punctuated rather than concatenated: the refusals it wraps end
@@ -3765,12 +3808,12 @@ def _battery_refusal(refused: Exception) -> str:
     Nothing was launched.`` is what naive concatenation produced.
 
     Args:
-        refused: The refusal raised for one template.
+        refused: The message of the refusal raised for one template — its remedy is carried apart.
 
     Returns:
-        Its message with the battery's own suffix.
+        The message with the battery's own suffix.
     """
-    message = str(refused).rstrip()
+    message = refused.rstrip()
     separator = "" if message.endswith((".", "!", "?")) else "."
     return f"{message}{separator} Nothing was launched."
 
@@ -3897,18 +3940,21 @@ async def start_universal_battery(
     # refuses part-way through the set.
     settings = host.settings()
     if max_cost_usd is not None and max_cost_usd <= 0:
-        raise ValidationFailedError(_battery_refusal(ValueError(f"max_cost_usd must be > 0 (got {max_cost_usd})")))
+        raise ValidationFailedError(
+            _battery_refusal(f"max_cost_usd must be > 0 (got {max_cost_usd})"),
+            remedy="pass one above 0, or omit it for the host's",
+        )
     try:
         _refuse_raised_ceilings(settings, max_cost_usd=max_cost_usd, max_metered_calls=None)
     except ValidationFailedError as refused:
-        raise ValidationFailedError(_battery_refusal(refused)) from refused
+        raise ValidationFailedError(_battery_refusal(refused.message), remedy=refused.remedy) from refused
     # Every template is one launch of one run per model, so a launch's own argument refusals — a model named
     # twice, more arms than one launch may start — read the battery's arguments alone, and are made here once.
     try:
         _refuse_repeated_models(models)
         _refuse_oversized_launch(max(1, len(models)), settings.max_launch_arms, settings.name_of("max_launch_arms"))
     except ValidationFailedError as refused:
-        raise ValidationFailedError(_battery_refusal(refused)) from refused
+        raise ValidationFailedError(_battery_refusal(refused.message), remedy=refused.remedy) from refused
     await _refuse_an_unknown_subject(host, subject_id, scope_id)
     ticket = host.job_manager.admit(
         len(templates) * max(1, len(models)),
@@ -3934,28 +3980,26 @@ async def start_universal_battery(
         try:
             battery_cassette_mode = _normalized_cassette_mode(cassette_mode)
         except ValidationFailedError as refused:
-            raise ValidationFailedError(_battery_refusal(refused)) from refused
+            raise ValidationFailedError(_battery_refusal(refused.message), remedy=refused.remedy) from refused
         # A replay serves ONE capture run's corpus, and a capture run recorded one template; a battery
         # launches many templates, so no single corpus could serve it.
         if battery_cassette_mode == "replay":
             raise ValidationFailedError(
                 _battery_refusal(
-                    ValueError(
-                        "a replay serves the corpus of one capture run, which recorded one template, and a battery "
-                        "launches every universal template; replay each template with start_run and its own corpus"
-                    )
-                )
+                    "a replay serves the corpus of one capture run, which recorded one template, and a battery "
+                    "launches every universal template"
+                ),
+                remedy="replay each template with start_run and its own corpus",
             )
         # A variation model reaches only the templates with an llm axis, so per template it is honoured
         # or absent — and one no template could use is refused here, since no template's launch would.
         if variation_model is not None and templates and not any(_llm_axes(t) for t in templates):
             raise ValidationFailedError(
                 _battery_refusal(
-                    ValueError(
-                        f"variation_model={variation_model!r} names the model that writes llm-generated axis values, "
-                        "and none of the battery's templates has an llm axis; launch it without variation_model"
-                    )
-                )
+                    f"variation_model={variation_model!r} names the model that writes llm-generated axis values, "
+                    "and none of the battery's templates has an llm axis"
+                ),
+                remedy="launch it without variation_model",
             )
         # The refusals the dispatch itself makes, per template — a kind with no launcher, a battery
         # argument the kind cannot honour, a stored spec its model now refuses — through the same
@@ -4047,7 +4091,7 @@ async def start_universal_battery(
                         list(plan_variation_calls(universal_template, n_variations, existing).values()),
                     )
                 except ValidationFailedError as refused:
-                    raise ValidationFailedError(_battery_refusal(refused)) from refused
+                    raise ValidationFailedError(_battery_refusal(refused.message), remedy=refused.remedy) from refused
         # Every refusal an arm of any template would make, made here over the whole set before anything
         # launches — through the host's check, which calls what its launchers call. The subject is read
         # once for the check and not shared with the launches, which each capture their own.
@@ -4057,7 +4101,7 @@ async def start_universal_battery(
                 try:
                     await check(universal_template, battery_cassette_mode)
                 except ValidationFailedError as refused:
-                    raise ValidationFailedError(_battery_refusal(refused)) from refused
+                    raise ValidationFailedError(_battery_refusal(refused.message), remedy=refused.remedy) from refused
 
         # Every template's arms PREPARED before any template's runs start — each launcher called, each case
         # set frozen, each tail's checks made against the plans priced above — and only then is every group
@@ -4339,17 +4383,21 @@ def _resolve_selected_judge_configs(
     for dim_id, config_id in selection.items():
         if dim_id not in scored:
             raise ValidationFailedError(
-                f"judge_config_ids names dim {dim_id!r}, which this template does not score. Scored dims: {', '.join(dim_ids)}."
+                f"judge_config_ids names dim {dim_id!r}, which this template does not score",
+                remedy=f"name a config only for a dim the template scores: {', '.join(dim_ids) or 'it scores none'}",
             )
         config = storage.load_judge_config(config_id, scope_id)
         if config is None:
             raise ValidationFailedError(
-                f"judge_config_ids names judge config {config_id!r} for dim {dim_id!r}, which does not exist in scope {scope_id!r}."
+                f"judge_config_ids names judge config {config_id!r} for dim {dim_id!r}, which does not exist in "
+                f"scope {scope_id!r}",
+                remedy=f"name a config the scope holds ({FIND_JUDGE_CONFIG})",
             )
         if config.rubric_dim_id != dim_id:
             raise ValidationFailedError(
                 f"judge config {config_id!r} was authored for dim {config.rubric_dim_id!r}, so it cannot "
-                f"be named under {dim_id!r} — that dim would be scored by another dim's prompt."
+                f"be named under {dim_id!r} — that dim would be scored by another dim's prompt",
+                remedy=f"name it under {config.rubric_dim_id!r}, or name a config authored for {dim_id!r}",
             )
         resolved[dim_id] = config
     return resolved

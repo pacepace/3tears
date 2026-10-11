@@ -86,7 +86,7 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.observe import get_logger
-from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_RUN
+from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_RESULT, FIND_RUN
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.cassettes import CellCassettes
@@ -317,7 +317,10 @@ def freeze_judge_cases(
     """
     _judge_template(template)
     if not run_ids:
-        raise ValidationFailedError("name at least one judged run whose results to freeze")
+        raise ValidationFailedError(
+            "a freeze was named no judged run",
+            remedy=f"name at least one judged run whose results to freeze ({FIND_RUN})",
+        )
     cases: list[FrozenJudgeCase] = []
     skipped: list[JudgeCaseSkip] = []
     seen: set[str] = set()
@@ -369,10 +372,16 @@ def freeze_judge_cases(
                     )
                 )
     if wanted is not None and (stray := sorted(wanted - found)):
-        raise ValidationFailedError(f"result(s) {stray} are not results of the named runs in this scope")
+        raise ValidationFailedError(
+            f"result(s) {stray} are not results of the named runs in this scope",
+            remedy=f"name results of those runs ({FIND_RESULT})",
+        )
     if not cases:
         why = "; ".join(f"{skip.result_id}: {skip.reason}" for skip in skipped) or "the runs have no results"
-        raise ValidationFailedError(f"no judge case could be frozen — {why}")
+        raise ValidationFailedError(
+            f"no judge case could be frozen — {why}",
+            remedy="freeze from judged runs whose results recorded their judging, or launch the template again for one",
+        )
     minted: CaseSetRef | None = None
     if case_set is not None:
         ids = [case.test_case_id for case in cases]
@@ -783,7 +792,10 @@ def judge_kind(
             temperature=overlays.temperature,
         )
     except ValueError as exc:
-        raise ValidationFailedError(str(exc)) from exc
+        raise ValidationFailedError(
+            str(exc),
+            remedy="name each judge config under the criterion it was authored for, pinning no model but the arm's",
+        ) from exc
 
 
 def _template_cases(storage: EvalStorage, template: EvalTemplate, scope_id: str) -> list[EvalTestCase]:
@@ -825,7 +837,8 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
         cases = request.cases_or(_template_cases(host.storage, request.template, request.scope_id))
         if not cases:
             raise ValidationFailedError(
-                f"template {request.template.id!r} holds no judge case to run; freeze some with judge_cases_freeze"
+                f"template {request.template.id!r} holds no judge case to run",
+                remedy="freeze some with judge_cases_freeze",
             )
         return ArmPlan(
             case_count=len(cases),

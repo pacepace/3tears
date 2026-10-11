@@ -71,7 +71,7 @@ def test_confirmation_refuses_anything_that_is_not_the_id(confirm):
         curation.require_delete_confirmation("run", "doomed", confirm)
     # The refusal names the id to echo, so the caller can act on it without
     # going and reading the source of the check.
-    assert "confirm='doomed'" in str(excinfo.value.message)
+    assert "confirm='doomed'" in excinfo.value.remedy
 
 
 def test_confirmation_accepts_the_echoed_id_ignoring_surrounding_whitespace():
@@ -82,7 +82,7 @@ def test_confirmation_defaults_to_offering_the_archive_alternative():
     """The default is what every archivable eval object should keep saying."""
     with pytest.raises(ValidationFailedError) as excinfo:
         curation.require_delete_confirmation("run", "doomed", None)
-    assert "archive it instead to exclude it from cohorts without destroying it" in str(excinfo.value.message)
+    assert "archive it instead to exclude it from cohorts without destroying it" in excinfo.value.remedy
 
 
 def test_confirmation_names_the_cascade_when_one_is_supplied():
@@ -126,7 +126,7 @@ def test_a_refused_result_delete_is_pointed_at_the_run_archive_not_a_result_one(
     with pytest.raises(ValidationFailedError) as excinfo:
         curation.delete_result(storage, result, SCOPE, confirm=None)
 
-    message = str(excinfo.value.message)
+    message = str(excinfo.value)
     assert "archive the whole run instead" in message
     assert "there is no per-result archive" in message
 
@@ -144,7 +144,7 @@ def test_a_refused_insight_delete_is_not_offered_an_archive_that_does_not_exist(
     with pytest.raises(ValidationFailedError) as excinfo:
         curation.delete_insight(storage, "ins-1", SCOPE, confirm=None)
 
-    message = str(excinfo.value.message)
+    message = str(excinfo.value)
     assert "an insight has no archive" in message
     assert "archive it instead to exclude it from cohorts" not in message
 
@@ -153,8 +153,8 @@ def test_confirmation_takes_a_replacement_alternative_for_an_unarchivable_object
     """Pointing a refused caller at a surface the object does not have is worse than silence."""
     with pytest.raises(ValidationFailedError) as excinfo:
         curation.require_delete_confirmation("case", "doomed", None, alternative="edit it in place")
-    message = str(excinfo.value.message)
-    assert "or edit it in place." in message
+    message = str(excinfo.value)
+    assert excinfo.value.remedy.endswith("or edit it in place")
     assert "archive it instead" not in message
 
 

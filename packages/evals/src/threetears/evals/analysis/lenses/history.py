@@ -16,6 +16,7 @@ from threetears.evals.analysis.contention import (
     withhold_contended_latency,
 )
 from threetears.evals.analysis.stats import ChangeLabel
+from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import MetricDescriptor
@@ -98,7 +99,7 @@ if set(_METRIC_GLOSS) != PROJECTED_METRICS | HISTORY_METRICS:  # pragma: no cove
     )
 
 
-class HistoryError(ValueError):
+class HistoryError(RefusedInput):
     """A history was requested for a measure it cannot honestly series.
 
     Raised rather than returned as an empty series, for the reason
@@ -107,7 +108,7 @@ class HistoryError(ValueError):
     """
 
 
-def _unknown_history_metric(metric: str) -> str:
+def _unknown_history_metric(metric: str) -> HistoryError:
     """Say why a measure cannot be seriesed, and where the caller should go instead.
 
     The single owner of that sentence — it is raised from two places, and two copies
@@ -125,31 +126,39 @@ def _unknown_history_metric(metric: str) -> str:
         metric: The measure the caller asked to series.
 
     Returns:
-        The refusal text, ready to raise as a :class:`HistoryError`.
+        The refusal, ready to raise.
     """
     expected = f"expected one of {_metric_vocabulary(HISTORY_METRICS)}"
     resolved = resolve_measure_name(metric)
     if resolved in SCOPED_METRICS and resolved != METRIC_SCORE:
         scope_field, scope_noun, _row_noun = SCOPED_METRICS[resolved]
-        return (
+        return HistoryError(
             f"history cannot series {resolved!r} — each row is ONE {scope_noun}, so there is no single per-run value "
-            f"to plot. Use the pivot surface with '{scope_field}' on an axis, which aggregates it as "
-            f"{_AGGREGATE_OF_OBSERVATION.get(resolved, resolved)!r}. {expected}."
+            "to plot",
+            remedy=(
+                f"use the pivot surface with '{scope_field}' on an axis, which aggregates it as "
+                f"{_AGGREGATE_OF_OBSERVATION.get(resolved, resolved)!r}; for history, {expected}"
+            ),
         )
     # Resolved for the BRANCH, while `metric` stays the caller's spelling for the
     # message: `mean_score` and `score` are the same refusal and must not take
     # different arms just because the operator read the catalog.
     if resolve_measure_name(metric) == METRIC_SCORE:
-        return (
+        return HistoryError(
             f"history cannot series {METRIC_SCORE!r} — it is the raw judge score for one rubric "
             "DIMENSION, and a series carries one value per contestant per run, so there is no single "
-            "per-run score to plot. For a per-dimension read use the pivot surface with 'rubric_dim' "
-            "on an axis, which aggregates it as 'mean_score'; to track judged quality over time, "
-            f"series 'composite', or {METRIC_TRANSCRIPT!r} / {METRIC_OUTCOME!r} to stay on the raw 1-5 "
-            "scale — each of those is one value per result, which is what this surface can plot. "
-            f"For history, {expected}."
+            "per-run score to plot",
+            remedy=(
+                "for a per-dimension read use the pivot surface with 'rubric_dim' on an axis, which aggregates it "
+                f"as 'mean_score'; to track judged quality over time, series 'composite', or {METRIC_TRANSCRIPT!r} / "
+                f"{METRIC_OUTCOME!r} to stay on the raw 1-5 scale — each of those is one value per result, which "
+                f"is what this surface can plot. For history, {expected}"
+            ),
         )
-    return f"unknown history metric {metric!r} — {expected}, or a numeric measure the host declares (a scorer's name)"
+    return HistoryError(
+        f"unknown history metric {metric!r}",
+        remedy=f"{expected}, or a numeric measure the host declares (a scorer's name)",
+    )
 
 
 def _attribution_withheld(descriptor: MetricDescriptor) -> bool:
@@ -528,7 +537,7 @@ def _history_value_of(metric: str) -> Callable[[EvalResult], float | None]:
             return None if counted_axis is None else float(counted_axis)
 
         return dual_axis_value
-    raise HistoryError(_unknown_history_metric(metric))
+    raise _unknown_history_metric(metric)
 
 
 def _host_measure_value_of(descriptor: MetricDescriptor) -> Callable[[EvalResult], float | None]:
@@ -559,7 +568,8 @@ def _host_measure_value_of(descriptor: MetricDescriptor) -> Callable[[EvalResult
             f"history cannot series {name!r} — the host declares it "
             + ("with no direction" if descriptor.data_type == "numeric" else f"as {descriptor.data_type or 'untyped'}")
             + ", and a series flags a step as a decline only on a numeric measure whose better direction is "
-            "declared (higher_is_better)"
+            "declared",
+            remedy="series a numeric measure the host declares with higher_is_better, or declare this one's direction",
         )
     population = summary_population(descriptor, "scored")
 
@@ -737,7 +747,7 @@ def compute_history(
     metric = resolve_measure_name(metric)
     declared = None if metric in HISTORY_METRICS else profile.measures.get(metric)
     if metric not in HISTORY_METRICS and declared is None:
-        raise HistoryError(_unknown_history_metric(requested))
+        raise _unknown_history_metric(requested)
 
     if declared is not None:
         value_of = _host_measure_value_of(declared)

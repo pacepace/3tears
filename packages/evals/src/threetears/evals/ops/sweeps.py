@@ -155,7 +155,8 @@ async def _refuse_what_any_arm_would_refuse(host: OpsHost, arguments: SweepArgum
     if arguments.max_concurrent_arms > settings.max_admitted_runs:
         raise ValidationFailedError(
             f"max_concurrent_arms={arguments.max_concurrent_arms} is above the runs this host admits at once "
-            f"({settings.name_of('max_admitted_runs')}={settings.max_admitted_runs})"
+            f"({settings.name_of('max_admitted_runs')}={settings.max_admitted_runs})",
+            remedy=f"pass max_concurrent_arms at or below {settings.max_admitted_runs}",
         )
     for arm in arguments.arms:
         try:
@@ -175,9 +176,15 @@ async def _refuse_what_any_arm_would_refuse(host: OpsHost, arguments: SweepArgum
                 case_set=arguments.case_set,
             )
         except ValidationFailedError as refused:
-            raise ValidationFailedError(f"arm {_arm_label(arm)!r} would be refused: {refused}") from refused
-        if refusals := [verdict.refusal for verdict in quote.arms if verdict.refusal is not None]:
-            raise ValidationFailedError(f"arm {_arm_label(arm)!r} would be refused: {'; '.join(refusals)}")
+            raise ValidationFailedError(
+                f"arm {_arm_label(arm)!r} would be refused: {refused.message}", remedy=refused.remedy
+            ) from refused
+        if refused_arms := [verdict for verdict in quote.arms if verdict.refusal is not None]:
+            raise ValidationFailedError(
+                f"arm {_arm_label(arm)!r} would be refused: "
+                + "; ".join(str(verdict.refusal) for verdict in refused_arms),
+                remedy="; ".join(dict.fromkeys(str(verdict.remedy) for verdict in refused_arms)),
+            )
 
 
 async def sweep_launch(host: OpsHost, arguments: SweepArguments, scope_id: str, *, created_by: str) -> JobsStarted:

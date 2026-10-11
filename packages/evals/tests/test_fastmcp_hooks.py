@@ -66,10 +66,10 @@ class _Noted(EvalBaseModel):
 
 #: The public errors a handler raises, by name, as the note names them.
 _ERRORS: dict[str, Callable[[], EvalServiceError]] = {
-    "EvalServiceError": lambda: EvalServiceError("no", status_code=418),
+    "EvalServiceError": lambda: EvalServiceError("no", status_code=418, remedy="ask the teapot"),
     "NotFoundError": lambda: NotFoundError("widget", "w-1", remedy="list them first"),
     "ConflictError": lambda: ConflictError("busy", remedy="try again"),
-    "ValidationFailedError": lambda: ValidationFailedError("bad"),
+    "ValidationFailedError": lambda: ValidationFailedError("bad", remedy="send a good one"),
     "StorageError": lambda: StorageError("down"),
     "ProviderRefusedError": lambda: ProviderRefusedError("rate limited"),
     "AdmissionRefusedError": lambda: AdmissionRefusedError(requested=2, admitted=4, limit=5, limit_name="EVAL_MAX"),

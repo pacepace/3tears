@@ -146,12 +146,16 @@ def scope_pivot(
                 predicted_cost if isinstance(predicted_cost, Mapping) else predicted_cost.model_dump(mode="json")
             )
         except ValidationError as e:
-            raise ValidationFailedError(f"predicted_cost is neither a launch estimate nor a cost estimate: {e}") from e
+            raise ValidationFailedError(
+                f"predicted_cost is neither a launch estimate nor a cost estimate: {e}",
+                remedy="pass a launch_estimate answer, or a cost estimate of planned arms",
+            ) from e
         plan = estimate.planned_costs(launched_run_ids)
     elif launched_run_ids:
         raise ValidationFailedError(
             "launched_run_ids names the runs an estimate's launch made, and no predicted_cost was given to set "
-            "them against"
+            "them against",
+            remedy="pass the launch's estimate as predicted_cost beside them, or drop launched_run_ids",
         )
     return pivot(
         host.storage,
@@ -475,6 +479,7 @@ class ArmEstimate(EvalBaseModel):
         basis: How the prediction was made, or why there is none.
         outcome: What the launch's one pricing rule makes of it (:data:`~threetears.evals.run.ArmOutcome`).
         refusal: The refusal the launch would make of it, word for word; ``None`` unless refused.
+        remedy: What brings it under its cap, or names one; set exactly when ``refusal`` is.
     """
 
     described: str
@@ -489,6 +494,7 @@ class ArmEstimate(EvalBaseModel):
     basis: str
     outcome: ArmOutcome
     refusal: str | None
+    remedy: str | None = None
 
 
 class DetectableEffect(EvalBaseModel):
@@ -886,6 +892,7 @@ def _arm_estimate(arm: ArmVerdict, k_runs: int, n_variations: int) -> ArmEstimat
         basis=price.basis,
         outcome=arm.outcome,
         refusal=arm.refusal,
+        remedy=arm.remedy,
     )
 
 
@@ -1195,6 +1202,7 @@ def estimate_text(estimate: LaunchEstimate) -> str:
         lines.append(f"- {arm.described}: {figure} — {arm.outcome}; {arm.basis}")
         if arm.refusal is not None:
             lines.append(f"  refused: {arm.refusal}")
+            lines.append(f"  remedy: {arm.remedy}")
     if estimate.total_predicted_usd is None:
         lines.append("total: none — an arm has no prediction, so no total is the launch's")
     else:

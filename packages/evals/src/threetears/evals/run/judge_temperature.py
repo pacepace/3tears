@@ -206,15 +206,19 @@ def _select(
     if not planned:
         raise ValidationFailedError(
             f"no result of run '{run_id}' has a borderline dim to compare temperatures on — every stored score is "
-            "at an end of its scale and no repeat or second judge disagreed with one. Select every dim "
-            "(selection='all'), or run a judge repeat first so disagreement can mark a case borderline"
+            "at an end of its scale and no repeat or second judge disagreed with one",
+            remedy=(
+                "select every dim (selection='all'), or run a judge repeat first so disagreement can mark a case "
+                "borderline"
+            ),
         )
     recorded = [one.result.judge_score(dim) for one in planned for dim in one.dims]
     if all(score is not None and score.judge_temperature == MODEL_DEFAULT_TEMPERATURE for score in recorded):
         raise ValidationFailedError(
             f"every score the comparison would re-judge on run '{run_id}' records that its judge was sent no "
             "temperature — a model that refuses one, so a call at the pinned temperature would be sent none too and "
-            "both sides would be the same sampling. There is nothing to compare on this judge"
+            "both sides would be the same sampling",
+            remedy="compare temperatures on a run judged by a model that takes a temperature",
         )
     return planned, skipped
 
@@ -253,7 +257,8 @@ async def _prepare(
     """
     if repeats < MIN_TEMPERATURE_REPEATS:
         raise ValidationFailedError(
-            f"repeats {repeats} is under {MIN_TEMPERATURE_REPEATS}: one answer per setting has no variance to compare"
+            f"repeats {repeats} is under {MIN_TEMPERATURE_REPEATS}: one answer per setting has no variance to compare",
+            remedy=f"pass repeats of at least {MIN_TEMPERATURE_REPEATS}",
         )
     clients = host.completion_clients("a judge temperature comparison")
 

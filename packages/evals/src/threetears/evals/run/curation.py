@@ -235,8 +235,8 @@ def require_delete_confirmation(
     if (confirm or "").strip() != object_id:
         target = f"{kind} '{object_id}'" + (f" {cascade}" if cascade else "")
         raise ValidationFailedError(
-            f"deleting {target} is unrecoverable and there is no import path to restore it. "
-            f"Pass confirm='{object_id}' to proceed, or {alternative}."
+            f"deleting {target} is unrecoverable and there is no import path to restore it",
+            remedy=f"pass confirm='{object_id}' to proceed, or {alternative}",
         )
 
 
@@ -505,8 +505,8 @@ def delete_run(storage: CurationStore, run: EvalRun, scope_id: str, *, confirm: 
     if run.status in NON_TERMINAL_RUN_STATUSES:
         raise ValidationFailedError(
             f"run '{run_id}' is {run.status} — a live job persists each result as it finishes, so "
-            f"deleting now orphans every result written after this call. Cancel it first "
-            f"(cancel_run), confirm it reached a terminal status, then delete."
+            "deleting now orphans every result written after this call",
+            remedy=f"cancel it first (job_cancel run:{run_id}), confirm it reached a terminal status, then delete",
         )
 
     results = storage.query_eval_results_by_run(run_id, scope_id)

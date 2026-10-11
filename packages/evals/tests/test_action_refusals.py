@@ -90,10 +90,14 @@ async def _call(tool: MountedTool, arguments: dict[str, Any]) -> ActionOutcome:
 
 #: One instance of every public error class, as a handler raises it, with the refusal it makes.
 _PUBLIC: dict[type[EvalServiceError], tuple[Callable[[], EvalServiceError], str, int]] = {
-    EvalServiceError: (lambda: EvalServiceError("no", status_code=418), "refused", 418),
+    EvalServiceError: (lambda: EvalServiceError("no", status_code=418, remedy="ask the teapot"), "refused", 418),
     NotFoundError: (lambda: NotFoundError("run", "r-1", remedy="list them first"), "not_found", 404),
     ConflictError: (lambda: ConflictError("busy", remedy="try again"), "conflict", 409),
-    ValidationFailedError: (lambda: ValidationFailedError("bad", details={"field": "x"}), "validation_failed", 422),
+    ValidationFailedError: (
+        lambda: ValidationFailedError("bad", details={"field": "x"}, remedy="send a good one"),
+        "validation_failed",
+        422,
+    ),
     StorageError: (lambda: StorageError("down"), "storage_failed", 503),
     ProviderRefusedError: (lambda: ProviderRefusedError("rate limited"), "provider_refused", 502),
     AdmissionRefusedError: (
@@ -105,8 +109,9 @@ _PUBLIC: dict[type[EvalServiceError], tuple[Callable[[], EvalServiceError], str,
 
 
 #: The public exceptions of :mod:`~threetears.evals.kernel.errors` that no call is refused with: ``JobFenced`` stops a
-#: job's own work when its record was written lost, and is caught at the job's boundary — no caller is told it.
-_NOT_REFUSALS = {"JobFenced"}
+#: job's own work when its record was written lost, and is caught at the job's boundary — no caller is told it; and
+#: ``RefusedInput`` is a lower layer's refusal, which the surface calling it translates into one that is.
+_NOT_REFUSALS = {"JobFenced", "RefusedInput"}
 
 
 def test_the_kinds_are_one_per_public_error_class_and_no_more() -> None:
@@ -143,7 +148,8 @@ async def test_a_host_subclass_keeps_the_status_it_was_raised_with() -> None:
         """A host's own refusal with a status the engine never uses."""
 
     outcome = await _call(
-        _tool(lambda: _Gone("gone for good", status_code=410)), {"action": "note_refuse", "note": "x"}
+        _tool(lambda: _Gone("gone for good", status_code=410, remedy="ask for another")),
+        {"action": "note_refuse", "note": "x"},
     )
     assert outcome.refusal == Refusal(kind="refused", status=410)
 
@@ -168,7 +174,9 @@ async def test_a_defect_is_not_a_refusal_and_propagates() -> None:
 async def test_a_call_the_catalogue_turns_away_is_validation_failed(arguments: dict[str, Any]) -> None:
     outcome = await _call(_tool(None), arguments)
     assert outcome.is_error and outcome.refusal == Refusal(kind="validation_failed", status=422)
-    assert outcome.refusal == Refusal.of(ValidationFailedError("any")), "the class's status, not a second copy"
+    assert outcome.refusal == Refusal.of(ValidationFailedError("any", remedy="any other")), (
+        "the class's status, not a second copy"
+    )
 
 
 async def test_a_result_and_help_carry_no_refusal() -> None:

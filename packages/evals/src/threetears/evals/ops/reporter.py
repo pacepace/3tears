@@ -127,7 +127,8 @@ def _reporter_template(template: EvalTemplate) -> EvalTemplate:
     if template.candidate_kind != REPORTER_KIND:
         raise ValidationFailedError(
             f"template {template.id!r} is of kind {template.candidate_kind!r}, not {REPORTER_KIND!r}, so it holds no "
-            "reporter cases"
+            "reporter cases",
+            remedy=f"name a template of the {REPORTER_KIND!r} kind ({FIND_TEMPLATE})",
         )
     return template
 
@@ -317,18 +318,19 @@ def _resolved_prompt(prompts: ReporterPrompts, preset: str | None) -> str:
     if text is None:
         if preset is None:
             raise ValidationFailedError(
-                f"the prompt registry holds no system default {ANALYSIS_GEN_PROMPT!r} prompt; seed it from "
-                "SEED_PROMPTS before launching a reporter"
+                f"the prompt registry holds no system default {ANALYSIS_GEN_PROMPT!r} prompt",
+                remedy="seed it from SEED_PROMPTS before launching a reporter",
             )
         raise ValidationFailedError(
-            f"prompt_preset {preset!r}: no {ANALYSIS_GEN_PROMPT!r} preset of that name — author it first. Refused "
-            "rather than resolved to the default, because the run would bill the incumbent prompt under the "
-            "candidate's name"
+            f"prompt_preset {preset!r}: no {ANALYSIS_GEN_PROMPT!r} preset of that name. Refused rather than resolved "
+            "to the default, because the run would bill the incumbent prompt under the candidate's name",
+            remedy="author the preset first, or launch without prompt_preset for the system default",
         )
     if not text.strip():
         raise ValidationFailedError(
             f"the {ANALYSIS_GEN_PROMPT!r} prompt {preset or 'system default'!r} resolves to no text, so every memo "
-            "would be written to no instruction"
+            "would be written to no instruction",
+            remedy="give the prompt its text in the prompt registry, or name another preset",
         )
     return text
 
@@ -347,7 +349,8 @@ def _candidate_model(request: LaunchRequest, resolve_model: ReporterModelResolve
     if named is not None and resolved != named:
         raise ValidationFailedError(
             f"reporter model {named!r} is an alias of {resolved!r}; the run records the name the launch gave, and an "
-            f"alias's target moves — launch {resolved!r} by name"
+            "alias's target moves",
+            remedy=f"launch {resolved!r} by name",
         )
     return resolved
 
@@ -370,7 +373,8 @@ def _cases(request: LaunchRequest, storage: EvalStorage) -> list[tuple[EvalTestC
         read.append((stored, case))
     if unusable:
         raise ValidationFailedError(
-            f"case set {request.case_set.ref.label!r} names case(s) no reporter can run: {', '.join(unusable)}"
+            f"case set {request.case_set.ref.label!r} names case(s) no reporter can run: {', '.join(unusable)}",
+            remedy="mint a version of the set without them (case_set_mint), or launch without case_set",
         )
     return read
 
@@ -380,7 +384,8 @@ def _refuse_a_replay_with_nothing_recorded(cases: Sequence[tuple[EvalTestCase, R
     if unrecorded := [stored.id for stored, case in cases if case.recorded_memo is None]:
         raise ValidationFailedError(
             f"model {AS_RECORDED_MODEL!r} replays each case's recorded memo, and case(s) {', '.join(unrecorded)} pin "
-            "none; launch it over cases that each froze the memo their campaign got, or launch a generator model"
+            "none",
+            remedy="launch it over cases that each froze the memo their campaign got, or launch a generator model",
         )
 
 

@@ -110,6 +110,7 @@ from threetears.evals.kernel.covariates import (
 from threetears.evals.kernel.declaration import (
     BarName,
     CampaignDesign,
+    DesignRefused,
     UndeclarableAxisError,
     UnreadableBarName,
     refuse_an_undeclarable_design,
@@ -130,6 +131,7 @@ from threetears.evals.kernel.errors import (
     JobFenced,
     NotFoundError,
     ProviderRefusedError,
+    RefusedInput,
     StorageError,
     ValidationFailedError,
 )
@@ -541,6 +543,7 @@ __all__ = [
     "TemperatureSkip",
     "RecordedCompletion",
     "ProviderRefusedError",
+    "RefusedInput",
     "Question",
     "QuestionAnswer",
     "Reading",
@@ -569,6 +572,7 @@ __all__ = [
     "ToolLike",
     "ToolWrap",
     "TransferabilityClass",
+    "DesignRefused",
     "UndeclarableAxisError",
     "UnknownCandidateKind",
     "UnreadableBarName",

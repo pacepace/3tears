@@ -36,7 +36,7 @@ from threetears.evals.kernel.campaign_writes import serialized_campaign_write
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.observe import get_logger
-from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_TEMPLATE
+from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_RUN, FIND_TEMPLATE, SCHEMA_REMEDY
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
@@ -229,20 +229,21 @@ def create_campaign(
     try:
         campaign = EvalCampaign(**clean)
     except ValidationError as e:
-        raise ValidationFailedError(f"invalid campaign definition: {e}") from e
+        raise ValidationFailedError(f"invalid campaign definition: {e}", remedy=SCHEMA_REMEDY) from e
     _refuse_runs_outside_scope(storage, campaign.run_ids, scope_id)
     campaign = campaign.model_copy(update={"template_id": _campaign_template(storage, campaign)})
     if control_from_run_id is not None:
         if campaign.declared_design is None:
             raise ValidationFailedError(
                 "control_from_run_id names the run whose variant is the control, and the control lives on the "
-                "declaration — declare a design (`declared_design`) with it. A control is the reference point of a "
-                "comparison, so there is nothing for it to reference yet"
+                "declaration. A control is the reference point of a comparison, so there is nothing for it to "
+                "reference yet",
+                remedy="declare a design (`declared_design`) with it",
             )
         if campaign.declared_design.control is not None:
             raise ValidationFailedError(
-                "the design types a `control` and control_from_run_id names one too — give one: the run (control_from_run_id), "
-                "whose variant key is resolved for you, or the key itself"
+                "the design types a `control` and control_from_run_id names one too",
+                remedy="give one: the run (control_from_run_id), whose variant key is resolved for you, or the key itself",
             )
         control = _resolve_control_variant(storage, campaign, control_from_run_id, profile=profile)
         campaign = campaign.model_copy(
@@ -322,7 +323,8 @@ def _refuse_runs_outside_scope(storage: CampaignStore, run_ids: Sequence[str], s
     if outside := sorted({run_id for run_id in run_ids if run_id not in resolved}):
         raise ValidationFailedError(
             f"run(s) {', '.join(repr(r) for r in outside)} do not exist in scope {scope_id!r} — a campaign holds "
-            "only runs in its own scope, because every read of its members is a read within that scope"
+            "only runs in its own scope, because every read of its members is a read within that scope",
+            remedy=f"name runs of this scope ({FIND_RUN})",
         )
 
 
@@ -382,31 +384,22 @@ def _gate_declaration(
             bar is looser than the registered incumbent, a bar contradicts the better-direction
             of what it names.
     """
-    from threetears.evals.kernel.declaration import (
-        NO_TEMPLATE_REMEDY,
-        UndeclarableAxisError,
-        refuse_an_undeclarable_design,
-    )
+    from threetears.evals.kernel.declaration import NO_TEMPLATE_REMEDY, DesignRefused, refuse_an_undeclarable_design
 
     template = storage.load_template(campaign.template_id, campaign.scope_id) if campaign.template_id else None
     try:
         refuse_an_undeclarable_design(design, behavior=campaign.behavior, template=template, profile=profile)
-    except UndeclarableAxisError as e:
-        raise ValidationFailedError(
-            f"invalid campaign design: {str(e).rstrip('.')}. `declarable_axes()` lists every axis this host accepts — its levers and "
-            "the open families whose members it recognises — read from the registry this gate decides with"
-        ) from e
-    except ValueError as e:
+    except DesignRefused as e:
         # A refusal for want of a template says which templates the campaign's runs ran, when they ran several: the
         # reason none was inferred, and the ids one of which to name.
-        ran = _templates_run(storage, campaign) if template is None and NO_TEMPLATE_REMEDY in str(e) else []
+        ran = _templates_run(storage, campaign) if template is None and NO_TEMPLATE_REMEDY in e.fault else []
         ran_note = (
             f". This campaign's runs ran {len(ran)} templates ({', '.join(ran)}), so none of them is its template "
             "until one is named"
             if len(ran) > 1
             else ""
         )
-        raise ValidationFailedError(f"invalid campaign design: {e}{ran_note}") from e
+        raise ValidationFailedError(f"invalid campaign design: {e.fault}{ran_note}", remedy=e.remedy) from e
 
 
 def declarable_axes(profile: HostProfile) -> DeclarableAxes:
@@ -487,16 +480,20 @@ def update_campaign(
     from pydantic import ValidationError
 
     from threetears.evals.kernel.campaign import EvalCampaign
-    from threetears.evals.kernel.declaration import CampaignDesign, reconcile_question_edits
+    from threetears.evals.kernel.declaration import CampaignDesign, DesignRefused, reconcile_question_edits
 
     if not updates:
-        raise ValidationFailedError("update_campaign requires at least one field to change")
+        raise ValidationFailedError(
+            "update_campaign was given no field to change",
+            remedy=f"name at least one of {', '.join(_CAMPAIGN_UPDATABLE_FIELDS)}",
+        )
     if unknown := sorted(set(updates) - set(_CAMPAIGN_UPDATABLE_FIELDS)):
         raise ValidationFailedError(
-            f"campaign fields not updatable here: {', '.join(unknown)}. "
-            f"Updatable: {', '.join(_CAMPAIGN_UPDATABLE_FIELDS)}. "
-            f"Membership and the control designation have their own write paths "
-            f"(add_runs_to_campaign / remove_runs_from_campaign / set_campaign_control)"
+            f"campaign fields not updatable here: {', '.join(unknown)}",
+            remedy=(
+                f"update only {', '.join(_CAMPAIGN_UPDATABLE_FIELDS)}; membership and the control designation have "
+                "their own write paths (add_runs_to_campaign / remove_runs_from_campaign / set_campaign_control)"
+            ),
         )
 
     campaign = storage.load_campaign(campaign_id, scope_id)
@@ -513,7 +510,7 @@ def update_campaign(
             # is judged against, and un-declaring one retroactively turns every coverage
             # shortfall it named back into data nobody meant to collect.
             raise ValidationFailedError(
-                "a declaration cannot be withdrawn — amend it instead, or retire the questions it asks"
+                "a declaration cannot be withdrawn", remedy="amend it instead, or retire the questions it asks"
             )
         if not isinstance(supplied, CampaignDesign | dict):
             # `**supplied` on a string, list or number raises TypeError, which the guard
@@ -522,25 +519,28 @@ def update_campaign(
             # PATCH and as an unhandled failure over MCP. `create_campaign` builds the same
             # field through `EvalCampaign(**clean)` and answers 400, and the two authoring
             # doors must not disagree about the same value.
-            raise ValidationFailedError(f"invalid campaign design: expected an object, got {type(supplied).__name__}")
+            raise ValidationFailedError(
+                f"invalid campaign design: expected an object, got {type(supplied).__name__}",
+                remedy="send the design as an object of its fields",
+            )
         try:
             incoming = supplied if isinstance(supplied, CampaignDesign) else CampaignDesign(**supplied)
         except ValidationError as e:
-            raise ValidationFailedError(f"invalid campaign design: {e}") from e
+            raise ValidationFailedError(f"invalid campaign design: {e}", remedy=SCHEMA_REMEDY) from e
         stored_questions = campaign.declared_design.questions if campaign.declared_design else []
         try:
             incoming = incoming.model_copy(
                 update={"questions": reconcile_question_edits(stored_questions, incoming.questions)}
             )
-        except ValueError as e:
-            raise ValidationFailedError(f"invalid campaign design: {e}") from e
+        except DesignRefused as e:
+            raise ValidationFailedError(f"invalid campaign design: {e.fault}", remedy=e.remedy) from e
         _gate_declaration(storage, campaign, incoming, profile=profile)
         merged["declared_design"] = _stamp_declaration(incoming, updated_by).model_dump(mode="json")
 
     try:
         updated = EvalCampaign(**merged)
     except ValidationError as e:
-        raise ValidationFailedError(f"invalid campaign update: {e}") from e
+        raise ValidationFailedError(f"invalid campaign update: {e}", remedy=SCHEMA_REMEDY) from e
 
     storage.save_campaign(updated)
     log.info("eval.update_campaign campaign=%s fields=%s by=%s", campaign_id, ",".join(sorted(updates)), updated_by)
@@ -742,7 +742,8 @@ def remove_runs_from_campaign(
     missing = [run_id for run_id in run_ids if run_id not in attached]
     if missing:
         raise ValidationFailedError(
-            f"campaign '{campaign_id}' does not hold run(s) {', '.join(repr(m) for m in missing)} — nothing was detached"
+            f"campaign '{campaign_id}' does not hold run(s) {', '.join(repr(m) for m in missing)} — nothing was detached",
+            remedy=f"detach only runs the campaign holds: {', '.join(campaign.run_ids) or 'it holds none'}",
         )
     removing = set(run_ids)
     # No control guard here, and its absence is the point. This path used to refuse when the
@@ -832,9 +833,9 @@ def set_campaign_control(
         if run_id is None:
             return campaign
         raise ValidationFailedError(
-            f"campaign '{campaign_id}' declares no design, and the control lives on the declaration — "
-            f"declare one first (update_campaign with `declared_design`). A control is the "
-            f"reference point of a comparison, so there is nothing for it to reference yet"
+            f"campaign '{campaign_id}' declares no design, and the control lives on the declaration. A control is "
+            "the reference point of a comparison, so there is nothing for it to reference yet",
+            remedy="declare one first (update_campaign with `declared_design`)",
         )
     control = None if run_id is None else _resolve_control_variant(storage, campaign, run_id, profile=profile)
 
@@ -879,13 +880,15 @@ def _resolve_control_variant(
 
     if run_id not in campaign.run_ids:
         raise ValidationFailedError(
-            f"run '{run_id}' is not attached to campaign '{campaign.id}' — attach it before designating its variant the control"
+            f"run '{run_id}' is not attached to campaign '{campaign.id}'",
+            remedy="attach it (add_runs_to_campaign) before designating its variant the control",
         )
     scope_id = campaign.scope_id
     run = storage.load_eval_run(run_id, scope_id)
     if run is None:
         raise ValidationFailedError(
-            f"run '{run_id}' does not exist in scope '{scope_id}' — nothing to resolve a variant from"
+            f"run '{run_id}' does not exist in scope '{scope_id}' — nothing to resolve a variant from",
+            remedy=f"name a run of this scope ({FIND_RUN})",
         )
     key = variant_key_of_run(storage.query_eval_results_by_run(run_id, scope_id))
     if key is None:

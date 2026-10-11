@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, NamedTuple
 
+from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER
@@ -79,7 +80,7 @@ CELL_WITHHELD = "withheld"
 _POOLABLE_ACROSS_SUBJECTS = "mechanical"
 
 
-class PivotError(ValueError):
+class PivotError(RefusedInput):
     """A pivot was requested that cannot be answered honestly.
 
     Raised rather than returned as an empty or caveated table: every case that
@@ -293,15 +294,17 @@ def _reads_a_lever(factor: str, *, records: Sequence[ScoreRecord], profile: Host
     if factor == "factors":
         # The map is the container for open coordinates, never one itself —
         # stringifying it would collapse every run into one dict-shaped bucket.
-        raise PivotError("'factors' is the open-coordinate map, not a coordinate — pivot on one of the levers it holds")
+        raise PivotError(
+            "'factors' is the open-coordinate map, not a coordinate", remedy="pivot on one of the levers it holds"
+        )
     if factor == "host_measures":
         # Same defect, and one step further from being an axis: these are the host's own
         # MEASUREMENTS of a cell, so grouping by one would partition the corpus by its own
         # answer. Refused here rather than left to `_axis_value`, which would stringify the
         # whole map and bucket every result under one dict.
         raise PivotError(
-            "'host_measures' is the host's own grade of a cell, not a coordinate — read it from the export, "
-            "where each measure is its own column"
+            "'host_measures' is the host's own grade of a cell, not a coordinate",
+            remedy="read it from the export, where each measure is its own column",
         )
     if factor == CANDIDATE_MODEL_LEVER:
         return False
@@ -314,15 +317,16 @@ def _reads_a_lever(factor: str, *, records: Sequence[ScoreRecord], profile: Host
     if declared and lever:
         raise PivotError(
             f"factor {factor!r} is both a declared score-record coordinate and a lever this host registers — "
-            "the pivot will not pick one by rule of thumb; rename the lever"
+            "the pivot will not pick one by rule of thumb",
+            remedy="rename the lever in the host's registry",
         )
     if lever:
         return True
     if declared:
         return False
     raise PivotError(
-        f"unknown factor {factor!r} — score records carry no such coordinate and this host registers no such "
-        f"lever. {registry.axis_remedy}; or a declared coordinate (model, template_id, test_case_id, ...)"
+        f"unknown factor {factor!r} — score records carry no such coordinate and this host registers no such lever",
+        remedy=f"{registry.axis_remedy}; or a declared coordinate (model, template_id, test_case_id, ...)",
     )
 
 
@@ -672,7 +676,7 @@ def compute_pivot(
             identically instead of one of them answering an empty grid.
     """
     if weighting not in WEIGHTINGS:
-        raise PivotError(f"unknown weighting {weighting!r} — expected one of {', '.join(WEIGHTINGS)}")
+        raise PivotError(f"unknown weighting {weighting!r}", remedy=f"pass one of {', '.join(WEIGHTINGS)}")
     # A cell holds `mean_composite`, so `mean_composite` is a name an operator can
     # legitimately arrive with — it is what `list_metrics` publishes for the
     # quantity. Resolved to the row name before the closed-set check, never after:
@@ -686,7 +690,8 @@ def compute_pivot(
     requested = metric
     metric = resolve_measure_name(metric)
     if metric not in PROJECTED_METRICS:
-        refusal = f"unknown metric {requested!r} — expected one of {_metric_vocabulary(PROJECTED_METRICS)}"
+        refusal = f"unknown metric {requested!r}"
+        remedy = f"pass one of {_metric_vocabulary(PROJECTED_METRICS)}"
         # Naming what is available is not enough when the caller asked for a
         # DIMENSION: they wanted a real capability, reached for it under the
         # wrong noun, and a bare list of measure names reads as "per-dimension
@@ -703,9 +708,10 @@ def compute_pivot(
         # already reached for the capability under the wrong noun.
         for scoped_metric, (scope_field, scope_noun, _row_noun) in SCOPED_METRICS.items():
             if any(getattr(record, scope_field) == metric for record in records):
-                refusal += f"; {metric!r} is a {scope_noun}, not a measure — aggregate {scoped_metric!r} with '{scope_field}' on an axis"
+                refusal += f"; {metric!r} is a {scope_noun}, not a measure"
+                remedy = f"aggregate {scoped_metric!r} with '{scope_field}' on an axis"
                 break
-        raise PivotError(refusal)
+        raise PivotError(refusal, remedy=remedy)
     # Decided before any row is grouped: grouping runs only once there are rows, so over an empty
     # selection a typo'd axis would otherwise answer an empty grid instead of a refusal.
     reads_lever = {
@@ -738,9 +744,9 @@ def compute_pivot(
         subjects = {r.subject_id for r in selected}
         if len(subjects) > 1:
             raise PivotError(
-                f"{measure.name!r} is {measure.transferability_class} and spans {len(subjects)} subjects — "
-                "put subject_id on an axis or filter to one; pooling it across subjects compares "
-                "measurements derived from different rubrics"
+                f"{measure.name!r} is {measure.transferability_class} and spans {len(subjects)} subjects; pooling it "
+                "across subjects compares measurements derived from different rubrics",
+                remedy="put subject_id on an axis, or filter to one subject",
             )
 
     grouped: dict[tuple[str, str], list[ScoreRecord]] = {}
@@ -758,8 +764,8 @@ def compute_pivot(
     for (row, column), members in grouped.items():
         if len(scales := {r.rubric_scale for r in members if r.rubric_scale is not None}) > 1:
             raise PivotError(
-                f"cell ({row}, {column}) pools rubric dimensions judged on different scales ({', '.join(sorted(scales))})"
-                " — put 'rubric_dim' on an axis so each cell holds one dimension"
+                f"cell ({row}, {column}) pools rubric dimensions judged on different scales ({', '.join(sorted(scales))})",
+                remedy="put 'rubric_dim' on an axis so each cell holds one dimension",
             )
 
     rows = sorted({row for row, _ in grouped})
@@ -982,21 +988,21 @@ def _planned_cost_per_observation(
         return []
     if metric != METRIC_COST_USD:
         raise PivotError(
-            f"a predicted cost sits beside an observed cost, and this pivot aggregates {metric!r} — "
-            f"pivot {METRIC_COST_USD!r} to set the estimate beside what was spent"
+            f"a predicted cost sits beside an observed cost, and this pivot aggregates {metric!r}",
+            remedy=f"pivot {METRIC_COST_USD!r} to set the estimate beside what was spent",
         )
     if CANDIDATE_MODEL_LEVER not in axes:
         raise PivotError(
-            f"the estimate predicts cost per planned model, and neither axis is {CANDIDATE_MODEL_LEVER!r} — "
-            "put the model on an axis so each prediction has the cells it planned"
+            f"the estimate predicts cost per planned model, and neither axis is {CANDIDATE_MODEL_LEVER!r}",
+            remedy="put the model on an axis so each prediction has the cells it planned",
         )
     planned = estimate.planned_costs() if isinstance(estimate, CostEstimate) else list(estimate)
     keys = [(cell.model, cell.template_id) for cell in planned]
     if repeated := sorted({key for key in keys if keys.count(key) > 1}, key=str):
         named = ", ".join(model if template is None else f"{model} on {template}" for model, template in repeated)
         raise PivotError(
-            f"the estimate plans {named} more than once, so no cell can say which prediction it carries — hand "
-            "the pivot one plan per model and template"
+            f"the estimate plans {named} more than once, so no cell can say which prediction it carries",
+            remedy="hand the pivot one plan per model and template",
         )
     plans: list[_Plan] = []
     for cell in planned:

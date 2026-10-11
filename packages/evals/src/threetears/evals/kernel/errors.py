@@ -28,6 +28,7 @@ __all__ = [
     "JobFenced",
     "NotFoundError",
     "ProviderRefusedError",
+    "RefusedInput",
     "StorageError",
     "ValidationFailedError",
 ]
@@ -38,28 +39,36 @@ class EvalServiceError(Exception):
     """Structured error from the eval service layer.
 
     **A refusal names what its caller can do next** (:attr:`remedy`), apart from what went wrong
-    (:attr:`message`), so a surface can state both and a reader is never left to retry the same call. The two
-    refusals whose cause is a record the caller named and the engine does not hold, or a record that changed
-    under it — :class:`NotFoundError` and :class:`ConflictError` — require one; :class:`StorageError` and
-    :class:`ProviderRefusedError` carry their class's own; the others may, and their message says it where it
-    exists. ``tests/test_refusal_remedies.py`` holds every refusal the engine raises to that, and every action a
-    remedy names to the engine's catalogue.
+    (:attr:`message`), so a surface states both and a reader is never left to retry the same call. Every refusal
+    carries one: each class's constructor requires it, except :class:`StorageError` and
+    :class:`ProviderRefusedError`, whose remedy is their class's own, and :class:`AdmissionRefusedError`, which
+    derives it from the numbers it was refused on. ``tests/test_refusal_remedies.py`` holds every refusal the engine
+    raises to that, and every action a remedy names to the engine's catalogue.
     """
 
     message: str
     status_code: int = 400
     details: dict[str, Any] = field(default_factory=dict)
-    remedy: str | None = None
+    remedy: str = field(kw_only=True)
+
+    def __post_init__(self) -> None:
+        """Refuse a blank remedy — a refusal that names nothing to do is the defect this field exists against.
+
+        Raises:
+            ValueError: ``remedy`` is blank.
+        """
+        if not self.remedy.strip():
+            raise ValueError(f"a refusal names its remedy; this one ({self.message!r}) names a blank one")
 
     def __str__(self) -> str:
-        """The message, then the remedy where there is one, whatever arguments the subclass was constructed with.
+        """The message, then the remedy, whatever arguments the subclass was constructed with.
 
         ``Exception.__str__`` renders the constructor's positional arguments, which a dataclass
         exception does not route through: an error built from keywords (an admission refusal) read
         as an empty string in every log line and traceback, and one built from two positionals (a
         not-found) as their tuple.
         """
-        return self.message if self.remedy is None else f"{self.message}; {self.remedy}"
+        return f"{self.message}; {self.remedy}"
 
 
 class NotFoundError(EvalServiceError):
@@ -101,8 +110,14 @@ class ConflictError(EvalServiceError):
 class ValidationFailedError(EvalServiceError):
     """Validation failed (status 422)."""
 
-    def __init__(self, message: str, details: dict[str, Any] | None = None, *, remedy: str | None = None):
-        """Build a 422 with the given message, an optional details payload, and what to do instead where it is not said in the message."""
+    def __init__(self, message: str, details: dict[str, Any] | None = None, *, remedy: str):
+        """Build a 422.
+
+        Args:
+            message: What was wrong with the request.
+            details: An optional structured payload.
+            remedy: What the caller sends instead, or does first — required, as on every refusal.
+        """
         super().__init__(message=message, status_code=422, details=details or {}, remedy=remedy)
 
 
@@ -177,21 +192,55 @@ class AdmissionRefusedError(EvalServiceError):
         if requested > limit:
             message = (
                 f"launch refused: it would admit {requested} run(s) at once, more than this process's limit of "
-                f"{limit} ({limit_name}) allows even when idle. Nothing was prepared or started. Launch fewer arms "
-                f"(or, for a battery, fewer models or universal templates), or raise {limit_name}."
+                f"{limit} ({limit_name}) allows even when idle. Nothing was prepared or started"
+            )
+            remedy = (
+                f"launch fewer arms (or, for a battery, fewer models or universal templates), or raise {limit_name}"
             )
         else:
             message = (
                 f"launch refused: it would admit {requested} run(s) while {admitted} are already admitted and "
                 f"unfinished (pending or running), past this process's limit of {limit} ({limit_name}). Nothing "
-                f"was prepared or started. Wait for runs to finish, cancel some, launch fewer arms, or raise "
-                f"{limit_name}."
+                "was prepared or started"
             )
+            remedy = f"wait for runs to finish, cancel some, launch fewer arms, or raise {limit_name}"
         super().__init__(
             message=message,
             status_code=429,
             details={"requested": requested, "admitted": admitted, "limit": limit, "limit_name": limit_name},
+            remedy=remedy,
         )
+
+
+class RefusedInput(ValueError):
+    """A lower layer's refusal of what a caller asked for, held as its fault and its remedy apart.
+
+    Raised below the service layer — a lens refusing an axis, the declaration gate refusing a bar, a launch refusing
+    a raised ceiling — where an :class:`EvalServiceError` would be the wrong layer's type, and translated by the
+    surface that called it into a :class:`ValidationFailedError` carrying the same two halves, so the remedy a lower
+    layer knows reaches the caller as a remedy rather than as prose inside a message. A :class:`ValueError`, so a
+    caller that needs only the words reads ``str()``: the fault, then the remedy.
+
+    Attributes:
+        fault: What was wrong with what the caller asked.
+        remedy: What the caller asks instead, or does first.
+    """
+
+    def __init__(self, fault: str, *, remedy: str) -> None:
+        """Hold the fault and the remedy apart.
+
+        Args:
+            fault: What was wrong.
+            remedy: What the caller does instead.
+
+        Raises:
+            ValueError: ``remedy`` is blank.
+        """
+        if not remedy.strip():
+            raise ValueError(f"a refusal names its remedy; this one ({fault!r}) names a blank one")
+        super().__init__(f"{fault}; {remedy}")
+        self.fault = fault
+        self.remedy = remedy
 
 
 class JobFenced(Exception):

@@ -216,7 +216,7 @@ def test_an_admission_refusal_reads_as_its_message_wherever_it_is_printed():
 
     refused = AdmissionRefusedError(requested=3, admitted=7, limit=8, limit_name="toyhost.launch.admitted")
 
-    assert str(refused) == refused.message and "toyhost.launch.admitted" in str(refused)
+    assert str(refused) == f"{refused.message}; {refused.remedy}" and "toyhost.launch.admitted" in refused.remedy
     assert (
         str(NotFoundError("template", "t-1", remedy="list them first")) == "template 't-1' not found; list them first"
     )
@@ -292,7 +292,7 @@ def _launching_with(
     def plan(request: LaunchRequest) -> ArmPlan:
         # The toy invoices, whatever a generation would have asked for: a launcher that generates nothing.
         if request.candidate_model is None:
-            raise ValidationFailedError("the toy extractor has no default candidate model; name one")
+            raise ValidationFailedError("the toy extractor has no default candidate model", remedy="name one")
         return ArmPlan(
             case_count=len(toyhost_test_cases(request.template)),
             candidate_model=request.candidate_model,
@@ -393,7 +393,7 @@ async def test_a_battery_cannot_replay_one_corpus_across_its_templates():
 
         return check
 
-    with pytest.raises(ValidationFailedError, match="replay each template with start_run.*Nothing was launched"):
+    with pytest.raises(ValidationFailedError, match="Nothing was launched.*replay each template with start_run"):
         await start_universal_battery(
             host,
             TOYHOST_SUBJECT.subject_id,

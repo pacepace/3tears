@@ -420,7 +420,11 @@ class Refusal:
 #: the tool's own declared input (``action``'s enum, the action's parameters), which is what
 #: :class:`~threetears.evals.kernel.ValidationFailedError` means; derived from that class rather than
 #: spelled here, so the two cannot disagree on the status.
-_CALL_REFUSAL = Refusal.of(ValidationFailedError("the call does not validate against the tool's input"))
+_CALL_REFUSAL = Refusal.of(
+    ValidationFailedError(
+        "the call does not validate against the tool's input", remedy="call it as action='help' describes"
+    )
+)
 
 
 @dataclass(frozen=True)

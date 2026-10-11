@@ -213,9 +213,9 @@ def results_list(
         ValidationFailedError: ``offset`` is negative, or ``limit`` is below 1.
     """
     if offset < 0:
-        raise ValidationFailedError(f"offset is {offset}; a page starts at 0 or later")
+        raise ValidationFailedError(f"offset is {offset}", remedy="pass an offset of 0 or more")
     if limit is not None and limit < 1:
-        raise ValidationFailedError(f"limit is {limit}; a page holds at least 1 row, or None for every row")
+        raise ValidationFailedError(f"limit is {limit}", remedy="pass a limit of at least 1, or omit it for every row")
     run = get_run(host.storage, run_id, scope_id)
     results = sorted(
         list_results(host.storage, run.id, scope_id),

@@ -54,7 +54,7 @@ from threetears.evals.run.rejudge import (
 )
 from threetears.evals.run.runner import build_judge_context, judge_dims, judge_requests
 from threetears.observe import get_logger
-from threetears.evals.kernel.remedies import FIND_RUN
+from threetears.evals.kernel.remedies import FIND_RESULT, FIND_RUN
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.eval_host import EvalHost
@@ -262,7 +262,10 @@ def collect_repeatable(
     if run is None:
         raise NotFoundError("run", run_id, remedy=FIND_RUN)
     if run.status in NON_TERMINAL_RUN_STATUSES:
-        raise ValidationFailedError(f"run '{run_id}' is {run.status} — its results are still being written")
+        raise ValidationFailedError(
+            f"run '{run_id}' is {run.status} — its results are still being written",
+            remedy=f"wait for it to end (job_poll run:{run_id}), then ask again",
+        )
     # Refusals that hold for every result, raised once rather than named per result.
     judge_model = recorded_judge_pins(run, request_settings=request_settings)
     judged_template(storage, run, scope_id)
@@ -270,7 +273,10 @@ def collect_repeatable(
     if result_ids is not None:
         known = {result.id for result in results}
         if stray := sorted(set(result_ids) - known):
-            raise ValidationFailedError(f"result(s) {stray} are not results of run '{run_id}' in this scope")
+            raise ValidationFailedError(
+                f"result(s) {stray} are not results of run '{run_id}' in this scope",
+                remedy=f"name results of run '{run_id}' ({FIND_RESULT})",
+            )
         wanted = set(result_ids)
         results = [result for result in results if result.id in wanted]
     planned: list[PlannedRepeat] = []
@@ -294,7 +300,10 @@ def collect_repeatable(
         planned.append(PlannedRepeat(result=result, inputs=inputs, dims=dims))
     if not planned:
         why = "; ".join(f"{skip.result_id}: {skip.reason}" for skip in skipped) or "it has no results"
-        raise ValidationFailedError(f"no result of run '{run_id}' can be repeated — {why}")
+        raise ValidationFailedError(
+            f"no result of run '{run_id}' can be repeated — {why}",
+            remedy="name a judged run whose results recorded their judging",
+        )
     return CollectedRepeat(run=run, judge_model=judge_model, planned=planned, skipped=skipped)
 
 

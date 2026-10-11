@@ -336,9 +336,12 @@ def parse_job_id(job_id: str) -> tuple[JobKind, str, str | None]:
         if colon and campaign_id and attempt_id:
             return "analysis", campaign_id, attempt_id
     raise ValidationFailedError(
-        f"job id {job_id!r} names no job: a job id is 'launch:<id>', 'run:<run id>', "
-        "'analysis:<campaign id>:<attempt id>', 'sweep:<sweep id>', 'second-judge:<id>', 'judge-temperature:<id>' "
-        "or 'action:<id>', exactly as the start returned it"
+        f"job id {job_id!r} names no job",
+        remedy=(
+            "pass a job id exactly as its start returned it: 'launch:<id>', 'run:<run id>', "
+            "'analysis:<campaign id>:<attempt id>', 'sweep:<sweep id>', 'second-judge:<id>', 'judge-temperature:<id>' "
+            "or 'action:<id>'"
+        ),
     )
 
 

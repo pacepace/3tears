@@ -345,7 +345,9 @@ def test_a_host_check_refusing_a_template_refuses_the_seed() -> None:
     storage, _ = memory_storage()
 
     def undeliverable(template: EvalTemplate) -> None:
-        raise ValidationFailedError(f"kind {template.candidate_kind!r} cannot honour this")
+        raise ValidationFailedError(
+            f"kind {template.candidate_kind!r} cannot honour this", remedy="author it for a kind that can"
+        )
 
     said = _refused(storage, toyhost_template(), refuse_undeliverable=undeliverable)
 

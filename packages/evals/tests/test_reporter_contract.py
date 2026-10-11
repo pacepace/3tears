@@ -130,7 +130,7 @@ def _resolve_model(role: ReporterModelRole, named: str | None) -> str:
     if named is None:
         return GENERATOR_DEFAULT if role == "generator" else JUDGE_DEFAULT
     if named == "unknown-model":
-        raise ValidationFailedError(f"no model named {named!r}")
+        raise ValidationFailedError(f"no model named {named!r}", remedy="name a model the client knows")
     return "writer-2026" if named == ALIAS else named
 
 
@@ -310,7 +310,7 @@ class TestAdmittingALaunch:
         assert prompts.asked == ["terse"]
 
     def test_a_preset_the_registry_does_not_hold_is_refused_never_resolved_to_the_default(self):
-        with pytest.raises(ValidationFailedError, match="prompt_preset 'missing'.*author it first.*incumbent"):
+        with pytest.raises(ValidationFailedError, match="prompt_preset 'missing'.*incumbent.*author the preset first"):
             _admit(_host(_stored("c-1", _case())), _request(preset="missing"))
 
     def test_a_registry_with_no_default_is_refused(self):

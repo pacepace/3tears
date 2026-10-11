@@ -107,10 +107,14 @@ def judge_profiles_record(host: EvalHost, record: JudgeProfilesRecord, scope_id:
         if run.candidate_kind != JUDGE_KIND:
             raise ValidationFailedError(
                 f"run {run_id!r} is of kind {run.candidate_kind!r}, not {JUDGE_KIND!r}; a judge profile is recorded "
-                "from a judge campaign's runs, whose trials measured the judge as their subject"
+                "from a judge campaign's runs, whose trials measured the judge as their subject",
+                remedy=f"name runs of a judge template ({FIND_RUN})",
             )
         if run.status in NON_TERMINAL_RUN_STATUSES:
-            raise ValidationFailedError(f"run {run_id!r} is {run.status} — its trials are still being written")
+            raise ValidationFailedError(
+                f"run {run_id!r} is {run.status} — its trials are still being written",
+                remedy=f"wait for it to end (job_poll run:{run_id}), then record",
+            )
         results.extend(host.storage.query_eval_results_by_run(run.id, scope_id))
     readings = judge_kind_readings(results)
     drafts = judge_profiles_of(readings, scope_id=scope_id)
@@ -119,7 +123,10 @@ def judge_profiles_record(host: EvalHost, record: JudgeProfilesRecord, scope_id:
             [f"{skip.rubric_dim}: {skip.reason}" for skip in drafts.skipped]
             + [f"{unread.result_id}: {unread.reason}" for unread in readings.unread]
         )
-        raise ValidationFailedError(f"no judge profile could be recorded — {why or 'the runs have no results'}")
+        raise ValidationFailedError(
+            f"no judge profile could be recorded — {why or 'the runs have no results'}",
+            remedy="record from a judge campaign's finished runs, launched over judge cases that carry labels",
+        )
     entries = []
     for profile in drafts.profiles:
         replaced = host.storage.load_judge_profile(profile.id, scope_id)

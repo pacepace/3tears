@@ -252,16 +252,19 @@ class OutOfRunBudget:
             raise ValidationFailedError(
                 f"{what} cannot be priced before they are made: the client cannot bound what a call on "
                 f"{client.model_name!r} costs (price_ceiling returned None), and the out-of-run cap ${self.cap_usd:.2f} "
-                "is enforced, so an unpriced call is refused rather than made — unknown is not $0. Give the host's "
-                "client a rate for that model, or name a model it can price. Nothing was called"
+                "is enforced, so an unpriced call is refused rather than made — unknown is not $0. Nothing was called",
+                remedy="give the host's client a rate for that model, or name a model it can price",
             )
         priced = math.fsum(c for c in ceilings if c is not None)
         if self._committed_usd + priced > self.cap_usd:
             already = f" on top of ${self._committed_usd:.4f} already admitted" if self._committed_usd else ""
             raise ValidationFailedError(
                 f"{what} are priced at up to ${priced:.4f}{already}, above the out-of-run cap ${self.cap_usd:.2f}. "
-                "Fewer generated cases, a cheaper model or a smaller output cap brings them under; a larger cap raises "
-                "it. Nothing was called"
+                "Nothing was called",
+                remedy=(
+                    "fewer generated cases, a cheaper model or a smaller output cap brings them under; a larger cap "
+                    "raises it"
+                ),
             )
         return ceilings
 

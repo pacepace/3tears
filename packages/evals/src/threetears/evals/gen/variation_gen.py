@@ -230,8 +230,8 @@ async def generate_variations(
         if not values:
             raise ValidationFailedError(
                 f"variation axis {axis.name!r} ({axis.generator}) produced no values, so no case set can be "
-                "generated for it — give the axis values, or for an llm axis read the log line above for "
-                "what the model returned"
+                "generated for it",
+                remedy="give the axis values, or for an llm axis launch again with another variation_model",
             )
         per_axis_values.append(values)
 

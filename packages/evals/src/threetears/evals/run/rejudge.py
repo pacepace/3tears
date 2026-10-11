@@ -33,7 +33,7 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import fold_judge_outcomes
-from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_TEMPLATE, FIND_TEST_CASE
+from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_TEMPLATE, FIND_TEST_CASE, RELAUNCH_TO_REJUDGE
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
@@ -133,7 +133,10 @@ def reproducible_judge_inputs(
         NotFoundError: A record the run names (template, judge config, test case) does not load.
     """
     if run.status in NON_TERMINAL_RUN_STATUSES:
-        raise ValidationFailedError(f"run '{run.id}' is {run.status} — its results are still being written")
+        raise ValidationFailedError(
+            f"run '{run.id}' is {run.status} — its results are still being written",
+            remedy=f"wait for it to end (job_poll run:{run.id}), then ask again",
+        )
     judge_model = recorded_judge_pins(run, request_settings=request_settings)
     template = judged_template(storage, run, scope_id)
     # What the first judge read, and the declaration that picked its axes, as the cell stored
@@ -141,7 +144,8 @@ def reproducible_judge_inputs(
     trace = storage.load_eval_trace(result.id, scope_id)
     if trace is None or trace.judge_evidence is None or trace.judged_artifact is None:
         raise ValidationFailedError(
-            f"result '{result.id}' stores no judge evidence, so what its judge read cannot be sent again"
+            f"result '{result.id}' stores no judge evidence, so what its judge read cannot be sent again",
+            remedy=RELAUNCH_TO_REJUDGE,
         )
     dims = recorded_judged_dims(run, template, trace.judged_artifact)
     # A result scored under a config its run did not record read a prompt nothing else names.
@@ -150,7 +154,8 @@ def reproducible_judge_inputs(
         if run.judge_config_ids.get(dim) != config_id:
             raise ValidationFailedError(
                 f"result '{result.id}' was scored on {dim} by config '{config_id}' while its run recorded "
-                f"{run.judge_config_ids.get(dim)!r}, so which prompt the judge read is ambiguous"
+                f"{run.judge_config_ids.get(dim)!r}, so which prompt the judge read is ambiguous",
+                remedy=RELAUNCH_TO_REJUDGE,
             )
     configs = recorded_judge_configs(
         storage, run, dims if config_dims is None else [dim for dim in dims if dim in config_dims], scope_id
@@ -189,23 +194,30 @@ def recorded_judge_pins(run: EvalRun, *, request_settings: RequestSettingsPolicy
             a call sends now.
     """
     if run.judge_model is None:
-        raise ValidationFailedError(f"run '{run.id}' was not judged, so there is no judgement to reproduce")
+        raise ValidationFailedError(
+            f"run '{run.id}' was not judged, so there is no judgement to reproduce",
+            remedy="name a judged run, or launch the template with a judge (run_launch with judge_model)",
+        )
     if not run.effective_judges:
         raise ValidationFailedError(
-            f"run '{run.id}' recorded no judge attribution, so which judge scored which dim cannot be reproduced"
+            f"run '{run.id}' recorded no judge attribution, so which judge scored which dim cannot be reproduced",
+            remedy=RELAUNCH_TO_REJUDGE,
         )
     if run.judge_config_ids is None:
         raise ValidationFailedError(
-            f"run '{run.id}' recorded no judge config set, so which prompt scored each dim is unknown"
+            f"run '{run.id}' recorded no judge config set, so which prompt scored each dim is unknown",
+            remedy=RELAUNCH_TO_REJUDGE,
         )
     if run.judge_request_settings is None:
         raise ValidationFailedError(
-            f"run '{run.id}' recorded no judge request settings, so how the judge was asked is unknown"
+            f"run '{run.id}' recorded no judge request settings, so how the judge was asked is unknown",
+            remedy=RELAUNCH_TO_REJUDGE,
         )
     if request_settings == "today" and run.judge_request_settings != JUDGE_REQUEST_SETTINGS:
         raise ValidationFailedError(
             f"run '{run.id}' was judged with request settings {run.judge_request_settings!r} and the judge client "
-            f"now sends {JUDGE_REQUEST_SETTINGS!r}; a new call would be asked differently from the rest of the run"
+            f"now sends {JUDGE_REQUEST_SETTINGS!r}; a new call would be asked differently from the rest of the run",
+            remedy=RELAUNCH_TO_REJUDGE,
         )
     # The judge service asks every dim with no config for DEFAULT_JUDGE_TEMPERATURE. A run that recorded
     # another — or none, which is a run launched when such dims were sampled at the provider's default —
@@ -218,7 +230,8 @@ def recorded_judge_pins(run: EvalRun, *, request_settings: RequestSettingsPolicy
         )
         raise ValidationFailedError(
             f"run '{run.id}' {recorded} and a judge call now asks for {DEFAULT_JUDGE_TEMPERATURE}; a new score "
-            "would be sampled differently from the rest of the run"
+            "would be sampled differently from the rest of the run",
+            remedy=RELAUNCH_TO_REJUDGE,
         )
     return run.judge_model
 
@@ -241,7 +254,10 @@ def judged_template(storage: JudgeInputStore, run: EvalRun, scope_id: str) -> Ev
         NotFoundError: The template does not load.
     """
     if run.template_id is None:
-        raise ValidationFailedError(f"run '{run.id}' is ad hoc, so there is no template to read its intent from")
+        raise ValidationFailedError(
+            f"run '{run.id}' is ad hoc, so there is no template to read its intent from",
+            remedy="name a run launched from a template",
+        )
     template = storage.load_template(run.template_id, scope_id)
     if template is None:
         raise NotFoundError("template", run.template_id, remedy=FIND_TEMPLATE)
@@ -250,7 +266,8 @@ def judged_template(storage: JudgeInputStore, run: EvalRun, scope_id: str) -> Ev
     if template.updated_at > run.created_at:
         raise ValidationFailedError(
             f"template '{template.id}' was edited at {template.updated_at}, after run '{run.id}' launched at "
-            f"{run.created_at}, so the judge would read an intent the run was not judged against"
+            f"{run.created_at}, so the judge would read an intent the run was not judged against",
+            remedy=RELAUNCH_TO_REJUDGE,
         )
     # Scores, configs and errors are keyed by dim NAME everywhere a result stores them, so a
     # rubric naming one dim twice cannot say which of the two a stored score belongs to.
@@ -258,7 +275,8 @@ def judged_template(storage: JudgeInputStore, run: EvalRun, scope_id: str) -> Ev
     if duplicated := sorted({name for name in names if names.count(name) > 1}):
         raise ValidationFailedError(
             f"template '{template.id}' names rubric dim(s) {', '.join(duplicated)} more than once, so which "
-            "of them a stored score belongs to cannot be told apart"
+            "of them a stored score belongs to cannot be told apart",
+            remedy="name each rubric dim once in the template, and launch it again",
         )
     return template
 
@@ -284,7 +302,8 @@ def recorded_judged_dims(run: EvalRun, template: EvalTemplate, judged_artifact: 
     if strays := sorted(set(recorded) - set(order)):
         raise ValidationFailedError(
             f"run '{run.id}' judged {', '.join(strays)}, which a {judged_artifact.value} cell of its "
-            "template is not scored on"
+            "template is not scored on",
+            remedy=RELAUNCH_TO_REJUDGE,
         )
     return [dim for dim in order if dim in recorded]
 

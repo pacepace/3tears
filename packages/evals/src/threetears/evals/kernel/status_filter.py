@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import TypeIs
 
+from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.schema.models import RUN_STATUSES, EvalRunStatus
 
 # Default run-status filter for comparability grouping: an in-flight run has no
@@ -26,7 +27,7 @@ DEFAULT_COMPARISON_STATUS: EvalRunStatus = "completed"
 ALL_STATUSES = "all"
 
 
-class StatusFilterError(ValueError):
+class StatusFilterError(RefusedInput):
     """A run-status filter was supplied that no run can carry.
 
     Raised rather than passed through, for the reason
@@ -99,8 +100,10 @@ def validate_status_filter(status: str | None) -> EvalRunStatus | None:
         return None
     if not _is_run_status(cleaned):
         raise StatusFilterError(
-            f"unknown run status {cleaned!r} — expected one of {', '.join(sorted(RUN_STATUSES))}, "
-            f"or {ALL_STATUSES!r} for every run regardless of status"
+            f"unknown run status {cleaned!r}",
+            remedy=(
+                f"pass one of {', '.join(sorted(RUN_STATUSES))}, or {ALL_STATUSES!r} for every run regardless of status"
+            ),
         )
     return cleaned
 

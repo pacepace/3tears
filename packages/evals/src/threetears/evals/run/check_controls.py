@@ -74,6 +74,7 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
+from threetears.evals.kernel.remedies import SEED_REMEDY
 from threetears.evals.schema.call_ledger import CallLedger
 from threetears.evals.kernel.dsl import NOT_ESTABLISHED, undefined_action, undefined_fired_dimension
 from threetears.evals.kernel.errors import ValidationFailedError
@@ -422,11 +423,13 @@ def refuse_non_discriminating_checks(
         if authored is not None and not (_AUTHORING_FIELDS & set(authored)):
             return
         raise ValidationFailedError(
-            f"template {template.name!r} declares goal checks without goal_check_controls: each check must state "
-            "its intent ('act' or 'hold') and name a control end state that proves it discriminates — "
-            "an act check must fail when the candidate did nothing and pass on its control, a hold check must pass "
-            "when the candidate did nothing and fail on its control. Unproven: "
-            + "; ".join(repr(check) for check in template.goal_state_checks)
+            f"template {template.name!r} declares goal checks without goal_check_controls. Unproven: "
+            + "; ".join(repr(check) for check in template.goal_state_checks),
+            remedy=(
+                "declare goal_check_controls: each check states its intent ('act' or 'hold') and names a control end "
+                "state that proves it discriminates — an act check must fail when the candidate did nothing and pass "
+                "on its control, a hold check must pass when the candidate did nothing and fail on its control"
+            ),
         )
 
     controlled = {entry.check for entry in controls.checks}
@@ -443,13 +446,15 @@ def refuse_non_discriminating_checks(
         armed = _armed_by_seed(template, profile.world)
     except ValueError as unnamed:
         raise ValidationFailedError(
-            f"template {template.name!r}: its world_seed states world state a control cannot be built over: {unnamed}"
+            f"template {template.name!r}: its world_seed states world state a control cannot be built over: {unnamed}",
+            remedy=SEED_REMEDY,
         ) from unnamed
     for name, end_state in controls.end_states.items():
         defects += [f"control {name!r}: {defect}" for defect in _end_state_defects(end_state, profile, armed=armed)]
     if defects:
         raise ValidationFailedError(
-            f"template {template.name!r} has goal_check_controls that do not hold: " + "; ".join(defects)
+            f"template {template.name!r} has goal_check_controls that do not hold: " + "; ".join(defects),
+            remedy="correct each control end state the defects name",
         )
 
     try:
@@ -457,18 +462,19 @@ def refuse_non_discriminating_checks(
     except GoalCheckUnevaluable as unevaluable:
         raise ValidationFailedError(
             f"template {template.name!r}: {unevaluable} against a control end state — "
-            "a check that cannot be evaluated is not one a run can grade"
+            "a check that cannot be evaluated is not one a run can grade",
+            remedy="correct the check, or the control end state, so the check evaluates over it",
         ) from unevaluable
     except ValueError as unnamed:
         raise ValidationFailedError(
-            f"template {template.name!r}: its world_seed states world state a control cannot be built over: {unnamed}"
+            f"template {template.name!r}: its world_seed states world state a control cannot be built over: {unnamed}",
+            remedy=SEED_REMEDY,
         ) from unnamed
     refusals = [refusal for discrimination in discriminations if (refusal := discrimination.refusal()) is not None]
     if refusals:
         raise ValidationFailedError(
-            f"template {template.name!r} has goal checks that do not discriminate: "
-            + "; ".join(refusals)
-            + " — correct the check so it reads what the behaviour changes, correct its intent, or correct the control"
+            f"template {template.name!r} has goal checks that do not discriminate: " + "; ".join(refusals),
+            remedy="correct the check so it reads what the behaviour changes, correct its intent, or correct the control",
         )
 
 

@@ -137,13 +137,17 @@ async def propose_draft(
     try:
         payload = extract_json(content)
     except ValueError as e:
-        raise ValidationFailedError(f"{refused} LLM output was not valid JSON ({cost}): {e}") from e
+        raise ValidationFailedError(
+            f"{refused} LLM output was not valid JSON ({cost}): {e}", remedy="propose again, or with another model"
+        ) from e
 
     _coerce_new_dim_axis(payload, axis)
     try:
         proposal = RubricProposal(**payload)
     except ValidationError as e:
-        raise ValidationFailedError(f"{refused} LLM output failed draft validation ({cost}): {e}") from e
+        raise ValidationFailedError(
+            f"{refused} LLM output failed draft validation ({cost}): {e}", remedy="propose again, or with another model"
+        ) from e
 
     if axis == "boundary":
         log.info(
