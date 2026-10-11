@@ -274,8 +274,9 @@ The engine's simulated user: the other side of a conversation a conversing kind 
 (`ConversationSpec`). A classifier template has none.
 
 #### Job
-Long work started by an operation (a launch, a sweep, an analysis generation), answered by `job_poll` and
-`job_cancel`. Its id names the durable record the work writes, so it survives a restart and reads the same in
+Work started by an operation because it is long or calls a model (a launch, a sweep, an analysis generation, a
+second judge's pass, a judge temperature comparison, a host action's draft), answered by `job_poll` and
+`job_cancel`: the operation's call prices and admits it and returns at once, so no call waits on a model. Its id names the durable record the work writes, so it survives a restart and reads the same in
 every process. The record carries the running process's lease; a job whose lease lapses before it ends is
 `lost`, which the first reader writes on the record.
 

@@ -243,6 +243,56 @@ prices it. `plan_arm` is therefore where a kind makes its request-level refusals
 its plan. The full rule is in [Cost and budgets: every arm is priced before any launcher
 runs](cost-and-budgets.md#every-arm-is-priced-before-any-launcher-runs).
 
+**A transport launches in two halves.** `run_launch` admits the launch in its call (`admit_launch`: every refusal
+above, every arm planned and priced, the runs' room reserved) and runs the rest as one job
+(`launch_job_work`): each arm's launcher — where your launcher builds its rig and generates cases — then the runs,
+waited for to their end. So your launcher runs inside a job and may call a model; `plan_arm` and your pricer run
+in the call and must not. A script awaits both halves in a row through `start_run`.
+
+### Your own actions are jobs too
+
+A host adds its own actions to the catalogue (`eval_catalogue(my_actions)`). One whose work calls a model — a
+rubric proposer, a drafter of a classifier's cases — is a `spend` action and keeps the engine's rule: **its call
+makes no completion request.** It prices and refuses in the call, then starts the work as a job with
+`start_action_job`, which writes an `EvalActionJob` record carrying the job's lease and, once the work returns,
+its typed result as JSON — what `job_poll` returns. Declare it `long_running=True` with result `JobsStarted`:
+
+```python
+async def _propose(host: OpsHost, caller: Caller, params: ProposeParams) -> JobsStarted:
+    budget = my_budget(host, caller.scope_id)            # price and refuse here, spending nothing
+    async def draft() -> RubricDraft:                    # the job's work: the model calls
+        return await my_proposer(host, params, budget)
+    return await start_action_job(host, caller.scope_id, action="rubric_propose", run=draft, label=params.topic)
+
+async def _propose_happy_path(stage: ConformanceStage) -> Mapping[str, Any]:
+    return {"topic": "tone"}                             # what reaches the work, with anything it must arrange
+
+Action(name="rubric_propose", permission="spend", result=JobsStarted, long_running=True,
+       handler=_propose, happy_path=_propose_happy_path, ...)
+```
+
+Every `spend` action declares a `happy_path`, and one without is refused where it is declared. **Prove it with the
+jobs conformance kit**: build your `OpsHost` over a fresh store with your client factory wrapped by the kit's
+guard, name a sample launch your host runs end to end and judges through that factory, and parametrise over
+the cases. Every action's call must make no completion request; every spend action's happy path must return
+`JobsStarted`, and its job, polled to its end, must make at least one — a happy path that never reaches the work
+is refused as vacuous. Route every client your actions use through the factory you hand the guard; a client
+built outside it is not watched.
+
+```python
+from threetears.evals.testing import CompletionGuard, JobsConformanceHost, jobs_conformance_cases
+
+def build(guard: CompletionGuard) -> JobsConformanceHost:
+    host = my_ops_host(store=InMemoryDocumentStore(), clients=guard.wrap(my_clients))
+    return JobsConformanceHost(host=host, caller=Caller(scope_id="dev", identity="kit"),
+                               sample=ConformanceSample(template_id="t", subject_id="s", models=("m",),
+                                                        second_judge_model="judge/other"))
+
+@pytest.mark.parametrize("case", jobs_conformance_cases(eval_catalogue(my_actions)), ids=lambda case: case.name)
+async def test_no_call_waits_on_a_model(case: JobsConformanceCase) -> None:
+    await case.check(build)
+```
+
 ### Hearing about a regression when a run completes
 
 `scope_history` flags a regression only when someone reads it. To hear about one as soon as a run
