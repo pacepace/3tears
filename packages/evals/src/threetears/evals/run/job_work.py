@@ -199,7 +199,7 @@ class JobWork[R: EvalDocumentModel]:
 def _failure_detail(broke: BaseException) -> str:
     """Why a job's work failed, in a poll's words: an engine refusal as it was said, anything else by its class too."""
     if isinstance(broke, EvalServiceError):
-        return broke.message
+        return str(broke)
     return f"{type(broke).__name__}: {broke}"
 
 

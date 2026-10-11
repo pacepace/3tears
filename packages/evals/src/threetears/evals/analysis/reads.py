@@ -77,6 +77,7 @@ from threetears.evals.kernel.scoring import (
 )
 from threetears.evals.kernel.status_filter import StatusFilterError, normalize_status_filter
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_RUN
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
@@ -200,7 +201,7 @@ def _load_campaign(storage: LensStore, campaign_id: str, scope_id: str) -> EvalC
     """
     campaign = storage.load_campaign(campaign_id, scope_id)
     if campaign is None:
-        raise NotFoundError("campaign", campaign_id)
+        raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
     return campaign
 
 
@@ -212,7 +213,7 @@ def _load_run(storage: LensStore, run_id: str, scope_id: str) -> EvalRun:
     """
     run = storage.load_eval_run(run_id, scope_id)
     if run is None:
-        raise NotFoundError("run", run_id)
+        raise NotFoundError("run", run_id, remedy=FIND_RUN)
     return run
 
 

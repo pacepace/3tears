@@ -70,6 +70,7 @@ from threetears.evals.kernel.offload import run_blocking, wait_through_cancellat
 from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
 from threetears.evals.kernel.provider import describe_failure, log_provider_failure, traceback_is_safe
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import FIND_ANALYSIS, FIND_CAMPAIGN, FIND_FINDING, FIND_RUN
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
@@ -245,7 +246,7 @@ def _load_campaign(storage: AnalysisStore, campaign_id: str, scope_id: str) -> E
     """
     campaign = storage.load_campaign(campaign_id, scope_id)
     if campaign is None:
-        raise NotFoundError("campaign", campaign_id)
+        raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
     return campaign
 
 
@@ -957,7 +958,7 @@ def get_analysis(storage: AnalysisStore, analysis_id: str, scope_id: str) -> Eva
     """
     analysis = storage.load_analysis(analysis_id, scope_id)
     if analysis is None:
-        raise NotFoundError("analysis", analysis_id)
+        raise NotFoundError("analysis", analysis_id, remedy=FIND_ANALYSIS)
     return analysis
 
 
@@ -1203,17 +1204,17 @@ def finding_chart_intent(storage: AnalysisStore, analysis_id: str, scope_id: str
     # A finding is identified by its position in the authored document, as a string.
     position = int(finding_id) if finding_id.isdigit() else -1
     if not 0 <= position < len(analysis.resolutions):
-        raise NotFoundError("finding", finding_id)
+        raise NotFoundError("finding", finding_id, remedy=FIND_FINDING)
     viz = analysis.resolutions[position].chart
     if viz is None:
-        raise NotFoundError("chart for finding", finding_id)
+        raise NotFoundError("chart for finding", finding_id, remedy=FIND_FINDING)
     try:
         return chart_intent(viz.type, viz.payload)
     except (PayloadError, IntentPolicyError) as exc:
         # Surfaced rather than swallowed: this caller asked for THIS chart by id,
         # so an empty answer would read as "no chart here" when the truth is that
         # the stored payload cannot be drawn.
-        raise NotFoundError("drawable chart for finding", f"{finding_id} ({exc})") from exc
+        raise NotFoundError("drawable chart for finding", f"{finding_id} ({exc})", remedy=FIND_FINDING) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1689,7 +1690,7 @@ def reporter_calibration(
     """
     run = storage.load_eval_run(run_id, scope_id)
     if run is None:
-        raise NotFoundError("run", run_id)
+        raise NotFoundError("run", run_id, remedy=FIND_RUN)
     loaded = {case.id: case for case in storage.load_test_cases_by_ids(list(run.test_case_ids), scope_id)}
     pairs = []
     missing: list[str] = []

@@ -287,7 +287,7 @@ async def test_a_generation_that_loses_the_race_releases_its_client(monkeypatch:
     fixture = ops_fixture()
 
     def taken(*_: Any, **__: Any) -> str:
-        raise ConflictError("task 'other' is already running")
+        raise ConflictError("task 'other' is already running", remedy="try again")
 
     monkeypatch.setattr(fixture.host.launch.job_manager, "start_task", taken)
     with pytest.raises(ConflictError):

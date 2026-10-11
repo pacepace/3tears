@@ -35,53 +35,91 @@ __all__ = [
 
 @dataclass
 class EvalServiceError(Exception):
-    """Structured error from the eval service layer."""
+    """Structured error from the eval service layer.
+
+    **A refusal names what its caller can do next** (:attr:`remedy`), apart from what went wrong
+    (:attr:`message`), so a surface can state both and a reader is never left to retry the same call. The two
+    refusals whose cause is a record the caller named and the engine does not hold, or a record that changed
+    under it — :class:`NotFoundError` and :class:`ConflictError` — require one; :class:`StorageError` and
+    :class:`ProviderRefusedError` carry their class's own; the others may, and their message says it where it
+    exists. ``tests/test_refusal_remedies.py`` holds every refusal the engine raises to that, and every action a
+    remedy names to the engine's catalogue.
+    """
 
     message: str
     status_code: int = 400
     details: dict[str, Any] = field(default_factory=dict)
+    remedy: str | None = None
 
     def __str__(self) -> str:
-        """The message, whatever arguments the subclass was constructed with.
+        """The message, then the remedy where there is one, whatever arguments the subclass was constructed with.
 
         ``Exception.__str__`` renders the constructor's positional arguments, which a dataclass
         exception does not route through: an error built from keywords (an admission refusal) read
         as an empty string in every log line and traceback, and one built from two positionals (a
         not-found) as their tuple.
         """
-        return self.message
+        return self.message if self.remedy is None else f"{self.message}; {self.remedy}"
 
 
 class NotFoundError(EvalServiceError):
-    """Resource not found (status 404)."""
+    """Resource not found (status 404).
 
-    def __init__(self, resource: str, resource_id: str):
-        """Build a 404 with a ``"<resource> '<id>' not found"`` message."""
-        super().__init__(message=f"{resource} '{resource_id}' not found", status_code=404)
+    Attributes:
+        resource: What kind of record was asked for (``template``, ``run``).
+        resource_id: The id it was asked by.
+    """
+
+    def __init__(self, resource: str, resource_id: str, *, remedy: str):
+        """Build a 404 with a ``"<resource> '<id>' not found"`` message.
+
+        Args:
+            resource: What kind of record was asked for.
+            resource_id: The id it was asked by.
+            remedy: How the caller finds the id of one that exists — required, because a bare "not found" leaves
+                its reader nothing to do but ask again (:mod:`threetears.evals.kernel.remedies` holds the engine's).
+        """
+        self.resource = resource
+        self.resource_id = resource_id
+        super().__init__(message=f"{resource} '{resource_id}' not found", status_code=404, remedy=remedy)
 
 
 class ConflictError(EvalServiceError):
     """State conflict (status 409)."""
 
-    def __init__(self, message: str):
-        """Build a 409 with the given message."""
-        super().__init__(message=message, status_code=409)
+    def __init__(self, message: str, *, remedy: str):
+        """Build a 409 with the given message.
+
+        Args:
+            message: What the conflict is.
+            remedy: What the caller does about it — required: a conflict is a state the caller can always do
+                something about, if only read the record again.
+        """
+        super().__init__(message=message, status_code=409, remedy=remedy)
 
 
 class ValidationFailedError(EvalServiceError):
     """Validation failed (status 422)."""
 
-    def __init__(self, message: str, details: dict[str, Any] | None = None):
-        """Build a 422 with the given message and optional details payload."""
-        super().__init__(message=message, status_code=422, details=details or {})
+    def __init__(self, message: str, details: dict[str, Any] | None = None, *, remedy: str | None = None):
+        """Build a 422 with the given message, an optional details payload, and what to do instead where it is not said in the message."""
+        super().__init__(message=message, status_code=422, details=details or {}, remedy=remedy)
+
+
+#: What a caller does about a store that did not answer: the same for every storage refusal.
+STORAGE_REMEDY = "the store did not complete the call; retry once it answers"
 
 
 class StorageError(EvalServiceError):
-    """Storage operation failed (status 503)."""
+    """Storage operation failed (status 503). Its remedy is the class's own (:data:`STORAGE_REMEDY`)."""
 
     def __init__(self, message: str):
         """Build a 503 — signal that the storage round-trip failed."""
-        super().__init__(message=message, status_code=503)
+        super().__init__(message=message, status_code=503, remedy=STORAGE_REMEDY)
+
+
+#: What a caller does about a provider that refused a call: the same for every provider refusal.
+PROVIDER_REMEDY = "the provider refused the call; retry later, or with another model"
 
 
 class ProviderRefusedError(EvalServiceError):
@@ -103,8 +141,8 @@ class ProviderRefusedError(EvalServiceError):
     """
 
     def __init__(self, message: str):
-        """Build a 502 with the described failure as its message."""
-        super().__init__(message=message, status_code=502)
+        """Build a 502 with the described failure as its message, and the class's remedy (:data:`PROVIDER_REMEDY`)."""
+        super().__init__(message=message, status_code=502, remedy=PROVIDER_REMEDY)
 
 
 class AdmissionRefusedError(EvalServiceError):

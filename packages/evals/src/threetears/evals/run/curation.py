@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from threetears.evals.kernel.campaign_writes import serialized_campaign_write
 from threetears.evals.kernel.errors import NotFoundError, StorageError, ValidationFailedError
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import FIND_ANALYSIS, FIND_CAMPAIGN, FIND_INSIGHT, FIND_RUN
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
@@ -260,7 +261,7 @@ def load_run_as_listed(storage: CurationStore, run_id: str, scope_id: str, *, pr
     """
     runs = storage.load_eval_runs([run_id], scope_id, elide_payload=profile.listing_elisions)
     if not runs:
-        raise NotFoundError("run", run_id)
+        raise NotFoundError("run", run_id, remedy=FIND_RUN)
     return runs[0]
 
 
@@ -304,7 +305,7 @@ def set_run_archived(
     if current.archived == archived:
         return current
     if not storage.set_eval_run_archived(run_id, scope_id, archived=archived):
-        raise NotFoundError("run", run_id)
+        raise NotFoundError("run", run_id, remedy=FIND_RUN)
     log.info(
         "eval.set_run_archived run=%s scope=%s archived=%s",
         run_id,
@@ -378,7 +379,7 @@ def set_analysis_archived(
 
     current = storage.load_analysis(analysis_id, scope_id)
     if current is None:
-        raise NotFoundError("analysis", analysis_id)
+        raise NotFoundError("analysis", analysis_id, remedy=FIND_ANALYSIS)
 
     target_reason = reason if archived else None
     if current.archived == archived and current.archived_reason == target_reason:
@@ -400,7 +401,7 @@ def set_analysis_archived(
     # persisted", and only storage can say what that is.
     persisted = storage.load_analysis(analysis_id, scope_id)
     if persisted is None:
-        raise NotFoundError("analysis", analysis_id)
+        raise NotFoundError("analysis", analysis_id, remedy=FIND_ANALYSIS)
     return persisted
 
 
@@ -435,7 +436,7 @@ def set_campaign_archived(storage: CurationStore, campaign_id: str, scope_id: st
     """
     current = storage.load_campaign(campaign_id, scope_id)
     if current is None:
-        raise NotFoundError("campaign", campaign_id)
+        raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
     if current.archived == archived:
         return current
     storage.save_campaign(current.model_copy(update={"archived": archived}))
@@ -444,7 +445,7 @@ def set_campaign_archived(storage: CurationStore, campaign_id: str, scope_id: st
     # persisted", and only storage can say what that is.
     persisted = storage.load_campaign(campaign_id, scope_id)
     if persisted is None:
-        raise NotFoundError("campaign", campaign_id)
+        raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
     return persisted
 
 
@@ -681,7 +682,7 @@ def delete_insight(
     """
     insight = storage.load_insight(insight_id, scope_id)
     if insight is None:
-        raise NotFoundError("insight", insight_id)
+        raise NotFoundError("insight", insight_id, remedy=FIND_INSIGHT)
     require_delete_confirmation("insight", insight_id, confirm, alternative=_NO_INSIGHT_ARCHIVE)
     if not storage.delete_insight(insight_id, scope_id):
         raise StorageError(f"failed to delete insight '{insight_id}'")

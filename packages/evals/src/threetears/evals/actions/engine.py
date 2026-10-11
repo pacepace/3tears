@@ -354,6 +354,9 @@ class CampaignCreateParams(EvalBaseModel):
     behavior: Behavior
     description: Description = ""
     run_ids: RunIds = Field(default_factory=list)
+    template_id: Annotated[
+        str | None, Field(min_length=1, description=LaunchArguments.model_fields["template_id"].description)
+    ] = None
     declared_design: Annotated[dict[str, Any] | None, CampaignDefinition.model_fields["declared_design"]] = None
     control_from_run_id: Annotated[str | None, CampaignDefinition.model_fields["control_from_run_id"]] = None
 
@@ -1410,7 +1413,8 @@ def engine_actions() -> tuple[Action, ...]:
                 "cannot honour it: an axis it does not declare, a bar looser than the registered one. control_from_run_id "
                 "names the run whose variant every other cell is read against. Omit both and the campaign is "
                 "exploratory: its report and analysis say once that its readings confirm nothing, and its design is "
-                "inferred from the runs."
+                "inferred from the runs. template_id names the template whose rubric dimensions and goal-state "
+                "checks a bar may name; omitted, it is the one template every run named ran."
             ),
         ),
         Action(

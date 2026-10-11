@@ -84,6 +84,7 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.kernel.metrics import describe_measure, summary_population
 from threetears.evals.kernel.usage_capture import blended_cost
+from threetears.evals.kernel.remedies import FIND_RUN
 
 
 #: What an amount no client could price reads as. Never ``$0``: an unpriced call may have been billed.
@@ -1036,7 +1037,7 @@ def summarize_run(
     """
     run = host.storage.load_eval_run(run_id, scope_id)
     if run is None:
-        raise NotFoundError("run", run_id)
+        raise NotFoundError("run", run_id, remedy=FIND_RUN)
     results = host.storage.query_eval_results_by_run(run_id, scope_id)
     outcomes = [classify_result(result) for result in results]
     declared = host.profile.measures.names

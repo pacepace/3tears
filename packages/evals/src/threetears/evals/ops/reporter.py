@@ -51,6 +51,7 @@ from threetears.evals.run.launch import ArmPlan, LaunchArgument, LaunchRequest, 
 from threetears.evals.schema.models import EvalTemplate, EvalTestCase, JudgedArtifact
 from threetears.evals.ops.runs import LaunchArguments
 from threetears.evals.run.authoring import get_template
+from threetears.evals.kernel.remedies import FIND_TEMPLATE
 
 
 class ReporterCaseFreeze(EvalBaseModel):
@@ -188,7 +189,7 @@ def reporter_cases_list(
     """
     template = host.storage.load_template(template_id, scope_id)
     if template is None:
-        raise NotFoundError("template", template_id)
+        raise NotFoundError("template", template_id, remedy=FIND_TEMPLATE)
     _reporter_template(template)
     bank = reporter_case_bank(host.storage.query_test_cases(scope_id, template_id=template_id))
     return ReporterCaseListing(

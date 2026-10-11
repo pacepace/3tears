@@ -27,6 +27,7 @@ from threetears.evals.analysis.stats import INTERVAL_LEVEL, bar_seed
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.bars import BarProposal, no_better_end
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import FIND_CAMPAIGN
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.eval_host import EvalHost
@@ -103,7 +104,7 @@ def propose_bars(host: EvalHost, baseline_campaign_id: str, *, scope_id: str) ->
     """
     campaign = host.storage.load_campaign(baseline_campaign_id, scope_id)
     if campaign is None:
-        raise NotFoundError("campaign", baseline_campaign_id)
+        raise NotFoundError("campaign", baseline_campaign_id, remedy=FIND_CAMPAIGN)
     bundle = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
     if len(bundle.cell_measures) != 1:
         raise ValidationFailedError(

@@ -37,6 +37,7 @@ from pydantic import ValidationError
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.schema.models import CalibrationRating, EvalResult, RaterKind
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import FIND_RESULT
 
 log = get_logger(__name__)
 
@@ -97,7 +98,7 @@ def rate_result(
     """
     result = storage.load_eval_result(result_id, scope_id)
     if result is None:
-        raise NotFoundError("result", result_id)
+        raise NotFoundError("result", result_id, remedy=FIND_RESULT)
     judged = result.judge_score(rubric_dim)
     if judged is None:
         scored = sorted(

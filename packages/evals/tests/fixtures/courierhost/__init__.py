@@ -463,7 +463,7 @@ def courier_launch_host() -> LaunchHost:
 
     async def launch(request: LaunchRequest) -> EvalRun:
         if request.subject_id != COURIER_SUBJECT.subject_id:
-            raise NotFoundError("subject", request.subject_id)
+            raise NotFoundError("subject", request.subject_id, remedy="list them first")
         cases = courier_cases()
         for case in cases:
             eval_host.storage.save_test_case(case)

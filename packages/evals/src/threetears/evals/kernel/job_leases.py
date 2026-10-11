@@ -229,7 +229,8 @@ def settle_job_record[R: EvalDocumentModel](
         )
         return lost, True
     raise ConflictError(
-        f"{kind.name} job '{record_id}' kept changing while its lapsed lease was being written lost; read it again"
+        f"{kind.name} job '{record_id}' kept changing while its lapsed lease was being written lost",
+        remedy="read it again with job_poll",
     )
 
 
@@ -299,7 +300,10 @@ def write_held_record[R: EvalDocumentModel](store: JobRecordStore, kind: LeasedJ
             # NOSILENT: a lost race re-reads and re-applies; exhausting the attempts raises below
             continue
         return written
-    raise ConflictError(f"{kind.name} job '{_leased(record).id}' kept changing while its own write was being made")
+    raise ConflictError(
+        f"{kind.name} job '{_leased(record).id}' kept changing while its own write was being made",
+        remedy="read it again with job_poll",
+    )
 
 
 #: What one renewal of one held record found: renewed (and nothing asked of it), a cancel asked of it, the job
@@ -557,7 +561,10 @@ class JobLeases:
                 # NOSILENT: the job's own write moved the record; re-read and end it from there
                 continue
             return True
-        raise ConflictError(f"{held.kind.name} job '{held.record_id}' kept changing while being ended at shutdown")
+        raise ConflictError(
+            f"{held.kind.name} job '{held.record_id}' kept changing while being ended at shutdown",
+            remedy="read it again with job_poll once the process has stopped",
+        )
 
 
 __all__ = [

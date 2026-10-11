@@ -36,6 +36,7 @@ from threetears.evals.kernel.campaign_writes import serialized_campaign_write
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_TEMPLATE
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
@@ -230,6 +231,7 @@ def create_campaign(
     except ValidationError as e:
         raise ValidationFailedError(f"invalid campaign definition: {e}") from e
     _refuse_runs_outside_scope(storage, campaign.run_ids, scope_id)
+    campaign = campaign.model_copy(update={"template_id": _campaign_template(storage, campaign)})
     if control_from_run_id is not None:
         if campaign.declared_design is None:
             raise ValidationFailedError(
@@ -260,6 +262,41 @@ def create_campaign(
 
     storage.save_campaign(campaign)
     return campaign
+
+
+def _campaign_template(storage: CampaignStore, campaign: EvalCampaign) -> str | None:
+    """The template a new campaign is over: the one it names, else the one every run it holds ran, else none.
+
+    A bar or a guardrail margin on a rubric dimension or goal-state check is read against the campaign's template,
+    so a campaign whose runs all ran one template is over that template whether or not its author typed the id —
+    typing it was the only way to declare such a bar, and the action that creates a campaign did not take it.
+
+    Args:
+        storage: The campaign store.
+        campaign: The campaign as defined, its runs already held to its scope.
+
+    Returns:
+        The template's id, or None when it names none and its runs ran more than one template, or none.
+
+    Raises:
+        NotFoundError: The campaign names a template its scope does not hold.
+    """
+    if campaign.template_id:
+        if storage.load_template(campaign.template_id, campaign.scope_id) is None:
+            raise NotFoundError("template", campaign.template_id, remedy=FIND_TEMPLATE)
+        return campaign.template_id
+    ran = _templates_run(storage, campaign)
+    return ran[0] if len(ran) == 1 and ran[0] != "(no template)" else None
+
+
+def _templates_run(storage: CampaignStore, campaign: EvalCampaign) -> list[str]:
+    """The templates a campaign's runs ran, sorted, an ad-hoc run's as ``(no template)``."""
+    ran = {
+        run.template_id or "(no template)"
+        for run_id in campaign.run_ids
+        if (run := storage.load_eval_run(run_id, campaign.scope_id)) is not None
+    }
+    return sorted(ran)
 
 
 def _refuse_runs_outside_scope(storage: CampaignStore, run_ids: Sequence[str], scope_id: str) -> None:
@@ -345,7 +382,11 @@ def _gate_declaration(
             bar is looser than the registered incumbent, a bar contradicts the better-direction
             of what it names.
     """
-    from threetears.evals.kernel.declaration import UndeclarableAxisError, refuse_an_undeclarable_design
+    from threetears.evals.kernel.declaration import (
+        NO_TEMPLATE_REMEDY,
+        UndeclarableAxisError,
+        refuse_an_undeclarable_design,
+    )
 
     template = storage.load_template(campaign.template_id, campaign.scope_id) if campaign.template_id else None
     try:
@@ -356,7 +397,16 @@ def _gate_declaration(
             "the open families whose members it recognises — read from the registry this gate decides with"
         ) from e
     except ValueError as e:
-        raise ValidationFailedError(f"invalid campaign design: {e}") from e
+        # A refusal for want of a template says which templates the campaign's runs ran, when they ran several: the
+        # reason none was inferred, and the ids one of which to name.
+        ran = _templates_run(storage, campaign) if template is None and NO_TEMPLATE_REMEDY in str(e) else []
+        ran_note = (
+            f". This campaign's runs ran {len(ran)} templates ({', '.join(ran)}), so none of them is its template "
+            "until one is named"
+            if len(ran) > 1
+            else ""
+        )
+        raise ValidationFailedError(f"invalid campaign design: {e}{ran_note}") from e
 
 
 def declarable_axes(profile: HostProfile) -> DeclarableAxes:
@@ -451,7 +501,7 @@ def update_campaign(
 
     campaign = storage.load_campaign(campaign_id, scope_id)
     if campaign is None:
-        raise NotFoundError("campaign", campaign_id)
+        raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
 
     merged = campaign.model_dump(mode="json")
     merged.update({k: v for k, v in updates.items() if k != "declared_design"})
@@ -513,7 +563,7 @@ def get_campaign(storage: CampaignStore, campaign_id: str, scope_id: str) -> Eva
     """
     campaign = storage.load_campaign(campaign_id, scope_id)
     if campaign is None:
-        raise NotFoundError("campaign", campaign_id)
+        raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
     return campaign
 
 
@@ -641,7 +691,7 @@ def add_runs_to_campaign(storage: CampaignStore, campaign_id: str, scope_id: str
     """
     campaign = storage.load_campaign(campaign_id, scope_id)
     if campaign is None:
-        raise NotFoundError("campaign", campaign_id)
+        raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
     _refuse_runs_outside_scope(storage, [run_id for run_id in run_ids if run_id not in campaign.run_ids], scope_id)
     seen = set(campaign.run_ids)
     merged = list(campaign.run_ids)
@@ -687,7 +737,7 @@ def remove_runs_from_campaign(
     """
     campaign = storage.load_campaign(campaign_id, scope_id)
     if campaign is None:
-        raise NotFoundError("campaign", campaign_id)
+        raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
     attached = set(campaign.run_ids)
     missing = [run_id for run_id in run_ids if run_id not in attached]
     if missing:
@@ -773,7 +823,7 @@ def set_campaign_control(
     """
     campaign = storage.load_campaign(campaign_id, scope_id)
     if campaign is None:
-        raise NotFoundError("campaign", campaign_id)
+        raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
     if campaign.declared_design is None:
         # Below the clear, deliberately: the narrowing argues that a control has nothing to
         # REFERENCE without a declared comparison, which is an argument about DESIGNATING.

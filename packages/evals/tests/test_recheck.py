@@ -431,7 +431,7 @@ def test_a_rewrite_something_else_raced_is_named_and_not_stored() -> None:
             return getattr(storage, name)
 
         def replace_eval_result(self, result: EvalResult, /, *, if_match: str | None) -> None:
-            raise ConflictError(f"eval_result {result.id} was written since it was read")
+            raise ConflictError(f"eval_result {result.id} was written since it was read", remedy="try again")
 
     recheck = recheck_goal_states(_RacedStorage(), run_id, "uni-1", world=None, apply=True)  # type: ignore[arg-type]
 

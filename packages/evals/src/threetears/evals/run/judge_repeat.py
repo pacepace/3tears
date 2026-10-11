@@ -54,6 +54,7 @@ from threetears.evals.run.rejudge import (
 )
 from threetears.evals.run.runner import build_judge_context, judge_dims, judge_requests
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import FIND_RUN
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.eval_host import EvalHost
@@ -259,7 +260,7 @@ def collect_repeatable(
     """
     run = storage.load_eval_run(run_id, scope_id)
     if run is None:
-        raise NotFoundError("run", run_id)
+        raise NotFoundError("run", run_id, remedy=FIND_RUN)
     if run.status in NON_TERMINAL_RUN_STATUSES:
         raise ValidationFailedError(f"run '{run_id}' is {run.status} — its results are still being written")
     # Refusals that hold for every result, raised once rather than named per result.

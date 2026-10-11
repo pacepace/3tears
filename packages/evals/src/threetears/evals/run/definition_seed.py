@@ -375,7 +375,7 @@ def seed_eval_definitions(
                 )
             )
         except ValidationFailedError as refused:
-            refusals.append(f"{template.name!r}: {refused.message}")
+            refusals.append(f"{template.name!r}: {refused}")
     if refusals:
         raise ValidationFailedError(
             f"the seed corpus for scope {corpus.scope_id!r} carries templates authoring would refuse, so nothing "

@@ -231,7 +231,7 @@ def _happy_path_case(action: Action, timeout_s: float) -> JobsConformanceCase:
             except CompletionOutsideJob as refused:
                 raise _fail(action, rule, f"its call made a completion request: {refused}") from None
             except EvalServiceError as refused:
-                raise _fail(action, rule, f"its call refused its happy path: {refused.message}") from None
+                raise _fail(action, rule, f"its call refused its happy path: {refused}") from None
             if guard.outside:
                 raise _fail(action, rule, f"its call made {', '.join(guard.outside)}")
             if not isinstance(started, JobsStarted):

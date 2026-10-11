@@ -94,6 +94,7 @@ from threetears.evals.run.runner import (
 )
 from threetears.evals.run.simulator import SIMULATOR_REQUEST_SETTINGS
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import FIND_TEMPLATE
 
 if TYPE_CHECKING:
     from threetears.evals.schema.subject import SubjectSnapshot
@@ -1487,7 +1488,7 @@ async def _dispatch(
     eval_host = host.eval_host
     template = await run_blocking(eval_host.blocking_executor, eval_host.storage.load_template, template_id, scope_id)
     if template is None:
-        raise NotFoundError("template", template_id)
+        raise NotFoundError("template", template_id, remedy=FIND_TEMPLATE)
 
     # THE LAUNCH DISPATCH — ``template.candidate_kind`` is read HERE, once per tier: the
     # tiers and their one reader each are declared by

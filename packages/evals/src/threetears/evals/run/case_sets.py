@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.schema.models import CaseSet, CaseSetRef
+from threetears.evals.kernel.remedies import FIND_CASE_SET
 
 if TYPE_CHECKING:
     from threetears.evals.schema.models import EvalTemplate, EvalTestCase
@@ -129,7 +130,7 @@ def resolve_case_set(
     """
     case_set = storage.load_case_set(ref.name, ref.version, scope_id)
     if case_set is None:
-        raise NotFoundError("case set", ref.label)
+        raise NotFoundError("case set", ref.label, remedy=FIND_CASE_SET)
     what = f"case set {ref.label!r}"
     if case_set.template_id != template.id:
         raise ValidationFailedError(

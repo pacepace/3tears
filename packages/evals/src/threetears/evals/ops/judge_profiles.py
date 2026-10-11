@@ -24,6 +24,7 @@ from threetears.evals.kernel.judge_cases import JUDGE_KIND
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES, EvalResult
+from threetears.evals.kernel.remedies import FIND_RUN
 
 __all__ = [
     "JudgeProfileEntry",
@@ -102,7 +103,7 @@ def judge_profiles_record(host: EvalHost, record: JudgeProfilesRecord, scope_id:
     for run_id in dict.fromkeys(record.judge_run_ids):
         run = host.storage.load_eval_run(run_id, scope_id)
         if run is None:
-            raise NotFoundError("run", run_id)
+            raise NotFoundError("run", run_id, remedy=FIND_RUN)
         if run.candidate_kind != JUDGE_KIND:
             raise ValidationFailedError(
                 f"run {run_id!r} is of kind {run.candidate_kind!r}, not {JUDGE_KIND!r}; a judge profile is recorded "

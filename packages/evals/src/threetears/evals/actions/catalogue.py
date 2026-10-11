@@ -470,8 +470,18 @@ class ToolHints:
 
 
 def _property_meaning(schema: Mapping[str, Any]) -> dict[str, Any]:
-    """A parameter's schema with what may differ between actions removed: its title and its default."""
-    return {key: value for key, value in schema.items() if key not in {"title", "default"}}
+    """A parameter's schema with what may differ between actions removed: its title, its default, and whether it may be null.
+
+    One action may require a parameter another takes optionally — a template id a launch must name and a campaign
+    may — and the optional one's schema admits ``null`` for "not given". What the value IS does not differ, so a
+    nullable schema means what its one non-null branch means.
+    """
+    meaning = {key: value for key, value in schema.items() if key not in {"title", "default"}}
+    branches = meaning.get("anyOf")
+    if isinstance(branches, list) and len(branches) == 2 and {"type": "null"} in branches:
+        (value,) = [branch for branch in branches if branch != {"type": "null"}]
+        meaning = {**{key: v for key, v in meaning.items() if key != "anyOf"}, **value}
+    return meaning
 
 
 @dataclass(frozen=True)

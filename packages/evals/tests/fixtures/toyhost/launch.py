@@ -175,7 +175,7 @@ def toyhost_launch_host(
         # would measure one subject whatever it asked for.
         subject = TOYHOST_SUBJECTS.get(request.subject_id)
         if subject is None:
-            raise NotFoundError("subject", request.subject_id)
+            raise NotFoundError("subject", request.subject_id, remedy="list them first")
         # The launch's case set when it names one, else every invoice. A set's cases are already stored.
         cases = request.cases_or(toyhost_test_cases(request.template))
         for case in cases:

@@ -67,8 +67,8 @@ class _Noted(EvalBaseModel):
 #: The public errors a handler raises, by name, as the note names them.
 _ERRORS: dict[str, Callable[[], EvalServiceError]] = {
     "EvalServiceError": lambda: EvalServiceError("no", status_code=418),
-    "NotFoundError": lambda: NotFoundError("widget", "w-1"),
-    "ConflictError": lambda: ConflictError("busy"),
+    "NotFoundError": lambda: NotFoundError("widget", "w-1", remedy="list them first"),
+    "ConflictError": lambda: ConflictError("busy", remedy="try again"),
     "ValidationFailedError": lambda: ValidationFailedError("bad"),
     "StorageError": lambda: StorageError("down"),
     "ProviderRefusedError": lambda: ProviderRefusedError("rate limited"),
@@ -139,7 +139,8 @@ async def test_every_refusal_kind_round_trips_through_the_client(error: str) -> 
     text, structured, is_error = await _call(_served(_Host()), {"action": "note_take", "note": error})
     expected = Refusal.of(raised)
     assert is_error and structured == {"refusal": {"kind": expected.kind, "status": raised.status_code}}
-    assert text == f"refused: note_take: {raised.message}"
+    remedy = "" if raised.remedy is None else f"\nremedy: {raised.remedy}"
+    assert text == f"refused: note_take: {raised.message}{remedy}"
 
 
 # =============================================================================

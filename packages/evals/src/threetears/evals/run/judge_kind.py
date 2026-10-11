@@ -79,6 +79,7 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_RUN
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.cassettes import CellCassettes
@@ -317,7 +318,7 @@ def freeze_judge_cases(
     for run_id in run_ids:
         run = storage.load_eval_run(run_id, scope_id)
         if run is None:
-            raise NotFoundError("run", run_id)
+            raise NotFoundError("run", run_id, remedy=FIND_RUN)
         for result in storage.query_eval_results_by_run(run.id, scope_id):
             if wanted is not None and result.id not in wanted:
                 continue
@@ -763,7 +764,7 @@ def judge_kind(
     for dim, config_id in overlays.config_ids.items():
         config = storage.load_judge_config(config_id, scope_id)
         if config is None:
-            raise NotFoundError("judge_config", config_id)
+            raise NotFoundError("judge_config", config_id, remedy=FIND_JUDGE_CONFIG)
         configs[dim] = config
     try:
         return JudgeKind(

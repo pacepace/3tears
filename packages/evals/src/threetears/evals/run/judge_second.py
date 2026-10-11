@@ -72,6 +72,7 @@ from threetears.evals.run.rejudge import (
 )
 from threetears.evals.run.runner import build_judge_context, judge_dims, judge_requests
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_RUN
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.eval_host import EvalHost
@@ -228,7 +229,7 @@ def _collect(
     """
     run = storage.load_eval_run(run_id, scope_id)
     if run is None:
-        raise NotFoundError("run", run_id)
+        raise NotFoundError("run", run_id, remedy=FIND_RUN)
     if run.status in NON_TERMINAL_RUN_STATUSES:
         raise ValidationFailedError(f"run '{run_id}' is {run.status} — its results are still being written")
     # The run's judge is the FIRST judge, so its apparatus must be recorded; a second judge may be sampled at another
@@ -250,7 +251,7 @@ def _collect(
         for dim, config_id in judge.config_ids.items():
             config = storage.load_judge_config(config_id, scope_id)
             if config is None:
-                raise NotFoundError("judge_config", config_id)
+                raise NotFoundError("judge_config", config_id, remedy=FIND_JUDGE_CONFIG)
             if config.rubric_dim_id != dim:
                 raise ValidationFailedError(
                     f"judge config '{config_id}' asks for {config.rubric_dim_id!r}, not {dim!r}, so it cannot ask the "

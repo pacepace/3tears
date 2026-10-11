@@ -1764,7 +1764,7 @@ async def run_arms(
         try:
             refuse_unsupplied_world(template, profile=host.profile)
         except ValidationFailedError as refused:
-            raise ValueError(refused.message) from refused
+            raise ValueError(str(refused)) from refused
     _save_unless_unchanged(host, template, test_cases)
     # Each scorer's declared range, which every score it returns is held to: the bounded tests read it as a fact.
     ranges = {

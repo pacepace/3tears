@@ -50,6 +50,7 @@ from threetears.evals.kernel.campaign import (
 )
 from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
 from threetears.evals.kernel.errors import ConflictError, StorageError
+from threetears.evals.kernel.remedies import REREAD_AND_RETRY
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileStore
 from threetears.evals.schema.models import (
     EVAL_DOC_TYPES,
@@ -146,7 +147,7 @@ def save_document(
             repo.upsert(document, if_match=if_match)
     except StoreConflict as e:
         raise ConflictError(
-            f"{document.get('doc_type')} '{document.get('id')}' changed since it was read — re-read it and re-apply"
+            f"{document.get('doc_type')} '{document.get('id')}' changed since it was read", remedy=REREAD_AND_RETRY
         ) from e
     # prawduct:ok-broad-except — DB write boundary; re-raised as a typed eval error
     except Exception as e:
@@ -869,8 +870,9 @@ class EvalStorage:
         """
         if self._store.get(case_set.id, case_set.scope_id) is not None:
             raise ConflictError(
-                f"case set {case_set.name!r} v{case_set.version} already exists in scope {case_set.scope_id!r}; a "
-                "case set is append-only — mint the next version instead of rewriting this one"
+                f"case set {case_set.name!r} v{case_set.version} already exists in scope {case_set.scope_id!r}, and a "
+                "case set is append-only",
+                remedy="mint the next version with case_set_mint instead of rewriting this one",
             )
         self._save(case_set.to_dict())
 

@@ -83,7 +83,7 @@ def test_a_host_command_named_on_the_command_line_takes_host_too() -> None:
 
 def test_a_refusal_a_host_command_raises_exits_two(capsys: pytest.CaptureFixture[str]) -> None:
     def handle(host: Any, args: argparse.Namespace) -> int:
-        raise NotFoundError("session", "s-404")
+        raise NotFoundError("session", "s-404", remedy="list them first")
 
     command = HostCommand(name="capture", help="capture", configure=lambda _parser: None, handler=handle)
     assert (

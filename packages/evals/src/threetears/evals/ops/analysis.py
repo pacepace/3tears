@@ -52,6 +52,7 @@ from threetears.evals.ops.jobs import JobHandle, JobsStarted, analysis_job_id, g
 from threetears.evals.run.curation import delete_analysis, delete_insight, set_analysis_archived, set_campaign_archived
 from threetears.evals.schema.models import utc_now_iso
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import FIND_INSIGHT
 
 log = get_logger(__name__)
 
@@ -92,6 +93,13 @@ CONTROL_RUN_DESCRIPTION = (
 )
 
 
+CAMPAIGN_TEMPLATE_DESCRIPTION = (
+    "The template the campaign's runs ran, as templates_list names it — whose rubric dimensions and goal-state checks "
+    "a declared bar or guardrail margin may name. Omitted, it is the one template every run named ran, and none when "
+    "they ran several."
+)
+
+
 class CampaignDefinition(EvalBaseModel):
     """What creating a campaign names: what it is called, its subject and behaviour, its runs, and what it set out to learn.
 
@@ -104,6 +112,7 @@ class CampaignDefinition(EvalBaseModel):
     behavior: str
     description: str = ""
     run_ids: list[str] = Field(default_factory=list)
+    template_id: str | None = Field(default=None, min_length=1, description=CAMPAIGN_TEMPLATE_DESCRIPTION)
     declared_design: dict[str, Any] | None = Field(default=None, description=DECLARED_DESIGN_DESCRIPTION)
     control_from_run_id: str | None = Field(default=None, min_length=1, description=CONTROL_RUN_DESCRIPTION)
 
@@ -553,7 +562,8 @@ def _already_running(campaign_id: str, attempt_id: str) -> ConflictError:
     """The refusal of a second generation of a campaign, naming the live one's job."""
     return ConflictError(
         f"a generation of campaign '{campaign_id}' is already running "
-        f"(job {analysis_job_id(campaign_id, attempt_id)}); poll it rather than starting another"
+        f"(job {analysis_job_id(campaign_id, attempt_id)})",
+        remedy="poll it with job_poll rather than starting another",
     )
 
 
@@ -607,7 +617,9 @@ def _claim_generation_slot(host: EvalHost, campaign_id: str, scope_id: str, atte
             # NOSILENT: another start wrote the slot first; the re-read names its attempt
             continue
         return None
-    raise ConflictError(f"campaign '{campaign_id}''s generation slot kept changing; start the generation again")
+    raise ConflictError(
+        f"campaign '{campaign_id}''s generation slot kept changing", remedy="start the generation again"
+    )
 
 
 def report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat) -> ReportDocument:
@@ -815,7 +827,7 @@ def insight_get(host: EvalHost, insight_id: str, scope_id: str) -> InsightDetail
     """
     insight = host.storage.load_insight(insight_id, scope_id)
     if insight is None:
-        raise NotFoundError("insight", insight_id)
+        raise NotFoundError("insight", insight_id, remedy=FIND_INSIGHT)
     return InsightDetail(insight=insight, standing=_standing_of(insight, _insight_standing(host, [insight], scope_id)))
 
 

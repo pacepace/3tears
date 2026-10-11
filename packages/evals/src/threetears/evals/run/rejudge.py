@@ -33,6 +33,7 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import fold_judge_outcomes
+from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_TEMPLATE, FIND_TEST_CASE
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
@@ -156,7 +157,7 @@ def reproducible_judge_inputs(
     )
     test_case = storage.load_test_case(result.test_case_id, scope_id)
     if test_case is None:
-        raise NotFoundError("test_case", result.test_case_id)
+        raise NotFoundError("test_case", result.test_case_id, remedy=FIND_TEST_CASE)
     return ReproducibleJudgeInputs(
         template=template,
         test_case=test_case,
@@ -243,7 +244,7 @@ def judged_template(storage: JudgeInputStore, run: EvalRun, scope_id: str) -> Ev
         raise ValidationFailedError(f"run '{run.id}' is ad hoc, so there is no template to read its intent from")
     template = storage.load_template(run.template_id, scope_id)
     if template is None:
-        raise NotFoundError("template", run.template_id)
+        raise NotFoundError("template", run.template_id, remedy=FIND_TEMPLATE)
     # Templates are edited in place, and the judge reads the template's intent (and a config-less
     # dim's own text): an edit after launch would change the question.
     if template.updated_at > run.created_at:
@@ -311,7 +312,7 @@ def recorded_judge_configs(
             continue
         config = storage.load_judge_config(recorded_id, scope_id)
         if config is None:
-            raise NotFoundError("judge_config", recorded_id)
+            raise NotFoundError("judge_config", recorded_id, remedy=FIND_JUDGE_CONFIG)
         configs[dim] = config
     return configs
 

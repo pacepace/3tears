@@ -234,6 +234,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # registry's self-contradiction check and the prose gate all walk.
     "schema/schema_nesting.py",
     "kernel/errors.py",
+    "kernel/remedies.py",
     # The write-seam refusal of an undeclared authoring field, and the lock every writer of an
     # existing campaign holds. Each is shared by two packages that may not import each other —
     # authoring in run and in analysis, campaign writes in analysis and run's delete cascade — so

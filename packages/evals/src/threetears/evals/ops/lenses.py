@@ -87,6 +87,7 @@ from threetears.evals.run.launch import ArmOutcome, ArmPrice, ArmQuote, ArmVerdi
 from threetears.evals.run.reads import list_runs
 
 from threetears.evals.analysis.lens_text import exclusion_lines
+from threetears.evals.kernel.remedies import FIND_RUN, FIND_TEMPLATE
 
 
 def _lister(host: EvalHost) -> RunLister:
@@ -343,7 +344,7 @@ def runs_compare(host: EvalHost, baseline_run_id: str, candidate_run_id: str, sc
     def template(template_id: str) -> EvalTemplate:
         found = storage.load_template(template_id, scope_id)
         if found is None:
-            raise NotFoundError("template", template_id)
+            raise NotFoundError("template", template_id, remedy=FIND_TEMPLATE)
         return found
 
     def subject_detail(run: EvalRun) -> dict[str, dict[str, Any]]:
@@ -376,7 +377,7 @@ def _pair_disclosures(
     for run_id in (baseline_run_id, candidate_run_id):
         run = storage.load_eval_run(run_id, scope_id)
         if run is None:
-            raise NotFoundError("run", run_id)
+            raise NotFoundError("run", run_id, remedy=FIND_RUN)
         runs.append(run)
     windows = [
         window

@@ -63,6 +63,7 @@ from threetears.evals.schema.models import (
 from threetears.evals.run.check_controls import refuse_non_discriminating_checks
 from threetears.evals.run.curation import require_delete_confirmation
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_RUBRIC_DIM, FIND_TEMPLATE
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import DefinitionStore
@@ -109,7 +110,9 @@ def validated_kind_spec(template: EvalTemplate, *, profile: HostProfile) -> Base
     try:
         return profile.kind_contract(template.candidate_kind).validate_spec(template.kind_spec)
     except ValidationFailedError as refused:
-        raise ValidationFailedError(f"template {template.name!r}: {refused.message}", refused.details) from refused
+        raise ValidationFailedError(
+            f"template {template.name!r}: {refused.message}", refused.details, remedy=refused.remedy
+        ) from refused
 
 
 def create_template(
@@ -180,7 +183,10 @@ def create_template(
     )
 
     if host.storage.load_template_by_name(template.name, scope_id) is not None:
-        raise ConflictError(f"a template named '{template.name}' already exists")
+        raise ConflictError(
+            f"a template named '{template.name}' already exists",
+            remedy=f"name the new one something else, or use the existing one ({FIND_TEMPLATE})",
+        )
 
     host.storage.save_template(template)
     return template
@@ -415,7 +421,7 @@ def get_template(host: EvalHost, template_id: str, scope_id: str) -> EvalTemplat
     """
     template = host.storage.load_template(template_id, scope_id)
     if template is None:
-        raise NotFoundError("template", template_id)
+        raise NotFoundError("template", template_id, remedy=FIND_TEMPLATE)
     refuse_stale_presumptions(template, profile=host.profile)
     return template
 
@@ -479,7 +485,7 @@ def update_template(
     """
     existing = host.storage.load_template(template_id, scope_id)
     if existing is None:
-        raise NotFoundError("template", template_id)
+        raise NotFoundError("template", template_id, remedy=FIND_TEMPLATE)
     if not fields:
         raise ValidationFailedError("update_template requires at least one field to change")
     reject_unknown_authoring_fields("update_template", fields, EvalTemplate, TEMPLATE_SERVER_FIELDS)
@@ -594,7 +600,10 @@ def create_rubric_dim(storage: DefinitionStore, definition: dict[str, Any], *, s
         raise ValidationFailedError(f"invalid rubric dim definition: {e}") from e
 
     if storage.load_active_rubric_dim(dim.key, scope_id) is not None:
-        raise ConflictError(f"an active rubric dim with key '{dim.key}' already exists")
+        raise ConflictError(
+            f"an active rubric dim with key '{dim.key}' already exists",
+            remedy=f"key the new one differently, or update the existing one ({FIND_RUBRIC_DIM})",
+        )
 
     storage.save_rubric_dim(dim)
     return dim
@@ -608,7 +617,7 @@ def get_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str) -> Cata
     """
     dim = storage.load_rubric_dim(dim_id, scope_id)
     if dim is None:
-        raise NotFoundError("rubric dim", dim_id)
+        raise NotFoundError("rubric dim", dim_id, remedy=FIND_RUBRIC_DIM)
     return dim
 
 
@@ -650,7 +659,7 @@ def update_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str, fiel
     """
     existing = storage.load_rubric_dim(dim_id, scope_id)
     if existing is None:
-        raise NotFoundError("rubric dim", dim_id)
+        raise NotFoundError("rubric dim", dim_id, remedy=FIND_RUBRIC_DIM)
     if not fields:
         raise ValidationFailedError("update_rubric_dim requires at least one field to change")
     reject_unknown_authoring_fields("update_rubric_dim", fields, CatalogRubricDim, RUBRIC_DIM_SERVER_FIELDS)
@@ -719,7 +728,7 @@ def delete_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str, *, c
     """
     dim = storage.load_rubric_dim(dim_id, scope_id)
     if dim is None:
-        raise NotFoundError("rubric dim", dim_id)
+        raise NotFoundError("rubric dim", dim_id, remedy=FIND_RUBRIC_DIM)
     require_delete_confirmation(
         "rubric dim",
         dim_id,
@@ -781,7 +790,10 @@ def create_judge_config(storage: DefinitionStore, definition: dict[str, Any], *,
         raise ValidationFailedError(f"invalid judge config definition: {e}") from e
 
     if storage.load_active_judge_config(config.rubric_dim_id, scope_id) is not None:
-        raise ConflictError(f"an active judge config already exists for rubric dim '{config.rubric_dim_id}'")
+        raise ConflictError(
+            f"an active judge config already exists for rubric dim '{config.rubric_dim_id}'",
+            remedy=f"update the existing one instead ({FIND_JUDGE_CONFIG})",
+        )
 
     storage.save_judge_config(config)
     return config
@@ -795,7 +807,7 @@ def get_judge_config(storage: DefinitionStore, config_id: str, scope_id: str) ->
     """
     config = storage.load_judge_config(config_id, scope_id)
     if config is None:
-        raise NotFoundError("judge config", config_id)
+        raise NotFoundError("judge config", config_id, remedy=FIND_JUDGE_CONFIG)
     return config
 
 
@@ -849,7 +861,7 @@ def update_judge_config(storage: DefinitionStore, config_id: str, scope_id: str,
     """
     existing = storage.load_judge_config(config_id, scope_id)
     if existing is None:
-        raise NotFoundError("judge config", config_id)
+        raise NotFoundError("judge config", config_id, remedy=FIND_JUDGE_CONFIG)
     if not fields:
         raise ValidationFailedError("update_judge_config requires at least one field to change")
     # BEFORE the archive-and-recreate below, which is the whole reason this one matters:
@@ -935,7 +947,7 @@ def delete_judge_config(storage: DefinitionStore, config_id: str, scope_id: str,
     """
     config = storage.load_judge_config(config_id, scope_id)
     if config is None:
-        raise NotFoundError("judge config", config_id)
+        raise NotFoundError("judge config", config_id, remedy=FIND_JUDGE_CONFIG)
     require_delete_confirmation(
         "judge config",
         config_id,

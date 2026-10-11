@@ -16,6 +16,7 @@ This module reads the catalogue's types only for annotations, so the catalogue i
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -208,9 +209,28 @@ def refuse_invalid(tool: MountedTool, action: Action, invalid: ValidationError) 
 
 
 def refuse_by_engine(tool: MountedTool, action: Action, refused: EvalServiceError) -> str:
-    """A call the engine refused, with the engine's own reason."""
-    del tool
-    return f"refused: {action.name}: {refused.message}"
+    """A call the engine refused: the engine's own reason, then what to do next where the refusal names it.
+
+    A remedy naming an action this tool does not carry says which tool does — the remedy is the engine's and
+    names the catalogue's actions, while which of them a caller can reach here is this tool's — so an agent is
+    never sent to a call its tool would refuse as unknown.
+    """
+    lines = [f"refused: {action.name}: {refused.message}"]
+    if refused.remedy is not None:
+        lines.append(f"remedy: {refused.remedy}")
+        named = sorted(set(_ACTION_TOKEN.findall(refused.remedy)))
+        for name in named:
+            elsewhere = tool.catalogue.get(name)
+            if elsewhere is not None and tool.action(name) is None:
+                lines.append(
+                    f"{name} is a {elsewhere.permission} action, which tool {tool.name} does not carry: call it on "
+                    f"the tool that mounts {elsewhere.permission} actions"
+                )
+    return "\n".join(lines)
+
+
+#: A word that could name an action: two or more lowercase parts joined by underscores (``templates_list``).
+_ACTION_TOKEN = re.compile(r"\b[a-z]+(?:_[a-z]+)+\b")
 
 
 # --- results -----------------------------------------------------------------------------------------

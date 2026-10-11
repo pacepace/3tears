@@ -91,8 +91,8 @@ async def _call(tool: MountedTool, arguments: dict[str, Any]) -> ActionOutcome:
 #: One instance of every public error class, as a handler raises it, with the refusal it makes.
 _PUBLIC: dict[type[EvalServiceError], tuple[Callable[[], EvalServiceError], str, int]] = {
     EvalServiceError: (lambda: EvalServiceError("no", status_code=418), "refused", 418),
-    NotFoundError: (lambda: NotFoundError("run", "r-1"), "not_found", 404),
-    ConflictError: (lambda: ConflictError("busy"), "conflict", 409),
+    NotFoundError: (lambda: NotFoundError("run", "r-1", remedy="list them first"), "not_found", 404),
+    ConflictError: (lambda: ConflictError("busy", remedy="try again"), "conflict", 409),
     ValidationFailedError: (lambda: ValidationFailedError("bad", details={"field": "x"}), "validation_failed", 422),
     StorageError: (lambda: StorageError("down"), "storage_failed", 503),
     ProviderRefusedError: (lambda: ProviderRefusedError("rate limited"), "provider_refused", 502),
@@ -124,7 +124,7 @@ def test_the_kinds_are_one_per_public_error_class_and_no_more() -> None:
 
 @pytest.mark.parametrize(
     ("error", "kind", "status"),
-    [*_PUBLIC.values(), (lambda: _HostMissing("widget", "w-1"), "not_found", 404)],
+    [*_PUBLIC.values(), (lambda: _HostMissing("widget", "w-1", remedy="widgets_list names them"), "not_found", 404)],
     ids=[*(cls.__name__ for cls in _PUBLIC), "host-subclass"],
 )
 async def test_an_engine_refusal_carries_its_kind_and_status(
@@ -132,7 +132,9 @@ async def test_an_engine_refusal_carries_its_kind_and_status(
 ) -> None:
     outcome = await _call(_tool(error), {"action": "note_refuse", "note": "x"})
     assert outcome.is_error and outcome.refusal == Refusal(kind=kind, status=status)  # type: ignore[arg-type]
-    assert outcome.text == f"refused: note_refuse: {error().message}", "the teaching text is unchanged"
+    refused = error()
+    remedy = "" if refused.remedy is None else f"\nremedy: {refused.remedy}"
+    assert outcome.text == f"refused: note_refuse: {refused.message}{remedy}", "the teaching text, then the remedy"
     assert (outcome.structured, outcome.action) == (None, "note_refuse")
 
 

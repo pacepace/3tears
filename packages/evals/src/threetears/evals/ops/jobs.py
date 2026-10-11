@@ -87,6 +87,7 @@ from threetears.evals.run.job_work import (
 from threetears.evals.run.judge_second import SECOND_JUDGE_JOB, EvalSecondJudgePass, SecondJudgeReport
 from threetears.evals.run.judge_temperature import JUDGE_TEMPERATURE_JOB, EvalJudgeTemperatureCheck
 from threetears.evals.run.launch_job import LAUNCH_JOB, EvalLaunch
+from threetears.evals.kernel.remedies import FIND_JOB, FIND_RUN
 
 #: What a job's work is: a launch (its arms prepared and its runs run), one launched run, an analysis generation, a
 #: sweep launching its arms in order, a second judge's pass, a judge temperature comparison, or a host action's work.
@@ -483,7 +484,7 @@ async def _settled_attempt(
     """
     attempt = await _settled(host, ANALYSIS_JOB, attempt_id, scope_id)
     if attempt is None or attempt.campaign_id != campaign_id:
-        raise NotFoundError("analysis job", job_id)
+        raise NotFoundError("analysis job", job_id, remedy=FIND_JOB)
     return attempt
 
 
@@ -512,19 +513,19 @@ async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
     if kind == "run":
         run = await _settled(host, RUN_JOB, target_id, scope_id)
         if run is None:
-            raise NotFoundError("run", target_id)
+            raise NotFoundError("run", target_id, remedy=FIND_RUN)
         return _run_status(run)
     if kind == "sweep":
         sweep = await _settled(host, SWEEP_JOB, target_id, scope_id)
         if sweep is None:
-            raise NotFoundError("sweep", target_id)
+            raise NotFoundError("sweep", target_id, remedy=FIND_JOB)
         run_ids = [arm.run_id for arm in sweep.arms if arm.run_id is not None]
         runs = await run_blocking(eval_host.blocking_executor, eval_host.storage.load_eval_runs, run_ids, scope_id)
         return _sweep_status(sweep, {run.id: run for run in runs})
     if kind == "launch":
         launch = await _settled(host, LAUNCH_JOB, target_id, scope_id)
         if launch is None:
-            raise NotFoundError("launch", target_id)
+            raise NotFoundError("launch", target_id, remedy=FIND_JOB)
         started = await run_blocking(
             eval_host.blocking_executor, eval_host.storage.load_eval_runs, launch.run_ids, scope_id
         )
@@ -533,7 +534,7 @@ async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
     if kind == "second_judge":
         judged = await _settled(host, SECOND_JUDGE_JOB, target_id, scope_id)
         if judged is None:
-            raise NotFoundError("second judge pass", target_id)
+            raise NotFoundError("second judge pass", target_id, remedy=FIND_JOB)
         read: dict[str, Any] | None = None
         if judged.outcome == "completed" and judged.report is not None and judged.lost is None:
             results = await run_blocking(
@@ -548,13 +549,13 @@ async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
     if kind == "judge_temperature":
         check = await _settled(host, JUDGE_TEMPERATURE_JOB, target_id, scope_id)
         if check is None:
-            raise NotFoundError("judge temperature comparison", target_id)
+            raise NotFoundError("judge temperature comparison", target_id, remedy=FIND_JOB)
         comparison = None if check.answers is None else read_judge_temperatures(check.answers).model_dump(mode="json")
         return _record_status(job_id, kind, check, run_id=check.run_id, result=comparison)
     if kind == "action":
         acted = await _settled(host, ACTION_JOB, target_id, scope_id)
         if acted is None:
-            raise NotFoundError("action job", target_id)
+            raise NotFoundError("action job", target_id, remedy=FIND_JOB)
         return _record_status(job_id, kind, acted, result=acted.result)
     assert attempt_id is not None  # parse_job_id names an attempt for every analysis job
     return _attempt_status(job_id, await _settled_attempt(host, job_id, target_id, attempt_id, scope_id))
@@ -590,13 +591,14 @@ async def job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str |
     if kind == "run":
         run = await _settled(host, RUN_JOB, target_id, scope_id)
         if run is None:
-            raise NotFoundError("run", target_id)
+            raise NotFoundError("run", target_id, remedy=FIND_RUN)
         require_cancellable(run)
     else:
         status = await job_poll(host, job_id, scope_id)
         if status.done:
             raise ValidationFailedError(
-                f"{kind} job {job_id!r} is not running (it reads {status.state}); there is nothing to cancel"
+                f"{kind} job {job_id!r} is not running (it reads {status.state}); there is nothing to cancel",
+                remedy="read how it ended with job_poll",
             )
         if attempt_id is not None:
             record_id = attempt_id

@@ -1053,6 +1053,15 @@ class UndeclarableAxisError(ValueError):
     """
 
 
+#: How a campaign comes to have a template whose rubric dimensions and goal-state checks a bar or a guardrail
+#: margin may name — what every refusal of one that found none says. Both ways are reachable at creation:
+#: ``campaign_create`` takes ``template_id``, and infers it from runs that all ran one template.
+NO_TEMPLATE_REMEDY = (
+    "name the template with template_id when creating the campaign (templates_list names this scope's templates), "
+    "or create it over runs that all ran one template, which is then the campaign's"
+)
+
+
 def _refuse_unreadable_guardrail_margins(design: CampaignDesign, template: EvalTemplate | None) -> None:
     """Refuse a guardrail margin on anything but a boundary dimension of the campaign's template, or wider than its scale.
 
@@ -1068,7 +1077,8 @@ def _refuse_unreadable_guardrail_margins(design: CampaignDesign, template: EvalT
         dim = dims.get(entry.dimension)
         if dim is None or dim.axis != "boundary":
             why = (
-                "this campaign names no template that could be read, so no rubric dimension is known"
+                f"this campaign names no template that could be read, so no rubric dimension is known — "
+                f"{NO_TEMPLATE_REMEDY}"
                 if template is None
                 else "the template declares no such dimension"
                 if dim is None
@@ -1226,7 +1236,8 @@ def refuse_an_undeclarable_design(
         if template is None:
             minted = (
                 "The campaign's template: none — this campaign names no template that could be read, so no "
-                "rubric dimension or goal-state check is known beyond the reserved axes every run scores"
+                "rubric dimension or goal-state check is known beyond the reserved axes every run scores; "
+                f"{NO_TEMPLATE_REMEDY}"
             )
         else:
             dims = ", ".join(sorted(rubric)) or "none — the campaign's template declares no rubric"
@@ -1349,6 +1360,7 @@ def refuse_an_undeclarable_design(
 
 
 __all__ = [
+    "NO_TEMPLATE_REMEDY",
     "BarName",
     "BarNameKind",
     "BarNameRefusal",

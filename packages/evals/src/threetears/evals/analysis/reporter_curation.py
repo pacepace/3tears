@@ -20,6 +20,7 @@ from threetears.evals.analysis.reporter_bank import case_pair, decidable_reporte
 from threetears.evals.analysis.reporter_kind import reporter_case_of
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import FIND_TEST_CASE
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
@@ -104,7 +105,7 @@ def set_reporter_case_archived(
 
     current = storage.load_test_case(test_case_id, scope_id)
     if current is None:
-        raise NotFoundError("test case", test_case_id)
+        raise NotFoundError("test case", test_case_id, remedy=FIND_TEST_CASE)
     try:
         case = reporter_case_of(current)
     except ValueError as e:
@@ -162,7 +163,7 @@ def set_reporter_case_archived(
     # case as persisted", and only storage can say what that is.
     persisted = storage.load_test_case(test_case_id, scope_id)
     if persisted is None:
-        raise NotFoundError("test case", test_case_id)
+        raise NotFoundError("test case", test_case_id, remedy=FIND_TEST_CASE)
     return persisted
 
 

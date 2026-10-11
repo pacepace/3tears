@@ -257,7 +257,8 @@ async def test_a_missing_required_parameter_is_refused_naming_it(tools: dict[str
 async def test_an_engine_refusal_is_a_refused_call_with_the_engines_reason(tools: dict[str, Any]) -> None:
     outcome = await _call(tools["evals"], {"action": "run_get", "run_id": "no-such-run"})
     assert outcome.is_error and outcome.structured is None
-    assert outcome.text.startswith("refused: run_get: ") and outcome.text.endswith("'no-such-run' not found")
+    assert outcome.text.startswith("refused: run_get: ") and "'no-such-run' not found" in outcome.text
+    assert outcome.text.splitlines()[-1] == "remedy: runs_list names this scope's runs"
 
 
 async def test_a_destructive_action_refuses_a_confirm_that_does_not_echo_the_id(tools: dict[str, Any]) -> None:

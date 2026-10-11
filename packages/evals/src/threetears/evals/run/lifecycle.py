@@ -32,6 +32,7 @@ from threetears.evals.run.rejudge import apply_rejudge, failed_judge_dims, repro
 from threetears.evals.run.run_document import update_eval_run
 from threetears.evals.run.runner import build_judge_context, judge_dims
 from threetears.observe import get_logger
+from threetears.evals.kernel.remedies import FIND_RESULT, FIND_RUN
 
 if TYPE_CHECKING:
     from threetears.evals.schema.models import EvalResult, RunCompleteness
@@ -114,7 +115,7 @@ def get_run(storage: RunStore, run_id: str, scope_id: str) -> EvalRun:
     """
     run = storage.load_eval_run(run_id, scope_id)
     if run is None:
-        raise NotFoundError("run", run_id)
+        raise NotFoundError("run", run_id, remedy=FIND_RUN)
     return run
 
 
@@ -160,7 +161,7 @@ def cancel_run(
     """
     run, _ = settle_job_record(storage, RUN_JOB, run_id, scope_id)
     if run is None:
-        raise NotFoundError("run", run_id)
+        raise NotFoundError("run", run_id, remedy=FIND_RUN)
     require_cancellable(run)
     request_job_cancel(storage, run_id, scope_id, reason=reason)
     if job_manager is not None and job_manager.cancel_job(run_id, reason=reason):
@@ -174,7 +175,7 @@ def cancel_run(
         )
     current, _ = storage.load_job_record(EvalRun, run_id, scope_id)
     if current is None:
-        raise NotFoundError("run", run_id)
+        raise NotFoundError("run", run_id, remedy=FIND_RUN)
     return current
 
 
@@ -190,7 +191,8 @@ def require_cancellable(run: EvalRun) -> None:
     if run.status not in NON_TERMINAL_RUN_STATUSES:
         lost = f"; it was lost: {run.lost.cause}" if run.lost is not None else ""
         raise ValidationFailedError(
-            f"run '{run.id}' is {run.status} — only pending/running runs can be cancelled{lost}"
+            f"run '{run.id}' is {run.status} — only pending/running runs can be cancelled{lost}",
+            remedy="read how it ended with run_get",
         )
 
 
@@ -335,7 +337,7 @@ async def rejudge_result(
     # conditional: a re-judge racing another writer of this result is refused rather than clobbering it.
     result, etag = storage.load_eval_result_with_etag(result_id, scope_id)
     if result is None:
-        raise NotFoundError("result", result_id)
+        raise NotFoundError("result", result_id, remedy=FIND_RESULT)
     if result.judge_error is None:
         raise ValidationFailedError(f"result '{result_id}' has no judge_error — no judge dimension failed to re-judge")
     run = get_run(storage, result.eval_run_id, scope_id)
@@ -381,8 +383,8 @@ async def rejudge_result(
         )
         if isinstance(e, ConflictError):
             raise ConflictError(
-                f"result '{result_id}' changed while it was being re-judged; nothing was stored "
-                "— re-read it and re-judge again if a dim is still missing"
+                f"result '{result_id}' changed while it was being re-judged; nothing was stored",
+                remedy="re-read it and re-judge again if a dim is still missing",
             ) from e
         raise
     _recount_rejudged_exclusion(storage, run.id, scope_id, before=result, after=updated)
@@ -431,7 +433,7 @@ def _recount_rejudged_exclusion(
     for _ in range(3):
         run, etag = storage.load_eval_run_with_etag(run_id, scope_id)
         if run is None:
-            raise NotFoundError("run", run_id)
+            raise NotFoundError("run", run_id, remedy=FIND_RUN)
         if run.completeness is None or run.completeness.infra_excluded_cells == 0:
             return
         recounted = run.completeness.model_copy(

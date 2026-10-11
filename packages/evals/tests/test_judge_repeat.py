@@ -214,7 +214,7 @@ class _ConflictOnce(EvalStorage):
                 current.model_copy(update={"judge_repeats": [*current.judge_repeats, _OTHER_WRITERS_REPEAT]}),
                 if_match=etag,
             )
-            raise ConflictError("another writer got there first")
+            raise ConflictError("another writer got there first", remedy="try again")
         super().replace_eval_result(result, if_match=if_match)
 
 
