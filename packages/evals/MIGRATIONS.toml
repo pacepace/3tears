@@ -12,8 +12,10 @@
 # not checked against today's surface.
 #
 # Before tagging a release, rename the first section from "unreleased" to its version; after the tag, the next
-# release's work goes in a new "unreleased" section since that tag. tests/test_api_surface.py fails once HEAD is
-# past a tag with no section of its own, or while the unreleased section starts at an older tag.
+# release's work goes in a new "unreleased" section since that tag. tests/test_api_surface.py fails once the tree
+# follows a tag with no section of its own, or while the unreleased section starts at an older tag. The tree follows
+# the newest final release tag at or below its pyproject version, on any ref (a release is tagged on main, which
+# develop never merges back), and a pre-release tag only where HEAD has it.
 #
 # Each [[release.change]] is one move for one reason:
 #   from     the root the names left, in full

@@ -26,7 +26,7 @@ import textwrap
 import tomllib
 import types
 import typing
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from functools import cache
 from pathlib import Path
 from typing import Any, Literal
@@ -1004,26 +1004,86 @@ def history_findings(release: Release) -> list[Finding]:
 # --- labelling: a tagged release has its own section -------------------------------------------------------------
 
 
+#: A release tag: ``v<major>.<minor>.<patch>``, and a pre-release of that version with a suffix
+#: (``v0.66.0-evaladopt.7``). Every package of the family releases at one version, so every such tag is the
+#: package's too.
+_RELEASE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.]+))?$")
+
+#: A version as tags and ``pyproject.toml`` spell it, ordered: ``(major, minor, patch, final, suffix parts)``.
+_VersionKey = tuple[int, int, int, int, tuple[tuple[int, int | str], ...]]
+
+
+def _version_key(tag: str) -> _VersionKey | None:
+    """``tag``'s place in release order, or ``None`` for a tag that is no release's.
+
+    A pre-release sorts below its final release (``v0.66.0-evaladopt.7`` < ``v0.66.0``) and above every earlier
+    one; two pre-releases of one version sort by their suffixes, numeric parts as numbers (``.10`` after ``.9``).
+    """
+    matched = _RELEASE_TAG.match(tag)
+    if matched is None:
+        return None
+    major, minor, patch, suffix = matched.groups()
+    parts = tuple((0, int(part)) if part.isdigit() else (1, part) for part in (suffix or "").split(".") if part)
+    return int(major), int(minor), int(patch), 0 if suffix else 1, parts
+
+
+def newest_release_tag(reachable: Iterable[str], every: Iterable[str], version: str) -> str | None:
+    """The release the working tree's records follow: the newest of the tags it has shipped past, by release order.
+
+    **Not by reachability alone.** A release is tagged on ``main``, and ``develop`` never merges ``main`` back, so a
+    final release's tag is never behind ``develop``'s HEAD: read by reachability, ``develop`` would hold its records
+    against the release before, and fail the moment a real release is cut. So a final tag (``v<x>.<y>.<z>``, no
+    suffix) counts wherever it is, up to the version the tree prepares — a final release at or below it has shipped,
+    and the tree's records follow it. A pre-release tag (``v0.66.0-evaladopt.7``) is cut on the branch that carries
+    its work, so it counts only where HEAD has it: a branch that has not merged that work has not shipped past it.
+
+    Args:
+        reachable: The release tags behind HEAD.
+        every: Every release tag in the checkout, on any ref.
+        version: The version the tree prepares, as ``pyproject.toml`` states it.
+
+    Returns:
+        The newest such tag, or ``None`` when there is none.
+    """
+    prepared = _version_key(f"v{version}")
+    finals = [
+        tag
+        for tag in every
+        if (key := _version_key(tag)) is not None and key[3] == 1 and (prepared is None or key <= prepared)
+    ]
+    candidates = [tag for tag in {*reachable, *finals} if _version_key(tag) is not None]
+    return max(candidates, key=lambda tag: _version_key(tag) or (0, 0, 0, 0, ()), default=None)
+
+
+def package_version() -> str:
+    """The version the package's ``pyproject.toml`` states: the release the working tree prepares."""
+    project = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return str(project["project"]["version"])
+
+
 def newest_tag() -> str | None:
-    """The release tag nearest behind HEAD (``v<version>``), or ``None`` in a checkout without the tags."""
-    described = _git("describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", "HEAD")
-    return described.stdout.strip() if described.returncode == 0 else None
+    """The release tag the working tree's records follow (:func:`newest_release_tag`), or ``None`` without tags."""
+    every = _git("tag", "--list", "v[0-9]*")
+    reachable = _git("tag", "--merged", "HEAD", "--list", "v[0-9]*")
+    if every.returncode != 0 or reachable.returncode != 0:
+        return None
+    return newest_release_tag(reachable.stdout.split(), every.stdout.split(), package_version())
 
 
 def labelling_findings(migrations: Migrations, tag: str | None) -> list[Finding]:
-    """Where the sections disagree with the newest release tag behind HEAD.
+    """Where the sections disagree with the newest release the working tree follows (:func:`newest_tag`).
 
     A release is tagged with its section already named for it, and the next release's work goes in a new
     ``unreleased`` section ``since`` that tag. A tag cut with its section still called ``unreleased`` leaves that
     section open: the next release's records pile into it, are checked against the working tree from the tag
-    before, and ``release_notes.py v<tag>`` finds nothing. v0.66.0-evaladopt.7 shipped that way. So once HEAD is
-    past a tag, that tag must have a section of its own, and an ``unreleased`` section must start at it.
+    before, and ``release_notes.py v<tag>`` finds nothing. v0.66.0-evaladopt.7 shipped that way. So once the tree
+    follows a tag, that tag must have a section of its own, and an ``unreleased`` section must start at it.
     """
     if tag is None:
         return [
             Finding(
-                "MIGRATIONS.toml's sections are checked against the newest release tag behind HEAD, and this "
-                "checkout has none: fetch the tags (git fetch --tags, or fetch-depth: 0 in CI).",
+                "MIGRATIONS.toml's sections are checked against the newest release the working tree follows, and "
+                "this checkout has no release tag: fetch the tags (git fetch --tags, or fetch-depth: 0 in CI).",
                 False,
             )
         ]
@@ -1043,7 +1103,7 @@ def labelling_findings(migrations: Migrations, tag: str | None) -> list[Finding]
     if newest.version == "unreleased" and newest.since != tag:
         findings.append(
             Finding(
-                f"the unreleased section is since {newest.since}, but {tag} is the newest tag behind HEAD: "
+                f"the unreleased section is since {newest.since}, but {tag} is the newest release this tree follows: "
                 f'set since = "{tag}", and give {tag} its own section if it has none.',
                 False,
             )
