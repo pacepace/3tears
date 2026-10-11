@@ -44,6 +44,7 @@ from threetears.evals.analysis.agreement import DimensionAgreement, JudgeKey, Se
 from threetears.evals.analysis.judge_kind_readings import JudgeKindReading, JudgeKindReadings
 from threetears.evals.kernel.evidence_tiers import (
     JudgeEvidenceTier,
+    JudgeProfileConsulted,
     JudgeTierFromProfile,
     agreement_statistic,
     tier_of,
@@ -249,7 +250,22 @@ def tiers_with_judge_profiles(
         calibration, separation = profile.criteria()
         decided = tier_of(calibration, separation)
         if decided == "undetermined":
-            read.append(tier)
+            # Consulted, and said so: a profile that decides nothing either is a finding, not an absence.
+            read.append(
+                tier.model_copy(
+                    update={
+                        "consulted_profile": JudgeProfileConsulted(
+                            profile_id=profile.id,
+                            measured_at=profile.measured_at,
+                            cases=profile.cases,
+                            case_set_fingerprint=profile.case_set_fingerprint,
+                            run_ids=list(profile.run_ids),
+                            calibration=calibration,
+                            separation=separation,
+                        )
+                    }
+                )
+            )
             continue
         # Built, never copied with an update: the entry's own validator holds the tier to the criteria it carries.
         read.append(

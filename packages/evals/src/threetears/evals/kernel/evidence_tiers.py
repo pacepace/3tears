@@ -286,6 +286,22 @@ class JudgeTierFromProfile(EvalDocumentModel):
     )
 
 
+class JudgeProfileConsulted(EvalDocumentModel):
+    """A stored judge profile read for a judge the campaign's own evidence left undetermined, which decided no tier either.
+
+    Carried so the tier line says the profile was consulted — "nothing either way" is a finding about the profile,
+    and silence would leave a reader to guess whether one was looked for. The tier stays the campaign's own.
+    """
+
+    profile_id: str = Field(min_length=1, description="The stored judge profile read (`EvalJudgeProfile.id`).")
+    measured_at: str = Field(description="When the profile's measurement was taken: its latest trial's scored_at.")
+    cases: int = Field(ge=0, description="The distinct frozen cases the profile was measured on.")
+    case_set_fingerprint: str = Field(min_length=1, description="A digest of those cases (each id and content).")
+    run_ids: list[str] = Field(description="The judge campaign's runs the profile was measured by, sorted.")
+    calibration: TierCriterion = Field(description="The profile's agreement with its labels, which decided no tier.")
+    separation: TierCriterion = Field(description="The profile's agreement with its own repeats, which decided no tier.")
+
+
 class JudgeEvidenceTier(EvalDocumentModel):
     """The evidence tier of one judge's readings on one dimension, and the two measurements that decided it."""
 
@@ -324,6 +340,16 @@ class JudgeEvidenceTier(EvalDocumentModel):
         ),
     )
 
+    consulted_profile: JudgeProfileConsulted | None = Field(
+        default=None,
+        description=(
+            "Set when this campaign's own evidence decided no tier and a stored judge profile of this very judge and "
+            "criterion was read and decided none either: the tier stays the campaign's own, and the profile read is "
+            "named so the tier line says it was consulted. None when no profile was read, and whenever "
+            "`from_profile` is set."
+        ),
+    )
+
     @model_validator(mode="after")
     def _tier_follows_the_criteria(self) -> JudgeEvidenceTier:
         """Refuse a tier the criteria do not decide, or criteria held to thresholds other than the ruled ones.
@@ -345,6 +371,11 @@ class JudgeEvidenceTier(EvalDocumentModel):
         derived = tier_of(self.calibration, self.separation)
         if self.tier != derived:
             raise ValueError(f"these criteria decide {derived!r}, not {self.tier!r}")
+        if self.consulted_profile is not None and (self.from_profile is not None or self.tier != "undetermined"):
+            raise ValueError(
+                "a consulted profile is one that decided nothing for an undetermined judge; a tier read from a "
+                "profile carries from_profile instead"
+            )
         return self
 
 
@@ -482,6 +513,7 @@ def weakest_judged_tier(tiers: list[JudgedEvidenceTier]) -> JudgedEvidenceTier:
 
 
 __all__ = [
+    "JudgeProfileConsulted",
     "CALIBRATION_MIN_AGREEMENT",
     "CALIBRATION_MIN_RESULTS",
     "JUDGED_TIERS_WEAKEST_FIRST",

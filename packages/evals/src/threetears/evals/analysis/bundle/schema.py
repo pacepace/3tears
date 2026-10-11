@@ -2108,7 +2108,9 @@ class AnalysisContextBundle(EvalDocumentModel):
             "finding citing one stands on it. An entry carrying `from_profile` took its tier and criteria from a "
             "stored judge profile — this campaign's own evidence decided no tier, and a judge campaign's measurement "
             "of this very judge and criterion decided one: say so when citing it, with when and on how many frozen "
-            "cases the profile was measured, never as this campaign's own measurement."
+            "cases the profile was measured, never as this campaign's own measurement. An entry carrying "
+            "`consulted_profile` is undetermined, and a stored profile of its judge was read and decided nothing "
+            "either: say both."
         ),
     )
     inter_judge_agreement: InterJudgeAgreement = Field(
