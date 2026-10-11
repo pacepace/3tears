@@ -67,6 +67,7 @@ class _Reply:
     served_model: str | None = "scripted/judge-2026"
     reasoning_tokens: int | None = None
     stop_reason: StopReason = "end_turn"
+    temperature: float | None = None
 
 
 # parity-with: threetears.evals.schema.CompletionClient

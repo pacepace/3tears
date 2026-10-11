@@ -92,6 +92,7 @@ class _Completion:
     model: str
     served_model: str
     stop_reason: str = "end_turn"
+    temperature: float | None = None
     input_tokens: int = 10
     output_tokens: int = 5
     reasoning_tokens: int | None = None

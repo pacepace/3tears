@@ -463,6 +463,7 @@ class _Completion:
     content: str
     cost_usd: float | None
     stop_reason: str = "end_turn"
+    temperature: float | None = None
     input_tokens: int = 1000
     output_tokens: int = 700
     model: str = MODEL

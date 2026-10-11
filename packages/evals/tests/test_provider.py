@@ -49,6 +49,7 @@ class _Completion:
     served_model: str | None = None
     reasoning_tokens: int | None = None
     stop_reason: str = "end_turn"
+    temperature: float | None = None
 
 
 class TestSumOptionalTokens:

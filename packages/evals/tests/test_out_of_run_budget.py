@@ -43,6 +43,7 @@ class _Reported:
     content: str = "{}"
     served_model: str | None = None
     stop_reason: Any = "end_turn"
+    temperature: float | None = None
     input_tokens: Any = 10
     output_tokens: Any = 5
     reasoning_tokens: Any = None

@@ -56,6 +56,7 @@ from threetears.evals.schema.models import (
     EvalTemplate,
     EvalTestCase,
     JudgedArtifact,
+    MODEL_DEFAULT_TEMPERATURE,
     JudgeEvidence,
     JudgeRepeat,
     RepeatedScore,
@@ -79,7 +80,7 @@ _JUDGE = "judge/scripted"
 _DIM = "doc.faithful"
 _CEILING = 0.01
 #: The judge every scored dim here is read under: the run's one dim, served by the scripted judge, no config.
-_KEY = JudgeKey(_DIM, "ordinal", _JUDGE, None)
+_KEY = JudgeKey(_DIM, "ordinal", _JUDGE, None, MODEL_DEFAULT_TEMPERATURE)
 
 _EVIDENCE = JudgeEvidence(
     subject="The game master. Rules as written.",
@@ -92,6 +93,7 @@ _EVIDENCE = JudgeEvidence(
 class _Completion:
     content: str
     stop_reason: str = "end_turn"
+    temperature: float | None = None
     input_tokens: int = 10
     output_tokens: int = 5
     reasoning_tokens: int | None = None

@@ -36,7 +36,11 @@ from threetears.evals.schema.models import (
     ClientRequestSettings,
     JudgeTemperature,
 )
-from threetears.evals.schema.completion import JSON_OBJECT_RESPONSE_FORMAT, ProviderFailureDescriber
+from threetears.evals.schema.completion import (
+    JSON_OBJECT_RESPONSE_FORMAT,
+    CompletionResult,
+    ProviderFailureDescriber,
+)
 from threetears.evals.kernel.provider import (
     describe_and_log_failure,
     describe_incomplete_completion,
@@ -512,7 +516,7 @@ async def run_judge_llm(
     }
 
 
-def sent_temperature(completion: Any) -> JudgeTemperature | None:
+def sent_temperature(completion: CompletionResult) -> JudgeTemperature:
     """The temperature a judge completion was actually sent at, as its client reports it (#633).
 
     Read off :attr:`~threetears.evals.schema.completion.CompletionResult.temperature`, which the client
@@ -520,17 +524,29 @@ def sent_temperature(completion: Any) -> JudgeTemperature | None:
     temperature. The engine asks every judge call for :data:`~threetears.evals.schema.models.DEFAULT_JUDGE_TEMPERATURE`
     unless a config says otherwise, and never assumes the request was honoured.
 
+    **The attribute is the protocol's, not optional.** Read through ``hasattr``, a host whose completion type
+    omitted it had every judge recorded at no temperature — unrecordable as a profile, and "unknown" in every
+    judge comparison — with no error anywhere; so a completion without it is refused here, naming the check that
+    holds a host's type to the protocol.
+
     Args:
         completion: The judge call's completion.
 
     Returns:
-        The number sent; :data:`~threetears.evals.schema.models.MODEL_DEFAULT_TEMPERATURE` when the client
-        sent none; ``None`` when the completion reports nothing about it (a client predating the attribute, or
-        a test double) — not recorded, which every comparison reads as unknown.
+        The number sent; :data:`~threetears.evals.schema.models.MODEL_DEFAULT_TEMPERATURE` when the client sent none.
+
+    Raises:
+        TypeError: The completion carries no ``temperature`` — its type does not meet the
+            :class:`~threetears.evals.schema.completion.CompletionResult` protocol.
     """
-    if not hasattr(completion, "temperature"):
-        return None
-    sent = completion.temperature
+    try:
+        sent = completion.temperature
+    except AttributeError as missing:
+        raise TypeError(
+            f"{type(completion).__name__} carries no `temperature`, a member of the CompletionResult protocol: a judge "
+            "is recorded at the temperature its call was sent at, so report it (None when the request carried none) — "
+            "threetears.evals.testing.check_completion_conformance holds a host's completion type to the protocol"
+        ) from missing
     return MODEL_DEFAULT_TEMPERATURE if sent is None else float(sent)
 
 

@@ -420,16 +420,22 @@ class TestAClientThatIgnoresTemperature:
         assert (row.pinned.cases, row.pinned.mean_variance) == (0, None)
         assert "NOT COMPARABLE" in comparison.render()
 
-    async def test_a_client_that_reports_no_temperature_makes_the_comparison_not_comparable(self):
+    async def test_a_client_that_reports_no_temperature_fails_every_call_naming_the_protocol(self):
+        """Not two "unrecorded" settings read as a comparison: each call fails, its error naming the protocol member."""
         judge = _Judge()
         host, run_id = await _judged_run(judge)
         judge.sends = _UNREPORTED
 
-        comparison = await compare_judge_temperatures(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)
+        leases = JobLeases(host.storage, blocking_executor=host.blocking_executor)
+        try:
+            work = await judge_temperature_work(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)
+            ended = await run_job_work(work, store=host.storage, executor=host.blocking_executor, leases=leases)
+        finally:
+            await leases.shut_down()
 
-        assert not comparison.comparable
-        assert [read.recorded for read in comparison.settings] == [["unrecorded"], ["unrecorded"]]
-        assert [read.off_setting for read in comparison.settings] == [6, 6]
+        assert ended.answers is not None
+        errors = [answer.error for case in ended.answers.answers for answer in case.answers]
+        assert errors and all(error and "check_completion_conformance" in error for error in errors)
 
 
 #: The judge request settings a run recorded before ``strict_output`` joined the engine's defaults.
