@@ -37,6 +37,11 @@ from threetears.evals.analysis.report.model import (
 )
 
 #: The page's whole stylesheet: system fonts, a readable measure, light and dark from the reader's setting.
+#:
+#: The page is bounded at 920px so a table or figure has room, but at a 16px body that is about a hundred
+#: characters a line, too long to read prose at; so every prose block (headings that carry a sentence,
+#: paragraphs, list items, a chart's caption, a disclosure, a caveat) is capped at 70 characters, and tables
+#: and figures keep the page's full width (#683).
 _STYLE = """
 :root { color-scheme: light dark; --fg: #1d1d1f; --muted: #5f6368; --bg: #ffffff; --rule: #d9d9de; --note: #f4f4f6; }
 @media (prefers-color-scheme: dark) {
@@ -55,6 +60,7 @@ th, td { border-bottom: 1px solid var(--rule); padding: 4px 10px; text-align: le
 th { font-weight: 600; }
 figure { margin: 16px 0; }
 figcaption { margin-bottom: 6px; }
+h1, h3, p, li, figcaption, .disclosure, .caveat { max-width: 70ch; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; }
 """
 

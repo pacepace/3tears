@@ -178,6 +178,14 @@ class ResolvesInto:
     own; where no level has two, the fold still applies and every comparison it applies to is marked
     ``unverified_fold``, because a check that could not run is not a pass.
 
+    **A residual reader makes one arm per level testable.** ``read_residual``, optional, reads the surface
+    off a run with this knob's contribution taken back out (called with the knob's lever name as the one
+    removed member; :data:`~threetears.evals.kernel.host.sweepables.ResidualReader`). Where every level of the
+    knob was run by one arm, the engine compares those residuals across the runs: equal, the knob accounts for
+    the surface's whole movement and the fold is checked; unequal, something else wrote into it and it stays a
+    lever and a confound of its own; a ``None`` from any run (it cannot say) leaves the fold ``unverified_fold``.
+    A host that declares no reader is read as before.
+
     Written beside the other markers, and combinable with them:
     ``Annotated[Literal["low", "high"], Ordinal(), ResolvesInto("llm_parameters")]``. The name
     must be a ``lever`` the host itself declares, not an open family, and not one another knob or
@@ -193,6 +201,7 @@ class ResolvesInto:
     """
 
     lever: str
+    read_residual: ResidualReader | None = None
 
 
 class KindContractError(TypeError):
@@ -213,6 +222,7 @@ class _Knob:
     acts_on: str | None
     resolves_into: str | None
     member_acts_on: tuple[tuple[str, str], ...] = ()
+    resolves_into_residual: ResidualReader | None = None
 
 
 @dataclass(frozen=True)
@@ -406,6 +416,7 @@ class KindContract:
                     reader_prose=knob.prose,
                     acts_on=knob.acts_on,
                     resolves_into=knob.resolves_into,
+                    read_residual=knob.resolves_into_residual,
                     departs_production=self._departs(knob.field_name),
                 )
             )
@@ -609,7 +620,8 @@ def _read_knob(prefix: str, name: str, info: FieldInfo) -> tuple[_Knob | None, l
     ordinal = any(isinstance(marker, Ordinal) for marker in info.metadata)
     interval = next((marker for marker in info.metadata if isinstance(marker, Interval)), None)
     acts_on = [marker.measure for marker in info.metadata if isinstance(marker, ActsOn)]
-    resolves_into = [marker.lever for marker in info.metadata if isinstance(marker, ResolvesInto)]
+    resolves_into_markers = [marker for marker in info.metadata if isinstance(marker, ResolvesInto)]
+    resolves_into = [marker.lever for marker in resolves_into_markers]
     member_acts_on = [marker.members for marker in info.metadata if isinstance(marker, MemberActsOn)]
     numeric = annotation in (int, float)
     family = typing.get_origin(annotation) in (dict, Mapping)
@@ -658,6 +670,7 @@ def _read_knob(prefix: str, name: str, info: FieldInfo) -> tuple[_Knob | None, l
             acts_on=acts_on[0] if acts_on else None,
             resolves_into=resolves_into[0] if resolves_into else None,
             member_acts_on=member_acts_on[0] if member_acts_on else (),
+            resolves_into_residual=resolves_into_markers[0].read_residual if resolves_into_markers else None,
         ),
         [],
     )

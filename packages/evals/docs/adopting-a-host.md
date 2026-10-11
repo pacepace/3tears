@@ -360,6 +360,14 @@ more arms (differing in, say, the model) can show the surface moving on its own.
 sweep still folds, but every comparison that does carries an `unverified_fold:llm_parameters` confound, which the
 analysis generator and the code-only report both state.
 
+A residual reader checks that sweep. `ResolvesInto("llm_parameters", read_residual=reader)` takes a
+`reader(run, results, removed)` that returns the surface with the knob's contribution taken out (`removed` is the
+knob's lever name), as JSON-safe content, or `None` where the run cannot say: the model parameters without their
+`reasoning_effort` entry, say. Where every knob level was run by one arm, the engine compares the residuals across
+the runs. Equal, the fold is checked and carries no mark; unequal, something else wrote into the surface and it
+stays a lever and a confound; any `None` leaves it `unverified_fold`. A host's own fixed lever takes the same reader
+as `Sweepable(resolves_into=..., read_residual=...)`. With no reader, nothing changes.
+
 The lever named must be a fixed `lever` your host declares, not an open family, and not one another knob already
 names (`RegistrationError`); a field marked twice is refused (`KindContractError`). The marker moves no variant key.
 A host's own fixed lever declares the same thing as `Sweepable(resolves_into=...)`. One surface takes one knob: if
@@ -413,6 +421,29 @@ prices it. `plan_arm` is therefore where a kind makes its request-level refusals
 `require_candidate_model` — a judge or simulator it needs), and the launch tail then holds each launcher to
 its plan. The full rule is in [Cost and budgets: every arm is priced before any launcher
 runs](cost-and-budgets.md#every-arm-is-priced-before-any-launcher-runs).
+
+**Price a floor under your subject kind's judge and simulator calls.** A judged subject kind — a persona, a
+classifier — registers `price_subject_call_floor` (from `threetears.evals.run`) as its `price_largest_call`:
+
+```python
+LaunchableKind(
+    launch=your_persona_launcher,
+    resolve_subject=your_persona_subject,
+    plan_arm=plan_persona_arm,  # plan_judge(eval_host, request.template, pin, request.judge_config_ids, ...)
+    price_largest_call=lambda request: price_subject_call_floor(
+        eval_host, request, judged_artifact=JudgedArtifact.TRANSCRIPT  # or DOCUMENT: what your judge reads
+    ),
+)
+```
+
+It prices the smallest judge call every judged case makes, and the smallest utterance your simulated user is
+bound to make, with the transcript and evidence left out, on the clients your cells call through. The estimate
+and the launch then refuse an arm whose cap cannot afford even that, before anything is spent. That catches a
+judge or simulator client whose output cap and retries alone put one call above the cap. Pass the `eval_host`
+your launcher builds the judge on and the `judged_artifact` it hands `build_judge_service`. The figure is a
+floor, not the largest call (`CallCeiling.lower_bound`): a cap above it is admitted, and a call its transcript
+makes larger is still held to the cap as the run reserves it. A kind with no judge and no simulated user has
+nothing to price here, and returns `None`.
 
 **A transport launches in two halves.** `run_launch` admits the launch in its call (`admit_launch`: every refusal
 above, every arm planned and priced, the runs' room reserved) and runs the rest as one job

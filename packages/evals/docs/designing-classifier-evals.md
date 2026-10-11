@@ -325,8 +325,9 @@ cases is marked "too few cases to read alone": three lookalikes with one right g
 6% to 79%. Add cases to it before acting on it.
 
 For generated cases, mark the variation axis that names the kind with `stratum=True` and each generated case
-takes that axis's value as its stratum. `run_eval` cannot set a stratum yet, so strata need cases stored as test
-cases, as a classifier kind's are.
+takes that axis's value as its stratum. On the quick path, give each case its kind under a key and name the key:
+`run_eval(cases, classify, expected=..., stratum_key="kind")`, or the same on `compare`
+([section 9](#the-quick-path-run_eval)).
 
 ## 8. Maintaining the set
 
@@ -381,6 +382,27 @@ per cause, such as `"(truncated)"`; each counts as its own predicted label.
 `run_eval` refuses an `expected=` that gives a case a blank, non-string or `UNUSABLE_ANSWER` label. Scorers
 still work beside `expected=`, each reported as its own measure. Two runs over the same cases are runs of one
 template, and so comparable, only when they expect the same labels.
+
+To read the results per kind of case ([section 7](#reading-results-by-kind-of-case)), put each case's kind under
+a key of the case and pass that key as `stratum_key=`:
+
+```python
+cases = [
+    {"text": "Book me a table in Paris.", "expected": "DIRECT", "kind": "plain"},
+    {"text": "Paris is lovely in spring.", "expected": "NONE", "kind": "lookalike"},
+    ...
+]
+summary = await run_eval(cases, classify, scope_id="dev", expected=lambda case: case["expected"], stratum_key="kind")
+```
+
+The key is taken out of every case before `classify`, a scorer, `expected=` or a judge is handed it, so the
+model is never told it faces a lookalike, and it is stored as each test case's stratum. `summary.strata` reads
+every measure again per kind (`match` is that kind's accuracy) and `render()` prints them under `by stratum:`,
+a kind with fewer than 10 cases marked too few to read alone. A case without the key declares none and is read
+under `(no stratum)`. `compare` takes the same key, and its report gains the **By stratum** table, which
+`comparison.strata()` reads row by row. The stratum is not part of what makes two runs runs of one template: change
+a case's kind and the next run stores it on the same case, so every run over that case, earlier ones included, is
+then read under the new kind.
 
 ### A classifier kind
 

@@ -72,7 +72,11 @@ from threetears.evals.kernel import (
 from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, DocumentStore, utc_now_iso
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, RUN_MARGIN_MEASURES, run_margin_refusal
+from threetears.evals.analysis.bundle.surface import bundle_decision_surface
+from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.summary import CaseResult, EvalSummary, self_judging_text
+from threetears.evals.analysis.surface_table import REFERENCE_MARK
+from threetears.evals.analysis.viz_refs import cell_arm_labels
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Judge
 from threetears.evals.quick.levers import refuse_unusable_lever_names
@@ -137,6 +141,8 @@ class Comparison:
             bundle decided it; empty when no reading is a guardrail. :meth:`guardrails` reads it row by row and
             :meth:`guardrail_standing` arm by arm.
         arm_variants: Each arm's variant key, by its key in :attr:`arms`: what the bundle names the arm by.
+        labelled_arms: Each arm's key, by the words the report names it by (``candidate=baseline``), for reading a
+            table that names arms in words back to their keys; an arm no variant matched is ``None``.
     """
 
     campaign_id: str
@@ -152,6 +158,7 @@ class Comparison:
     kind: str = field(default=CALLABLE_KIND, repr=False, compare=False)
     guardrail_readings: GuardrailReadings = field(default_factory=GuardrailReadings, repr=False, compare=False)
     arm_variants: dict[ArmKey, str] = field(default_factory=dict, repr=False, compare=False)
+    labelled_arms: dict[str, ArmKey | None] = field(default_factory=dict, repr=False, compare=False)
 
     def results(self, arm: ArmKey) -> list[CaseResult]:
         """Every result of one arm: each case's answer on each repeat, its grades, and why it failed or was excluded.
@@ -262,6 +269,53 @@ class Comparison:
             ValueError: A ``fail_on`` name that is no outcome, or a reading no verdict is on.
         """
         return gate_verdicts(self.report.verdicts, fail_on=fail_on, readings=readings)
+
+    def strata(self, arm: ArmKey | None = None, *, reading: str | None = None) -> list[dict[str, Any]]:
+        """The rows of the report's "By stratum" table: each arm's figures over all cases, then per kind of case.
+
+        Present when the cases declare strata (``compare(stratum_key=...)``). Each arm opens with a ``cases`` row
+        saying how many cases and observations each column rests on, a stratum of fewer than
+        ``STRATUM_MIN_CASES`` (10) cases marked too few to read alone, then one row per reading.
+
+        Args:
+            arm: Only this arm's rows, by its key in :attr:`arms`; ``None`` keeps every arm's.
+            reading: Only the rows on this reading, as the report heads it (``"Accuracy"``), or ``"cases"``;
+                ``None`` keeps every row.
+
+        Returns:
+            One row per arm and reading, keyed ``arm`` (the arm, by its key in :attr:`arms`), ``label`` (the arm as
+            the report names it), ``reading``, ``all`` (the figure over every case) and ``strata`` (the figure
+            over each stratum's cases alone, by stratum name, the cases declaring none under ``"(no stratum)"``;
+            a stratum the arm has no case in is absent); empty when no case declares a stratum.
+
+        Raises:
+            ValueError: ``arm`` names no arm.
+        """
+        if arm is not None:
+            _refuse_an_unknown_control(self.arms, arm, said="arm")
+        tables = [block for block in self.report.blocks if isinstance(block, TableBlock) and block.name == "strata"]
+        rows: list[dict[str, Any]] = []
+        for table in tables:
+            headers = {column.key: column.header for column in table.columns}
+            for row in table.values():
+                label = str(row["arm"]).removesuffix(f" {REFERENCE_MARK}")
+                key = self.labelled_arms.get(label)
+                if (arm is not None and key != arm) or (reading is not None and row["reading"] != reading):
+                    continue
+                rows.append(
+                    {
+                        "arm": key,
+                        "label": label,
+                        "reading": row["reading"],
+                        "all": row["all"],
+                        "strata": {
+                            headers[column]: value
+                            for column, value in row.items()
+                            if column not in ("arm", "reading", "all") and value is not None
+                        },
+                    }
+                )
+        return rows
 
     def guardrails(self, arm: ArmKey | None = None) -> list[dict[str, Any]]:
         """The rows of the report's "Guardrails against the control" table: each guardrail, for each arm.
@@ -507,6 +561,12 @@ def _declare(
         if (variant := variant_key_of_run(list_results(host.storage, summary.run_id, scope_id))) is not None
     }
     arm_of_variant = {variant: arm for arm, variant in arm_variants.items()}
+    surface = bundle_decision_surface(bundle)
+    labels = cell_arm_labels(surface, list(bundle.variant_index))
+    labelled_arms = {
+        labels[cell_ref(cell.variant_key, cell.apparatus_class_id)]: arm_of_variant.get(cell.variant_key)
+        for cell in surface.cells
+    }
     report = _with_self_judging_disclosed(report, arms, factors)
     report = _with_no_margin_disclosed(report, bundle)
     report = _with_guardrail_standing_disclosed(report, bundle, arm_variants, factors)
@@ -530,6 +590,7 @@ def _declare(
         kind=kind,
         guardrail_readings=bundle.guardrails,
         arm_variants=arm_variants,
+        labelled_arms=labelled_arms,
     )
 
 
@@ -716,6 +777,7 @@ async def compare(
     control: ArmKey,
     scope_id: str | None = None,
     expected: ExpectedLabel | None = None,
+    stratum_key: str | None = None,
     judge: Judge | None = None,
     intent: str | None = None,
     host: EvalHost | None = None,
@@ -757,6 +819,11 @@ async def compare(
             stores them in :data:`~threetears.evals.quick.one_call.DEFAULT_QUICK_SCOPE`, in the in-memory store the
             call builds. A host or a store of your own needs one.
         expected: Declares every candidate a classifier, as :func:`~threetears.evals.quick.run_eval` takes it.
+        stratum_key: The key each case carries its stratum under (``"kind"``), as
+            :func:`~threetears.evals.quick.run_eval` takes it: taken out of every case before any arm sees it, and
+            stored as its test case's stratum. The report then carries its By stratum table — each arm's figures
+            over all cases, then over each stratum's, a stratum of fewer than 10 cases called too few to read
+            alone — which :meth:`Comparison.strata` reads.
         judge: A model grading every arm's answers on one rubric, as :func:`~threetears.evals.quick.run_eval`
             takes it. ONE judge for every arm — its model, rubric and judge configs — so no difference between
             the arms is a difference in how they were judged, and the report contrasts every arm against the
@@ -921,6 +988,7 @@ async def compare(
         scorers,
         scope_id=scope_id,
         expected=expected,
+        stratum_key=stratum_key,
         judge=judge,
         intent=intent,
         host=host,

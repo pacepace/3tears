@@ -73,7 +73,10 @@ CORE_BASELINE_VERSION: Final[int] = 8
 #:   ``EvalJudgeTemperatureCheck``, ``EvalActionJob``, ``EvalSweep`` and ``EvalAnalysisAttempt``. Additive: the v10 step
 #:   is the identity, and a v10 record reads with none — its ending's words are in ``detail`` (an attempt's ``error``)
 #:   as they always were, and its kind is not recorded.
-CORE_SCHEMA_VERSION: int = 11
+#: - **v12** — a run carries the labels an operator gave it (#648): ``EvalRun.labels``, a sorted list of short
+#:   names, empty by default and in no identity key. Additive: the v11 step is the identity, and a v11 run reads
+#:   with none — no one had labelled it.
+CORE_SCHEMA_VERSION: int = 12
 """The core version this build writes, and the newest a read of a core document accepts.
 
 How each value a core document stored at v8 predates reads — a field v8 gained after the document was
@@ -419,6 +422,12 @@ CORE_UPGRADERS: tuple[CoreUpgrader, ...] = (
             "v11 adds the optional refusal a job ended on (its kind and status) to every job record but a run's; a "
             "v10 one has none, which v11 reads as not recorded"
         ),
+        upgrade=lambda document: document,
+    ),
+    CoreUpgrader(
+        from_version=11,
+        doc_types=frozenset({"eval_run"}),
+        reason="v12 adds the labels an operator gave a run; a v11 run has none, which v12 reads as never labelled",
         upgrade=lambda document: document,
     ),
 )

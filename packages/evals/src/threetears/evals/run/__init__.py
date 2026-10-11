@@ -54,6 +54,7 @@ from threetears.evals.run.jobs import (
 )
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_MAX_TOKENS, JUDGE_REQUEST_SETTINGS, run_judge_llm
 from threetears.evals.run.judge_service import JudgeRequest, JudgeService
+from threetears.evals.run.call_floor import price_subject_call_floor
 from threetears.evals.run.launch import (
     AdmittedLaunch,
     admit_group,
@@ -359,6 +360,7 @@ __all__ = [
     "no_launcher_for",
     "plan_judge",
     "price_arms",
+    "price_subject_call_floor",
     "quote_launch",
     "refuse_ignored_template_fields",
     "require_candidate_model",

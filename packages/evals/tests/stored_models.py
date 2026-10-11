@@ -209,7 +209,8 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
             )
         ]
     ),
-    "EvalRun": make_eval_run,
+    # Labelled, so the frozen core corpus from v12 holds a run carrying the labels v12 added (#648).
+    "EvalRun": lambda: make_eval_run(labels=["baseline", "production-2026-10"]),
     "EvalTemplate": make_template,
     "EvalTestCase": make_test_case,
     "EvalTrace": make_eval_trace,

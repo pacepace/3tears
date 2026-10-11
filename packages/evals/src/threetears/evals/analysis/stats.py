@@ -1355,6 +1355,49 @@ def contrast_samples(
     return a, b, paired
 
 
+#: The fewest paired cases a between-arm correlation is reported over. Two points always lie on a line, so a
+#: correlation over two is ±1 whatever the arms did; from three it can say something.
+MIN_PAIRS_FOR_CORRELATION: Final[int] = 3
+
+
+def pairing_correlation(a: Sequence[float], b: Sequence[float]) -> float | None:
+    """Pearson's r between two paired samples: how far the arms' per-case results moved together.
+
+    Pairing on the case removes the between-case variance the two arms share, so it buys power exactly as far as
+    their per-case results correlate: the paired difference's variance is ``var(a) + var(b) − 2·r·sd(a)·sd(b)``.
+    Reported beside a paired comparison so a reader sees what pairing bought (Miller, *Adding Error Bars to
+    Evals*, 2024): near 1 it bought much, near 0 nothing, and a negative r means the paired test is WEAKER than an
+    unpaired one would have been.
+
+    Args:
+        a: One side's per-case values.
+        b: The other side's, aligned with ``a`` case by case.
+
+    Returns:
+        r, in [-1, 1]; None below :data:`MIN_PAIRS_FOR_CORRELATION` pairs, and where either side has no spread
+        (a constant has no correlation with anything).
+
+    Raises:
+        ValueError: If the two samples are not the same length.
+    """
+    if len(a) != len(b):
+        raise ValueError(f"a correlation pairs its samples case by case; got {len(a)} and {len(b)} values")
+    n = len(a)
+    if n < MIN_PAIRS_FOR_CORRELATION:
+        return None
+    mean_a = math.fsum(a) / n
+    mean_b = math.fsum(b) / n
+    centred_a = [x - mean_a for x in a]
+    centred_b = [y - mean_b for y in b]
+    spread_a = math.fsum(x * x for x in centred_a)
+    spread_b = math.fsum(y * y for y in centred_b)
+    if spread_a <= 0.0 or spread_b <= 0.0 or _all_equal(list(a)) or _all_equal(list(b)):
+        return None
+    r = math.fsum(x * y for x, y in zip(centred_a, centred_b)) / math.sqrt(spread_a * spread_b)
+    # A float residue can carry |r| a hair past 1 on perfectly collinear samples.
+    return max(-1.0, min(1.0, r))
+
+
 #: Why a guardrail on a reading with no declared range is never read ``held`` (#695's rule, applied to guardrails).
 GUARDRAIL_HELD_NEEDS_RANGE = (
     "declare value_range on this measure (on compare(), ranges= beside the scorer) for it to be shown held: it "
@@ -2561,6 +2604,7 @@ __all__ = [
     "GUARDRAIL_OUTSIDE_RANGE",
     "GuardrailVerdict",
     "INTERVAL_LEVEL",
+    "MIN_PAIRS_FOR_CORRELATION",
     "MIN_PAIRS_FOR_DETERMINISTIC_GAP",
     "MULTIPLE_COMPARISON_CORRECTION",
     "PAIRED_TEST_NAME",
@@ -2604,6 +2648,7 @@ __all__ = [
     "paired_detectable_difference",
     "paired_equivalence",
     "paired_t_power",
+    "pairing_correlation",
     "PredictionPoweredMean",
     "prediction_powered_mean",
     "proportion_interval",

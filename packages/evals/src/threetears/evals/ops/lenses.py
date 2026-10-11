@@ -484,6 +484,9 @@ class ArmEstimate(EvalBaseModel):
             priced it (:class:`~threetears.evals.run.CallCeiling`) — an arm whose largest call is above its cap is
             refused, since its run could never make that call; ``None`` when its kind does not price its calls
             before launch.
+        call_ceiling_lower_bound: Whether ``call_ceiling_usd`` is a floor under the arm's largest call rather than
+            its exact ceiling — a subject kind's, priced with its transcripts left out
+            (:attr:`~threetears.evals.run.CallCeiling.lower_bound`). Its largest call is reserved at that or more.
     """
 
     described: str
@@ -500,6 +503,7 @@ class ArmEstimate(EvalBaseModel):
     refusal: str | None
     remedy: str | None = None
     call_ceiling_usd: float | None = None
+    call_ceiling_lower_bound: bool = False
 
 
 class DetectableEffect(EvalBaseModel):
@@ -899,6 +903,7 @@ def _arm_estimate(arm: ArmVerdict, k_runs: int, n_variations: int) -> ArmEstimat
         refusal=arm.refusal,
         remedy=arm.remedy,
         call_ceiling_usd=plan.call_ceiling.usd if plan is not None and plan.call_ceiling is not None else None,
+        call_ceiling_lower_bound=plan is not None and plan.call_ceiling is not None and plan.call_ceiling.lower_bound,
     )
 
 

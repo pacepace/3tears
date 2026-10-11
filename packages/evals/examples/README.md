@@ -47,7 +47,7 @@ in a comparison, where the arms disagree (`comparison.results(arm)`). Read them 
 |---|---|---|---|
 | 0 | [`rung_zero.py`](rung_zero.py) | Does my function give the right answer on my cases? | `run_eval`; `expected=` and a scorer; `summary.misses()` |
 | 1 | [`llm_judge.py`](llm_judge.py) | Is each answer helpful, and does it say only what its source supports? | `Judge`: a model grades each answer against a rubric |
-| 2 | [`compare_two_prompts.py`](compare_two_prompts.py) | What does the new prompt change, and is the difference real or noise? | `compare`: arms, a control, delta, its interval, a verdict; the cases kept as a file, [`tickets.jsonl`](tickets.jsonl), that every prompt version runs against |
+| 2 | [`compare_two_prompts.py`](compare_two_prompts.py) | What does the new prompt change, and is the difference real or noise? | `compare`: arms, a control, delta, its interval, a verdict; each arm per kind of case (`stratum_key=`, `comparison.strata()`); the cases kept as a file, [`tickets.jsonl`](tickets.jsonl), that every prompt version runs against |
 | 3 | [`compare_two_models.py`](compare_two_models.py) | Is the cheaper model good enough for this prompt, given what it saves? | `Answer` (each arm's spend), `margins={"accuracy": ...}`: only `equivalent` says "good enough"; typed verdicts |
 | 4 | [`prompt_x_model.py`](prompt_x_model.py) | What does changing the prompt do on each model? | `factors=`, and `Comparison.against` for a second control |
 | 5 | [`cassettes.py`](cassettes.py) | How do I compare candidates fairly when the tool they call answers differently every time? | `tools=`, `cassette_mode=`: capturing and replaying tool results |
@@ -62,8 +62,9 @@ The [tutorial](../docs/tutorial.md) walks the same capabilities in the same orde
 
 These are documented in the guides:
 
-- Judge reliability and evidence tiers, and results by kind of case (strata):
-  [Reading reports](../docs/reading-reports.md).
+- Judge reliability and evidence tiers: [Reading reports](../docs/reading-reports.md). Results by kind of case
+  (strata) are read in [`compare_two_prompts.py`](compare_two_prompts.py), and explained in
+  [Reading reports](../docs/reading-reports.md#results-by-kind-of-case-strata).
 - Declaring a campaign's design (axes, question, bar), and when exploring without one is the right call:
   [Choosing a design](../docs/choosing-a-design.md).
 - Budgets and spend caps: [Cost and budgets](../docs/cost-and-budgets.md).

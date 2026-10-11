@@ -21,6 +21,7 @@ from threetears.evals.analysis.summary import EvalSummary, summarize_run
 from threetears.evals.run.authoring import list_templates
 from threetears.evals.run.case_sets import mint_case_set
 from threetears.evals.run.curation import delete_run, set_run_archived
+from threetears.evals.run.run_document import set_run_labels
 from threetears.evals.run.launch import admit_launch
 from threetears.evals.run.launch_job import launch_job_work
 from threetears.evals.run.judge_repeat import (
@@ -72,6 +73,7 @@ class RunLine(EvalBaseModel):
     template_id: str | None
     created_at: str
     archived: bool
+    labels: list[str] = Field(default_factory=list, description="The labels an operator gave the run, sorted.")
 
 
 class RunListing(EvalBaseModel):
@@ -79,6 +81,7 @@ class RunListing(EvalBaseModel):
 
     runs: list[RunLine]
     include_archived: bool = Field(description="Whether archived runs were listed; they are left out by default.")
+    label: str | None = Field(default=None, description="The label the runs were listed by; None lists every run.")
 
 
 class LaunchArguments(EvalBaseModel):
@@ -268,6 +271,7 @@ def _line(run: EvalRun) -> RunLine:
         template_id=run.template_id,
         created_at=run.created_at,
         archived=run.archived,
+        labels=list(run.labels),
     )
 
 
@@ -297,7 +301,12 @@ def templates_list(host: EvalHost, scope_id: str, *, archived: bool = False) -> 
 
 
 def runs_list(
-    host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False
+    host: EvalHost,
+    scope_id: str,
+    *,
+    status: str | None = None,
+    include_archived: bool = False,
+    label: str | None = None,
 ) -> RunListing:
     """The scope's runs.
 
@@ -306,6 +315,7 @@ def runs_list(
         scope_id: The scope.
         status: Only runs with this stored status.
         include_archived: List archived runs too.
+        label: Only runs carrying this label (:func:`run_label`); None lists every run.
 
     Returns:
         The listing.
@@ -313,8 +323,9 @@ def runs_list(
     Raises:
         ValidationFailedError: ``status`` is not a run status.
     """
-    runs = list_runs(host, scope_id, status=status, include_archived=include_archived)
-    return RunListing(runs=[_line(run) for run in runs], include_archived=include_archived)
+    label = None if label is None else label.strip()
+    runs = list_runs(host, scope_id, status=status, include_archived=include_archived, label=label)
+    return RunListing(runs=[_line(run) for run in runs], include_archived=include_archived, label=label)
 
 
 def run_get(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
@@ -405,6 +416,30 @@ def run_archive(host: EvalHost, run_id: str, scope_id: str, *, archived: bool) -
         NotFoundError: No run with that id in the scope.
     """
     return _line(set_run_archived(host.storage, run_id, scope_id, archived=archived, profile=host.profile))
+
+
+def run_label(host: EvalHost, run_id: str, scope_id: str, *, labels: list[str]) -> RunLine:
+    """Set a run's labels, replacing any it has; an empty list clears them (#648).
+
+    A label names a run (a baseline, a production snapshot) so it can be referred to, and listed by
+    (``runs_list`` with ``label``), by something other than its id. It is curation, like archiving: no variant key,
+    context key or fingerprint is computed over it, so labelling a run moves none of them.
+
+    Args:
+        host: The host whose store holds the run.
+        run_id: The run.
+        scope_id: The scope it lives in.
+        labels: Its labels: each 1 to 64 characters once stripped, at most 16, stored sorted and each once.
+
+    Returns:
+        The run as persisted.
+
+    Raises:
+        ValidationFailedError: A label is blank or too long, or there are too many.
+        NotFoundError: No run with that id in the scope.
+        StorageError: The write did not land.
+    """
+    return _line(set_run_labels(host.storage, run_id, scope_id, labels=labels))
 
 
 class ResultRated(EvalBaseModel):
@@ -793,6 +828,7 @@ __all__ = [
     "TemplateLine",
     "TemplateListing",
     "run_archive",
+    "run_label",
     "run_delete",
     "run_get",
     "result_rate",

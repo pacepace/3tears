@@ -64,13 +64,17 @@ def world_dimension_key(dimension: str) -> str:
 #: ``explained`` — the surface moved only because the knob written into it did, so it is the same
 #: change seen twice: for an open family, every run's residual (the surface with the swept members
 #: taken back out) agrees; for a fixed lever, the surface held one level within each of the lever's
-#: levels, and some level was held by two or more arms, so the runs could have shown otherwise.
+#: levels, and some level was held by two or more arms, so the runs could have shown otherwise — or
+#: every level was held by one arm and the lever's residual reader (the surface with the knob taken out)
+#: read one residual on every run.
 #: ``unverified`` — a fixed lever's fold that the runs could NOT have refuted: the surface held one
 #: level within each of the lever's, but every level was held by one arm only, and every run of an
 #: arm resolves the arm's one surface (the surface is in the variant key), so the dependency holds by
-#: construction. The surface is still folded — the knob names the arm — and every lens that folds it
+#: construction, and the host declared no residual reader or some run's reader could not say. The
+#: surface is still folded — the knob names the arm — and every lens that folds it
 #: marks the comparison with an ``unverified_fold`` confound, because a check that could not run is
-#: not a pass. ``unexplained`` — something besides the knob changed it: the residuals disagree, two
+#: not a pass. ``unexplained`` — something besides the knob changed it: the residuals disagree (an open
+#: family's, or a fixed lever's where every level was held by one arm), two
 #: runs that held the lever at one level carried different surfaces, or a run the lever does not apply
 #: to (another kind's) carried a surface no run of the lever's own kind in the cohort carries. ``undetermined`` — some run's
 #: residual or surface could not be read, so neither can be shown; the surface is kept, because
@@ -301,7 +305,9 @@ class _SurfaceFolds:
             ``undetermined`` when some run did not record the surface; ``unexplained`` when two runs at
             one of the lever's levels carried different surfaces, or a run the lever does not apply to
             carried a surface no run of its own kind here carries; otherwise ``explained`` when some level of the
-            lever was held by two or more arms, and ``unverified`` when none was.
+            lever was held by two or more arms. Where none was, the lever's residual reader decides when the host
+            declares one (#605): ``explained`` when every run's residual is the same, ``unexplained`` when two
+            differ, and ``unverified`` when some run's reader cannot say — as it is when the host declares none.
         """
         levels = [self._fixed_levels.get(run_id, {}) for run_id in cohort]
         if any(level.get(surface) is None for level in levels):
@@ -326,7 +332,17 @@ class _SurfaceFolds:
             if surface_at.setdefault(level.get(lever), level.get(surface)) != level.get(surface):
                 return "unexplained"
             arms_at[level.get(lever)].add(self._arm_of.get(run_id, f"run:{run_id}"))
-        return "explained" if any(len(arms) > 1 for arms in arms_at.values()) else "unverified"
+        if any(len(arms) > 1 for arms in arms_at.values()):
+            return "explained"
+        # One arm per level: the runs cannot refute the fold, so the surface with the knob's contribution taken
+        # out answers where the host can read it. Equal residuals are the knob's movement seen twice; unequal ones
+        # are a second change that rode in where the knob changed.
+        if self._surfaces[surface].read_residual is None:
+            return "unverified"
+        residuals = {self._residual(surface, run_id, frozenset({lever})) for run_id in cohort}
+        if None in residuals:
+            return "unverified"
+        return "explained" if len(residuals) == 1 else "unexplained"
 
     def _residual(self, surface: str, run_id: str, removed: frozenset[str]) -> str | None:
         """One run's residual, as a comparable key, memoised.

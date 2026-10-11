@@ -32,6 +32,7 @@ from threetears.evals.analysis.stats import (
     interval_permits_separation,
     no_spread_p,
     paired_equivalence,
+    pairing_correlation,
     separation_test,
 )
 from threetears.evals.kernel.campaign import ReadingKind
@@ -67,6 +68,7 @@ from threetears.evals.analysis.bundle.schema import (
     ComparisonVerdict,
     exploratory_disclosure,
     FamilyComparison,
+    PairingCorrelation,
     JudgedMeasure,
     MultipleComparisons,
     ReadingScope,
@@ -384,6 +386,8 @@ def _compare(
         [exact_decimal(y) - exact_decimal(x) for x, y in zip(a, b)], margin, value_range=value_range
     )
     delta = None if mean_a is None or mean_b is None else mean_b - mean_a
+    # What pairing bought: the arms' per-case correlation over exactly the cases the paired test read (#595).
+    r = pairing_correlation(a, b) if paired and p_raw is not None else None
     comparison = FamilyComparison(
         reading=reading[0],
         name=reading[1],
@@ -405,6 +409,7 @@ def _compare(
         delta=delta,
         hedges_g=hedges_g if p_raw is not None else None,
         test=None if p_raw is None else ("paired" if paired else "unpaired"),
+        pairing_correlation=None if r is None else PairingCorrelation(r=r, n_cases=len(a)),
         basis=separation.basis,
         p_raw=p_raw,
         equivalence_margin=margin,

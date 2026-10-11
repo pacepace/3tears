@@ -40,9 +40,14 @@ whose results reported nothing carries none of it.
 it (:func:`~threetears.evals.kernel.counted_goal_verdicts`): passed as it evaluated, failed on every
 check of a result the candidate failed, and in no count for a result excluded as a fault of the rig.
 
+**So is each kind of case.** When any case of the run declares a stratum (``EvalTestCase.stratum``), every
+measure is read again over each stratum's results alone (:class:`StratumSummary`), the cases declaring none
+their own stratum, and a stratum of fewer than ``STRATUM_MIN_CASES`` cases is said to be too few to read alone.
+A run none of whose cases declares one carries no strata and reads as before.
+
 **Its words are served with it.** Every line :meth:`EvalSummary.render` prints is a field of the summary's JSON
 (each a ``computed_field``): the run's line, its results line, why it stopped, its spend cap, each measure's
-state and line, the confusion and per-label lines, the intent, each judged dimension, the self-judging warning,
+state and line, the confusion and per-label lines, each stratum's lines, the intent, each judged dimension, the self-judging warning,
 each role's spend and the total, and each goal check (each error is ``errors`` itself, printed as written) —
 and ``text``, all of it as one string.
 So a browser shows the words this package wrote, and ``render`` is those fields joined, never a second spelling.
@@ -84,6 +89,8 @@ from threetears.evals.schema.models import (
     stale_goal_check_proofs,
 )
 from threetears.evals.kernel.metrics import describe_measure, summary_population
+from threetears.evals.kernel.surface import STRATUM_MIN_CASES
+from threetears.evals.analysis.report.build import NO_STRATUM, TOO_FEW_CASES
 from threetears.evals.kernel.remedies import FIND_RUN
 
 
@@ -337,6 +344,8 @@ class CaseResult(BaseModel):
             (``"0"`` is the first). The summary's :attr:`EvalSummary.errors` name cases the same way.
         input: The case, as given.
         expected: A classifier's expected label for the case; ``None`` when the run classified nothing.
+        stratum: The kind of case it is, as its stored test case declares it (``EvalTestCase.stratum``); ``None``
+            when it declares none.
         repeat: Which repeat of the case this is, from 1 to ``k``.
         outcome: ``scored``, ``failed`` (the candidate's failure, counted against it) or ``excluded`` (a fault
             of the rig — a scorer that raised, a judge that failed — counted for nothing).
@@ -362,6 +371,7 @@ class CaseResult(BaseModel):
     case: str
     input: JsonValue
     expected: str | None = None
+    stratum: str | None = None
     repeat: int
     outcome: CaseOutcome
     answer: JsonValue = None
@@ -388,6 +398,7 @@ class CaseResult(BaseModel):
         expected: str | None,
         answer: JsonValue,
         higher_is_better: Mapping[str, bool | None] | None = None,
+        stratum: str | None = None,
     ) -> CaseResult:
         """One stored result, read as a case result.
 
@@ -401,6 +412,7 @@ class CaseResult(BaseModel):
                 of errors) misses above 0 and not at 0, guardrail or not; a measure that declares no direction
                 misses never, since "worse" needs one; a measure not named reads as higher-is-better, a scorer's
                 default.
+            stratum: The stratum the case declares, or ``None``.
 
         Returns:
             The case result, its miss reasons decided by the rule :attr:`missed_because` states.
@@ -446,6 +458,7 @@ class CaseResult(BaseModel):
             case=case,
             input=given,
             expected=expected,
+            stratum=stratum,
             repeat=result.k_iteration,
             outcome=outcome,
             answer=answer,
@@ -464,7 +477,8 @@ class CaseResult(BaseModel):
         Returns:
             The text, without a trailing newline.
         """
-        head = f"case {self.case} (repeat {self.repeat}, {self.outcome}): answered {_shown_value(self.answer)}"
+        kind = "" if self.stratum is None else f"{self.stratum}, "
+        head = f"case {self.case} ({kind}repeat {self.repeat}, {self.outcome}): answered {_shown_value(self.answer)}"
         if self.expected is not None:
             head += f", expected {_shown_value(self.expected)}"
         lines = [head]
@@ -582,6 +596,33 @@ def _shown_value(value: Any) -> str:
     return repr(value) if isinstance(value, str) or value is None else str(value)
 
 
+class StratumSummary(BaseModel):
+    """One stratum of a run: its cases' results, each measure read over them alone.
+
+    A run's pooled mean is dominated by its commonest kind of case, so a run whose cases declare strata
+    (``EvalTestCase.stratum``) is read again per stratum, by the same rules as the pooled figures.
+
+    Attributes:
+        stratum: The stratum, as its cases declare it; ``None`` for the cases of the run that declare none.
+        n_cases: Cases of the run's frozen case set in it.
+        n_results: Results stored over them.
+        measures: Each measure over those results alone, as :attr:`EvalSummary.measures` reads it over all of
+            them — every one but ``confusion_cell``, whose counts are the run's confusion matrix.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    stratum: str | None
+    n_cases: int
+    n_results: int
+    measures: list[RunMeasureSummary]
+
+    @property
+    def too_few(self) -> bool:
+        """Whether it holds fewer cases than a stratum needs to be read on its own (:data:`STRATUM_MIN_CASES`)."""
+        return self.n_cases < STRATUM_MIN_CASES
+
+
 class EvalSummary(BaseModel):
     """One run, summarised.
 
@@ -608,6 +649,9 @@ class EvalSummary(BaseModel):
             over the cases behind it (a case classified k times is one draw); empty with the matrix.
         judged: Each rubric dimension a judge scored or could not tell on, in the order first met; empty
             for an unjudged run.
+        strata: The run read again per stratum of its cases (:class:`StratumSummary`), named strata in name order
+            then the cases declaring none; empty when none of its cases declares a stratum, so an unstratified
+            run reads as it did before strata existed.
         goal_checks: Each goal-state check the results carry, in the order first met; empty for a run
             with none.
         intent: The template's intent, which a judged run's judge read beside every answer; ``None`` for an
@@ -665,6 +709,7 @@ class EvalSummary(BaseModel):
     confusion: list[ConfusionCount]
     labels: list[LabelStatistics]
     judged: list[DimensionSummary] = []
+    strata: list[StratumSummary] = []
     spend: list[RoleSpend] = []
     total_cost_usd: float | None = None
     second_judge_calls: int = 0
@@ -842,6 +887,25 @@ class EvalSummary(BaseModel):
         return [_label_line(statistics) for statistics in self.labels]
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description=(
+            "Each stratum's line (its cases and results, and whether it holds too few cases to read alone), each "
+            "followed by its measures' lines, indented; empty with `strata`."
+        )
+    )
+    @property
+    def stratum_lines(self) -> list[str]:
+        """Each stratum's line, then its measures' lines indented beneath it."""
+        lines: list[str] = []
+        for stratum in self.strata:
+            said = f"{NO_STRATUM if stratum.stratum is None else stratum.stratum}: {stratum.n_cases} case(s), "
+            said += f"{stratum.n_results} result(s)"
+            if stratum.too_few:
+                said += f" — {TOO_FEW_CASES} (fewer than {STRATUM_MIN_CASES})"
+            lines.append(said)
+            lines += [f"  {self._measure_line(measure).text}" for measure in stratum.measures]
+        return lines
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description="The intent the judge read, with where it came from; null when the summary carries no intent."
     )
     @property
@@ -936,6 +1000,9 @@ class EvalSummary(BaseModel):
             lines += [f"    {line}" for line in self.confusion_lines]
             lines.append("  per label:")
             lines += [f"    {line}" for line in self.label_lines]
+        if self.strata:
+            lines.append("  by stratum:")
+            lines += [f"    {line}" for line in self.stratum_lines]
         if self.intent_text is not None:
             lines.append(f"  {self.intent_text}")
         lines += [f"  {line}" for line in self.dimension_lines]
@@ -1092,35 +1159,7 @@ def summarize_run(
         raise NotFoundError("run", run_id, remedy=FIND_RUN)
     results = host.storage.query_eval_results_by_run(run_id, scope_id)
     outcomes = [classify_result(result) for result in results]
-    declared = host.profile.measures.names
-    classified = [
-        name
-        for name in (MATCH_MEASURE, CONFUSION_CELL_MEASURE)
-        if name not in declared and any(name in result.host_measures for result in results)
-    ]
-    measures = []
-    for name in (*declared, *classified):
-        carrying = [result for result in results if name in result.host_measures]
-        # A cost or latency reading is a turn's: a call that took none carries a round trip and an empty spend,
-        # and a faulted one measured the rig. `delivered_a_turn` is the one predicate every surface reads.
-        turns_only = summary_population(describe_measure(name, host.profile.measures), "all_observed") == "delivered"
-        left = [result for result in carrying if turns_only and not delivered_a_turn(result)]
-        carried = [result.host_measures[name] for result in carrying if not turns_only or delivered_a_turn(result)]
-        # A text observation is words, never a number; a boolean counts as 1 or 0, so its mean is its rate.
-        values = [float(value) for value in carried if not isinstance(value, str)]
-        measures.append(
-            RunMeasureSummary(
-                name=name,
-                n=len(carried),
-                mean=sum(values) / len(values) if values else None,
-                minimum=min(values) if values else None,
-                maximum=max(values) if values else None,
-                n_no_turn=sum(1 for result in left if classify_result(result) is ResultOutcome.CANDIDATE_FAIL),
-                n_faulted=sum(1 for result in left if classify_result(result) is ResultOutcome.INFRA_EXCLUDE),
-                guardrail=describe_measure(name, host.profile.measures).guardrail,
-                unit=describe_measure(name, host.profile.measures).unit or "",
-            )
-        )
+    measures = _measure_summaries(host, results)
     names = case_names or {}
     errors = [
         f"case {names.get(result.test_case_id, result.test_case_id)}: {error}"
@@ -1164,6 +1203,7 @@ def summarize_run(
         confusion=confusion,
         labels=label_statistics(classifications),
         judged=_judged_dimensions(results),
+        strata=_strata(host, run, results),
         spend=_role_spend(results),
         total_cost_usd=_total_cost(results),
         second_judge_calls=len(second_rows),
@@ -1181,6 +1221,68 @@ def summarize_run(
         max_cost_usd_origin=run.max_cost_usd_origin,
         judge_shares_candidate_model=_self_judging(run, results),
     )
+
+
+def _measure_summaries(host: EvalHost, results: list[EvalResult]) -> list[RunMeasureSummary]:
+    """Each measure the host declares over the results carrying it, then ``match`` and ``confusion_cell`` where carried."""
+    declared = host.profile.measures.names
+    classified = [
+        name
+        for name in (MATCH_MEASURE, CONFUSION_CELL_MEASURE)
+        if name not in declared and any(name in result.host_measures for result in results)
+    ]
+    measures = []
+    for name in (*declared, *classified):
+        carrying = [result for result in results if name in result.host_measures]
+        # A cost or latency reading is a turn's: a call that took none carries a round trip and an empty spend,
+        # and a faulted one measured the rig. `delivered_a_turn` is the one predicate every surface reads.
+        turns_only = summary_population(describe_measure(name, host.profile.measures), "all_observed") == "delivered"
+        left = [result for result in carrying if turns_only and not delivered_a_turn(result)]
+        carried = [result.host_measures[name] for result in carrying if not turns_only or delivered_a_turn(result)]
+        # A text observation is words, never a number; a boolean counts as 1 or 0, so its mean is its rate.
+        values = [float(value) for value in carried if not isinstance(value, str)]
+        measures.append(
+            RunMeasureSummary(
+                name=name,
+                n=len(carried),
+                mean=sum(values) / len(values) if values else None,
+                minimum=min(values) if values else None,
+                maximum=max(values) if values else None,
+                n_no_turn=sum(1 for result in left if classify_result(result) is ResultOutcome.CANDIDATE_FAIL),
+                n_faulted=sum(1 for result in left if classify_result(result) is ResultOutcome.INFRA_EXCLUDE),
+                guardrail=describe_measure(name, host.profile.measures).guardrail,
+                unit=describe_measure(name, host.profile.measures).unit or "",
+            )
+        )
+    return measures
+
+
+def _strata(host: EvalHost, run: EvalRun, results: list[EvalResult]) -> list[StratumSummary]:
+    """The run read again per stratum of its cases — or nothing, when none of its cases declares one.
+
+    The strata partition the run: the cases declaring none are their own stratum, last, so they add up to it.
+    """
+    declared = {case.id: case.stratum for case in host.storage.load_case_strata(list(run.test_case_ids), run.scope_id)}
+    if not any(stratum is not None for stratum in declared.values()):
+        return []
+    cases: dict[str | None, list[str]] = {}
+    for case_id in run.test_case_ids:
+        cases.setdefault(declared.get(case_id), []).append(case_id)
+    strata = []
+    for stratum in sorted(cases, key=lambda name: (name is None, name or "")):
+        members = set(cases[stratum])
+        carried = [result for result in results if result.test_case_id in members]
+        strata.append(
+            StratumSummary(
+                stratum=stratum,
+                n_cases=len(members),
+                n_results=len(carried),
+                measures=[
+                    measure for measure in _measure_summaries(host, carried) if measure.name != CONFUSION_CELL_MEASURE
+                ],
+            )
+        )
+    return strata
 
 
 def _role_spend(results: list[EvalResult]) -> list[RoleSpend]:

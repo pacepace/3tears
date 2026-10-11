@@ -268,12 +268,15 @@ def render_templates(listing: TemplateListing) -> str:
 def render_run_line(run: RunLine) -> str:
     """One run on one line."""
     archived = ", archived" if run.archived else ""
-    return f"- {run.id}: {run.status}, model {run.candidate_model}, template {run.template_id}{archived}"
+    labels = f", labels {', '.join(run.labels)}" if run.labels else ""
+    return f"- {run.id}: {run.status}, model {run.candidate_model}, template {run.template_id}{archived}{labels}"
 
 
 def render_runs(listing: RunListing) -> str:
     """A scope's runs."""
     scope = "including archived" if listing.include_archived else "archived runs left out"
+    if listing.label is not None:
+        scope += f", labelled {listing.label}"
     return "\n".join([f"runs ({len(listing.runs)}, {scope})", *(render_run_line(run) for run in listing.runs)])
 
 

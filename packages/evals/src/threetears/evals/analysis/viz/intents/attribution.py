@@ -31,7 +31,8 @@ def attribution_intent(payload: AttributionPayload) -> ChartIntent:
         The intent.
     """
     measured = [("End-to-end", payload.end_to_end), ("Subsystem", payload.subsystem)]
-    unattributed = payload.unattributed_delta
+    # The remainder's state is the payload's to name (`remainder`); the number is read only when it is stated.
+    unattributed = payload.unattributed_delta if payload.remainder == "stated" else None
     # The display unit is chosen from the MOVEMENTS, not from the levels they run between: a pair of
     # 50 ms deltas between two ~44 s levels restated in seconds rounds to 0.05, a change the reader
     # would take for none. The levels are then stated in that same unit.
@@ -126,8 +127,10 @@ def _attribution_disclosures(payload: AttributionPayload) -> list[str]:
     if payload.lever:
         levels = f": {payload.a_label} → {payload.b_label}" if payload.a_label and payload.b_label else ""
         parts.append(f"Comparing {payload.lever}{levels}.")
-    if payload.unattributed_withheld:
-        parts.append(payload.unattributed_withheld)
+    if payload.remainder == "withheld":
+        withheld = payload.unattributed_withheld
+        assert withheld is not None, "a withheld remainder carries its sentence"
+        parts.append(withheld)
     else:
         # Past tense, and deliberately: the containment is a fact the payload CARRIES, recorded when the
         # analysis was generated, and nothing here re-reads the live catalog.

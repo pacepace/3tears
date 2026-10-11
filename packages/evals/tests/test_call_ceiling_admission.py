@@ -26,6 +26,7 @@ from threetears.evals.kernel import (
     JUDGE_KIND,
     JUDGE_KIND_CONTRACT,
     JudgeCase,
+    JUDGE_CASE_KEY,
     JudgeCaseSource,
     ValidationFailedError,
     judge_case_payload,
@@ -247,3 +248,29 @@ async def test_a_call_above_the_hosts_own_ceiling_is_named_as_the_hosts_to_raise
         "one such call needs a cap of at least $0.59, above the host's $0.50 ceiling, which a launch cannot raise"
     )
     assert "a cheaper judge model" in arm.remedy
+
+
+async def test_a_case_the_judge_kind_cannot_read_is_refused_by_name_rather_than_dropped() -> None:
+    """A stored case this build cannot read used to be left out of the arm without a word: a set nobody chose."""
+    campaign = _JudgeCampaign()
+    campaign.host.eval_host.storage.save_test_case(
+        EvalTestCase(
+            id="judge-case-unreadable",
+            scope_id=TOYHOST_SCOPE,
+            template_id=_TEMPLATE_ID,
+            variation_params={},
+            host_payload={**_judge_case(9, "a short reply").host_payload, JUDGE_CASE_KEY: {"dim": 7}},
+        )
+    )
+
+    with pytest.raises(ValidationFailedError) as estimated:
+        await campaign.estimate(1.0)
+    assert "1 case(s) the judge kind cannot ask" in estimated.value.message
+    assert "judge-case-unreadable" in estimated.value.message
+    assert "judge_cases_freeze" in estimated.value.remedy
+
+    with pytest.raises(ValidationFailedError) as launched:
+        await campaign.launch(1.0)
+    assert launched.value.message == estimated.value.message, "the estimate refuses what the launch refuses"
+    assert campaign.client.calls == [], "no call was made"
+    assert campaign.host.eval_host.storage.query_eval_runs(TOYHOST_SCOPE) == []

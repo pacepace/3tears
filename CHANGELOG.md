@@ -6,6 +6,104 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: backlog while Discodon adopts .13
+
+- **A judge case this build cannot read is refused by name, not dropped (breaking for a judge template holding
+  one).** The judge kind left a stored case it could not read out of the arm without a word, and its pricing answered
+  "no figure" for one, both by swallowing the `ValueError`. The plan now refuses an arm holding a case with no
+  readable judge case, or no criterion to ask, naming every one, before anything is spent, so the estimate and the
+  launch say so alike; `JudgeKind.price_case` no longer catches anything.
+- **`run_eval` and `compare` take `stratum_key=` (#704).** The key each case carries its kind under
+  (`stratum_key="kind"`): its value is stored as the test case's `EvalTestCase.stratum`, and the key is taken out of
+  the case before the candidate, a scorer, `expected=`, `seed=` or the judge is handed it, and out of what
+  addresses the case set. So re-labelling a case keeps its template, its test case id and its history: the new
+  stratum is stored on the same case, and every run over it, earlier ones included, is then read under it (the
+  `EvalTestCase.stratum` description now says so). A case without the key, or with `None` under it, declares none;
+  a blank or non-string value, and `stratum_key="id"`, are refused. A case list that already carried the key and
+  now names it as `stratum_key=` addresses a new template once, since the key leaves the addressed cases.
+- **`EvalSummary.strata`** (`list[StratumSummary]`, exported from `threetears.evals.analysis`): when any case of the
+  run declares a stratum, every measure is read again over each stratum's results alone (`confusion_cell` aside),
+  named strata in name order then the cases declaring none; `StratumSummary.too_few` marks one under
+  `STRATUM_MIN_CASES` (10) cases. `render()` prints them under `by stratum:`, each stratum's line saying it is too
+  few to read alone where it is, and the served `stratum_lines` carry the same words. Empty, and printed as before,
+  for a run none of whose cases declares one — `summarize_run` reads every run this way, so the CLI's summaries
+  gain it too.
+- **`CaseResult.stratum`**: each result carries its case's stratum, and `render()` names it beside the repeat.
+- **`Comparison.strata(arm=None, *, reading=None)`** reads the report's By stratum table: per arm (by its key) and
+  reading, the figure over all cases and, under `strata`, over each stratum's. `compare`'s report carries the table
+  and its too-few-cases disclosure whenever the cases declare strata, as every campaign report already did.
+- `examples/compare_two_prompts.py` names its tickets' `kind` as `stratum_key=` and prints each arm's accuracy per
+  kind; the classifier guide's "`run_eval` cannot set a stratum yet" is replaced by how to set one.
+- **A subject arm's judge and simulator calls are floored before launch (follow-up to gaps 45 and 50).** A subject
+  kind's judge and simulator prompts carry a transcript that does not exist before its run, so its largest call
+  could not be priced and a call whose client's output cap and retries alone put it above the cap was refused only
+  when the run reached it, after the cases before it were paid for. A host now composes
+  `run.price_subject_call_floor(eval_host, request, *, judged_artifact)` into each subject kind's
+  `price_largest_call`. It prices every judge dim's call with every part the cell fills left empty (variation,
+  goal outcomes, subject, case material, transcript) and everything else as sent (instructions, reply contract,
+  intent, headings, reply format, every parse-retry attempt) on the run's judge clients, and keeps the largest,
+  since every judged case makes every dim's call. It also prices the smallest actor's simulated-user utterance the
+  same way on the `simulator`-role client, when the conversation is bound to make one. The estimate and the launch
+  refuse an arm whose cap cannot afford even that floor, before anything is spent. The bound is sound on any client
+  whose ceiling does not fall as a prompt grows.
+- **`CallCeiling.lower_bound` says a ceiling is a floor.** It defaults to `False`, the exact largest call the judge
+  kind and the reporter price. When it is set, the refusal says "even the smallest such call this arm could make"
+  is reserved above the cap, and the remedy names the floor as a cap to exceed rather than one that would be
+  enough. The estimate reports it as `ArmEstimate.call_ceiling_lower_bound`. `JudgeService.floor_requests` builds
+  the floor requests. A real call and its floor share one prompt layout, so they cannot drift apart.
+  `cost-and-budgets.md` and `adopting-a-host.md` show the wiring.
+- **The writer prompt states the per-sentence pruning test (#682).** The seed `eval_analysis_gen` prompt
+  (`EVAL_ANALYSIS_GEN_DEFAULT`) now says, under "WRITE LESS", who the reader is (the person deciding what to change
+  next) and the test every sentence must pass: does it change what that reader does or believes? If not, cut it.
+  Rule 13's cut points back at that test and lists its usual failures (a repeat, an idle caveat or next step, a
+  restated method, a narrated chart, a hedge in a finding's body) as applications of it rather than as the whole of
+  it. **A shipped prompt changed**: its `seed_digest` moved, so `prompt_drift` reports a host's uncustomized stored
+  copy as `stale` until it is reseeded, and every generation sent the new text records a new
+  `prompt_content_version`. Scoring the test is the host's: the engine ships no reporter rubric, so a host adds the
+  criterion (or anchors its decision-usefulness dimension on it) in its own seeded reporter rubric.
+- **The reporter judge reads the prose code prints with a chart (#683).** `render_memo_as_written` now prints, under a
+  drawn chart's caption and labelled "Printed with the chart:", the chart's footnote and then its disclosures, the
+  same lines the Markdown and HTML reports list beneath it. Before, the judge saw only the model's caption, so no
+  eval scored the compiler's words though every reader reads them; now a host's voice and readability criteria
+  score them with the model's. A chart this build cannot draw prints none. **The judged artifact changed** for
+  every memo with such a chart: a newly generated memo, and a case frozen from now on, read differently from one
+  frozen before, so compare reporter scores across this change with that in mind.
+- **Compiler prose has a voice contract (#683).** `viz/intent.py` states that `footnote`, `disclosures` and
+  `intervals` keep the voice the writer prompt asks of the model (rule 9's STYLE, and the pruning test), and that
+  it is measured by the reporter judge, never checked over the words.
+- **The HTML report caps prose line length (#683).** Headings that carry a sentence, paragraphs, list items, chart
+  captions, disclosures and caveats are capped at `max-width: 70ch`; tables and figures keep the page's 920px.
+- **An attribution remainder's two states are named once (#615).** `analysis.remainder.remainder_state` names a
+  remainder `"stated"` (a number in `unattributed_delta`) or `"withheld"` (a sentence in `unattributed_withheld`),
+  refusing neither and both, and `AttributionPayload` and `ScopeDivergence` each enforce the invariant through it and
+  expose the answer as a `remainder` property (typed `RemainderState`, exported from `threetears.evals.analysis`).
+  The attribution chart's intent reads the property rather than either field. A blank sentence now explains nothing
+  in both: the bundle used to accept an empty `unattributed_withheld` beside no number, which the chart refused.
+- **A paired comparison reports what pairing bought (#595).** Each `FamilyComparison` carries
+  `pairing_correlation` (`PairingCorrelation`, exported from `threetears.evals.analysis`): Pearson's r between the
+  control's and the contrast's per-case means over the cases the paired test read, with that count. It is `None`
+  for an unpaired test, when no test ran, below three paired cases, and where a side does not vary. The report's
+  "Contrasts against the control" table shows it as "Pairing r", and `analysis.stats.pairing_correlation` computes
+  it. The bundle shape is version 48 (was 47), so an analysis assembled at 47 reads its bundle as moved by the
+  package (`package_shape`). The open-problems entry is removed.
+- **A fold with one arm per knob level can be checked (#605).** `ResolvesInto(lever, read_residual=reader)`, and
+  `Sweepable(resolves_into=..., read_residual=...)` on a host's own fixed lever, take an optional reader of the
+  surface with the knob's contribution taken out (called with the knob's lever name as the one removed member).
+  Where every level of the knob was run by one arm, the fold is decided by those residuals: equal across the
+  cohort, it is checked and carries no `unverified_fold` mark; unequal, the surface stays a lever and a confound of
+  its own; a `None` from any run leaves it `unverified_fold`. A host that declares no reader is read as before. A
+  fixed lever's `read_residual` used to be refused at registration; it is now refused only without
+  `resolves_into`. The `unverified_fold` sentence names the reader as a second way to test the fold. The
+  open-problems entry is removed.
+- **A run can be labelled (#648); core schema v12.** `EvalRun.labels` holds the short names an operator gave a run
+  (a baseline, a production snapshot): sorted, each once, 1 to 64 characters, at most 16, and in no identity key, so
+  setting or clearing one moves no variant key, context key or bundle fingerprint. `ops.run_label(host, run_id,
+  scope_id, *, labels)` replaces them (an empty list clears them), written through the run document's conditional
+  read-modify-write so a writer moving the run keeps its edit; the `run_label` action takes them as `run_labels`.
+  `runs_list` (operation and action) and `run.list_runs` take `label=` to list only runs carrying one, and each
+  `RunLine` carries its `labels`. The v11 step is the identity, so a v11 run reads with none; a build before this one
+  refuses a v12 run as newer, so every process sharing a store upgrades together (MIGRATIONS.toml).
+
 ### 3tears-evals: what adopting .12 found (gaps 49–50)
 
 - **A host resolver's refusal reaches both hooks as the error it raised (gap 49).** `ToolCall.refused` is the very
