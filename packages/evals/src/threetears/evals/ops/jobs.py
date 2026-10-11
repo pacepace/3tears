@@ -218,6 +218,14 @@ class JobStatus(EvalBaseModel):
     analysis_id: str | None = Field(default=None, description="The analysis a completed generation stored.")
     sweep_id: str | None = Field(default=None, description="The sweep a sweep job runs.")
     detail: str | None = Field(default=None, description="Why it ended other than completed, when the record says.")
+    faults: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Faults at the job's lease boundary its record keeps, oldest first — a holder whose renewals failed for "
+            "a whole lease, which stopped the job, names the last renewal's error here. Kept beside the ending, so a "
+            "job read lost still says why its holder stopped. Empty when there were none."
+        ),
+    )
     refusal: JobRefusal | None = Field(
         default=None,
         description=(
@@ -302,6 +310,7 @@ def _sweep_status(sweep: EvalSweep, runs: dict[str, EvalRun]) -> JobStatus:
         campaign_id=sweep.campaign_id,
         sweep_id=sweep.id,
         detail=detail if state != "completed" else None,
+        faults=list(sweep.faults),
         refusal=sweep.refusal,
     )
 
@@ -390,6 +399,7 @@ def _run_status(run: EvalRun) -> JobStatus:
         progress=dict(run.progress),
         run_id=run.id,
         detail=detail if state != "completed" else None,
+        faults=list(run.faults),
     )
 
 
@@ -418,6 +428,7 @@ def _attempt_status(job_id: str, attempt: EvalAnalysisAttempt) -> JobStatus:
         campaign_id=attempt.campaign_id,
         analysis_id=attempt.analysis_id,
         detail=attempt.lost.cause if attempt.lost is not None else (attempt.error if state != "running" else None),
+        faults=list(attempt.faults),
         refusal=attempt.refusal,
     )
 
@@ -467,6 +478,7 @@ def _record_status(
         run_id=run_id,
         run_ids=run_ids or [],
         detail=detail if state != "completed" else None,
+        faults=list(record.faults),
         result=result if state == "completed" else None,
         refusal=record.refusal,
     )

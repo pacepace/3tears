@@ -15,11 +15,18 @@ A **cancel** is a field on the record too (``cancel_requested_at`` and ``cancel_
 process was asked and read by the holder at its next renewal, so a cancel no longer needs the job to be
 live in the process that hears it.
 
-The three fields are declared on each job record's model through the aliases here (:data:`LeaseField`,
-:data:`CancelRequestedAtField`, :data:`CancelRequestReasonField`, :data:`LostField`) rather than a base class, so
-each record keeps its own field order and one more record type takes the same four lines;
-:class:`LeasedRecord` is the surface the lease machinery reads off any of them. Each is declared with ``= None``
-(``lease: LeaseField = None``): every one is optional, and a record written before it reads it as None.
+A record also keeps its **faults** (:data:`FaultsField`, core v13): what went wrong at the lease's boundary while
+the job had not yet ended — chiefly a holder whose renewals failed for a whole lease, which stops the job. A
+record's own ending (a run's status and reason, a sweep's ``detail``, an attempt's ``error``) is one value, and the
+loss a reader writes later replaces it; a fault written there would be overwritten by the very loss it explains.
+So faults are a list beside the ending, which no ending writes over, the same on every job record.
+
+The fields are declared on each job record's model through the aliases here (:data:`LeaseField`,
+:data:`CancelRequestedAtField`, :data:`CancelRequestReasonField`, :data:`LostField`, :data:`FaultsField`) rather than
+a base class, so each record keeps its own field order and one more record type takes the same five lines;
+:class:`LeasedRecord` is the surface the lease machinery reads off any of them. The four single values are declared
+with ``= None`` (``lease: LeaseField = None``), and the list with ``= Field(default_factory=list)``: every one is
+optional, and a record written before it reads it as None, or as no faults.
 
 Times are ISO-8601 in UTC, stamped in the store's time when the store keeps a clock
 (:class:`~threetears.evals.schema.store_port.StoreClock`) and in the writer's own otherwise.
@@ -28,9 +35,9 @@ Times are ISO-8601 in UTC, stamped in the store's time when the store keeps a cl
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Protocol
+from typing import Annotated, Final, Protocol
 
-from pydantic import Field
+from pydantic import Field, StringConstraints
 
 from threetears.evals.schema.base import EvalBaseModel
 
@@ -110,8 +117,55 @@ LostField = Annotated[
 ]
 
 
+#: How many faults a job record keeps: a record whose lease machinery kept failing says so without growing without
+#: bound. Once full, the newest fault takes the last place (:func:`with_fault`), so the first ones — usually the
+#: cause — and the latest are both kept.
+JOB_FAULTS_MAX: Final[int] = 32
+
+#: How long one fault may be, in characters; a longer one is cut to it (:func:`with_fault`), marked as cut.
+JOB_FAULT_MAX_CHARS: Final[int] = 2000
+
+#: A job record's faults: what went wrong at its lease's boundary before it ended (core v13).
+FaultsField = Annotated[
+    list[Annotated[str, StringConstraints(min_length=1, max_length=JOB_FAULT_MAX_CHARS)]],
+    Field(
+        max_length=JOB_FAULTS_MAX,
+        description=(
+            "Faults at this job's lease boundary, written on the record before it ended, oldest first: each names "
+            "where it happened, then the error (its type and message) — a holder whose renewals failed for a "
+            "whole lease, which stopped the job, writes the last renewal's error here. Beside the record's own "
+            "ending, which a loss writes over, so the loss never erases what explains it. Empty on a job with "
+            "none, and on a record stored before core v13. At most 32, each at most 2000 characters."
+        ),
+    ),
+]
+
+
+def with_fault(faults: list[str], entry: str) -> list[str]:
+    """``faults`` with ``entry`` appended, kept inside :data:`FaultsField`'s caps.
+
+    An entry longer than :data:`JOB_FAULT_MAX_CHARS` is cut to it, ending in ``…``; a list already holding
+    :data:`JOB_FAULTS_MAX` entries gives its last place to the new one, keeping the earliest.
+
+    Args:
+        faults: The record's faults as stored.
+        entry: The fault to add; blank is refused.
+
+    Returns:
+        The new list; ``faults`` is not changed.
+
+    Raises:
+        ValueError: ``entry`` is blank.
+    """
+    if not entry.strip():
+        raise ValueError("a job fault names what went wrong; it cannot be blank")
+    if len(entry) > JOB_FAULT_MAX_CHARS:
+        entry = entry[: JOB_FAULT_MAX_CHARS - 1] + "…"
+    return [*faults[: JOB_FAULTS_MAX - 1], entry]
+
+
 class LeasedRecord(Protocol):
-    """What the lease machinery reads off a job record: its identity and the four lease fields.
+    """What the lease machinery reads off a job record: its identity and the five lease fields.
 
     Every job record (:class:`~threetears.evals.schema.models.EvalRun`,
     :class:`~threetears.evals.kernel.campaign.EvalSweep`,
@@ -148,13 +202,22 @@ class LeasedRecord(Protocol):
         """How it was lost, or None."""
         ...
 
+    @property
+    def faults(self) -> list[str]:
+        """Faults at its lease boundary before it ended, oldest first."""
+        ...
+
 
 __all__ = [
+    "JOB_FAULTS_MAX",
+    "JOB_FAULT_MAX_CHARS",
     "CancelRequestReasonField",
     "CancelRequestedAtField",
+    "FaultsField",
     "JobLease",
     "JobLoss",
     "LeaseField",
     "LeasedRecord",
     "LostField",
+    "with_fault",
 ]

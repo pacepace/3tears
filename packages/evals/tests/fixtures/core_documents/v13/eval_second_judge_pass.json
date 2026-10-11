@@ -1,0 +1,29 @@
+{
+  "asked_by": "judge_second",
+  "cancel_request_reason": null,
+  "cancel_requested_at": null,
+  "created_at": "2026-10-11T21:50:03.833143+00:00",
+  "detail": null,
+  "doc_type": "eval_second_judge_pass",
+  "ended_at": null,
+  "faults": [
+    "job lease: its holder, process 0199a000-0000-7000-8000-000000000001, could not renew it for 60s, its whole lease, and stopped the job \u2014 the last renewal failed: StorageError: the store refused the write"
+  ],
+  "id": "01a12cf1-c238-72f6-9cb2-6ed887490b5e",
+  "judge": {
+    "config_ids": null,
+    "model": "judge/b",
+    "temperature": null
+  },
+  "lease": null,
+  "lost": null,
+  "outcome": "running",
+  "refusal": null,
+  "report": null,
+  "result_ids": null,
+  "run_id": "run-1",
+  "sample_fraction": 0.5,
+  "sample_seed": 0,
+  "schema_version": 13,
+  "scope_id": "uni-1"
+}

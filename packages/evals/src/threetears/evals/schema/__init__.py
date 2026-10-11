@@ -146,13 +146,17 @@ from threetears.evals.schema.prose import PROSE_SCHEMA_KEY
 from threetears.evals.schema.schema_nesting import NestedSchema, nested_schemas
 from threetears.evals.schema.store_port import DocumentStore, StoreClock, StoreConflict, keep_fields, omit_paths
 from threetears.evals.schema.job_lease import (
+    JOB_FAULT_MAX_CHARS,
+    JOB_FAULTS_MAX,
     CancelRequestedAtField,
     CancelRequestReasonField,
+    FaultsField,
     JobLease,
     JobLoss,
     LeaseField,
     LeasedRecord,
     LostField,
+    with_fault,
 )
 from threetears.evals.schema.refusal import REFUSAL_KINDS, JobRefusal, RefusalField, RefusalKind
 from threetears.evals.schema.subject import SubjectSnapshot
@@ -186,6 +190,10 @@ __all__ = [
     "LeaseField",
     "LeasedRecord",
     "LostField",
+    "FaultsField",
+    "JOB_FAULTS_MAX",
+    "JOB_FAULT_MAX_CHARS",
+    "with_fault",
     "REFUSAL_KINDS",
     "JobRefusal",
     "RefusalField",

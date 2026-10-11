@@ -6,6 +6,25 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a lease's faults are recorded on its job record (core schema v13)
+
+- **Every job record keeps its lease's faults beside its ending.** A sweep's `detail`, a launch's `detail` and an
+  analysis attempt's `error` are its ending, and the loss a reader writes later replaces it, so a renewal error
+  written there would be erased by the loss it explains; those kinds kept it in the log only. Each job record now
+  has `faults` (`schema.FaultsField`, at most `JOB_FAULTS_MAX` = 32 entries of at most `JOB_FAULT_MAX_CHARS` = 2000
+  characters, appended through `schema.with_fault`, which keeps the earliest and gives the last place to the newest).
+- **A holder whose renewals fail for a whole lease writes why in `faults`, for every kind.** Conditionally, before
+  the loss and without moving the lease, so the record read lost later still says why its holder stopped. A run's
+  renewal error moves there too, out of `error_details`, so there is one place for a job's lease faults on every
+  record, and `error_details` keeps the faults of the run's own work. A holder's own write of its record
+  (`write_held_record`) carries the stored faults, as it carries the stored lease.
+- **`job_poll` shows them.** `JobStatus.faults` carries a job's faults for every kind, and the poll's text prints
+  each as a `fault:` line.
+- **Core schema v13.** v12's frozen corpus stays as it is, v13's is generated from the samples (every job record's
+  sample carries a fault), a ledger line and an identity step from v12 for the seven job record types, and every
+  digest re-pinned under v13. A build before this one refuses a v13 record as newer, so every process sharing a
+  store upgrades together (MIGRATIONS.toml).
+
 ### 3tears-evals: a boundary's error is recorded where an operator reads it
 
 - **A run's completeness record that is not written says why on the run.** `record_completeness` contains every

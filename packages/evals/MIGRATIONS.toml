@@ -31,6 +31,18 @@
 # callers.
 
 [[release]]
+version = "unreleased"
+since = "v0.66.0-evaladopt.16"
+summary = """
+A job lease's faults are recorded on its job record (core schema v13): every job record keeps `faults`, beside its
+ending, so a sweep's, a launch's and an analysis attempt's record now carry the renewal error that stopped them.
+"""
+notes = [
+    "Core schema v13 is upgrade-together: every job record (`EvalRun`, `EvalLaunch`, `EvalSecondJudgePass`, `EvalJudgeTemperatureCheck`, `EvalActionJob`, `EvalSweep`, `EvalAnalysisAttempt`) gains `faults`, a list of at most 32 entries of at most 2000 characters, empty by default. The v12 step is the identity, and a v12 record reads with none. A build before this one refuses a v13 record as newer: stop every process sharing a store, then upgrade them together.",
+    "A holder whose lease renewals fail for a whole lease writes the last renewal's error in the record's `faults`, for every job kind, before the loss — no longer in a run's `error_details`, where .16 wrote it. A reader that looked for that entry in `error_details` reads `faults` (or `JobStatus.faults`) instead; `error_details` keeps the faults of a run's own work. `job_poll` returns `faults` on every `JobStatus`, and its text prints each as a `fault:` line.",
+]
+
+[[release]]
 version = "0.66.0-evaladopt.16"
 since = "v0.66.0-evaladopt.15"
 summary = """

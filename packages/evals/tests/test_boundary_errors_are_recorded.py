@@ -3,8 +3,9 @@
 Some handlers are isolation boundaries: they keep an error from changing an outcome that is not theirs to change (a
 run that executed its matrix, a job whose lease machinery failed). Each used to put the error in the log and nowhere
 else. Where a run or job record exists at that point, the error is now also written on it — ``EvalRun.error_details``
-for a run, the loss's cause for a job record ended lost — naming where it happened, its kind and its message. What
-the caller receives is unchanged, and a record write that fails as well is logged with both errors.
+for a run's own work, a job record's ``faults`` for its lease (every kind alike, kept beside the ending a loss writes
+over), the loss's cause for a job record ended lost — naming where it happened, its kind and its message. What the
+caller receives is unchanged, and a record write that fails as well is logged with both errors.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import asyncio
 import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -20,7 +22,11 @@ from pydantic import BaseModel
 
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink, VariantConfig
 from threetears.evals.kernel.cassettes import ActionSeam, CellCassettes, DeliverySeam, ToolWrap
-from threetears.evals.kernel import RUN_JOB, SWEEP_JOB, EvalSweep, JobLeases, SweepArmRecord
+from threetears.evals.actions.render import render_job_status
+from threetears.evals.kernel import ANALYSIS_JOB, RUN_JOB, SWEEP_JOB, EvalSweep, JobLeases, SweepArmRecord
+from threetears.evals.kernel.job_leases import LeasedJobKind, settle_job_record
+from threetears.evals.ops import job_poll, sweep_job_id
+from threetears.evals.run import LAUNCH_JOB, EvalLaunch
 from threetears.evals.kernel.errors import ConflictError, StorageError
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.scoring import CellSummary
@@ -28,11 +34,20 @@ from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.run.jobs import EvalJobManager
 from threetears.evals.run.lifecycle import record_completeness
 from threetears.evals.run.runner import RunnerOptions, execute_run
+from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.models import EvalCassette, EvalRun, JudgedArtifact
 from threetears.evals.storage import InMemoryDocumentStore
-from packages.evals.tests.factories import DEFAULT_KIND, make_eval_result, make_eval_run, make_template, make_test_case
+from packages.evals.tests.factories import (
+    DEFAULT_KIND,
+    make_analysis_attempt,
+    make_eval_result,
+    make_eval_run,
+    make_template,
+    make_test_case,
+)
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.job_support import InMemoryRunStore
+from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture
 
 # =============================================================================
 # record_completeness: a record that is not written says so on the run
@@ -256,7 +271,7 @@ async def test_a_run_whose_loop_contained_nothing_carries_no_entry() -> None:
 
 
 # =============================================================================
-# Job leases: a holder whose renewals fail says why on the run; a failed task's record says what ended it
+# Job leases: a holder whose renewals fail says why in its record's faults; a failed task's record says what ended it
 # =============================================================================
 
 #: When the store's clock starts; the tests move it inside the lease and hold it there, so only the holder's own
@@ -315,7 +330,8 @@ async def test_a_run_whose_renewals_fail_for_a_whole_lease_is_told_why_on_its_re
 
     record, _ = storage.load_job_record(EvalRun, run.id, run.scope_id)
     assert record is not None and (record.status, record.lost) == ("running", None), "no ending of its own"
-    [entry] = record.error_details
+    assert record.error_details == [], "a lease fault is the job's, kept in faults as on every job record"
+    [entry] = record.faults
     assert entry.startswith("job lease: its holder, process ")
     assert "could not renew it for 0.3s, its whole lease, and stopped the job" in entry
     assert "— the last renewal failed: StorageError: " in entry and "the store refused the renewal" in entry
@@ -337,7 +353,92 @@ async def test_a_run_whose_renewals_fail_and_whose_record_cannot_be_written_logs
     assert line.exc_info is not None and "the store is unreachable" in str(line.exc_info[1])
     store.unreachable = False
     record, _ = storage.load_job_record(EvalRun, run.id, run.scope_id)
-    assert record is not None and record.error_details == []
+    assert record is not None and record.faults == []
+
+
+def _launch(scope_id: str) -> EvalLaunch:
+    return EvalLaunch(
+        id="launch-1",
+        scope_id=scope_id,
+        template_id="tpl-1",
+        subject_id="subject-1",
+        models=["m1"],
+        k_runs=1,
+        n_variations=0,
+    )
+
+
+#: Each job record kind as it is held, and the field its own ending is written in — the one a loss writes over.
+_HELD_KINDS: dict[str, tuple[LeasedJobKind[Any], Callable[[str], EvalDocumentModel], Callable[[Any], str | None]]] = {
+    "run": (
+        RUN_JOB,
+        lambda scope_id: make_eval_run(status="running", scope_id=scope_id),
+        lambda r: r.cancellation_reason,
+    ),
+    "sweep": (SWEEP_JOB, lambda scope_id: _sweep(scope_id), lambda r: r.detail),
+    "launch": (LAUNCH_JOB, _launch, lambda r: r.detail),
+    "analysis attempt": (
+        ANALYSIS_JOB,
+        lambda scope_id: make_analysis_attempt(scope_id=scope_id, outcome="running", analysis_id=None),
+        lambda r: r.error,
+    ),
+}
+
+
+async def _expired(
+    store: _RenewalRefusingStore, storage: EvalStorage, kind: LeasedJobKind[Any], record: EvalDocumentModel
+) -> str:
+    """Hold ``record`` under a 0.3s lease whose every renewal the store refuses, until its holder stops it; its fault."""
+    leases = JobLeases(storage, lease_s=0.3)
+    held = record.model_copy(update={"lease": leases.grant()})
+    storage.save_job_record(held.to_dict(), if_match=None, create_only=True)
+    stopped = asyncio.Event()
+    leases.hold(kind, held.id, held.scope_id, cancel=lambda _reason: None, stop=stopped.set)
+    store.at = _T0 + timedelta(seconds=0.1)  # inside the lease, so every renewal moves it and is refused
+    store.refusing = True
+    await asyncio.wait_for(stopped.wait(), timeout=5)
+    store.refusing = False
+    stored, _ = storage.load_job_record(kind.model, held.id, held.scope_id)
+    assert stored is not None and stored.lost is None and not kind.ended(stored), "no ending of its own yet"
+    [fault] = stored.faults
+    return fault
+
+
+@pytest.mark.parametrize("name", sorted(_HELD_KINDS))
+async def test_a_job_whose_renewals_fail_keeps_the_renewal_error_in_its_faults_after_it_is_written_lost(
+    name: str,
+) -> None:
+    """Before: a sweep's, a launch's or an attempt's record had no field for it beside its ending, so the renewal
+    error reached only the log, and the loss a reader wrote later read as a process that simply went away."""
+    kind, make, ending = _HELD_KINDS[name]
+    store = _RenewalRefusingStore()
+    storage = EvalStorage(store)
+    record = make("scope-1")
+
+    fault = await _expired(store, storage, kind, record)
+    store.at = _T0 + timedelta(seconds=5)  # past the expiry: the next reader writes the loss
+    lost, wrote = settle_job_record(storage, kind, record.id, record.scope_id)
+
+    assert fault.startswith("job lease: its holder, process ")
+    assert "could not renew it for 0.3s, its whole lease, and stopped the job" in fault
+    assert "— the last renewal failed: StorageError: " in fault and "the store refused the renewal" in fault
+    assert wrote and lost is not None and lost.lost is not None
+    assert ending(lost) == f"lost: {lost.lost.cause}", "the loss wrote the record's ending"
+    assert lost.faults == [fault], "and kept the fault beside it"
+
+
+async def test_job_poll_shows_the_faults_of_a_job_read_lost() -> None:
+    store = _RenewalRefusingStore()
+    fixture = ops_fixture(store=store)
+    storage = fixture.host.eval_host.storage
+    sweep = _sweep(TOYHOST_SCOPE)
+
+    fault = await _expired(store, storage, SWEEP_JOB, sweep)
+    store.at = _T0 + timedelta(seconds=5)
+    status = await job_poll(fixture.host, sweep_job_id(sweep.id), TOYHOST_SCOPE)
+
+    assert (status.state, status.faults) == ("lost", [fault])
+    assert f"fault: {fault}" in render_job_status(status).splitlines()
 
 
 def _sweep(scope_id: str = "scope-1") -> EvalSweep:

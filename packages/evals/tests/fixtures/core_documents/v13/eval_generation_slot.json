@@ -1,0 +1,9 @@
+{
+  "attempt_id": "a-1",
+  "campaign_id": "c-1",
+  "claimed_at": "2026-10-11T21:50:03.817920+00:00",
+  "doc_type": "eval_generation_slot",
+  "id": "generation-slot:c-1",
+  "schema_version": 13,
+  "scope_id": "uni-1"
+}

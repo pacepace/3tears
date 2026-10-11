@@ -50,6 +50,7 @@ from threetears.evals.schema.base import CoreDocumentModel, EvalDocumentModel
 from threetears.evals.schema.job_lease import (
     CancelRequestedAtField,
     CancelRequestReasonField,
+    FaultsField,
     JobLoss,
     LeaseField,
     LostField,
@@ -526,6 +527,7 @@ class EvalActionJob(CoreDocumentModel):
     cancel_requested_at: CancelRequestedAtField = None
     cancel_request_reason: CancelRequestReasonField = None
     lost: LostField = None
+    faults: FaultsField = Field(default_factory=list)
     refusal: RefusalField = None
 
     @field_validator("doc_type")

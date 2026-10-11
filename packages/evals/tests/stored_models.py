@@ -132,6 +132,12 @@ _LABEL_KEY = label_key_of(
 )
 
 
+#: The lease fault every job record's sample carries, so the frozen core corpus from v13 holds a record with one.
+_LEASE_FAULT = (
+    "job lease: its holder, process 0199a000-0000-7000-8000-000000000001, could not renew it for 60s, its whole "
+    "lease, and stopped the job — the last renewal failed: StorageError: the store refused the write"
+)
+
 #: A valid instance of every stored model, by name. Keyed by the derived population below, so a
 #: stored model added without a row here fails :func:`test_every_stored_model_has_a_sample` rather
 #: than slipping past both refusals and the core's frozen fixtures.
@@ -146,6 +152,7 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
         subject_id="s-1",
         arms=[SweepArmRecord(label="a", model="m")],
         max_concurrent_arms=1,
+        faults=[_LEASE_FAULT],
     ),
     "EvalGenerationSlot": lambda: EvalGenerationSlot(
         id=generation_slot_id("c-1"), scope_id="uni-1", campaign_id="c-1", attempt_id="a-1"
@@ -170,7 +177,14 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
         measured_at="2026-10-10T00:00:00+00:00",
     ),
     "EvalLaunch": lambda: EvalLaunch(
-        id="launch-1", scope_id="uni-1", template_id="t-1", subject_id="s-1", models=["m"], k_runs=1, n_variations=0
+        id="launch-1",
+        scope_id="uni-1",
+        template_id="t-1",
+        subject_id="s-1",
+        models=["m"],
+        k_runs=1,
+        n_variations=0,
+        faults=[_LEASE_FAULT],
     ),
     "EvalSecondJudgePass": lambda: EvalSecondJudgePass(
         scope_id="uni-1",
@@ -179,9 +193,10 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
         judge=SecondJudge(model="judge/b"),
         sample_fraction=0.5,
         sample_seed=0,
+        faults=[_LEASE_FAULT],
     ),
     "EvalJudgeTemperatureCheck": lambda: EvalJudgeTemperatureCheck(
-        scope_id="uni-1", run_id="run-1", selection="borderline", repeats=2
+        scope_id="uni-1", run_id="run-1", selection="borderline", repeats=2, faults=[_LEASE_FAULT]
     ),
     "EvalActionJob": lambda: EvalActionJob(
         scope_id="uni-1",
@@ -190,11 +205,12 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
         result={"draft": "tone"},
         result_model="Draft",
         ended_at="2026-10-11T00:00:00+00:00",
+        faults=[_LEASE_FAULT],
     ),
     "CaseSet": lambda: CaseSet(scope_id="uni-1", name="smoke", version=1, template_id="t-1", test_case_ids=["c-1"]),
     "CatalogRubricDim": make_rubric_dim,
     "EvalAnalysis": make_analysis,
-    "EvalAnalysisAttempt": make_analysis_attempt,
+    "EvalAnalysisAttempt": lambda: make_analysis_attempt(faults=[_LEASE_FAULT]),
     "EvalCampaign": lambda: make_campaign(declared_design=minimal_declaration()),
     "EvalCassette": _cassette,
     "EvalInsight": make_insight,
@@ -209,8 +225,9 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
             )
         ]
     ),
-    # Labelled, so the frozen core corpus from v12 holds a run carrying the labels v12 added (#648).
-    "EvalRun": lambda: make_eval_run(labels=["baseline", "production-2026-10"]),
+    # Labelled, so the frozen core corpus from v12 holds a run carrying the labels v12 added (#648); and with a
+    # lease fault, as every job record sample is, so the corpus from v13 holds the faults v13 added.
+    "EvalRun": lambda: make_eval_run(labels=["baseline", "production-2026-10"], faults=[_LEASE_FAULT]),
     "EvalTemplate": make_template,
     "EvalTestCase": make_test_case,
     "EvalTrace": make_eval_trace,
