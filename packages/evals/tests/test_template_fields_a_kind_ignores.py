@@ -5,6 +5,9 @@ launch ran as if the template had said nothing — the same silence a launch arg
 meet, before ``unhonoured_launch_arguments`` refused it. So a kind's registry entry declares the template fields it
 ignores (``LaunchableKind.ignored_template_fields``), the dispatch refuses a template stating any of them, and the
 package's own launchables declare theirs.
+
+A host's authoring check refuses the same template before it is stored through the dispatch's own refusal,
+``refuse_ignored_template_fields``, rather than restating the list and the rule beside it.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from threetears.evals.run import (
     LaunchHost,
     launchable_judge_kind,
     quote_launch,
+    refuse_ignored_template_fields,
 )
 from threetears.evals.schema import EvalTemplate, Precondition, WorldSeed
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
@@ -44,7 +48,6 @@ def _judge_host() -> LaunchHost:
         eval_host=eval_host,
         kinds={JUDGE_KIND: launchable_judge_kind(lambda: holder[0])},
         settings=lambda: TOYHOST_LAUNCH_SETTINGS,
-        resolve_subject=lambda _subject, _scope: None,
         job_timeout_factory=default_job_timeout,
         world_placements=lambda _run: {},
     )
@@ -91,4 +94,21 @@ def test_the_judge_kind_declares_every_field_but_what_it_reads() -> None:
 
 def test_a_kind_declaring_a_name_no_template_has_is_refused() -> None:
     with pytest.raises(ValueError, match="not template fields"):
-        LaunchableKind(launch=lambda _request: None, ignored_template_fields=frozenset({"world_sed"}))  # type: ignore[arg-type,return-value]
+        LaunchableKind(
+            launch=lambda _request: None,  # type: ignore[arg-type,return-value]
+            resolve_subject=lambda _subject, _scope: None,
+            ignored_template_fields=frozenset({"world_sed"}),
+        )
+
+
+def test_a_hosts_authoring_check_refuses_what_the_dispatch_would_through_the_same_call() -> None:
+    entry = launchable_judge_kind(lambda: _judge_host())
+    refuse_ignored_template_fields(_judge_template(), entry)
+    with pytest.raises(ValidationFailedError, match="never acts on its goal_state_checks, world_seed") as refused:
+        refuse_ignored_template_fields(
+            _judge_template(
+                world_seed=WorldSeed(namespaces={"inbox": {"unread": 3}}), goal_state_checks=["state.done == 1"]
+            ),
+            entry,
+        )
+    assert refused.value.remedy

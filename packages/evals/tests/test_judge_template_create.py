@@ -37,7 +37,6 @@ def _judging_host() -> OpsHost:
         eval_host=eval_host,
         kinds={JUDGE_KIND: launchable_judge_kind(lambda: holder[0])},
         settings=lambda: TOYHOST_LAUNCH_SETTINGS,
-        resolve_subject=lambda _subject, _scope: None,
         job_timeout_factory=default_job_timeout,
         world_placements=lambda _run: {},
     )

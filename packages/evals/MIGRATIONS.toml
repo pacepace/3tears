@@ -31,6 +31,19 @@
 # callers.
 
 [[release]]
+version = "0.66.0-evaladopt.9"
+since = "v0.66.0-evaladopt.8"
+summary = """
+What adopting .8 found (gaps 35–38): a subject is asked of its kind, the engine's remedies are public, the router's
+refusals hold their fault and remedy apart, and a host's authoring check refuses a kind's ignored fields through the
+dispatch's own call.
+"""
+notes = [
+    "`LaunchHost` no longer takes `resolve_subject`; each `LaunchableKind` takes a required `resolve_subject` (`run.SubjectResolver`, unchanged in shape) in its place. Move the host's resolver onto each kind it registers, splitting it by what that kind's subject id names. `launchable_judge_kind` brings its own, which admits any non-blank label. The subject is now refused once the template's kind is known (after a missing template, a kind with no launcher and the kind's argument refusals, still before any arm is priced); a battery asks each kind it launches.",
+    "`storage.RouteChanged` and `storage.MisplacedDocument` are constructed as `(fault, *, remedy)` and carry both as attributes; `str()` reads `fault; remedy` as before, and both are still `RuntimeError`s.",
+]
+
+[[release]]
 version = "0.66.0-evaladopt.8"
 since = "v0.66.0-evaladopt.7"
 summary = """

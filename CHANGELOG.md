@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: what adopting .8 found (gaps 35–38)
+
+- **A subject is asked of its kind, not its host (breaking for `LaunchHost` and `LaunchableKind`).** One subject id
+  names a live entity to one kind, a fixed prompt key to another and a free label to the judge kind, so a host-wide
+  resolver told only the id and the scope could either refuse every judge launch or admit any string for every kind.
+  `LaunchableKind.resolve_subject` replaces `LaunchHost.resolve_subject` and is asked once the template's kind is
+  known, still before any arm is priced; a battery asks each kind it launches. `launchable_judge_kind` admits any
+  non-blank label.
+- **The engine's remedies are public** (`kernel.FIND_TEMPLATE`, `FIND_RUN`, `FIND_JUDGE_CONFIG`, `SEED_REMEDY`, …),
+  so a host refusing the same records ends its refusals in the same words rather than a copy of them.
+- **`RouteChanged` and `MisplacedDocument` carry `fault` and `remedy` apart**, as every other refusal does, so a host
+  naming its own relocation tool replaces only the remedy. `str()` reads as before.
+- **`run.refuse_ignored_template_fields(template, launchable)` is the dispatch's own refusal of a field a kind
+  ignores**, public so a host's `refuse_undeliverable_template` refuses the same template before it is stored.
+
 ### 3tears-evals: what reviewing .8 found
 
 - **A measure reads on one ruler on every surface of a report.** A chart compiled from a reference records its

@@ -1145,6 +1145,54 @@
       "kind": "function",
       "signature": "extract_json_array(text: str) -> list[dict[str, Any]]"
     },
+    "threetears.evals.kernel.FIND_ANALYSIS": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
+    "threetears.evals.kernel.FIND_CAMPAIGN": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
+    "threetears.evals.kernel.FIND_CASE_SET": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
+    "threetears.evals.kernel.FIND_FINDING": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
+    "threetears.evals.kernel.FIND_INSIGHT": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
+    "threetears.evals.kernel.FIND_JOB": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
+    "threetears.evals.kernel.FIND_JUDGE_CONFIG": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
+    "threetears.evals.kernel.FIND_RESULT": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
+    "threetears.evals.kernel.FIND_RUBRIC_DIM": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
+    "threetears.evals.kernel.FIND_RUN": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
+    "threetears.evals.kernel.FIND_TEMPLATE": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
+    "threetears.evals.kernel.FIND_TEST_CASE": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
     "threetears.evals.kernel.Finding": {
       "kind": "model",
       "signature": "Finding(title: ModelProse, body: ModelProse, confidence: Confidence, axes: list[str], evidence: list[EvidenceRef], chart: Chart, caveats: list[Caveat], invalidates: list[int], durable: ModelProse)"
@@ -1573,6 +1621,10 @@
       "kind": "exception",
       "signature": "RefusedInput(fault: str, *, remedy: str) -> None"
     },
+    "threetears.evals.kernel.RELAUNCH_TO_REJUDGE": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
     "threetears.evals.kernel.RenewalVerdict": {
       "kind": "literal",
       "signature": "'renewed'` | `'cancel'` | `'ended'` | `'fenced'` | `'contended'"
@@ -1588,6 +1640,10 @@
     "threetears.evals.kernel.require_held": {
       "kind": "function",
       "signature": "require_held(store: LeaseStore, kind: LeasedJobKind[R], record_id: str, scope_id: str, *, leases: JobLeases | None = None) -> None"
+    },
+    "threetears.evals.kernel.REREAD_AND_RETRY": {
+      "kind": "constant (str)",
+      "signature": ""
     },
     "threetears.evals.kernel.resolve_bar_name": {
       "kind": "function",
@@ -1665,12 +1721,20 @@
       "kind": "function",
       "signature": "save_document(repo: DocumentStore, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None"
     },
+    "threetears.evals.kernel.SCHEMA_REMEDY": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
     "threetears.evals.kernel.seed_digest": {
       "kind": "function",
       "signature": "seed_digest(seed: SeedTemplate | str) -> str"
     },
     "threetears.evals.kernel.SEED_PROMPTS": {
       "kind": "constant (tuple)",
+      "signature": ""
+    },
+    "threetears.evals.kernel.SEED_REMEDY": {
+      "kind": "constant (str)",
       "signature": ""
     },
     "threetears.evals.kernel.SeedPrompt": {
@@ -1880,6 +1944,10 @@
     "threetears.evals.kernel.write_held_record": {
       "kind": "function",
       "signature": "write_held_record(store: JobRecordStore, kind: LeasedJobKind[R], record: R, *, leases: JobLeases | None = None) -> R"
+    },
+    "threetears.evals.kernel.WRITER_REMEDY": {
+      "kind": "constant (str)",
+      "signature": ""
     },
     "threetears.evals.kernel.host.ActionParameterReader": {
       "kind": "type alias",
@@ -2639,7 +2707,7 @@
     },
     "threetears.evals.run.LaunchableKind": {
       "kind": "dataclass",
-      "signature": "LaunchableKind(launch: KindLauncher, unhonoured_launch_arguments: frozenset[LaunchArgument] = frozenset(), ignored_template_fields: frozenset[TemplateField] = frozenset(), plan_arm: Callable[[LaunchRequest], ArmPlan] | None = None, apparatus_settings: Mapping[str, ApparatusSettingValue] = <lambda>())"
+      "signature": "LaunchableKind(launch: KindLauncher, resolve_subject: SubjectResolver, unhonoured_launch_arguments: frozenset[LaunchArgument] = frozenset(), ignored_template_fields: frozenset[TemplateField] = frozenset(), plan_arm: Callable[[LaunchRequest], ArmPlan] | None = None, apparatus_settings: Mapping[str, ApparatusSettingValue] = <lambda>())"
     },
     "threetears.evals.run.LaunchArgument": {
       "kind": "literal",
@@ -2651,7 +2719,7 @@
     },
     "threetears.evals.run.LaunchHost": {
       "kind": "dataclass",
-      "signature": "LaunchHost(eval_host: EvalHost, kinds: Mapping[str, LaunchableKind], settings: Callable[[], LaunchSettings], resolve_subject: SubjectResolver, job_timeout_factory: JobTimeoutFactory, world_placements: Callable[[EvalRun], dict[str, WorldPlacement]] | None = None, launch_pricer: LaunchPricer | None = None, max_concurrent_jobs: int = 2, cell_executor: CellExecutor | None = None, on_job_progress: Callable[[str, dict[str, Any]], None] | None = None, on_run_end: RunEndHook | None = None, job_lease_s: float = 60.0, job_leases: JobLeases (derived), job_manager: EvalJobManager (derived))"
+      "signature": "LaunchHost(eval_host: EvalHost, kinds: Mapping[str, LaunchableKind], settings: Callable[[], LaunchSettings], job_timeout_factory: JobTimeoutFactory, world_placements: Callable[[EvalRun], dict[str, WorldPlacement]] | None = None, launch_pricer: LaunchPricer | None = None, max_concurrent_jobs: int = 2, cell_executor: CellExecutor | None = None, on_job_progress: Callable[[str, dict[str, Any]], None] | None = None, on_run_end: RunEndHook | None = None, job_lease_s: float = 60.0, job_leases: JobLeases (derived), job_manager: EvalJobManager (derived))"
     },
     "threetears.evals.run.LaunchPricer": {
       "kind": "protocol",
@@ -2772,6 +2840,10 @@
     "threetears.evals.run.record_witnessed_cell": {
       "kind": "async function",
       "signature": "record_witnessed_cell(host: EvalHost, run: EvalRun, test_case: EvalTestCase, output: CandidateOutput, *, k_iteration: int, result_id: str, scored_at: str, judged_artifact: JudgedArtifact, external_rates: ExternalRateTable | None = None, spans: CellTrace | None = None, world_events: Sequence[WorldEvent] | None = None, end_state: Mapping[str, Any] | None = None, judging: WitnessedJudging | None = None) -> tuple[EvalResult, EvalTrace]"
+    },
+    "threetears.evals.run.refuse_ignored_template_fields": {
+      "kind": "function",
+      "signature": "refuse_ignored_template_fields(template: EvalTemplate, launchable: LaunchableKind) -> None"
     },
     "threetears.evals.run.refuse_raised_ceiling": {
       "kind": "function",
@@ -4419,11 +4491,11 @@
     },
     "threetears.evals.storage.MisplacedDocument": {
       "kind": "exception",
-      "signature": ""
+      "signature": "MisplacedDocument(fault: str, *, remedy: str) -> None"
     },
     "threetears.evals.storage.RouteChanged": {
       "kind": "exception",
-      "signature": ""
+      "signature": "RouteChanged(fault: str, *, remedy: str) -> None"
     },
     "threetears.evals.storage.RoutedDocumentStore": {
       "kind": "class",

@@ -258,7 +258,13 @@ def _generating_host(
         )
 
     generating = replace(
-        host, kinds={TOY_EXTRACTOR_KIND: LaunchableKind(launch=launch, plan_arm=plan_arm)}, launch_pricer=pricer
+        host,
+        kinds={
+            TOY_EXTRACTOR_KIND: LaunchableKind(
+                launch=launch, resolve_subject=lambda _subject, _scope: None, plan_arm=plan_arm
+            )
+        },
+        launch_pricer=pricer,
     )
     return generating, storage, clients, handed
 

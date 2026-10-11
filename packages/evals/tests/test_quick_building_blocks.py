@@ -152,10 +152,10 @@ async def test_a_host_of_your_own_launches_the_quick_kind_through_start_run(tmp_
         )
         launching = LaunchHost(
             eval_host=host,
-            resolve_subject=lambda _subject, _scope: None,
             kinds={
                 CALLABLE_KIND: LaunchableKind(
                     launch=launch,
+                    resolve_subject=lambda _subject, _scope: None,
                     unhonoured_launch_arguments=frozenset(
                         {"simulator_model", "judge_config_ids", "n_variations", "judge_model", "cassette_mode"}
                     ),
