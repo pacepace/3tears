@@ -61,6 +61,10 @@ CORE_SHAPE_DIGESTS: dict[str, str] = {
     "eval_analysis_attempt": "5fcf17735d8a4791fa8b1cb9eed7a59458c67cc0c787f39d210ebf5b343085e8",
     "eval_campaign": "c33c6dc1d6c9fba98d9887bc20c395eac5ca6245302eb0fb32d696b155fab8d5",
     "eval_generation_slot": "ad3f47db82a197b3a28ee46b348f8af6d6e372b5ee6fa49afa2401acaeb6d335",
+    "eval_launch": "c37688519989fbde89f0de546ff91a74366bd9d6c5a08d8eede957855f3e942a",
+    "eval_second_judge_pass": "4ed107d3c79c98a667baa37876899c51fefc6472ec11c8134a0a073ff5afa81e",
+    "eval_judge_temperature_check": "31041aeb3ede68a30441f85e0d36ad39a3cc98f22f72a8cafed112550326235a",
+    "eval_action_job": "5fab44c96441fed0df1d6d6c42245c5f84a615e7681c8909bab0bdd5ccc02d3a",
     "eval_out_of_run_spend": "f1d51ffd4cb2447bc1ca32c67ac20a184a6fa17665c3f22bae7ba73bb0f46f43",
     "eval_result": "84be2b0ee738171611a7173793061d06a7297d952b5a0aba41ecdb3207487cb5",
     "eval_run": "32fdaebc9f3eaca01c2ead896dede4cd9a2a9283980b9338961578e77c3bf1c5",
@@ -124,6 +128,12 @@ PINNED_ADDRESSING_FIELDS: dict[str, frozenset[str]] = {
         {"id", "doc_type", "schema_version", "scope_id", "cancel_requested_at", "cancel_request_reason"}
     ),
     "eval_generation_slot": frozenset({"id", "doc_type", "schema_version", "scope_id", "campaign_id", "attempt_id"}),
+    **{
+        job_record: frozenset(
+            {"id", "doc_type", "schema_version", "scope_id", "cancel_requested_at", "cancel_request_reason"}
+        )
+        for job_record in ("eval_launch", "eval_second_judge_pass", "eval_judge_temperature_check", "eval_action_job")
+    },
     "eval_analysis_attempt": frozenset(
         {
             "id",
@@ -158,7 +168,13 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures" / "core_documents"
 #: A core type that did not exist before some version, by the version it was first stored at: no store holds one
 #: from before it, so its frozen corpus starts there. A type that existed and joined the core later is not here —
 #: an older store holds it, and its corpus starts at the baseline.
-FIRST_STORED_AT: dict[str, int] = {"eval_generation_slot": 10}
+FIRST_STORED_AT: dict[str, int] = {
+    "eval_generation_slot": 10,
+    "eval_launch": 10,
+    "eval_second_judge_pass": 10,
+    "eval_judge_temperature_check": 10,
+    "eval_action_job": 10,
+}
 
 #: Each frozen fixture's sha256, so a stored document of the past is never edited.
 FIXTURE_DIGESTS: dict[str, str] = {
@@ -197,6 +213,10 @@ FIXTURE_DIGESTS: dict[str, str] = {
     "v10/eval_analysis_attempt.json": "d8254f8c6a09b5e5a653b98a89db576ace68c82fc32fe4da6a162cfe7ac27bf4",
     "v10/eval_campaign.json": "ce49d7fa609312692d79d5fdb7c3661becb056d9c7bd8cb60828d97a46b3c4e2",
     "v10/eval_generation_slot.json": "7de32af29779e8be2afe49db69959ff3a03017aefc843555bfab69fbe80f923b",
+    "v10/eval_launch.json": "09e109cea826386249b47e9d62c5a0ac7258f965f377827db19483a8e13fc435",
+    "v10/eval_second_judge_pass.json": "dcc1965334813457a0c97d23760bcd143322e1fc25b4097ee4af6a7f0b13a74d",
+    "v10/eval_judge_temperature_check.json": "1e018414a97497027c6506513a466c0a48f26eda9b15658e9d4f1aa0ac38f5ab",
+    "v10/eval_action_job.json": "93991981cfd6b6ee924b881666a85fb10dcad29867bcdad96ff566b202d28919",
     "v10/eval_out_of_run_spend.json": "09d29852a0078c3750de7f0443e37927a685978a064098d3a398118184b7250b",
     "v10/eval_result.json": "072ab69a839032ca0395c91adc93aa6d0a5913cf62c138f4b7ba0df5a034e27d",
     "v10/eval_run.json": "56b1cdd79e8754004d0658d5ed926a7f0acf609bdeff4e07724ccf7d2f9f158f",

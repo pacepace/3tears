@@ -43,7 +43,7 @@ from threetears.evals.kernel.job_leases import JobLeases, LeasedJobKind, write_h
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
 from threetears.evals.kernel.storage import JobRecordStore, LeaseStore
 from threetears.evals.run.jobs import EvalJobManager
-from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.schema.base import CoreDocumentModel, EvalDocumentModel
 from threetears.evals.schema.job_lease import (
     CancelRequestedAtField,
     CancelRequestReasonField,
@@ -51,8 +51,8 @@ from threetears.evals.schema.job_lease import (
     LeaseField,
     LostField,
 )
-from threetears.evals.schema.models import SchemaVersion, utc_now_iso
-from threetears.evals.schema.versioning import REGENERABLE_SCHEMA_VERSION
+from threetears.evals.schema.models import CoreSchemaVersion, utc_now_iso
+from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -352,18 +352,21 @@ async def run_job_work[R: EvalDocumentModel](
 # --- the generic record ---------------------------------------------------------------------------
 
 
-class EvalActionJob(EvalDocumentModel):
+class EvalActionJob(CoreDocumentModel):
     """A job whose work has no domain record of its own: what it was, how it ended, and the result it produced.
 
     A host action that drafts something — a rubric proposal, cases for a classifier — produces a value, not a run,
     and its work calls a model, so it runs as a job (:func:`action_job_work`) and this is its record: written as it
     starts (``running``, carrying the job's lease) and again as it ends. Polling the job returns :attr:`result` — the
     action's typed result as its JSON — once it has completed.
+
+    **Kept** (:mod:`threetears.evals.schema.versioning`): it records what nothing stored can make again, so every
+    build reads it, upgraded across core versions and never dropped.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_action_job"] = "eval_action_job"
-    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     action: str = Field(min_length=1, description="The catalogue action that started the job, by name.")

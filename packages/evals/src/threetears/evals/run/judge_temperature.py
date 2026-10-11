@@ -69,10 +69,10 @@ from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.out_of_run import OutOfRunBudget, PlannedCall
 from threetears.evals.kernel.job_leases import LeasedJobKind
 from threetears.evals.run.job_work import JobOutcome, JobRecorder, JobWork, end_record, leased_job_kind
-from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
+from threetears.evals.schema.base import CoreDocumentModel, EvalBaseModel
 from threetears.evals.schema.job_lease import CancelRequestedAtField, CancelRequestReasonField, LeaseField, LostField
-from threetears.evals.schema.models import MODEL_DEFAULT_TEMPERATURE, SCALES, EvalResult, SchemaVersion, utc_now_iso
-from threetears.evals.schema.versioning import REGENERABLE_SCHEMA_VERSION
+from threetears.evals.schema.models import MODEL_DEFAULT_TEMPERATURE, SCALES, CoreSchemaVersion, EvalResult, utc_now_iso
+from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
 from threetears.evals.run.judge_repeat import (
     BudgetedJudgeClient,
@@ -399,7 +399,7 @@ async def estimate_judge_temperature_comparison(
     )
 
 
-class EvalJudgeTemperatureCheck(EvalDocumentModel):
+class EvalJudgeTemperatureCheck(CoreDocumentModel):
     """One judge temperature comparison over a finished run: what was asked, how it ended, and every answer.
 
     Nothing of the comparison is written to the run's results — the forced temperatures are not the run's judge — so
@@ -407,11 +407,14 @@ class EvalJudgeTemperatureCheck(EvalDocumentModel):
     with the :class:`~threetears.evals.kernel.JudgeTemperatureAnswers` once it has run. The reading of the answers
     (:func:`~threetears.evals.analysis.read_judge_temperatures`) spends nothing and is made from this record whenever
     it is asked, so a comparison started from a transport is answered by polling its job, in any process.
+
+    **Kept** (:mod:`threetears.evals.schema.versioning`): it records what nothing stored can make again, so every
+    build reads it, upgraded across core versions and never dropped.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_judge_temperature_check"] = "eval_judge_temperature_check"
-    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     run_id: str = Field(min_length=1, description="The finished run whose judge is compared at the two temperatures.")

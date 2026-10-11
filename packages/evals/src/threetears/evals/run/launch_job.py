@@ -25,25 +25,28 @@ from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.run.job_work import JobOutcome, JobRecorder, JobWork, end_record, leased_job_kind
 from threetears.evals.run.jobs import JOB_TIMEOUT_CAP_S
 from threetears.evals.run.launch import AdmittedLaunch, LaunchHost
-from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.schema.base import CoreDocumentModel
 from threetears.evals.schema.job_lease import CancelRequestedAtField, CancelRequestReasonField, LeaseField, LostField
-from threetears.evals.schema.models import SchemaVersion, utc_now_iso
-from threetears.evals.schema.versioning import REGENERABLE_SCHEMA_VERSION
+from threetears.evals.schema.models import CoreSchemaVersion, utc_now_iso
+from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION
 
 #: The reason recorded on a run its launch's cancel stopped.
 LAUNCH_CANCEL_REASON = "its launch was cancelled"
 
 
-class EvalLaunch(EvalDocumentModel):
+class EvalLaunch(CoreDocumentModel):
     """One launch of a template's arms, run as a job: what it named, the runs it started, and how it ended.
 
     Written by the launch's job — as it starts, as its runs start, and as it ends — conditionally, so a record another
     process has written lost or asked to cancel is never overwritten. Its id is the launch group's.
+
+    **Kept** (:mod:`threetears.evals.schema.versioning`): it records what nothing stored can make again, so every
+    build reads it, upgraded across core versions and never dropped.
     """
 
     id: str = Field(min_length=1, description="The launch group's id, which every run it starts carries.")
     doc_type: Literal["eval_launch"] = "eval_launch"
-    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     template_id: str = Field(min_length=1)

@@ -341,8 +341,7 @@ def test_a_rule_moving_one_type_refuses_to_start_naming_it() -> None:
 
     with pytest.raises(
         RouteChanged,
-        match=r"keeps \['eval_action_job', 'eval_cassette', 'eval_judge_temperature_check', 'eval_launch', "
-        r"'eval_second_judge_pass'\] in another store",
+        match=r"keeps \['eval_cassette'\] in another store",
     ):
         RoutedDocumentStore(stores, _BY_ORIGIN)
 

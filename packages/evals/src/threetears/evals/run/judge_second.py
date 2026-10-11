@@ -45,9 +45,9 @@ from pydantic import Field, field_validator
 
 from threetears.evals.kernel.job_leases import LeasedJobKind
 from threetears.evals.run.job_work import JobOutcome, JobRecorder, JobWork, end_record, leased_job_kind
-from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
+from threetears.evals.schema.base import CoreDocumentModel, EvalBaseModel
 from threetears.evals.schema.job_lease import CancelRequestedAtField, CancelRequestReasonField, LeaseField, LostField
-from threetears.evals.schema.versioning import REGENERABLE_SCHEMA_VERSION
+from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
 from threetears.evals.schema.models import (
     NON_TERMINAL_RUN_STATUSES,
@@ -55,7 +55,7 @@ from threetears.evals.schema.models import (
     EvalRun,
     SecondJudge,
     SecondJudgeScore,
-    SchemaVersion,
+    CoreSchemaVersion,
     SecondJudging,
     utc_now_iso,
 )
@@ -445,7 +445,7 @@ async def estimate_second_judge(
 SecondJudgeAskedBy = Literal["judge_second", "judge_drift_check"]
 
 
-class EvalSecondJudgePass(EvalDocumentModel):
+class EvalSecondJudgePass(CoreDocumentModel):
     """One second judge's pass over a finished run: what was asked, how it ended, and its report — the record its job writes.
 
     The pass's scores are recorded on the results it asked about (:class:`~threetears.evals.schema.models.SecondJudging`,
@@ -453,11 +453,14 @@ class EvalSecondJudgePass(EvalDocumentModel):
     results whenever it is asked. This is the record of the pass itself: written as it starts (``running``, carrying the
     job's lease) and again as it ends, with the :class:`SecondJudgeReport` once it has run, so a pass started from a
     transport is answered by polling its job, in any process.
+
+    **Kept** (:mod:`threetears.evals.schema.versioning`): it records what nothing stored can make again, so every
+    build reads it, upgraded across core versions and never dropped.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     doc_type: Literal["eval_second_judge_pass"] = "eval_second_judge_pass"
-    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
+    schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     run_id: str = Field(min_length=1, description="The finished run whose stored evidence the second judge read.")

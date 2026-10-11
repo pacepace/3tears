@@ -151,7 +151,8 @@ types the engine stores, and says three things about each:
 
 - **origin**: `input` (what runs read as given, whoever wrote it: templates, judge configs, rubric dims, case
   sets, test cases, campaigns), `record` (what happened: runs, results, traces, calibration ratings, the
-  out-of-run spend ledger, sweeps, analysis attempts, cassettes, generation slots) or `derived` (computed from other stored
+  out-of-run spend ledger, sweeps, analysis attempts, cassettes, generation slots, launches, second judge passes,
+  judge temperature comparisons, host action jobs) or `derived` (computed from other stored
   documents: analyses, insights, judge profiles).
 - **lifecycle**: `kept` (read by every later release, below) or `regenerable` (refused after a format change,
   and made again).
@@ -166,7 +167,9 @@ the out-of-run spend ledger, case sets, and the templates, judge configs and rub
 tombstones) those documents name by id; and the campaigns people declared and gathered runs into, and the
 records of how each sweep ended, what each analysis generation spent, and which generation holds a campaign's
 slot (a later build that could not read a slot would block the campaign's generations, or start a second beside
-a live one). `CORE_DOC_TYPES` lists them.
+a live one), and the records of every other job: a launch (the runs it started), a second judge's pass (its report),
+a judge temperature comparison (every answer, stored nowhere else) and a host action's job (its result).
+`CORE_DOC_TYPES` lists them.
 
 **A release that changes a core shape ships an upgrader, and your store needs no migration.** Every change
 to a core shape bumps `CORE_SCHEMA_VERSION`, an added optional field included. Each bump comes with one
