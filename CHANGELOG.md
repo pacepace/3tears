@@ -13,7 +13,9 @@ a literal `importlib.import_module`/`__import__` below a root (`dynamic_import`)
 `getattr`/`hasattr` through a bound root that its `__all__` does not declare (`attribute_reach`); an `_name` on
 a chain rooted at a name bound from the package, dunders admitted (`private_reach`); and `monkeypatch`, `mock.patch`
 and its forms, `setattr`/`delattr` or attribute assignment whose target is a `"threetears.evals..."` string or an
-object bound from the package (`patch`). Each finding names its rule.
+object bound from the package (`patch`). Each finding names its rule. Names are resolved per scope, as Python
+resolves them: a parameter, local assignment, comprehension target or `global`/`nonlocal` rebinding shadows an
+import, so `def f(run): run._x` is not reported, while a nested function that does not rebind it still is.
 
 - **Breaking:** `NonPublicImport` is now `BoundaryFinding`, with `rule` (a `BoundaryRule`, the stable identifiers
   listed in `BOUNDARY_RULES`) and `target` (the dotted name reached) in place of `module` and `name`; its `str()`

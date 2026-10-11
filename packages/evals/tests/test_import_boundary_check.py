@@ -382,3 +382,132 @@ def test_every_finding_names_one_of_the_stable_rules(tmp_path: Path) -> None:
     rules = [rule for _line, rule, _target in _rules(tmp_path, source)]
 
     assert rules == list(BOUNDARY_RULES)
+
+
+# --- bindings are per scope ----------------------------------------------------------------------------
+
+
+def test_a_parameter_shadowing_an_import_is_not_a_reach(tmp_path: Path) -> None:
+    source = (
+        "from threetears.evals import run\n"
+        "import threetears.evals.kernel as k\n"
+        "def f(run, *args, k=None, **kwargs):\n"
+        "    return run._x, run.metering, k._helper\n"
+        "handler = lambda run: run._x\n"
+    )
+
+    assert _rules(tmp_path, source) == []
+
+
+def test_a_local_reassignment_shadows_the_import_from_where_it_binds(tmp_path: Path) -> None:
+    source = (
+        "from threetears.evals import run\n"
+        "def f(make):\n"
+        "    run._before\n"
+        "    run = make()\n"
+        "    run._after\n"
+        "run._module_level\n"
+        "run = object()\n"
+        "run._rebound\n"
+    )
+
+    assert _rules(tmp_path, source) == [
+        (6, "private_reach", "threetears.evals.run._module_level"),
+    ]
+
+
+def test_every_other_binding_form_shadows_within_its_scope(tmp_path: Path) -> None:
+    source = (
+        "from threetears.evals import run\n"
+        "def loops(runs, cm, value):\n"
+        "    for run in runs:\n"
+        "        run._a\n"
+        "def managed(cm):\n"
+        "    with cm as run:\n"
+        "        run._b\n"
+        "def caught():\n"
+        "    try:\n"
+        "        pass\n"
+        "    except ValueError as run:\n"
+        "        run._c\n"
+        "def matched(value):\n"
+        "    match value:\n"
+        "        case run:\n"
+        "            run._d\n"
+        "def walrus(make):\n"
+        "    if (run := make()):\n"
+        "        run._e\n"
+        "def other_import():\n"
+        "    from myhost import run\n"
+        "    run._f\n"
+        "def defined():\n"
+        "    def run():\n"
+        "        pass\n"
+        "    run._g\n"
+        "squares = [run._h for run in range(3)]\n"
+        "pairs = {run: run._i for run in range(3)}\n"
+    )
+
+    assert _rules(tmp_path, source) == []
+
+
+def test_a_nested_function_that_does_not_rebind_still_sees_the_import(tmp_path: Path) -> None:
+    source = (
+        "from threetears.evals import run\n"
+        "def outer():\n"
+        "    def inner():\n"
+        "        return run._x\n"
+        "    return [run.metering for _ in range(2)]\n"
+        "class Host:\n"
+        "    run = None\n"
+        "    def method(self):\n"
+        "        return run._y\n"
+    )
+
+    assert _rules(tmp_path, source) == [
+        (4, "private_reach", "threetears.evals.run._x"),
+        (5, "attribute_reach", "threetears.evals.run.metering"),
+        (9, "private_reach", "threetears.evals.run._y"),
+    ]
+
+
+def test_global_and_nonlocal_send_a_rebinding_to_the_scope_they_name(tmp_path: Path) -> None:
+    source = (
+        "from threetears.evals import run\n"
+        "import threetears.evals.kernel as k\n"
+        "def rebinds_global(make):\n"
+        "    global run\n"
+        "    run = make()\n"
+        "def reads_global():\n"
+        "    return run._x\n"
+        "def outer(make):\n"
+        "    k = make()\n"
+        "    def inner():\n"
+        "        nonlocal k\n"
+        "        return k._y\n"
+        "    return inner\n"
+        "def imports_late():\n"
+        "    global k\n"
+        "    return k._z\n"
+    )
+
+    assert _rules(tmp_path, source) == [
+        (16, "private_reach", "threetears.evals.kernel._z"),
+    ]
+
+
+def test_a_signature_is_read_in_the_scope_that_defines_it(tmp_path: Path) -> None:
+    """Defaults, annotations and decorators are evaluated outside the function, where the import binds."""
+    source = (
+        "import threetears.evals.kernel as k\n"
+        "@k._decorate\n"
+        "def f(k: k._Annotation = k._default) -> k._Returned:\n"
+        "    return k._unseen\n"
+    )
+
+    assert _rules(tmp_path, source) == [
+        (2, "private_reach", "threetears.evals.kernel._decorate"),
+        (3, "private_reach", "threetears.evals.kernel._Annotation"),
+        (3, "private_reach", "threetears.evals.kernel._Returned"),
+        (3, "private_reach", "threetears.evals.kernel._default"),
+    ]

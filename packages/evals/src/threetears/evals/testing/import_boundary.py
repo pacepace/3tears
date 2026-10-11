@@ -51,17 +51,26 @@ reach names, to read that root's ``__all__``, so a root that needs an extra (``v
   (``k.make()._cache``), a name re-bound from an imported one (``alias = k; alias._x``), an instance
   (``EvalRun(...)._x``), ``sys.modules``, ``exec`` and ``eval``.
 * A string annotation (``"k._Private"``): annotations are read only where they are expressions.
+* Control flow. Which binding of a name is in effect is decided by scope and source order, not by the
+  paths through a scope: a rebinding inside one branch of an ``if`` counts on every line after it, a
+  rebinding later in a loop is not seen by an earlier line's next iteration, and a function reads its
+  enclosing scope's last binding of a free name, whenever it is called.
+* A shadowed ``importlib``: the names ``importlib`` and ``import_module`` are recognised wherever a file
+  imports them, without regard to scope.
 
-**What it may over-report.** Bindings are per file, not per scope: a name bound from a
-``threetears.evals`` import anywhere in a file is read as that binding everywhere in it, so a local
-variable or parameter that shadows it (``def f(run): run._x``) is reported as a reach. Rename the local.
+**Bindings are per scope.** A name is read as a ``threetears.evals`` binding only where the import's
+binding is the one in effect, as Python resolves it: a function parameter, a local assignment, a ``for``,
+``with``, ``except`` or ``match`` target, a comprehension's target, a nested ``def`` or ``class``, and
+another import all shadow it within their scope, and ``global``/``nonlocal`` send a rebinding to the scope
+they name. So ``def f(run): run._x`` is not a reach, while a nested function that does not rebind ``run``
+still reads the module's import. A name read before its scope binds it is not a reach either.
 """
 
 from __future__ import annotations
 
 import ast
 import importlib
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -198,6 +207,362 @@ def _is_private(name: str) -> bool:
     return name.startswith("_") and not _is_dunder(name)
 
 
+# --- which binding of a name is in effect where it is read ---------------------------------------------
+
+#: Where a binding happens, as ``(line, column)``: a read sees the last binding in its scope that comes
+#: before it. A function's parameters and a comprehension's targets bind at :data:`_SCOPE_START`, before
+#: anything in the scope is read.
+_Position = tuple[int, int]
+
+#: The position a scope's own parameters and targets bind at: before every read in it.
+_SCOPE_START: _Position = (0, -1)
+
+#: A scope that reads its free names when it is CALLED, not where it is written: a name it reads from an
+#: enclosing scope is whatever that scope bound last.
+_DEFERRED_KINDS = frozenset({"function"})
+
+
+@dataclass
+class _Scope:
+    """One Python scope: the module, a function or lambda, a class body, or a comprehension.
+
+    Attributes:
+        kind: ``module``, ``function`` (a lambda too), ``class`` or ``comprehension``.
+        parent: The enclosing scope; None for the module.
+        events: Each name bound in this scope, to its bindings in source order: where, and what it binds
+            (None for anything that is not a ``threetears.evals`` import — an assignment, a parameter, an
+            import of another package).
+        declared_global: Names a ``global`` statement hands to the module scope.
+        declared_nonlocal: Names a ``nonlocal`` statement hands to an enclosing function.
+    """
+
+    kind: Literal["module", "function", "class", "comprehension"]
+    parent: _Scope | None
+    events: dict[str, list[tuple[_Position, _Bound | None]]] = field(default_factory=dict)
+    declared_global: set[str] = field(default_factory=set)
+    declared_nonlocal: set[str] = field(default_factory=set)
+
+
+def _end(node: ast.AST) -> _Position:
+    """Where ``node`` ends — the position a binding made from its value takes effect at."""
+    return (getattr(node, "end_lineno", None) or 0, getattr(node, "end_col_offset", None) or 0)
+
+
+def _start(node: ast.AST) -> _Position:
+    """Where ``node`` starts — the position a read at it happens at."""
+    return (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+
+
+def _target_names(target: ast.AST) -> Iterator[str]:
+    """Every name an assignment target binds: a name, or the names inside a tuple, list or starred target.
+
+    An attribute or subscript target binds no name; it changes an object, which the patch rule reads.
+    """
+    if isinstance(target, ast.Name):
+        yield target.id
+    elif isinstance(target, ast.Tuple | ast.List):
+        for element in target.elts:
+            yield from _target_names(element)
+    elif isinstance(target, ast.Starred):
+        yield from _target_names(target.value)
+
+
+class _ScopeBuilder(ast.NodeVisitor):
+    """Walk a module once, recording every scope, every binding in it, and the scope each node is read in.
+
+    The parts of a definition Python evaluates in the ENCLOSING scope — decorators, defaults, annotations,
+    a class's bases, a comprehension's first iterable — are visited there, and only the body in the new one.
+    """
+
+    def __init__(self) -> None:
+        self.module = _Scope("module", None)
+        self.current = self.module
+        self.scope_of: dict[int, _Scope] = {}
+
+    def visit(self, node: ast.AST) -> None:
+        self.scope_of[id(node)] = self.current
+        super().visit(node)
+
+    def _visit_all(self, nodes: Sequence[ast.AST]) -> None:
+        for node in nodes:
+            self.visit(node)
+
+    def _bind(self, name: str, at: _Position, bound: _Bound | None, scope: _Scope | None = None) -> None:
+        """Record that ``name`` is bound at ``at``, in the scope a ``global``/``nonlocal`` hands it to."""
+        scope = scope or self.current
+        if name in scope.declared_global:
+            scope = self.module
+        elif name in scope.declared_nonlocal:
+            scope = self._enclosing_owner(scope, name)
+        scope.events.setdefault(name, []).append((at, bound))
+
+    def _enclosing_owner(self, scope: _Scope, name: str) -> _Scope:
+        """The enclosing function scope a ``nonlocal name`` refers to."""
+        cursor = scope.parent
+        while cursor is not None:
+            if cursor.kind == "function" and name in cursor.events:
+                return cursor
+            cursor = cursor.parent
+        return scope
+
+    def _enter(self, kind: Literal["function", "class", "comprehension"]) -> _Scope:
+        scope = _Scope(kind, self.current)
+        self.current = scope
+        return scope
+
+    def _leave(self, scope: _Scope) -> None:
+        assert scope.parent is not None
+        self.current = scope.parent
+
+    # --- imports bind --------------------------------------------------------------------------------
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            head = alias.name.split(".")[0]
+            bound = _bound_module(alias.name if alias.asname is not None else head)
+            self._bind(alias.asname or head, _end(node), bound)
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        module = node.module if node.level == 0 else None
+        for alias in node.names:
+            if alias.name == "*":
+                continue
+            bound: _Bound | None = None
+            if module is not None and _in_package(module):
+                dotted = f"{module}.{alias.name}"
+                bound = _Bound(dotted, "root") if dotted in PUBLIC_ROOTS else _Bound(dotted, "object")
+            self._bind(alias.asname or alias.name, _end(node), bound)
+        self.generic_visit(node)
+
+    def visit_Global(self, node: ast.Global) -> None:
+        self.current.declared_global.update(node.names)
+
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        self.current.declared_nonlocal.update(node.names)
+
+    # --- every other binding shadows -----------------------------------------------------------------
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self.visit(node.value)
+        for target in node.targets:
+            for name in _target_names(target):
+                self._bind(name, _end(node.value), None)
+        self._visit_all(node.targets)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self.visit(node.target)
+        self.visit(node.value)
+        for name in _target_names(node.target):
+            self._bind(name, _end(node.value), None)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self.visit(node.annotation)
+        if node.value is not None:
+            self.visit(node.value)
+        for name in _target_names(node.target):
+            self._bind(name, _end(node), None)
+        self.visit(node.target)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self.visit(node.value)
+        owner = self.current
+        while owner.kind == "comprehension" and owner.parent is not None:
+            owner = owner.parent
+        self._bind(node.target.id, _end(node.value), None, owner)
+        self.visit(node.target)
+
+    def visit_For(self, node: ast.For | ast.AsyncFor) -> None:
+        self.visit(node.iter)
+        for name in _target_names(node.target):
+            self._bind(name, _end(node.iter), None)
+        self.visit(node.target)
+        self._visit_all(node.body)
+        self._visit_all(node.orelse)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        self.visit_For(node)
+
+    def visit_With(self, node: ast.With | ast.AsyncWith) -> None:
+        for item in node.items:
+            self.visit(item.context_expr)
+            if item.optional_vars is not None:
+                for name in _target_names(item.optional_vars):
+                    self._bind(name, _end(item.context_expr), None)
+                self.visit(item.optional_vars)
+        self._visit_all(node.body)
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+        self.visit_With(node)
+
+    def visit_Delete(self, node: ast.Delete) -> None:
+        self._visit_all(node.targets)
+        for target in node.targets:
+            for name in _target_names(target):
+                self._bind(name, _end(node), None)
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.type is not None:
+            self.visit(node.type)
+        if node.name is not None:
+            self._bind(node.name, _end(node.type) if node.type is not None else _start(node), None)
+        self._visit_all(node.body)
+
+    def visit_MatchAs(self, node: ast.MatchAs) -> None:
+        self.generic_visit(node)
+        if node.name is not None:
+            self._bind(node.name, _end(node), None)
+
+    def visit_MatchStar(self, node: ast.MatchStar) -> None:
+        if node.name is not None:
+            self._bind(node.name, _end(node), None)
+
+    def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
+        self.generic_visit(node)
+        if node.rest is not None:
+            self._bind(node.rest, _end(node), None)
+
+    # --- new scopes ----------------------------------------------------------------------------------
+
+    def _parameters(self, arguments: ast.arguments) -> list[str]:
+        every = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
+        every += [arg for arg in (arguments.vararg, arguments.kwarg) if arg is not None]
+        return [arg.arg for arg in every]
+
+    def _outer_parts_of(self, arguments: ast.arguments) -> None:
+        """A signature's defaults and annotations, which the enclosing scope evaluates."""
+        self._visit_all(arguments.defaults)
+        self._visit_all([default for default in arguments.kw_defaults if default is not None])
+        every = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
+        every += [arg for arg in (arguments.vararg, arguments.kwarg) if arg is not None]
+        self._visit_all([arg.annotation for arg in every if arg.annotation is not None])
+
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self._visit_all(node.decorator_list)
+        self._outer_parts_of(node.args)
+        if node.returns is not None:
+            self.visit(node.returns)
+        self._visit_all(node.type_params)
+        scope = self._enter("function")
+        for name in self._parameters(node.args):
+            self._bind(name, _SCOPE_START, None)
+        self._visit_all(node.body)
+        self._leave(scope)
+        self._bind(node.name, _end(node), None)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.visit_FunctionDef(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self._outer_parts_of(node.args)
+        scope = self._enter("function")
+        for name in self._parameters(node.args):
+            self._bind(name, _SCOPE_START, None)
+        self.visit(node.body)
+        self._leave(scope)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._visit_all(node.decorator_list)
+        self._visit_all(node.bases)
+        self._visit_all(node.keywords)
+        self._visit_all(node.type_params)
+        scope = self._enter("class")
+        self._visit_all(node.body)
+        self._leave(scope)
+        self._bind(node.name, _end(node), None)
+
+    def _comprehension(self, node: ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp) -> None:
+        first, *rest = node.generators
+        self.visit(first.iter)
+        scope = self._enter("comprehension")
+        for generator in node.generators:
+            for name in _target_names(generator.target):
+                self._bind(name, _SCOPE_START, None)
+        for at, generator in enumerate([first, *rest]):
+            self.scope_of[id(generator)] = scope
+            self.visit(generator.target)
+            if at:
+                self.visit(generator.iter)
+            self._visit_all(generator.ifs)
+        if isinstance(node, ast.DictComp):
+            self.visit(node.key)
+            self.visit(node.value)
+        else:
+            self.visit(node.elt)
+        self._leave(scope)
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._comprehension(node)
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._comprehension(node)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._comprehension(node)
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._comprehension(node)
+
+
+@dataclass
+class _Scopes:
+    """A module's scopes, answering which binding of a name is in effect where it is read."""
+
+    module: _Scope
+    scope_of: dict[int, _Scope]
+
+    @classmethod
+    def of(cls, tree: ast.Module) -> _Scopes:
+        builder = _ScopeBuilder()
+        builder.visit(tree)
+        return cls(builder.module, builder.scope_of)
+
+    def resolve(self, node: ast.Name) -> _Bound | None:
+        """What ``node`` stands for in the package where it is read, or None when the binding in effect is not
+        a ``threetears.evals`` import.
+
+        A name bound in the reading scope is the last binding there before the read (none before it is an
+        unbound local, or — in a class body — a read of the module's). A free name is looked up outward,
+        skipping class bodies as Python does; once the lookup leaves a function, the read happens when the
+        function is called, so the enclosing scope's LAST binding is the one in effect.
+
+        Args:
+            node: A name being read.
+
+        Returns:
+            Its binding, or None.
+        """
+        name = node.id
+        scope = self.scope_of.get(id(node), self.module)
+        at: _Position | None = _start(node)
+        if name in scope.declared_global:
+            return self._last(self.module, name, None)[1]
+        if name not in scope.declared_nonlocal and name in scope.events:
+            found, bound = self._last(scope, name, at)
+            if found or scope.kind != "class":
+                return bound
+        cursor = scope
+        while cursor.parent is not None:
+            if cursor.kind in _DEFERRED_KINDS:
+                at = None
+            cursor = cursor.parent
+            if cursor.kind == "class":
+                continue
+            if name in cursor.events:
+                return self._last(cursor, name, at)[1]
+        return None
+
+    @staticmethod
+    def _last(scope: _Scope, name: str, at: _Position | None) -> tuple[bool, _Bound | None]:
+        """The last binding of ``name`` in ``scope`` before ``at`` (any, when ``at`` is None).
+
+        Returns:
+            Whether there is one, and what it binds.
+        """
+        before = [bound for where, bound in scope.events.get(name, []) if at is None or where <= at]
+        return (True, before[-1]) if before else (False, None)
+
+
 @dataclass
 class _FileCheck:
     """The rules, over one parsed file."""
@@ -205,13 +570,16 @@ class _FileCheck:
     path: Path
     tree: ast.Module
     exported: dict[str, frozenset[str]]
-    bindings: dict[str, _Bound] = field(default_factory=dict)
+    scopes: _Scopes = field(init=False)
     importlib_names: set[str] = field(default_factory=set)
     import_module_names: set[str] = field(default_factory=set)
     out: list[BoundaryFinding] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        self.scopes = _Scopes.of(self.tree)
+
     def findings(self) -> list[BoundaryFinding]:
-        """Every finding in the file: the imports first, which also bind the names every other rule reads.
+        """Every finding in the file: the static imports first, then every reach through a bound name.
 
         Returns:
             The findings, unordered.
@@ -242,12 +610,6 @@ class _FileCheck:
                 self._find(node, "static_import", alias.name, reason)
             if alias.name == "importlib":
                 self.importlib_names.add(alias.asname or "importlib")
-            if alias.asname is not None:
-                bound = _bound_module(alias.name)
-            else:
-                bound = _bound_module(alias.name.split(".")[0])
-            if bound is not None:
-                self.bindings[alias.asname or alias.name.split(".")[0]] = bound
 
     def _import_from(self, node: ast.ImportFrom, module: str) -> None:
         for alias in node.names:
@@ -257,12 +619,6 @@ class _FileCheck:
                 continue
             if (reason := _from_import_defect(module, alias.name, self.exported)) is not None:
                 self._find(node, "static_import", f"{module}.{alias.name}", reason)
-            if alias.name == "*":
-                continue
-            dotted = f"{module}.{alias.name}"
-            self.bindings[alias.asname or alias.name] = (
-                _Bound(dotted, "root") if dotted in PUBLIC_ROOTS else _Bound(dotted, "object")
-            )
 
     # --- attribute chains -----------------------------------------------------------------------------
 
@@ -280,7 +636,7 @@ class _FileCheck:
             does not start at a bound name.
         """
         if isinstance(node, ast.Name):
-            return self.bindings.get(node.id)
+            return self.scopes.resolve(node)
         if isinstance(node, ast.Attribute):
             base = self._resolve(node.value)
             return None if base is None else self._step(base, node.attr, node=None)
@@ -334,7 +690,7 @@ class _FileCheck:
         while isinstance(cursor, ast.Attribute):
             links.append(cursor)
             cursor = cursor.value
-        if not isinstance(cursor, ast.Name) or (bound := self.bindings.get(cursor.id)) is None:
+        if not isinstance(cursor, ast.Name) or (bound := self.scopes.resolve(cursor)) is None:
             return
         links.reverse()
         for at, link in enumerate(links):
