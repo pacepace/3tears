@@ -4461,7 +4461,7 @@ class TestAHostMeasuresItsOwnFace:
             "font": "Host Face, sans-serif",
             "measured_with": "vl-convert-python test",
             "probe_size": 1000,
-            "weights": [400, 600],
+            "weights": [400, 500, 600],
             "font_files": {},
         }
 

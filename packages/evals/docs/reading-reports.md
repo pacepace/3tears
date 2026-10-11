@@ -639,8 +639,10 @@ renderer = VegaRenderer.for_style(style, font_dir=Path("/srv/fonts"))
 
 The table records the metrics format it was written in and the SHA-256 of each file in `--font-dir` that
 declares the measured family (other faces in the directory are not recorded, so adding or updating one leaves
-the table valid). `load_chart_font` refuses a table written in another metrics format, and a renderer given a
-font directory refuses a font whose recorded files there no longer hash as measured; both refusals name the
+the table valid). `load_chart_font` refuses a table written in another metrics format, or measured at weights
+other than the ones the chart type scale draws at, and a renderer given a font directory refuses a font whose
+files there are not the ones it was measured from: a recorded file missing or hashing differently, or a file
+declaring the face that the table did not record (a weight added to the family, say); each refusal names the
 command that re-measures the face. The table also records a digest of what the measurer probed (the
 characters, how each is framed, the size and the corpus), and `load_chart_font` refuses a table probed with
 anything else, so a change to the probes that forgot a format bump reads as drift too.

@@ -366,6 +366,18 @@ def font_weights() -> dict[str, float]:
     return dict(packaged_artifact()["font_weight"])
 
 
+def drawn_weights() -> list[int]:
+    """Every weight the chart type scale draws at, ascending: what a face's metrics table is measured at.
+
+    The one list both sides read — the measurer measures at it, and a table measured at any other is refused — so
+    a type scale that gains a weight cannot leave a table laying text out at widths it was never measured at.
+
+    Returns:
+        The distinct :func:`font_weights`, as integers.
+    """
+    return sorted({int(weight) for weight in font_weights().values()})
+
+
 def series_colors(theme: Theme) -> list[str]:
     """The categorical hues, in fixed order — the whole palette, not the validated prefix.
 
@@ -619,6 +631,7 @@ __all__ = [
     "Theme",
     "check_palette_artifact",
     "font_sizes",
+    "drawn_weights",
     "font_weights",
     "geometry",
     "load_palette",

@@ -36,7 +36,7 @@ the table carries the SHA-256 of each font file under ``--font-dir`` whose own n
 measured family — those files only: a directory may hold other faces, and adding or updating one of them
 must not invalidate this table. A renderer then refuses the table once those files change
 (:func:`~threetears.evals.vega.text_metrics.check_font_files`). Which files provide a family is read from
-each file's ``name`` table (:func:`font_families`), the same names the rasteriser's font database matches
+each file's ``name`` table (:func:`~threetears.evals.vega.text_metrics.font_families`), the same names the rasteriser's font database matches
 a family against; this module parses that table itself, so measuring needs nothing past the extra.
 
 **It refuses a face it cannot tie to files.** With ``--font-dir``, a family no file in the directory
@@ -54,14 +54,13 @@ from __future__ import annotations
 
 import argparse
 import re
-import struct
 import sys
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
 from threetears.evals.kernel.host import CHART_FONT_CHARACTERS
-from threetears.evals.vega.palette import font_weights
+from threetears.evals.vega.palette import drawn_weights
 from threetears.evals.vega.render import register_fonts, vega_png, vega_svg
 from threetears.evals.vega.text_metrics import (
     CORPUS,
@@ -70,19 +69,12 @@ from threetears.evals.vega.text_metrics import (
     PROBE_FRAME,
     PROBE_SIZE,
     RUN_LENGTH,
-    font_file_digest,
+    resolving_files,
     write_font_metrics,
 )
 
 #: The face the rasteriser embeds, and so the one face measurable with no font directory.
 EMBEDDED_FACE = PACKAGED_FAMILY.split(",")[0].strip()
-
-#: The file suffixes the rasteriser's font database loads from a registered directory, lowercased.
-FONT_SUFFIXES = frozenset({".ttf", ".otf", ".ttc", ".otc"})
-
-#: The ``name`` table records that name a family: 1 is the family, 16 the typographic family a face that
-#: has more than four styles declares beside it. A face is matched against either.
-_FAMILY_NAME_IDS = frozenset({1, 16})
 
 
 class FontMeasureError(SystemExit):
@@ -91,90 +83,6 @@ class FontMeasureError(SystemExit):
     A :class:`SystemExit`, because this module is a command and its refusals are the command's exit: the
     message is what the person running it reads.
     """
-
-
-def font_families(data: bytes) -> frozenset[str]:
-    """Every family a font file's ``name`` table declares, in every face it holds.
-
-    Reads an sfnt font (TrueType or OpenType, ``.ttf``/``.otf``) or a collection of them (``.ttc``/
-    ``.otc``): name IDs 1 and 16, on the Unicode and Windows platforms (UTF-16BE) and the Macintosh
-    platform's Roman encoding. Nothing else is read.
-
-    Args:
-        data: The file's bytes.
-
-    Returns:
-        The families, as declared. Empty for bytes that are not a font, or a font with no family name.
-    """
-    try:
-        if data[:4] == b"ttcf":
-            (count,) = struct.unpack_from(">I", data, 8)
-            offsets = struct.unpack_from(f">{count}I", data, 12)
-        else:
-            offsets = (0,)
-        return frozenset(family for offset in offsets for family in _sfnt_families(data, offset))
-    # NOSILENT: bytes that do not parse as a font declare no family; the rasteriser's font database skips
-    # such a file too, so it cannot be what drew the face, and the caller refuses when no file declares it.
-    except struct.error:
-        return frozenset()
-
-
-def _sfnt_families(data: bytes, offset: int) -> list[str]:
-    """The families one sfnt face at ``offset`` declares in its ``name`` table.
-
-    Args:
-        data: The file's bytes.
-        offset: Where the face's table directory starts.
-
-    Returns:
-        The families; empty when the face has no ``name`` table.
-
-    Raises:
-        struct.error: The bytes end inside a structure they declare.
-    """
-    (tables,) = struct.unpack_from(">H", data, offset + 4)
-    for record in range(tables):
-        tag, _checksum, start, _length = struct.unpack_from(">4sIII", data, offset + 12 + 16 * record)
-        if tag == b"name":
-            _format, count, strings = struct.unpack_from(">HHH", data, start)
-            families = []
-            for entry in range(count):
-                platform, encoding, _language, name_id, length, at = struct.unpack_from(
-                    ">HHHHHH", data, start + 6 + 12 * entry
-                )
-                if name_id not in _FAMILY_NAME_IDS:
-                    continue
-                raw = data[start + strings + at : start + strings + at + length]
-                if platform in {0, 3}:
-                    families.append(raw.decode("utf-16-be", errors="replace"))
-                elif platform == 1 and encoding == 0:
-                    families.append(raw.decode("mac_roman"))
-            return families
-    return []
-
-
-def resolving_files(face: str, font_dir: Path) -> dict[str, str]:
-    """Every font file under ``font_dir`` that declares ``face`` as its family, with its digest.
-
-    The directory is read recursively, as the rasteriser registers it, and a family matches without
-    regard to case. Files declaring other families are not in the result: the table is tied to the files
-    of the face it measured, not to the directory.
-
-    Args:
-        face: The family measured.
-        font_dir: The directory registered for it.
-
-    Returns:
-        Each file's path relative to ``font_dir`` (``/``-separated) to the SHA-256 of its bytes.
-    """
-    wanted = face.casefold()
-    return {
-        path.relative_to(font_dir).as_posix(): font_file_digest(path)
-        for path in sorted(font_dir.rglob("*"))
-        if path.is_file()
-        and path.suffix.lower() in FONT_SUFFIXES
-        and wanted in {family.casefold() for family in font_families(path.read_bytes())}
-    }
 
 
 def _width(text: str, *, face: str, weight: int) -> float:
@@ -279,7 +187,7 @@ def measure(family: str) -> dict[str, Any]:
     """
     face = family.split(",")[0].strip()
     _require_face_resolves(face)
-    weights = sorted({int(weight) for weight in font_weights().values()})
+    weights = drawn_weights()
     advances: dict[str, float] = {}
     for weight in weights:
         frame = PROBE_FRAME
@@ -346,15 +254,12 @@ def main(argv: list[str] | None = None) -> int:
 __all__ = [
     "CORPUS",
     "EMBEDDED_FACE",
-    "FONT_SUFFIXES",
     "PROBE_SIZE",
     "RUN_LENGTH",
     "FontMeasureError",
     "face_files",
-    "font_families",
     "main",
     "measure",
-    "resolving_files",
 ]
 
 

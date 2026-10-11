@@ -2288,7 +2288,7 @@ The Vega-Lite chart renderer — an optional adapter over eval's chart intent.
 
 **Functions**
 
-- **`check_font_files`** · function · Refuse `font` when the files its table was measured from are not, byte for byte, in `font_dirs`.
+- **`check_font_files`** · function · Refuse `font` when the files declaring its face in `font_dirs` are not, byte for byte, the ones it was measured from.
   <br>`check_font_files(font: ChartFont, font_dirs: Sequence[Path]) -> None`
 - **`check_spec`** · function · Check a Vega-Lite spec against the presentation rules.
   <br>`check_spec(spec: dict[str, Any]) -> list[str]`

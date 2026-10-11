@@ -42,9 +42,7 @@ from threetears.evals.vega.measure_font import (
     EMBEDDED_FACE,
     FontMeasureError,
     face_files,
-    font_families,
     main,
-    resolving_files,
 )
 from threetears.evals.vega.text_metrics import (
     MEASURE_COMMAND,
@@ -52,9 +50,11 @@ from threetears.evals.vega.text_metrics import (
     METRICS_PATH,
     chart_font_from_artifact,
     check_font_files,
+    font_families,
     font_file_digest,
     load_metrics,
     probe_digest,
+    resolving_files,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -117,7 +117,7 @@ def _measured(**update: Any) -> dict[str, Any]:
         "font": "Host Face, sans-serif",
         "measured_with": "vl-convert-python test",
         "probe_size": 1000,
-        "weights": [400, 600],
+        "weights": [400, 500, 600],
         "font_files": {"host.ttf": "0" * 64},
     } | update
 
@@ -168,6 +168,26 @@ def test_a_table_of_another_format_is_refused_naming_the_command(tmp_path: Path,
     assert f"this engine reads format {METRICS_FORMAT}" in message
     assert f"{MEASURE_COMMAND} --family 'Host Face, sans-serif' --font-dir " in message
     assert f"--out {path}" in message
+
+
+@pytest.mark.parametrize("weights", [[400, 600], [400, 500, 600, 700], [], None])
+def test_a_table_measured_at_weights_the_type_scale_does_not_draw_at_is_refused(
+    tmp_path: Path, weights: list[int] | None
+) -> None:
+    """The type scale draws at 500 too; a table measured at 400 and 600 lays medium text out at widths never measured."""
+    path = write_font_metrics(**_measured(), path=tmp_path / "host.json")
+    artifact = json.loads(path.read_text(encoding="utf-8"))
+    if weights is None:
+        del artifact["weights"]
+    else:
+        artifact["weights"] = weights
+    path.write_text(json.dumps(artifact), encoding="utf-8")
+
+    with pytest.raises(TextMetricsError, match=r"the chart type scale draws at \[400, 500, 600\]") as refused:
+        load_chart_font(path)
+    assert f"--out {path}" in str(refused.value)
+    with pytest.raises(TextMetricsError, match="type scale draws at"):
+        write_font_metrics(**_measured(weights=[400, 600]), path=tmp_path / "other.json")
 
 
 def test_the_packaged_table_s_refusal_names_the_bare_command() -> None:
@@ -243,6 +263,27 @@ def test_a_font_file_missing_from_every_directory_is_refused(tmp_path: Path) -> 
 
     with pytest.raises(TextMetricsError, match="host.ttf is in none of"):
         check_font_files(font, [tmp_path / "elsewhere"])
+
+
+def test_a_weight_file_added_to_the_measured_face_is_refused(tmp_path: Path) -> None:
+    """A semibold added beside the measured regular is drawn wherever a chart asks for 600, at widths never measured."""
+    font = _host_font(tmp_path)
+    _write(tmp_path / "weights" / "Host-SemiBold.ttf", _font("Host Face SemiBold", typographic="Host Face"))
+
+    with pytest.raises(
+        TextMetricsError, match="Host-SemiBold.ttf declares 'Host Face', and its table was not measured"
+    ):
+        check_font_files(font, [tmp_path])
+    with pytest.raises(TextMetricsError, match="its table was not measured from it"):
+        VegaRenderer(palette=packaged_palette("dark"), font=font, font_dir=tmp_path)
+
+
+def test_a_face_recording_no_files_is_refused_where_a_directory_provides_it(tmp_path: Path) -> None:
+    """The packaged face was measured as the rasteriser embeds it; a directory supplying its own file draws another."""
+    _write(tmp_path / "LiberationSans-Regular.ttf", _font(EMBEDDED_FACE))
+
+    with pytest.raises(TextMetricsError, match="LiberationSans-Regular.ttf declares 'Liberation Sans'"):
+        check_font_files(packaged_font(), [tmp_path])
 
 
 def test_one_matching_directory_among_several_is_enough(tmp_path: Path) -> None:

@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import struct
 from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from pathlib import Path
@@ -175,6 +176,14 @@ MEASURE_COMMAND = "python -m threetears.evals.vega.measure_font"
 #: underestimates past this, so a font or rasteriser change that invalidates the
 #: choice fails at the point of regeneration rather than in a report.
 SAFETY_MARGIN = 0.04
+
+
+#: The file suffixes the rasteriser's font database loads from a registered directory, lowercased.
+FONT_SUFFIXES = frozenset({".ttf", ".otf", ".ttc", ".otc"})
+
+#: The ``name`` table records that name a family: 1 is the family, 16 the typographic family a face that
+#: has more than four styles declares beside it. A face is matched against either.
+_FAMILY_NAME_IDS = frozenset({1, 16})
 
 
 class TextMetricsError(RuntimeError):
@@ -307,7 +316,9 @@ def chart_font_from_artifact(artifact: dict[str, Any], *, where: str) -> ChartFo
     Raises:
         TextMetricsError: The artifact names no family, was written in a metrics format
             other than :data:`METRICS_FORMAT`, records a probe digest other than :func:`probe_digest` (or none),
-            or its table is not one a renderer can lay out against (the contract's refusal, with its reason).
+            was measured at weights other than the ones the chart type scale draws at
+            (:func:`~threetears.evals.vega.palette.drawn_weights`), or its table is not one a renderer can lay out
+            against (the contract's refusal, with its reason).
     """
     family = artifact.get("font")
     if not isinstance(family, str):
@@ -335,6 +346,17 @@ def chart_font_from_artifact(artifact: dict[str, Any], *, where: str) -> ChartFo
             f"chart font metrics at {where} record {recorded}, and this engine probes a face with "
             f"{probe_digest()[:12]}… — the advances answer probes (characters, their framing, the corpus) this engine "
             f"no longer makes, so a layout read from them is drift. Re-measure the face: {measure_command(family, out=where)}"
+        )
+    # Deferred: the palette reads this module's packaged font, so a top-level import would close a cycle.
+    from threetears.evals.vega.palette import drawn_weights
+
+    drawn = drawn_weights()
+    if (measured := artifact.get("weights")) != drawn:
+        raise TextMetricsError(
+            f"chart font metrics at {where} were measured at weights {measured!r}, and the chart type scale draws at "
+            f"{drawn} — each advance is the widest across the weights a chart draws, so a table measured at others "
+            f"lays a label out against widths it is not drawn at. Re-measure the face: "
+            f"{measure_command(family, out=where)}"
         )
     return font
 
@@ -374,28 +396,124 @@ def font_file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+def font_families(data: bytes) -> frozenset[str]:
+    """Every family a font file's ``name`` table declares, in every face it holds.
+
+    Reads an sfnt font (TrueType or OpenType, ``.ttf``/``.otf``) or a collection of them (``.ttc``/
+    ``.otc``): name IDs 1 and 16, on the Unicode and Windows platforms (UTF-16BE) and the Macintosh
+    platform's Roman encoding. Nothing else is read.
+
+    Args:
+        data: The file's bytes.
+
+    Returns:
+        The families, as declared. Empty for bytes that are not a font, or a font with no family name.
+    """
+    try:
+        if data[:4] == b"ttcf":
+            (count,) = struct.unpack_from(">I", data, 8)
+            offsets = struct.unpack_from(f">{count}I", data, 12)
+        else:
+            offsets = (0,)
+        return frozenset(family for offset in offsets for family in _sfnt_families(data, offset))
+    # NOSILENT: bytes that do not parse as a font declare no family; the rasteriser's font database skips
+    # such a file too, so it cannot be what drew the face, and the caller refuses when no file declares it.
+    except struct.error:
+        return frozenset()
+
+
+def _sfnt_families(data: bytes, offset: int) -> list[str]:
+    """The families one sfnt face at ``offset`` declares in its ``name`` table.
+
+    Args:
+        data: The file's bytes.
+        offset: Where the face's table directory starts.
+
+    Returns:
+        The families; empty when the face has no ``name`` table.
+
+    Raises:
+        struct.error: The bytes end inside a structure they declare.
+    """
+    (tables,) = struct.unpack_from(">H", data, offset + 4)
+    for record in range(tables):
+        tag, _checksum, start, _length = struct.unpack_from(">4sIII", data, offset + 12 + 16 * record)
+        if tag == b"name":
+            _format, count, strings = struct.unpack_from(">HHH", data, start)
+            families = []
+            for entry in range(count):
+                platform, encoding, _language, name_id, length, at = struct.unpack_from(
+                    ">HHHHHH", data, start + 6 + 12 * entry
+                )
+                if name_id not in _FAMILY_NAME_IDS:
+                    continue
+                raw = data[start + strings + at : start + strings + at + length]
+                if platform in {0, 3}:
+                    families.append(raw.decode("utf-16-be", errors="replace"))
+                elif platform == 1 and encoding == 0:
+                    families.append(raw.decode("mac_roman"))
+            return families
+    return []
+
+
+def resolving_files(face: str, font_dir: Path) -> dict[str, str]:
+    """Every font file under ``font_dir`` that declares ``face`` as its family, with its digest.
+
+    The directory is read recursively, as the rasteriser registers it, and a family matches without
+    regard to case. Files declaring other families are not in the result: the table is tied to the files
+    of the face it measured, not to the directory.
+
+    Args:
+        face: The family measured.
+        font_dir: The directory registered for it.
+
+    Returns:
+        Each file's path relative to ``font_dir`` (``/``-separated) to the SHA-256 of its bytes.
+    """
+    wanted = face.casefold()
+    return {
+        path.relative_to(font_dir).as_posix(): font_file_digest(path)
+        for path in sorted(font_dir.rglob("*"))
+        if path.is_file()
+        and path.suffix.lower() in FONT_SUFFIXES
+        and wanted in {family.casefold() for family in font_families(path.read_bytes())}
+    }
+
+
 def check_font_files(font: ChartFont, font_dirs: Sequence[Path]) -> None:
-    """Refuse ``font`` when the files its table was measured from are not, byte for byte, in ``font_dirs``.
+    """Refuse ``font`` when the files declaring its face in ``font_dirs`` are not, byte for byte, the ones it was measured from.
 
-    **A host's CI gate.** Exported from :mod:`threetears.evals.vega` and needing no rasteriser — it hashes files, and
-    imports and calls nothing of ``vl-convert`` — so a host's suite runs it, over the table it ships and the font
-    directory its image carries, wherever it builds: a face updated without a re-measure fails there, before any
-    renderer is built. ``load_chart_font`` holds the table to this engine's format and probes the same way.
+    **A host's CI gate.** Exported from :mod:`threetears.evals.vega` and needing no rasteriser — it hashes files and
+    reads their ``name`` tables, and imports and calls nothing of ``vl-convert`` — so a host's suite runs it, over the
+    table it ships and the font directory its image carries, wherever it builds: a face updated without a re-measure
+    fails there, before any renderer is built. ``load_chart_font`` holds the table to this engine's format, probes
+    and type scale the same way.
 
-    The advances describe the bytes that were measured, not the family name, so a face updated or
-    replaced in place lays out against widths it no longer has. Each recorded file must be found under
-    one of the directories with the digest it was measured at; a directory may hold other files, and
-    a change to one of those says nothing about this face. A font that records no files (the embedded
-    face, or one declared in code) has nothing to check.
+    The advances describe the bytes that were measured, not the family name, so a face updated, replaced or
+    extended in place lays out against widths it no longer has. **The face's whole file set is compared**, as
+    :func:`resolving_files` reads it in each directory: every file the table recorded must be there with the digest
+    it was measured at, and no other file may declare the face. A weight file added beside the measured ones (a
+    semibold the face did not have) is drawn by the rasteriser wherever the chart asks for that weight, at widths
+    the table never measured, so it is refused like a changed one. A file declaring another family says nothing
+    about this face and is not read. A font that records no files (the embedded face, or one declared in code) is
+    held to the same rule: a directory that provides its face with files the table was not measured from is
+    refused.
 
     Args:
         font: The font a render is set in.
         font_dirs: The directories registered for it; a recorded path is read relative to each.
 
     Raises:
-        TextMetricsError: A recorded file is in none of the directories, or hashes differently in
-            every one that holds it; each is named, with the command that re-measures the face.
+        TextMetricsError: A recorded file is in none of the directories, or hashes differently in every one that
+            holds it, or a file the table did not record declares the face; each is named, with the command that
+            re-measures the face.
     """
+    face = font.family.split(",")[0].strip()
+    present = [
+        (directory, name, digest)
+        for directory in font_dirs
+        for name, digest in resolving_files(face, directory).items()
+    ]
     stale: list[str] = []
     for name, measured in sorted(font.font_files.items()):
         found = [directory / name for directory in font_dirs if (directory / name).is_file()]
@@ -403,6 +521,11 @@ def check_font_files(font: ChartFont, font_dirs: Sequence[Path]) -> None:
             stale.append(f"{name} is in none of {[str(directory) for directory in font_dirs]}")
         elif all(font_file_digest(candidate) != measured for candidate in found):
             stale.append(f"{found[0]} hashes differently from the {name} its table was measured from")
+    stale.extend(
+        f"{directory / name} declares {face!r}, and its table was not measured from it"
+        for directory, name, digest in present
+        if name not in font.font_files
+    )
     if stale:
         named = str(font_dirs[0]) if len(font_dirs) == 1 else "<the directory holding its font files>"
         raise TextMetricsError(
@@ -534,7 +657,10 @@ __all__ = [
     "SAFETY_MARGIN",
     "TextMetricsError",
     "chart_font_from_artifact",
+    "FONT_SUFFIXES",
     "check_font_files",
+    "font_families",
+    "resolving_files",
     "fits",
     "font_file_digest",
     "load_chart_font",
