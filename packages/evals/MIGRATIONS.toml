@@ -31,7 +31,7 @@
 # callers.
 
 [[release]]
-version = "unreleased"
+version = "0.66.0-evaladopt.11"
 since = "v0.66.0-evaladopt.10"
 summary = """
 What adopting .10 found (gaps 40–47): the FastMCP transport enters the `around` hook for a host resolver's refusal,
