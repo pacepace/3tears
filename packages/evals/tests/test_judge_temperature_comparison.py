@@ -436,6 +436,12 @@ class TestAClientThatIgnoresTemperature:
         assert ended.answers is not None
         errors = [answer.error for case in ended.answers.answers for answer in case.answers]
         assert errors and all(error and "check_completion_conformance" in error for error in errors)
+        # Every call failed, so neither side scored a case twice: there is nothing to compare, and it says so.
+        comparison = read_judge_temperatures(ended.answers)
+        assert not comparison.comparable
+        assert comparison.incomparable is not None and "answered no case twice" in comparison.incomparable
+        assert "call(s) failed" in comparison.incomparable
+        assert "NOT COMPARABLE" in comparison.render()
 
 
 #: The judge request settings a run recorded before ``strict_output`` joined the engine's defaults.

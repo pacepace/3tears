@@ -13,6 +13,8 @@ spends nothing:
 - **The temperature sent is checked, never assumed.** A score recorded at anything other than its setting's
   temperature — a client that dropped it, or reports none — is left out of that side's figures and counted, and the
   comparison is marked not comparable, with the reason.
+- **Nothing measured is not a comparison.** A side that answered no case twice on a dimension — every call failed,
+  say — measured no spread there, and the comparison is marked not comparable, saying how its calls ended.
 """
 
 from __future__ import annotations
@@ -118,8 +120,9 @@ class JudgeTemperatureComparison(EvalBaseModel):
         cases: The (result, dim) pairs re-judged.
         dimensions: Per dimension, the two settings side by side.
         settings: Per setting, every case and the full self-agreement read.
-        comparable: Whether every score on each side was recorded at that side's temperature. False means the
-            figures do not compare the two settings as named, and ``incomparable`` says why.
+        comparable: Whether every score on each side was recorded at that side's temperature, and each side answered
+            some case at least twice on every dimension. False means the figures do not compare the two settings as
+            named — or compare nothing, as when every call failed — and ``incomparable`` says why.
         incomparable: Why not, when not.
         skipped: The run's results not re-judged, each with why — decided before anything was spent.
         stopped: Why the comparison stopped before its last result, when it did.
@@ -335,13 +338,28 @@ def read_judge_temperatures(answers: JudgeTemperatureAnswers) -> JudgeTemperatur
         )
         for dim, scale in sorted(scales.items())
     ]
-    incomparable = None
+    reasons: list[str] = []
     if problems:
-        incomparable = (
+        reasons.append(
             "; ".join(problems)
             + " — the judge's client did not send (or does not report sending) the temperature each side names, so "
             "those scores are left out and the two sides do not compare the settings as named"
         )
+    # A side that answered no case twice on a dimension measured nothing there — no spread, no self-agreement — so
+    # the two settings are not compared on it, whatever the temperatures recorded. Every call failing is one way.
+    for spec in TEMPERATURE_SETTINGS:
+        for dim in sorted(scales):
+            mine = [case for case in cases_by[spec.setting] if case.rubric_dim == dim]
+            if any(case.stable is not None for case in mine):
+                continue
+            failed = sum(case.failed for case in mine)
+            cannot_tell = sum(case.cannot_tell for case in mine)
+            reasons.append(
+                f"on {dim}, the {spec.setting} setting answered no case twice ({failed} call(s) failed, "
+                f"{cannot_tell} could not tell, {sum(len(case.scores) for case in mine)} scored), so it measured "
+                "nothing there to compare"
+            )
+    incomparable = "; ".join(reasons) or None
     return JudgeTemperatureComparison(
         run_id=answers.run_id,
         judge_model=answers.judge_model,
