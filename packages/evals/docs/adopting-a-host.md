@@ -141,10 +141,25 @@ before a page is slow, and you can alert on `elapsed_ms` instead.
 
 ## Stored data: what is kept
 
+**Every stored type has facts.** `DOC_TYPE_FACTS` (in `threetears.evals.schema`) is the one list of the
+types the engine stores, and says three things about each:
+
+- **origin**: `input` (what runs read as given, whoever wrote it: templates, judge configs, rubric dims, case
+  sets, test cases, campaigns), `record` (what happened: runs, results, traces, calibration ratings, the
+  out-of-run spend ledger, sweeps, analysis attempts, cassettes) or `derived` (computed from other stored
+  documents: analyses, insights, judge profiles).
+- **lifecycle**: `kept` (read by every later release, below) or `regenerable` (refused after a format change,
+  and made again).
+- **suppresses**: for a tombstone, the type it suppresses (`rubric_dim_tombstone` holds a `rubric_dim`'s
+  slot, `judge_config_tombstone` a `judge_config`'s).
+
+`EVAL_DOC_TYPES` (what the operator wipe sweeps) and `CORE_DOC_TYPES` (what is kept) are derived from it.
+
 **The evidence core is kept.** Every later release reads it, from core v8 (the first release) on. The core is
 what the engine cannot regenerate and an audit needs: test cases, runs, results, traces, calibration ratings,
 the out-of-run spend ledger, case sets, and the templates, judge configs and rubric dims (with their
-tombstones) those documents name by id. `CORE_DOC_TYPES` (in `threetears.evals.schema`) lists them.
+tombstones) those documents name by id; and the campaigns people declared and gathered runs into, and the
+records of how each sweep ended and what each analysis generation spent. `CORE_DOC_TYPES` lists them.
 
 **A release that changes a core shape ships an upgrader, and your store needs no migration.** Every change
 to a core shape bumps `CORE_SCHEMA_VERSION`, an added optional field included. Each bump comes with one
@@ -154,10 +169,10 @@ next writes that document, at the current version. So one scope can hold documen
 A step never changes a field the store filters, sorts or projects on (`CORE_ADDRESSING_FIELDS`), so an index
 your adapter keeps on those fields stays valid.
 
-**Everything else is regenerated.** Campaigns, analyses, insights and sweeps are built over the core, and
+**Everything else is regenerated.** Analyses, insights and judge profiles are built over the core, and
 a cassette is re-captured. When one of their shapes changes, `REGENERABLE_SCHEMA_VERSION` is bumped and a
-document written under another version is refused: make it again over the kept runs (create the campaign,
-generate the analysis), or re-capture the cassette. After a bump, `analyses_undescribable` (operation and action) lists the scope's analyses holding
+document written under another version is refused: make it again over the kept runs (generate the analysis,
+profile the judge), or re-capture the cassette (a new capture run, so a new corpus). After a bump, `analyses_undescribable` (operation and action) lists the scope's analyses holding
 an arm this build can no longer describe.
 
 **Each version space moves on its own.** Core documents, regenerable documents, the bundle, the report
@@ -167,6 +182,47 @@ recomputes an identity key, so keys from different predicates never silently poo
 **Reads stay strict.** Every stored model refuses an unknown field and a missing required one. A core
 document written by a newer release is refused, never guessed at, so when two builds share one store,
 upgrade the older one. A core document from before the first release (below core v8) is refused too.
+
+### Partition by facts: one store per kind of document
+
+You can keep each kind of document in a store suited to it, such as the evidence in your database and
+everything the engine can remake in a cheaper store. `RoutedDocumentStore` (in `threetears.evals.storage`) is
+one `DocumentStore` over several. A `DocTypeRoute` keys on one fact, `origin` or `lifecycle`, and names a store
+for every value of it, plus one store for the types the registry does not hold (your own documents):
+
+```python
+from threetears.evals.kernel import EvalStorage
+from threetears.evals.storage import DocTypeRoute, RoutedDocumentStore, SqliteDocumentStore
+
+stores = {"evidence": MyPostgresStore(dsn), "scratch": SqliteDocumentStore("regenerable.sqlite")}
+route = DocTypeRoute(by="lifecycle", to={"kept": "evidence", "regenerable": "scratch"}, unregistered="evidence")
+
+# Once, with the engine stopped: move what the stores already hold to where the route puts it.
+RoutedDocumentStore.relocate(stores, route, scope_ids=["acme", "globex"], host_doc_types=["host_note"])
+
+storage = EvalStorage(RoutedDocumentStore(stores, route), host_doc_types=["host_note"])
+```
+
+A route keys on facts, never on type names, so a type a later release adds is placed by what it is. Every
+mistake a route can hold is refused when the router is built: a fact value left unmapped, a store that is
+not among `stores`, one store passed under two names, a tombstone kept apart from the type it suppresses.
+
+**Typed calls go to one store; id-only calls ask every store.** A write, `get_many`, `by_doc_type` and
+`iter_by_doc_type` go to the store the type is kept in, and a conditional write's `if_match` reaches that store
+unchanged. `get`, `get_with_etag`, `merge_fields` and `delete` carry only an id, so they ask every store. A store
+that does not hold the id answers "not here", as the port says. One id lives in one store: a read that finds an
+id in two stores, or in a store its type is not kept in, raises `MisplacedDocument` rather than picking one.
+
+**Changing the route is an operation.** Each store records the placements it was written under, in a scope of
+its own (`ROUTING_SCOPE`: never use it as a scope of your own, and your adapter must be able to hold it).
+The router refuses to start (`RouteChanged`) when a type would be read from a store it was not written to, when
+two stores are passed under each other's names, and when no store has a record yet. `RoutedDocumentStore.relocate`
+moves every document of the scopes and host types you name to its new store, then writes the records. Run it
+once when you adopt the router and again whenever you change the route, with the engine stopped. If it is
+interrupted, run it again. A release that adds a type needs no relocation unless your route places the new type
+somewhere other than your `unregistered` store.
+
+Prove the router as you prove any store: the conformance kit runs over a `RoutedDocumentStore` of your stores.
 
 ## The kind: what you are evaluating
 
