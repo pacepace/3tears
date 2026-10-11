@@ -132,6 +132,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "kernel/authoring_fields.py": {},
     "schema/base.py": {},
     "schema/call_ledger.py": {},
+    "schema/doc_types.py": {},
     "kernel/campaign.py": {},
     "kernel/campaign_writes.py": {},
     "kernel/candidate_kind.py": {},

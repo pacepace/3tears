@@ -1,7 +1,8 @@
 """Which stored documents are kept across releases, which are regenerated, and how a kept one is read when it is old.
 
 **The evidence core is kept.** A document the engine cannot regenerate, and that an audit needs, is in the
-core (:data:`CORE_DOC_TYPES`): the evidence a run produced (its test cases, the run, its results and traces,
+core (:data:`CORE_DOC_TYPES`, the ``kept`` entries of :data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`):
+the evidence a run produced (its test cases, the run, its results and traces,
 human calibration ratings, the out-of-run spend ledger) and the launch inputs those documents name by id (the
 template, the judge config, the rubric dim, their tombstones, and the case set). A core document is read
 forever from :data:`CORE_BASELINE_VERSION` on: a read of an older core document upgrades it in memory, one
@@ -40,6 +41,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Final
+
+from threetears.evals.schema.doc_types import DOC_TYPE_FACTS
 
 #: The first core version a public release wrote, and the oldest this and every later build reads. Below
 #: it a document is pre-release (``v0.66.0-evaladopt.*`` wrote v8, so nothing a released build wrote is).
@@ -238,23 +241,12 @@ the judge campaign's stored runs and results. A store written before it holds no
 profiled": every campaign's tiers are its own evidence alone, as they were.
 """
 
-#: The kept documents, by ``doc_type``. Embedded shapes (a result's rubric scores, usage rows and goal-state
-#: outcomes, a run's context components and subject snapshot, a ledger's calls) are core through their parent.
+#: The kept documents, by ``doc_type``: the ``kept`` entries of
+#: :data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`, derived so the registry is the one place a type's
+#: lifecycle is decided. Embedded shapes (a result's rubric scores, usage rows and goal-state outcomes, a run's
+#: context components and subject snapshot, a ledger's calls) are core through their parent.
 CORE_DOC_TYPES: Final[frozenset[str]] = frozenset(
-    {
-        "eval_test_case",
-        "eval_run",
-        "eval_result",
-        "eval_trace",
-        "calibration_rating",
-        "eval_out_of_run_spend",
-        "eval_template",
-        "judge_config",
-        "rubric_dim",
-        "rubric_dim_tombstone",
-        "judge_config_tombstone",
-        "case_set",
-    }
+    doc_type for doc_type, facts in DOC_TYPE_FACTS.items() if facts.lifecycle == "kept"
 )
 
 #: The fields every core document is addressed by in the store.

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from threetears.evals.schema.base import CoreDocumentModel, EvalBaseModel, EvalDocumentModel
 from threetears.evals.schema.call_ledger import PASS_ACTION, PASS_TOOL, CallLedger, RecordedCall, is_pass
+from threetears.evals.schema.doc_types import DOC_TYPE_FACTS, DocLifecycle, DocOrigin, DocTypeFacts
 from threetears.evals.schema.completion import (
     BoundCompletionClient,
     CompletionClient,
@@ -171,6 +172,10 @@ __all__ = [
     "DEFAULT_JUDGE_TEMPERATURE",
     "DEFAULT_LAUNCH_K_RUNS",
     "EVAL_DOC_TYPES",
+    "DOC_TYPE_FACTS",
+    "DocLifecycle",
+    "DocOrigin",
+    "DocTypeFacts",
     "WorldPlacement",
     "CORE_ADDRESSING_FIELDS",
     "CORE_BASELINE_VERSION",

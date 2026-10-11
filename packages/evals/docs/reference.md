@@ -97,6 +97,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>values: `'max_turns'`, `'user_done'`, `'participants_ended'`, `'simulator_error'`, `'apparatus_error'`, `'candidate_error'`, `'budget_stopped'`
 - **`CoreDocumentModel`** · model · A stored document in the evidence core: kept across releases, and upgraded when read at an older version.
 - **`CoreUpgrader`** · dataclass · One step of the core's upgrade chain: a document at `from_version` rewritten to `from_version + 1`.
+- **`DocTypeFacts`** · dataclass · The facts of one stored document type.
 - **`DocumentStore`** · protocol · A narrow document store over one `(scope_id, doc_type, id)`-keyed collection.
 - **`DSLError`** · exception · Raised when a DSL expression is malformed or disallowed.
 - **`EvalBaseModel`** · model · Base model for the eval engine's own Pydantic models.
@@ -184,6 +185,10 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`'chosen'` | `'inherited'` | `'uncapped'`
 - **`DimName`** · type alias · A rubric dimension's name as every model holds it: `<context>.<dim>`, or a reserved dual-score axis id.
   <br>`Annotated[str, AfterValidator(_namespaced_dim_name)]`
+- **`DocLifecycle`** · literal · Whether a later release reads a stored document: `kept` — in the core, read from the core baseline on and upgraded across core versions; `regenerable` — refused on read after a regenerable schema bump, and made again.
+  <br>`'kept'` | `'regenerable'`
+- **`DocOrigin`** · literal · Where a stored document comes from: `input` — what runs read as given, whoever wrote it; `record` — what happened; `derived` — computed from other stored documents.
+  <br>`'input'` | `'record'` | `'derived'`
 - **`EvalRunStatus`** · literal · `budget_stopped` is a budget the run was launched under binding — its cost cap or its wall-clock budget, `EvalRun.budget_stop_reason` says which: a designed stop that keeps what the run delivered, never `failed`.
   <br>`'pending'` | `'running'` | `'completed'` | `'failed'` | `'cancelled'` | `'budget_stopped'` | `'exhausted'`
 - **`GoalCheckIntent`** · literal · What a goal check says about the behaviour it grades, and so which verdict "the candidate did nothing" must get.
@@ -238,7 +243,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`CORE_ADDRESSING_FIELDS`** · constant (mappingproxy) · Per core type, every field the store reads on the stored bytes, before any upgrade: what a query filters or orders on, what a projection keeps, and what a partial write merges.
 - **`CORE_BASELINE_VERSION`** · constant (int) · The first core version a public release wrote, and the oldest this and every later build reads.
   <br>`= 8`
-- **`CORE_DOC_TYPES`** · constant (frozenset) · The kept documents, by `doc_type`.
+- **`CORE_DOC_TYPES`** · constant (frozenset) · The kept documents, by `doc_type`: the `kept` entries of `DOC_TYPE_FACTS`, derived so the registry is the one place a type's lifecycle is decided.
 - **`CORE_SCHEMA_VERSION`** · constant (int) · The core version this build writes. Every bump appends one line here and one `CoreUpgrader`.
   <br>`= 9`
 - **`CORE_UPGRADERS`** · constant (tuple) · The registered steps, oldest first: `[s.from_version for s in CORE_UPGRADERS]` is `range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION)`.
@@ -246,6 +251,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 0.0`
 - **`DEFAULT_LAUNCH_K_RUNS`** · constant (int) · Repeats per (case, model) a launch uses when the caller names none: one observation per case cannot tell a setting from the model's own variance.
   <br>`= 3`
+- **`DOC_TYPE_FACTS`** · constant (mappingproxy) · Every `doc_type` the engine stores, and its facts.
 - **`EVAL_DOC_TYPES`** · constant (tuple) · Every `doc_type` the engine writes — the set the operator wipe sweeps.
 - **`JSON_OBJECT_RESPONSE_FORMAT`** · constant (dict) · `response_format` directive forcing JSON-object output, passed to `CompletionClient.generate` by callers that parse a structured JSON *object* (the judge, the analysis generator, the proposer/boundary-proposer).
 - **`MODEL_DEFAULT_TEMPERATURE`** · constant (str) · A judge call SENT with no temperature, because its model refuses one (some reasoning models do): the model's own default applied.
