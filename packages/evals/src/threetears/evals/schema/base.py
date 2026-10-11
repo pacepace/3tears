@@ -331,10 +331,27 @@ class EvalDocumentModel(EvalBaseModel):
         Returns:
             The input without computed-field keys.
         """
-        derived = cls.model_computed_fields
-        if not derived or not isinstance(data, Mapping) or not any(key in derived for key in data):
-            return data
-        return {key: value for key, value in data.items() if key not in derived}
+        return without_computed_field_echo(cls, data)
+
+
+def without_computed_field_echo(model: type[BaseModel], data: Any) -> Any:
+    """``data`` without ``model``'s computed-field keys — the echo a dump of it carries, which a read re-derives.
+
+    :class:`EvalDocumentModel`'s rule, as a function, for a served model that keeps a stance of its own (a frozen
+    summary) and so cannot inherit it: the derived values are discarded rather than believed or refused, and any
+    other unknown key is still refused by the model's own ``extra="forbid"``.
+
+    Args:
+        model: The model under validation.
+        data: The input under validation; only a mapping is touched.
+
+    Returns:
+        The input without computed-field keys.
+    """
+    derived = model.model_computed_fields
+    if not derived or not isinstance(data, Mapping) or not any(key in derived for key in data):
+        return data
+    return {key: value for key, value in data.items() if key not in derived}
 
 
 class CoreDocumentModel(EvalDocumentModel):
@@ -393,4 +410,5 @@ __all__ = [
     "VerbatimJsonObject",
     "VerbatimObject",
     "VerbatimText",
+    "without_computed_field_echo",
 ]
