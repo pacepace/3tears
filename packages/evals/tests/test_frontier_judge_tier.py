@@ -25,11 +25,16 @@ from threetears.evals.kernel.evidence_tiers import (
 )
 from threetears.evals.schema import EvalRun, GoalStateOutcome, RoleUsage, RubricScore
 from threetears.evals.storage import InMemoryDocumentStore
-from packages.evals.tests.factories import make_eval_result, make_eval_run
+from packages.evals.tests.factories import make_calibration_rating, make_eval_result, make_eval_run
 
 _DIM = "reply.quality"
 _JUDGE = "judge/model"
 _CASES = 20
+
+
+def _score(case: int) -> int:
+    """The judge's score on a case: 4 or 5 — both passing, and varied, so people agreeing with it is agreement."""
+    return 4 + case % 2
 
 
 def _corpus(*, judged: bool) -> tuple[EvalRun, list[Any]]:
@@ -44,7 +49,7 @@ def _corpus(*, judged: bool) -> tuple[EvalRun, list[Any]]:
             variant_key="vk-a",
             test_case_id=f"tc{case}",
             rubric_scores=(
-                [RubricScore(dim=_DIM, score=4, scale="ordinal", served_model=_JUDGE, judge_temperature=0.0)]
+                [RubricScore(dim=_DIM, score=_score(case), scale="ordinal", served_model=_JUDGE, judge_temperature=0.0)]
                 if judged
                 else []
             ),
@@ -112,11 +117,21 @@ def test_a_pick_no_judge_scored_carries_no_tier() -> None:
 
 
 def test_the_scope_frontier_reads_its_judges_tiers_from_the_scope() -> None:
+    """People's ratings stored in the scope decide the judge's tier, and the scope's frontier names it.
+
+    Without them the answer would be ``undetermined``, which is also what a frontier that read no tier at all says;
+    only a stored rating that decides a tier tells the two apart.
+    """
     storage = EvalStorage(InMemoryDocumentStore())
     run, results = _corpus(judged=True)
     storage.save_eval_run(run)
-    for result in results:
+    for case, result in enumerate(results):
         storage.save_eval_result(result)
+        storage.save_calibration_rating(
+            make_calibration_rating(
+                scope_id=run.scope_id, run_id=run.id, result_id=result.id, rubric_dim=_DIM, score=_score(case)
+            )
+        )
     answered = frontier(storage, run.scope_id, list_runs=lambda scope_id, **_: [run], bar=0.5)
     (subject,) = answered["subjects"]
-    assert subject["verdict"]["judge_evidence_tier"] == "undetermined"
+    assert subject["verdict"]["judge_evidence_tier"] == "calibrated"
