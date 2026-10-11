@@ -34,9 +34,13 @@
 version = "unreleased"
 since = "v0.66.0-evaladopt.10"
 summary = """
-What adopting .10 found (gaps 42–44): `format_number` takes a `prefix` that goes on the number, and
-`RoutedDocumentStore.holds_documents` says whether stores about to be adopted hold any document.
+What adopting .10 found (gaps 42–44): `format_number` takes a `prefix` that goes on the number;
+`RoutedDocumentStore.holds_documents` says whether stores about to be adopted hold any document; and every report
+block serves `rests_on_numbers` (report version 8).
 """
+notes = [
+    "`REPORT_VERSION` is 8 (was 7): every report block carries `rests_on_numbers`, and the published schema's `$id` is `urn:threetears-evals:report:v8`. A client that pins `report_version` to 7, or validates against the version 7 schema (which refuses a key it does not name), refuses a version 8 report until it takes the new schema.",
+]
 
 [[release]]
 version = "0.66.0-evaladopt.10"

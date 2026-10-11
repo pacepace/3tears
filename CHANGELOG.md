@@ -20,6 +20,12 @@ packages (bumped in lock-step).
   every store and named scope, as `relocate` would move them, and stops at the first document. A host's start no
   longer loops over `DOC_TYPE_FACTS`, the stores and `iter_by_doc_type` itself. The router's placement record is
   not a document and is not counted. `adopting-a-host.md` shows it beside `relocate`.
+- **Gap 44: every report block serves `rests_on_numbers`; the report is version 8.** Beside `rests_on`, which
+  still counts findings from 0, each block carries the same findings counted from 1, as `finding_number` counts
+  them, so a page prints them rather than adding 1 itself. Re-derived on read like the other served words, and
+  required by the schema. The Markdown and HTML serializers print it. `REPORT_VERSION` moves to 8, since its rule
+  is that an added field moves it, and the schema (whose `$id` is now `urn:threetears-evals:report:v8`) refuses a
+  key it does not name: a client holding the version 7 schema would refuse a version 8 report.
 
 ### 3tears-evals: the judge temperature measurement and the prompt-comparison test set (#633)
 
