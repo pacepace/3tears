@@ -132,8 +132,8 @@ ceiling of `0` with origin `none_declared`, and a metered call that happens anyw
 3. **Refuse.** First, it refuses an arm whose largest call is reserved above its run's cap on its own
    (`ArmPlan.call_ceiling`): the run could never make that call, whatever the arm is predicted to cost in
    all. The kind prices it right after planning (`LaunchableKind.price_largest_call`), on the clients the
-   cells will call through, exactly as a cell reserves it. Two kinds price their calls, each over every case,
-   keeping the largest:
+   cells will call through, exactly as a cell reserves it. Two kinds price their largest call exactly, each
+   over every case, keeping the largest:
    - **The judge kind** prices each case's judge call. What lowers it: a cheaper judge model, shorter frozen
      evidence on the largest case, or a judge-role client priced at the output cap the judge asks for.
    - **The analysis reporter** prices each case's first generator request, built from the frozen bundle, the
@@ -147,14 +147,40 @@ ceiling of `0` with origin `none_declared`, and a metered call that happens anyw
      generation's repair round-trip, which carries the first call's output. The replay
      (`AS_RECORDED_MODEL`) calls no generator and prices nothing.
 
+   - **A subject kind** (a persona, a classifier, any kind whose launcher builds its judge with
+     `build_judge_service`) cannot price its largest call: its judge and simulator prompts carry a transcript
+     that does not exist yet. It prices a **floor** under it instead, with `price_subject_call_floor` (from
+     `threetears.evals.run`), and the ceiling says so (`CallCeiling.lower_bound`, reported on the estimate as
+     `call_ceiling_lower_bound`). Each call is priced with every part its cell fills left empty — the
+     variation, the goal-state outcomes, the kind's subject, case material and transcript — and everything
+     else as sent: the dim's instructions and reply contract, the template's intent, every heading, the reply
+     format and every parse-retry attempt. That is the smallest request the cell could send, and every real one
+     is it with text added. The judge's floor is the largest dim's, since every judged case makes every dim's
+     call. The simulated user's is the smallest actor's utterance call, counted only when the conversation is
+     bound to make one: not when every round up to the turn limit is the world's, or round one is the only
+     actors' round and an opener can end it. `llm_decided` scheduling calls are not priced. The arm's floor is
+     the larger of the two.
+
+     The floor is sound on a client whose `price_ceiling` does not fall as a prompt grows, which holds for
+     any ceiling priced from a bound on the prompt's length and a fixed output cap. It catches the ceilings the
+     output cap and the retry multiplier dominate, as in the incident above, whatever the transcript. A ceiling
+     a long transcript dominates it cannot see: a floor under the cap admits the arm, and that call is held to
+     the cap as the run reserves it. A candidate's own calls are the kind's and are not priced. Wire it as
+     `price_largest_call=lambda request: price_subject_call_floor(eval_host, request, judged_artifact=...)`,
+     with the `eval_host` your launcher builds its judge and simulator clients on and the declaration it hands
+     `build_judge_service`. The simulator client comes from the host's factory in the `simulator` role, for
+     the planned simulator model.
+
    The refusal names the call, its ceiling and the cap one such call needs (rounded up to the cent, plus the
    arm's predicted spend for room around it, or the host's operator when that is above the host's ceiling),
-   and what lowers the ceiling. A kind that does not price its calls before launch (`price_largest_call=None`;
-   today every subject kind, since its judge and simulator prompts are built from transcripts that do not
-   exist yet) is not checked here: such a call is refused only when the run reaches it. Then it refuses an arm predicted above its run's cap, or one
+   and what lowers the ceiling. A floor's refusal says "even the smallest such call this arm could make" is
+   reserved above the cap, and its remedy names the floor as a cap to exceed, not one that would be enough,
+   since the real call adds its transcript on top. A kind that does not price its calls before launch
+   (`price_largest_call=None`) is not checked here: such a call is refused only when the run reaches it. Then
+   it refuses an arm predicted above its run's cap, or one
    nothing can predict — no pricer, no plan, or no history to bound — whose cap the run would merely inherit.
    An unpriceable arm under a cap the launch named runs under it. The estimate reports each arm's largest
-   call as `call_ceiling_usd`.
+   call as `call_ceiling_usd`, and `call_ceiling_lower_bound` when that figure is a floor.
 
 Every arm is planned before any is priced, so `plan_arm` is where a kind makes its request-level refusals
 (no model and no default — `require_candidate_model`, the tail's own refusal — a judge or simulator it

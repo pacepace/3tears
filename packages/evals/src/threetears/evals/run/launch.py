@@ -260,17 +260,28 @@ class CallCeiling:
     ``budget_stopped`` and excludes its case. So an arm is refused before launch when its largest call's ceiling
     is above its cap (:func:`price_arms`, and :func:`quote_launch` with it), and this is what that refusal reads.
 
+    **Exact, or a floor.** For a kind whose calls are whole before launch (the judge kind's frozen cases, the
+    reporter's frozen bundles), ``usd`` is the largest call's ceiling exactly, and ``lower_bound`` is ``False``.
+    A subject kind's judge and simulator calls carry a transcript that does not exist before its run, so the most
+    it can say is a floor (:func:`~threetears.evals.run.price_subject_call_floor`): ``lower_bound`` is ``True``
+    and ``usd`` is what the named call is reserved at with every part its cell fills left empty — so the call,
+    and the arm's largest call with it, is reserved at ``usd`` or more. The admission rule reads either the same
+    way, and is sound for both: a floor above the cap means the real call is too. A floor at or under the cap
+    admits nothing about the real call, which is still held to the cap as the run reserves it.
+
     Attributes:
         usd: The ceiling in dollars: the client's ``price_ceiling`` for the call, times every attempt the engine
-            makes of it — exactly what the run will reserve.
+            makes of it — exactly what the run will reserve, or, when ``lower_bound`` is set, the least it will.
         call: Which call it is, in words a refusal quotes ("the judge call on case 'c-3' (2 requests: the
             first and its parse retry) on 'google/gemini-3.8-flash'").
         lowered_by: What lowers the ceiling, in words a remedy quotes — the levers besides a larger cap.
+        lower_bound: Whether ``usd`` is a floor under the call's reservation rather than its exact figure.
     """
 
     usd: float
     call: str
     lowered_by: str
+    lower_bound: bool = False
 
     def __post_init__(self) -> None:
         """Refuse an amount no reservation could hold, and blank words.
@@ -308,7 +319,8 @@ class ArmPlan:
             grade is mechanical. Required, so a judged kind cannot be priced from unjudged history by omission.
         simulator_model: The model that will drive the arm's simulated user, resolved — the launch's pin, or
             the role's default; ``None`` for a kind that runs no simulator.
-        call_ceiling: The largest reservation one call of the arm's cells will hold, as its kind priced it
+        call_ceiling: The largest reservation one call of the arm's cells will hold — or a floor under it, for a
+            subject kind (:attr:`CallCeiling.lower_bound`) — as its kind priced it
             (:attr:`LaunchableKind.price_largest_call`), which the engine sets once the plan is made; ``None`` for
             a kind that does not price its calls before launch, whose calls are bounded only as the run reserves
             them.
@@ -1138,7 +1150,9 @@ class LaunchableKind:
             whose rig a launch cannot set.
         price_largest_call: The largest reservation one call of a planned arm's cells will hold
             (:class:`CallCeiling`), priced on the clients the cells will call through, or ``None`` when no call of
-            the arm can be priced. Asked of every planned arm — the request carries its plan — right after
+            the arm can be priced. A subject kind, whose judge and simulator prompts carry transcripts that do not
+            exist yet, composes :func:`~threetears.evals.run.price_subject_call_floor` here: a floor under those
+            calls (:attr:`CallCeiling.lower_bound`), which refuses the same way. Asked of every planned arm — the request carries its plan — right after
             :attr:`plan_arm`, by the estimate and the launch alike, and awaited on the event loop, so it may build
             and release clients. An arm whose largest call is above its cap is refused before anything is spent
             (:func:`price_arms`): its run could never make that call. ``None`` for a kind that does not price its
@@ -2728,6 +2742,28 @@ def _largest_call_over_cap(
     """
     needed = _cents_up(ceiling.usd)
     host_ceiling = request.settings.max_cost_usd
+    if ceiling.lower_bound:
+        # A floor: the real call carries its transcript on top, so the cap it needs is MORE than this, by an amount
+        # nobody can know before the run — the remedy says so rather than name a cap that would admit the arm.
+        refusal = (
+            f"{what} cannot make {ceiling.call} under its ${cap:.2f} cap: even the smallest such call this arm could "
+            f"make — its fixed parts alone, before any transcript or evidence is added — is reserved at "
+            f"${ceiling.usd:.4f} before it is sent, more than the whole cap, and a run refuses every call whose "
+            "reservation would take it past its cap. The run would stop budget_stopped on reaching the first such "
+            f"call, with its case excluded and whatever was spent before it lost to the measurement. {refused}"
+        )
+        if needed <= host_ceiling:
+            raise_it = (
+                f"name max_cost_usd above ${needed:.2f} — a floor, not the cap the arm needs: the real call adds its "
+                "transcript and evidence to that smallest one, so leave room for them and for the rest of the run"
+            )
+        else:
+            raise_it = (
+                f"even the smallest such call needs a cap above ${needed:.2f}, beyond the host's ${host_ceiling:.2f} "
+                f"ceiling, which a launch cannot raise — only the host's operator can, through "
+                f"{request.settings.name_of('max_cost_usd')}"
+            )
+        return refusal, f"{raise_it}; or lower the call's floor: {ceiling.lowered_by}"
     refusal = (
         f"{what} cannot make its largest call under its ${cap:.2f} cap: {ceiling.call} is reserved at up to "
         f"${ceiling.usd:.4f} before it is sent, more than the whole cap, and a run refuses every call whose "

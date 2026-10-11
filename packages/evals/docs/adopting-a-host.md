@@ -414,6 +414,29 @@ prices it. `plan_arm` is therefore where a kind makes its request-level refusals
 its plan. The full rule is in [Cost and budgets: every arm is priced before any launcher
 runs](cost-and-budgets.md#every-arm-is-priced-before-any-launcher-runs).
 
+**Price a floor under your subject kind's judge and simulator calls.** A judged subject kind — a persona, a
+classifier — registers `price_subject_call_floor` (from `threetears.evals.run`) as its `price_largest_call`:
+
+```python
+LaunchableKind(
+    launch=your_persona_launcher,
+    resolve_subject=your_persona_subject,
+    plan_arm=plan_persona_arm,  # plan_judge(eval_host, request.template, pin, request.judge_config_ids, ...)
+    price_largest_call=lambda request: price_subject_call_floor(
+        eval_host, request, judged_artifact=JudgedArtifact.TRANSCRIPT  # or DOCUMENT: what your judge reads
+    ),
+)
+```
+
+It prices the smallest judge call every judged case makes, and the smallest utterance your simulated user is
+bound to make, with the transcript and evidence left out, on the clients your cells call through. The estimate
+and the launch then refuse an arm whose cap cannot afford even that, before anything is spent. That catches a
+judge or simulator client whose output cap and retries alone put one call above the cap. Pass the `eval_host`
+your launcher builds the judge on and the `judged_artifact` it hands `build_judge_service`. The figure is a
+floor, not the largest call (`CallCeiling.lower_bound`): a cap above it is admitted, and a call its transcript
+makes larger is still held to the cap as the run reserves it. A kind with no judge and no simulated user has
+nothing to price here, and returns `None`.
+
 **A transport launches in two halves.** `run_launch` admits the launch in its call (`admit_launch`: every refusal
 above, every arm planned and priced, the runs' room reserved) and runs the rest as one job
 (`launch_job_work`): each arm's launcher — where your launcher builds its rig and generates cases — then the runs,
