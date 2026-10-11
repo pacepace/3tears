@@ -140,6 +140,30 @@ async def _running_run(host: OpsHost) -> str:
     return (await _running_launch(host))[1]
 
 
+class _Heard:
+    """What a holder's process told anyone about its runs: each run-end hook call, and each broadcast."""
+
+    def __init__(self) -> None:
+        """Start with nothing heard."""
+        self.ends: list[tuple[str, str]] = []
+        self.broadcasts: list[tuple[str, dict[str, Any]]] = []
+
+    async def run_end(self, run_id: str, scope_id: str, status: str) -> None:
+        """The run-end hook: record the run and the status."""
+        self.ends.append((run_id, status))
+
+    def broadcast(self, run_id: str, payload: dict[str, Any]) -> None:
+        """The progress broadcast: record it."""
+        self.broadcasts.append((run_id, payload))
+
+
+def _heard(host: OpsHost) -> tuple[OpsHost, _Heard]:
+    """``host`` with a run-end hook and a broadcast that record what its process says about its runs."""
+    heard = _Heard()
+    launch = dataclasses.replace(host.launch, on_run_end=heard.run_end, on_job_progress=heard.broadcast)
+    return dataclasses.replace(host, launch=launch), heard
+
+
 # =============================================================================
 # Another process's job: running there, cancelled from there
 # =============================================================================
@@ -246,23 +270,54 @@ async def test_a_run_whose_record_was_written_lost_elsewhere_stops_at_its_next_w
 ) -> None:
     gate = _held_extraction(monkeypatch)
     store = ClockedStore()
-    holder = ops_fixture(store=store)
-    elsewhere = _other_process(holder.host)
-    run_id = await _running_run(holder.host)
+    holder, heard = _heard(ops_fixture(store=store).host)
+    elsewhere = _other_process(holder)
+    run_id = await _running_run(holder)
     assert (await job_poll(elsewhere, run_job_id(run_id), TOYHOST_SCOPE)).state == "running"
 
     store.at = T0 + timedelta(seconds=61)
     lost = await job_poll(elsewhere, run_job_id(run_id), TOYHOST_SCOPE)
     assert (lost.state, lost.status) == ("lost", "cancelled")
-    written = _run(holder.host, run_id)
+    written = _run(holder, run_id)
     assert written.completeness is not None, "the loss reconstructed what the run delivered"
+    heard.broadcasts.clear()
 
+    store.at = T0 + timedelta(seconds=75)  # the holder's own ending would be stamped later than the loss
     gate.set()
-    await _until(lambda: not holder.host.launch.job_manager.is_active(run_id))
-    after = _run(holder.host, run_id)
+    await _until(lambda: not holder.launch.job_manager.is_active(run_id))
+    after = _run(holder, run_id)
     assert (after.status, after.lost, after.completeness) == ("cancelled", written.lost, written.completeness), (
         "the fenced run wrote nothing more: not its progress, its completeness or its ending"
     )
+    assert (after.completed_at, after.cancellation_reason) == (written.completed_at, written.cancellation_reason), (
+        "the loss's own ending stands: its time and its reason"
+    )
+    assert heard.ends == [] and heard.broadcasts == [], "the process that lost the run told nobody it ended"
+
+
+async def test_a_lost_run_cancelled_by_its_old_holder_keeps_the_loss(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The holder's operator cancels a run another process already wrote lost: the cancel's ending is refused."""
+    _held_extraction(monkeypatch)
+    store = ClockedStore()
+    holder, heard = _heard(ops_fixture(store=store).host)
+    elsewhere = _other_process(holder)
+    run_id = await _running_run(holder)
+    store.at = T0 + timedelta(seconds=61)
+    assert (await job_poll(elsewhere, run_job_id(run_id), TOYHOST_SCOPE)).state == "lost"
+    written = _run(holder, run_id)
+    heard.broadcasts.clear()
+
+    assert holder.launch.job_manager.cancel_job(run_id, reason="operator said stop")
+    await _until(lambda: not holder.launch.job_manager.is_active(run_id))
+
+    after = _run(holder, run_id)
+    assert (after.completed_at, after.cancellation_reason, after.lost) == (
+        written.completed_at,
+        written.cancellation_reason,
+        written.lost,
+    )
+    assert after.cancellation_reason is not None and after.cancellation_reason.startswith("lost: ")
+    assert heard.ends == [] and heard.broadcasts == []
 
 
 # =============================================================================
@@ -273,18 +328,31 @@ async def test_a_run_whose_record_was_written_lost_elsewhere_stops_at_its_next_w
 async def test_a_graceful_shutdown_writes_every_held_job_lost_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
     _held_extraction(monkeypatch)
     gate = asyncio.Event()
-    holder = ops_fixture(gate=gate)
-    elsewhere = _other_process(holder.host)
-    (generation,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
-    launch_id, run_id = await _running_launch(holder.host)
+    store = ClockedStore()
+    fixture = ops_fixture(gate=gate, store=store)
+    holder, heard = _heard(fixture.host)
+    elsewhere = _other_process(holder)
+    (generation,) = (await analysis_generate(holder, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    launch_id, run_id = await _running_launch(holder)
+    heard.broadcasts.clear()
 
-    await holder.host.launch.job_manager.shutdown()
+    store.at = T0 + timedelta(seconds=5)
+    await holder.launch.job_manager.shutdown()
 
     for job_id in (generation.job_id, run_job_id(run_id), launch_id):
         status = await job_poll(elsewhere, job_id, TOYHOST_SCOPE)
         assert (status.state, status.detail) == ("lost", SHUTDOWN_CAUSE), job_id
-    assert _attempt(holder.host, generation.job_id).lease is None, "the lease was released"
-    assert _run(holder.host, run_id).lease is None
+    assert _attempt(holder, generation.job_id).lease is None, "the lease was released"
+    run = _run(holder, run_id)
+    assert run.lease is None
+    # What a shutdown writes is the loss, stamped in the store's time as it shut down; the runs' own
+    # cancelled endings, written as they unwind, are refused, and nobody is told they ended.
+    assert (run.status, run.completed_at, run.cancellation_reason) == (
+        "cancelled",
+        store.at.isoformat(),
+        f"lost: {SHUTDOWN_CAUSE}",
+    )
+    assert heard.ends == [] and heard.broadcasts == []
 
 
 # =============================================================================

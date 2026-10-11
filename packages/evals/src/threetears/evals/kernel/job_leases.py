@@ -16,8 +16,9 @@ did not start a job read a live one as lost, and a cancel there was refused. Her
 - **A holder that has lost its lease writes nothing more.** Its renewal finding the record ended by someone else,
   or its own lease lapsed (which it writes lost itself, as any reader would), stops the work at once; a write the
   work makes of its own record goes through :func:`write_held_record`, which refuses a record already ended and
-  raises :class:`~threetears.evals.kernel.JobFenced`. A run's own writes are refused the same way by the terminal
-  rule its status writes already keep.
+  raises :class:`~threetears.evals.kernel.JobFenced`. A run's own writes are refused the same way: its status
+  write takes nothing over a record carrying ``lost``, its own ending included, and the process that lost it
+  neither broadcasts that ending nor tells the run-end hook.
 - **A cancel is a field on the record** (``cancel_requested_at``), written by whichever process was asked
   (:func:`request_job_cancel`); the holder reads it at its next renewal and ends the job ``cancelled``, so a cancel
   lands within one renewal interval from anywhere.

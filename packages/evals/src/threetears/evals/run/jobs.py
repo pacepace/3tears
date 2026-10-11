@@ -737,7 +737,11 @@ class EvalJobManager:
         **Every job this process holds a lease on ends lost first** (:meth:`JobLeases.shut_down
         <threetears.evals.kernel.job_leases.JobLeases.shut_down>`), its cause the shutdown, its lease released: its
         record reads lost at once in every process, rather than ``running`` until the lease lapses. The jobs are
-        cancelled after, and the endings they write as they unwind are refused — the record has ended.
+        cancelled after, and the endings they write as they unwind are refused — the record has ended. So what a
+        shutdown records of a run it held is the loss alone: ``cancelled``, ``completed_at`` the store's time as
+        it shut down, ``cancellation_reason`` ``lost: process shut down``; nothing is broadcast for it and the
+        run-end hook is not called, since no ending of the run's own was recorded. A run whose loss could not be
+        written (logged) keeps its own ending as it unwinds, which is recorded and heard as any other.
 
         Args:
             timeout: Seconds to wait for every cancelled job to finish.
@@ -1285,6 +1289,15 @@ class EvalJobManager:
             # close it; refusing the transition closes it.
             if run.status in TERMINAL_RUN_STATUSES and status != run.status:
                 return None
+            # A run another writer recorded LOST — a reader found its lease lapsed, or this
+            # process's shutdown wrote it — refuses every later write, the same status included.
+            # Its loss is ``cancelled``, which is exactly what the fenced holder's own cancel
+            # branch writes as it unwinds, so the rule above let that ending through: it
+            # re-stamped ``completed_at`` in this process's wall time and replaced the loss's
+            # reason, and then the run was broadcast and handed to the run-end hook by a process
+            # that no longer held it. A declined write is neither broadcast nor handed to the hook.
+            if run.lost is not None:
+                return None
             data = run.to_dict()
             data["status"] = status
             if error is not None:
@@ -1315,11 +1328,13 @@ class EvalJobManager:
             outcome = await write
         if outcome == "declined":
             # Not a failure: the run reached a terminal status first and that document
-            # stands. Deliberately NOT broadcast — a socket message naming this status
-            # would tell every live reader the opposite of what is stored, which is the
+            # stands — its own earlier ending, or a loss another writer recorded. Deliberately
+            # NOT broadcast, nor handed to the run-end hook — a socket message naming this
+            # status would tell every live reader the opposite of what is stored, which is the
             # half of the defect that outlives the process.
             log.info(
-                "Job %s: status=%s not recorded — the run is already terminal and a terminal status is final",
+                "Job %s: status=%s not recorded — the run is already terminal (or was lost) and a terminal "
+                "status is final",
                 run_id,
                 status,
             )
