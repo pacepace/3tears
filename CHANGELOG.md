@@ -30,7 +30,7 @@ packages (bumped in lock-step).
 - **A measurement-window gap that cannot be computed says why.** `WindowGap` gains `uncomputable`, the reason its
   `seconds` is `None` — a stamp that is not an ISO-8601 instant, a naive stamp beside an aware one, or a parsed
   order that contradicts the recorded one — and the disclosure prints it after "gap not computable from the recorded
-  stamps". The three read alike, with the parse error dropped.
+  stamps"; the three causes used to read alike, and the parse error was dropped.
 - **The import-boundary check names a public root it could not import.** A finding's suggestion passed over a root
   whose import raised `ImportError` (an extra not installed, or a broken import), so "no public root exports it"
   could be said without asking that root. The finding now ends "not counting <root> (<error>), which could not be
