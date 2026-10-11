@@ -30,6 +30,7 @@ from packages.evals.tests.factories import (
     make_rubric_dim,
     make_template,
     make_test_case,
+    minimal_declaration,
 )
 from threetears.evals.kernel.campaign import EvalGenerationSlot, EvalSweep, SweepArmRecord, generation_slot_id
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileAgreement
@@ -194,7 +195,7 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
     "CatalogRubricDim": make_rubric_dim,
     "EvalAnalysis": make_analysis,
     "EvalAnalysisAttempt": make_analysis_attempt,
-    "EvalCampaign": make_campaign,
+    "EvalCampaign": lambda: make_campaign(declared_design=minimal_declaration()),
     "EvalCassette": _cassette,
     "EvalInsight": make_insight,
     "EvalResult": lambda: make_eval_result(

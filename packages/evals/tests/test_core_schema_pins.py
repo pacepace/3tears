@@ -58,9 +58,13 @@ PINNED_CORE_SCHEMA_VERSION = 10
 CORE_SHAPE_DIGESTS: dict[str, str] = {
     "calibration_rating": "a543edb034dbeb7a7956d697939f665cc5c9f6c380419dbcf70e95e27f343772",
     "case_set": "67cd75fe2dcb16a85fe8ecbda3ee0890addf6913d64ac1b95a93a64b06625d52",
+    "eval_analysis_attempt": "5fcf17735d8a4791fa8b1cb9eed7a59458c67cc0c787f39d210ebf5b343085e8",
+    "eval_campaign": "c33c6dc1d6c9fba98d9887bc20c395eac5ca6245302eb0fb32d696b155fab8d5",
+    "eval_generation_slot": "ad3f47db82a197b3a28ee46b348f8af6d6e372b5ee6fa49afa2401acaeb6d335",
     "eval_out_of_run_spend": "f1d51ffd4cb2447bc1ca32c67ac20a184a6fa17665c3f22bae7ba73bb0f46f43",
     "eval_result": "84be2b0ee738171611a7173793061d06a7297d952b5a0aba41ecdb3207487cb5",
     "eval_run": "32fdaebc9f3eaca01c2ead896dede4cd9a2a9283980b9338961578e77c3bf1c5",
+    "eval_sweep": "17f38b8fb24fb416695a5ed2c4ef7f6a4702a18e0a0a1e470dd0f15769640c90",
     "eval_template": "8f9ae4cc32fe1a11fcf08007b7c6ef96767c475e3d7f220222f92b7cd9763231",
     "eval_test_case": "1e928fb0d3d646aa8c7451385d04417d0f42b70239da88ae4929d23f0f8de87f",
     "eval_trace": "fb24fe2a75c0ebe5586510326023406c98ee0a0fb701fc9db4988020b4a7b084",
@@ -113,6 +117,25 @@ PINNED_ADDRESSING_FIELDS: dict[str, frozenset[str]] = {
     "rubric_dim_tombstone": frozenset({"id", "doc_type", "schema_version", "scope_id", "deleted_at"}),
     "judge_config_tombstone": frozenset({"id", "doc_type", "schema_version", "scope_id", "deleted_at"}),
     "case_set": frozenset({"id", "doc_type", "schema_version", "scope_id", "name", "version"}),
+    "eval_campaign": frozenset(
+        {"id", "doc_type", "schema_version", "scope_id", "subject_id", "behavior", "archived", "created_at"}
+    ),
+    "eval_sweep": frozenset(
+        {"id", "doc_type", "schema_version", "scope_id", "cancel_requested_at", "cancel_request_reason"}
+    ),
+    "eval_generation_slot": frozenset({"id", "doc_type", "schema_version", "scope_id", "campaign_id", "attempt_id"}),
+    "eval_analysis_attempt": frozenset(
+        {
+            "id",
+            "doc_type",
+            "schema_version",
+            "scope_id",
+            "campaign_id",
+            "created_at",
+            "cancel_requested_at",
+            "cancel_request_reason",
+        }
+    ),
 }
 
 #: What a step may never touch beyond the addressing fields: the host's and the kind's opaque payloads, and
@@ -132,13 +155,21 @@ UNTOUCHABLE_FIELDS = frozenset(
 #: The frozen corpus: one directory per core version, one stored document per core type.
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "core_documents"
 
+#: A core type that did not exist before some version, by the version it was first stored at: no store holds one
+#: from before it, so its frozen corpus starts there. A type that existed and joined the core later is not here —
+#: an older store holds it, and its corpus starts at the baseline.
+FIRST_STORED_AT: dict[str, int] = {"eval_generation_slot": 10}
+
 #: Each frozen fixture's sha256, so a stored document of the past is never edited.
 FIXTURE_DIGESTS: dict[str, str] = {
     "v8/calibration_rating.json": "ae0d27591a4335b1e22fcf023dd69cd5c25a5079febfcf85f65daf4e85b27214",
     "v8/case_set.json": "8dbf4dc88ffc44d95e4dc9d13a344d1479321893b635812c415defadd67c8fb4",
+    "v8/eval_analysis_attempt.json": "f68876fc90a3a3a9374d949460d81eaa107f4035461a19781770c0d26a31da1e",
+    "v8/eval_campaign.json": "7b240be0794eb3621310f399e90288c84717af0caec4c993fd88f26a9127f084",
     "v8/eval_out_of_run_spend.json": "234922bc7364b5c390728a54b0c37f80ded81c913ffd068bd30a21642cbb61f7",
     "v8/eval_result.json": "0ec4c7bc2001e3923c26ee79c728aaf80ce4212c7d0403c0e528c6d25ac582f8",
     "v8/eval_run.json": "859ff20570f63d78963c51471decf76218f4ef2312e8de8e889f9776513fa56d",
+    "v8/eval_sweep.json": "ffe9e179d8493b8162a4bd04f867d2ed3ac130801ace6b7179bf7d6e58062f5a",
     "v8/eval_template.json": "8b9174fbcee49a61f7e0b863399e34af37644da5cc074e5e18a9e1a6c3062e3c",
     "v8/eval_test_case.json": "3a15ab6414bb2de1de0df80f8841fbbc631ecb3c7d85fccf84a3053a7e219de0",
     "v8/eval_trace.json": "1d0b69fad9e25b56764fda5c3885994e9587a89f48a01e30c728af7f11883358",
@@ -148,9 +179,12 @@ FIXTURE_DIGESTS: dict[str, str] = {
     "v8/rubric_dim_tombstone.json": "4198ff3163fc2cc1b2de7b67fb0dddb4a87d370551725e4e20f19af40ade3529",
     "v9/calibration_rating.json": "41b8f8a8c87b832148090ea42e5a215980810fab4a30716f0111656b3a1c6c9f",
     "v9/case_set.json": "883b7aece975b2727571ce8cb931204112b44da58adc2dbc94eb933514585ae5",
+    "v9/eval_analysis_attempt.json": "d9e693bc468d85e5dbf9cd4e5b94b88b9eb527305d17d89500f610c7f607f035",
+    "v9/eval_campaign.json": "47fdd75fc22140e30d3746944f8f78305a694199a98519df2888880e8ea98bc5",
     "v9/eval_out_of_run_spend.json": "a5bb8d170690525b99b8a89d50551cf6a13e85cc35927f9ca0ce86cbbcde966f",
     "v9/eval_result.json": "add5bcd7b841d0abbd285f11390b7078abc32178aeacf48de9110c47025771ca",
     "v9/eval_run.json": "b7d71bf1aac26afb13d405046127f82e10ce5340e21da03cf766cb560ca02582",
+    "v9/eval_sweep.json": "68c3fcb2b9c64837b46befb3c366ae5e46b5988a74f9edd1b0e905e07565c01b",
     "v9/eval_template.json": "c766828c84b560109267571c35987ce6d50ee30d9b0251d8bf9d8054e7180155",
     "v9/eval_test_case.json": "6e5f26208443cfd966a5bc977bbd4a4a52ba8c745fb9bd0b981fb1ea99a2ba7e",
     "v9/eval_trace.json": "eb8ffa40da641f26b0f75d86aa4f697b03e6ad895c3e15d37d8f6fabe5624e85",
@@ -160,9 +194,13 @@ FIXTURE_DIGESTS: dict[str, str] = {
     "v9/rubric_dim_tombstone.json": "3c8058911dd4cfa1a87bf3ea0e5ba7b62b4ed11ce94dca8c63b44860d242e7bd",
     "v10/calibration_rating.json": "bd29da501e7cb6a2e2c54f14783c90f3c3e5f2fa6313ad3b70e5de27fda532fe",
     "v10/case_set.json": "d5d2c352b4effea075cf6f05a7b4ece0789120c48bae5faf371d25c7117635ad",
+    "v10/eval_analysis_attempt.json": "d8254f8c6a09b5e5a653b98a89db576ace68c82fc32fe4da6a162cfe7ac27bf4",
+    "v10/eval_campaign.json": "ce49d7fa609312692d79d5fdb7c3661becb056d9c7bd8cb60828d97a46b3c4e2",
+    "v10/eval_generation_slot.json": "7de32af29779e8be2afe49db69959ff3a03017aefc843555bfab69fbe80f923b",
     "v10/eval_out_of_run_spend.json": "09d29852a0078c3750de7f0443e37927a685978a064098d3a398118184b7250b",
     "v10/eval_result.json": "072ab69a839032ca0395c91adc93aa6d0a5913cf62c138f4b7ba0df5a034e27d",
     "v10/eval_run.json": "56b1cdd79e8754004d0658d5ed926a7f0acf609bdeff4e07724ccf7d2f9f158f",
+    "v10/eval_sweep.json": "ad6f534d12f194819e9a4bb9f56dde8d0ae00cfb4ac33975863131de70aaa3d5",
     "v10/eval_template.json": "5f2ebd9cfb97b037141adcfd51597a0a4cc01d33243a117320fe609bacc13e61",
     "v10/eval_test_case.json": "30c4e9297c56ab3791c98802459f83b7ad6f8246b9e885fecb561f164fe8e8c9",
     "v10/eval_trace.json": "3d99d43d31546bfdfbbd53381b660c59346d52b1c464e4c4738b3b6bcbcb6884",
@@ -301,10 +339,16 @@ def test_every_core_version_has_a_ledger_entry_and_an_upgrader() -> None:
 
 
 def test_every_core_version_has_a_whole_frozen_corpus() -> None:
-    """One stored document per core type, for every version from the baseline: what an old store holds."""
+    """One stored document per core type, for every version from the baseline (or from the version a type was
+    first stored at): what an old store holds."""
+    assert all(
+        doc_type in CORE_DOC_TYPES and CORE_BASELINE_VERSION < version <= CORE_SCHEMA_VERSION
+        for doc_type, version in FIRST_STORED_AT.items()
+    )
     for version in range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION + 1):
         held = {path.stem for path in (FIXTURES / f"v{version}").glob("*.json")}
-        assert held == CORE_DOC_TYPES, f"v{version}'s frozen corpus holds {sorted(held)}"
+        stored_then = {doc_type for doc_type in CORE_DOC_TYPES if FIRST_STORED_AT.get(doc_type, 0) <= version}
+        assert held == stored_then, f"v{version}'s frozen corpus holds {sorted(held)}"
 
 
 def test_no_frozen_fixture_was_edited() -> None:

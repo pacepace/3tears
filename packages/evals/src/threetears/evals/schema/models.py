@@ -12,10 +12,11 @@ Four managed shapes carry an evaluation:
 
 Schema rule: every stored entity carries ``schema_version``, and a read is strict — an unknown field
 or a missing required one is refused, never coerced. The evidence core (the template, test case, run,
-result, trace, calibration rating, case set and the definitions with their tombstones) is kept: a stored
-read of an older core version upgrades it through registered upgraders, and a newer or pre-release
-version is refused. A regenerable document (the cassette here; the campaign, analysis and insight
-documents in the kernel) written under another version is refused and regenerated.
+result, trace, calibration rating, case set and the definitions with their tombstones here; the campaign,
+sweep and analysis attempt in the kernel) is kept: a stored read of an older core version upgrades it
+through registered upgraders, and a newer or pre-release version is refused. A regenerable document (the
+cassette here; the analysis, insight and judge profile in the kernel) written under another version is
+refused and regenerated. Which is which is :data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`.
 :mod:`~threetears.evals.schema.versioning` holds both versions, their ledgers, and the rules.
 """
 
@@ -53,6 +54,7 @@ from threetears.evals.schema.base import (
     VerbatimObject,
 )
 from threetears.evals.schema.call_ledger import CallLedger, RecordedCall
+from threetears.evals.schema.doc_types import DOC_TYPE_FACTS
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.goal_grammar import DSLError, extract_paths, parse, referenced_fires
 from threetears.evals.schema.external_spend import ExternalSpend
@@ -164,36 +166,13 @@ WorldPlacement = Literal["representable", "judge_only", "witnessed", "out_of_pla
 
 #: Every ``doc_type`` the engine writes — the set the operator wipe sweeps.
 #:
-#: Exactly the engine's own types. A host's documents in the same store are the host's to name, and
-#: reach the wipe as ``EvalStorage(host_doc_types=...)`` rather than by an edit here. A type added
-#: to the schema and not to this tuple leaves documents behind that an operator was told were gone,
-#: which ``tests/test_storage_one_store.py`` pins against the model graph.
-EVAL_DOC_TYPES = (
-    "eval_template",
-    "judge_config",
-    "rubric_dim",
-    "rubric_dim_tombstone",
-    "judge_config_tombstone",
-    "eval_campaign",
-    "eval_analysis",
-    "eval_analysis_attempt",
-    "eval_insight",
-    "eval_run",
-    "eval_result",
-    "eval_trace",
-    "eval_test_case",
-    "eval_cassette",
-    "calibration_rating",
-    "eval_out_of_run_spend",
-    "case_set",
-    "eval_sweep",
-    "eval_judge_profile",
-    "eval_generation_slot",
-    "eval_launch",
-    "eval_second_judge_pass",
-    "eval_judge_temperature_check",
-    "eval_action_job",
-)
+#: Exactly the engine's own types, derived from :data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS` (its
+#: keys, in its order) rather than listed, so a type registered there is swept here without a second edit. A
+#: host's documents in the same store are the host's to name, and reach the wipe as
+#: ``EvalStorage(host_doc_types=...)`` rather than by an edit here. ``tests/test_doc_type_facts.py`` pins the
+#: registry against the model graph, so a stored model left out of it goes red rather than leaving documents
+#: behind that an operator was told were gone.
+EVAL_DOC_TYPES: tuple[str, ...] = tuple(DOC_TYPE_FACTS)
 
 
 def utc_now_iso() -> str:
