@@ -91,6 +91,7 @@ from threetears.evals.run.launch import (
 )
 from threetears.evals.run.lifecycle import (
     AbandonedRunSweepReport,
+    ReclaimStore,
     cancel_run,
     get_run,
     rejudge_result,
@@ -194,6 +195,7 @@ from threetears.evals.run.runner import EveryCellApparatusFailedError, RunCallba
 
 
 __all__ = [
+    "ReclaimStore",
     "JUDGE_CALL_ATTEMPTS",
     "JUDGE_MAX_TOKENS",
     "JUDGE_REQUEST_SETTINGS",

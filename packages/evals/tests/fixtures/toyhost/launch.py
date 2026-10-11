@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from threetears.evals.kernel import DEFAULT_JOB_LEASE_S
 from threetears.evals.schema import EvalRun, WorldSeed
 from threetears.evals.kernel import EvalStorage, NotFoundError
 from threetears.evals.kernel.host import CompletionClients, HostProfile
@@ -135,6 +136,7 @@ def toyhost_launch_host(
     client: ScriptedExtractionClient | None = None,
     cell_executor: CellExecutor | None = None,
     kind_cell_timeout_s: float | None = None,
+    job_lease_s: float = DEFAULT_JOB_LEASE_S,
 ) -> tuple[LaunchHost, ScriptedExtractionClient]:
     """The toy host as a launching host: its :class:`~threetears.evals.kernel.host.EvalHost`, plus its launch registry.
 
@@ -149,6 +151,7 @@ def toyhost_launch_host(
         cell_executor: What runs each run's cells; ``None`` is the engine's in-process default.
         kind_cell_timeout_s: The per-cell deadline the launcher wires for its kind
             (``KindWiring.cell_timeout_s``); ``None`` leaves the engine's default.
+        job_lease_s: How long the host's job leases last unless renewed.
 
     Returns:
         The host, and the scripted client its extractor calls — so a caller can see what was asked.
@@ -235,6 +238,7 @@ def toyhost_launch_host(
         job_timeout_factory=default_job_timeout,
         world_placements=place,
         cell_executor=cell_executor,
+        job_lease_s=job_lease_s,
     )
     return launch_host, client
 

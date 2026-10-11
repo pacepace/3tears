@@ -96,10 +96,10 @@ class _GetIgnoresScope(InMemoryDocumentStore):
 class _OneDocumentPerId(InMemoryDocumentStore):
     """A write evicts the same id from every other scope, as a store keyed by id alone would."""
 
-    def upsert(self, document: dict[str, Any], *, if_match: str | None = None) -> None:
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
         for key in [key for key in self.documents if key[1] == document["id"]]:
             del self.documents[key]
-        super().upsert(document, if_match=if_match)
+        super().upsert(document, if_match=if_match, create_only=create_only)
 
 
 class _IgnoresDocType(InMemoryDocumentStore):
@@ -131,9 +131,9 @@ class _InjectsItsEtag(InMemoryDocumentStore):
 class _UpsertMerges(InMemoryDocumentStore):
     """An upsert merges into the stored document instead of replacing it."""
 
-    def upsert(self, document: dict[str, Any], *, if_match: str | None = None) -> None:
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
         stored = self.get(document["id"], document["scope_id"]) or {}
-        super().upsert({**stored, **document}, if_match=if_match)
+        super().upsert({**stored, **document}, if_match=if_match, create_only=create_only)
 
 
 class _SharesReferences(InMemoryDocumentStore):
@@ -298,15 +298,22 @@ class _NoEtags(InMemoryDocumentStore):
     def get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]:
         return self.get(doc_id, scope_id), None
 
-    def upsert(self, document: dict[str, Any], *, if_match: str | None = None) -> None:
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
         super().upsert(document)
 
 
 class _IgnoresIfMatch(InMemoryDocumentStore):
     """The etag compare is broken: every conditional write lands."""
 
-    def upsert(self, document: dict[str, Any], *, if_match: str | None = None) -> None:
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
         super().upsert(document)
+
+
+class _IgnoresCreateOnly(InMemoryDocumentStore):
+    """The create-only precondition is dropped on the way to the backend: every create lands, replacing."""
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        super().upsert(document, if_match=if_match)
 
 
 class _EtagNeverMoves(InMemoryDocumentStore):
@@ -363,7 +370,7 @@ class _EtagIsAContentHash(InMemoryDocumentStore):
 class _ComparesThenWritesApart(InMemoryDocumentStore):
     """A conditional write compares the etag, then writes in a second step, so racing writers all pass the compare."""
 
-    def upsert(self, document: dict[str, Any], *, if_match: str | None = None) -> None:
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
         if if_match is not None:
             _, etag = self.get_with_etag(document["id"], document["scope_id"])
             if etag != if_match:
@@ -375,10 +382,10 @@ class _ComparesThenWritesApart(InMemoryDocumentStore):
 class _RefusesUnconditionalOverwrite(InMemoryDocumentStore):
     """A write without ``if_match`` to a document that exists is refused."""
 
-    def upsert(self, document: dict[str, Any], *, if_match: str | None = None) -> None:
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
         if if_match is None and self.get(document["id"], document["scope_id"]) is not None:
             raise StoreConflict("refusing an unconditional overwrite")
-        super().upsert(document, if_match=if_match)
+        super().upsert(document, if_match=if_match, create_only=create_only)
 
 
 class _MergeReplaces(InMemoryDocumentStore):
@@ -426,10 +433,10 @@ class _RoutesOnlyTheTypesItWasBuiltFor(InMemoryDocumentStore):
     — the shape an adopter's store is in the day the engine adds a document type.
     """
 
-    def upsert(self, document: dict[str, Any], *, if_match: str | None = None) -> None:
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
         if document["doc_type"] == "eval_out_of_run_spend":
             return
-        super().upsert(document, if_match=if_match)
+        super().upsert(document, if_match=if_match, create_only=create_only)
 
 
 #: Each broken store, and the cases it must turn red. A case may fail under other faults too; what is
@@ -465,6 +472,7 @@ _FAULTS: dict[type[InMemoryDocumentStore], frozenset[str]] = {
             "retry.reread_recovers_a_lost_race",
         }
     ),
+    _IgnoresCreateOnly: frozenset({"create.only_on_absence", "create.racing_creates_one_lands"}),
     _EtagNeverMoves: frozenset({"etag.current_write_lands", "etag.stale_write_is_refused", "etag.merge_moves_it"}),
     _MergeKeepsTheEtag: frozenset({"etag.merge_moves_it"}),
     _EtagSurvivesDelete: frozenset({"etag.gone_document_is_refused"}),

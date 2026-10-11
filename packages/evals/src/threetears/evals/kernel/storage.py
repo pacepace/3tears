@@ -34,12 +34,21 @@ failing the list.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 from pydantic import ValidationError
 
-from threetears.evals.kernel.campaign import EvalAnalysis, EvalAnalysisAttempt, EvalCampaign, EvalInsight, EvalSweep
-from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.kernel.campaign import (
+    EvalAnalysis,
+    EvalAnalysisAttempt,
+    EvalCampaign,
+    EvalGenerationSlot,
+    EvalInsight,
+    EvalSweep,
+    generation_slot_id,
+)
+from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
 from threetears.evals.kernel.errors import ConflictError, StorageError
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileStore
 from threetears.evals.schema.models import (
@@ -66,7 +75,7 @@ from threetears.evals.schema.models import (
     eval_trace_doc_id,
 )
 from threetears.evals.schema.out_of_run_spend import OutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
-from threetears.evals.schema.store_port import DocumentStore, StoreConflict
+from threetears.evals.schema.store_port import DocumentStore, StoreClock, StoreConflict
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -102,7 +111,9 @@ class NonTerminalRunScan(NamedTuple):
     """
 
 
-def save_document(repo: DocumentStore, document: dict[str, Any], *, if_match: str | None = None) -> None:
+def save_document(
+    repo: DocumentStore, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False
+) -> None:
     """Upsert ``document`` through ``repo``, raising on any failure.
 
     The one write path for eval documents over a :class:`~threetears.evals.schema.store_port.DocumentStore`,
@@ -119,13 +130,20 @@ def save_document(repo: DocumentStore, document: dict[str, Any], *, if_match: st
         repo: The store to write through.
         document: The document, carrying its ``id`` and ``doc_type``.
         if_match: The etag the stored document must still have, for a conditional write.
+        create_only: Write only if nothing is stored under the document's scope and id.
 
     Raises:
-        ConflictError: ``if_match`` was given and the stored document has moved on.
+        ConflictError: ``if_match`` was given and the stored document has moved on, or ``create_only`` was
+            set and a document is stored there.
         StorageError: Any other backend failure.
     """
     try:
-        repo.upsert(document, if_match=if_match)
+        if create_only:
+            repo.upsert(document, if_match=if_match, create_only=True)
+        else:
+            # Only a create names the precondition, so a write that needs none asks of the store exactly
+            # what it always did.
+            repo.upsert(document, if_match=if_match)
     except StoreConflict as e:
         raise ConflictError(
             f"{document.get('doc_type')} '{document.get('id')}' changed since it was read — re-read it and re-apply"
@@ -168,6 +186,49 @@ class JobStore(Protocol):
 
     def save_eval_run(self, run: EvalRun, /, *, if_match: str | None = None) -> None:
         """See :meth:`EvalStorage.save_eval_run`."""
+        ...
+
+
+class JobRecordStore(Protocol):
+    """A job record's read-modify-write: what a job's own guarded write of its record goes through.
+
+    Generic over the record's model, because every job record — a run, a sweep, an analysis attempt — carries the
+    same lease fields (:mod:`~threetears.evals.schema.job_lease`) and is written by its job the same way
+    (:func:`~threetears.evals.kernel.job_leases.write_held_record`).
+    """
+
+    def load_job_record[R: EvalDocumentModel](
+        self, model: type[R], record_id: str, scope_id: str, /
+    ) -> tuple[R | None, str | None]:
+        """See :meth:`EvalStorage.load_job_record`."""
+        ...
+
+    def save_job_record(self, document: dict[str, Any], /, *, if_match: str | None) -> None:
+        """See :meth:`EvalStorage.save_job_record`."""
+        ...
+
+
+class LeaseClock(Protocol):
+    """The time job leases are stamped and compared in — one store-wide clock, so it names no scope."""
+
+    def store_time(self) -> datetime:
+        """See :meth:`EvalStorage.store_time`."""
+        ...
+
+
+class LeaseStore(JobRecordStore, LeaseClock, Protocol):
+    """A job record's read-modify-write, a cancel asked of it, and the store's time: what job leases are kept through.
+
+    Every job record is renewed, cancelled and written lost the same way (:mod:`threetears.evals.kernel.job_leases`).
+    A run's results are here too: a run written lost has its completeness reconstructed from them in the same write.
+    """
+
+    def merge_job_record_fields(self, record_id: str, scope_id: str, fields: dict[str, Any], /) -> bool:
+        """See :meth:`EvalStorage.merge_job_record_fields`."""
+        ...
+
+    def query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]:
+        """See :meth:`EvalStorage.query_eval_results_by_run`."""
         ...
 
 
@@ -503,9 +564,90 @@ class EvalStorage:
         expected = model_cls.model_fields["doc_type"].default
         return None if stored is not None and stored != expected else data
 
-    def _save(self, document: dict[str, Any], *, if_match: str | None = None) -> None:
+    def _save(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
         """Upsert ``document`` with :func:`save_document`, which raises on any failure."""
-        save_document(self._store, document, if_match=if_match)
+        save_document(self._store, document, if_match=if_match, create_only=create_only)
+
+    # =========================================================================
+    # Job records — the lease fields every job record carries (JobRecordStore, LeaseStore)
+    # =========================================================================
+
+    def load_job_record[R: EvalDocumentModel](
+        self, model: type[R], record_id: str, scope_id: str, /
+    ) -> tuple[R | None, str | None]:
+        """Load one job record of ``model``'s type plus the token a conditional write of it must present.
+
+        Args:
+            model: The record's model — :class:`EvalRun`, :class:`EvalSweep` or :class:`EvalAnalysisAttempt`.
+            record_id: Its id.
+            scope_id: The scope it lives in.
+
+        Returns:
+            ``(record, etag)``, or ``(None, None)`` when no record of that type resolves there (:meth:`_of_type`).
+        """
+        data, etag = self._store.get_with_etag(record_id, scope_id)
+        data = self._of_type(model, data)
+        if data is None:
+            return None, None
+        return self._hydrate(model, data), etag
+
+    def save_job_record(self, document: dict[str, Any], /, *, if_match: str | None) -> None:
+        """Write a job record whole — as its model's ``to_dict`` writes it — conditionally when ``if_match`` is given.
+
+        A document rather than a model, so one write serves every job record type; the record carries its own
+        scope. The lease machinery writes only records it read whole (:meth:`load_job_record`), so a run here never
+        lacks payload a listing left out.
+
+        Raises:
+            ConflictError: ``if_match`` was given and the stored record has moved on.
+            StorageError: Any other write failure.
+        """
+        self._save(document, if_match=if_match)
+
+    def merge_job_record_fields(self, record_id: str, scope_id: str, fields: dict[str, Any], /) -> bool:
+        """Set top-level fields on a job record in place — a cancel request — without reading or re-sending it.
+
+        Unconditional, as :meth:`~threetears.evals.schema.store_port.DocumentStore.merge_fields` is, and it mints
+        a new etag, so the holder's next conditional write re-reads and sees the request.
+
+        Args:
+            record_id: The record's id.
+            scope_id: The scope it lives in.
+            fields: The fields and their new values.
+
+        Returns:
+            ``True`` when the record was written; ``False`` when there is no such document.
+
+        Raises:
+            StorageError: The write failed.
+        """
+        try:
+            return self._store.merge_fields(record_id, scope_id, fields)
+        # prawduct:ok-broad-except — DB write boundary; re-raised as a typed eval error
+        except Exception as e:
+            log.error("Failed to merge %s into job record %s (scope %s) — %s", sorted(fields), record_id, scope_id, e)
+            raise StorageError(f"failed to write job record '{record_id}': {e}") from e
+
+    def store_time(self) -> datetime:
+        """The time leases are stamped and compared in: the store's own when it keeps a clock, this process's otherwise.
+
+        A store offering :class:`~threetears.evals.schema.store_port.StoreClock` is asked, so every process sharing it
+        reads one clock; any other store is read on this process's clock, in UTC.
+
+        Returns:
+            An aware datetime, in UTC.
+
+        Raises:
+            StorageError: The store's clock answered a naive datetime, which names no instant.
+        """
+        if not isinstance(self._store, StoreClock):
+            return datetime.now(UTC)
+        now = self._store.now()
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise StorageError(
+                f"the store's clock answered {now.isoformat()}, a time with no zone, which names no instant"
+            )
+        return now.astimezone(UTC)
 
     def _load[M: EvalBaseModel](self, model_cls: type[M], doc_id: str, scope_id: str) -> M | None:
         """One document by id within a scope, hydrated, or ``None`` when no document of its type resolves there."""
@@ -746,9 +888,14 @@ class EvalStorage:
     # EvalSweep — a multi-arm launch's own record
     # =========================================================================
 
-    def save_sweep(self, sweep: EvalSweep) -> None:
-        """Persist a sweep's record in the scope it names; its own task is its one writer."""
-        self._save(sweep.to_dict())
+    def save_sweep(self, sweep: EvalSweep, *, if_match: str | None = None) -> None:
+        """Persist a sweep's record in the scope it names; conditionally when ``if_match`` is given.
+
+        Raises:
+            ConflictError: ``if_match`` was given and the stored record has moved on.
+            StorageError: Any other write failure.
+        """
+        self._save(sweep.to_dict(), if_match=if_match)
 
     def load_sweep(self, sweep_id: str, scope_id: str) -> EvalSweep | None:
         """Load a sweep's record by id within a scope."""
@@ -838,9 +985,35 @@ class EvalStorage:
         """Delete an analysis by id within a scope."""
         return self._store.delete(analysis_id, scope_id)
 
-    def save_analysis_attempt(self, attempt: EvalAnalysisAttempt) -> None:
-        """Persist one generation attempt's record in the scope it names."""
-        self._save(attempt.to_dict())
+    def save_analysis_attempt(self, attempt: EvalAnalysisAttempt, *, if_match: str | None = None) -> None:
+        """Persist one generation attempt's record in the scope it names; conditionally when ``if_match`` is given.
+
+        Raises:
+            ConflictError: ``if_match`` was given and the stored record has moved on.
+            StorageError: Any other write failure.
+        """
+        self._save(attempt.to_dict(), if_match=if_match)
+
+    def load_generation_slot_with_etag(
+        self, campaign_id: str, scope_id: str
+    ) -> tuple[EvalGenerationSlot | None, str | None]:
+        """Load a campaign's generation slot plus the token a takeover must present; ``(None, None)`` when unclaimed."""
+        return self.load_job_record(EvalGenerationSlot, generation_slot_id(campaign_id), scope_id)
+
+    def claim_generation_slot(self, slot: EvalGenerationSlot, *, if_match: str | None) -> None:
+        """Claim a campaign's generation slot: created when ``if_match`` is None, taken over with it otherwise.
+
+        Never unconditional: a slot that does not exist is created with a create-only write, so of two processes
+        creating it at once exactly one lands.
+
+        Raises:
+            ConflictError: Another start claimed the slot first; re-read it.
+            StorageError: Any other write failure.
+        """
+        if if_match is None:
+            self._save(slot.to_dict(), create_only=True)
+        else:
+            self._save(slot.to_dict(), if_match=if_match)
 
     def list_analysis_attempts_by_campaign(self, campaign_id: str, scope_id: str) -> list[EvalAnalysisAttempt]:
         """Return every generation attempt recorded against a campaign, newest first."""
@@ -1702,7 +1875,11 @@ if TYPE_CHECKING:
             OutOfRunSpendStore,
             CaseSetStore,
             JudgeProfileStore,
+            JobRecordStore,
+            LeaseStore,
         ] = (
+            storage,
+            storage,
             storage,
             storage,
             storage,
@@ -1721,7 +1898,10 @@ __all__ = [
     "CassetteStore",
     "DefinitionStore",
     "EvalStorage",
+    "JobRecordStore",
     "JobStore",
+    "LeaseClock",
+    "LeaseStore",
     "NonTerminalRunScan",
     "ResultStore",
     "RunRecordStore",

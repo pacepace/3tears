@@ -25,6 +25,7 @@ __all__ = [
     "AdmissionRefusedError",
     "ConflictError",
     "EvalServiceError",
+    "JobFenced",
     "NotFoundError",
     "ProviderRefusedError",
     "StorageError",
@@ -153,3 +154,14 @@ class AdmissionRefusedError(EvalServiceError):
             status_code=429,
             details={"requested": requested, "admitted": admitted, "limit": limit, "limit_name": limit_name},
         )
+
+
+class JobFenced(Exception):
+    """A job's own write found its record ended by someone else — written lost — so the job writes nothing more.
+
+    Not an :class:`EvalServiceError`: no caller is told it. It is how a job's work, holding a lease that another
+    process found lapsed (or that this process released at shutdown), learns that its record now says it was
+    lost, and stops rather than overwrite that with an ending of its own — the record's answer is the one every
+    process has already read. Raised by the job's guarded writes
+    (:func:`~threetears.evals.kernel.job_leases.write_held_record`) and caught at the job's own boundary.
+    """
