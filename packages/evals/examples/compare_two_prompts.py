@@ -3,7 +3,8 @@
 Two versions of a support-ticket classifier, differing only in their prompt, run over the same tickets, and the
 engine tests the new one against the old one, the control. New here: ``compare``, which runs each candidate as
 one arm and reports every arm against the control: the difference (delta), its interval, the Holm-adjusted p,
-and a verdict. Then read where the arms disagree, through ``comparison.results(arm)``. The verdicts and what
+and a verdict. Then read each arm per kind of case (``stratum_key=``, ``comparison.strata()``) and where the arms
+disagree, through ``comparison.results(arm)``. The verdicts and what
 each licenses: ``docs/reading-reports.md``.
 
 The tickets are a file beside this one, ``tickets.jsonl``, not a list in the script, so the next prompt version,
@@ -35,9 +36,11 @@ MODEL = "claude-haiku-5-5"
 #
 # The test set is data, not code: the next prompt version runs against exactly these cases, and when production
 # gets a ticket wrong, it becomes a new line here (docs/designing-classifier-evals.md, section 8, "Maintaining the
-# set"). Each line's "kind" marks the hard ones, the lookalikes that mention a second queue's words; it is for you
-# and the disagreement printout, never the candidate, which sees only the ticket. When the suite needs versions
-# and history, store it as a case set (mint_case_set, or the case_set_mint action: docs/concepts.md, "Case set").
+# set"). Each line's "kind" marks the hard ones, the lookalikes that mention a second queue's words, and is the
+# case's stratum (stratum_key="kind" below): the report reads each arm again per kind, and compare takes the key
+# out of every case before an arm sees it, since a ticket that says it is a lookalike tells the model what to watch
+# for. When the suite needs versions and history, store it as a case set (mint_case_set, or the case_set_mint
+# action: docs/concepts.md, "Case set").
 # -----------------------------------------------------------------------------
 
 TICKETS = Path(__file__).with_name("tickets.jsonl")
@@ -128,6 +131,7 @@ async def main() -> Comparison:
         CASES,
         {"baseline": make(BASELINE_PROMPT), "candidate": make(CANDIDATE_PROMPT)},  # each arm by the name you give it
         expected=lambda case: case["queue"],  # a classifier eval: accuracy and a confusion matrix per arm
+        stratum_key="kind",  # each case's kind: the report's By stratum table reads every arm per kind of case
         control="baseline",  # the arm every other arm is tested against
         name="ticket triage: baseline vs candidate prompt" + ("" if online() else " (offline)"),  # titles the report
         k=2,  # repeats per case: a model's answer can change between calls
@@ -140,6 +144,12 @@ async def main() -> Comparison:
         )  # none when nothing varied
         print(f"{row['arm']} vs {comparison.control} on {row['reading']}: {row['control_mean']:.2f} -> ", end="")
         print(f"{row['arm_mean']:.2f}, delta {row['delta']:+.2f}, interval {row['interval']}{p}: {row['verdict']}")
+
+    # Where it changed: each arm's accuracy per kind of case. Twelve tickets make every kind too few to read
+    # alone, which the report says; a real suite wants ten cases of each kind it acts on.
+    print("\nAccuracy by kind of case:")
+    for row in comparison.strata(reading="Accuracy"):
+        print(f"  {row['arm']}: all {row['all']}; " + "; ".join(f"{k} {v}" for k, v in row["strata"].items()))
 
     # Where the arms disagree: each arm's answer to a ticket, on every repeat.
     print("\nWhere the arms disagree:")

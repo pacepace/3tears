@@ -63,7 +63,9 @@ the code, one JSON object per line, and load them with
 `CASES = [json.loads(line) for line in open("tickets.jsonl") if line.strip()]`. A test set is data: it outlives
 any one version of the candidate, and it grows. When production routes a ticket wrong, add that ticket to the file
 ([Maintaining the set](designing-classifier-evals.md#8-maintaining-the-set)).
-[`compare_two_prompts.py`](../examples/compare_two_prompts.py) loads its tickets this way.
+[`compare_two_prompts.py`](../examples/compare_two_prompts.py) loads its tickets this way, and gives each its kind
+(`"kind": "lookalike"`), which `stratum_key="kind"` turns into results per kind of case
+([Reading results by kind of case](designing-classifier-evals.md#reading-results-by-kind-of-case)).
 
 ## 2. Run it
 

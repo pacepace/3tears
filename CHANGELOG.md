@@ -6,6 +6,30 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: backlog while Discodon adopts .13
+
+- **`run_eval` and `compare` take `stratum_key=` (#704).** The key each case carries its kind under
+  (`stratum_key="kind"`): its value is stored as the test case's `EvalTestCase.stratum`, and the key is taken out of
+  the case before the candidate, a scorer, `expected=`, `seed=` or the judge is handed it, and out of what
+  addresses the case set. So re-labelling a case keeps its template, its test case id and its history: the new
+  stratum is stored on the same case, and every run over it, earlier ones included, is then read under it (the
+  `EvalTestCase.stratum` description now says so). A case without the key, or with `None` under it, declares none;
+  a blank or non-string value, and `stratum_key="id"`, are refused. A case list that already carried the key and
+  now names it as `stratum_key=` addresses a new template once, since the key leaves the addressed cases.
+- **`EvalSummary.strata`** (`list[StratumSummary]`, exported from `threetears.evals.analysis`): when any case of the
+  run declares a stratum, every measure is read again over each stratum's results alone (`confusion_cell` aside),
+  named strata in name order then the cases declaring none; `StratumSummary.too_few` marks one under
+  `STRATUM_MIN_CASES` (10) cases. `render()` prints them under `by stratum:`, each stratum's line saying it is too
+  few to read alone where it is, and the served `stratum_lines` carry the same words. Empty, and printed as before,
+  for a run none of whose cases declares one — `summarize_run` reads every run this way, so the CLI's summaries
+  gain it too.
+- **`CaseResult.stratum`**: each result carries its case's stratum, and `render()` names it beside the repeat.
+- **`Comparison.strata(arm=None, *, reading=None)`** reads the report's By stratum table: per arm (by its key) and
+  reading, the figure over all cases and, under `strata`, over each stratum's. `compare`'s report carries the table
+  and its too-few-cases disclosure whenever the cases declare strata, as every campaign report already did.
+- `examples/compare_two_prompts.py` names its tickets' `kind` as `stratum_key=` and prints each arm's accuracy per
+  kind; the classifier guide's "`run_eval` cannot set a stratum yet" is replaced by how to set one.
+
 ### 3tears-evals: what adopting .12 found (gaps 49–50)
 
 - **A host resolver's refusal reaches both hooks as the error it raised (gap 49).** `ToolCall.refused` is the very
