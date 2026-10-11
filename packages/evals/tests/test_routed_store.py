@@ -178,8 +178,9 @@ def test_a_document_in_a_store_its_type_is_not_kept_in_is_refused_on_read() -> N
     stores["evidence"].upsert(_doc("a1", "eval_analysis"))
 
     assert router.by_doc_type("eval_analysis", _SCOPE) == []
-    with pytest.raises(MisplacedDocument, match="its type is kept in 'scratch'"):
+    with pytest.raises(MisplacedDocument, match="its type is kept in 'scratch'") as refused:
         router.get("a1", _SCOPE)
+    assert "relocate" not in refused.value.fault and "RoutedDocumentStore.relocate" in refused.value.remedy
 
 
 # --- conditional writes ------------------------------------------------------------------------
@@ -324,7 +325,10 @@ def test_a_changed_rule_refuses_to_start_naming_what_moved() -> None:
 
     with pytest.raises(RouteChanged, match="eval_analysis") as refused:
         RoutedDocumentStore(stores, _BY_LIFECYCLE, routing_scope=_ROUTING)
-    assert "relocate" in str(refused.value)
+    # The fault and the remedy apart, so a host naming its own relocation tool replaces only the remedy.
+    assert "eval_analysis" in refused.value.fault and "relocate" not in refused.value.fault
+    assert "RoutedDocumentStore.relocate" in refused.value.remedy
+    assert str(refused.value) == f"{refused.value.fault}; {refused.value.remedy}"
 
 
 def test_a_different_rule_with_the_same_placements_starts() -> None:

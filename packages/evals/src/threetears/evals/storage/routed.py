@@ -78,11 +78,39 @@ _FACT_VALUES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
 )
 
 
-class RouteChanged(RuntimeError):
+class _StoreRefusal(RuntimeError):
+    """A router's refusal, held as its fault and its remedy apart, as :class:`~threetears.evals.kernel.RefusedInput` is.
+
+    A :class:`RuntimeError` still, since what it refuses is the stores' state rather than a caller's input; a host
+    naming its own relocation tool replaces :attr:`remedy` and keeps :attr:`fault`, and ``str()`` reads both.
+
+    Attributes:
+        fault: What the router found.
+        remedy: What its operator does about it.
+    """
+
+    def __init__(self, fault: str, *, remedy: str) -> None:
+        """Hold the fault and the remedy apart.
+
+        Args:
+            fault: What the router found.
+            remedy: What its operator does about it.
+
+        Raises:
+            ValueError: ``remedy`` is blank.
+        """
+        if not remedy.strip():
+            raise ValueError(f"a refusal names its remedy; this one ({fault!r}) names a blank one")
+        super().__init__(f"{fault}; {remedy}")
+        self.fault = fault
+        self.remedy = remedy
+
+
+class RouteChanged(_StoreRefusal):
     """The router was started under placements its stores were not written under; :meth:`relocate` first."""
 
 
-class MisplacedDocument(RuntimeError):
+class MisplacedDocument(_StoreRefusal):
     """One id is held by two stores, or by a store its type is not placed in; the router never picks one."""
 
 
@@ -273,14 +301,16 @@ class RoutedDocumentStore:
         if not held:
             raise RouteChanged(
                 f"none of the stores {sorted(self._children)} records the placements it was written under in routing "
-                f"scope {self._routing_scope!r}, so documents already in one cannot be told from an empty store; "
-                f"{remedy}"
+                f"scope {self._routing_scope!r}, so documents already in one cannot be told from an empty store",
+                remedy=remedy,
             )
         for name, record in held.items():
             if record.get("child") != name:
-                raise RouteChanged(f"the store passed as {name!r} was written as {record.get('child')!r}; {remedy}")
+                raise RouteChanged(
+                    f"the store passed as {name!r} was written as {record.get('child')!r}", remedy=remedy
+                )
         if len({record.get("fingerprint") for record in held.values()}) != 1:
-            raise RouteChanged(f"the stores record different placements (an interrupted relocation); {remedy}")
+            raise RouteChanged("the stores record different placements (an interrupted relocation)", remedy=remedy)
         first = next(iter(held.values()))
         was: Mapping[str, str] = first["placements"]
         was_unregistered: str = first["unregistered"]
@@ -292,7 +322,7 @@ class RoutedDocumentStore:
         if was_unregistered != self.unregistered:
             moved.append("(unregistered types)")
         if moved:
-            raise RouteChanged(f"this route keeps {moved} in another store than they were written to; {remedy}")
+            raise RouteChanged(f"this route keeps {moved} in another store than they were written to", remedy=remedy)
         if len(held) != len(self._children) or first["fingerprint"] != _fingerprint(
             self._placements, self.unregistered
         ):
@@ -334,14 +364,16 @@ class RoutedDocumentStore:
         if len(found) > 1:
             raise MisplacedDocument(
                 f"document {doc_id!r} in scope {scope_id!r} is held by {[name for name, _, _ in found]}; one id is "
-                "kept in one store, so neither is read — relocate settles it, or remove the copy that is wrong"
+                "kept in one store, so neither is read",
+                remedy="run RoutedDocumentStore.relocate, or remove the copy that is wrong",
             )
         name, document, etag = found[0]
         expected = self._place(str(document.get("doc_type")))
         if name != expected:
             raise MisplacedDocument(
                 f"document {doc_id!r} ({document.get('doc_type')}) in scope {scope_id!r} is held by {name!r}, and "
-                f"its type is kept in {expected!r}, where a typed read would not find it; relocate moves it"
+                f"its type is kept in {expected!r}, where a typed read would not find it",
+                remedy="run RoutedDocumentStore.relocate, which moves it",
             )
         return document, etag
 
@@ -355,7 +387,8 @@ class RoutedDocumentStore:
         if len(landed) > 1:
             raise MisplacedDocument(
                 f"{what} of {doc_id!r} in scope {scope_id!r} reached {landed}, which each held it; one id is kept "
-                "in one store — relocate settles it"
+                "in one store",
+                remedy="run RoutedDocumentStore.relocate",
             )
         return bool(landed)
 
@@ -536,7 +569,8 @@ class RoutedDocumentStore:
                         elif there != document:
                             raise MisplacedDocument(
                                 f"document {doc_id!r} in scope {scope_id!r} is held by {name!r} and by "
-                                f"{target_name!r}, and the two differ; decide which is right and remove the other"
+                                f"{target_name!r}, and the two differ",
+                                remedy="decide which is right, remove the other, and relocate again",
                             )
                         store.delete(doc_id, scope_id)
                         moved[doc_type] = moved.get(doc_type, 0) + 1
