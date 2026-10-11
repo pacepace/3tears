@@ -116,7 +116,19 @@ class TestTheRegistry:
 
 class TestTheLabels:
     def test_the_label_names_the_depth_and_the_threshold(self) -> None:
-        assert pass_threshold_label(3, 4) == "pass^k (k=3, criterion >= 4 of 5)"
+        assert pass_threshold_label(3, 4, criteria=["rubric"]) == "pass^k (k=3, criterion >= 4 of 5)"
+
+    @pytest.mark.parametrize(
+        ("criteria", "said"),
+        [
+            (["goal_checks"], "pass^k (k=2, every goal check)"),
+            (["goal_checks", "rubric"], "pass^k (k=2, every goal check and criterion >= 3 of 5)"),
+            ([], "pass^k (k=2, no criterion)"),
+        ],
+    )
+    def test_the_label_names_only_the_criteria_the_attempts_had(self, criteria: list[str], said: str) -> None:
+        """A pass^k over attempts no judge scored is never labelled with a rubric threshold they never met."""
+        assert pass_threshold_label(2, 3, criteria=criteria) == said  # type: ignore[arg-type]
 
     def test_the_descriptions_name_the_threshold_and_where_it_comes_from(self) -> None:
         description = METRIC_DESCRIPTORS["pass_hat_k"].description

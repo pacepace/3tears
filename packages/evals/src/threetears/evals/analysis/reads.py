@@ -62,8 +62,10 @@ from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, composite_significance, difference_interval
 from threetears.evals.kernel.arguments import normalize_blank
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.host.bars import PassCriterion
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.scoring import (
+    capability_scores,
     compute_composite_summary,
     compute_async_delivery_summary,
     compute_cost_summary,
@@ -1202,7 +1204,11 @@ def compare_two_runs(
         ``composite_{a,b,delta}``, ``composite_basis_{a,b}`` (what each composite was meaned over, ragged
         when its results carried different dimension sets), ``composite_bases_differ``,
         ``composite_interval`` (at ``interval_level``),
-        ``n_cases_{a,b}``, ``n_left_out_{a,b}``, ``count_{a,b}``, ``paired``, ``n_pairs``,
+        ``n_cases_{a,b}``, ``n_left_out_{a,b}``, ``count_{a,b}``, ``paired`` (True only over at least one
+        case both runs scored), ``n_pairs`` (how many; None when nothing was paired),
+        ``composite_untested_reason`` (why no composite test ran, None when one did), ``pass_hat_k_n_cases_{a,b}``
+        (the cases each pass^k averaged at ``k``), ``pass_criteria_{a,b}`` (what each run's attempts were held to,
+        as :data:`~threetears.evals.kernel.host.PassCriterion` names),
         ``hedges_g``, ``p``, ``significant`` (nulls where a run scored nothing,
         a test is undefined, or the composites are not comparable).
         ``composite_{a,b}`` and the delta are over the cases the test read —
@@ -1263,6 +1269,18 @@ def compare_two_runs(
         if entry_b is not None and common_k is not None
         else None
     )
+    # The cases each pass^k above averaged at that depth: its own count, never the composite's, which counts the
+    # cases a judge scored — none at all for a run graded only by goal checks.
+    pass_cases_a = (
+        pass_hat_k_at(entry_a["pass_hat_k_curve"], common_k)["n_cases"]
+        if entry_a is not None and common_k is not None
+        else 0
+    )
+    pass_cases_b = (
+        pass_hat_k_at(entry_b["pass_hat_k_curve"], common_k)["n_cases"]
+        if entry_b is not None and common_k is not None
+        else 0
+    )
     n_pairs: int | None = None
     if shared_cases:
         # Pair only cases scored in BOTH runs.
@@ -1271,8 +1289,10 @@ def compare_two_runs(
         ]
         sample_a = [per_case_a[(model_a, run_a_id, tc)] for tc in paired_cases]
         sample_b = [per_case_b[(model_b, run_b_id, tc)] for tc in paired_cases]
-        paired = True
-        n_pairs = len(paired_cases)
+        # Paired only over cases that exist: two runs sharing their cases but no composite pair nothing, and a
+        # test "paired over 0 cases" is no test at all.
+        paired = bool(paired_cases)
+        n_pairs = len(paired_cases) if paired_cases else None
     else:
         sample_a = [v for (_m, r, _tc), v in per_case_a.items() if r == run_a_id]
         sample_b = [v for (_m, r, _tc), v in per_case_b.items() if r == run_b_id]
@@ -1300,6 +1320,9 @@ def compare_two_runs(
     # still read as one model here. Never the requested id standing in for a response that named none.
     served_a = pooled_served_models(results_a)
     served_b = pooled_served_models(results_b)
+    untested = _composite_untested_reason(
+        scored_a=n_scored_a, scored_b=n_scored_b, tested=bool(sample_a and sample_b), shared=bool(shared_cases)
+    )
     interval: tuple[float, float] | None = None
     if composites_comparable:
         hedges_g, significant, p_value = composite_significance(sample_a, sample_b, paired=paired)
@@ -1320,6 +1343,12 @@ def compare_two_runs(
         "pass_hat_k_a": pass_hat_k_a,
         "pass_hat_k_b": pass_hat_k_b,
         "pass_hat_k_delta": _score_delta(pass_hat_k_a, pass_hat_k_b),
+        # The cases each pass^k was averaged over at that depth — its own denominator, not the composite's.
+        "pass_hat_k_n_cases_a": pass_cases_a,
+        "pass_hat_k_n_cases_b": pass_cases_b,
+        # What each run's attempts were held to (`PassCriterion`s): goal checks, a judge's criteria, or both.
+        "pass_criteria_a": _pass_criteria(results_a),
+        "pass_criteria_b": _pass_criteria(results_b),
         # Why a side has no pass^k when none of its attempts had a criterion to pass (#688); None otherwise.
         "pass_hat_k_unmeasured_reason_a": entry_a.get("pass_hat_k_unmeasured_reason") if entry_a else None,
         "pass_hat_k_unmeasured_reason_b": entry_b.get("pass_hat_k_unmeasured_reason") if entry_b else None,
@@ -1346,9 +1375,12 @@ def compare_two_runs(
         "count_a": count_a,
         "count_b": count_b,
         # How the samples line up, which is what the test that ran on them was:
-        # pairing needs cases scored in both runs, not merely one template id in both.
+        # pairing needs cases scored in both runs, not merely one template id in both. `paired` is True only over
+        # at least one such case, and `n_pairs` is how many — None whenever nothing was paired.
         "paired": paired,
         "n_pairs": n_pairs,
+        # Why no composite test ran — no paired cases, and why there are none; None when one ran.
+        "composite_untested_reason": untested,
         # Hedges' g (g_z when paired): Cohen's d with its small-sample bias removed. Renamed from
         # `cohens_d` when the estimator changed, so a reader of the old key cannot take the new number for it.
         "hedges_g": hedges_g,
@@ -1375,6 +1407,42 @@ def compare_two_runs(
         "subject_detail_a": subject_detail(run_a),
         "subject_detail_b": subject_detail(run_b),
     }
+
+
+def _pass_criteria(results: Sequence[EvalResult]) -> list[PassCriterion]:
+    """What a run's attempts were held to for pass^k: goal checks where any carried one, a judge's criteria where any
+    was judged on the capability axis (scored, or asked and unable to tell)."""
+    goal = any(result.goal_state_outcomes for result in results)
+    judged = any(
+        capability_scores(result)
+        or set(result.judge_cannot_tell) - set(result.judge_cannot_tell_boundary)
+        or result.judge_model is not None
+        for result in results
+    )
+    criteria: list[PassCriterion] = []
+    if goal:
+        criteria.append("goal_checks")
+    if judged:
+        criteria.append("rubric")
+    return criteria
+
+
+def _composite_untested_reason(*, scored_a: int, scored_b: int, tested: bool, shared: bool) -> str | None:
+    """Why no composite test ran between two runs — or None when one did.
+
+    Args:
+        scored_a: Cases run A carries a composite on.
+        scored_b: Cases run B carries a composite on.
+        tested: Whether both samples the test reads hold a case.
+        shared: Whether the runs share frozen cases to pair on.
+    """
+    if tested:
+        return None
+    if not scored_a and not scored_b:
+        return "neither run's results carry a judged composite"
+    if not scored_a or not scored_b:
+        return f"run {'A' if not scored_a else 'B'}'s results carry no judged composite"
+    return "no case carries a composite in both runs" if shared else None
 
 
 def _compare_per_template(

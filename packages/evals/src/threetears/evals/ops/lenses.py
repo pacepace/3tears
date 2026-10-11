@@ -1262,24 +1262,37 @@ def runs_compared_text(compared: RunsCompared) -> str:
     view = compared.comparison
     arm: Mapping[str, Any] = view.get("comparison", {}).get("arm", {})
     paired = bool(arm.get("paired"))
+    criteria = {*arm.get("pass_criteria_a", []), *arm.get("pass_criteria_b", [])}
+    label = pass_threshold_label(
+        arm.get("k"), view.get("rubric_threshold", DEFAULT_PASS_THRESHOLD), criteria=sorted(criteria)
+    )
+    untested = arm.get("composite_untested_reason")
+    if untested is not None:
+        # No test ran, so there is no pairing to state and no composite to set beside it — said, never a test
+        # "paired over 0 cases" or a delta between two absent numbers.
+        composite = f"mean composite: none — no paired cases: {untested}"
+    else:
+        composite = (
+            f"mean composite: {format_number(arm.get('composite_a'))} vs {format_number(arm.get('composite_b'))} "
+            f"(delta {format_signed(arm.get('composite_delta'))}; "
+            + (f"paired over {arm.get('n_pairs')} shared case(s)" if paired else "unpaired: no case scored in both")
+            + "), "
+            + format_significance(
+                significant=arm.get("significant"),
+                paired=paired,
+                p=arm.get("p"),
+                effect=arm.get("hedges_g"),
+                n=arm.get("n_pairs"),
+                hedges=True,
+            )
+        )
     lines = [
         f"run {compared.baseline_run_id} ({arm.get('model_a')}) against run {compared.candidate_run_id} "
-        f"({arm.get('model_b')}); "
-        + (f"paired over {arm.get('n_pairs')} shared case(s)" if paired else "unpaired: no case scored in both"),
-        f"{pass_threshold_label(arm.get('k'), view.get('rubric_threshold', DEFAULT_PASS_THRESHOLD))}: "
-        f"{format_number(arm.get('pass_hat_k_a'))} vs "
+        f"({arm.get('model_b')})",
+        f"{label}: {format_number(arm.get('pass_hat_k_a'))} vs "
         f"{format_number(arm.get('pass_hat_k_b'))} (delta {format_signed(arm.get('pass_hat_k_delta'))}; "
-        f"{arm.get('count_a')} vs {arm.get('count_b')} case(s))",
-        f"mean composite: {format_number(arm.get('composite_a'))} vs {format_number(arm.get('composite_b'))} "
-        f"(delta {format_signed(arm.get('composite_delta'))}), "
-        + format_significance(
-            significant=arm.get("significant"),
-            paired=paired,
-            p=arm.get("p"),
-            effect=arm.get("hedges_g"),
-            n=arm.get("n_pairs"),
-            hedges=True,
-        ),
+        f"{arm.get('pass_hat_k_n_cases_a')} vs {arm.get('pass_hat_k_n_cases_b')} case(s))",
+        composite,
     ]
     for run_id, key in (
         (compared.baseline_run_id, "pass_hat_k_unmeasured_reason_a"),

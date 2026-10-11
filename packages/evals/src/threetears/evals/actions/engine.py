@@ -1748,8 +1748,11 @@ def engine_actions() -> tuple[Action, ...]:
             render=render.render_runs_compared,
             example={"baseline_run_id": run_id, "candidate_run_id": "0193a1b2-run-b"},
             detail=(
-                "pass^k is read on both arms at the shallower arm's depth. The composite is tested paired over the "
-                "cases both runs scored, else unpaired, and the answer says which; a miss reads not significant, "
+                "pass^k is read on both arms at the shallower arm's depth, over the cases each averaged there, and "
+                "names what its attempts were held to — goal checks, a judge's criteria at the threshold, or both. "
+                "The composite is tested paired over the cases both runs scored, else unpaired, and the answer says "
+                "which; where no case carries a composite in both, no test ran and it says why. A miss reads not "
+                "significant, "
                 "never no difference. Composites of two different subjects are not compared. Each run that "
                 "delivered less than its matrix carries its sentence, and the answer says when the two were "
                 "measured over spans that do not overlap or recorded different cassette modes. A run not in the "

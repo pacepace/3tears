@@ -47,9 +47,9 @@ the one its author wrote.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, assert_never
+from typing import TYPE_CHECKING, Any, Literal, assert_never
 
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, ValidationError
 
@@ -67,20 +67,33 @@ DEFAULT_PASS_THRESHOLD = 3
 _SCALE_TOP = 5
 
 
-def pass_threshold_label(k: int | None, threshold: int) -> str:
-    """How every surface names pass^k: its depth and the bar a criterion had to clear, e.g. ``pass^k (k=3, criterion >= 4 of 5)``.
+#: What an attempt can be held to for pass^k: every goal-state check it carries (``goal_checks``), and every
+#: capability criterion a judge scored at a level (``rubric``). pass^k conjoins whichever an attempt has.
+PassCriterion = Literal["goal_checks", "rubric"]
 
-    One spelling, so no surface can print a pass^k without the threshold it was computed at.
+
+def pass_threshold_label(k: int | None, threshold: int, *, criteria: Collection[PassCriterion]) -> str:
+    """How every surface names pass^k: its depth and what an attempt had to pass, e.g. ``pass^k (k=3, criterion >= 4 of 5)``.
+
+    One spelling, so no surface can print a pass^k without what it was computed against — and only that: a
+    pass^k over attempts no judge scored is not stated under a rubric threshold they never met, which would read
+    as a judged figure.
 
     Args:
         k: The depth the figure is read at, or None where no depth was reached.
         threshold: The 1–5 level a criterion had to reach.
+        criteria: What the attempts behind the figure were held to (:data:`PassCriterion`); empty when nothing was.
 
     Returns:
-        The label.
+        The label: ``every goal check``, ``criterion >= <threshold> of 5``, both joined by ``and``, or
+        ``no criterion``.
     """
     depth = "k=?" if k is None else f"k={k}"
-    return f"pass^k ({depth}, criterion >= {threshold} of {_SCALE_TOP})"
+    held = [
+        *(["every goal check"] if "goal_checks" in criteria else []),
+        *([f"criterion >= {threshold} of {_SCALE_TOP}"] if "rubric" in criteria else []),
+    ]
+    return f"pass^k ({depth}, {' and '.join(held) or 'no criterion'})"
 
 
 @dataclass(frozen=True)
@@ -624,5 +637,6 @@ __all__ = [
     "PassThreshold",
     "contradicts_descriptor",
     "load_bar_registry",
+    "PassCriterion",
     "pass_threshold_label",
 ]
