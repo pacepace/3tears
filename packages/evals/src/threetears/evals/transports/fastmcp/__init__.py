@@ -147,12 +147,18 @@ class CatalogueTool(Tool):
             flag when it was refused or outlived the call timeout.
         """
         binding = self.binding
+        deadline = asyncio.timeout(binding.call_timeout_s)
         try:
-            async with asyncio.timeout(binding.call_timeout_s):
+            async with deadline:
                 resolved = binding.caller()
                 caller = await resolved if inspect.isawaitable(resolved) else resolved
                 outcome = await binding.mounted.call(arguments, host=binding.host, caller=caller)
         except TimeoutError:
+            # A TimeoutError the caller resolver or the action raised of its own is not this call outliving the
+            # server's timeout, and answering it as one would blame the store for the action's own fault: it
+            # propagates, as anything else the action raises does.
+            if not deadline.expired():
+                raise
             return ToolResult(
                 content=(
                     f"the call outlived this server's {binding.call_timeout_s:g}s call timeout and was stopped. No "
