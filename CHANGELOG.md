@@ -6,6 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the judge temperature measurement and the prompt-comparison test set (#633)
+
+- **The first judge temperature measurement is void.** The 2026-10-10 run on `openai/gpt-6-luna` compared the
+  provider default with itself: the model accepts no temperature, OpenRouter dropped it silently, and the host's
+  adapter reported the requested temperature as the one sent. `judges-and-calibration.md` (Step 10) keeps its
+  figures only as a same-setting noise floor.
+- **Measured on a judge that honours temperature, 0 halves borderline variance.** Re-run on
+  `openai/gpt-oss-120b`, pinned to one endpoint whose default samples, with `require_parameters` on every request:
+  over 50 borderline cases, 5 repeats each, mean score variance was 0.27 at 0 against 0.55 at the default (paired
+  difference -0.28, 95% interval -0.45 to -0.12). The policy of pinning judge calls at 0 stays; 20 of the 50 cases
+  still moved at 0. Step 10 also says to check that a provider's default actually samples, since one endpoint served
+  the model greedily by default. Step 4 summarises the result.
+- **The prompt-comparison example keeps its test set in a file.** `examples/compare_two_prompts.py` loads its 12
+  tickets from `examples/tickets.jsonl`, one JSON object per line marked `"kind": "plain"` or `"lookalike"`, and its
+  disagreement printout names the kind. The tutorial (steps 1 and 4) says why: every prompt version runs against
+  the same cases, a production miss becomes a new line, and a stored case set (`mint_case_set`, `case_set_mint`) is
+  the step after that.
+
 ### 3tears-evals: what adopting .8 found, continued (gap 39)
 
 - **A resolver's refusal is a refusal, not a defect.** A caller or host resolver that raises an `EvalServiceError` —

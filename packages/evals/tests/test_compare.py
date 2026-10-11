@@ -228,7 +228,7 @@ async def test_the_example_runs_offline_and_prints_the_verdict(
         out,
     )
     # Where the arms disagree: the tickets the baseline misfiled, each arm's answer on every repeat.
-    assert "  'Do you plan to add a dark mode?', filed under feature_request:\n" in out
+    assert "  'Do you plan to add a dark mode?', filed under feature_request (plain):\n" in out
     assert "    baseline said billing, billing; candidate said feature_request, feature_request\n" in out
     assert comparison.render() not in out
 
