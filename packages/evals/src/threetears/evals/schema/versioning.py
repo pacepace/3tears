@@ -54,7 +54,11 @@ CORE_BASELINE_VERSION: Final[int] = 8
 #:   ``RubricScore.output_fingerprint`` / ``criterion_fingerprint`` (stamped by the judge) and the same pair on
 #:   ``CalibrationRating`` (copied from the rated score), both OPTIONAL. Additive: the v8 step is the identity,
 #:   and a v8 document reads with neither — a score judged before the stamp, and a rating read by its result alone.
-CORE_SCHEMA_VERSION: int = 9
+#: - **v10** — a run carries its job's lease (:mod:`~threetears.evals.schema.job_lease`): ``EvalRun.lease``,
+#:   ``cancel_requested_at``, ``cancel_request_reason`` and ``lost``, all OPTIONAL. Additive: the v9 step is the
+#:   identity, and a v9 run reads with none of them — no lease, so one that has not ended reads lost (nothing can
+#:   be renewing it: the build that started it kept liveness in its own process), which is how a restart left it.
+CORE_SCHEMA_VERSION: int = 10
 """The core version this build writes, and the newest a read of a core document accepts.
 
 How each value a core document stored at v8 predates reads — a field v8 gained after the document was
@@ -236,6 +240,13 @@ run arm after arm. A store written before it holds none, which reads as "no swee
 one judge to be on one criterion, which other campaigns' evidence tiers read. Regenerable, since it is recorded from
 the judge campaign's stored runs and results. A store written before it holds none, which reads as "no judge was
 profiled": every campaign's tiers are its own evidence alone, as they were.
+
+**Within v8, not a bump**: ``EvalSweep`` and ``EvalAnalysisAttempt`` joined the job lease as OPTIONAL fields
+(:mod:`~threetears.evals.schema.job_lease`): ``lease``, ``cancel_requested_at``, ``cancel_request_reason`` and
+``lost``. A record stored before them carries none of them: a sweep reading ``running`` then has no lease, and reads
+lost — which is what it was, its liveness having lived only in the process that ran it — and an attempt, which was
+written only as it ended, has ended and reads as it says. ``AttemptOutcome`` gained ``running``, the attempt a
+background generation now writes as it starts; no stored attempt carries it, so none reads differently.
 """
 
 #: The kept documents, by ``doc_type``. Embedded shapes (a result's rubric scores, usage rows and goal-state
@@ -266,7 +277,8 @@ _ADDRESSED_EVERYWHERE = frozenset({"id", "doc_type", "schema_version", "scope_id
 CORE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
     {
         "eval_test_case": _ADDRESSED_EVERYWHERE | {"template_id", "stratum"},
-        "eval_run": _ADDRESSED_EVERYWHERE | {"status", "archived", "created_at"},
+        "eval_run": _ADDRESSED_EVERYWHERE
+        | {"status", "archived", "created_at", "cancel_requested_at", "cancel_request_reason"},
         "eval_result": _ADDRESSED_EVERYWHERE | {"eval_run_id", "test_case_id", "model"},
         "eval_trace": _ADDRESSED_EVERYWHERE,
         "calibration_rating": _ADDRESSED_EVERYWHERE
@@ -310,6 +322,15 @@ CORE_UPGRADERS: tuple[CoreUpgrader, ...] = (
         reason=(
             "v9 adds the optional label key (output_fingerprint, criterion_fingerprint) to a judge score and a "
             "calibration rating; a v8 document has neither, which v9 reads as not stamped"
+        ),
+        upgrade=lambda document: document,
+    ),
+    CoreUpgrader(
+        from_version=9,
+        doc_types=frozenset({"eval_run"}),
+        reason=(
+            "v10 adds the optional job lease (lease, cancel_requested_at, cancel_request_reason, lost) to a run; a v9 "
+            "run has none, which v10 reads as a record no process holds"
         ),
         upgrade=lambda document: document,
     ),
