@@ -21,6 +21,12 @@ packages (bumped in lock-step).
   through, caught the `ValidationError` and left the record as stored, so it read as a job still running with nothing
   saying it could not be read. It now propagates, as every other read of that record raises it; a record another
   writer keeps moving is still left to its own next read.
+- **Font bytes that do not parse are refused by name, not read as declaring no family (breaking for a font
+  directory holding one).** `font_families` answered an empty set for bytes that are not a font, the answer for a font
+  naming no family, so `resolving_files` left a broken `.ttf` out as if it declared another face, and a truncated
+  copy of the measured face went unnoticed. `font_families` now raises `ValueError`; `resolving_files` raises
+  `TextMetricsError` naming every such file, which `check_font_files` (and so a renderer built over the directory)
+  and the measurer's `--font-dir` (as `FontMeasureError`) report.
 
 ### 3tears-evals: backlog while Discodon adopts .13
 
