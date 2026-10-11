@@ -689,13 +689,17 @@ def _build_actor_system_prompt(actor: ActorPolicy, variation: dict[str, Any]) ->
     The prompt frames the actor against a generic "candidate under
     evaluation", so a template of any domain works without rewording.
     """
-    var_block = _render_variation_block(variation)
+    return _actor_system_prompt(actor.policy, _render_variation_block(variation))
+
+
+def _actor_system_prompt(policy: str, variation_block: str) -> str:
+    """Lay out an actor's system prompt from its policy and its rendered variation — the one layout."""
     return (
         f"You are simulating a user interacting with a candidate under evaluation. "
         f"Speak ONLY as your assigned actor — do not narrate, do not address yourself "
         f"in third person.\n\n"
-        f"## Actor policy (your tone & manner)\n{actor.policy}\n\n"
-        f"## Scenario parameters\n{var_block}"
+        f"## Actor policy (your tone & manner)\n{policy}\n\n"
+        f"## Scenario parameters\n{variation_block}"
     )
 
 
@@ -707,14 +711,36 @@ def _build_actor_user_prompt(actor: ActorPolicy, transcript: list[tuple[str, str
     ``You (<id>)``; the candidate's turns are labeled ``Candidate``;
     other actors' turns are labeled ``Actor (<id>)``.
     """
-    rendered = _render_transcript(transcript, current_actor_id=actor.id)
+    return _actor_user_prompt(actor.intent, _render_transcript(transcript, current_actor_id=actor.id))
+
+
+def _actor_user_prompt(intent: str, rendered_transcript: str) -> str:
+    """Lay out an actor's user prompt from its intent and the rendered transcript — the one layout."""
     return (
-        f"Your intent in this conversation: {actor.intent}\n\n"
-        f"Transcript so far:\n{rendered}\n\n"
+        f"Your intent in this conversation: {intent}\n\n"
+        f"Transcript so far:\n{rendered_transcript}\n\n"
         f"Reply with your next utterance, in character, one short paragraph, as `utterance`. "
         f"Set `done` to true instead when you have nothing more to say in this conversation; "
         f"you then leave it, and `utterance` is not delivered."
     )
+
+
+def smallest_utterance_prompts(actor: ActorPolicy) -> tuple[str, str]:
+    """The smallest ``(system, user)`` pair one of ``actor``'s utterance calls could send, buildable before any run.
+
+    An utterance call (:meth:`TurnDriver.next_user_turn`) is the actor's policy and intent, which the template
+    fixes, around the case's variation and the transcript so far, which only the cell has. This is that call with
+    those two left empty and everything else as sent, so every real utterance call of the actor is it with text
+    inserted, never removed; it is sent with :data:`SIMULATED_USER_RESPONSE_FORMAT`. What a launch prices a
+    simulated user's floor by (:func:`~threetears.evals.run.price_subject_call_floor`).
+
+    Args:
+        actor: One of the conversation's actors.
+
+    Returns:
+        The system prompt and the user prompt.
+    """
+    return _actor_system_prompt(actor.policy, ""), _actor_user_prompt(actor.intent, "")
 
 
 def _render_transcript(transcript: list[tuple[str, str]], *, current_actor_id: str | None) -> str:
@@ -818,4 +844,5 @@ __all__ = [
     "SimulatorTurn",
     "TurnDriver",
     "next_speaker_response_format",
+    "smallest_utterance_prompts",
 ]

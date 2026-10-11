@@ -2359,7 +2359,7 @@
     },
     "threetears.evals.run.CallCeiling": {
       "kind": "dataclass",
-      "signature": "CallCeiling(usd: float, call: str, lowered_by: str)"
+      "signature": "CallCeiling(usd: float, call: str, lowered_by: str, lower_bound: bool = False)"
     },
     "threetears.evals.run.callers_missing_the_constructor": {
       "kind": "function",
@@ -2812,6 +2812,10 @@
     "threetears.evals.run.price_arms": {
       "kind": "async function",
       "signature": "price_arms(host: LaunchHost, launchable: LaunchableKind, requests: Sequence[LaunchRequest]) -> list[LaunchRequest]"
+    },
+    "threetears.evals.run.price_subject_call_floor": {
+      "kind": "async function",
+      "signature": "price_subject_call_floor(host: EvalHost, request: LaunchRequest, *, judged_artifact: JudgedArtifact) -> CallCeiling | None"
     },
     "threetears.evals.run.quote_launch": {
       "kind": "async function",
@@ -4879,7 +4883,7 @@
     },
     "threetears.evals.ops.ArmEstimate": {
       "kind": "model",
-      "signature": "ArmEstimate(described: str, candidate_model: str | None, case_count: int | None, case_source: Literal['stored', 'generated'], n_observations: int | None, predicted_usd: float | None, central_usd: float | None, low_usd: float | None, method_id: str | None, basis: str, outcome: ArmOutcome, refusal: str | None, remedy: str | None = None, call_ceiling_usd: float | None = None)"
+      "signature": "ArmEstimate(described: str, candidate_model: str | None, case_count: int | None, case_source: Literal['stored', 'generated'], n_observations: int | None, predicted_usd: float | None, central_usd: float | None, low_usd: float | None, method_id: str | None, basis: str, outcome: ArmOutcome, refusal: str | None, remedy: str | None = None, call_ceiling_usd: float | None = None, call_ceiling_lower_bound: bool = False)"
     },
     "threetears.evals.ops.await_job": {
       "kind": "async function",

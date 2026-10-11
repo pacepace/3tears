@@ -1033,6 +1033,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`precondition_failure_text(outcomes: Sequence[PreconditionOutcome]) -> str`
 - **`price_arms`** · async function · Plan and price every arm of one launch by the engine's one rule, refusing before any launcher runs.
   <br>`price_arms(host: LaunchHost, launchable: LaunchableKind, requests: Sequence[LaunchRequest]) -> list[LaunchRequest]`
+- **`price_subject_call_floor`** · async function · A floor under a subject arm's largest judge or simulator call, for its `LaunchableKind.price_largest_call`.
+  <br>`price_subject_call_floor(host: EvalHost, request: LaunchRequest, *, judged_artifact: JudgedArtifact) -> CallCeiling | None`
 - **`quote_launch`** · async function · What `start_run` with the same arguments would make of its arms' prices — read-only.
   <br>`quote_launch(host: LaunchHost, *, template_id: str, subject_id: str, models: list[str], k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, judge_model: str | None = None, judge_config_ids: dict[str, str] | None = None, simulator_model: str | None = None, cassette_mode: str | None = 'off', cassette_corpus_id: str | None = None, overlays: Mapping[str, Any] | None = None, apparatus_settings: Mapping[str, Any] | None = None, max_cost_usd: float | None = None, max_metered_calls: int | None = None, scope_id: str, case_count: int | None = None, cell_timeout_s: float | None = None, case_set: CaseSetRef | None = None) -> LaunchQuote`
 - **`rate_result`** · function · Record one rater's score for one judged dimension of one result — a person's, or an agent's.

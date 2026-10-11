@@ -47,7 +47,7 @@ call + parse + cost-log still flow through
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, NamedTuple, Self
 
@@ -533,47 +533,127 @@ class JudgeService:
 
     def transcript_request(self, context: JudgeContext) -> JudgeRequest:
         """The transcript axis's call as it is sent: its config, system prompt and user prompt."""
+        return self._transcript_call(
+            self._build_user_prompt(context, include_goal_outcomes=False),
+            label_key_of(context.judge_evidence, TRANSCRIPT_DIM_ID),
+        )
+
+    def outcome_request(self, context: JudgeContext) -> JudgeRequest:
+        """The outcome axis's call as it is sent: its config, system prompt and user prompt."""
+        return self._outcome_call(
+            self._build_user_prompt(context, include_goal_outcomes=True),
+            label_key_of(context.judge_evidence, OUTCOME_DIM_ID),
+        )
+
+    def dimension_request(self, dim: RubricDim, context: JudgeContext) -> JudgeRequest:
+        """One rubric dimension's call as it is sent: its config, system prompt and user prompt."""
+        return self._dimension_call(
+            dim,
+            self._build_user_prompt(context, include_goal_outcomes=True),
+            label_key_of(context.judge_evidence, dim),
+            document=context.judged_artifact is JudgedArtifact.DOCUMENT,
+        )
+
+    def floor_requests(
+        self, rubric: Sequence[RubricDim], *, intent: str, judged_artifact: JudgedArtifact
+    ) -> list[JudgeRequest]:
+        """Each call a result's judging consists of, at the smallest it could be sent — buildable before any run.
+
+        What a launch prices a subject arm's judge by before anything is spent
+        (:func:`~threetears.evals.run.price_subject_call_floor`): a result's judge calls carry the transcript, the
+        kind's rendered evidence, the case's variation and the goal-state outcomes, none of which exist before
+        the run, but every other part of each call is fixed by the template and its judge configs. Each request
+        here is the call :func:`~threetears.evals.run.runner.judge_requests` builds for the dim, with every part a
+        cell fills from its result left out — the variation, the goal outcomes, the subject, the case material
+        and the artifact — and everything else sent as sent: the system prompt (the config's instructions or the
+        default ones, with the reply contract), the template's intent, every heading, and the reply format.
+
+        So each real call for a dim is its floor request with text inserted, never removed: a client whose
+        ceiling does not fall as a prompt grows (one priced from a bound on the prompt's length, as
+        :meth:`~threetears.evals.schema.completion.PricedCompletion.price_ceiling` is) prices every real call at
+        least as high as its floor request.
+
+        Args:
+            rubric: The template's rubric, whose dims are the per-dim calls.
+            intent: The template's intent, which every call states.
+            judged_artifact: What the kind's judge reads, which picks the axes and the wording.
+
+        Returns:
+            One request per call, in :func:`~threetears.evals.run.runner.judge_requests`'s order, each carrying
+            no label key: it reads no output.
+
+        Raises:
+            ValueError: ``judged_artifact`` declares a kind no judge reads.
+        """
+        if judged_artifact is JudgedArtifact.UNJUDGED:
+            raise ValueError("an unjudged kind has no judge to price; its grade is the kind's own measures")
+        document = judged_artifact is JudgedArtifact.DOCUMENT
+
+        def floor(*, include_goal_outcomes: bool) -> str:
+            # A document's goal block is shown only when its kind's checks are non-empty, so the floor leaves it
+            # out; a conversation's is always shown, so its heading is kept and its body left empty.
+            goals = "" if include_goal_outcomes and not document else None
+            return _user_prompt(
+                intent=intent, variation="", subject=None, goals=goals, case_material="", artifact="", document=document
+            )
+
+        axes = (
+            []
+            if document
+            else [
+                self._transcript_call(floor(include_goal_outcomes=False), None),
+                self._outcome_call(floor(include_goal_outcomes=True), None),
+            ]
+        )
+        return [
+            *axes,
+            *[self._dimension_call(dim, floor(include_goal_outcomes=True), None, document=document) for dim in rubric],
+        ]
+
+    def _transcript_call(self, user_prompt: str, label_key: LabelKey | None) -> JudgeRequest:
+        """The transcript axis's call over ``user_prompt``."""
         config = self._configs.get(TRANSCRIPT_DIM_ID)
         return _request(
             dim_id=TRANSCRIPT_DIM_ID,
             config=config,
             instructions=config.prompt_template if config else _TRANSCRIPT_INSTRUCTIONS,
-            user_prompt=self._build_user_prompt(context, include_goal_outcomes=False),
+            user_prompt=user_prompt,
             label="EvalTranscript",
             scale="ordinal",
             include_goal_outcomes=False,
-            label_key=label_key_of(context.judge_evidence, TRANSCRIPT_DIM_ID),
+            label_key=label_key,
         )
 
-    def outcome_request(self, context: JudgeContext) -> JudgeRequest:
-        """The outcome axis's call as it is sent: its config, system prompt and user prompt."""
+    def _outcome_call(self, user_prompt: str, label_key: LabelKey | None) -> JudgeRequest:
+        """The outcome axis's call over ``user_prompt``."""
         config = self._configs.get(OUTCOME_DIM_ID)
         return _request(
             dim_id=OUTCOME_DIM_ID,
             config=config,
             instructions=config.prompt_template if config else _OUTCOME_INSTRUCTIONS,
-            user_prompt=self._build_user_prompt(context, include_goal_outcomes=True),
+            user_prompt=user_prompt,
             label="EvalOutcome",
             scale="ordinal",
             include_goal_outcomes=True,
-            label_key=label_key_of(context.judge_evidence, OUTCOME_DIM_ID),
+            label_key=label_key,
         )
 
-    def dimension_request(self, dim: RubricDim, context: JudgeContext) -> JudgeRequest:
-        """One rubric dimension's call as it is sent: its config, system prompt and user prompt."""
+    def _dimension_call(
+        self, dim: RubricDim, user_prompt: str, label_key: LabelKey | None, *, document: bool
+    ) -> JudgeRequest:
+        """One rubric dimension's call over ``user_prompt``."""
         config = self._configs.get(dim.name)
-        document = context.judged_artifact is JudgedArtifact.DOCUMENT
         return _request(
             dim_id=dim.name,
             config=config,
             instructions=config.prompt_template if config else _dimension_instructions(dim, document=document),
-            user_prompt=self._build_user_prompt(context, include_goal_outcomes=True),
+            user_prompt=user_prompt,
             label="EvalRubric",
             scale=dim.scale,
             include_goal_outcomes=True,
             document=document,
             axis=dim.axis,
-            label_key=label_key_of(context.judge_evidence, dim),
+            label_key=label_key,
         )
 
     # ------------------------------------------------------------------
@@ -689,40 +769,72 @@ class JudgeService:
         """
         evidence = context.judge_evidence
         document = context.judged_artifact is JudgedArtifact.DOCUMENT
-        sections = [
-            "# Scenario",
-            f"**Intent:** {context.intent}",
-            "",
-            "# Variation params",
-            _render_variation(context.variation),
-            "",
-        ]
-        if evidence.subject is not None:
-            sections += ["# Candidate under test", evidence.subject, ""]
+        goals: str | None = None
         if document:
             # A document's mechanical facts are the kind's own checks, shown only when it has any:
             # a document kind that grades nothing mechanically declares no goal-state checks to say
             # are missing.
             if include_goal_outcomes and context.goal_outcomes:
-                sections += [
-                    "# Objective checks (already scored — evidence only)",
-                    _render_goal_outcomes(context.goal_outcomes),
-                    "",
-                ]
+                goals = _render_goal_outcomes(context.goal_outcomes)
         elif include_goal_outcomes:
-            sections += [
-                "# Objective goal-state outcomes (already scored — evidence only)",
-                _render_goal_outcomes(context.goal_outcomes),
-                "",
-            ]
-        sections += [
-            "# Case material (the evidence the output must be judged against)",
-            evidence.case_material,
-            "",
-            "# Output under review" if document else "# Transcript",
-            evidence.artifact,
-        ]
-        return "\n".join(sections)
+            goals = _render_goal_outcomes(context.goal_outcomes)
+        return _user_prompt(
+            intent=context.intent,
+            variation=_render_variation(context.variation),
+            subject=evidence.subject,
+            goals=goals,
+            case_material=evidence.case_material,
+            artifact=evidence.artifact,
+            document=document,
+        )
+
+
+def _user_prompt(
+    *,
+    intent: str,
+    variation: str,
+    subject: str | None,
+    goals: str | None,
+    case_material: str,
+    artifact: str,
+    document: bool,
+) -> str:
+    """Lay out a judge call's user prompt from its parts, each already rendered.
+
+    The one layout a real call (:meth:`JudgeService._build_user_prompt`) and its floor
+    (:meth:`JudgeService.floor_requests`) share, so a floor is a real call with its result's parts left
+    empty — what makes it a lower bound — and cannot drift from it.
+
+    Args:
+        intent: The template's intent.
+        variation: The case's variation, rendered.
+        subject: The kind's rendering of the candidate, or ``None`` to leave its section out.
+        goals: The goal-state outcomes, rendered, or ``None`` to leave their section out.
+        case_material: What the output is judged against.
+        artifact: The output under review, or the transcript.
+        document: Whether the output is a document, which picks the headings.
+
+    Returns:
+        The user prompt.
+    """
+    sections = ["# Scenario", f"**Intent:** {intent}", "", "# Variation params", variation, ""]
+    if subject is not None:
+        sections += ["# Candidate under test", subject, ""]
+    if goals is not None:
+        heading = (
+            "# Objective checks (already scored — evidence only)"
+            if document
+            else "# Objective goal-state outcomes (already scored — evidence only)"
+        )
+        sections += [heading, goals, ""]
+    sections += [
+        "# Case material (the evidence the output must be judged against)",
+        case_material,
+        "",
+        "# Output under review" if document else "# Transcript",
+        artifact,
+    ]
+    return "\n".join(sections)
 
 
 # ---------------------------------------------------------------------------

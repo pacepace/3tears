@@ -29,6 +29,24 @@ packages (bumped in lock-step).
   and its too-few-cases disclosure whenever the cases declare strata, as every campaign report already did.
 - `examples/compare_two_prompts.py` names its tickets' `kind` as `stratum_key=` and prints each arm's accuracy per
   kind; the classifier guide's "`run_eval` cannot set a stratum yet" is replaced by how to set one.
+- **A subject arm's judge and simulator calls are floored before launch (follow-up to gaps 45 and 50).** A subject
+  kind's judge and simulator prompts carry a transcript that does not exist before its run, so its largest call
+  could not be priced and a call whose client's output cap and retries alone put it above the cap was refused only
+  when the run reached it, after the cases before it were paid for. A host now composes
+  `run.price_subject_call_floor(eval_host, request, *, judged_artifact)` into each subject kind's
+  `price_largest_call`. It prices every judge dim's call with every part the cell fills left empty (variation,
+  goal outcomes, subject, case material, transcript) and everything else as sent (instructions, reply contract,
+  intent, headings, reply format, every parse-retry attempt) on the run's judge clients, and keeps the largest,
+  since every judged case makes every dim's call. It also prices the smallest actor's simulated-user utterance the
+  same way on the `simulator`-role client, when the conversation is bound to make one. The estimate and the launch
+  refuse an arm whose cap cannot afford even that floor, before anything is spent. The bound is sound on any client
+  whose ceiling does not fall as a prompt grows.
+- **`CallCeiling.lower_bound` says a ceiling is a floor.** It defaults to `False`, the exact largest call the judge
+  kind and the reporter price. When it is set, the refusal says "even the smallest such call this arm could make"
+  is reserved above the cap, and the remedy names the floor as a cap to exceed rather than one that would be
+  enough. The estimate reports it as `ArmEstimate.call_ceiling_lower_bound`. `JudgeService.floor_requests` builds
+  the floor requests. A real call and its floor share one prompt layout, so they cannot drift apart.
+  `cost-and-budgets.md` and `adopting-a-host.md` show the wiring.
 
 ### 3tears-evals: what adopting .12 found (gaps 49–50)
 
