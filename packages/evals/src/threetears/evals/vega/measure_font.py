@@ -367,10 +367,11 @@ def main(argv: list[str] | None = None) -> int:
     written = write_font_metrics(**measured, font_files=files, path=args.out)
     digits = [measured["advances"][digit] for digit in "0123456789"]
     figures = "tabular" if max(digits) - min(digits) <= 0.001 else "PROPORTIONAL — numeric ticks will not align"
-    print(
+    # The command's product is this line, so it is a stream write rather than a log record.
+    sys.stdout.write(
         f"wrote {written}: {args.family!r}, weights {measured['weights']}, worst corpus ratio "
         f"{measured['worst_ratio']:.4f} on {measured['worst_label']!r}; figures {figures}; "
-        f"font files {sorted(files) or 'none (embedded face)'}"
+        f"font files {sorted(files) or 'none (embedded face)'}\n"
     )
     return 0
 
