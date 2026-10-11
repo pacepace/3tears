@@ -6,6 +6,30 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: what adopting .10 found (gaps 40–47)
+
+- **A host resolver's refusal enters the `around` hook (gap 40).** The caller is known, so the `ToolCall` exists: the
+  hook runs to its yield and is handed the refusal as its outcome, exactly as an action's, so a host's audit log
+  records "no host could serve this call" from the hook that writes every other call's line, not from `annotate`. A
+  caller resolver's refusal still enters no hook, since there is no `ToolCall` without a caller. A behaviour change
+  for a host's hook: see `MIGRATIONS.toml`.
+- **The host resolver hands per-call state to both hooks (gap 41).** A `host_resolver` may answer a
+  `HostResolution(host, context=...)` in place of the bare `OpsHost`, and its `context` reaches `around` and
+  `annotate` as `ToolCall.context`, beside the resolved host as `ToolCall.host`, so a host no longer passes per-call
+  state through context variables its resolver resets on every call. A resolver answering a bare `OpsHost` works as
+  before, with `context` `None`. The `ToolCall` is built once the host is known, and stays frozen; for a host
+  resolver's refusal both fields are `None`. `HostResolution` is exported from `threetears.evals.transports.fastmcp`.
+- **A timed-out call says to read before calling again (gap 46).** `CallTimedOut`'s message, and the error result
+  `CatalogueTool.run` answers it with, say the action may have completed, or begun a write, before it was stopped,
+  and to read before calling it again: `job_poll` for a job it may have started, or the list for what it was
+  writing. A `run_launch` stopped after its job record was written, retried blind, was a second paid launch. The
+  text is read by the refusal-remedy reach check, so every action it names is one the catalogue has.
+- **The `around` hook tells a timeout from a cancel (gap 47).** `ToolCall` carries `timeout_s`, the call timeout this
+  call read as it started. A call that outlives it has `CallTimedOut` thrown in at the hook's yield, where it was
+  closed with nothing thrown before; a call cancelled from outside (the client gave up, the process is stopping) is
+  still closed. The outcome and what propagates are unchanged: the call still raises `CallTimedOut`, whatever the hook
+  does. A behaviour change for a host's hook: see `MIGRATIONS.toml`.
+
 ### 3tears-evals: the judge temperature measurement and the prompt-comparison test set (#633)
 
 - **The first judge temperature measurement is void.** The 2026-10-10 run on `openai/gpt-6-luna` compared the

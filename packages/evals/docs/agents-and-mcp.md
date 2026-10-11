@@ -222,17 +222,37 @@ mount_fastmcp(
 - **`host_resolver`** answers which `OpsHost` this call works in, per call, from the same request context as
   the caller. It may be sync or async, and is asked after the caller. Pass `host` for a server with one host,
   or `host_resolver`: exactly one of the two, or the mount is refused before any tool is added.
+- **The host resolver can hand state to the hooks.** Answer a `HostResolution(host, context=...)` in place of the
+  bare `OpsHost`, and its `context` reaches both `around` and `annotate` as `call.context`, beside the resolved host
+  as `call.host`: the tenant you resolved, an audit record you started, for this call alone. No context variable to
+  set and reset. A resolver answering a bare `OpsHost` gives `call.context` `None`, as does a mount with `host=`.
+
+  ```python
+  from threetears.evals.transports.fastmcp import HostResolution
+
+  def host_resolver() -> HostResolution:
+      tenant = current_tenant()
+      return HostResolution(tenant_hosts[tenant], context=AuditRecord(tenant=tenant))
+
+  async def around(call: ToolCall) -> AsyncGenerator[None, ActionOutcome]:
+      outcome = yield
+      audit.write(call.context, call.action, outcome)  # call.context is None if the host resolver refused
+  ```
 - **A resolver that refuses answers the call as a refusal.** A caller or host resolver that raises an
   `EvalServiceError` (your own subclass among them, say a 503 for a host still booting, with a remedy telling the
   agent when to come back) is answered exactly as an action's refusal is: the `refused:` text with its `remedy:`
-  line, and `{"refusal": {"kind": ..., "status": ...}}` with the error flag. No action runs and the hook is not
-  entered.
+  line, and `{"refusal": {"kind": ..., "status": ...}}` with the error flag. No action runs. A host resolver's
+  refusal still enters the `around` hook, because the caller is known: the hook runs to its yield and is handed the
+  refusal as its outcome, so your audit log records "no host could serve this call" from the same hook as every
+  other call. Its `ToolCall` has `host` and `context` both `None`. A caller resolver's refusal enters no hook, since
+  there is no `ToolCall` without a caller.
 - **A resolver that raises anything else fails the call before anything runs.** No action runs and the hook is
   not entered. The client sees the transport's error result, not a refusal. A resolver that answers with
-  something other than a `Caller` or an `OpsHost` fails the same way, with a `TypeError` naming what it
+  something other than a `Caller`, or an `OpsHost` or a `HostResolution` holding one, fails the same way, with a `TypeError` naming what it
   answered.
 - **`around`** wraps every call to every tool, for tracing, metrics or an audit log. It is an async generator
-  function. It receives a `ToolCall` (the tool, the `action` argument as given, and the caller), yields once,
+  function. It receives a `ToolCall` (the tool, the `action` argument as given, the caller, the resolved host, the
+  timeout the call read and the host resolver's `context`), yields once,
   and receives the `ActionOutcome` at the yield. Anything it opens before the yield is current while the
   action runs, so a span it starts is the parent of the action's own; a `ContextVar` it sets, or a `with` it
   enters, before the yield is what the action sees, and its code after the yield undoes it in the call's own
@@ -247,8 +267,12 @@ mount_fastmcp(
   that raised or timed out. One that raises, answers something other than a string, or overruns
   `HOOK_TAIL_TIMEOUT_S` is logged, and the call returns as if there were no note.
 - **The one call timeout holds the whole call**, the caller and host resolvers and the hook with it. A call it
-  stops is closed in the hook at its yield, so the hook's `finally` runs, and the client gets the timeout's
-  error result, naming the timeout that call read. `call_timeout_s` takes a number, checked positive at mount,
+  stops has `CallTimedOut` thrown in at the hook's yield, so the hook's `except CallTimedOut` and `finally` run and
+  it can tell a timeout from a cancel: a call cancelled from outside (the client gave up, the process is stopping)
+  closes the hook with nothing thrown. `call.timeout_s` is the timeout this call read. The client gets the timeout's
+  error result, naming the timeout that call read and saying the action may have completed, or begun a
+  write, before it was stopped: read before calling again (`job_poll` for a job it may have started, or the list
+  for what it was writing), or a retried launch is paid for twice. `call_timeout_s` takes a number, checked positive at mount,
   or a function, read once as each call starts: one answering anything but a positive number fails that call
   with a `ValueError` naming the value, before anything runs.
 

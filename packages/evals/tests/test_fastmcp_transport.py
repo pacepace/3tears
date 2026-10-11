@@ -17,7 +17,7 @@ import pytest
 from fastmcp import Client, FastMCP
 
 from threetears.evals.actions import Caller, eval_catalogue, read_only_tools
-from threetears.evals.transports.fastmcp import mount_fastmcp
+from threetears.evals.transports.fastmcp import CallTimedOut, mount_fastmcp
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.ops_support import CALLER, RUN_MODELS, TOYHOST_SUBJECT, OpsFixture, ops_fixture
 
@@ -177,6 +177,15 @@ async def test_every_call_is_held_to_the_one_fixed_call_timeout() -> None:
         text, structured, is_error = await _text(client, "evals", {"action": "templates_list"})
     assert is_error and structured is None
     assert "outlived this server's 0.05s call timeout" in text and "No action's call waits on a model" in text
+    # A run_launch stopped after its job record was written, retried blind, is a second paid launch.
+    assert "may have completed, or begun a write, before it was stopped, so read before calling it again" in text
+    assert "job_poll for a job it may have started" in text and "runs_list" in text
+
+
+async def test_a_call_timed_out_says_to_read_before_calling_again() -> None:
+    stopped = CallTimedOut(0.5)
+    assert str(stopped).startswith("the call outlived its 0.5s call timeout and was stopped; the action may have")
+    assert "read before calling it again: job_poll" in str(stopped)
 
 
 async def test_a_timeout_the_call_raises_of_its_own_is_not_reported_as_the_call_timeout() -> None:
