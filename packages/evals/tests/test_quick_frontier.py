@@ -101,7 +101,13 @@ async def test_the_action_and_the_cli_return_the_python_call_s_frontier(capsys: 
         max_out_of_run_cost_usd=1.0,
     )
     ops_host = OpsHost(
-        launch=LaunchHost(eval_host=host, kinds={}, settings=lambda: settings, job_timeout_factory=default_job_timeout)
+        launch=LaunchHost(
+            eval_host=host,
+            kinds={},
+            settings=lambda: settings,
+            resolve_subject=lambda _subject, _scope: None,
+            job_timeout_factory=default_job_timeout,
+        )
     )
     called = await tool.call(
         {"action": "scope_frontier", "bar": 0.5}, host=ops_host, caller=Caller(scope_id="ranked", identity="t")

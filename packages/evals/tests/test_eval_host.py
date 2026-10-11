@@ -233,6 +233,7 @@ def test_a_launch_host_holds_its_eval_host_whole_and_builds_its_jobs_over_that_h
     eval_host = replace(toyhost_host(), clients=lambda role, model, *, temperature=None: None)  # type: ignore[arg-type,return-value]
     launch_host = LaunchHost(
         eval_host=eval_host,
+        resolve_subject=lambda _subject, _scope: None,
         kinds={},
         settings=lambda: TOYHOST_LAUNCH_SETTINGS,
         job_timeout_factory=default_job_timeout,
@@ -245,6 +246,7 @@ def test_a_launch_host_holds_its_eval_host_whole_and_builds_its_jobs_over_that_h
     with pytest.raises(TypeError, match="job_manager"):
         LaunchHost(  # type: ignore[call-arg]
             eval_host=eval_host,
+            resolve_subject=lambda _subject, _scope: None,
             kinds={},
             settings=lambda: TOYHOST_LAUNCH_SETTINGS,
             job_timeout_factory=default_job_timeout,

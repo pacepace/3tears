@@ -123,6 +123,7 @@ from threetears.evals.run import (
     LaunchGroup,
     LaunchSettings,
     RunJudge,
+    UnknownSubject,
     build_judge_service,
     default_job_timeout,
     get_result_trace,
@@ -1355,10 +1356,18 @@ def _launch_host(
         unhonoured.add("judge_model")
     if not calls_tools:
         unhonoured.add("cassette_mode")
+    def resolve_subject(subject_id: str, _scope_id: str) -> UnknownSubject | None:
+        # A one-call run's subjects are its arms' own, named by the caller as it launched them.
+        held = {arm.subject for arm in (*arms, *preparing)}
+        if subject_id in held:
+            return None
+        return UnknownSubject(remedy=f"this call's arms measure {', '.join(sorted(held))}")
+
     launch_host = LaunchHost(
         eval_host=host,
         kinds={kind_name: LaunchableKind(launch=launch, unhonoured_launch_arguments=frozenset(unhonoured))},
         settings=partial(_launch_settings, len(arms), max_cost_usd),
+        resolve_subject=resolve_subject,
         job_timeout_factory=default_job_timeout,
         world_placements=place if declared is not None else None,
     )

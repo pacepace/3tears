@@ -51,7 +51,6 @@ from threetears.evals.kernel import (
     CellSpanWindow,
     EvalCampaign,
     EvalStorage,
-    NotFoundError,
     ValidationFailedError,
     MetricDescriptor,
     WorldSession,
@@ -81,6 +80,7 @@ from threetears.evals.kernel.host import (
 )
 from threetears.evals.schema import IntervalScale, SubjectSnapshot, SweepableValue
 from threetears.evals.run import (
+    UnknownSubject,
     KindWiring,
     LaunchableKind,
     LaunchHost,
@@ -462,8 +462,6 @@ def courier_launch_host() -> LaunchHost:
     eval_host.storage.save_template(courier_template())
 
     async def launch(request: LaunchRequest) -> EvalRun:
-        if request.subject_id != COURIER_SUBJECT.subject_id:
-            raise NotFoundError("subject", request.subject_id, remedy="list them first")
         cases = courier_cases()
         for case in cases:
             eval_host.storage.save_test_case(case)
@@ -484,8 +482,14 @@ def courier_launch_host() -> LaunchHost:
             ),
         )
 
+    def resolve_subject(subject_id: str, _scope_id: str) -> UnknownSubject | None:
+        if subject_id == COURIER_SUBJECT.subject_id:
+            return None
+        return UnknownSubject(remedy=f"the courier host holds one subject, {COURIER_SUBJECT.subject_id}")
+
     launch_host = LaunchHost(
         eval_host=eval_host,
+        resolve_subject=resolve_subject,
         kinds={
             COURIER_KIND: LaunchableKind(
                 launch=launch,

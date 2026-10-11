@@ -90,7 +90,9 @@ pass it to every entrypoint. It holds:
 Nothing is ambient: there is no installed or default host, so two hosts in one process never meet.
 
 An app that starts runs builds a `LaunchHost` (in `threetears.evals.run`) around its `EvalHost`: the
-launch settings, a registry of the kinds it can launch, a job timeout, `world_placements` (required exactly
+launch settings, a registry of the kinds it can launch, a job timeout, `resolve_subject` (whether it holds the
+subject a launch names: `None`, or an `UnknownSubject` saying how a caller finds one it does — asked at admission,
+so `launch_estimate` and a launch refuse an unknown subject alike, before anything is priced), `world_placements` (required exactly
 when the profile declares a world: what each assembled run did with every dimension) and a `launch_pricer`
 (without one, an arm under an enforced cap is refused unless the launch names its own cap; see
 [Cost and budgets](cost-and-budgets.md#every-arm-is-priced-before-any-launcher-runs)); it builds its job manager over
@@ -372,7 +374,8 @@ report recognises, by its content hash, as a lever the arm did not run, and neve
 
 **A kind's launcher resolves only what is the kind's.** `start_run` refuses a launch argument the
 kind declares it cannot honour before the launcher runs, then hands the launcher a `LaunchRequest`.
-The launcher captures the subject the request names, freezes the cases, builds its judge
+The launcher captures the subject the request names (admission has already asked `resolve_subject` whether
+the host holds it, so a launcher never meets one it does not), freezes the cases, builds its judge
 (`build_judge_service`) if it has one, and returns `launch_run(host, request, KindWiring(...))`. The
 engine stamps everything the request and the template already say — scope, model, repeats, cassette
 mode, overlays, spec, world seed, tool bound, ceilings — and refuses a wiring that contradicts them.

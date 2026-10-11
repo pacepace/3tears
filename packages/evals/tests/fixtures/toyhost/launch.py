@@ -22,11 +22,12 @@ from collections.abc import Callable
 
 from threetears.evals.kernel import DEFAULT_JOB_LEASE_S
 from threetears.evals.schema import EvalRun, WorldSeed
-from threetears.evals.kernel import EvalStorage, NotFoundError
+from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.host import CompletionClients, HostProfile
 from threetears.evals.schema import TraceSink
 from threetears.evals.schema import WorldPlacement
 from threetears.evals.run import (
+    UnknownSubject,
     ArmPlan,
     CellExecutor,
     ArmPrice,
@@ -173,9 +174,8 @@ def toyhost_launch_host(
     async def launch(request: LaunchRequest) -> EvalRun:
         # The subject the launch names, as this host captures it — never a constant, or every launch
         # would measure one subject whatever it asked for.
-        subject = TOYHOST_SUBJECTS.get(request.subject_id)
-        if subject is None:
-            raise NotFoundError("subject", request.subject_id, remedy="list them first")
+        # Admission resolved it (`resolve_subject` below), so a launcher never meets a subject the host lacks.
+        subject = TOYHOST_SUBJECTS[request.subject_id]
         # The launch's case set when it names one, else every invoice. A set's cases are already stored.
         cases = request.cases_or(toyhost_test_cases(request.template))
         for case in cases:
@@ -219,8 +219,14 @@ def toyhost_launch_host(
             ),
         )
 
+    def resolve_subject(subject_id: str, _scope_id: str) -> UnknownSubject | None:
+        if subject_id in TOYHOST_SUBJECTS:
+            return None
+        return UnknownSubject(remedy=f"the toy host holds subjects {', '.join(sorted(TOYHOST_SUBJECTS))}")
+
     launch_host = LaunchHost(
         eval_host=eval_host,
+        resolve_subject=resolve_subject,
         # The extractor honours no simulated user, no judge and no cassette, so a launch naming one
         # is refused at the dispatch rather than handed to this launcher to ignore.
         kinds={

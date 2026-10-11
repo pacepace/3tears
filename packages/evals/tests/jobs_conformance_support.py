@@ -170,6 +170,7 @@ def conformance_host(
     )
     launching = LaunchHost(
         eval_host=eval_host,
+        resolve_subject=lambda _subject, _scope: None,
         kinds={
             JUDGED_CALLABLE_KIND: LaunchableKind(
                 launch=launch,

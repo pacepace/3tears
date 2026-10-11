@@ -227,6 +227,7 @@ def test_run_exits_one_when_a_run_does_not_complete(capsys: pytest.CaptureFixtur
 
     launch_host = LaunchHost(
         eval_host=eval_host,
+        resolve_subject=lambda _subject, _scope: None,
         kinds={COURIER_KIND: LaunchableKind(launch=launch)},
         settings=lambda: COURIER_LAUNCH_SETTINGS,
         job_timeout_factory=default_job_timeout,
@@ -310,6 +311,7 @@ def _launch_host_whose_launcher_raises() -> LaunchHost:
 
     return LaunchHost(
         eval_host=eval_host,
+        resolve_subject=lambda _subject, _scope: None,
         kinds={COURIER_KIND: LaunchableKind(launch=launch)},
         settings=lambda: COURIER_LAUNCH_SETTINGS,
         job_timeout_factory=default_job_timeout,
@@ -378,9 +380,21 @@ def test_run_refuses_a_host_that_cannot_launch(capsys: pytest.CaptureFixture[str
 
 
 def test_run_refuses_a_template_the_scope_does_not_hold(capsys: pytest.CaptureFixture[str]) -> None:
-    args = ["run", "--scope", COURIER_SCOPE, "--template", "nope", "--subject", "x", "--model", "planner-lite"]
+    args = [
+        "run",
+        *("--scope", COURIER_SCOPE, "--template", "nope", "--subject", COURIER_SUBJECT.subject_id),
+        *("--model", "planner-lite"),
+    ]
     assert run_cli(args, host_factory=courier_launch_host) == 2
     assert "nope" in capsys.readouterr().err
+
+
+def test_run_refuses_a_subject_the_host_does_not_hold_with_the_hosts_remedy(capsys: pytest.CaptureFixture[str]) -> None:
+    args = ["run", "--scope", COURIER_SCOPE, "--template", COURIER_TEMPLATE_ID, "--subject", "x", "--model", "planner-lite"]
+    assert run_cli(args, host_factory=courier_launch_host) == 2
+    assert f"subject 'x' not found; the courier host holds one subject, {COURIER_SUBJECT.subject_id}" in (
+        capsys.readouterr().err
+    )
 
 
 def test_run_relays_the_launchers_own_refusal(capsys: pytest.CaptureFixture[str]) -> None:
