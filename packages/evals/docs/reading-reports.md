@@ -567,19 +567,26 @@ colour alone to identify a category: it labels the marks or names the level in t
 `ChartPalette` is held to the contract's shape only.
 
 The packaged face is Liberation Sans (`Liberation Sans, Arial, sans-serif`), embedded by the rasteriser and
-metric-compatible with Arial, with digits of one width. To draw in your own face, measure it with the tool in a
-checkout of this repository (it needs the `[vega]` extra) and declare the result:
+metric-compatible with Arial, with digits of one width. To draw in your own face, measure it with the measurer
+the `[vega]` extra installs, from the directory holding the face's files, and declare the result:
 
 ```bash
-uv run python packages/evals/scripts/measure_font_metrics.py \
+python -m threetears.evals.vega.measure_font \
     --family "Inter, Arial, sans-serif" --font-dir /srv/fonts --out inter_metrics.json
 ```
 
 ```python
-from threetears.evals.vega import load_chart_font
+from threetears.evals.vega import VegaRenderer, load_chart_font
 
 style = StyleProfile(chart_font=load_chart_font(Path("inter_metrics.json")))
+renderer = VegaRenderer.for_style(style, font_dir=Path("/srv/fonts"))
 ```
+
+The table records the metrics format it was written in and the SHA-256 of each file in `--font-dir` that
+declares the measured family (other faces in the directory are not recorded, so adding or updating one leaves
+the table valid). `load_chart_font` refuses a table written in another metrics format, and a renderer given a
+font directory refuses a font whose recorded files there no longer hash as measured; both refusals name the
+command that re-measures the face.
 
 ## Bringing your own renderer
 

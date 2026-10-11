@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the font measurer ships, and a table that does not match its engine or its files is refused
+
+- **The measurer is part of the `[vega]` extra**: `python -m threetears.evals.vega.measure_font --family ...
+  --font-dir ... --out ...`, writing through the same `write_font_metrics` gate. `packages/evals/scripts/
+  measure_font_metrics.py` is gone.
+- **A table records its metrics format and its files.** `format` (now 2) and `font_files`: the SHA-256 of each
+  file under `--font-dir` whose name table declares the measured family, and only those, so another face in the
+  same directory can change without invalidating the table. `ChartFont` gains `font_files`.
+- **`load_chart_font` refuses a table of another format, and a renderer refuses changed files.** `VegaRenderer`
+  built with a `font_dir`, and `render_png`/`render_svg`, refuse a font whose recorded files are missing or
+  hash differently (`TextMetricsError`). Each refusal names the command that re-measures the face.
+- **Breaking:** every host table written before this release is format 1 and is refused on load; re-measure it.
+  `write_font_metrics` takes a required `font_files`. Measuring a face other than the embedded Liberation Sans
+  now needs `--font-dir`, and is refused when no file in the directory declares the family.
+
 ### 3tears-evals: the context bundle and the reporting projection are split by concern (#612)
 
 `analysis/bundle.py` (about 10,400 lines) and `analysis/reporting.py` (about 8,000) each held a dozen concerns

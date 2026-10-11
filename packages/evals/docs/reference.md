@@ -2081,7 +2081,7 @@ The Vega-Lite chart renderer — an optional adapter over eval's chart intent.
 - **`vega_config`** · function · Build the Vega-Lite config that themes a compiled spec in `palette`, set in `font`.
   <br>`vega_config(palette: ChartPalette, font: ChartFont | None = None) -> dict[str, Any]`
 - **`write_font_metrics`** · function · Commit a fresh measurement as a table `text_width` reads.
-  <br>`write_font_metrics(advances: dict[str, float], *, fallback_advance: float, worst_label: str, worst_ratio: float, font: str, measured_with: str, probe_size: int, weights: list[int], path: Path = Path('<package>/src/threetears/evals/vega/font_metrics.json')) -> Path`
+  <br>`write_font_metrics(advances: dict[str, float], *, fallback_advance: float, worst_label: str, worst_ratio: float, font: str, measured_with: str, probe_size: int, weights: list[int], font_files: Mapping[str, str], path: Path = Path('<package>/src/threetears/evals/vega/font_metrics.json')) -> Path`
 
 **Classes**
 
