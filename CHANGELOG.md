@@ -52,6 +52,10 @@ packages (bumped in lock-step).
   caught the chart's `PayloadError`/`IntentPolicyError` and printed nothing under its caption, so the judge read an
   undrawable chart as a drawn one while the report printed why it was not. The memo now prints the report's own line,
   "A <type> chart is stored for this finding and cannot be drawn: <reason>".
+- **A lost generation whose withdrawal fails says so.** When another process wrote a generation's attempt lost
+  after its analysis was stored, a withdrawal that failed part-way was logged and swallowed, and the fence that
+  stops the job then said the analysis "and its insights were withdrawn". The fence now says the withdrawal failed,
+  with the store's error, and names the analysis and the insights left to remove by hand.
 
 ### 3tears-evals: backlog while Discodon adopts .13
 
