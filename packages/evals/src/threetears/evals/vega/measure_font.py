@@ -64,8 +64,12 @@ from threetears.evals.kernel.host import CHART_FONT_CHARACTERS
 from threetears.evals.vega.palette import font_weights
 from threetears.evals.vega.render import register_fonts, vega_png, vega_svg
 from threetears.evals.vega.text_metrics import (
+    CORPUS,
     METRICS_PATH,
     PACKAGED_FAMILY,
+    PROBE_FRAME,
+    PROBE_SIZE,
+    RUN_LENGTH,
     font_file_digest,
     write_font_metrics,
 )
@@ -73,51 +77,12 @@ from threetears.evals.vega.text_metrics import (
 #: The face the rasteriser embeds, and so the one face measurable with no font directory.
 EMBEDDED_FACE = PACKAGED_FAMILY.split(",")[0].strip()
 
-#: The font size every probe is drawn at, in px. Vega reports the sized SVG in whole px, so a larger probe
-#: makes that rounding a smaller fraction of an advance: at 1000 px it is under 0.001 of the font size.
-PROBE_SIZE = 1000
-
-#: How many copies of a character the repeated context draws.
-RUN_LENGTH = 10
-
 #: The file suffixes the rasteriser's font database loads from a registered directory, lowercased.
 FONT_SUFFIXES = frozenset({".ttf", ".otf", ".ttc", ".otc"})
 
 #: The ``name`` table records that name a family: 1 is the family, 16 the typographic family a face that
 #: has more than four styles declares beside it. A face is matched against either.
 _FAMILY_NAME_IDS = frozenset({1, 16})
-
-#: Strings a chart lays out, drawn whole to check the per-character sum against Vega's own measurement.
-CORPUS = (
-    "anthropic/claude-opus-4-20250514",
-    "anthropic-0/claude-opus-4-20250514-extended-thinking-preview",
-    "openai/gpt-4o-2024-08-06",
-    "google/gemini-2.5-pro-preview-05-06",
-    "meta-llama/Llama-3.1-405B-Instruct-Turbo",
-    "mistralai/Mixtral-8x22B-Instruct-v0.1",
-    "accuracy",
-    "cost_usd",
-    "mean_composite",
-    "p95 latency (s)",
-    "share of stops",
-    "budget_exhausted",
-    "End-to-end",
-    "Subsystem",
-    "Unattributed",
-    "timeout=4s",
-    "0.1234",
-    "1,234,567",
-    "1.235e-05",
-    "+12.5%",
-    "-0.0081",
-    "11111111",
-    "AVAVAVAVAVAV",
-    "To Ty Te Yo LT LV",
-    "WWWWWWWWWWWWWWWWWWWW",
-    "/////",
-    "The batch never fills before the deadline at either setting.",
-)
-
 
 class FontMeasureError(SystemExit):
     """The face cannot be measured as asked: it does not draw, or cannot be tied to the files it draws from.
@@ -316,10 +281,11 @@ def measure(family: str) -> dict[str, Any]:
     weights = sorted({int(weight) for weight in font_weights().values()})
     advances: dict[str, float] = {}
     for weight in weights:
-        pair = _width("HH", face=face, weight=weight)
+        frame = PROBE_FRAME
+        pair = _width(frame * 2, face=face, weight=weight)
         for character in CHART_FONT_CHARACTERS:
-            isolated = _width(f"H{character}H", face=face, weight=weight) - pair
-            repeated = (_width(f"H{character * RUN_LENGTH}H", face=face, weight=weight) - pair) / RUN_LENGTH
+            isolated = _width(f"{frame}{character}{frame}", face=face, weight=weight) - pair
+            repeated = (_width(f"{frame}{character * RUN_LENGTH}{frame}", face=face, weight=weight) - pair) / RUN_LENGTH
             widest = max(isolated, repeated) / PROBE_SIZE
             advances[character] = round(max(advances.get(character, 0.0), widest), 5)
     worst_label, worst_ratio = "", 0.0

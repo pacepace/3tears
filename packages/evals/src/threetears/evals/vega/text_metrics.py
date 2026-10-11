@@ -68,7 +68,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from threetears.evals.kernel.host import ChartFont, StyleError
+from threetears.evals.kernel.host import CHART_FONT_CHARACTERS, ChartFont, StyleError
 
 #: The measured artifact, beside the module that reads it.
 #:
@@ -89,6 +89,71 @@ PACKAGED_FAMILY = "Liberation Sans, Arial, sans-serif"
 #: read under another: :func:`chart_font_from_artifact` refuses any other number, naming the command that
 #: re-measures the face. Format 2 added ``font_files``; a table with no ``format`` is format 1.
 METRICS_FORMAT = 2
+
+#: The font size every probe is drawn at, in px. Vega reports the sized SVG in whole px, so a larger probe
+#: makes that rounding a smaller fraction of an advance: at 1000 px it is under 0.001 of the font size.
+PROBE_SIZE = 1000
+
+#: How many copies of a character the repeated context draws.
+RUN_LENGTH = 10
+
+#: The glyph every character is framed between when it is probed: isolated as ``H<c>H``, repeated as
+#: ``H<c * RUN_LENGTH>H``, each less the width of ``HH``.
+PROBE_FRAME = "H"
+
+#: Strings a chart lays out, drawn whole to check the per-character sum against Vega's own measurement.
+CORPUS = (
+    "anthropic/claude-opus-4-20250514",
+    "anthropic-0/claude-opus-4-20250514-extended-thinking-preview",
+    "openai/gpt-4o-2024-08-06",
+    "google/gemini-2.5-pro-preview-05-06",
+    "meta-llama/Llama-3.1-405B-Instruct-Turbo",
+    "mistralai/Mixtral-8x22B-Instruct-v0.1",
+    "accuracy",
+    "cost_usd",
+    "mean_composite",
+    "p95 latency (s)",
+    "share of stops",
+    "budget_exhausted",
+    "End-to-end",
+    "Subsystem",
+    "Unattributed",
+    "timeout=4s",
+    "0.1234",
+    "1,234,567",
+    "1.235e-05",
+    "+12.5%",
+    "-0.0081",
+    "11111111",
+    "AVAVAVAVAVAV",
+    "To Ty Te Yo LT LV",
+    "WWWWWWWWWWWWWWWWWWWW",
+    "/////",
+    "The batch never fills before the deadline at either setting.",
+)
+
+
+
+def probe_digest() -> str:
+    """The SHA-256 of what the measurer probes: the characters, how each is framed and repeated, the size, the corpus.
+
+    Recorded in every table (``probe_digest``) and compared when one is read (:func:`chart_font_from_artifact`), so a
+    change to what is probed — a character added, a context changed, a corpus string replaced — that forgot to raise
+    :data:`METRICS_FORMAT` is caught as drift too: a table answers the probes it was measured with, and the
+    engine's own reading of it assumes today's. The weights are not in it; a table records them itself.
+
+    Returns:
+        The digest, lowercase hex.
+    """
+    probes = {
+        "characters": CHART_FONT_CHARACTERS,
+        "frame": PROBE_FRAME,
+        "run_length": RUN_LENGTH,
+        "probe_size": PROBE_SIZE,
+        "corpus": list(CORPUS),
+    }
+    return hashlib.sha256(json.dumps(probes, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
 
 #: The command that measures a face and writes its table — the one a refusal tells a reader to run.
 MEASURE_COMMAND = "python -m threetears.evals.vega.measure_font"
@@ -177,8 +242,9 @@ def write_font_metrics(
         path: Where to write it — the packaged table by default; a host measuring its own
             face writes it anywhere and reads it back with :func:`load_chart_font`.
 
-    The table is written in :data:`METRICS_FORMAT`, which the caller does not choose: the
-    format is this module's reading of the fields, not the measurement's.
+    The table is written in :data:`METRICS_FORMAT` and records :func:`probe_digest`, neither of which the caller
+    chooses: the format is this module's reading of the fields and the probes are this module's, not the
+    measurement's.
 
     Returns:
         The path written.
@@ -205,7 +271,9 @@ def write_font_metrics(
             "character drawn between two H glyphs and in a run of itself. Kerning is not included: the "
             "per-character sum is an estimate carrying SAFETY_MARGIN, and the generator refuses to write a table "
             "whose corpus underestimates past it. font_files are the files that provided the measured face, "
-            "relative to the directory measured from, by SHA-256; a renderer refuses the table once they differ."
+            "relative to the directory measured from, by SHA-256; a renderer refuses the table once they differ. "
+            "probe_digest is the SHA-256 of what was probed (characters, framing, size, corpus); a table probed "
+            "with anything else is refused."
         ),
         "format": METRICS_FORMAT,
         "font": font,
@@ -217,6 +285,7 @@ def write_font_metrics(
         "fallback_advance": fallback_advance,
         "advances": advances,
         "font_files": dict(sorted(font_files.items())),
+        "probe_digest": probe_digest(),
     }
     chart_font_from_artifact(artifact, where=str(path))
     path.write_text(json.dumps(artifact, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -238,8 +307,8 @@ def chart_font_from_artifact(artifact: dict[str, Any], *, where: str) -> ChartFo
 
     Raises:
         TextMetricsError: The artifact names no family, was written in a metrics format
-            other than :data:`METRICS_FORMAT`, or its table is not one a renderer can lay
-            out against (the contract's refusal, with its reason).
+            other than :data:`METRICS_FORMAT`, records a probe digest other than :func:`probe_digest` (or none),
+            or its table is not one a renderer can lay out against (the contract's refusal, with its reason).
     """
     family = artifact.get("font")
     if not isinstance(family, str):
@@ -252,7 +321,7 @@ def chart_font_from_artifact(artifact: dict[str, Any], *, where: str) -> ChartFo
             f"Re-measure the face: {measure_command(family, out=where)}"
         )
     try:
-        return ChartFont(
+        font = ChartFont(
             family=family,
             advances=dict(artifact.get("advances") or {}),
             fallback_advance=float(artifact.get("fallback_advance", 0.0)),
@@ -260,6 +329,15 @@ def chart_font_from_artifact(artifact: dict[str, Any], *, where: str) -> ChartFo
         )
     except StyleError as refused:
         raise TextMetricsError(f"chart font metrics at {where} are not usable: {refused}") from refused
+    # After the table's own shape: a table no renderer could lay out against says so first, whatever it was probed by.
+    if (probed := artifact.get("probe_digest")) != probe_digest():
+        recorded = "no probe digest" if probed is None else f"probe digest {str(probed)[:12]}…"
+        raise TextMetricsError(
+            f"chart font metrics at {where} record {recorded}, and this engine probes a face with "
+            f"{probe_digest()[:12]}… — the advances answer probes (characters, their framing, the corpus) this engine "
+            f"no longer makes, so a layout read from them is drift. Re-measure the face: {measure_command(family, out=where)}"
+        )
+    return font
 
 
 def measure_command(family: str, *, out: str, font_dir: str = "<the directory holding its font files>") -> str:
@@ -299,6 +377,11 @@ def font_file_digest(path: Path) -> str:
 
 def check_font_files(font: ChartFont, font_dirs: Sequence[Path]) -> None:
     """Refuse ``font`` when the files its table was measured from are not, byte for byte, in ``font_dirs``.
+
+    **A host's CI gate.** Exported from :mod:`threetears.evals.vega` and needing no rasteriser — it hashes files, and
+    imports and calls nothing of ``vl-convert`` — so a host's suite runs it, over the table it ships and the font
+    directory its image carries, wherever it builds: a face updated without a re-measure fails there, before any
+    renderer is built. ``load_chart_font`` holds the table to this engine's format and probes the same way.
 
     The advances describe the bytes that were measured, not the family name, so a face updated or
     replaced in place lays out against widths it no longer has. Each recorded file must be found under

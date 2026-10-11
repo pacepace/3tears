@@ -27,6 +27,7 @@ from threetears.evals.kernel.host import (
     StyleError,
     StyleProfile,
 )
+from threetears.evals import vega
 from threetears.evals.kernel.host.style import assert_no_style_text
 from threetears.evals.vega import (
     TextMetricsError,
@@ -53,6 +54,7 @@ from threetears.evals.vega.text_metrics import (
     check_font_files,
     font_file_digest,
     load_metrics,
+    probe_digest,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -347,3 +349,58 @@ def test_the_measurer_runs_as_a_module() -> None:
 
     assert proc.returncode == 0, proc.stderr
     assert "--font-dir" in proc.stdout
+
+
+# --- the probe corpus is recorded, and a change to it is drift --------------------------------------------
+
+
+def test_a_written_table_records_the_digest_of_the_corpus_it_was_probed_with(tmp_path: Path) -> None:
+    path = write_font_metrics(**_measured(), path=tmp_path / "host.json")
+    assert json.loads(path.read_text(encoding="utf-8"))["probe_digest"] == probe_digest()
+    assert load_metrics()["probe_digest"] == probe_digest(), "the packaged table was probed with today's corpus"
+
+
+@pytest.mark.parametrize("recorded", [None, "0" * 64])
+def test_a_table_probed_with_another_corpus_is_refused_as_drift(tmp_path: Path, recorded: str | None) -> None:
+    """A corpus change that forgot a format bump: the advances answer probes this engine no longer makes."""
+    path = write_font_metrics(**_measured(), path=tmp_path / "host.json")
+    artifact = json.loads(path.read_text(encoding="utf-8"))
+    if recorded is None:
+        del artifact["probe_digest"]
+    else:
+        artifact["probe_digest"] = recorded
+    path.write_text(json.dumps(artifact), encoding="utf-8")
+
+    with pytest.raises(TextMetricsError, match="probe") as refused:
+        load_chart_font(path)
+    assert f"{MEASURE_COMMAND} --family 'Host Face, sans-serif'" in str(refused.value)
+
+
+# --- the cheap check is the vega root's, and needs no rasteriser ------------------------------------------
+
+
+def test_the_font_file_check_is_exported_from_the_vega_root() -> None:
+    from threetears import evals
+
+    assert vega.check_font_files is check_font_files
+    assert "check_font_files" in vega.__all__ and "threetears.evals.vega" in evals.PUBLIC_ROOTS
+
+
+def test_the_font_file_check_runs_without_the_rasteriser(tmp_path: Path) -> None:
+    """A host's CI gate: imported and run where vl-convert cannot be imported at all."""
+    font_dir = tmp_path / "fonts"
+    font = _host_font(font_dir)
+    table = tmp_path / "host.json"
+    write_font_metrics(**_measured(font_files=dict(font.font_files)), path=table)
+    script = (
+        "import sys; sys.modules['vl_convert'] = None\n"
+        "from pathlib import Path\n"
+        "from threetears.evals.vega import check_font_files, load_chart_font\n"
+        f"check_font_files(load_chart_font(Path({str(table)!r})), [Path({str(font_dir)!r})])\n"
+        "assert sys.modules['vl_convert'] is None\n"
+        "print('checked')\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=60, cwd=_REPO_ROOT, check=False
+    )
+    assert proc.returncode == 0 and proc.stdout.strip() == "checked", proc.stderr
