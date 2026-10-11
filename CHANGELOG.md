@@ -6,6 +6,56 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: what adopting .10 found (gaps 40–47)
+
+- **A host resolver's refusal enters the `around` hook (gap 40).** The caller is known, so the `ToolCall` exists: the
+  hook runs to its yield and is handed the refusal as its outcome, exactly as an action's, so a host's audit log
+  records "no host could serve this call" from the hook that writes every other call's line, not from `annotate`. A
+  caller resolver's refusal still enters no hook, since there is no `ToolCall` without a caller. A behaviour change
+  for a host's hook: see `MIGRATIONS.toml`.
+- **The host resolver hands per-call state to both hooks (gap 41).** A `host_resolver` may answer a
+  `HostResolution(host, context=...)` in place of the bare `OpsHost`, and its `context` reaches `around` and
+  `annotate` as `ToolCall.context`, beside the resolved host as `ToolCall.host`, so a host no longer passes per-call
+  state through context variables its resolver resets on every call. A resolver answering a bare `OpsHost` works as
+  before, with `context` `None`. The `ToolCall` is built once the host is known, and stays frozen; for a host
+  resolver's refusal both fields are `None`. `HostResolution` is exported from `threetears.evals.transports.fastmcp`.
+- **A timed-out call says to read before calling again (gap 46).** `CallTimedOut`'s message, and the error result
+  `CatalogueTool.run` answers it with, say the action may have completed, or begun a write, before it was stopped,
+  and to read before calling it again: `job_poll` for a job it may have started, or the list for what it was
+  writing. A `run_launch` stopped after its job record was written, retried blind, was a second paid launch. The
+  text is read by the refusal-remedy reach check, so every action it names is one the catalogue has.
+- **The `around` hook tells a timeout from a cancel (gap 47).** `ToolCall` carries `timeout_s`, the call timeout this
+  call read as it started. A call that outlives it has `CallTimedOut` thrown in at the hook's yield, where it was
+  closed with nothing thrown before; a call cancelled from outside (the client gave up, the process is stopping) is
+  still closed. The outcome and what propagates are unchanged: the call still raises `CallTimedOut`, whatever the hook
+  does. A behaviour change for a host's hook: see `MIGRATIONS.toml`.
+- **An arm whose largest call is reserved above its cap is refused before anything is spent.** A judge campaign on
+  a flash model was estimated at $0.023 and admitted under a $0.50 cap, then stopped `budget_stopped` after one
+  result: one case's call was reserved at $0.58, and a run refuses every call whose reservation would pass its cap,
+  so that call could never be made. The judge kind now prices every case's call before launch, as its cell
+  reserves it (`LaunchableKind.price_largest_call`, carried as `ArmPlan.call_ceiling`), and the estimate and the
+  launch refuse such an arm with one `ValidationFailedError`, naming the call, the cap one call needs and what
+  lowers the ceiling. The estimate reports the figure as `ArmEstimate.call_ceiling_usd`. Kinds that do not price
+  their calls before launch are not checked (`cost-and-budgets.md`).
+- **Gap 42: `format_number` takes a `prefix`, and a currency symbol goes on the number.** `format_number(value,
+  prefix="$")` writes `$1.23`, `-$1.23`, `$1234568`, `< $0.000001` and `> -$0.000001`: after the sign and inside a
+  bound, so a host's money formatter no longer takes the returned text apart to move the symbol. An absent value is
+  still `—`, without the prefix. The engine's own `$`-joined spellings (the cost lens, the paid-analysis notices,
+  the cost estimate) use it, so they no longer write `$< 0.000001` or `$-1.23`. The default is unchanged.
+  `tests/fixtures/number-format-cases.json` carries the prefixed cases under a `prefixed` key, apart from `cases`,
+  so a renderer that ignores the prefix keeps passing.
+- **Gap 43: `RoutedDocumentStore.holds_documents` says whether stores about to be adopted hold anything.**
+  `holds_documents(children, scope_ids, *, host_doc_types=())` asks every registered type and the host's own, in
+  every store and named scope, as `relocate` would move them, and stops at the first document. A host's start no
+  longer loops over `DOC_TYPE_FACTS`, the stores and `iter_by_doc_type` itself. The router's placement record is
+  not a document and is not counted. `adopting-a-host.md` shows it beside `relocate`.
+- **Gap 44: every report block serves `rests_on_numbers`; the report is version 8.** Beside `rests_on`, which
+  still counts findings from 0, each block carries the same findings counted from 1, as `finding_number` counts
+  them, so a page prints them rather than adding 1 itself. Re-derived on read like the other served words, and
+  required by the schema. The Markdown and HTML serializers print it. `REPORT_VERSION` moves to 8, since its rule
+  is that an added field moves it, and the schema (whose `$id` is now `urn:threetears-evals:report:v8`) refuses a
+  key it does not name: a client holding the version 7 schema would refuse a version 8 report.
+
 ### 3tears-evals: the judge temperature measurement and the prompt-comparison test set (#633)
 
 - **The first judge temperature measurement is void.** The 2026-10-10 run on `openai/gpt-6-luna` compared the

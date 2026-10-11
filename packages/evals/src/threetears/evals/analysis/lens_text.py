@@ -60,7 +60,7 @@ def frontier_text(result: FrontierResult) -> str:
             )
             cleared = f", bar {point.bar_decision}" if point.bar_decision is not None else ""
             cost = (
-                f"${format_number(point.production_replicating_cost)} per result (n={point.n_cost}"
+                f"{format_number(point.production_replicating_cost, prefix='$')} per result (n={point.n_cost}"
                 + (", partial" if point.cost_is_partial else "")
                 + ")"
                 if point.production_replicating_cost is not None

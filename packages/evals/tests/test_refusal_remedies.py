@@ -345,6 +345,9 @@ class TestEveryRemedyIsReachable:
         assert any(where.endswith("axis_remedy()") and text for where, text in written.items()), (
             "a function building a remedy is read at its definition"
         )
+        assert any(where.startswith("transports/fastmcp/") and "job_poll" in text for where, text in written.items()), (
+            "the transport's advice on a timed-out call is read as a remedy, so the actions it names are checked"
+        )
 
 
 class TestARefusedCallStatesItsRemedy:

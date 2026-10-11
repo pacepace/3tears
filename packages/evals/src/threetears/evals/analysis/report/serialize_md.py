@@ -25,7 +25,6 @@ from threetears.evals.analysis.report.model import (
     TableColumn,
     TextBlock,
 )
-from threetears.evals.analysis.report.words import positions
 
 
 def report_markdown(report: Report) -> str:
@@ -62,7 +61,7 @@ def _block(block: ReportBlock) -> list[str]:
 def _text(block: TextBlock) -> list[str]:
     """An author's words, laid out by what they were written as."""
     body = block.body.strip()
-    rests = f" Rests on finding {positions(block.rests_on)}." if block.rests_on else ""
+    rests = f" Rests on finding {', '.join(map(str, block.rests_on_numbers))}." if block.rests_on else ""
     facts = _facts(block.facts)
     if block.role == "finding_title":
         heading = f"### {block.finding_number}. {_one_line(body)}"

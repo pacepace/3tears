@@ -139,6 +139,39 @@ class TestTheSignedFormWithAUnit:
                 assert not any(re.search(r"[+-][<>]", text) for text in spellings), spellings
 
 
+class TestThePrefixedForm:
+    """A prefix — a currency symbol — goes on the number: after its sign, inside a bound."""
+
+    @pytest.mark.parametrize(
+        ("value", "text"),
+        [
+            (1.23, "$1.23"),
+            (-1.23, "-$1.23"),
+            (0.0, "$0"),
+            (-0.0, "$0"),
+            (12345.6, "$12346"),
+            (-12345.6, "-$12346"),
+            (3.6e-169, "< $0.000001"),
+            (-3.3e-7, "> -$0.000001"),
+            (1e-6, "$0.000001"),
+            (None, ABSENT),
+            (math.inf, ABSENT),
+        ],
+    )
+    def test_the_prefix_is_on_the_number(self, value, text):
+        assert format_number(value, prefix="$") == text
+
+    @pytest.mark.parametrize(
+        "value", [1.23, -1.23, 0.0, 42.0, -42.0, 12345.6, -12345.6, 3.6e-169, -3.3e-7, 5.165e-5, None, math.nan]
+    )
+    def test_an_empty_prefix_is_the_text_without_one(self, value):
+        assert format_number(value, prefix="") == format_number(value)
+
+    @pytest.mark.parametrize("value", [1.23, -1.23, 3.6e-169, -3.3e-7, 12345.6])
+    def test_a_prefix_never_lands_on_a_sign_or_a_comparison(self, value):
+        assert not re.search(r"\$[-<>]", format_number(value, prefix="$"))
+
+
 class TestThereIsOneImplementation:
     def test_every_surface_that_spells_numbers_holds_the_same_function(self):
         """The chart quantities spell their values with it, as every chart arm does; nothing holds a copy.

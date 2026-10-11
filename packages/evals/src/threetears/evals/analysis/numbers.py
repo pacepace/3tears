@@ -55,23 +55,39 @@ WHOLE_FROM = 1000.0
 WRITTEN_FROM = 1e-6
 
 
-def format_number(value: float | None) -> str:
+def format_number(value: float | None, *, prefix: str = "") -> str:
     """Spell a number for a reader, the same way on every analysis surface.
+
+    A ``prefix`` — a currency symbol — goes on the number itself, after its sign and inside a bound:
+    ``$1.23``, ``-$1.23``, ``$1234568``, ``< $0.000001``, ``> -$0.000001``. A caller that joined the
+    symbol to the returned text would write ``$< 0.000001``, a symbol on a comparison, and ``$-1.23``;
+    one that took the text apart to put it right would be restating the rule from the outside. An
+    absent value stays :data:`ABSENT` with no prefix: there is no amount to carry it.
 
     Args:
         value: The number, or ``None`` when there is none.
+        prefix: Text written on the number itself, after any sign and inside a bound. Empty by default,
+            which leaves the text exactly as it is without one.
 
     Returns:
         Its text under the module's rule; :data:`ABSENT` for ``None``, NaN or an infinity.
     """
     if value is None or not math.isfinite(value):
         return ABSENT
+    if abs(value) < WRITTEN_FROM and value != 0:
+        return f"> -{prefix}{_WRITTEN_FROM_TEXT}" if value < 0 else f"< {prefix}{_WRITTEN_FROM_TEXT}"
+    text = _digits(value)
+    if text.startswith("-"):
+        return f"-{prefix}{text[1:]}"
+    return f"{prefix}{text}"
+
+
+def _digits(value: float) -> str:
+    """A finite value at or above :data:`WRITTEN_FROM` in magnitude (or zero) as its digits, sign included."""
     if value == int(value):
         return str(int(value))
     if abs(value) >= WHOLE_FROM:
         return f"{value:.0f}"
-    if abs(value) < WRITTEN_FROM:
-        return f"> -{_WRITTEN_FROM_TEXT}" if value < 0 else f"< {_WRITTEN_FROM_TEXT}"
     # Where the fourth significant figure falls, read off the value as ROUNDED to four figures, so a value that
     # rounds across a power of ten (9.99996e-5 to 0.0001) is placed by what it became, as `%g` places it.
     exponent = int(f"{value:.3e}".split("e")[1])

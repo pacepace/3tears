@@ -377,6 +377,15 @@
           "title": "Rests On",
           "type": "array"
         },
+        "rests_on_numbers": {
+          "description": "The findings this block rests on as a reader counts findings \u2014 from 1, as `finding_number` counts, where `rests_on` counts from 0; in `rests_on`'s order.",
+          "items": {
+            "type": "integer"
+          },
+          "readOnly": true,
+          "title": "Rests On Numbers",
+          "type": "array"
+        },
         "rows": {
           "description": "The values-as-drawn rows, in drawn order, keyed by `columns`: each cell its value (in the drawn unit) and its text. Empty when the chart cannot be drawn.",
           "items": {
@@ -437,6 +446,7 @@
         "error",
         "section_title",
         "finding_number",
+        "rests_on_numbers",
         "columns",
         "rows"
       ],
@@ -892,6 +902,15 @@
           "title": "Rests On",
           "type": "array"
         },
+        "rests_on_numbers": {
+          "description": "The findings this block rests on as a reader counts findings \u2014 from 1, as `finding_number` counts, where `rests_on` counts from 0; in `rests_on`'s order.",
+          "items": {
+            "type": "integer"
+          },
+          "readOnly": true,
+          "title": "Rests On Numbers",
+          "type": "array"
+        },
         "section": {
           "description": "The section the block sits in.",
           "enum": [
@@ -948,7 +967,8 @@
         "source",
         "text",
         "section_title",
-        "finding_number"
+        "finding_number",
+        "rests_on_numbers"
       ],
       "title": "DisclosureBlock",
       "type": "object"
@@ -1147,6 +1167,15 @@
           "title": "Rests On",
           "type": "array"
         },
+        "rests_on_numbers": {
+          "description": "The findings this block rests on as a reader counts findings \u2014 from 1, as `finding_number` counts, where `rests_on` counts from 0; in `rests_on`'s order.",
+          "items": {
+            "type": "integer"
+          },
+          "readOnly": true,
+          "title": "Rests On Numbers",
+          "type": "array"
+        },
         "rows": {
           "description": "The rows shown, in the stated order, each keyed by every column's key: each cell its value and its text, an absent value a cell whose value is null.",
           "items": {
@@ -1205,7 +1234,8 @@
         "order",
         "total_rows",
         "section_title",
-        "finding_number"
+        "finding_number",
+        "rests_on_numbers"
       ],
       "title": "TableBlock",
       "type": "object"
@@ -1371,6 +1401,15 @@
           "title": "Rests On",
           "type": "array"
         },
+        "rests_on_numbers": {
+          "description": "The findings this block rests on as a reader counts findings \u2014 from 1, as `finding_number` counts, where `rests_on` counts from 0; in `rests_on`'s order.",
+          "items": {
+            "type": "integer"
+          },
+          "readOnly": true,
+          "title": "Rests On Numbers",
+          "type": "array"
+        },
         "role": {
           "description": "What the author wrote it as.",
           "enum": [
@@ -1420,7 +1459,8 @@
         "body",
         "facts",
         "section_title",
-        "finding_number"
+        "finding_number",
+        "rests_on_numbers"
       ],
       "then": {
         "properties": {
@@ -1760,7 +1800,7 @@
       "type": "object"
     }
   },
-  "$id": "urn:threetears-evals:report:v7",
+  "$id": "urn:threetears-evals:report:v8",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "allOf": [
@@ -1917,8 +1957,8 @@
       "type": "string"
     },
     "report_version": {
-      "const": 7,
-      "default": 7,
+      "const": 8,
+      "default": 8,
       "description": "This shape's version.",
       "title": "Report Version",
       "type": "integer"

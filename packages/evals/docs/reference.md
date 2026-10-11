@@ -1117,6 +1117,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`ArmQuote`** · dataclass · One arm of a launch, as the engine asks the host's pricer to price it — stored-case arms and generating ones alike.
 - **`ArmVerdict`** · dataclass · One arm of a launch as the engine's one pricing rule judged it: its plan, its price, its cap and the outcome.
 - **`BudgetStoppedError`** · exception · Raised by `execute_run` when the cap trips mid-run.
+- **`CallCeiling`** · dataclass · The largest reservation one call of an arm's cells will hold against its run's cap, priced before launch.
 - **`CandidateTurn`** · dataclass · One candidate-side response captured by the kind and fed back into the simulator.
 - **`CapBreach`** · dataclass · The numbers that justify a graceful budget stop.
 - **`CeilingRaisedError`** · exception · A launch named a per-run ceiling ABOVE the host's configured one.
@@ -1306,7 +1307,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`first_request`** · function · The exact first request a generation sends: system prompt, user message and the contract.
   <br>`first_request(bundle: AnalysisContextBundle, prompt: str, profile: HostProfile) -> tuple[str, str, dict[str, Any]]`
 - **`format_number`** · function · Spell a number for a reader, the same way on every analysis surface.
-  <br>`format_number(value: float | None) -> str`
+  <br>`format_number(value: float | None, *, prefix: str = '') -> str`
 - **`format_signed`** · function · Spell a change, carrying its sign — the direction is half of what a delta says.
   <br>`format_signed(value: float | None) -> str`
 - **`format_significance`** · function · The read plus the statistics behind it, as one cell a surface prints verbatim.
@@ -1721,7 +1722,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`READ_TIER_ROW_BUDGET`** · constant (int) · How many projected score records one read-tier call may carry before its observer line is logged at WARNING instead of INFO (#652).
   <br>`= 50000`
 - **`REPORT_VERSION`** · constant (int) · The report shape's version.
-  <br>`= 7`
+  <br>`= 8`
 - **`REPORTER_KIND`** · constant (str) · The `candidate_kind` a reporter template declares.
   <br>`= 'analysis_reporter'`
 - **`REPORTER_KIND_CONTRACT`** · constant (KindContract) · The reporter kind's contract, for a profile's `kinds`: its overlay is the prompt preset, and it seats the judge and the spend ceiling. `reporter_kind_contract` builds it with a host's own seats added.
@@ -2306,8 +2307,9 @@ The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
 
 - **`CallTimedOut`** · exception · A call outlived the call timeout and was stopped before its action finished.
 - **`CatalogueTool`** · model · One mounted tool, as FastMCP serves it: every call handed to the catalogue.
+- **`HostResolution`** · dataclass · What a host resolver may answer in place of the bare host: the host, and state of the host's own for the hooks.
 - **`ToolBinding`** · class · What a `CatalogueTool` hands each call to: the mounted tool, the host, the caller resolver and the hooks.
-- **`ToolCall`** · dataclass · One call, as an `around` hook sees it before the catalogue carries it out.
+- **`ToolCall`** · dataclass · One call, as the `around` and `annotate` hooks see it once its caller and host are known.
 
 **Types**
 
@@ -2320,7 +2322,7 @@ The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
 - **`CallTimeout`** · type alias · The timeout every call is held to, in seconds: a fixed number, or a function the binding reads once as each call starts — a host reading it from live configuration, so an operator retunes it without remounting.
   <br>`float | Callable[[], float]`
 - **`HostResolver`** · type alias · Resolves the host one call works in — sync or async — for a server that serves more than one: a tenant's storage, job manager and settings, read from the same request context as the caller.
-  <br>`Callable[[], OpsHost | Awaitable[OpsHost]]`
+  <br>`Callable[[], OpsHost | HostResolution | Awaitable[OpsHost | HostResolution]]`
 
 **Constants**
 
@@ -2434,7 +2436,7 @@ One analysis, as a document every surface renders. See the module docstring for 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `report_version` | `Literal[7]` | `7` | This shape's version. |
+| `report_version` | `Literal[8]` | `8` | This shape's version. |
 | `basis` | `ReportBasis` | required | `analysis` when the report renders a generated analysis; `code_only` when no analysis exists and the report is the campaign's evidence as code computed it — no headline, no findings, no author's words. |
 | `headline` | `ModelProse` | required | The author's headline, as written; empty when the author wrote none, and on a code-only report. |
 | `finding_count` | `int` | required | How many findings the document holds — the range every position is in. |

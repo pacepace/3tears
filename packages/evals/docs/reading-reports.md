@@ -36,6 +36,7 @@ number or keeps its own copy of a heading. The JSON carries:
 | The report | `title`, `byline` | The line every serializer heads the report with, and the one under it. An analysis report's title is its headline, led by the campaign's name when the report carries it (`source.campaign_name`, which `analysis_report` and `campaign_report` set); a code-only report's names the campaign by its name, or else its id. |
 | Every block | `section_title` | The heading of its section (`SECTION_TITLES`), so a client groups blocks under the same words. |
 | Every block | `finding_number` | The finding it belongs to, counted from 1 as a reader counts (`finding` counts from 0); null when it belongs to none. |
+| Every block | `rests_on_numbers` | The findings it rests on, counted from 1 as `finding_number` counts (`rests_on` holds the same findings counted from 0), in `rests_on`'s order. |
 | A table block | `rows` | Each row keys every column, and each cell is `{"value": ..., "text": ...}`: the value to sort and draw by, the text to print — the number rule's spelling (`format_number`), a dash for an absent value, `yes`/`no` for a boolean. `TableBlock.values()` reads the rows as values alone. |
 | A chart block | `columns`, `rows` | Its values-as-drawn table, cells as above, its columns already chosen for printing (a distribution's `Shape` column is left out when no row knows a shape; the intent keeps it). The `intent` beside them is what a renderer draws from. |
 
@@ -80,7 +81,7 @@ names it. A `thin` or `unswept` lever no step names reads "no next step names it
 no coverage row is a proposal, not a gap, and says so beside it. The methods count the levers no finding names;
 a measured lever with no finding may simply have had nothing to say, so nothing acts on the count.
 
-`Report.basis` says which a report is; `REPORT_VERSION` is 7.
+`Report.basis` says which a report is; `REPORT_VERSION` is 8.
 
 ## Reading the arm table
 
@@ -350,7 +351,7 @@ prompt lever alone (`ticket_router.prompt_version=v1` and `ticket_router.prompt_
 
 `schema.json` ships in the package beside the model (`SCHEMA_PATH`; `published_report_schema()` reads it). It is
 generated from the model, a test holds it equal to the model's, and its `$id` names the report version it validates
-(`urn:threetears-evals:report:v7`), as its `report_version` const does. It holds the report's shape, every served
+(`urn:threetears-evals:report:v8`), as its `report_version` const does. It holds the report's shape, every served
 word as required, and every cross-field rule JSON Schema can state:
 
 - a code-only report names no analysis or model and holds no headline, finding or text block;

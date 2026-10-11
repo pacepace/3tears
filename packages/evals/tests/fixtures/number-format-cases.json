@@ -171,5 +171,70 @@
   "unrepresentable_in_json": {
     "$comment": "NaN and +/-Infinity render as an em dash on BOTH surfaces. JSON cannot carry them, so they are named here and asserted directly in each reader rather than being silently untested. `null` is NOT in this set \u2014 it is the absent case, which the two surfaces word differently on purpose; see `rule`.",
     "expected": "\u2014"
+  },
+  "prefixed": {
+    "$comment": "The same rule with a prefix \u2014 a currency symbol \u2014 passed as `format_number(value, prefix=...)`. Kept OUT of `cases` on purpose: a reader that iterates `cases` calling the formatter with a value alone keeps passing, and one that implements the prefix reads these too. The prefix goes on the number itself: after its sign ('-$1.23', never '$-1.23') and inside a bound ('< $0.000001', never '$< 0.000001'). An absent value takes no prefix, since there is no amount to carry it; that is why no absent case appears here.",
+    "cases": [
+      {
+        "value": 1.23,
+        "prefix": "$",
+        "expected": "$1.23",
+        "why": "an ordinary amount"
+      },
+      {
+        "value": -1.23,
+        "prefix": "$",
+        "expected": "-$1.23",
+        "why": "the sign goes before the prefix"
+      },
+      {
+        "value": 0,
+        "prefix": "$",
+        "expected": "$0",
+        "why": "integral, so integer form"
+      },
+      {
+        "value": -42,
+        "prefix": "$",
+        "expected": "-$42",
+        "why": "integral and negative: the sign still goes first"
+      },
+      {
+        "value": 1234567.89,
+        "prefix": "$",
+        "expected": "$1234568",
+        "why": "large: rounded to the integer, written in full, prefix on the number"
+      },
+      {
+        "value": -1234567.89,
+        "prefix": "$",
+        "expected": "-$1234568",
+        "why": "large and negative"
+      },
+      {
+        "value": 5.165e-05,
+        "prefix": "$",
+        "expected": "$0.00005165",
+        "why": "small: four significant figures written out, prefix on the number"
+      },
+      {
+        "value": 3.6e-07,
+        "prefix": "$",
+        "expected": "< $0.000001",
+        "why": "below one millionth: the prefix goes inside the bound, on the number"
+      },
+      {
+        "value": -3.3e-07,
+        "prefix": "$",
+        "expected": "> -$0.000001",
+        "why": "below one millionth and negative: inside the bound, after the sign"
+      },
+      {
+        "value": 1.65,
+        "prefix": "",
+        "expected": "1.65",
+        "why": "an empty prefix is the default and changes nothing"
+      }
+    ]
   }
 }

@@ -19,8 +19,8 @@ model's own dump), Markdown (the agent-facing form) and HTML that reads without 
 
 **The words are served, not ported.** Every word a reader is shown is in the JSON, written here: the report's
 :attr:`~Report.title` and :attr:`~Report.byline`, each block's :attr:`~_Block.section_title`, the
-:attr:`~_Block.finding_number` a reader counts findings by, and each table cell's :attr:`~TableCell.text`
-beside its :attr:`~TableCell.value` — the value for sorting and drawing, the text spelled by the one number
+:attr:`~_Block.finding_number` and :attr:`~_Block.rests_on_numbers` a reader counts findings by, and each table
+cell's :attr:`~TableCell.text` beside its :attr:`~TableCell.value` — the value for sorting and drawing, the text spelled by the one number
 rule (:func:`~threetears.evals.analysis.viz.quantities.render_cell`). A chart block serves its values-as-drawn
 table the same way (:attr:`ChartBlock.columns`, :attr:`ChartBlock.rows`), its columns already chosen for
 printing. So a browser, a terminal and this package's own serializers print the same words, and no client
@@ -104,7 +104,11 @@ from threetears.evals.schema.prose import ModelProse
 #: the report carries its ``title`` and ``byline``, and every block its ``section_title`` and ``finding_number``. An
 #: analysis report's ``source.campaign_name`` is set where the campaign is found, and its title then names the
 #: campaign. Every field with a default is required in the schema, since every dump carries it.
-REPORT_VERSION: Literal[7] = 7
+#:
+#: 8: every block serves ``rests_on_numbers``, the findings it rests on counted from 1 as ``finding_number`` counts,
+#: beside ``rests_on``, which keeps counting from 0. A field added, so the version moves: the schema refuses a key
+#: it does not name, so a client holding the version 7 schema would refuse a document carrying it.
+REPORT_VERSION: Literal[8] = 8
 
 #: What a report is of: a generated analysis, or the campaign's evidence alone with no analysis.
 ReportBasis = Literal["analysis", "code_only"]
@@ -327,7 +331,23 @@ class _Block(EvalDocumentModel):
     @property
     def finding_number(self) -> int | None:
         """``finding`` counted from one, as every serializer numbers a finding; None when the block names none."""
-        return None if self.finding is None else self.finding + 1
+        return None if self.finding is None else _reader_number(self.finding)
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description=(
+            "The findings this block rests on as a reader counts findings — from 1, as `finding_number` counts, where "
+            "`rests_on` counts from 0; in `rests_on`'s order."
+        )
+    )
+    @property
+    def rests_on_numbers(self) -> list[int]:
+        """``rests_on`` counted from one, as ``finding_number`` counts and every serializer prints them."""
+        return [_reader_number(position) for position in self.rests_on]
+
+
+def _reader_number(position: int) -> int:
+    """A finding's position in the document (0 is the first) as a reader counts findings: from one."""
+    return position + 1
 
 
 #: The text roles that are part of one finding, and so name it.
@@ -682,7 +702,7 @@ class Report(EvalDocumentModel):
         }
     )
 
-    report_version: Literal[7] = Field(default=REPORT_VERSION, description="This shape's version.")
+    report_version: Literal[8] = Field(default=REPORT_VERSION, description="This shape's version.")
     basis: ReportBasis = Field(
         description=(
             "`analysis` when the report renders a generated analysis; `code_only` when no analysis exists and the "

@@ -254,6 +254,18 @@ once when you adopt the router and again whenever you change the route, with the
 interrupted, run it again. A release that adds a type needs no relocation unless your route places the new type
 somewhere other than your `unregistered` store.
 
+**Ask whether the stores hold anything before you relocate.** A host's start that adopts tables, rather than
+relocating on every start, asks first: `RoutedDocumentStore.holds_documents(stores, scope_ids, host_doc_types=...)`
+answers whether any store holds any document of any registered type, or of your own types, in the scopes you
+name, and stops at the first one it finds. It reaches what `relocate` reaches and nothing more: the scopes and
+host types you name. It does not count the router's placement record, which lives in the routing scope (never a
+document scope) under a type no registry holds, so stores holding only a record answer `False`.
+
+```python
+if RoutedDocumentStore.holds_documents(stores, ["acme", "globex"], host_doc_types=["host_note"]):
+    ...  # documents are there: relocate them, with the engine stopped, before the router starts
+```
+
 `RouteChanged` and `MisplacedDocument` carry `fault` and `remedy` apart (their `str()` reads both). A host that
 offers its own relocation tool states its own remedy beside the router's `fault` instead of rewording the message.
 

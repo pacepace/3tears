@@ -3198,6 +3198,13 @@ class TestBothSurfacesRenderOneRule:
         """A fixture that failed to load would pass the loop above by iterating nothing."""
         assert len(self.CASES["cases"]) >= 10
 
+    def test_every_shared_prefixed_case_renders_as_the_table_says(self):
+        """A currency symbol sits on the number: after its sign, inside a bound."""
+        prefixed = self.CASES["prefixed"]["cases"]
+        assert len(prefixed) >= 5
+        for case in prefixed:
+            assert format_number(case["value"], prefix=case["prefix"]) == case["expected"], case["why"]
+
     @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
     def test_a_non_finite_value_is_an_em_dash_on_both_surfaces(self, value):
         """JSON cannot carry these, so the shared table names them and each reader asserts them."""

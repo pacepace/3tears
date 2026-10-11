@@ -477,7 +477,7 @@ async def generate_analysis(
         # shape of the very defect this logging exists for — an error sweep returning nothing
         # over a window where money was spent — uncovered.
         summary = (
-            f"${format_number(tally.token_cost)} was billed on the one call and nothing was stored. "
+            f"{format_number(tally.token_cost, prefix='$')} was billed on the one call and nothing was stored. "
             f"No repair was possible: {terminal}"
         )
         log.warning(
@@ -538,7 +538,7 @@ async def generate_analysis(
         # rules: the repair fixes what it was told and breaks something else, so a caller holding
         # one of them is holding half the diagnosis.
         summary = (
-            f"${format_number(tally.token_cost)} was billed across both calls and nothing was stored. "
+            f"{format_number(tally.token_cost, prefix='$')} was billed across both calls and nothing was stored. "
             f"First refusal: {refusal_text}. "
             f"Second, after the one repair: {exhausted}{_prompt_provenance_clause(prompt)}"
         )

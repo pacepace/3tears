@@ -31,6 +31,24 @@
 # callers.
 
 [[release]]
+version = "0.66.0-evaladopt.11"
+since = "v0.66.0-evaladopt.10"
+summary = """
+What adopting .10 found (gaps 40–47): the FastMCP transport enters the `around` hook for a host resolver's refusal,
+hands per-call state from the host resolver to both hooks on `ToolCall`, says to read before retrying a timed-out
+call, and throws `CallTimedOut` into the hook of a call that outlived its timeout; an arm whose largest call its cap
+cannot reserve is refused before anything is spent; `format_number` takes a `prefix` that goes on the number;
+`RoutedDocumentStore.holds_documents` says whether stores about to be adopted hold any document; and every report
+block serves `rests_on_numbers` (report version 8).
+"""
+notes = [
+    "`transports.fastmcp`: a host resolver's `kernel.EvalServiceError` refusal now enters the `around` hook, which runs to its yield and is handed the refused `ActionOutcome` as its outcome, as for an action's; it entered no hook before. A hook that assumed every outcome it sees came from an action that ran now also sees these. A caller resolver's refusal still enters no hook. A host that wrote its audit line for such a refusal from `annotate` (which already saw it) writes it once, from one hook or the other.",
+    "`transports.fastmcp.ToolCall` takes a required `host` (`OpsHost | None`) and `timeout_s` (`float`, the call timeout the call read), and an optional `context`: a host that builds a `ToolCall` itself, in a test of its hooks, passes `host=` and `timeout_s=`. A `host_resolver` answering a bare `OpsHost` is unchanged.",
+    "`transports.fastmcp`: an `around` hook whose call outlives its timeout has `CallTimedOut` thrown in at its yield, where it was closed (a `GeneratorExit`) before. A hook catching `Exception` at its yield to record a defect now catches the timeout too, and can tell it by its type; a call cancelled from outside still closes the hook. The call still raises `CallTimedOut`, whatever the hook does.",
+    "`REPORT_VERSION` is 8 (was 7): every report block carries `rests_on_numbers`, and the published schema's `$id` is `urn:threetears-evals:report:v8`. A client that pins `report_version` to 7, or validates against the version 7 schema (which refuses a key it does not name), refuses a version 8 report until it takes the new schema.",
+]
+
+[[release]]
 version = "0.66.0-evaladopt.10"
 since = "v0.66.0-evaladopt.9"
 summary = """
