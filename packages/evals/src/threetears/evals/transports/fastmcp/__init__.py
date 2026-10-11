@@ -27,7 +27,9 @@ These hooks are what a multi-tenant host needs, so no host rebuilds :meth:`Catal
   suspended — answers the call as a refusal with that error's kind, status and remedy, exactly as an action's
   refusal is answered; anything else it raises is a defect.
 - **One ``around`` hook** wraps every call for the host's tracing, metrics or audit log
-  (:data:`CallHook`). It sees the call and its outcome and cannot change either.
+  (:data:`CallHook`). It sees the call and its outcome and cannot change either — a host resolver's refusal among
+  them, handed to the hook as its outcome exactly as an action's is, so "no host could serve this call" reaches the
+  host's audit log where every other call's line is written.
 - **One ``annotate`` hook** adds the host's own word to what a call returns (:data:`CallAnnotator`): a note
   appended as a text block of its own after the outcome's, never in place of it — the pricing catalogue a refused
   launch was priced against is stale, say.
@@ -152,8 +154,13 @@ class ToolCall:
 #: Code before the yield runs in the call's own context, so a span it opens is current while the action
 #: runs: a :class:`~contextvars.ContextVar` it sets, or a ``with`` it enters, before its yield is what the action
 #: sees, and its code after the yield — a ``reset`` or the ``with``'s exit — undoes it in that same task, so
-#: nothing it set outlives the call. A call refused while its caller or host was being resolved never enters the
-#: hook: no action was going to run, and a hook is the wrapper of one. A call that raises — a defect, not a refusal — is thrown in at the yield, so a ``with`` or
+#: nothing it set outlives the call.
+#:
+#: **A host resolver's refusal enters the hook too.** The caller is known, so the :class:`ToolCall` exists: the hook
+#: runs to its yield and is then handed the refusal as its outcome, exactly as an action's — no action runs between,
+#: and an audit log written from the hook records "no host could serve this call" like any other refused call. A call
+#: refused while its *caller* was being resolved never enters the hook, since there is no :class:`ToolCall` without a
+#: caller. A call that raises — a defect, not a refusal — is thrown in at the yield, so a ``with`` or
 #: ``finally`` closes; the hook cannot catch it on the call's behalf, since it propagates whatever the
 #: hook does. **It cannot change the outcome**: what it yields is discarded, and the outcome is frozen.
 #:
@@ -274,8 +281,9 @@ class ToolBinding:
         :class:`~threetears.evals.kernel.EvalServiceError` — a host's own subclass among them, a 503 for a host still
         booting — refuses the call as the engine refuses one from inside an action
         (:meth:`~threetears.evals.actions.MountedTool.refused_by_host`): its kind, its status, its reason and its
-        remedy. It is refused before the hook is entered, as any resolver failure is, so the hook sees no such call:
-        a hook wraps an action, and none was going to run.
+        remedy. A caller resolver's refusal is answered before the hook is entered, since there is no
+        :class:`ToolCall` without a caller; a host resolver's enters the hook, which runs to its yield and is handed
+        the refusal as its outcome, as it would an action's (:data:`CallHook`).
 
         Args:
             arguments: The call's arguments, ``action`` among them.
@@ -291,8 +299,7 @@ class ToolBinding:
                 :class:`~threetears.evals.actions.Caller` or an :class:`~threetears.evals.ops.OpsHost`.
             Exception: Whatever else a resolver raises — anything but an
                 :class:`~threetears.evals.kernel.EvalServiceError` — before the hook is entered and before any action
-                runs, with no caller there is no one to run it as; and whatever the catalogue lets propagate (a
-                defect). A refusal is an outcome, not an exception.
+                runs; and whatever the catalogue lets propagate (a defect). A refusal is an outcome, not an exception.
         """
         outcome, _ = await _answered(self, arguments)
         return outcome
@@ -335,24 +342,30 @@ async def _answered(binding: ToolBinding, arguments: dict[str, Any]) -> tuple[Ac
                 tool=binding.mounted.name, action=action if isinstance(action, str) else None, caller=caller
             )
             host = binding.host
+            host_refusal: ActionOutcome | None = None
             if binding.host_resolver is not None:
                 try:
                     host = await _resolved(binding.host_resolver())
                 except EvalServiceError as refused:
-                    return binding.mounted.refused_by_host(refused, action=action), observed
-                if not isinstance(host, OpsHost):
-                    raise TypeError(
-                        f"tool {binding.mounted.name!r}: the host resolver answered {host!r}, not an OpsHost"
-                    )
-            assert host is not None  # one of the two is set, which __init__ holds
+                    # The caller is known, so the hook is entered and handed this refusal as its outcome.
+                    host_refusal = binding.mounted.refused_by_host(refused, action=action)
+                else:
+                    if not isinstance(host, OpsHost):
+                        raise TypeError(
+                            f"tool {binding.mounted.name!r}: the host resolver answered {host!r}, not an OpsHost"
+                        )
             if binding.around is not None:
                 hook = await _entered(binding.around, observed)
-            try:
-                outcome = await binding.mounted.call(arguments, host=host, caller=caller)
-            except BaseException as defect:
-                if hook is not None:
-                    await _closed_within(hook, observed, defect)
-                raise
+            if host_refusal is not None:
+                outcome = host_refusal
+            else:
+                assert host is not None  # one of the two is set, which __init__ holds
+                try:
+                    outcome = await binding.mounted.call(arguments, host=host, caller=caller)
+                except BaseException as defect:
+                    if hook is not None:
+                        await _closed_within(hook, observed, defect)
+                    raise
     except TimeoutError:
         # A TimeoutError the caller resolver or the action raised of its own is not this call outliving its
         # timeout, and answering it as one would blame the store for the action's own fault: it propagates, as

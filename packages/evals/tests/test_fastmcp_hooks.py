@@ -9,7 +9,8 @@ What a host gets without rebuilding :meth:`CatalogueTool.over`:
 - **A resolver that fails fails the call before anything runs**: no action, no hook. One that answers
   with the wrong type is refused naming it. **One that refuses** — raises an engine error, a host's own
   subclass among them — answers the call as a refusal with that error's kind, status and remedy, read as an
-  action's refusal is, still before any action or hook.
+  action's refusal is, before any action runs. A host resolver's refusal enters the ``around`` hook, which is
+  handed it as its outcome; a caller resolver's enters none, since there is no call without a caller.
 - **One ``around`` hook wraps each call**: it sees the tool, the action as given, the caller and the
   outcome; what it opens before its yield is current while the action runs; a defect is thrown in at the
   yield and still propagates. It cannot change the outcome, and a hook that raises — before its yield,
@@ -518,7 +519,7 @@ async def _booting_async() -> Any:
     [{"host_resolver": _booting}, {"host_resolver": _booting_async}, {"caller": _booting}, {"caller": _booting_async}],
     ids=["host", "async-host", "caller", "async-caller"],
 )
-async def test_a_resolver_that_refuses_answers_a_refusal_before_anything_runs(mount: dict[str, Any]) -> None:
+async def test_a_resolver_that_refuses_answers_a_refusal_before_any_action_runs(mount: dict[str, Any]) -> None:
     """A host booting answered a 503 with its remedy, read as an action's refusal is — not a defect with no remedy."""
     actions = _Host()
     entered: list[ToolCall] = []
@@ -532,7 +533,39 @@ async def test_a_resolver_that_refuses_answers_a_refusal_before_anything_runs(mo
     )
     assert is_error and structured == {"refusal": {"kind": "refused", "status": 503}}
     assert text == "refused: note_take: this host is still booting\nremedy: call again in a minute"
-    assert actions.ran_in == [] and entered == [], "no action ran and the hook was never entered"
+    assert actions.ran_in == [], "no action ran"
+    if "caller" in mount:
+        assert entered == [], "with no caller there is no ToolCall, so the hook is never entered"
+    else:
+        assert [call.action for call in entered] == ["note_take"], "the caller is known, so the hook is entered"
+
+
+async def test_a_host_resolver_s_refusal_is_the_around_hook_s_outcome() -> None:
+    """Discodon audits "no host could serve this call" from the hook that writes every other call's line."""
+    seen: list[tuple[str, ToolCall, ActionOutcome | None]] = []
+
+    async def around(call: ToolCall) -> AsyncGenerator[None, ActionOutcome]:
+        seen.append(("entered", call, None))
+        outcome = yield
+        seen.append(("finished", call, outcome))
+
+    binding = ToolBinding(
+        _Host().catalogue().mount(_TOOLS[0]), host_resolver=_booting, caller=lambda: CALLER, around=around
+    )
+    outcome = await binding.call({"action": "note_take", "note": "ok"})
+    assert outcome.refusal == Refusal(kind="refused", status=503)
+    assert [(step, call.action) for step, call, _ in seen] == [("entered", "note_take"), ("finished", "note_take")]
+    assert seen[1][2] is outcome, "the hook is handed the refusal exactly as the call returns it"
+
+
+async def test_a_host_resolver_s_refusal_survives_a_hook_that_fails(caplog: pytest.LogCaptureFixture) -> None:
+    for around in (_raises_before, _raises_after):
+        binding = ToolBinding(
+            _Host().catalogue().mount(_TOOLS[0]), host_resolver=_booting, caller=lambda: CALLER, around=around
+        )
+        with caplog.at_level(logging.ERROR, logger=_LOGGER):
+            outcome = await binding.call({"action": "note_take", "note": "ok"})
+        assert outcome.refusal == Refusal(kind="refused", status=503), "the refusal stands whatever the hook does"
 
 
 async def test_a_resolver_refusal_is_the_outcome_the_binding_returns() -> None:

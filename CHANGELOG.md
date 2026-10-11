@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: what adopting .10 found (gaps 40–44)
+
+- **A host resolver's refusal enters the `around` hook (gap 40).** The caller is known, so the `ToolCall` exists: the
+  hook runs to its yield and is handed the refusal as its outcome, exactly as an action's, so a host's audit log
+  records "no host could serve this call" from the hook that writes every other call's line, not from `annotate`. A
+  caller resolver's refusal still enters no hook, since there is no `ToolCall` without a caller. A behaviour change
+  for a host's hook: see `MIGRATIONS.toml`.
+
 ### 3tears-evals: the judge temperature measurement and the prompt-comparison test set (#633)
 
 - **The first judge temperature measurement is void.** The 2026-10-10 run on `openai/gpt-6-luna` compared the

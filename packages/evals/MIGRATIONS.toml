@@ -31,6 +31,17 @@
 # callers.
 
 [[release]]
+version = "unreleased"
+since = "v0.66.0-evaladopt.10"
+summary = """
+What adopting .10 found (gaps 40–41): the FastMCP transport enters the `around` hook for a host resolver's refusal,
+and hands per-call state from the host resolver to both hooks on `ToolCall`.
+"""
+notes = [
+    "`transports.fastmcp`: a host resolver's `kernel.EvalServiceError` refusal now enters the `around` hook, which runs to its yield and is handed the refused `ActionOutcome` as its outcome, as for an action's; it entered no hook before. A hook that assumed every outcome it sees came from an action that ran now also sees these. A caller resolver's refusal still enters no hook. A host that wrote its audit line for such a refusal from `annotate` (which already saw it) writes it once, from one hook or the other.",
+]
+
+[[release]]
 version = "0.66.0-evaladopt.10"
 since = "v0.66.0-evaladopt.9"
 summary = """
