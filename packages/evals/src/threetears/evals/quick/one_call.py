@@ -1357,6 +1357,7 @@ def _launch_host(
         unhonoured.add("judge_model")
     if not calls_tools:
         unhonoured.add("cassette_mode")
+
     def resolve_subject(subject_id: str, _scope_id: str) -> UnknownSubject | None:
         # A one-call run's subjects are its arms' own, named by the caller as it launched them.
         held = {arm.subject for arm in (*arms, *preparing)}

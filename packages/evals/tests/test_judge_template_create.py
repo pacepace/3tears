@@ -28,7 +28,9 @@ def _judging_host() -> OpsHost:
     profile = toyhost_profile()
     eval_host = dataclasses.replace(
         toyhost_host(),
-        profile=dataclasses.replace(profile, kinds=(*profile.kinds, dataclasses.replace(JUDGE_KIND_CONTRACT, seats=None))),
+        profile=dataclasses.replace(
+            profile, kinds=(*profile.kinds, dataclasses.replace(JUDGE_KIND_CONTRACT, seats=None))
+        ),
     )
     holder: list[LaunchHost] = []
     launch = LaunchHost(
@@ -48,7 +50,11 @@ def _tool(name: str) -> MountedTool:
 
 
 async def _create(host: OpsHost, **arguments: Any) -> Any:
-    call = {"action": "judge_template_create", "template_name": "faithfulness judge", "intent": "Score as a person would."}
+    call = {
+        "action": "judge_template_create",
+        "template_name": "faithfulness judge",
+        "intent": "Score as a person would.",
+    }
     return await _tool("judge_template_create").call({**call, **arguments}, host=host, caller=_CALLER)
 
 
@@ -58,7 +64,11 @@ async def test_it_writes_a_template_of_the_judge_kind_and_nothing_else() -> None
     assert not outcome.is_error, outcome.text
     stored = host.eval_host.storage.load_template(outcome.structured["id"], _CALLER.scope_id)
     assert stored is not None
-    assert (stored.candidate_kind, stored.name, stored.intent) == (JUDGE_KIND, "faithfulness judge", "Score as a person would.")
+    assert (stored.candidate_kind, stored.name, stored.intent) == (
+        JUDGE_KIND,
+        "faithfulness judge",
+        "Score as a person would.",
+    )
     assert (stored.rubric, stored.goal_state_checks, stored.world_seed.namespaces) == ([], [], {})
 
 

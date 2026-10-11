@@ -53,7 +53,8 @@ class _RecordingClient(ReleasableClientMixin):
         self.calls.append({"system": system, "user": user, "response_format": response_format})
         if self.raises is not None:
             raise self.raises
-        return SimpleNamespace(temperature=None, 
+        return SimpleNamespace(
+            temperature=None,
             content=self.content,
             model=self.model_name,
             served_model="proposer-model-2026",

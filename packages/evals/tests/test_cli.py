@@ -390,7 +390,17 @@ def test_run_refuses_a_template_the_scope_does_not_hold(capsys: pytest.CaptureFi
 
 
 def test_run_refuses_a_subject_the_host_does_not_hold_with_the_hosts_remedy(capsys: pytest.CaptureFixture[str]) -> None:
-    args = ["run", "--scope", COURIER_SCOPE, "--template", COURIER_TEMPLATE_ID, "--subject", "x", "--model", "planner-lite"]
+    args = [
+        "run",
+        "--scope",
+        COURIER_SCOPE,
+        "--template",
+        COURIER_TEMPLATE_ID,
+        "--subject",
+        "x",
+        "--model",
+        "planner-lite",
+    ]
     assert run_cli(args, host_factory=courier_launch_host) == 2
     assert f"subject 'x' not found; the courier host holds one subject, {COURIER_SUBJECT.subject_id}" in (
         capsys.readouterr().err

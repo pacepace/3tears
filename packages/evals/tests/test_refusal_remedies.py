@@ -57,7 +57,9 @@ def _remedy_text(node: ast.expr) -> str:
     if isinstance(node, ast.Name):
         return str(getattr(remedies, node.id, ""))
     if isinstance(node, ast.JoinedStr):
-        return " ".join(_remedy_text(part.value if isinstance(part, ast.FormattedValue) else part) for part in node.values)
+        return " ".join(
+            _remedy_text(part.value if isinstance(part, ast.FormattedValue) else part) for part in node.values
+        )
     return ""
 
 
@@ -72,8 +74,7 @@ class TestEveryRefusalNamesARemedy:
             for where, call in _calls()
             if call.func.id in _REMEDY_REQUIRED  # type: ignore[attr-defined]
             and not any(
-                keyword.arg == "remedy"
-                and not (isinstance(keyword.value, ast.Constant) and not keyword.value.value)
+                keyword.arg == "remedy" and not (isinstance(keyword.value, ast.Constant) and not keyword.value.value)
                 for keyword in call.keywords
             )
         ]

@@ -1029,7 +1029,6 @@ def _measure_rows(
     rulers = measure_rulers(surface)
     rows: list[dict[str, ChartValue]] = []
     for measure in measures:
-        found = [summary for summaries in (pooled, *per_stratum.values()) if (summary := summaries.get(measure))]
         # The measure's one ruler for the report, so a stratum in ms beside a pool in s never happens, and this row
         # reads in the unit the decision surface's column for the measure does.
         factor, unit = rulers.get(measure, UNITLESS)

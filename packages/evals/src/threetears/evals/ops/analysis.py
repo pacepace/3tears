@@ -561,8 +561,7 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
 def _already_running(campaign_id: str, attempt_id: str) -> ConflictError:
     """The refusal of a second generation of a campaign, naming the live one's job."""
     return ConflictError(
-        f"a generation of campaign '{campaign_id}' is already running "
-        f"(job {analysis_job_id(campaign_id, attempt_id)})",
+        f"a generation of campaign '{campaign_id}' is already running (job {analysis_job_id(campaign_id, attempt_id)})",
         remedy="poll it with job_poll rather than starting another",
     )
 

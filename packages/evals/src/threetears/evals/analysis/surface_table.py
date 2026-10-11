@@ -522,9 +522,7 @@ def measure_rulers(surface: DecisionSurface) -> dict[str, MeasureRuler]:
     for bar in surface.bars:
         if bar.measure_id in values:
             values[bar.measure_id] += [bar.threshold] + [v.value for v in bar.verdicts if v.value is not None]
-    return {
-        name: MeasureRuler(*display_scale(values[name], facts.unit)) for name, facts in surface.measures.items()
-    }
+    return {name: MeasureRuler(*display_scale(values[name], facts.unit)) for name, facts in surface.measures.items()}
 
 
 def _verdict_of(bar: BarAdjudication, cell: CellFacts) -> BarVerdict | None:

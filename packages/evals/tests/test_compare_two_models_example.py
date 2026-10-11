@@ -37,7 +37,10 @@ async def test_offline_the_stand_ins_name_no_model_and_not_separated_is_no_reaso
     for summary in comparison.arms.values():
         assert summary.status == "completed" and (summary.n_cases, summary.k_runs, summary.n_scored) == (12, 2, 24)
         assert summary.role_spend("candidate").calls == 24 and summary.role_spend("candidate").cost_usd is not None
-    assert comparison.arms[cheaper].role_spend("candidate").cost_usd < comparison.arms[current].role_spend("candidate").cost_usd  # type: ignore[operator]
+    assert (
+        comparison.arms[cheaper].role_spend("candidate").cost_usd
+        < comparison.arms[current].role_spend("candidate").cost_usd
+    )  # type: ignore[operator]
     # The margin is declared on accuracy, on both runs, so equivalence could be tested; no duplicate scorer is needed.
     assert "correct" not in comparison.host.profile.measures.names
     (verdict,) = comparison.verdicts("accuracy")
@@ -109,7 +112,9 @@ async def test_live_two_models_alike_on_twelve_emails_are_still_not_shown_good_e
     assert {request["model"] for request in sent} == set(module.LIVE)
     for model, summary in comparison.arms.items():
         input_rate, output_rate = live.PRICES[model]
-        assert summary.role_spend("candidate").cost_usd == pytest.approx(24 * (120 * input_rate + 40 * output_rate) / 1e6)
+        assert summary.role_spend("candidate").cost_usd == pytest.approx(
+            24 * (120 * input_rate + 40 * output_rate) / 1e6
+        )
     (accuracy,) = comparison.contrasts("accuracy")
     assert accuracy["delta"] == 0 and accuracy["outcome"] == "not_separated"
     assert "\nOn accuracy, not separated" in capsys.readouterr().out

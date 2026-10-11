@@ -1238,7 +1238,8 @@ class _RecordingJudgeLLM:
         match = re.search(r'the single key "(.+?)"', system)
         dim_id = match.group(1) if match else "?"
         payload = json.dumps({"reasoning": f"because {dim_id}", "criteria_scores": {dim_id: 4}})
-        return SimpleNamespace(temperature=None, 
+        return SimpleNamespace(
+            temperature=None,
             served_model=None,
             stop_reason="end_turn",
             content=payload,

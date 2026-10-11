@@ -529,11 +529,7 @@ class RoleSpend(BaseModel):
         metered = ", ".join(
             f"{units.units} {units.unit}" + (f" ({units.provider})" if units.provider else "") for units in self.units
         )
-        cost = (
-            dollars_text(self.cost_usd)
-            if self.cost_usd is not None
-            else "unpriced: no rate was declared for them"
-        )
+        cost = dollars_text(self.cost_usd) if self.cost_usd is not None else "unpriced: no rate was declared for them"
         return f"external spend: {metered or 'no units counted'} over {self.calls} call(s), {cost}"
 
 
@@ -1160,7 +1156,9 @@ def _role_spend(results: list[EvalResult]) -> list[RoleSpend]:
                 cost_usd=None if None in costs else math.fsum(cost for cost in costs if cost is not None),
                 units=[
                     ProviderUnits(provider=provider, unit=unit, units=units)
-                    for (provider, unit), units in sorted(metered.items(), key=lambda item: (item[0][0] or "", item[0][1]))
+                    for (provider, unit), units in sorted(
+                        metered.items(), key=lambda item: (item[0][0] or "", item[0][1])
+                    )
                 ],
             )
         )

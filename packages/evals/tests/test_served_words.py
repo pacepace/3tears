@@ -61,7 +61,15 @@ from packages.evals.tests.report_support import minimal_report
 
 @pytest.mark.parametrize(
     ("value", "text"),
-    [(None, "—"), (True, "yes"), (False, "no"), (3, "3"), (12345.678, "12346"), (0.000012345, "0.00001234"), ("a", "a")],
+    [
+        (None, "—"),
+        (True, "yes"),
+        (False, "no"),
+        (3, "3"),
+        (12345.678, "12346"),
+        (0.000012345, "0.00001234"),
+        ("a", "a"),
+    ],
 )
 def test_a_cells_text_is_the_number_rules_spelling_of_its_value(value: Any, text: str) -> None:
     cell = TableCell(value=value)

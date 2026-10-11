@@ -217,7 +217,9 @@ def test_an_admission_refusal_reads_as_its_message_wherever_it_is_printed():
     refused = AdmissionRefusedError(requested=3, admitted=7, limit=8, limit_name="toyhost.launch.admitted")
 
     assert str(refused) == refused.message and "toyhost.launch.admitted" in str(refused)
-    assert str(NotFoundError("template", "t-1", remedy="list them first")) == "template 't-1' not found; list them first"
+    assert (
+        str(NotFoundError("template", "t-1", remedy="list them first")) == "template 't-1' not found; list them first"
+    )
 
 
 # --- the launch host composes the host, and the wiring is typed -----------------------------------

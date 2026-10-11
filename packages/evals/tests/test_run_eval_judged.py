@@ -232,7 +232,11 @@ async def test_a_judge_reply_that_will_not_parse_excludes_the_cell_and_says_so()
     assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (0, 0, 1)
     assert summary.errors and all(": judge: " in error for error in summary.errors)
     # Every attempt the judge made was paid for, parsed or not, so its spend is still counted.
-    assert summary.role_spend("judge").calls >= 2 and summary.role_spend("judge").cost_usd is not None and summary.role_spend("judge").cost_usd > 0
+    assert (
+        summary.role_spend("judge").calls >= 2
+        and summary.role_spend("judge").cost_usd is not None
+        and summary.role_spend("judge").cost_usd > 0
+    )
 
 
 async def test_a_judge_that_cannot_tell_is_counted_apart_and_excludes_nothing() -> None:

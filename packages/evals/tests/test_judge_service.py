@@ -61,7 +61,8 @@ class _CapturingClient:
             content = "not json at all"
         else:
             content = json.dumps({"reasoning": self.reasoning, "criteria_scores": {_dim_of(system): self.score}})
-        return SimpleNamespace(temperature=None, 
+        return SimpleNamespace(
+            temperature=None,
             served_model=None,
             stop_reason="end_turn",
             content=content,
@@ -82,7 +83,8 @@ class _PromptSensitiveClient:
     async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
         score = 2 if "STRICT" in system else 5
         content = json.dumps({"reasoning": "r", "criteria_scores": {_dim_of(system): score}})
-        return SimpleNamespace(temperature=None, 
+        return SimpleNamespace(
+            temperature=None,
             served_model=None,
             stop_reason="end_turn",
             content=content,
@@ -509,7 +511,8 @@ async def test_a_reply_whose_reasoning_is_not_a_string_is_a_parse_failure_that_k
 async def test_a_reply_with_no_reasoning_at_all_is_a_parse_failure():
     class _NoReasoningClient:
         async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
-            return SimpleNamespace(temperature=None, 
+            return SimpleNamespace(
+                temperature=None,
                 served_model=None,
                 stop_reason="end_turn",
                 content=json.dumps({"criteria_scores": {_dim_of(system): 4}}),
@@ -533,7 +536,8 @@ async def test_score_omitted_by_judge_is_an_error():
         async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
             # Returns a score under the wrong key — the asked dim is missing.
             content = json.dumps({"reasoning": "r", "criteria_scores": {"some_other_dim": 4}})
-            return SimpleNamespace(temperature=None, 
+            return SimpleNamespace(
+                temperature=None,
                 served_model=None,
                 stop_reason="end_turn",
                 content=content,
@@ -575,7 +579,8 @@ async def test_score_dimension_parses_real_code_fenced_judge_output():
             async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
                 # Waived at the site: the class is constructed and fully consumed inside
                 # this same iteration, so the late binding B023 warns about is never observed.
-                return SimpleNamespace(temperature=None, 
+                return SimpleNamespace(
+                    temperature=None,
                     served_model=None,
                     stop_reason="end_turn",
                     content=content,  # noqa: B023
@@ -609,7 +614,8 @@ async def test_judge_retries_on_parse_failure_then_succeeds():
                 content = "not json at all"  # first attempt unparseable
             else:
                 content = json.dumps({"reasoning": "ok", "criteria_scores": {_dim_of(system): 4}})
-            return SimpleNamespace(temperature=None, 
+            return SimpleNamespace(
+                temperature=None,
                 served_model=None,
                 stop_reason="end_turn",
                 content=content,
@@ -639,7 +645,8 @@ async def test_judge_parse_failure_gives_up_after_bounded_retries():
 
         async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
             self.calls += 1
-            return SimpleNamespace(temperature=None, 
+            return SimpleNamespace(
+                temperature=None,
                 served_model=None,
                 stop_reason="end_turn",
                 content="not json",
@@ -705,7 +712,8 @@ class _StopReasonClient:
 
     async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
         self.calls += 1
-        return SimpleNamespace(temperature=None, 
+        return SimpleNamespace(
+            temperature=None,
             served_model=None,
             stop_reason=self.stop_reason,
             content=self.content,
@@ -830,7 +838,8 @@ async def test_judge_usage_accumulates_across_parse_retries():
                 if self.calls == 1
                 else json.dumps({"reasoning": "ok", "criteria_scores": {_dim_of(system): 4}})
             )
-            return SimpleNamespace(temperature=None, 
+            return SimpleNamespace(
+                temperature=None,
                 served_model=None,
                 stop_reason="end_turn",
                 content=content,
@@ -856,7 +865,8 @@ async def test_unscorable_dim_still_reports_the_tokens_it_burned():
 
     class _AlwaysFailClient:
         async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
-            return SimpleNamespace(temperature=None, 
+            return SimpleNamespace(
+                temperature=None,
                 served_model=None,
                 stop_reason="end_turn",
                 content="not json",
@@ -884,7 +894,8 @@ async def test_dim_omitted_by_the_judge_still_reports_usage():
     class _WrongKeyClient:
         async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
             content = json.dumps({"reasoning": "r", "criteria_scores": {"some-other-dim": 3}})
-            return SimpleNamespace(temperature=None, 
+            return SimpleNamespace(
+                temperature=None,
                 served_model=None,
                 stop_reason="end_turn",
                 content=content,
@@ -920,7 +931,8 @@ async def test_judge_reasoning_tokens_sum_when_reported():
     class _ReasoningClient:
         async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
             content = json.dumps({"reasoning": "r", "criteria_scores": {_dim_of(system): 4}})
-            return SimpleNamespace(temperature=None, 
+            return SimpleNamespace(
+                temperature=None,
                 served_model=None,
                 stop_reason="end_turn",
                 content=content,
@@ -946,7 +958,8 @@ async def test_judge_cost_unreported_stays_none_not_zero():
     class _NoCostClient:
         async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
             content = json.dumps({"reasoning": "r", "criteria_scores": {_dim_of(system): 4}})
-            return SimpleNamespace(temperature=None, 
+            return SimpleNamespace(
+                temperature=None,
                 served_model=None,
                 stop_reason="end_turn",
                 content=content,
@@ -979,7 +992,8 @@ async def test_a_dim_one_of_whose_attempts_went_unpriced_costs_unknown_not_its_p
                 if self.calls == 1
                 else json.dumps({"reasoning": "r", "criteria_scores": {_dim_of(system): 4}})
             )
-            return SimpleNamespace(temperature=None, 
+            return SimpleNamespace(
+                temperature=None,
                 served_model=None,
                 stop_reason="end_turn",
                 content=content,
@@ -1012,7 +1026,8 @@ async def test_judge_llm_exception_reports_prior_attempt_spend():
         async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
             self.calls += 1
             if self.calls == 1:
-                return SimpleNamespace(temperature=None, 
+                return SimpleNamespace(
+                    temperature=None,
                     served_model=None,
                     stop_reason="end_turn",
                     content="not json",
@@ -1070,7 +1085,8 @@ async def test_judge_result_carries_no_rival_composite():
     class _Client:
         async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
             content = json.dumps({"reasoning": "ok", "criteria_scores": {"a": 4, "b": 2}})
-            return SimpleNamespace(temperature=None, 
+            return SimpleNamespace(
+                temperature=None,
                 served_model=None,
                 stop_reason="end_turn",
                 content=content,
@@ -1216,8 +1232,13 @@ async def test_a_judge_reporting_no_token_counts_reads_as_unmeasured():
     class _Silent:
         async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
             content = json.dumps({"reasoning": "ok", "criteria_scores": {_dim_of(system): 4}})
-            return SimpleNamespace(temperature=None, 
-                served_model=None, stop_reason="end_turn", content=content, cost_usd=None, model="judge-fake"
+            return SimpleNamespace(
+                temperature=None,
+                served_model=None,
+                stop_reason="end_turn",
+                content=content,
+                cost_usd=None,
+                model="judge-fake",
             )
 
     outcome = await JudgeService(

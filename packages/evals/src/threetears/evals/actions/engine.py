@@ -829,9 +829,7 @@ async def _bars_propose(host: OpsHost, caller: Caller, params: CampaignParams) -
 
 async def _judge_template_create(host: OpsHost, caller: Caller, params: JudgeTemplateCreateParams) -> TemplateLine:
     create = JudgeTemplateCreate.model_validate(params.model_dump())
-    return await run_blocking(
-        host.eval_host.blocking_executor, judge_template_create, host, create, caller.scope_id
-    )
+    return await run_blocking(host.eval_host.blocking_executor, judge_template_create, host, create, caller.scope_id)
 
 
 async def _judge_cases_freeze(host: OpsHost, caller: Caller, params: JudgeCasesFreezeParams) -> JudgeCaseFreezeReport:

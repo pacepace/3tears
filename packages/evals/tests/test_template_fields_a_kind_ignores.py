@@ -36,7 +36,9 @@ def _judge_host() -> LaunchHost:
     eval_host = dataclasses.replace(
         toyhost_host(),
         # Held to every seat the toy host declares, so its profile stays sound with a second kind beside its own.
-        profile=dataclasses.replace(profile, kinds=(*profile.kinds, dataclasses.replace(JUDGE_KIND_CONTRACT, seats=None))),
+        profile=dataclasses.replace(
+            profile, kinds=(*profile.kinds, dataclasses.replace(JUDGE_KIND_CONTRACT, seats=None))
+        ),
     )
     holder: list[LaunchHost] = []
     launch_host = LaunchHost(
@@ -53,7 +55,12 @@ def _judge_host() -> LaunchHost:
 
 def _judge_template(**fields: Any) -> EvalTemplate:
     return EvalTemplate(
-        id="judge-tpl", scope_id=_SCOPE, name="a judge", intent="Score as a person would.", candidate_kind=JUDGE_KIND, **fields
+        id="judge-tpl",
+        scope_id=_SCOPE,
+        name="a judge",
+        intent="Score as a person would.",
+        candidate_kind=JUDGE_KIND,
+        **fields,
     )
 
 
@@ -69,7 +76,9 @@ def _judge_template(**fields: Any) -> EvalTemplate:
         ),
     ],
 )
-async def test_a_judge_template_stating_what_the_judge_kind_ignores_is_refused(fields: dict[str, Any], named: str) -> None:
+async def test_a_judge_template_stating_what_the_judge_kind_ignores_is_refused(
+    fields: dict[str, Any], named: str
+) -> None:
     host = _judge_host()
     host.eval_host.storage.save_template(_judge_template(**fields))
     with pytest.raises(ValidationFailedError, match=named):

@@ -299,7 +299,9 @@ class JudgeProfileConsulted(EvalDocumentModel):
     case_set_fingerprint: str = Field(min_length=1, description="A digest of those cases (each id and content).")
     run_ids: list[str] = Field(description="The judge campaign's runs the profile was measured by, sorted.")
     calibration: TierCriterion = Field(description="The profile's agreement with its labels, which decided no tier.")
-    separation: TierCriterion = Field(description="The profile's agreement with its own repeats, which decided no tier.")
+    separation: TierCriterion = Field(
+        description="The profile's agreement with its own repeats, which decided no tier."
+    )
 
 
 class JudgeEvidenceTier(EvalDocumentModel):

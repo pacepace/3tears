@@ -589,9 +589,13 @@ class TestTheSchemaHoldsTheCrossFieldRulesItCanState:
             _with(
                 _code_only_document(),
                 lambda d: d["blocks"].append(
-                    _TABLE | {
+                    _TABLE
+                    | {
                         "rows": [
-                            {"arm": {"value": "a", "unit": "", "text": "a"}, "stray": {"value": "x", "unit": "", "text": "x"}}
+                            {
+                                "arm": {"value": "a", "unit": "", "text": "a"},
+                                "stray": {"value": "x", "unit": "", "text": "x"},
+                            }
                         ]
                     }
                 ),
