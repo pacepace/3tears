@@ -689,6 +689,10 @@
       "kind": "dataclass",
       "signature": "AdmittedCall(call: PlannedCall, purpose: OutOfRunPurpose, model: str, ceiling_usd: float | None, token: str)"
     },
+    "threetears.evals.kernel.AdmittedGeneration": {
+      "kind": "dataclass",
+      "signature": "AdmittedGeneration(writer: VariationLLM, budget: OutOfRunBudget, calls: Mapping[str, AdmittedCall])"
+    },
     "threetears.evals.kernel.agreement_statistic": {
       "kind": "function",
       "signature": "agreement_statistic(scale: RubricScale, kappa: float | None, weighted_kappa: float | None) -> float | None"
@@ -2611,7 +2615,7 @@
     },
     "threetears.evals.run.LaunchRequest": {
       "kind": "dataclass",
-      "signature": "LaunchRequest(template: EvalTemplate, kind: str, subject_id: str, candidate_model: str | None, k_runs: int, scope_id: str, n_variations: int, variation_model: str | None, judge_model: str | None, judge_config_ids: dict[str, str] | None, simulator_model: str | None, cassette_mode: CassetteMode, cassette_corpus_id: str | None, overlays: BaseModel | None, kind_spec: BaseModel | None, max_cost_usd: float | None, max_metered_calls: int | None, apparatus_settings: Mapping[str, ApparatusSettingValue], generation_budget: OutOfRunBudget | None, arm_plan: ArmPlan | None, arm_price: ArmPrice | None, launch_group: LaunchGroup, settings: LaunchSettings, refused_goal_checks: Mapping[str, str] = <lambda>(), cell_timeout_s: float | None = None, case_set: CaseSet | None = None, case_set_cases: tuple[EvalTestCase, ...] = (), margins: Mapping[str, float] = <lambda>(), measure_latency: bool = False)"
+      "signature": "LaunchRequest(template: EvalTemplate, kind: str, subject_id: str, candidate_model: str | None, k_runs: int, scope_id: str, n_variations: int, variation_model: str | None, judge_model: str | None, judge_config_ids: dict[str, str] | None, simulator_model: str | None, cassette_mode: CassetteMode, cassette_corpus_id: str | None, overlays: BaseModel | None, kind_spec: BaseModel | None, max_cost_usd: float | None, max_metered_calls: int | None, apparatus_settings: Mapping[str, ApparatusSettingValue], generation_budget: OutOfRunBudget | None, arm_plan: ArmPlan | None, arm_price: ArmPrice | None, launch_group: LaunchGroup, settings: LaunchSettings, refused_goal_checks: Mapping[str, str] = <lambda>(), cell_timeout_s: float | None = None, case_set: CaseSet | None = None, case_set_cases: tuple[EvalTestCase, ...] = (), margins: Mapping[str, float] = <lambda>(), measure_latency: bool = False, generation: AdmittedGeneration | None = None)"
     },
     "threetears.evals.run.LaunchSettings": {
       "kind": "model",
@@ -4327,11 +4331,15 @@
     },
     "threetears.evals.gen.generate_variations": {
       "kind": "async function",
-      "signature": "generate_variations(template: EvalTemplate, n_variations: int, *, storage: EvalTestCaseStore, scope_id: str, blocking_executor: Executor | None, llm: VariationLLM | None = None, budget: OutOfRunBudget | None = None, rng: random.Random | None = None, preview: bool = False) -> GeneratedVariations"
+      "signature": "generate_variations(template: EvalTemplate, n_variations: int, *, storage: EvalTestCaseStore, scope_id: str, blocking_executor: Executor | None, generation: AdmittedGeneration | None = None, rng: random.Random | None = None, preview: bool = False) -> GeneratedVariations"
     },
     "threetears.evals.gen.GeneratedVariations": {
       "kind": "class",
       "signature": "GeneratedVariations(cases: list[EvalTestCase], counts: VariationCounts, spend: tuple[OutOfRunSpend, ...] = ())"
+    },
+    "threetears.evals.gen.plan_draft": {
+      "kind": "function",
+      "signature": "plan_draft(*, system_prompt: str, subject_feed: str, catalog_feed: str) -> PlannedCall"
     },
     "threetears.evals.gen.price_variations": {
       "kind": "async function",
@@ -4339,7 +4347,7 @@
     },
     "threetears.evals.gen.propose_draft": {
       "kind": "async function",
-      "signature": "propose_draft(client: BoundCompletionClient, *, budget: OutOfRunBudget, axis: RubricAxis, subject_id: str, system_prompt: str, subject_feed: str, catalog_feed: str) -> ProposedDraft"
+      "signature": "propose_draft(client: BoundCompletionClient, admitted: AdmittedCall, *, budget: OutOfRunBudget, axis: RubricAxis, subject_id: str) -> ProposedDraft"
     },
     "threetears.evals.gen.ProposedDraft": {
       "kind": "class",

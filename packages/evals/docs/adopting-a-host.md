@@ -413,9 +413,13 @@ needs no `render`: long work reads back as the jobs it started, with `render_job
 
 ```python
 async def _propose(host: OpsHost, caller: Caller, params: ProposeParams) -> JobsStarted:
-    budget = my_budget(host, caller.scope_id)            # price and refuse here, spending nothing
-    async def draft() -> RubricDraft:                    # the job's work: the model calls
-        return await my_proposer(host, params, budget)
+    budget = my_budget(host, caller.scope_id)
+    client = my_proposer_client(host)
+    call = plan_draft(system_prompt=..., subject_feed=..., catalog_feed=...)
+    [admitted] = budget.admit(client, "proposer", [call])   # price and refuse here, spending nothing
+    async def draft() -> RubricProposal:                     # the job's work: the admitted call, made
+        proposed = await propose_draft(client, admitted, budget=budget, axis=params.axis, subject_id=...)
+        return proposed.proposal
     return await start_action_job(host, caller.scope_id, action="rubric_propose", run=draft, label=params.topic)
 
 async def _propose_happy_path(stage: ConformanceStage) -> Mapping[str, Any]:
@@ -480,12 +484,14 @@ generated once for every arm:
   `blocking_executor=host.blocking_executor` (its case reads and writes run there; its model calls stay
   on the loop), and hand its counts on as `KindWiring(variation_counts=...)`.
 - An `llm` axis is written by the model the launch names as `variation_model` — required then, refused
-  when nothing would call it — which the launcher asks of the host's client factory in the `variation`
-  role (`clients("variation", request.variation_model)`), never the simulator's.
+  when nothing would call it. The launch's call builds the writer from the host's client factory in the
+  `variation` role (never the simulator's), plans and admits its calls there, and hands them to the launcher
+  as `request.generation`. The launcher builds no writer of its own.
 - The run records the model the client resolved to on `variation_counts.variation_model`; it enters no
   identity, because the cases it wrote are already hashed through `test_case_ids`.
-- The launcher hands `generate_variations` the request's `budget=request.generation_budget`.
-  `propose_draft` takes a budget the same way.
+- The launcher hands `generate_variations` the request's `generation=request.generation`, which makes exactly
+  the calls the launch admitted. A rubric proposal is planned (`plan_draft`), admitted in your call and made in
+  your job (`propose_draft(client, admitted, ...)`) the same way.
 
 Generation runs before any run exists, so its calls are outside every run's cost cap and metered-call
 ceiling. How they are priced and ledgered instead is in [Cost and budgets: spend outside any

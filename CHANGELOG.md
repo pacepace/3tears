@@ -18,6 +18,11 @@ packages (bumped in lock-step).
 - **Long work reads back as the jobs it started, with no render declared.** An `Action` returning `JobsStarted`
   defaults its `render` to `render_jobs_started`, now exported from `threetears.evals.actions`; an action returning
   anything else must still declare its own, and is refused using that one.
+- **Every out-of-run model call is planned, admitted by its caller, then made (breaking).** `plan_draft` is the
+  proposer's public planner and `propose_draft` makes a call its host admitted, so a host's `rubric_propose` prices
+  and refuses in its call. `generate_variations` takes an `AdmittedGeneration` and admits nothing; a launch admits
+  its generation in its call, on the writer it hands the launcher (`LaunchRequest.generation`). A test holds that
+  no package function both admits a call and makes it, and lists every out-of-run caller's planner and executor.
 
 ### 3tears-evals: what a consumer's end-to-end test of .6 found (gaps 16–27)
 

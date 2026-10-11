@@ -22,7 +22,7 @@ import pytest
 from threetears.evals.kernel import EvalStorage, OutOfRunBudget
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.schema.models import RubricProposal
-from threetears.evals.gen import propose_draft
+from threetears.evals.gen import plan_draft, propose_draft
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.llm_client_fakes import ReleasableClientMixin
 
@@ -96,6 +96,22 @@ def _draft(*, suggestion_axis: str) -> str:
     )
 
 
+async def _proposed(
+    client: Any,
+    *,
+    budget: OutOfRunBudget,
+    axis: Any,
+    subject_id: str,
+    system_prompt: str,
+    subject_feed: str,
+    catalog_feed: str,
+) -> Any:
+    """A host's proposal: planned and admitted in its call, then made, as the job makes it."""
+    call = plan_draft(system_prompt=system_prompt, subject_feed=subject_feed, catalog_feed=catalog_feed)
+    [admitted] = budget.admit(client, "proposer", [call])
+    return await propose_draft(client, admitted, budget=budget, axis=axis, subject_id=subject_id)
+
+
 _AXES = [
     pytest.param("capability", id="capability"),
     pytest.param("boundary", id="boundary"),
@@ -108,7 +124,7 @@ async def test_the_feeds_are_sent_verbatim_subject_first_in_json_mode(axis):
     client = _RecordingClient(_draft(suggestion_axis=axis))
     budget, _storage = _budget()
 
-    proposal, _spend = await propose_draft(
+    proposal, _spend = await _proposed(
         client,
         budget=budget,
         axis=axis,
@@ -146,7 +162,7 @@ async def test_the_proposer_stamps_its_own_axis_whatever_the_model_wrote(axis, w
     """
     client = _RecordingClient(_draft(suggestion_axis=written))
 
-    proposal, _spend = await propose_draft(
+    proposal, _spend = await _proposed(
         client, budget=_budget()[0], axis=axis, subject_id="s", system_prompt="", subject_feed="F", catalog_feed="C"
     )
 
@@ -162,7 +178,7 @@ async def test_the_drafted_rubric_dims_take_the_proposers_axis_too(axis):
     draft["template"]["rubric"] = [{**dim, "axis": "capability" if axis == "boundary" else "boundary"}]
     client = _RecordingClient(json.dumps(draft))
 
-    proposal, _spend = await propose_draft(
+    proposal, _spend = await _proposed(
         client, budget=_budget()[0], axis=axis, subject_id="s", system_prompt="", subject_feed="F", catalog_feed="C"
     )
 
@@ -197,7 +213,7 @@ async def test_a_refused_draft_raises_and_still_releases_the_client(axis, refuse
     with pytest.raises(
         ValidationFailedError, match=rf"^{refused_by} LLM output {reason} \(the call cost \$0\.0123\): "
     ):
-        await propose_draft(
+        await _proposed(
             client, budget=budget, axis=axis, subject_id="s", system_prompt="", subject_feed="F", catalog_feed="C"
         )
 
@@ -212,7 +228,7 @@ async def test_a_refused_draft_raises_and_still_releases_the_client(axis, refuse
 
 
 async def _propose(client: _RecordingClient, budget: OutOfRunBudget, *, subject_id: str = "s") -> Any:
-    return await propose_draft(
+    return await _proposed(
         client,
         budget=budget,
         axis="capability",
@@ -253,7 +269,6 @@ async def test_a_call_priced_above_the_cap_is_refused_before_it_is_made():
         await _propose(client, budget)
 
     assert client.calls == [] and storage.query_out_of_run_spend(_SCOPE) == []
-    assert client.aclose_calls == 1, "a refused admission still releases the client"
 
 
 async def test_a_call_the_client_cannot_price_is_refused_under_an_enforced_cap():
@@ -290,11 +305,60 @@ async def test_a_call_that_raises_is_ledgered_with_its_failure_class_and_no_usag
     assert client.aclose_calls == 1
 
 
-async def test_a_budget_for_another_subject_is_refused_before_anything_is_priced():
+async def test_a_budget_for_another_subject_is_refused_before_the_call_is_made():
     client = _RecordingClient(_draft(suggestion_axis="capability"))
     budget, storage = _budget(subject_id="someone-else")
 
     with pytest.raises(ValueError, match="ledgers its calls under subject 'someone-else'"):
         await _propose(client, budget, subject_id="s")
 
-    assert client.priced == [] and client.calls == [] and storage.query_out_of_run_spend(_SCOPE) == []
+    assert client.calls == [] and storage.query_out_of_run_spend(_SCOPE) == []
+    assert client.aclose_calls == 1
+
+
+# =============================================================================
+# Planned, admitted by the host in its call, then made: the proposal admits nothing of its own
+# =============================================================================
+
+
+def test_the_plan_is_the_call_as_sent_feeds_subject_first():
+    call = plan_draft(system_prompt="SYS", subject_feed="# Subject\n", catalog_feed="# Catalog\n\n")
+    assert (call.system, call.user) == ("SYS", "# Subject\n\n# Catalog\n")
+
+
+async def test_a_proposal_makes_the_call_its_host_admitted_and_prices_nothing_itself():
+    client = _RecordingClient(_draft(suggestion_axis="capability"))
+    budget, _storage = _budget()
+    call = plan_draft(system_prompt="SYS", subject_feed="F", catalog_feed="C")
+    [admitted] = budget.admit(client, "proposer", [call])
+    priced_in_the_call = list(client.priced)
+
+    await propose_draft(client, admitted, budget=budget, axis="capability", subject_id="s")
+
+    assert client.priced == priced_in_the_call, "priced once, by the host's admission"
+    assert client.calls == [{"system": call.system, "user": call.user, "response_format": call.response_format}]
+
+
+async def test_an_admission_for_another_purpose_is_refused_and_nothing_is_called():
+    client = _RecordingClient(_draft(suggestion_axis="capability"))
+    budget, storage = _budget()
+    [admitted] = budget.admit(client, "variation", [plan_draft(system_prompt="S", subject_feed="F", catalog_feed="C")])
+
+    with pytest.raises(ValueError, match="admitted for purpose 'proposer'"):
+        await propose_draft(client, admitted, budget=budget, axis="capability", subject_id="s")
+
+    assert client.calls == [] and storage.query_out_of_run_spend(_SCOPE) == [] and client.aclose_calls == 1
+
+
+async def test_an_admission_another_budget_made_is_refused_and_nothing_is_called():
+    client = _RecordingClient(_draft(suggestion_axis="capability"))
+    admitting, _ = _budget()
+    making, storage = _budget()
+    [admitted] = admitting.admit(
+        client, "proposer", [plan_draft(system_prompt="S", subject_feed="F", catalog_feed="C")]
+    )
+
+    with pytest.raises(ValueError, match="not one this budget admitted"):
+        await propose_draft(client, admitted, budget=making, axis="capability", subject_id="s")
+
+    assert client.calls == [] and storage.query_out_of_run_spend(_SCOPE) == [] and client.aclose_calls == 1

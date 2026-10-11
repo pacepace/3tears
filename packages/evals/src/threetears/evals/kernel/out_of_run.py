@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import math
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Annotated, Any, NamedTuple
 
@@ -52,7 +52,7 @@ from threetears.observe import get_logger
 if TYPE_CHECKING:
     from concurrent.futures import Executor
 
-    from threetears.evals.schema.completion import PricedCompletion
+    from threetears.evals.schema.completion import PricedCompletion, VariationLLM
 
 from threetears.evals.schema.out_of_run_spend import OutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
 
@@ -85,6 +85,28 @@ class AdmittedCall:
     model: str
     ceiling_usd: float | None
     token: str
+
+
+@dataclass(frozen=True)
+class AdmittedGeneration:
+    """A case generation's calls, admitted in the call that asked for it, for the job that makes them.
+
+    What :func:`~threetears.evals.gen.generate_variations` takes in place of admitting anything itself: the writer
+    the calls were priced on, the budget that admitted them and ledgers them as they are made, and each ``llm``
+    axis's admitted call, keyed by axis name as :func:`plan_variation_calls` keyed its plan. A launch builds one in
+    its call (:attr:`~threetears.evals.run.LaunchRequest.generation`), so a generation the cap cannot pay for is
+    refused before the launch returns, and its launcher only makes the calls. A host generating outside a launch
+    plans with :func:`plan_variation_calls`, admits with :meth:`OutOfRunBudget.admit`, and builds one the same way.
+
+    Attributes:
+        writer: The client every call was priced on and is made on — the very object.
+        budget: The budget that admitted the calls.
+        calls: Each ``llm`` axis's admitted call, by axis name.
+    """
+
+    writer: VariationLLM
+    budget: OutOfRunBudget
+    calls: Mapping[str, AdmittedCall]
 
 
 def existing_axis_values(axis: VariationAxis, existing: Sequence[EvalTestCase]) -> set[str]:
@@ -160,7 +182,9 @@ class OutOfRunBudget:
     Built by whoever starts the work: the launch builds one per generating launch
     (``LaunchRequest.generation_budget``, capped at the host's ``max_out_of_run_cost_usd``), an analysis
     generation one per generation (:func:`~threetears.evals.ops.analysis_generate`, at the same cap), and a
-    host proposing a rubric builds one for the proposal. Admissions accumulate — a second admission is
+    host proposing a rubric builds one for the proposal. Whoever builds it admits the calls in its own call — a
+    planner's :class:`PlannedCall` in, an :class:`AdmittedCall` out — and the work that runs later makes only
+    what was admitted. Admissions accumulate — a second admission is
     refused when it and every earlier one together would pass the cap.
 
     Attributes:

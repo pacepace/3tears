@@ -64,7 +64,7 @@ from threetears.evals.schema.models import (
     resolve_effective_judges,
     scored_dim_ids,
 )
-from threetears.evals.kernel.out_of_run import OutOfRunBudget, plan_variation_calls
+from threetears.evals.kernel.out_of_run import AdmittedGeneration, OutOfRunBudget, plan_variation_calls
 from threetears.evals.run.authoring import validated_kind_spec
 from threetears.evals.run.budget import EvalRunCostCap
 from threetears.evals.run.case_sets import resolve_case_set
@@ -100,7 +100,7 @@ if TYPE_CHECKING:
     from threetears.evals.schema.subject import SubjectSnapshot
     from threetears.evals.kernel.host.sweepables import SweepableRegistry
     from threetears.evals.schema.models import EvalTemplate, JudgeConfig, VariationCounts
-    from threetears.evals.schema.completion import PricedCompletion
+    from threetears.evals.schema.completion import BoundCompletionClient, PricedCompletion
     from threetears.evals.kernel.scoring import CellSummary
     from threetears.evals.kernel.storage import DefinitionStore
     from threetears.evals.kernel.usage_capture import ExternalRateTable
@@ -852,10 +852,10 @@ class LaunchRequest:
             launch generates (``n_variations`` > 0), as the caller named it. The dispatch has already
             made it present exactly when the template has an ``llm`` axis and the launch generates, so
             ``None`` means no model writes this launch's cases. A launcher builds the writer through its
-            host's client factory in the ``variation`` role (never the simulator's — a kind with no
-            simulated user still generates) and hands it to
-            :func:`~threetears.evals.gen.generate_variations`, whose counts record the model it resolved
-            to and which :func:`launch_run` checks against this pin. Generation runs before the run
+            engine's writer for it (:attr:`generation`), built from the host's client factory in the ``variation``
+            role (never the simulator's — a kind with no simulated user still generates), makes the calls in
+            :func:`~threetears.evals.gen.generate_variations`, whose counts record the model it resolved to and
+            which :func:`launch_run` checks against this pin. Generation runs before the run
             exists, once per launch for every arm (:meth:`LaunchGroup.resolve_once`), so its calls are
             outside every run's cost cap and metered-call ceiling.
         judge_model: The run-level judge pin, unresolved.
@@ -879,10 +879,15 @@ class LaunchRequest:
             run records exactly these (``EvalRun.apparatus_settings``).
         generation_budget: For a launch that generates (``n_variations`` > 0), the out-of-run budget its
             generation's calls are priced against and ledgered through — one for the whole launch, shared
-            by every arm, capped at the host's ``max_out_of_run_cost_usd``. A launcher hands it to
-            :func:`~threetears.evals.gen.generate_variations` as ``budget``; a generation a model wrote
+            by every arm, capped at the host's ``max_out_of_run_cost_usd``. The calls :attr:`generation` admitted
+            were admitted under it, and are ledgered through it as they are made; a generation a model wrote
             whose calls this budget never ledgered is refused at the launch tail. ``None`` for a launch
             that generates nothing.
+        generation: For a launch whose generation a model writes, its calls as the launch's call admitted them,
+            before it returned: the writer they were priced on, :attr:`generation_budget`, and each ``llm`` axis's
+            admitted call. A launcher hands it to :func:`~threetears.evals.gen.generate_variations` as
+            ``generation`` and builds no writer of its own; the launch holds the writer open around its launchers
+            and releases it. ``None`` for a launch that generates nothing, or whose template no model writes.
         arm_plan: What the kind planned this arm to run (:attr:`LaunchableKind.plan_arm`) — the plan the arm
             was priced at, and the launch tail holds its run to — for an arm over stored cases and a generating
             one alike. ``None`` for a kind that plans nothing.
@@ -945,6 +950,7 @@ class LaunchRequest:
     case_set_cases: tuple[EvalTestCase, ...] = ()
     margins: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
     measure_latency: bool = False
+    generation: AdmittedGeneration | None = None
 
     def cases_or(self, template_cases: Sequence[EvalTestCase]) -> list[EvalTestCase]:
         """The cases this arm freezes: the case set's, when the launch names one, else the kind's own.
@@ -2141,6 +2147,10 @@ async def _admit_run(
         case_set=case_set,
     )
 
+    #: The writer a generating launch's calls were admitted on, built in the call and released once the
+    #: launchers that make them have run.
+    writers: list[BoundCompletionClient] = []
+
     async def priced(group: LaunchGroup, dispatched: _Dispatched) -> list[LaunchRequest]:
         """Every arm's request, planned and priced — no launcher has run, nothing is built and nothing spent.
 
@@ -2178,25 +2188,30 @@ async def _admit_run(
         # pays for the generation the arms share and what builds an arm's clients, so pricing an arm after
         # it would refuse a launch already billed. Priced exactly once — here, or by the battery's
         # pre-flight, whose plans the arms then carry.
-        if priced_arms is not None:
-            return priced_arms.carried_by(requests)
-        priced_requests = await price_arms(host, dispatched.launchable, requests)
-        # And the generation's own calls, against the out-of-run cap they will be admitted under — the battery's
-        # pre-flight quotes its templates' the same way. Without it a generation the cap cannot pay for was refused
-        # only inside the launcher, which a transport runs in the launch's job, after the call had returned.
-        await _quote_generation(
+        priced_requests = (
+            priced_arms.carried_by(requests)
+            if priced_arms is not None
+            else await price_arms(host, dispatched.launchable, requests)
+        )
+        # And the generation's own calls, admitted here, in the call, against the out-of-run cap — the battery's
+        # pre-flight quotes its templates' the same way. Admitted rather than only quoted, so the launcher makes
+        # exactly the calls priced here, on the writer they were priced on, and admits nothing in the job.
+        return await _with_admitted_generation(
             host,
             dispatched.template,
-            requests[0].generation_budget,
+            priced_requests,
             n_variations=n_variations,
             variation_model=variation_model,
             scope_id=scope_id,
+            writers=writers,
         )
-        return priced_requests
 
     async def launched(dispatched: _Dispatched, requests: list[LaunchRequest]) -> list[EvalRun]:
         """Hand each priced arm, one per model, to the kind's launcher — where a generating launch's calls are made."""
-        return [await dispatched.launchable.launch(request) for request in requests]
+        async with contextlib.AsyncExitStack() as held:
+            for writer in writers:
+                await held.enter_async_context(writer)
+            return [await dispatched.launchable.launch(request) for request in requests]
 
     async def dispatched_once() -> _Dispatched:
         """The launch's dispatch — or, for a battery's launch, the one its pre-flight priced, template and all.
@@ -2241,45 +2256,59 @@ async def _admit_run(
     )
 
 
-async def _quote_generation(
+async def _with_admitted_generation(
     host: LaunchHost,
     template: EvalTemplate,
-    budget: OutOfRunBudget | None,
+    requests: list[LaunchRequest],
     *,
     n_variations: int,
     variation_model: str | None,
     scope_id: str,
-) -> None:
-    """Price a launch's case generation on its writer against the budget it will be admitted under — no call made.
+    writers: list[BoundCompletionClient],
+) -> list[LaunchRequest]:
+    """Admit a launch's case generation in its call, and carry the admission on every arm's request.
 
-    The plan and the budget are the ones the launcher's generation uses (:func:`plan_variation_calls`,
-    :func:`_generation_budget`), so a generation this passes is one the launcher's admission passes too; the quote
-    commits nothing. A launch that generates nothing, or whose template no model writes, has nothing to price.
+    The plan and the budget are the ones the battery's pre-flight quotes (:func:`plan_variation_calls`,
+    :func:`_generation_budget`), so a generation the pre-flight passes is one this admits. The writer is built here
+    and every call admitted on it, so the launcher makes exactly what was priced, on the client it was priced on;
+    it is kept in ``writers`` for the launch to hold open around its launchers and release. A launch that
+    generates nothing, or whose template no model writes, admits nothing and carries no generation.
 
     Args:
         host: The host: its writer client and the store the existing cases are read from.
         template: The template whose ``llm`` axes the generation writes.
-        budget: The launch's generation budget; ``None`` for a launch that generates nothing.
+        requests: The launch's priced requests, every one carrying the launch's generation budget.
         n_variations: The cases the launch generates.
         variation_model: The writer model the launch named.
         scope_id: The scope the cases are generated into.
+        writers: Where the built writer is kept for the launch to release.
+
+    Returns:
+        The requests, each carrying the admitted generation.
 
     Raises:
-        ValidationFailedError: Under an enforced cap, a call the writer cannot price, or calls priced above it.
+        ValidationFailedError: Under an enforced cap, a call the writer cannot price, or calls priced above it — the
+            writer released, nothing called.
         ValueError: The host supplies no completion clients.
     """
+    budget = requests[0].generation_budget if requests else None
     if budget is None or n_variations <= 0 or variation_model is None or not _llm_axes(template):
-        return
+        return requests
     existing = await run_blocking(
         host.eval_host.blocking_executor,
         partial(host.eval_host.storage.query_test_cases, scope_id, template_id=template.id),
     )
-    planned = list(plan_variation_calls(template, n_variations, existing).values())
-    if not planned:
-        return
-    writer = host.eval_host.completion_clients("a launch's generation pricing")("variation", variation_model)
-    async with writer:
-        budget.quote(writer, "variation", planned)
+    planned = plan_variation_calls(template, n_variations, existing)
+    writer = host.eval_host.completion_clients("a launch's generation")("variation", variation_model)
+    try:
+        admitted = budget.admit(writer, "variation", list(planned.values()))
+    except BaseException:
+        async with writer:
+            pass
+        raise
+    writers.append(writer)
+    generation = AdmittedGeneration(writer=writer, budget=budget, calls=dict(zip(planned, admitted, strict=True)))
+    return [replace(request, generation=generation) for request in requests]
 
 
 def _generation_budget(
@@ -3414,16 +3443,16 @@ def _refuse_wiring_the_request_contradicts(request: LaunchRequest, wiring: KindW
     if counts is not None and counts.variation_model != request.variation_model:
         raise ValueError(
             f"the launch named variation model {request.variation_model!r} and kind {kind!r}'s launcher's generation "
-            f"recorded {counts.variation_model!r} as the model that wrote its cases; build the writer in the "
-            "'variation' role from the request's variation_model and hand it to generate_variations, whose counts "
-            "name the model it called"
+            f"recorded {counts.variation_model!r} as the model that wrote its cases; hand generate_variations the "
+            "request's generation, whose writer the launch built from its variation_model, and whose counts name "
+            "the model it called"
         )
     budget = request.generation_budget
     if counts is not None and counts.variation_model is not None and (budget is None or not budget.recorded):
         raise ValueError(
             f"kind {kind!r}'s launcher recorded cases written by {counts.variation_model!r}, and the launch's "
-            "generation budget ledgered no call: hand generate_variations budget=request.generation_budget, so the "
-            "calls are priced against the launch's out-of-run cap before they are made and ledgered once they are"
+            "generation budget ledgered no call: hand generate_variations generation=request.generation, the calls "
+            "the launch admitted against its out-of-run cap, so they are made as admitted and ledgered once they are"
         )
     plan = request.arm_plan
     if plan is not None:

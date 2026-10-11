@@ -258,6 +258,7 @@ from threetears.evals.kernel.judge_temperature import (
 )
 from threetears.evals.kernel.out_of_run import (
     AdmittedCall,
+    AdmittedGeneration,
     OutOfRunBudget,
     PlannedCall,
     RecordedCompletion,
@@ -534,6 +535,7 @@ __all__ = [
     "NonTerminalRunScan",
     "NotFoundError",
     "AdmittedCall",
+    "AdmittedGeneration",
     "OutOfRunBudget",
     "PassHatPoint",
     "CompositeBasis",

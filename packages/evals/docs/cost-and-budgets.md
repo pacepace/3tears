@@ -170,12 +170,26 @@ launch's job, before its runs start; a second judge's and a temperature comparis
 part-way — a kind's launcher refusing an arm, a provider refusing the account — ends `failed` on its record, and
 what it had spent is in the ledger as it went.
 
+**Planned, admitted in the call, made in the job.** Every one of these calls is a public plan before it is
+anything else, so the call can price it. The package never plans, admits and makes a call in one step: a
+planner returns the `PlannedCall` (`gen.plan_draft` for a proposal, `kernel.plan_variation_calls` for a
+generation), the caller quotes it and admits it under its `OutOfRunBudget` in its call, and the executor
+(`gen.propose_draft`, `gen.generate_variations`) takes the admitted call and only makes it, on the client it was
+priced on. The engine's own jobs (an analysis generation, a second judge, a judge repeat, a temperature
+comparison) admit in their call the same way, and each has an estimate that quotes the same plan.
+
 **Case generation.** Generation runs before any run exists, so its calls are outside every run's cost cap
-and metered-call ceiling. Every `llm` axis's call is priced on the writer's client (`price_ceiling`) against
-`LaunchSettings.max_out_of_run_cost_usd` before the first is made, and each is ledgered as an `OutOfRunSpend`
-under the launch's group. The launcher's side is in
-[Generating cases at launch](adopting-a-host.md#generating-cases-at-launch); `propose_draft` takes a budget the
-same way.
+and metered-call ceiling. In the launch's call, the engine builds the writer from the host's client factory,
+plans every `llm` axis's call, and admits them together on that writer (`price_ceiling`) against
+`LaunchSettings.max_out_of_run_cost_usd`, so a generation the cap cannot pay for is refused before the launch
+returns. Each arm's request carries the admission (`LaunchRequest.generation`); the launcher makes those calls
+and no others, and each is ledgered as an `OutOfRunSpend` under the launch's group. The launcher's side is in
+[Generating cases at launch](adopting-a-host.md#generating-cases-at-launch).
+
+**A rubric proposal.** A host plans it with `plan_draft`, admits the call with
+`budget.admit(client, "proposer", [call])` in its action's call (refusing there, with nothing called), and makes
+it in the action's job with `propose_draft(client, admitted, budget=..., axis=..., subject_id=...)`, which
+releases the client. A client admitted and never made is the host's to release.
 
 **Batteries that generate.** A battery prices every template's arms and every template's writer calls (on
 the host's `variation` client, against the budget each launch will be held to) before any template

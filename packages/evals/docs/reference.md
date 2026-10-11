@@ -413,6 +413,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`ActionSeam`** · protocol · A kind's synchronous tools, as the cassette lane records and replays them.
 - **`AdmissionRefusedError`** · exception · A launch refused because it would admit more unfinished runs than the process may hold (status 429).
 - **`AdmittedCall`** · dataclass · A planned call its budget admitted, at the ceiling it was priced at.
+- **`AdmittedGeneration`** · dataclass · A case generation's calls, admitted in the call that asked for it, for the job that makes them.
 - **`ArmGuardrails`** · class · Where one arm stands on every guardrail checked against the control, under any rig.
 - **`AuthoredAnalysis`** · model · A decision memo over one campaign's evidence.
 - **`BarAdjudication`** · model · One bar the campaign is held to, adjudicated against every cell.
@@ -1736,11 +1737,13 @@ The engine's generation package: the prompts and expanders that author test mate
 **Functions**
 
 - **`generate_variations`** · async function · Generate up to `n_variations` test cases for a template.
-  <br>`generate_variations(template: EvalTemplate, n_variations: int, *, storage: EvalTestCaseStore, scope_id: str, blocking_executor: Executor | None, llm: VariationLLM | None = None, budget: OutOfRunBudget | None = None, rng: random.Random | None = None, preview: bool = False) -> GeneratedVariations`
+  <br>`generate_variations(template: EvalTemplate, n_variations: int, *, storage: EvalTestCaseStore, scope_id: str, blocking_executor: Executor | None, generation: AdmittedGeneration | None = None, rng: random.Random | None = None, preview: bool = False) -> GeneratedVariations`
+- **`plan_draft`** · function · The one call a rubric proposal sends, on either axis, built before anything is priced or made.
+  <br>`plan_draft(*, system_prompt: str, subject_feed: str, catalog_feed: str) -> PlannedCall`
 - **`price_variations`** · async function · Price the calls `generate_variations` would make, refusing exactly as it would — and make none.
   <br>`price_variations(template: EvalTemplate, n_variations: int, *, storage: EvalTestCaseStore, scope_id: str, blocking_executor: Executor | None, llm: VariationLLM, budget: OutOfRunBudget) -> list[float | None]`
-- **`propose_draft`** · async function · Draft a rubric on `axis` from a subject feed and a catalog feed.
-  <br>`propose_draft(client: BoundCompletionClient, *, budget: OutOfRunBudget, axis: RubricAxis, subject_id: str, system_prompt: str, subject_feed: str, catalog_feed: str) -> ProposedDraft`
+- **`propose_draft`** · async function · Make an admitted rubric proposal on `axis` and read its draft.
+  <br>`propose_draft(client: BoundCompletionClient, admitted: AdmittedCall, *, budget: OutOfRunBudget, axis: RubricAxis, subject_id: str) -> ProposedDraft`
 
 **Classes**
 
