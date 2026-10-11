@@ -31,7 +31,7 @@ from packages.evals.tests.factories import (
     make_template,
     make_test_case,
 )
-from threetears.evals.kernel.campaign import EvalSweep, SweepArmRecord
+from threetears.evals.kernel.campaign import EvalGenerationSlot, EvalSweep, SweepArmRecord, generation_slot_id
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileAgreement
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import (
@@ -143,6 +143,9 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
         subject_id="s-1",
         arms=[SweepArmRecord(label="a", model="m")],
         max_concurrent_arms=1,
+    ),
+    "EvalGenerationSlot": lambda: EvalGenerationSlot(
+        id=generation_slot_id("c-1"), scope_id="uni-1", campaign_id="c-1", attempt_id="a-1"
     ),
     "EvalJudgeProfile": lambda: EvalJudgeProfile(
         scope_id="uni-1",

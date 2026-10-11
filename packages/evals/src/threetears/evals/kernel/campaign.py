@@ -1121,6 +1121,52 @@ class EvalAnalysisAttempt(EvalDocumentModel):
         return self
 
 
+def generation_slot_id(campaign_id: str) -> str:
+    """The id of a campaign's generation slot: one per campaign, so every process racing a start names one document."""
+    return f"generation-slot:{campaign_id}"
+
+
+class EvalGenerationSlot(EvalDocumentModel):
+    """Which analysis attempt holds a campaign's one generation: the document two starts race to claim.
+
+    One per campaign and scope, at :func:`generation_slot_id`, so a start in any process writes the same document:
+    created with a create-only write when the campaign has none, and taken over with ``if_match`` from an attempt
+    that has ended. Of two processes racing a start exactly one write lands; the other re-reads, finds the winner's
+    attempt live, and is refused naming it. Never released — the attempt's own record says whether it still runs
+    (its lease), so a process that dies holding the slot frees it when its lease lapses.
+    """
+
+    id: str = Field(min_length=1, description="generation_slot_id(campaign_id): one slot per campaign.")
+    doc_type: Literal["eval_generation_slot"] = "eval_generation_slot"
+    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
+    scope_id: str = Field(min_length=1)
+
+    campaign_id: str = Field(min_length=1, description="The campaign whose generations the slot admits one at a time.")
+    attempt_id: str = Field(
+        min_length=1, description="The attempt that last claimed the slot (EvalAnalysisAttempt.id)."
+    )
+    claimed_at: str = Field(default_factory=utc_now_iso, description="When it claimed it (ISO-8601).")
+
+    @field_validator("doc_type")
+    @classmethod
+    def check_doc_type(cls, v: str) -> str:
+        """Reject documents loaded into the wrong model class."""
+        if v != "eval_generation_slot":
+            raise ValueError(f"doc_type must be 'eval_generation_slot', got '{v}'")
+        return v
+
+    @model_validator(mode="after")
+    def check_slot_id(self) -> EvalGenerationSlot:
+        """Refuse a slot stored anywhere but its campaign's one id.
+
+        Raises:
+            ValueError: ``id`` is not ``generation_slot_id(campaign_id)``.
+        """
+        if self.id != generation_slot_id(self.campaign_id):
+            raise ValueError(f"a generation slot's id is {generation_slot_id(self.campaign_id)!r}; got {self.id!r}")
+        return self
+
+
 #: Where a sweep stands: ``running`` while its arms are being launched and run; ``completed`` — every arm ran;
 #: ``failed`` — an arm was refused at launch, or its run ended ``failed``, so no further arm was launched;
 #: ``cancelled`` — a cancel stopped it, cancelling the arms in flight and launching none after; or it was lost

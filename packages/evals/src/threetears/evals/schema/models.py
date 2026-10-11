@@ -188,6 +188,7 @@ EVAL_DOC_TYPES = (
     "case_set",
     "eval_sweep",
     "eval_judge_profile",
+    "eval_generation_slot",
 )
 
 

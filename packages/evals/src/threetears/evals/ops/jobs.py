@@ -20,6 +20,12 @@ process, reads the same. A **cancel** is written on the record too (``cancel_req
 was asked; the process running the job reads it at its next renewal — at once when it is this one — and the job
 ends ``cancelled``. A job is therefore cancelled from any process, and a cancel lands within one renewal interval.
 
+**A loss bounds what the lost holder may still write, it does not erase what it measured.** Between another
+process writing a run lost and the holder's next write of its own run (a progress tick, at most one cell later) or
+its next renewal (at most a third of a lease later), the holder may still store results — at most the cells
+in flight then, typically one. Each is a real measurement of a cell the run did execute, and a lost run keeps
+what it measured; the run's status, completeness and ending are the loss's and are never overwritten.
+
 **A job is answered only inside the caller's scope.** Its record is read scoped, so another scope's run, sweep or
 generation reads absent — not found, on poll and cancel alike — and a generation's attempt is answered only under
 the campaign it was filed under, so a caller typing another campaign into the id learns nothing.

@@ -39,7 +39,15 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 from pydantic import ValidationError
 
-from threetears.evals.kernel.campaign import EvalAnalysis, EvalAnalysisAttempt, EvalCampaign, EvalInsight, EvalSweep
+from threetears.evals.kernel.campaign import (
+    EvalAnalysis,
+    EvalAnalysisAttempt,
+    EvalCampaign,
+    EvalGenerationSlot,
+    EvalInsight,
+    EvalSweep,
+    generation_slot_id,
+)
 from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
 from threetears.evals.kernel.errors import ConflictError, StorageError
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileStore
@@ -103,7 +111,9 @@ class NonTerminalRunScan(NamedTuple):
     """
 
 
-def save_document(repo: DocumentStore, document: dict[str, Any], *, if_match: str | None = None) -> None:
+def save_document(
+    repo: DocumentStore, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False
+) -> None:
     """Upsert ``document`` through ``repo``, raising on any failure.
 
     The one write path for eval documents over a :class:`~threetears.evals.schema.store_port.DocumentStore`,
@@ -120,13 +130,20 @@ def save_document(repo: DocumentStore, document: dict[str, Any], *, if_match: st
         repo: The store to write through.
         document: The document, carrying its ``id`` and ``doc_type``.
         if_match: The etag the stored document must still have, for a conditional write.
+        create_only: Write only if nothing is stored under the document's scope and id.
 
     Raises:
-        ConflictError: ``if_match`` was given and the stored document has moved on.
+        ConflictError: ``if_match`` was given and the stored document has moved on, or ``create_only`` was
+            set and a document is stored there.
         StorageError: Any other backend failure.
     """
     try:
-        repo.upsert(document, if_match=if_match)
+        if create_only:
+            repo.upsert(document, if_match=if_match, create_only=True)
+        else:
+            # Only a create names the precondition, so a write that needs none asks of the store exactly
+            # what it always did.
+            repo.upsert(document, if_match=if_match)
     except StoreConflict as e:
         raise ConflictError(
             f"{document.get('doc_type')} '{document.get('id')}' changed since it was read — re-read it and re-apply"
@@ -547,9 +564,9 @@ class EvalStorage:
         expected = model_cls.model_fields["doc_type"].default
         return None if stored is not None and stored != expected else data
 
-    def _save(self, document: dict[str, Any], *, if_match: str | None = None) -> None:
+    def _save(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
         """Upsert ``document`` with :func:`save_document`, which raises on any failure."""
-        save_document(self._store, document, if_match=if_match)
+        save_document(self._store, document, if_match=if_match, create_only=create_only)
 
     # =========================================================================
     # Job records — the lease fields every job record carries (JobRecordStore, LeaseStore)
@@ -976,6 +993,27 @@ class EvalStorage:
             StorageError: Any other write failure.
         """
         self._save(attempt.to_dict(), if_match=if_match)
+
+    def load_generation_slot_with_etag(
+        self, campaign_id: str, scope_id: str
+    ) -> tuple[EvalGenerationSlot | None, str | None]:
+        """Load a campaign's generation slot plus the token a takeover must present; ``(None, None)`` when unclaimed."""
+        return self.load_job_record(EvalGenerationSlot, generation_slot_id(campaign_id), scope_id)
+
+    def claim_generation_slot(self, slot: EvalGenerationSlot, *, if_match: str | None) -> None:
+        """Claim a campaign's generation slot: created when ``if_match`` is None, taken over with it otherwise.
+
+        Never unconditional: a slot that does not exist is created with a create-only write, so of two processes
+        creating it at once exactly one lands.
+
+        Raises:
+            ConflictError: Another start claimed the slot first; re-read it.
+            StorageError: Any other write failure.
+        """
+        if if_match is None:
+            self._save(slot.to_dict(), create_only=True)
+        else:
+            self._save(slot.to_dict(), if_match=if_match)
 
     def list_analysis_attempts_by_campaign(self, campaign_id: str, scope_id: str) -> list[EvalAnalysisAttempt]:
         """Return every generation attempt recorded against a campaign, newest first."""

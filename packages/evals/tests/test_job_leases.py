@@ -16,6 +16,9 @@ are to the engine. Pinned:
 - **Old records**: a record that has not ended and carries no lease reads lost.
 - **Scope**: another scope's job reads absent, on poll and on cancel.
 - **Sweeps** are cancelled from another process, and a lapsed one launches no further arm.
+- **One generation of a campaign at a time**: two processes racing a start both reach the claim of the campaign's
+  generation slot; exactly one wins, and the other is refused naming the live attempt. A slot whose attempt has
+  ended or lapsed is taken over.
 - **The reclaim** writes lapsed runs lost and leaves any process's live one alone.
 """
 
@@ -23,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -30,6 +34,7 @@ import pytest
 
 from threetears.evals.kernel import (
     ANALYSIS_JOB,
+    ConflictError,
     RUN_JOB,
     SHUTDOWN_CAUSE,
     EvalAnalysisAttempt,
@@ -472,3 +477,83 @@ async def test_a_sweep_whose_lease_lapsed_reads_lost_and_launches_nothing_more()
     assert after.state == "lost" and after.progress["arms_launched"] == 1, "the fenced sweep launched no further arm"
     sweep, _ = holder.eval_host.storage.load_job_record(EvalSweep, sweep_id, TOYHOST_SCOPE)
     assert sweep is not None and sweep.outcome == "cancelled" and sweep.lost is not None
+
+
+# =============================================================================
+# One generation of a campaign at a time, across processes
+# =============================================================================
+
+
+class RacingStore(InMemoryDocumentStore):
+    """Holds the two claims of a campaign's generation slot until both have read it, so both race the write.
+
+    Each start reads the slot twice: once before it prepares (a cheap early refusal) and once in its claim. The
+    third and fourth reads are the two claims; each waits for the other, so both find the slot empty and both
+    try to create it.
+    """
+
+    def __init__(self) -> None:
+        """Arm the barrier the two claims meet at."""
+        super().__init__()
+        self.slot_reads = 0
+        self._claims = threading.Barrier(2, timeout=5)
+
+    def get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]:
+        """Read, holding a claim's read of the slot until the other claim has read it too."""
+        found = super().get_with_etag(doc_id, scope_id)
+        if doc_id.startswith("generation-slot:"):
+            self.slot_reads += 1
+            if self.slot_reads in (3, 4):
+                self._claims.wait()
+        return found
+
+
+async def test_two_processes_racing_a_generation_start_one_wins_and_the_other_is_refused_naming_it() -> None:
+    gate = asyncio.Event()
+    store = RacingStore()
+    first = ops_fixture(gate=gate, store=store)
+    second = _other_process(first.host)
+
+    outcomes = await asyncio.gather(
+        analysis_generate(first.host, first.campaign.id, TOYHOST_SCOPE),
+        analysis_generate(second, first.campaign.id, TOYHOST_SCOPE),
+        return_exceptions=True,
+    )
+
+    started = [outcome for outcome in outcomes if not isinstance(outcome, BaseException)]
+    refused = [outcome for outcome in outcomes if isinstance(outcome, BaseException)]
+    assert len(started) == 1 and len(refused) == 1, outcomes
+    assert store.slot_reads >= 4, "both starts reached the claim"
+    (job,) = started[0].jobs
+    assert isinstance(refused[0], ConflictError)
+    assert f"(job {job.job_id})" in str(refused[0]), "the refusal names the live attempt"
+
+    attempts = {
+        attempt.id: attempt
+        for attempt in first.host.eval_host.storage.list_analysis_attempts_by_campaign(first.campaign.id, TOYHOST_SCOPE)
+    }
+    loser = next(attempt for attempt_id, attempt in attempts.items() if attempt_id != job.job_id.rsplit(":", 1)[1])
+    assert loser.outcome == "failed" and loser.calls == 0
+    assert loser.error is not None and loser.error.startswith("refused before any call") and job.job_id in loser.error
+
+    gate.set()
+    assert (await settled(first.host, job.job_id)).state == "completed"
+
+
+async def test_a_generation_slot_is_taken_over_once_its_attempt_has_ended_or_lapsed() -> None:
+    gate = asyncio.Event()
+    store = ClockedStore()
+    holder = ops_fixture(gate=gate, store=store)
+    elsewhere = _other_process(holder.host)
+    (job,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
+
+    with pytest.raises(ConflictError, match=f"job {job.job_id}"):
+        await analysis_generate(elsewhere, holder.campaign.id, TOYHOST_SCOPE)
+
+    store.at = T0 + timedelta(seconds=61)  # the holder's process went away
+    (taken,) = (await analysis_generate(elsewhere, holder.campaign.id, TOYHOST_SCOPE)).jobs
+    assert taken.job_id != job.job_id
+    assert (await job_poll(elsewhere, job.job_id, TOYHOST_SCOPE)).state == "lost"
+    slot, _ = elsewhere.eval_host.storage.load_generation_slot_with_etag(holder.campaign.id, TOYHOST_SCOPE)
+    assert slot is not None and slot.attempt_id == taken.job_id.rsplit(":", 1)[1]
+    gate.set()
