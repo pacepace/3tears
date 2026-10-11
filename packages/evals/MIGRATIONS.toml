@@ -61,6 +61,7 @@ notes = [
     "`analysis.lenses.frontier.compute_frontier` takes `tiers`, and `FrontierVerdict` carries `judge_evidence_tier` for a verdict made on a judged pass^k. `analysis.reads.LensStore` gains `query_calibration_ratings`, `query_judge_profiles` and `load_template`, which a scope's frontier reads its judges' tiers through.",
     "`JudgeEvidenceTier` carries `consulted_profile` (`kernel.JudgeProfileConsulted`) when a stored judge profile was read for an undetermined judge and decided nothing either.",
     "A font metrics table records `probe_digest`; `load_chart_font` refuses one recording another or none. Re-measure every host table with `python -m threetears.evals.vega.measure_font`. `check_font_files` is exported from `threetears.evals.vega`.",
+    "`storage.RoutedDocumentStore(children, route, *, routing_scope)` and `RoutedDocumentStore.relocate(..., routing_scope=...)` take a required `routing_scope`: the scope the placement record is kept in, which the host names (a partition of shared stores names its own). `ROUTING_SCOPE` is gone. A host upgrading in place passes `routing_scope=\"threetears.evals.routing\"`, the scope its records were written in; one choosing another scope runs `relocate` with it before starting. A router built with another scope than `relocate` was given refuses to start (`RouteChanged`), and `relocate` refuses a routing scope among its `scope_ids`.",
 ]
 
 [[release.change]]
@@ -68,6 +69,12 @@ from = "threetears.evals.testing"
 to = "threetears.evals.testing"
 why = """The import check reports more than imports now — attribute chains, private reach, patches — so its finding is renamed, and names the rule it breaks (see the notes for its fields)."""
 renamed = { NonPublicImport = "BoundaryFinding" }
+
+[[release.change]]
+from = "threetears.evals.storage"
+to = "removed"
+why = """A fixed routing scope put every partition's placement record under one key in shared stores, so only one partition could write it. The host names the scope now (`routing_scope`, required on the router and on `relocate`)."""
+names = ["ROUTING_SCOPE"]
 
 [[release]]
 version = "0.66.0-evaladopt.7"

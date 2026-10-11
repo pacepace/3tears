@@ -213,10 +213,14 @@ from threetears.evals.storage import DocTypeRoute, RoutedDocumentStore, SqliteDo
 stores = {"evidence": MyPostgresStore(dsn), "scratch": SqliteDocumentStore("regenerable.sqlite")}
 route = DocTypeRoute(by="lifecycle", to={"kept": "evidence", "regenerable": "scratch"}, unregistered="evidence")
 
-# Once, with the engine stopped: move what the stores already hold to where the route puts it.
-RoutedDocumentStore.relocate(stores, route, scope_ids=["acme", "globex"], host_doc_types=["host_note"])
+ROUTING = "evals-routing.production"  # yours to name; never a scope you keep documents in
 
-storage = EvalStorage(RoutedDocumentStore(stores, route), host_doc_types=["host_note"])
+# Once, with the engine stopped: move what the stores already hold to where the route puts it.
+RoutedDocumentStore.relocate(
+    stores, route, scope_ids=["acme", "globex"], routing_scope=ROUTING, host_doc_types=["host_note"]
+)
+
+storage = EvalStorage(RoutedDocumentStore(stores, route, routing_scope=ROUTING), host_doc_types=["host_note"])
 ```
 
 A route keys on facts, never on type names, so a type a later release adds is placed by what it is. Every
@@ -232,8 +236,13 @@ id in two stores, or in a store its type is not kept in, raises `MisplacedDocume
 it, as a single store would refuse it. Only the owning store's create is atomic, so a write racing that check
 can leave the id in two stores, and the next id-only read reports it as `MisplacedDocument`.
 
-**Changing the route is an operation.** Each store records the placements it was written under, in a scope of
-its own (`ROUTING_SCOPE`: never use it as a scope of your own, and your adapter must be able to hold it).
+**Changing the route is an operation.** Each store records the placements it was written under, in the routing
+scope you name (`routing_scope`, on the router and on `relocate` alike, with no default). Never keep documents in
+it, and your adapter must be able to hold it. If you run several partitions in one database, such as
+environments or tenants behind row-level security over tables whose key is global, run one router per partition
+and give each its own routing scope: one shared scope would hold every partition's record under one key, which
+only the first partition could write. A router built with another routing scope than `relocate` was given finds
+no record and refuses to start.
 The router refuses to start (`RouteChanged`) when a type would be read from a store it was not written to, when
 two stores are passed under each other's names, and when no store has a record yet. `RoutedDocumentStore.relocate`
 moves every document of the scopes and host types you name to its new store, then writes the records. Run it

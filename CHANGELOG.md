@@ -12,6 +12,9 @@ packages (bumped in lock-step).
   and .8's records sit in a new unreleased section since that tag. `release_notes.py v0.66.0-evaladopt.7` prints
   what .7 shipped. `tests/test_api_surface.py` now fails once HEAD is past a tag with no section of its own, or
   while the unreleased section starts at an older tag, and `docs/releasing.md` names the rename as a release step.
+- **The host names a routed store's routing scope (breaking).** `RoutedDocumentStore` and `relocate` take a
+  required `routing_scope`, so partitions of one database (row-level security over a global key) each keep their
+  own placement record instead of only the first being able to write it; `ROUTING_SCOPE` is gone.
 
 ### 3tears-evals: what a consumer's end-to-end test of .6 found (gaps 16–27)
 

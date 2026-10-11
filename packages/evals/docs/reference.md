@@ -1771,8 +1771,6 @@ Storage adapters the engine ships: implementations of the one port a host stores
 
 **Constants**
 
-- **`ROUTING_SCOPE`** · constant (str) · The scope each store's placement record lives in, reserved: a host never uses it as a scope of its own.
-  <br>`= 'threetears.evals.routing'`
 - **`SQLITE_STORE_LAYOUT`** · constant (int) · The file layout this store writes and reads, stamped as the file's `user_version`.
   <br>`= 1`
 

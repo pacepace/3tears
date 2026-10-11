@@ -208,8 +208,8 @@ async def test_the_kit_passes_the_whole_catalogue_over_a_two_store_router() -> N
 
     def routed(guard: CompletionGuard) -> JobsConformanceHost:
         stores = {"given": InMemoryDocumentStore(), "happened": InMemoryDocumentStore()}
-        RoutedDocumentStore.relocate(stores, route, scope_ids=[])
-        built = conformance_host(guard, store=RoutedDocumentStore(stores, route))
+        RoutedDocumentStore.relocate(stores, route, scope_ids=[], routing_scope="evals-routing")
+        built = conformance_host(guard, store=RoutedDocumentStore(stores, route, routing_scope="evals-routing"))
         held.append(stores)
         return built
 

@@ -24,7 +24,7 @@ reads the other. A store that does not hold the id answers "not here" (``None``,
 miss, never a refusal; so an id-only write reports ``False`` only when no store holds it.
 
 **Changing the rule is an operation.** Each store holds a record of the placements it was last started under,
-in a scope reserved for it (:data:`ROUTING_SCOPE`), under a ``doc_type`` no engine call names. The router refuses to start
+in the routing scope its host names, under a ``doc_type`` no engine call names. The router refuses to start
 (:class:`RouteChanged`) when any type would now be read from a store other than the one an earlier start wrote it
 to, when a store's record names another store (two stores passed under each other's names), when the records
 disagree, and when no store holds a record at all, since a store adopted with documents already in it cannot be
@@ -44,9 +44,14 @@ agreement it cannot keep.
 The record is the router's bookkeeping about the stores, not an engine document: it is not routed by facts, it
 is written to every store alike, and it is not in :data:`~threetears.evals.schema.models.EVAL_DOC_TYPES` because
 no operator wipe should remove it and no adapter's conformance run should be asked to store it. It lives in its
-own scope, under its own ``doc_type``, so no typed read of a document scope meets it. The router does not police
-the scope (tenancy is opaque: nothing in the engine reads a scope's value), so a host must never use
-:data:`ROUTING_SCOPE` as a scope of its own.
+own scope, under its own ``doc_type``, so no typed read of a document scope meets it.
+
+**The host names the routing scope, and there is no default.** A host that partitions environments or tenants
+in one database (row-level security over a table whose key is global, say) runs one router per partition over
+the same tables. A fixed scope would put every partition's record under one key, which only the first partition
+could write; each partition names its own scope, and holds its own record there. Tenancy is opaque (nothing in
+the engine reads a scope's value), so the router cannot police the scope beyond refusing a blank one and refusing
+to move it as a document scope: a host never uses its routing scope as a scope of its own.
 """
 
 from __future__ import annotations
@@ -61,13 +66,9 @@ from threetears.evals.schema.doc_types import DOC_TYPE_FACTS, DocLifecycle, DocO
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.store_port import DocumentStore, StoreClock, StoreConflict
 
-__all__ = ["ROUTING_SCOPE", "DocTypeRoute", "MisplacedDocument", "RouteChanged", "RoutedDocumentStore"]
+__all__ = ["DocTypeRoute", "MisplacedDocument", "RouteChanged", "RoutedDocumentStore"]
 
-#: The scope each store's placement record lives in, reserved: a host never uses it as a scope of its own. An
-#: adapter that isolates by scope must be able to hold it.
-ROUTING_SCOPE: Final[str] = "threetears.evals.routing"
-
-#: The ``doc_type`` and ``id`` of a store's placement record, inside :data:`ROUTING_SCOPE`.
+#: The ``doc_type`` and ``id`` of a store's placement record, inside the routing scope its host names.
 _RECORD_DOC_TYPE: Final[str] = "eval_routing_record"
 _RECORD_ID: Final[str] = "placements"
 
@@ -152,7 +153,7 @@ def _fingerprint(placements: Mapping[str, str], unregistered: str) -> str:
     return canonical_digest({"placements": dict(placements), "unregistered": unregistered})
 
 
-def _record(child: str, placements: Mapping[str, str], unregistered: str) -> dict[str, Any]:
+def _record(child: str, placements: Mapping[str, str], unregistered: str, routing_scope: str) -> dict[str, Any]:
     """The placement record written to the store named ``child``: the placements whole, and their fingerprint.
 
     The placements are kept whole rather than as the digest alone so a start can tell a type that moved (refused)
@@ -160,13 +161,27 @@ def _record(child: str, placements: Mapping[str, str], unregistered: str) -> dic
     """
     return {
         "id": _RECORD_ID,
-        "scope_id": ROUTING_SCOPE,
+        "scope_id": routing_scope,
         "doc_type": _RECORD_DOC_TYPE,
         "child": child,
         "placements": dict(sorted(placements.items())),
         "unregistered": unregistered,
         "fingerprint": _fingerprint(placements, unregistered),
     }
+
+
+def _checked_routing_scope(routing_scope: str) -> str:
+    """Refuse a blank routing scope, which would hold every record under a scope no host chose.
+
+    Raises:
+        ValueError: ``routing_scope`` is blank.
+    """
+    if not routing_scope.strip():
+        raise ValueError(
+            "a routed store's routing scope is blank; name the scope its placement record is kept in, one this "
+            "partition of the stores owns and never uses for documents"
+        )
+    return routing_scope
 
 
 def _checked_children(children: Mapping[str, DocumentStore], route: DocTypeRoute) -> Mapping[str, str]:
@@ -199,20 +214,27 @@ class RoutedDocumentStore:
         children: The stores, by name. A store no type is placed in is still asked by every id-only call, so one
             being drained stays reachable until :meth:`relocate` has emptied it.
         route: Where each type is kept.
+        routing_scope: The scope this router's placement record is kept in, in every store: one the host owns and
+            never uses for documents. A host running one router per partition of shared stores names one per
+            partition (the module docstring). Required: it must be the scope :meth:`relocate` was given.
 
     Raises:
-        ValueError: The route or the stores are refused (see :class:`DocTypeRoute` and :meth:`relocate`).
+        ValueError: The route or the stores are refused (see :class:`DocTypeRoute` and :meth:`relocate`), or the
+            routing scope is blank.
         RouteChanged: The stores were written under other placements, or under none.
     """
 
-    def __new__(cls, children: Mapping[str, DocumentStore], route: DocTypeRoute) -> RoutedDocumentStore:
+    def __new__(
+        cls, children: Mapping[str, DocumentStore], route: DocTypeRoute, *, routing_scope: str
+    ) -> RoutedDocumentStore:
         """Build the clocked router when every store offers a clock, so ``isinstance(router, StoreClock)`` says so."""
         if cls is RoutedDocumentStore and children and all(isinstance(s, StoreClock) for s in children.values()):
             return super().__new__(_ClockedRoutedDocumentStore)
         return super().__new__(cls)
 
-    def __init__(self, children: Mapping[str, DocumentStore], route: DocTypeRoute) -> None:
+    def __init__(self, children: Mapping[str, DocumentStore], route: DocTypeRoute, *, routing_scope: str) -> None:
         """Resolve the route, and refuse to start unless every store was written under these placements."""
+        self._routing_scope = _checked_routing_scope(routing_scope)
         self._children: Mapping[str, DocumentStore] = MappingProxyType(dict(children))
         self._route = route
         self._placements = _checked_children(self._children, route)
@@ -222,6 +244,11 @@ class RoutedDocumentStore:
     def placements(self) -> Mapping[str, str]:
         """The store each registered ``doc_type`` is kept in, by name."""
         return self._placements
+
+    @property
+    def routing_scope(self) -> str:
+        """The scope this router's placement record is kept in."""
+        return self._routing_scope
 
     @property
     def unregistered(self) -> str:
@@ -237,13 +264,17 @@ class RoutedDocumentStore:
         Raises:
             RouteChanged: See the module docstring.
         """
-        records = {name: store.get(_RECORD_ID, ROUTING_SCOPE) for name, store in self._children.items()}
+        records = {name: store.get(_RECORD_ID, self._routing_scope) for name, store in self._children.items()}
         held = {name: record for name, record in records.items() if record is not None}
-        remedy = "run RoutedDocumentStore.relocate over every scope with the engine stopped, then start again"
+        remedy = (
+            f"run RoutedDocumentStore.relocate over every scope, with routing_scope={self._routing_scope!r}, with the "
+            "engine stopped, then start again"
+        )
         if not held:
             raise RouteChanged(
-                f"none of the stores {sorted(self._children)} records the placements it was written under, so "
-                f"documents already in one cannot be told from an empty store; {remedy}"
+                f"none of the stores {sorted(self._children)} records the placements it was written under in routing "
+                f"scope {self._routing_scope!r}, so documents already in one cannot be told from an empty store; "
+                f"{remedy}"
             )
         for name, record in held.items():
             if record.get("child") != name:
@@ -270,7 +301,7 @@ class RoutedDocumentStore:
     def _write_records(self) -> None:
         """Write this router's placements to every store's record."""
         for name, store in self._children.items():
-            store.upsert(_record(name, self._placements, self.unregistered))
+            store.upsert(_record(name, self._placements, self.unregistered, self._routing_scope))
 
     # --- routing ---------------------------------------------------------------------------------
 
@@ -445,6 +476,7 @@ class RoutedDocumentStore:
         route: DocTypeRoute,
         *,
         scope_ids: Iterable[str],
+        routing_scope: str,
         host_doc_types: Sequence[str] = (),
     ) -> dict[str, int]:
         """Move every document of the named scopes to the store ``route`` keeps it in, then record the placements.
@@ -460,20 +492,30 @@ class RoutedDocumentStore:
             children: The stores, by name, as the router will be built over them.
             route: Where each type is to be kept.
             scope_ids: Every scope with documents in these stores.
+            routing_scope: The scope the placement record is written in, which the router is then built with.
+                Never one of ``scope_ids``.
             host_doc_types: The host's own ``doc_type`` values in these stores, kept in ``route.unregistered``.
 
         Returns:
             How many documents were moved, by ``doc_type``.
 
         Raises:
-            ValueError: The route or the stores are refused.
+            ValueError: The route or the stores are refused, the routing scope is blank, or it is among
+                ``scope_ids``.
             MisplacedDocument: Two stores hold different documents under one id; which is right is an
                 operator's decision, and nothing of that id is moved.
         """
+        routing_scope = _checked_routing_scope(routing_scope)
+        scope_ids = list(scope_ids)
+        if routing_scope in scope_ids:
+            raise ValueError(
+                f"the routing scope {routing_scope!r} is among the scopes to relocate; it holds the router's own "
+                "record, never documents, so name a routing scope no document is kept in"
+            )
         placements = _checked_children(children, route)
         known: set[str] = set(placements) | set(host_doc_types)
         for store in children.values():
-            record = store.get(_RECORD_ID, ROUTING_SCOPE)
+            record = store.get(_RECORD_ID, routing_scope)
             if record is not None:
                 known |= set(record.get("placements", {}))
         moved: dict[str, int] = {}
@@ -499,7 +541,7 @@ class RoutedDocumentStore:
                         store.delete(doc_id, scope_id)
                         moved[doc_type] = moved.get(doc_type, 0) + 1
         for name, store in children.items():
-            store.upsert(_record(name, placements, route.unregistered))
+            store.upsert(_record(name, placements, route.unregistered, routing_scope))
         return moved
 
 
