@@ -484,8 +484,10 @@ def update_campaign(
     updated_by: str,
     profile: HostProfile,
     exploratory: bool = False,
+    control_from_run_id: str | None = None,
+    clear_control: bool = False,
 ) -> EvalCampaign:
-    """Amend a campaign's authored fields — the write half the declaration needs.
+    """Amend a campaign's authored fields and its control — the write half the declaration needs.
 
     A declaration is not a create-time-only fact: an operator learns what they were actually
     asking somewhere in the middle of a campaign, and without this there is no way to say so
@@ -505,6 +507,14 @@ def update_campaign(
     update leaves, checked and never stored, so it is refused beside a design, and on a declared campaign whose
     declaration this update keeps.
 
+    **The control is named here too, in the same write**: ``control_from_run_id`` names a member run whose variant
+    becomes the declaration's control, resolved exactly as :func:`set_campaign_control` resolves it, and
+    ``clear_control`` clears it. Declaring a design and naming its control is one write rather than two, so a
+    refused designation leaves the design as it was too, as it does at creation. Either needs a declaration —
+    the one this update writes, or the stored one — and neither may stand beside a design that types its own
+    ``control``. A design this update writes replaces the stored one whole, so it keeps no control it does not
+    type or name here.
+
     Args:
         storage: The campaign store.
         campaign_id: The campaign to amend.
@@ -516,16 +526,22 @@ def update_campaign(
         profile: The host whose vocabulary this reads.
         exploratory: True to say the campaign this update leaves declares no design; required to set
             ``declared_design`` to None.
+        control_from_run_id: One of the campaign's runs whose variant becomes the declared control, or None.
+        clear_control: True to clear the declared control; a campaign declaring no design has none to clear.
 
     Returns:
         The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
 
     Raises:
         NotFoundError: No campaign with that id in the scope.
-        ValidationFailedError: ``updates`` is empty, names a field that is not updatable,
-            drops a stored question, fails campaign validation, or declares a design this
-            host cannot honour; sets ``declared_design`` to None without ``exploratory``; or
-            ``exploratory`` is True beside a design, or on a declared campaign this update leaves declared.
+        ValidationFailedError: ``updates`` is empty and no control is named or cleared, names a field that is
+            not updatable, drops a stored question, fails campaign validation, or declares a design this
+            host cannot honour; sets ``declared_design`` to None without ``exploratory``;
+            ``exploratory`` is True beside a design, or on a declared campaign this update leaves declared;
+            or ``control_from_run_id`` is given beside ``clear_control``, with no declaration to hold it, beside a
+            design typing ``control``, or naming a run the campaign does not hold.
+        LeverCoordinateError: ``control_from_run_id``'s run has no results and recorded no lever map, and the
+            host's variant map disagrees with its own registry.
         StorageError: The updated campaign failed to persist.
     """
     from pydantic import ValidationError
@@ -533,19 +549,24 @@ def update_campaign(
     from threetears.evals.kernel.campaign import EvalCampaign
     from threetears.evals.kernel.declaration import CampaignDesign, DesignRefused, reconcile_question_edits
 
-    if not updates:
+    names_control = control_from_run_id is not None or clear_control
+    if not updates and not names_control:
         raise ValidationFailedError(
-            "the campaign update names no field to change",
-            remedy=f"name at least one of {', '.join(_CAMPAIGN_UPDATABLE_FIELDS)}",
+            "the campaign update names nothing to change",
+            remedy=f"name at least one of {', '.join(_CAMPAIGN_UPDATABLE_FIELDS)}, or the control (control_from_run_id)",
         )
     if unknown := sorted(set(updates) - set(_CAMPAIGN_UPDATABLE_FIELDS)):
         raise ValidationFailedError(
             f"campaign fields not updatable here: {', '.join(unknown)}",
             remedy=(
-                f"update only {', '.join(_CAMPAIGN_UPDATABLE_FIELDS)}; membership and the control designation have "
-                "their own write paths (analysis.add_runs_to_campaign, analysis.remove_runs_from_campaign and "
-                "analysis.set_campaign_control)"
+                f"update only {', '.join(_CAMPAIGN_UPDATABLE_FIELDS)}, and name the control with control_from_run_id; "
+                "runs join and leave a campaign through campaign_runs_add and campaign_runs_remove"
             ),
+        )
+    if control_from_run_id is not None and clear_control:
+        raise ValidationFailedError(
+            "the update both names a control run and clears the control",
+            remedy="send one: control_from_run_id to name the control, or clear_control alone to clear it",
         )
 
     if exploratory and updates.get("declared_design") is not None:
@@ -568,7 +589,12 @@ def update_campaign(
     merged = campaign.model_dump(mode="json")
     merged.update({k: v for k, v in updates.items() if k != "declared_design"})
 
-    if "declared_design" in updates and updates["declared_design"] is None:
+    # The declaration this update leaves, and whether it writes one: the stored one, untouched, until the update
+    # withdraws it, replaces it, or names its control.
+    design = campaign.declared_design
+    rewrites = False
+    withdrawing = "declared_design" in updates and updates["declared_design"] is None
+    if withdrawing:
         if not exploratory:
             # Not a bare "clear it": a declaration is what an analysis of this campaign is
             # judged against, and un-declaring one turns every coverage shortfall it named back
@@ -579,7 +605,7 @@ def update_campaign(
                 "which an update says rather than implies",
                 remedy="send exploratory: true with it to withdraw the declaration, or amend the declaration instead",
             )
-        merged["declared_design"] = None
+        design, rewrites = None, True
     elif "declared_design" in updates:
         supplied = updates["declared_design"]
         if not isinstance(supplied, CampaignDesign | dict):
@@ -605,7 +631,40 @@ def update_campaign(
         except DesignRefused as e:
             raise ValidationFailedError(f"invalid campaign design: {e.fault}", remedy=e.remedy) from e
         _gate_declaration(storage, campaign, incoming, profile=profile)
-        merged["declared_design"] = _stamp_declaration(incoming, updated_by).model_dump(mode="json")
+        if names_control and incoming.control is not None:
+            raise ValidationFailedError(
+                "the design types a `control` and this update "
+                + ("names one too (control_from_run_id)" if control_from_run_id is not None else "clears it"),
+                remedy="give one: the run (control_from_run_id), whose variant key is resolved for you, or the key itself",
+            )
+        design, rewrites = incoming, True
+
+    if names_control and design is not None:
+        control = (
+            None
+            if control_from_run_id is None
+            else _resolve_control_variant(storage, campaign, control_from_run_id, profile=profile)
+        )
+        design, rewrites = design.model_copy(update={"control": control}), True
+    elif control_from_run_id is not None:
+        # Clearing a control on a campaign that declares none is not refused: there is nothing to clear, and a
+        # refusal would answer "remove the control" with "declare a design" — as set_campaign_control answers it.
+        raise ValidationFailedError(
+            f"control_from_run_id names the run whose variant is the control, and the control lives on the declaration, "
+            f"which campaign '{campaign_id}' "
+            + ("would no longer have once this update withdraws it" if withdrawing else "does not have")
+            + ". A control is the reference point of a comparison, so there is nothing for it to reference",
+            remedy=(
+                "leave control_from_run_id out when withdrawing the declaration"
+                if withdrawing
+                else "declare a design (declared_design) in the same update"
+            ),
+        )
+
+    if rewrites:
+        merged["declared_design"] = (
+            None if design is None else _stamp_declaration(design, updated_by).model_dump(mode="json")
+        )
 
     try:
         updated = EvalCampaign(**merged)
@@ -613,7 +672,13 @@ def update_campaign(
         raise ValidationFailedError(f"invalid campaign update: {e}", remedy=SCHEMA_REMEDY) from e
 
     storage.save_campaign(updated)
-    log.info("eval.update_campaign campaign=%s fields=%s by=%s", campaign_id, ",".join(sorted(updates)), updated_by)
+    log.info(
+        "eval.update_campaign campaign=%s fields=%s control=%s by=%s",
+        campaign_id,
+        ",".join(sorted(updates)) or "(none)",
+        "(cleared)" if clear_control else f"from run {control_from_run_id}" if control_from_run_id else "(unchanged)",
+        updated_by,
+    )
     return updated
 
 
@@ -905,7 +970,8 @@ def set_campaign_control(
         raise ValidationFailedError(
             f"campaign '{campaign_id}' declares no design, and the control lives on the declaration. A control is "
             "the reference point of a comparison, so there is nothing for it to reference yet",
-            remedy="declare one first (campaign_update with `declared_design`)",
+            remedy="declare one with campaign_update, which names the control in the same call (declared_design and "
+            "control_from_run_id)",
         )
     control = None if run_id is None else _resolve_control_variant(storage, campaign, run_id, profile=profile)
 

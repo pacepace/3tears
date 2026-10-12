@@ -114,7 +114,19 @@ contradiction. `exploratory` is checked, never stored: a campaign is exploratory
 design. `campaign_update` changes a campaign's `name`, `description` or `declared_design` after it exists, so an
 operator who started exploring declares the design when the question settles, and the campaign is declared from
 that write on. Going back is said too: `declared_design: null` withdraws the declaration only beside
-`exploratory: true`. Runs and the control have their own paths.
+`exploratory: true`.
+
+**Everything a campaign needs is an action.** An agent can start ad hoc and end with a declared, controlled
+campaign without a line of Python:
+
+1. `run_launch` the arms, then `campaign_create` with their `run_ids` and `exploratory: true`;
+2. `campaign_runs_add` the runs launched later (`campaign_runs_remove` takes one out; its results stay);
+3. `campaign_update` with the `declared_design` once the question settles, and `control_from_run_id` naming the
+   member run whose variant is the control — one write, so a refused control leaves the design unwritten too.
+   `control_from_run_id` alone re-names the control on a declared campaign, and `control_from_run_id: null`
+   clears it.
+
+`judge_configs_list` names the judge configs a second judge's `second_judge_config_ids` can map a dimension to.
 
 ## Reading one result
 

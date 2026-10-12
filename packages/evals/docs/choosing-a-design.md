@@ -83,11 +83,13 @@ print(design.shape, [arm.moved for arm in design.contrasts])  # one_factor_at_a_
 
 **On your own host, declare it when you create the campaign.** Call `create_campaign` (the `campaign_create`
 action takes the same fields). Pass `declared_design`, and name the control by one of its runs with
-`control_from_run_id`. A campaign you create without a design is one you say is exploratory
-(`exploratory=True`); creating one that says neither is refused, so no campaign is exploratory by accident. The engine resolves that run's variant key, so you never type a digest. To change the
-control later, call `set_campaign_control`. A design that names an axis your host cannot vary, or a bar looser
-than the registered one, is refused when the campaign is created. So create it before you launch, with no runs,
-then add each run with `add_runs_to_campaign` and set the control with `set_campaign_control`; a run can be
+`control_from_run_id`. The engine resolves that run's variant key, so you never type a digest. A campaign you
+create without a design is one you say is exploratory (`exploratory=True`); creating one that says neither is
+refused, so no campaign is exploratory by accident. To change the control later, call `update_campaign` with
+`control_from_run_id` (the `campaign_update` action), or `set_campaign_control`. A design that names an axis your
+host cannot vary, or a bar looser than the registered one, is refused when the campaign is created. So create it
+before you launch, with no runs, then add each run with `add_runs_to_campaign` (the `campaign_runs_add` action)
+and name the control from one of them; a run can be
 named as the control before it has any results. This declares the runs above by hand:
 
 ```python
@@ -114,7 +116,7 @@ campaign = create_campaign(
 |---|---|---|
 | `axes` (required) | The levers and levels you meant to compare. Each declared axis gets a row in `bundle.coverage`, `unswept` if it held one level; compare the row's `levels` with yours. | every question |
 | `held_fixed` (required) | Whether the cases held the stimulus fixed, and whether the rig was commissioned or found. | every question |
-| `control` | The reference variant, set from `control_from_run_id` or `set_campaign_control`. With none, the shape is `undesignated` and nothing is tested against a control. | A/B, single changes, grid |
+| `control` | The reference variant, set from `control_from_run_id` (on create or update) or `set_campaign_control`. With none, the shape is `undesignated` and nothing is tested against a control. | A/B, single changes, grid |
 | `intended_repetitions` | The repeats per case you meant each cell to get. A cell that falls short is named in `bundle.short_cells`. | the frontier, and any cell you want checked |
 | `questions` | What you set out to learn. Their `merit_axes` set the Holm families, and a reading no question covers is [exploratory](reading-reports.md#readings-no-question-asked-about-exploratory). | a confirmatory answer |
 | `bars`, `merit_priority` | Thresholds tighter than the host's, and the tie-break order between merit axes. | a bar verdict, a tie-break |

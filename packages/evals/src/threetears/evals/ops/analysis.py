@@ -20,7 +20,13 @@ from pydantic import Field
 
 from threetears.evals.analysis.bundle.insights import InsightStanding, insight_standing
 from threetears.evals.analysis.bar_proposals import propose_bars
-from threetears.evals.analysis.campaigns import create_campaign, list_campaigns, update_campaign
+from threetears.evals.analysis.campaigns import (
+    add_runs_to_campaign,
+    create_campaign,
+    list_campaigns,
+    remove_runs_from_campaign,
+    update_campaign,
+)
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.report import ReportBasis
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
@@ -53,7 +59,7 @@ from threetears.evals.ops.jobs import JobHandle, JobsStarted, analysis_job_id, g
 from threetears.evals.run.curation import delete_analysis, delete_insight, set_analysis_archived, set_campaign_archived
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.schema.logs import get_logger
-from threetears.evals.kernel.remedies import FIND_INSIGHT
+from threetears.evals.kernel.remedies import FIND_INSIGHT, FIND_RUN
 
 log = get_logger(__name__)
 
@@ -104,9 +110,10 @@ EXPLORATORY_DESCRIPTION = (
 
 #: What the control run is, said once for the operation and the action.
 CONTROL_RUN_DESCRIPTION = (
-    "One of run_ids whose variant becomes the declared control, the cell every other is read against: its variant "
-    "key is resolved from the run, as designating a control on an existing campaign resolves it. Requires "
-    "declared_design."
+    "One of the campaign's runs whose variant becomes the declared control, the cell every other is read against: "
+    "its variant key is resolved from the run, so nobody types it. Requires a declaration — declared_design in the "
+    "same call, or, on an update, the stored one — and is refused beside a design that types its own control. On "
+    "an update, null clears the control and omitted leaves it as it is."
 )
 
 
@@ -137,17 +144,20 @@ class CampaignDefinition(EvalBaseModel):
 
 
 class CampaignChanges(EvalBaseModel):
-    """What an update of a campaign may change: its name, its description and its declaration — each only when given.
+    """What an update of a campaign may change: its name, its description, its declaration and the declaration's
+    control — each only when given.
 
-    Membership and the control designation are not here: each has its own write path with rules a generic update
-    would skip. An omitted field is left as stored; ``declared_design`` given as null is a different request — the
-    declaration withdrawn — told apart by the fields the caller set, and allowed only beside ``exploratory``.
+    Membership is not here: runs join and leave through :func:`campaign_runs_add` and :func:`campaign_runs_remove`,
+    whose rules a generic update would skip. An omitted field is left as stored; ``declared_design`` given as null
+    is a different request — the declaration withdrawn — told apart by the fields the caller set, and allowed only
+    beside ``exploratory``; ``control_from_run_id`` given as null clears the control.
     """
 
     name: str | None = Field(default=None, min_length=1, description="The campaign's new name.")
     description: str | None = Field(default=None, description="The campaign's new description.")
     declared_design: dict[str, Any] | None = Field(default=None, description=DECLARED_DESIGN_DESCRIPTION)
     exploratory: bool = Field(default=False, description=EXPLORATORY_DESCRIPTION)
+    control_from_run_id: str | None = Field(default=None, min_length=1, description=CONTROL_RUN_DESCRIPTION)
 
 
 class AnalysisLine(EvalBaseModel):
@@ -310,10 +320,12 @@ def campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: st
 def campaign_update(
     host: EvalHost, campaign_id: str, changes: CampaignChanges, scope_id: str, *, updated_by: str
 ) -> CampaignLine:
-    """Amend a campaign's name, description or declaration — declaring a design on an exploratory one included.
+    """Amend a campaign's name, description, declaration or control — declaring a design on an exploratory one included.
 
     Only the fields the caller set are written (:attr:`CampaignChanges.model_fields_set`), so an omitted
-    ``declared_design`` leaves the declaration alone and a null one withdraws it.
+    ``declared_design`` leaves the declaration alone and a null one withdraws it, and an omitted
+    ``control_from_run_id`` leaves the control alone and a null one clears it. The declaration and its control are
+    written together, so a refused designation leaves the design as it was.
 
     Args:
         host: The host whose store holds the campaign.
@@ -328,20 +340,81 @@ def campaign_update(
     Raises:
         NotFoundError: No campaign with that id in the scope.
         ValidationFailedError: No field is set; a design this host cannot honour, or one dropping a stored
-            question; ``declared_design`` null without ``exploratory``; or ``exploratory`` beside a design, or on a
-            declared campaign the update leaves declared.
+            question; ``declared_design`` null without ``exploratory``; ``exploratory`` beside a design, or on a
+            declared campaign the update leaves declared; or a control run with no declaration to hold it, beside
+            a design typing its control, or that the campaign does not hold.
+        LeverCoordinateError: The control run has no results and recorded no lever map, and the host's variant
+            map disagrees with its own registry.
         StorageError: The write failed.
     """
     campaign = update_campaign(
         host.storage,
         campaign_id,
         scope_id,
-        changes.model_dump(include=changes.model_fields_set - {"exploratory"}),
+        changes.model_dump(include=changes.model_fields_set - {"exploratory", "control_from_run_id"}),
         updated_by=updated_by,
         profile=host.profile,
         exploratory=changes.exploratory,
+        control_from_run_id=changes.control_from_run_id,
+        clear_control="control_from_run_id" in changes.model_fields_set and changes.control_from_run_id is None,
     )
     return _campaign_line(campaign)
+
+
+def _refuse_no_runs(run_ids: list[str], verb: str) -> None:
+    """Refuse a membership change naming no run: it would write the campaign and change nothing."""
+    if not run_ids:
+        raise ValidationFailedError(f"no run was named to {verb}", remedy=f"name the runs by id ({FIND_RUN})")
+
+
+def campaign_runs_add(host: EvalHost, campaign_id: str, run_ids: list[str], scope_id: str) -> CampaignLine:
+    """Put runs in a campaign — runs launched after it was created, or a run first measured on its own.
+
+    A run already in the campaign is not added twice, and a run outside the scope is refused, all-or-nothing, as at
+    creation (:func:`~threetears.evals.analysis.add_runs_to_campaign`).
+
+    Args:
+        host: The host whose store holds the campaign and the runs.
+        campaign_id: The campaign.
+        run_ids: The runs to add.
+        scope_id: The scope they all live in.
+
+    Returns:
+        The campaign as persisted.
+
+    Raises:
+        NotFoundError: No campaign with that id in the scope.
+        ValidationFailedError: No run is named, or one does not exist in the scope; nothing was added.
+        StorageError: The write failed.
+    """
+    _refuse_no_runs(run_ids, "add")
+    return _campaign_line(add_runs_to_campaign(host.storage, campaign_id, scope_id, run_ids))
+
+
+def campaign_runs_remove(host: EvalHost, campaign_id: str, run_ids: list[str], scope_id: str) -> CampaignLine:
+    """Take runs out of a campaign — membership only: the runs and their results stay, in any other campaign too.
+
+    A run the campaign does not hold is refused, all-or-nothing
+    (:func:`~threetears.evals.analysis.remove_runs_from_campaign`). The declared control is a variant, not a run, so
+    removing the run it was named from leaves it declared; where no remaining run carries it, the report says the
+    control is unobserved.
+
+    Args:
+        host: The host whose store holds the campaign.
+        campaign_id: The campaign.
+        run_ids: The runs to take out; every one must be in the campaign.
+        scope_id: The scope it lives in.
+
+    Returns:
+        The campaign as persisted.
+
+    Raises:
+        NotFoundError: No campaign with that id in the scope.
+        ValidationFailedError: No run is named, or one is not in the campaign; nothing was removed.
+        StorageError: The write failed.
+    """
+    _refuse_no_runs(run_ids, "remove")
+    return _campaign_line(remove_runs_from_campaign(host.storage, campaign_id, scope_id, run_ids))
 
 
 def campaign_archive(host: EvalHost, campaign_id: str, scope_id: str, *, archived: bool) -> CampaignLine:
@@ -995,6 +1068,8 @@ __all__ = [
     "bars_propose",
     "campaign_archive",
     "campaign_create",
+    "campaign_runs_add",
+    "campaign_runs_remove",
     "campaign_update",
     "campaigns_list",
     "insight_delete",
