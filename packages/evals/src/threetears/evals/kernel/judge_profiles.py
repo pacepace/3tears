@@ -73,7 +73,8 @@ def judge_profile_id(
         rubric_dim: The criterion's dim.
         scale: Its scale.
         judge_model: The model that served the judge's replies.
-        judge_config_id: The versioned config that asked; None for the built-in prompt.
+        judge_config_id: The versioned config that asked, or a ``builtin:`` id for the built-in prompt, by its
+            wording; None for a built-in prompt whose wording was not recorded (judged before evaladopt.19).
         judge_temperature: What the judge's calls were sent at.
         criterion_digest: The criterion's wording (:func:`~threetears.evals.kernel.judge_criterion_digest`).
 
@@ -119,7 +120,13 @@ class EvalJudgeProfile(EvalDocumentModel):
     rubric_dim: DimName = Field(description="The criterion's dim.")
     scale: RubricScale = Field(description="The scale it was asked on.")
     judge_model: str = Field(min_length=1, description="The model the judge's replies named as having answered.")
-    judge_config_id: str | None = Field(description="The versioned JudgeConfig that asked; None = the built-in prompt.")
+    judge_config_id: str | None = Field(
+        description=(
+            "The versioned JudgeConfig that asked, or a ``builtin:`` id = the built-in prompt, by its wording. None = "
+            "a built-in prompt whose wording was not recorded (judged before evaladopt.19), which a profile measured "
+            "on it never lends to a ``builtin:`` judge."
+        )
+    )
     judge_temperature: JudgeTemperature = Field(
         description="What the judge's calls were sent at ('model_default' = sent none, the model refusing one)."
     )
@@ -216,6 +223,8 @@ def _derived_profile_id(data: dict[str, object]) -> str:
             str(data["criterion_digest"]),
         )
     except KeyError:
+        # NOSILENT(expected): a field this id is derived from failed its own validation, so it is absent here;
+        # that failure is what the construction raises, and the blank id never outlives it
         return ""
 
 

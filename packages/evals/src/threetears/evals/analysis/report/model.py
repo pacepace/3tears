@@ -108,7 +108,12 @@ from threetears.evals.schema.prose import ModelProse
 #: 8: every block serves ``rests_on_numbers``, the findings it rests on counted from 1 as ``finding_number`` counts,
 #: beside ``rests_on``, which keeps counting from 0. A field added, so the version moves: the schema refuses a key
 #: it does not name, so a client holding the version 7 schema would refuse a document carrying it.
-REPORT_VERSION: Literal[8] = 8
+#:
+#: 9: the headline and each summary bullet say what they stand on. An analysis report opens with a ``headline`` text
+#: block (the headline, the findings it rests on, and its ``Confidence`` and ``Stands on`` facts, the weakest of those
+#: findings'), and its summary is one ``summary`` block per bullet, each with its own ``rests_on`` and facts. A text
+#: role added, so the version moves: a client holding the version 8 schema refuses a role it does not name.
+REPORT_VERSION: Literal[9] = 9
 
 #: What a report is of: a generated analysis, or the campaign's evidence alone with no analysis.
 ReportBasis = Literal["analysis", "code_only"]
@@ -134,6 +139,7 @@ SECTION_TITLES: dict[str, str] = {
 
 #: What a text block's author wrote it as.
 TextRole = Literal[
+    "headline",
     "summary",
     "answer",
     "decision",
@@ -702,7 +708,7 @@ class Report(EvalDocumentModel):
         }
     )
 
-    report_version: Literal[8] = Field(default=REPORT_VERSION, description="This shape's version.")
+    report_version: Literal[9] = Field(default=REPORT_VERSION, description="This shape's version.")
     basis: ReportBasis = Field(
         description=(
             "`analysis` when the report renders a generated analysis; `code_only` when no analysis exists and the "

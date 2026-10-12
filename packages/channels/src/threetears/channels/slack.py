@@ -370,6 +370,8 @@ class SlackAdapter:
                 try:
                     posted_at = float(raw_ts)
                 except ValueError:
+                    # NOSILENT(expected): a ts that is not a number cannot prove the message predates the
+                    # adapter, so the answer is "not a replay" -- the message is handled, never dropped
                     posted_at = None
             if posted_at is not None and posted_at < self._started_at - _STARTUP_REPLAY_GRACE_SECONDS:
                 log.info(

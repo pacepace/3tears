@@ -300,7 +300,15 @@ def collect_repeatable(
             continue
         try:
             inputs = reproducible_judge_inputs(
-                storage, result, run, scope_id, request_settings=request_settings, config_dims=scored
+                storage,
+                result,
+                run,
+                scope_id,
+                request_settings=request_settings,
+                config_dims=scored,
+                # A repeat's answers pair with the first scores, so a built-in dim must be asked by the prompt that
+                # asked it; a temperature comparison pairs its answers with each other and nothing stored.
+                same_judge_dims=scored if request_settings == "today" else (),
             )
         except (ValidationFailedError, NotFoundError) as refused:
             skipped.append(JudgeRepeatSkip(result_id=result.id, reason=str(refused)))

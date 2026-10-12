@@ -516,11 +516,16 @@ class _FakeTables:
 
 # parity-exempt: hand-rolled subset stub of PyMuPDF's third-party Page (get_text() and find_tables(), the only surfaces the PDF parser reads)
 class _FakePdfPage:
-    def __init__(self, tables: list[_FakeExtractedTable], *, tables_raise: bool = False) -> None:
+    def __init__(
+        self, tables: list[_FakeExtractedTable], *, tables_raise: bool = False, layout_raise: bool = False
+    ) -> None:
         self.tables = tables
         self.tables_raise = tables_raise
+        self.layout_raise = layout_raise
 
     def get_text(self, option: str = "text") -> Any:
+        if option == "dict" and self.layout_raise:
+            raise RuntimeError("layout unreadable")
         return {"blocks": []} if option == "dict" else _PAGE_TEXT
 
     def find_tables(self) -> _FakeTables:
@@ -742,6 +747,18 @@ class TestPdfTables:
         result = await parse_document(b"%PDF-stub", "application/pdf")
         assert "| 4/14/2026 | Greenwood Leflore Hospital | 622110 – General |" in result.text
         assert "|  |  | Medical and Surgical Hospital |" in result.text
+
+    async def test_a_heading_detection_failure_keeps_the_page_text_and_says_so(self, monkeypatch, caplog):
+        """The heading heuristic used to answer "no headings" on any failure, saying nothing."""
+        fake_fitz = ModuleType("fitz")
+        page = _FakePdfPage([], layout_raise=True)
+        fake_fitz.open = lambda *a, **kw: _FakePdfDocument(page)  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+        with caplog.at_level("WARNING"):
+            result = await parse_document(b"%PDF-stub", "application/pdf")
+        assert result.text == _PAGE_TEXT
+        assert [s.content for s in result.sections] == [_PAGE_TEXT]
+        assert any("heading detection failed" in r.getMessage() for r in caplog.records)
 
     async def test_a_table_extraction_exception_degrades_to_the_page_text(self, monkeypatch):
         assert await _parse_pdf_page(monkeypatch, _FakePdfPage([], tables_raise=True), merge=False) == ""

@@ -220,6 +220,8 @@ def _is_blocked_address(address: str) -> bool:
     try:
         parsed = ipaddress.ip_address(address)
     except ValueError:
+        # NOSILENT(expected): fail closed -- an address the guard cannot classify is refused, and True
+        # is that refusal, never a permission.
         return True
     return (
         parsed.is_private
@@ -242,6 +244,7 @@ def _is_address_literal(host: str) -> bool:
     try:
         ipaddress.ip_address(host)
     except ValueError:
+        # NOSILENT(expected): the refusal IS the answer -- a host that does not parse as an address is a name.
         return False
     return True
 
@@ -283,12 +286,12 @@ def _as_address(host: str) -> str | None:
     try:
         return str(ipaddress.ip_address(host))
     except ValueError:
-        # NOSILENT: not a standard literal; the IPv4 shorthand spellings are tried next.
+        # NOSILENT(expected): "not a standard literal" is this parse's answer; the shorthand spellings are tried next.
         pass
     try:
         return socket.inet_ntoa(socket.inet_aton(host))
     except OSError:
-        # NOSILENT: not an IPv4 shorthand either, so it is a name -- the documented None.
+        # NOSILENT(expected): not an IPv4 shorthand either, so the host is a name -- the documented None.
         return None
 
 

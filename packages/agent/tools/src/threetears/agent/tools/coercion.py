@@ -53,6 +53,8 @@ def coerce_value(value: Any, json_type: str | None) -> Any:
             try:
                 parsed = json.loads(value)
             except TypeError, ValueError:
+                # NOSILENT(expected): text that is not JSON is not coercible; the original value passes
+                # through unchanged, as documented, and the tool's own validation refuses it by type
                 parsed = None
             if isinstance(parsed, dict):
                 result = parsed
@@ -63,6 +65,8 @@ def coerce_value(value: Any, json_type: str | None) -> Any:
             try:
                 parsed = json.loads(value)
             except TypeError, ValueError:
+                # NOSILENT(expected): text that is not JSON is not coercible; the original value passes
+                # through unchanged, as documented, and the tool's own validation refuses it by type
                 parsed = None
             if isinstance(parsed, list):
                 result = parsed

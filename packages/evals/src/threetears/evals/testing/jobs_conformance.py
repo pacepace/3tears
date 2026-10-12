@@ -268,17 +268,19 @@ def _call_case(action: Action, call_return_timeout_s: float) -> JobsConformanceC
         try:
             params = action.params.model_validate(dict(action.example))
             guard.call_started()
+            ended = "it returned"
             try:
                 await action.handler(built.host, built.caller, params)
             # prawduct:ok-broad-except — the example's ids name nothing; how the call ends is not this case's question
-            except Exception:
-                # NOSILENT: the example's ids name nothing in the conformance host, so the call may refuse; how it
-                # ends is not this case's question -- only whether it made a completion request, read just below.
-                pass
+            except Exception as refused:
+                # The example's ids name nothing in the conformance host, so the call may refuse; how it ends is not
+                # this case's question -- only whether it made a completion request, read just below. How it ended
+                # is kept, and named in that failure, so a request made on the way to a crash is not misread.
+                ended = f"it then raised {type(refused).__name__}: {refused}"
             finally:
                 guard.call_returned()
             if guard.outside:
-                raise _fail(action, rule, f"its example call made {', '.join(guard.outside)}")
+                raise _fail(action, rule, f"its example call made {', '.join(guard.outside)} ({ended})")
             if guard.awaited_by_call:
                 raise _awaited(action, rule, guard)
         finally:

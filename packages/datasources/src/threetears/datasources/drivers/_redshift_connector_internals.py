@@ -45,7 +45,7 @@ def connection_socket(conn: Any) -> Any:
     try:
         result = conn._usock
     except AttributeError:
-        # NOSILENT: an absent socket is the answer this returns, and each caller logs or raises
+        # NOSILENT(expected): an absent socket is the answer this returns, and each caller logs or raises
         # what that means for it -- a keepalive left at the system default, or a refused login.
         result = None
     return result

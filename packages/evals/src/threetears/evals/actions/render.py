@@ -22,12 +22,13 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
-from threetears.evals.schema import GoalStateOutcome
+from threetears.evals.schema import GoalStateOutcome, is_builtin_judge_config_id
 from threetears.evals.kernel import ResultOutcome, counted_goal_verdicts
 from threetears.evals.kernel.errors import EvalServiceError
 from threetears.evals.ops import (
     AnalysisDeleted,
     JudgeProfileEntry,
+    JudgeConfigListing,
     JudgeProfileListing,
     JudgeProfileRecording,
     CaseSetLine,
@@ -263,6 +264,17 @@ def render_templates(listing: TemplateListing) -> str:
     """A scope's templates."""
     lines = [f"templates ({len(listing.templates)})"]
     lines += [f"- {t.id}: {t.name} — kind {t.candidate_kind}; {t.intent}" for t in listing.templates]
+    return "\n".join(lines)
+
+
+def render_judge_configs(listing: JudgeConfigListing) -> str:
+    """A scope's judge configs, one per line with the dimension each asks for."""
+    lines = [f"judge configs ({len(listing.judge_configs)})"]
+    for config in listing.judge_configs:
+        model = f", model {config.model}" if config.model else ""
+        lines.append(
+            f"- {config.id}: {config.name} — dimension {config.rubric_dim_id}{model}, temperature {config.temperature}"
+        )
     return "\n".join(lines)
 
 
@@ -556,7 +568,10 @@ def render_campaigns(listing: CampaignListing) -> str:
 def render_analysis_line(analysis: AnalysisLine) -> str:
     """One stored analysis on one line."""
     archived = ", archived" if analysis.archived else ""
-    return f"- {analysis.id}: {analysis.headline} ({analysis.generator_model}, {analysis.generated_at}{archived})"
+    return (
+        f"- {analysis.id}: {analysis.headline} [{analysis.headline_standing}] "
+        f"({analysis.generator_model}, {analysis.generated_at}{archived})"
+    )
 
 
 def render_analyses(listing: AnalysisListing) -> str:
@@ -628,7 +643,9 @@ def render_judge_case_freeze(report: JudgeCaseFreezeReport) -> str:
 def _judge_profile_line(entry: JudgeProfileEntry) -> str:
     """One stored judge profile as a line: the judge, the criterion, what it was measured on and when, its tier."""
     profile = entry.profile
-    judge = profile.judge_model + (f", config {profile.judge_config_id}" if profile.judge_config_id else "")
+    config = profile.judge_config_id
+    what = "built-in prompt" if is_builtin_judge_config_id(config) else "config"
+    judge = profile.judge_model + (f", {what} {config}" if config else "")
     temperature = profile.judge_temperature
     judge += f", temperature {temperature if isinstance(temperature, str) else format_number(temperature)}"
     measures = []
@@ -930,6 +947,7 @@ __all__ = [
     "render_insight_deleted",
     "render_insights",
     "render_job_status",
+    "render_judge_configs",
     "render_jobs_started",
     "render_pivot",
     "render_report",

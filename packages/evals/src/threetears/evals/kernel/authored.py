@@ -14,6 +14,13 @@ hooks code acts on, never what it says or how much it says:
   proposal, answer and rationale, in prose with markdown allowed; and whatever else is worth saying,
   which goes in the summary.
 
+**What the headline and summary rest on.** ``headline_rests_on`` and ``summary_rests_on`` (one entry per bullet, as
+:func:`summary_bullets` splits the summary) link the two to findings by position, as a decision's ``rests_on`` does, so
+code can show each at the weakest confidence and evidence tier of the findings under it
+(:mod:`threetears.evals.analysis.standing`). Both default to empty so an analysis stored before them reads; the
+generator refuses a new one that leaves them empty over findings, so an empty list beside findings means "stored
+before the link existed", never "rests on nothing".
+
 **Sized to what every writer accepts.** A strict schema derived from the stored analysis models was
 refused by every Anthropic writer as a grammar too large, and the limit counts free-text and list
 slots across the whole schema.
@@ -27,6 +34,7 @@ and what is checked on return (:func:`validate_authored`), so the two cannot dri
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from typing import Any, Literal
 
@@ -150,6 +158,13 @@ class AuthoredAnalysis(_Authored):
             "At most twelve plain words a non-specialist understands: what to do and why. No numbers, setting names, or jargon."
         )
     )
+    headline_rests_on: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Positions in `findings` the headline rests on; at least one when there are findings. Code shows the "
+            "headline at the weakest confidence and evidence among them."
+        ),
+    )
     summary: ModelProse = Field(
         description=(
             "Three to five markdown bullets for a reader who reads nothing else: what was learned, what to do, what is "
@@ -157,10 +172,44 @@ class AuthoredAnalysis(_Authored):
             "belong in the findings."
         )
     )
+    summary_rests_on: list[list[int]] = Field(
+        default_factory=list,
+        description=(
+            "One entry per summary bullet, in order (a bullet is a line opening with `-`, `*`, `+` or a number): the "
+            "positions in `findings` it rests on; at least one each when there are findings."
+        ),
+    )
     findings: list[Finding] = Field(description="The findings, in reading order.")
     decisions: list[Decision]
     questions: list[QuestionAnswer]
     next: list[NextStep] = Field(description="Experiments to run next, highest leverage first.")
+
+
+#: A summary line that opens a bullet: ``-``, ``*``, ``+``, ``•``, or a number with ``.`` or ``)``.
+_BULLET = re.compile(r"^\s*(?:[-*+•]|\d+[.)])\s+")
+
+
+def summary_bullets(summary: str) -> list[str]:
+    """Split a markdown summary into its bullets, a line that opens none continuing the one before it.
+
+    The one split ``summary_rests_on`` is counted against. Text before the first bullet, or a summary with no bullet
+    at all, is one bullet of its own, so every word of the summary is in exactly one of them.
+
+    Args:
+        summary: The authored summary.
+
+    Returns:
+        The bullets in order, each stripped of its marker; empty for a blank summary.
+    """
+    bullets: list[str] = []
+    for line in summary.splitlines():
+        if not line.strip():
+            continue
+        if _BULLET.match(line) or not bullets:
+            bullets.append(_BULLET.sub("", line).strip())
+        else:
+            bullets[-1] += " " + line.strip()
+    return bullets
 
 
 class MapFieldInSchema(TypeError):
@@ -413,5 +462,6 @@ __all__ = [
     "count_slots",
     "response_format",
     "strict_schema",
+    "summary_bullets",
     "validate_authored",
 ]

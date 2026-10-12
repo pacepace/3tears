@@ -17,6 +17,7 @@ from importlib.metadata import version as _version
 try:
     __version__ = _version("3tears-langgraph")
 except _PackageNotFoundError:  # pragma: no cover - dev fallback
+    # NOSILENT(expected): a source tree that was never installed has no version, and "unknown" says so
     __version__ = "unknown"
 
 from threetears.langgraph.anonymize import (

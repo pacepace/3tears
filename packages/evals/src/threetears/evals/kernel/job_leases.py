@@ -285,7 +285,7 @@ def settle_job_record[R: EvalDocumentModel](
         try:
             store.save_job_record(_document(lost), if_match=etag)
         except ConflictError:
-            # NOSILENT: a lost race re-reads; whoever won (a renewal, another reader) decides what this answers
+            # NOSILENT(attempt): a lost race re-reads; whoever won (a renewal, another reader) decides what this answers
             continue
         log.warning(
             "eval.job_lease %s=%s scope=%s written lost: %s",
@@ -465,7 +465,7 @@ def write_held_record[R: EvalDocumentModel](
         try:
             store.save_job_record(_document(written), if_match=etag)
         except ConflictError:
-            # NOSILENT: a lost race re-reads and re-applies; exhausting the attempts raises below
+            # NOSILENT(attempt): a lost race re-reads and re-applies; exhausting the attempts raises below
             continue
         return written
     raise ConflictError(
@@ -493,7 +493,7 @@ def _note_fault(store: LeaseStore, kind: LeasedJobKind[Any], record_id: str, sco
         try:
             store.save_job_record(_document(noted), if_match=etag)
         except ConflictError:
-            # NOSILENT: a lost race re-reads and re-applies; exhausting the attempts raises below
+            # NOSILENT(attempt): a lost race re-reads and re-applies; exhausting the attempts raises below
             continue
         return True
     raise ConflictError(
@@ -842,7 +842,8 @@ class JobLeases:
             try:
                 self._store.save_job_record(_document(renewed), if_match=etag)
             except ConflictError:
-                # NOSILENT: another writer (the job's own progress, a cancel request) moved the record; re-read
+                # NOSILENT(attempt): another writer (the job's progress, a cancel request) moved the record; re-read. A
+                # renewal that loses every race answers "contended" below and is tried again next interval
                 continue
             return ("cancel", leased.cancel_request_reason) if asked else ("renewed", None)
         return "contended", None
@@ -892,7 +893,8 @@ class JobLeases:
             try:
                 self._store.save_job_record(_document(lost.model_copy(update={"lease": None})), if_match=etag)
             except ConflictError:
-                # NOSILENT: the job's own write moved the record; re-read and end it from there
+                # NOSILENT(attempt): the job's own write moved the record; re-read and end it from there; every
+                # attempt lost raises ConflictError below
                 continue
             return True
         raise ConflictError(

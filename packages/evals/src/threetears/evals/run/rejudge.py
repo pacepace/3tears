@@ -29,10 +29,11 @@ from threetears.evals.schema.models import (
     TRANSCRIPT_DIM_ID,
     JudgedArtifact,
     JudgeRescore,
+    is_builtin_judge_config_id,
     scored_dim_ids,
 )
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
-from threetears.evals.run.judge_service import fold_judge_outcomes
+from threetears.evals.run.judge_service import builtin_judge_config_ids, fold_judge_outcomes
 from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_TEMPLATE, FIND_TEST_CASE, RELAUNCH_TO_REJUDGE
 
 if TYPE_CHECKING:
@@ -106,6 +107,7 @@ def reproducible_judge_inputs(
     *,
     request_settings: RequestSettingsPolicy,
     config_dims: Collection[str] | None = None,
+    same_judge_dims: Collection[str] = (),
 ) -> ReproducibleJudgeInputs:
     """Load what a result's judge calls read, refusing any input its run did not record.
 
@@ -124,6 +126,10 @@ def reproducible_judge_inputs(
         request_settings: How the run's recorded judge request settings are treated — see
             :data:`RequestSettingsPolicy`.
         config_dims: The dims whose recorded configs must load; ``None`` for every dim the run judged.
+        same_judge_dims: The dims the caller asks again AS the judge that first asked them (a re-judge, a judge
+            repeat), rather than as a judge of its own choosing (a second judge, a freeze). Each one its run recorded
+            no config for is asked with the built-in prompt, and must have been asked with the one the judge
+            sends today: the result must record that prompt's identity for it, and it must be today's.
 
     Returns:
         The records.
@@ -148,15 +154,23 @@ def reproducible_judge_inputs(
             remedy=RELAUNCH_TO_REJUDGE,
         )
     dims = recorded_judged_dims(run, template, trace.judged_artifact)
-    # A result scored under a config its run did not record read a prompt nothing else names.
+    # A result scored under a config its run did not record read a prompt nothing else names. A built-in
+    # prompt's identity stands where a config's id would, and is the run's "no config" for its dim.
     assert run.judge_config_ids is not None  # recorded_judge_pins refuses a run without
     for dim, config_id in result.judge_config_ids.items():
-        if run.judge_config_ids.get(dim) != config_id:
+        recorded = run.judge_config_ids.get(dim)
+        if recorded != (None if is_builtin_judge_config_id(config_id) else config_id):
             raise ValidationFailedError(
                 f"result '{result.id}' was scored on {dim} by config '{config_id}' while its run recorded "
-                f"{run.judge_config_ids.get(dim)!r}, so which prompt the judge read is ambiguous",
+                f"{recorded!r}, so which prompt the judge read is ambiguous",
                 remedy=RELAUNCH_TO_REJUDGE,
             )
+    _refuse_another_builtin_judge(
+        result,
+        run.judge_config_ids,
+        [dim for dim in dims if dim in same_judge_dims],
+        builtin_judge_config_ids(template.rubric, judged_artifact=trace.judged_artifact),
+    )
     configs = recorded_judge_configs(
         storage, run, dims if config_dims is None else [dim for dim in dims if dim in config_dims], scope_id
     )
@@ -172,6 +186,45 @@ def reproducible_judge_inputs(
         dims=dims,
         judge_model=judge_model,
     )
+
+
+def _refuse_another_builtin_judge(
+    result: EvalResult, run_configs: dict[str, str], dims: list[str], today: dict[str, str]
+) -> None:
+    """Refuse re-asking a dim with today's built-in prompt when it is not the one that first asked it.
+
+    The built-in wording is an instrument with an identity
+    (:func:`~threetears.evals.schema.models.builtin_judge_config_id`): asked again under another wording, a
+    dim's new score is a different judge's, filed beside its run's other scores as if it were the same one.
+    A result judged before that identity was recorded (before ``v0.66.0-evaladopt.19``) names none, so which
+    wording asked it is unknown — refused for the reason a run that recorded no judge temperature is (#633).
+
+    Args:
+        result: The result whose dims are re-asked.
+        run_configs: The config set its run recorded; a dim with none in it is asked with the built-in prompt.
+        dims: The dims re-asked as the judge that first asked them.
+        today: Each dim's built-in prompt identity as the judge sends it now (:func:`builtin_judge_config_ids`).
+
+    Raises:
+        ValidationFailedError: A built-in dim's recorded prompt is not today's, or is not recorded.
+    """
+    for dim in dims:
+        if dim in run_configs:
+            continue
+        recorded = result.judge_config_ids.get(dim)
+        if recorded is None:
+            raise ValidationFailedError(
+                f"result '{result.id}' records no identity for the built-in prompt that judged {dim} (it was judged "
+                "before the built-in prompts were identified), so whether today's built-in prompt is the same judge "
+                "cannot be told",
+                remedy=RELAUNCH_TO_REJUDGE,
+            )
+        if recorded != today[dim]:
+            raise ValidationFailedError(
+                f"result '{result.id}' was judged on {dim} by built-in prompt '{recorded}', and the judge's built-in "
+                f"prompt for it is now '{today[dim]}'; a new score would be a different judge's",
+                remedy=RELAUNCH_TO_REJUDGE,
+            )
 
 
 def recorded_judge_pins(run: EvalRun, *, request_settings: RequestSettingsPolicy) -> str:

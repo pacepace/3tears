@@ -74,7 +74,9 @@ class UnderscoreAccessConfig:
         (``conftest.py``, ``__main__.py``, ``_version.py``).
     :ivar enable_shape_b_ruff: whether to run ruff for shape B. set
         ``False`` on hosts without ruff installed (in which case
-        shape B yields zero violations). defaults to ``True``.
+        shape B is not run); left ``True`` there, shape B raises
+        rather than report a clean pass it never checked. defaults
+        to ``True``.
     :ivar test_roots: the ``tests/`` trees shape F scans IN ADDITION to
         :attr:`scan_roots`. shapes A, C, D and E stay src-only; shape F
         exists for a spelling of private access that turned up in test

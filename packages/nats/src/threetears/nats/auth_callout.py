@@ -77,6 +77,8 @@ class AuthCalloutRequest:
             try:
                 result = NatsConnectionRef(server_id=server_id, client_id=client_id)
             except ValidationError:
+                # NOSILENT(expected): ids that are not a server nkey and a positive cid name no connection
+                # that can be kicked -- the documented None, the same answer as a request missing them
                 result = None
         return result
 

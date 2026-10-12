@@ -309,9 +309,11 @@ from threetears.evals.analysis.reporter_kind import (
 )
 from threetears.evals.analysis.reporting import (
     FrontierDominance,
+    IdentityRole,
     ProjectionExclusions,
     ServedModelReading,
     ServedModelState,
+    UnconfirmedModelIdentity,
 )
 from threetears.evals.analysis.latency_partition import LatencyPartition
 from threetears.evals.analysis.measurement_windows import MeasurementWindow
@@ -553,8 +555,10 @@ __all__ = [
     "ScoreExport",
     "SelfAgreementDimension",
     "SeriesPoint",
+    "IdentityRole",
     "ServedModelReading",
     "ServedModelState",
+    "UnconfirmedModelIdentity",
     "SimpsonsFlag",
     "AnalysisGenerationEstimate",
     "CallAdmission",

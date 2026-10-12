@@ -25,7 +25,7 @@ from threetears.evals.schema.models import (
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.jobs import AdmittedJob, JobsStarted, start_job
 from threetears.evals.analysis.summary import EvalSummary, summarize_run
-from threetears.evals.run.authoring import list_templates
+from threetears.evals.run.authoring import list_judge_configs, list_templates
 from threetears.evals.run.case_sets import mint_case_set
 from threetears.evals.run.curation import delete_run, set_run_archived
 from threetears.evals.run.run_document import set_run_labels
@@ -69,6 +69,23 @@ class TemplateListing(EvalBaseModel):
     """A scope's templates."""
 
     templates: list[TemplateLine]
+
+
+class JudgeConfigLine(EvalBaseModel):
+    """One judge config, as a listing shows it: the versioned prompt a judge is asked one dimension with."""
+
+    id: str
+    name: str
+    rubric_dim_id: str = Field(description="The dimension this config asks a judge for.")
+    model: str = Field(description="The judge model it pins for its dimension; blank when it pins none.")
+    temperature: float
+    archived: bool
+
+
+class JudgeConfigListing(EvalBaseModel):
+    """A scope's judge configs."""
+
+    judge_configs: list[JudgeConfigLine]
 
 
 class RunLine(EvalBaseModel):
@@ -337,6 +354,35 @@ def templates_list(host: EvalHost, scope_id: str, *, archived: bool = False) -> 
                 archived=template.archived,
             )
             for template in list_templates(host.storage, scope_id, archived=archived)
+        ]
+    )
+
+
+def judge_configs_list(
+    host: EvalHost, scope_id: str, *, rubric_dim_id: str | None = None, archived: bool = False
+) -> JudgeConfigListing:
+    """The scope's judge configs — what a second judge's ``config_ids`` and a launch's ``judge_config_ids`` name.
+
+    Args:
+        host: The host whose store is read.
+        scope_id: The scope.
+        rubric_dim_id: Only the configs asking for this dimension; None for every dimension's.
+        archived: List the archived (superseded) versions instead of the active ones.
+
+    Returns:
+        The listing.
+    """
+    return JudgeConfigListing(
+        judge_configs=[
+            JudgeConfigLine(
+                id=config.id,
+                name=config.name,
+                rubric_dim_id=config.rubric_dim_id,
+                model=config.model,
+                temperature=config.temperature,
+                archived=config.archived,
+            )
+            for config in list_judge_configs(host.storage, scope_id, rubric_dim_id=rubric_dim_id, archived=archived)
         ]
     )
 
@@ -916,6 +962,8 @@ __all__ = [
     "CaseSetLine",
     "CaseSetListing",
     "CaseSetMint",
+    "JudgeConfigLine",
+    "JudgeConfigListing",
     "LaunchArguments",
     "ResultRated",
     "RunDeleted",
@@ -936,4 +984,5 @@ __all__ = [
     "templates_list",
     "case_set_mint",
     "case_sets_list",
+    "judge_configs_list",
 ]

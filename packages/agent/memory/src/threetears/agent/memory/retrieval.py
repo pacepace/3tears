@@ -160,7 +160,9 @@ def _written(mem: dict[str, Any], tz: tzinfo | None) -> str:
     :param tz: the person's timezone, or ``None`` when the caller does not want
         times shown -- the row still carries ``date_created`` either way
     :ptype tz: tzinfo | None
-    :return: the suffix, e.g. `` (written Thu 14 May 2026, 2:30 AM PDT)``, or ``""``
+    :return: the suffix, e.g. `` (written Thu 14 May 2026, 2:30 AM PDT)``; ``""`` when no time is
+        wanted or the row has none; a suffix saying the date is unreadable when the stored text is
+        not an ISO-8601 timestamp
     :rtype: str
     """
     if tz is None:
@@ -170,7 +172,13 @@ def _written(mem: dict[str, Any], tz: tzinfo | None) -> str:
         try:
             written = datetime.fromisoformat(written)
         except ValueError:
-            return ""
+            # an undated line reads as current, which is the defect this suffix exists to prevent:
+            # say the date is unreadable, on the line and to the operator, rather than drop it
+            log.warning(
+                "memory row carries an unreadable date_created",
+                extra={"extra_data": {"memory_id": str(mem.get("memory_id")), "date_created": written}},
+            )
+            return " (written at an unknown time: its stored date is unreadable)"
     if not isinstance(written, datetime):
         return ""
     if written.tzinfo is None:

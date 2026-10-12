@@ -412,7 +412,9 @@ class RolePins:
 #: "nobody recorded this" and refuse to compare two runs that in fact agree. The sentinel says
 #: "no result was scored by one" rather than "every scored dim used the built-in prompt", because
 #: a run whose cells all died before scoring reaches this state too and the narrower claim is
-#: true in both cases.
+#: true in both cases. Since evaladopt.19 a judged result records its built-in prompts by their
+#: identity too (``builtin:<sha12>``), so only results judged before then reach this state
+#: scored — on built-in prompts whose wording nobody recorded, which no ``builtin:`` level matches.
 NO_JUDGE_CONFIGS = "(none — no result was scored by a versioned judge config)"
 
 #: What a run reports when it recorded attribution and every dim was scored by the pin. Explicit
@@ -1437,7 +1439,10 @@ def _max_cost_usd(run: EvalRun, _results: Sequence[EvalResult]) -> float | str |
 
 
 def _judge_config_ids(_run: EvalRun, results: Sequence[EvalResult]) -> list[str] | str:
-    """Every judge-config id OBSERVED across a run's results, sorted.
+    """Every judge-config id OBSERVED across a run's results, sorted — a built-in prompt's ``builtin:`` id among them.
+
+    A built-in prompt's identity is a level like a config's: two built-in wordings are two judges, so a run judged
+    by one and a run judged by the other differ here as they would under two configs.
 
     The run also carries a declared ``judge_config_ids`` — the set it pinned at launch — and
     reading that instead is a tempting simplification that would change what this input means.
@@ -1765,7 +1770,10 @@ CORE_SWEEPABLES: tuple[Sweepable, ...] = (
         name="judge_config_ids",
         role="apparatus",
         read=_judge_config_ids,
-        reader_prose="the versioned judge configurations the results were actually scored with",
+        reader_prose=(
+            "the judge prompts the results were actually scored with: versioned configurations, and the built-in "
+            "prompt by its wording"
+        ),
         confounds="a different judge configuration scored the results — other dimensions, or the same ones weighted differently",
         indeterminate_when_blank=True,
         result_level=True,

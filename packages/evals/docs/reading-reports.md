@@ -81,7 +81,7 @@ names it. A `thin` or `unswept` lever no step names reads "no next step names it
 no coverage row is a proposal, not a gap, and says so beside it. The methods count the levers no finding names;
 a measured lever with no finding may simply have had nothing to say, so nothing acts on the count.
 
-`Report.basis` says which a report is; `REPORT_VERSION` is 8.
+`Report.basis` says which a report is; `REPORT_VERSION` is 9.
 
 ## Reading the arm table
 
@@ -304,18 +304,26 @@ insight retracts it; each insight's `invalidation_trigger` states both rules. Th
 actions show the ledger and each insight's standing (live, retracted or orphaned); `insight_delete` removes one wrong
 insight.
 
-**A headline or summary never states a null the findings did not establish.** Most readers read only those two,
-so "halving the budget does not change latency, cost or delivery" decides as surely as a finding does, and over a
-contrast that did not separate it asserts a result the campaign never measured. The bundle establishes a null in
-two places only: a contrast reading `equivalent` (the equivalence test against a declared margin) and a guardrail
-reading `held`. The writer is told so, and the generator also refuses the headline or a summary bullet that uses
-a common null phrasing ("does not change", "no difference", "no effect", "no worse", "was unchanged", "about the
-same", and a few more, listed in `analysis/null_claims.py`) when no finding cites a reading the bundle
-established alike, through the one repair round like any refusal. It is a tripwire, not a gate: it reads phrases,
-never claims, so a reworded null passes, and once any finding cites an established null it stands down entirely,
-since it cannot tell which contrast a sentence means. An unresolved contrast belongs in the headline as a
-judgement that says how unsure it is ("probably cheaper, too close to call"), never as "no change". The headline
-carries no confidence tier, so its words carry the doubt.
+**The headline and summary rest on findings, and are shown at the weakest of them.** Most readers read only those
+two. The writer names the findings the headline rests on (`headline_rests_on`) and those each summary bullet rests
+on (`summary_rests_on`, one entry per bullet, a bullet being a line opening with `-`, `*`, `+` or a number), and
+the generator refuses a link left empty over findings, one entry too many or too few, or a position past the
+findings, through the one repair round. Code derives each sentence's standing (`analysis/standing.py`): the weakest
+confidence among its findings, and the weakest evidence tier of every reading they cite. The report serves it as
+the `Confidence` and `Stands on` facts on a `headline` block that opens the summary section and on one `summary`
+block per bullet, each with its `rests_on`; `analyses_list` states it beside each headline; the memo the reporter
+judge reads carries it too. An analysis stored before the links existed keeps its summary as one block, and its
+headline says the standing was **not recorded**, never a tier guessed from its findings.
+
+**A headline or summary never states a null its findings did not establish.** "Halving the budget does not change
+latency, cost or delivery" decides as surely as a finding does, and over a contrast that did not separate it
+asserts a result the campaign never measured. The bundle establishes a null in two places only: a contrast reading
+`equivalent` (the equivalence test against a declared margin) and a guardrail reading `held`. The generator refuses
+a headline or bullet in a common null phrasing ("does not change", "no difference", "no effect", "no worse", "was
+unchanged", "about the same", and a few more, listed in `analysis/null_claims.py`) when none of the findings that
+sentence rests on cites a reading the bundle established alike. A null one sentence's finding established
+licenses no other sentence. The join is structural; only the phrase is read off the words, so a reworded null
+passes, and the reporter eval measures the rest.
 
 The bundle stays closed: the generator has no tools to fetch more context, such as a `runs_bisect` or `scope_pivot`
 drill-down. A generator that fetched its own context would read different inputs on every call, so nothing could
@@ -368,7 +376,7 @@ prompt lever alone (`ticket_router.prompt_version=v1` and `ticket_router.prompt_
 
 `schema.json` ships in the package beside the model (`SCHEMA_PATH`; `published_report_schema()` reads it). It is
 generated from the model, a test holds it equal to the model's, and its `$id` names the report version it validates
-(`urn:threetears-evals:report:v8`), as its `report_version` const does. It holds the report's shape, every served
+(`urn:threetears-evals:report:v9`), as its `report_version` const does. It holds the report's shape, every served
 word as required, and every cross-field rule JSON Schema can state:
 
 - a code-only report names no analysis or model and holds no headline, finding or text block;
@@ -453,6 +461,32 @@ verdict, each history series and each of its points, each pivot cell on a table 
 `model` (with `served_model_disclosure` on the table), and each side of `compare_two_runs` (`served_models_a`,
 `served_models_b`). `served_model` is also a coordinate: pivot on it to read each model alone, and the export
 carries it as a column. A response that named no model reads `unrecorded`, never the alias.
+
+## Which model answered
+
+A run records the model id each call asked for. Which model answered is recorded only where the completion client
+reported the model the provider's response named (`served_model`): on each candidate usage row and on each judge
+score. Where it reported none, the record holds the requested id alone, and a provider may answer an id with a
+model of its choosing. Nothing refuses such a run, and the package never guesses which ids float: that is the
+provider's vocabulary. It says so instead, once, in one sentence every surface prints verbatim
+(`model_identity_disclosure`): the run's summary (`run_get`, its `model_identity_warning` and `unconfirmed_models`),
+`run_summary` (`model_identity_disclosure`), the analysis bundle (`model_identity_disclosure`, which the writer is
+told never to read as the model that ran) and the campaign report's methods, whether an analysis wrote it or code
+alone. Per role, the candidate then the judge, it counts the results whose candidate made a call no response named
+a model for, and the scores no response named a model for, out of all of them, with the ids asked for and any
+model the other responses did name:
+
+```text
+Model identity unconfirmed: the candidate (asked for vendor/model-latest) made calls whose response named no model
+in 4 of 10 result(s) (the responses that named one named vendor/model-2026-05). The record keeps the model id asked
+for, and a provider may answer an id with a model of its choosing (a floating alias), so these numbers cannot say
+which model produced them; a completion client that reports the model its provider's response named
+(served_model) confirms it.
+```
+
+A run whose responses all named their model prints nothing, and neither does one whose candidate called nothing.
+The fix is in the host's completion client ([Adopting a host](adopting-a-host.md)); a quick candidate passes
+`Answer(served_model=...)`.
 
 ## Results by kind of case: strata
 
@@ -559,6 +593,12 @@ records what was sent (`RubricScore.judge_temperature`), and that is part of the
 groups, tiers and apparatus comparisons are keyed by it, and a repeat at another temperature is unpaired. A score
 or run stored before this recorded none and reads as not recorded, never as 0; such a run is not re-judged or
 repeated, and its cells keep their old ids.
+
+**Which prompt asked.** A judge is also the prompt that asked: a `JudgeConfig`'s id, or, for a dimension with no
+config, `builtin:<sha12>`, the identity of the engine's built-in wording. A release that rewords the built-in prompt
+makes a new judge, whose tiers and agreement are read apart from the old one's. A result stored before
+`v0.66.0-evaladopt.19` recorded no identity for a built-in prompt and reads as config `None`, a judge of its own
+([judges and calibration](judges-and-calibration.md#step-4-run-the-judge)).
 
 **Where tiers appear.** The bundle lists each judge's tier per dimension with both criteria
 (`judge_evidence_tiers`); a finding stands on the weakest tier among its rows

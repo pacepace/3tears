@@ -103,7 +103,7 @@ from nats.errors import (
 )
 from nats.js.errors import NotFoundError as _NatsJsNotFoundError
 from pydantic import BaseModel, ValidationError
-from threetears.observe import get_logger, representative_exception
+from threetears.observe import cancel_and_wait, get_logger, representative_exception
 from threetears.observe.resilience import retry_until_done
 
 from threetears.nats.diagnostics import permissions_violation_remedy
@@ -723,11 +723,7 @@ class _SubscriptionFeed:
         for task in receivers:
             task.cancel()
         for task in receivers:
-            try:
-                await task
-            except asyncio.CancelledError:
-                # NOSILENT: this IS the cancellation requested above
-                pass
+            await cancel_and_wait(task)
 
     async def _receive(self, raw_subscription: Any, connection: Any) -> None:
         """take each message off one connection as it arrives and date it there.
@@ -939,12 +935,8 @@ class Subscription:
                 "unsubscribe failed",
                 extra={"extra_data": {"subject": self.subject.path, "error": str(exc)}},
             )
-        self.dispatch_task.cancel()
         try:
-            await self.dispatch_task
-        except asyncio.CancelledError:
-            # NOSILENT: this IS the cancellation requested on the line above
-            pass
+            await cancel_and_wait(self.dispatch_task)
         except Exception as exc:  # noqa: BLE001 -- diag only; the subscription is dropped either way
             log.warning(
                 "dispatch task raised while unwinding",
@@ -1354,6 +1346,8 @@ class JetStreamPullConsumer:
         try:
             msgs = await self._psub.fetch(self._batch, timeout=self._fetch_timeout_seconds)
         except _NatsTimeoutError:
+            # NOSILENT(expected): a fetch that times out found no message -- the documented idle 0; a
+            # broken fetch raises something other than a timeout, and that propagates
             msgs = []
         for msg in msgs:
             await self._handle(msg)
@@ -1872,7 +1866,8 @@ async def _stream_exists(js: Any, stream: str) -> bool:
     try:
         await js.stream_info(stream)
     except _NatsJsNotFoundError:
-        # NOSILENT: the answer itself -- the server said the stream is absent
+        # NOSILENT(expected): the server answered that the stream is absent -- the False this documents;
+        # every other failure of the lookup propagates
         exists = False
     return exists
 
@@ -2728,56 +2723,53 @@ class _CredentialRenewal:
         connection that reconnected on its own restarts the schedule; an unknown TTL is
         re-checked on a short cadence without renewing on a guess.
 
-        :return: nothing
+        :return: nothing; the loop only ends by being cancelled
         :rtype: None
+        :raises asyncio.CancelledError: when shutdown, or a replacing renew_credential, stops it
         """
         retry_in: float | None = None
-        try:
-            while True:
-                try:
-                    ttl = await self._current_ttl()
-                    if retry_in is None:
-                        delay = seconds_until_reauth(ttl, longest_request_seconds=self._longest_request_seconds)
-                        if has_schedulable_ttl(ttl):
-                            delay = max(REAUTH_MIN_SLEEP_SECONDS, delay - self._connection_age_seconds())
-                        unsafe = unsafe_renewal_reason(ttl, longest_request_seconds=self._longest_request_seconds)
-                        if unsafe is not None:
-                            # every cycle, on purpose: this can cut off the longest request on the connection.
-                            log.error("UNSAFE NATS credential renewal cadence: %s", unsafe)
-                    else:
-                        delay = retry_in
-                    retry_in = None
-                    await asyncio.sleep(delay)
-                    if not has_schedulable_ttl(ttl):
-                        continue
-                    retire_after = seconds_until_retirement(
-                        ttl,
-                        connection_age_seconds=self._connection_age_seconds(),
-                        longest_request_seconds=self._longest_request_seconds,
-                    )
-                    await self._renew(timedelta(seconds=retire_after))
-                    log.info(
-                        "NATS credential renewed on a successor connection before it expired; the replaced "
-                        "connection retires once the work it carries has finished",
-                        extra={
-                            "extra_data": {
-                                "client_name": self._client_name,
-                                "ttl_seconds": ttl,
-                                "retire_after_seconds": retire_after,
-                            }
-                        },
-                    )
-                except Exception as exc:  # noqa: BLE001 -- the loop must outlive any one failed renewal
-                    retry_in = REAUTH_RETRY_SECONDS
-                    log.warning(
-                        "NATS credential renewal failed (retrying in %ss): %s",
-                        REAUTH_RETRY_SECONDS,
-                        exc,
-                        extra={"extra_data": {"client_name": self._client_name}},
-                    )
-        # NOSILENT: cancellation is how shutdown, or a replacing renew_credential, ends the loop
-        except asyncio.CancelledError:
-            return
+        while True:
+            try:
+                ttl = await self._current_ttl()
+                if retry_in is None:
+                    delay = seconds_until_reauth(ttl, longest_request_seconds=self._longest_request_seconds)
+                    if has_schedulable_ttl(ttl):
+                        delay = max(REAUTH_MIN_SLEEP_SECONDS, delay - self._connection_age_seconds())
+                    unsafe = unsafe_renewal_reason(ttl, longest_request_seconds=self._longest_request_seconds)
+                    if unsafe is not None:
+                        # every cycle, on purpose: this can cut off the longest request on the connection.
+                        log.error("UNSAFE NATS credential renewal cadence: %s", unsafe)
+                else:
+                    delay = retry_in
+                retry_in = None
+                await asyncio.sleep(delay)
+                if not has_schedulable_ttl(ttl):
+                    continue
+                retire_after = seconds_until_retirement(
+                    ttl,
+                    connection_age_seconds=self._connection_age_seconds(),
+                    longest_request_seconds=self._longest_request_seconds,
+                )
+                await self._renew(timedelta(seconds=retire_after))
+                log.info(
+                    "NATS credential renewed on a successor connection before it expired; the replaced "
+                    "connection retires once the work it carries has finished",
+                    extra={
+                        "extra_data": {
+                            "client_name": self._client_name,
+                            "ttl_seconds": ttl,
+                            "retire_after_seconds": retire_after,
+                        }
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 -- the loop must outlive any one failed renewal
+                retry_in = REAUTH_RETRY_SECONDS
+                log.warning(
+                    "NATS credential renewal failed (retrying in %ss): %s",
+                    REAUTH_RETRY_SECONDS,
+                    exc,
+                    extra={"extra_data": {"client_name": self._client_name}},
+                )
 
 
 class _SuccessorMove:
@@ -2834,34 +2826,31 @@ class _SuccessorMove:
 
         :return: nothing
         :rtype: None
+        :raises asyncio.CancelledError: when shutdown or abandon stops the move
         """
-        try:
-            while self._still_leaving():
-                try:
-                    await self._renew(self._retire_after)
-                except Exception as exc:  # noqa: BLE001 -- retried while the connection is still being left; the reason is logged
-                    log.warning(
-                        "could not move to a successor NATS connection (%s; retrying in %ss): %s",
-                        self._why,
-                        REAUTH_RETRY_SECONDS,
-                        exc,
-                        extra={"extra_data": {"client_name": self._client_name}},
-                    )
-                    await asyncio.sleep(REAUTH_RETRY_SECONDS)
-                else:
-                    log.info(
-                        "moved to a successor NATS connection; the old connection retires with its work",
-                        extra={
-                            "extra_data": {
-                                "client_name": self._client_name,
-                                "why": self._why,
-                                "retire_after_seconds": self._retire_after.total_seconds(),
-                            }
-                        },
-                    )
-        # NOSILENT: cancellation is how shutdown and abandon stop the move
-        except asyncio.CancelledError:
-            return
+        while self._still_leaving():
+            try:
+                await self._renew(self._retire_after)
+            except Exception as exc:  # noqa: BLE001 -- retried while the connection is still being left; the reason is logged
+                log.warning(
+                    "could not move to a successor NATS connection (%s; retrying in %ss): %s",
+                    self._why,
+                    REAUTH_RETRY_SECONDS,
+                    exc,
+                    extra={"extra_data": {"client_name": self._client_name}},
+                )
+                await asyncio.sleep(REAUTH_RETRY_SECONDS)
+            else:
+                log.info(
+                    "moved to a successor NATS connection; the old connection retires with its work",
+                    extra={
+                        "extra_data": {
+                            "client_name": self._client_name,
+                            "why": self._why,
+                            "retire_after_seconds": self._retire_after.total_seconds(),
+                        }
+                    },
+                )
 
 
 class NatsClient:
@@ -3566,12 +3555,7 @@ class NatsClient:
         task = self._refilling
         self._refilling = None
         if task is not None and task is not asyncio.current_task():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                # NOSILENT: this IS the cancellation requested on the line above
-                pass
+            await cancel_and_wait(task)
 
     async def _restore_durable(self, consumer: JetStreamPushConsumer | JetStreamPullConsumer) -> None:
         """bind a durable consumer again when the server no longer has it.
@@ -3596,6 +3580,8 @@ class NatsClient:
                 stream = await js.find_stream_name_by_subject(consumer.subject.path)
             await js.consumer_info(stream, consumer.durable)
         except _NatsJsNotFoundError:
+            # NOSILENT(expected): the server answered that the durable is gone, which is what this
+            # restores; every other lookup failure propagates to the round that logs and retries it
             missing = True
         if missing and isinstance(consumer, JetStreamPushConsumer):
             async with self._handover_lock:
@@ -3737,14 +3723,21 @@ class NatsClient:
             treating as unhealthy.
         :ptype timeout: float
         :return: True if the server responded within the timeout,
-            False on timeout or any nats-py error.
+            False on timeout or any nats-py error -- which is logged
+            with the error, so an unhealthy answer says why.
         :rtype: bool
         """
         if not self._raw.is_connected:
             return False
         try:
             await _round_trip(self._raw, timeout=timeout)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 -- any failure IS the unhealthy answer; the reason is logged
+            log.warning(
+                "NATS ping failed; reporting the connection unhealthy: %s: %s",
+                type(exc).__name__,
+                exc,
+                extra={"extra_data": {"client_name": self._client_name, "error": str(exc)}},
+            )
             return False
         return True
 
@@ -4338,12 +4331,7 @@ class NatsClient:
         task = self._successor_move
         self._successor_move = None
         if task is not None and task is not asyncio.current_task():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                # NOSILENT: this IS the cancellation requested on the line above
-                pass
+            await cancel_and_wait(task)
 
     async def _stop_restoration(self) -> None:
         """cancel a restoration after a reconnect, if one runs, and wait for it to end.
@@ -4354,12 +4342,7 @@ class NatsClient:
         task = self._restoration
         self._restoration = None
         if task is not None and task is not asyncio.current_task():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                # NOSILENT: this IS the cancellation requested on the line above
-                pass
+            await cancel_and_wait(task)
 
     async def _stop_renewal(self) -> None:
         """cancel the credential-renewal loop, if one runs, and wait for it to end.
@@ -4370,12 +4353,7 @@ class NatsClient:
         task = self._renewal_task
         self._renewal_task = None
         if task is not None:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                # NOSILENT: this IS the cancellation requested on the line above
-                pass
+            await cancel_and_wait(task)
 
     async def abandon(self, *, reason: str) -> None:
         """close every connection this client holds at once, without draining, and stop renewing.
@@ -4467,11 +4445,7 @@ class NatsClient:
         :rtype: None
         """
         for task in self._lifecycle.take_retirements():
-            try:
-                await task
-            except asyncio.CancelledError:
-                # NOSILENT: this IS the cancellation requested above
-                pass
+            await cancel_and_wait(task)
         for connection in self._lifecycle.replaced():
             await self._drain_retired(connection)
             self._forget_connection(connection)
@@ -5266,12 +5240,8 @@ class NatsClient:
                 "unsubscribe failed",
                 extra={"extra_data": {"subject": sub.subject.path, "error": str(exc)}},
             )
-        sub.dispatch_task.cancel()
         try:
-            await sub.dispatch_task
-        except asyncio.CancelledError:
-            # NOSILENT: this IS the cancellation requested on the line above
-            pass
+            await cancel_and_wait(sub.dispatch_task)
         except Exception as exc:  # noqa: BLE001 -- diag only; the subscription is dropped either way
             log.warning(
                 "dispatch task raised while unwinding",
@@ -6027,6 +5997,8 @@ class NatsClient:
         try:
             live = (await js.consumer_info(stream_name, durable)).config
         except _NatsJsNotFoundError:
+            # NOSILENT(expected): the server answered that no durable exists yet, so there is no live
+            # config to reconcile and the bind below creates it; any other failure propagates
             live = None
         if live is not None and (live.ack_wait != ack_wait_seconds or live.max_deliver != max_deliver):
             await js.add_consumer(stream_name, config=live.evolve(ack_wait=ack_wait_seconds, max_deliver=max_deliver))

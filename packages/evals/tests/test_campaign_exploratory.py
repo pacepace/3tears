@@ -210,7 +210,7 @@ async def test_withdrawing_a_declaration_saying_exploratory_leaves_the_campaign_
             "this update keeps it",
             id="exploratory-keeping-a-design",
         ),
-        pytest.param("declared", {}, "names no field to change", id="nothing"),
+        pytest.param("declared", {}, "names nothing to change", id="nothing"),
     ],
 )
 async def test_an_update_that_contradicts_itself_or_its_campaign_is_refused_and_writes_nothing(
@@ -283,7 +283,14 @@ def test_the_python_update_holds_to_the_same_rule() -> None:
 async def test_campaign_update_is_a_write_with_a_help_page_and_an_example(evals: MountedTool) -> None:
     action = evals.action("campaign_update")
     assert action is not None and action.permission == "write"
-    assert set(action.params.model_fields) == {"campaign_id", "name", "description", "declared_design", "exploratory"}
+    assert set(action.params.model_fields) == {
+        "campaign_id",
+        "name",
+        "description",
+        "declared_design",
+        "exploratory",
+        "control_from_run_id",
+    }
 
     page = await evals.call(
         {"action": "help", "topic": "campaign_update"}, host=off_loop(ops_fixture).host, caller=CALLER

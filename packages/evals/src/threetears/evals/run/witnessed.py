@@ -318,6 +318,8 @@ async def record_witnessed_cell(
             kind's cell is not scored on.
         NotFoundError: A judged run's template, or a judge config it recorded, does not load.
         CandidateKindDefect: ``output`` contradicts ``judged_artifact``.
+        CompletionProtocolDefect: A judged run's judge client returned a completion that does not meet the protocol
+            — the host's defect, raised rather than recorded as the cell's judge error.
         LeverCoordinateError: The host's profile cannot derive the run's variant identity.
         BudgetStoppedError: A judged run's saved cells already carry judge spend past its ceiling, or
             unpriced judge spend under an enforced one — raised before the judge is called.

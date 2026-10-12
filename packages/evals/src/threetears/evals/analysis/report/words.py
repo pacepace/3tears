@@ -17,7 +17,8 @@ from threetears.evals.analysis.bundle.schema import ComparisonVerdict
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import resolve_reading, restated_dispersion
-from threetears.evals.analysis.report.model import TableCell
+from threetears.evals.analysis.report.model import Fact, TableCell
+from threetears.evals.analysis.standing import Standing
 from threetears.evals.analysis.surface_table import UNITLESS, measure_rulers
 from threetears.evals.analysis.viz.intent import ChartValue
 from threetears.evals.analysis.viz_refs import cell_arm_labels
@@ -254,6 +255,39 @@ def _restated_spread(analysis: EvalAnalysis, row: EvidenceRow, factor: float) ->
     return restated_dispersion(resolved, factor)
 
 
+#: What a headline or summary bullet stands on in an analysis stored before they named the findings they rest on.
+STANDING_NOT_RECORDED = (
+    "not recorded: this analysis was stored before its headline and summary named the findings they rest on"
+)
+
+#: What a headline or summary bullet stands on in an analysis with no findings.
+STANDING_NO_FINDING = "no finding: the analysis has none"
+
+
+def standing_facts(analysis: EvalAnalysis, standing: Standing | None) -> list[Fact]:
+    """What a headline or summary bullet stands on, as the facts code states beside it.
+
+    The same two facts a finding's title carries, read off the weakest of the findings it rests on
+    (:mod:`threetears.evals.analysis.standing`): its confidence, and what its evidence is. An analysis stored before
+    the links existed says so, and is never given a tier guessed from its findings.
+
+    Args:
+        analysis: The analysis.
+        standing: The sentence's standing; None when it was not recorded.
+
+    Returns:
+        The facts, in reading order.
+    """
+    if standing is None:
+        return [Fact(name="Stands on", value=STANDING_NOT_RECORDED)]
+    if standing.confidence is None:
+        return [Fact(name="Stands on", value=STANDING_NO_FINDING)]
+    facts = [Fact(name="Confidence", value=CONFIDENCE_WORDS[standing.confidence])]
+    if standing.evidence_tier is not None:
+        facts.append(Fact(name="Stands on", value=stands_on_words(analysis, standing.evidence_tier)))
+    return facts
+
+
 def positions(numbers: list[int]) -> str:
     """Finding positions as a reader counts them: from one."""
     return ", ".join(str(position + 1) for position in numbers)
@@ -269,6 +303,9 @@ __all__ = [
     "evidence_rows",
     "stands_on_words",
     "arm_namer",
+    "STANDING_NOT_RECORDED",
+    "STANDING_NO_FINDING",
     "positions",
+    "standing_facts",
     "worded",
 ]

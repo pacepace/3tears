@@ -370,6 +370,8 @@ def _returns_bool(scorer: Scorer) -> bool:
     try:
         returned = inspect.signature(scorer).return_annotation
     except TypeError, ValueError:
+        # NOSILENT(expected): a callable with no readable signature declares no `-> bool`; it is then held to a
+        # numeric scorer's rules (a margin needs a declared range), which refuse rather than assume
         return False
     return returned is bool or returned == "bool"
 

@@ -91,7 +91,10 @@ def offline_classifier(model: str) -> Candidate:
             label = "legit"
         tokens_in, tokens_out = 80 + len(text) // 4, 3 if careful else 20
         cost = (tokens_in * input_rate + tokens_out * output_rate) / 1e6
-        return Answer(label, model=model, input_tokens=tokens_in, output_tokens=tokens_out, cost_usd=cost)
+        # No provider resolves a stand-in, so the model that answered is the one asked for: say so as served_model.
+        return Answer(
+            label, model=model, served_model=model, input_tokens=tokens_in, output_tokens=tokens_out, cost_usd=cost
+        )
 
     return classify
 

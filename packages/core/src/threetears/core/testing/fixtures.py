@@ -363,9 +363,9 @@ def s3_container(s3_credentials: tuple[str, str]) -> Iterator[tuple[str, str]]:
                 if exc.code < 500:
                     break
             except urllib.error.URLError, OSError:
-                # NOSILENT: a refused or reset connection IS the not-ready
+                # NOSILENT(attempt): a refused or reset connection IS the not-ready
                 # signal this loop polls for. Never becoming ready is the
-                # failure that matters, and it is raised at the deadline.
+                # failure that matters, and pytest.fail raises it at the deadline.
                 pass
             if time.monotonic() > deadline:
                 pytest.fail(f"S3 testcontainer at {endpoint} never answered")
@@ -416,9 +416,11 @@ def _outbound_proxy_by_ip() -> str | None:
     A container on a nested daemon cannot resolve the proxy's name, so it has to
     be handed an address it can dial.
 
-    :return: e.g. ``http://172.23.0.2:3128``, or ``None`` when no proxy is set or
-        its name does not resolve here either
+    :return: e.g. ``http://172.23.0.2:3128``, or ``None`` when no proxy is set
     :rtype: str | None
+    :raises RuntimeError: a proxy is set but its name does not resolve on this host
+        either -- starting the container without it would leave its engines with no
+        route out, and SearXNG answers that with empty results, not an error
     """
     import os  # noqa: PLC0415
     import socket  # noqa: PLC0415
@@ -432,11 +434,11 @@ def _outbound_proxy_by_ip() -> str | None:
         return None
     try:
         address = socket.gethostbyname(parts.hostname)
-    except OSError:
-        # NOSILENT: an unresolvable proxy name means this host cannot hand the container a
-        # dialable proxy; returning None starts it without one, and the readiness poll then
-        # fails loudly naming the URL if that matters.
-        return None
+    except OSError as exc:
+        raise RuntimeError(
+            f"HTTPS_PROXY names {parts.hostname!r}, which does not resolve on this host, so the container "
+            f"cannot be handed a proxy it can dial: {exc}"
+        ) from exc
     return url.replace(parts.hostname, address, 1)
 
 
@@ -533,7 +535,7 @@ def searxng_container() -> Iterator[str]:
                         if probe.status == 200:
                             break
                 except urllib.error.URLError, OSError:
-                    # NOSILENT: a refused or reset connection IS the not-ready
+                    # NOSILENT(attempt): a refused or reset connection IS the not-ready
                     # signal this loop exists to poll for, so each one is an
                     # expected outcome rather than a fault worth reporting.
                     # The failure that matters -- never becoming ready -- is

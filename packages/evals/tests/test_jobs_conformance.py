@@ -155,6 +155,16 @@ async def test_the_kit_catches_a_spend_action_that_calls_its_model_in_the_call()
         await cases["rubric_propose.call"].check(conformance_host)
 
 
+async def test_the_call_case_names_how_a_call_that_made_a_request_then_ended() -> None:
+    """The guard refuses the request inside the call; that refusal is named beside the failure, not dropped."""
+    cases = _cases(_draft_in_call)
+
+    with pytest.raises(
+        JobsConformanceFailure, match=r"proposer request to proposer/default \(it then raised Completion"
+    ):
+        await cases["rubric_propose.call"].check(conformance_host)
+
+
 async def test_the_kit_catches_a_handler_that_waits_on_its_own_job() -> None:
     """It makes no request in its call and returns JobsStarted — and still holds the call until its model answers."""
     cases = _cases(_waits_on_its_job, call_return_timeout_s=0.2)

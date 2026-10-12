@@ -19,6 +19,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 try:
     import uuid_utils as _uuid_utils
 except ImportError:
+    # NOSILENT(optional-import): uuid_utils is optional; without it there are no uuid_utils values to sanitize
     _uuid_utils = None  # type: ignore[assignment]
 
 

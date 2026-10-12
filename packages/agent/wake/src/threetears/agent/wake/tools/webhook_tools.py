@@ -39,6 +39,7 @@ from threetears.core.collections import CallerTransaction
 from threetears.core.exceptions import ConcurrentModificationError
 from threetears.agent.wake.tools.schedule_tools import (
     WakeRegistryClient,
+    _skill_label,
     _tool_error,
     _validate_name,
 )
@@ -429,14 +430,7 @@ def load_webhook_subscription_create_tool(
 
         skill_name: str | None = None
         if attached_skill is not None:
-            try:
-                skill_name = await registry.skill_name_for_id(
-                    user_id=user_id,
-                    agent_id=agent_id,
-                    skill_id=attached_skill,
-                )
-            except Exception:  # noqa: BLE001 - best-effort
-                skill_name = None
+            skill_name = await _skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=attached_skill)
 
         log.info(
             "webhook_subscription_create persisted",
@@ -660,14 +654,9 @@ def load_webhook_subscription_update_tool(
 
         skill_name: str | None = None
         if entity.default_skill_id is not None:
-            try:
-                skill_name = await registry.skill_name_for_id(
-                    user_id=user_id,
-                    agent_id=agent_id,
-                    skill_id=entity.default_skill_id,
-                )
-            except Exception:  # noqa: BLE001 - best-effort
-                skill_name = None
+            skill_name = await _skill_label(
+                registry, user_id=user_id, agent_id=agent_id, skill_id=entity.default_skill_id
+            )
         return _format_subscription_line(entity, skill_name=skill_name)
 
     webhook_subscription_update.description = (
@@ -710,14 +699,9 @@ def load_webhook_subscription_list_tool(
         for entity in visible:
             skill_name: str | None = None
             if entity.default_skill_id is not None:
-                try:
-                    skill_name = await registry.skill_name_for_id(
-                        user_id=user_id,
-                        agent_id=agent_id,
-                        skill_id=entity.default_skill_id,
-                    )
-                except Exception:  # noqa: BLE001 - best-effort
-                    skill_name = None
+                skill_name = await _skill_label(
+                    registry, user_id=user_id, agent_id=agent_id, skill_id=entity.default_skill_id
+                )
             lines.append("- " + _format_subscription_line(entity, skill_name=skill_name))
         return "\n".join(lines)
 

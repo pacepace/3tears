@@ -682,7 +682,7 @@ class TracedHttpClient:
         """
         try:
             from opentelemetry import trace
-        # NOSILENT: optional dependency probe; absence is a supported configuration
+        # NOSILENT(optional-import): without opentelemetry there is no span to decorate
         except ImportError:
             return
         span = trace.get_current_span()

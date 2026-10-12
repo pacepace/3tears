@@ -277,7 +277,7 @@ class DocMergeTool(TearsTool):
                                         nats_client=self._nats_client,
                                         namespace=self._namespace,
                                     )
-                            # NOSILENT: audit failure never taints doc_merge
+                            # NOSILENT: logged, not swallowed: a failed audit never turns a true doc_merge into an error
                             except Exception as audit_exc:
                                 log.exception(
                                     "doc_merge audit publish swallow caught: %s",
