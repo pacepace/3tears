@@ -18,6 +18,8 @@ import ast
 from dataclasses import dataclass
 from pathlib import Path
 
+from threetears.enforcement.common import note_unscanned
+
 __all__ = [
     "DURABLE_STORAGE",
     "KV_OPENING_CALLS",
@@ -79,7 +81,9 @@ def file_backed_kv_calls(path: Path) -> list[tuple[int, str]]:
     """
     try:
         tree = ast.parse(path.read_text(errors="ignore"))
-    except OSError, SyntaxError:
+    except (OSError, SyntaxError) as exc:
+        # An unread module is not a clean one: name it, as every enforcement walker does.
+        note_unscanned(path, f"could not be read or parsed: {type(exc).__name__}: {exc}")
         return []
 
     found: list[tuple[int, str]] = []

@@ -54,6 +54,7 @@ import re
 import tokenize
 from pathlib import Path
 
+from threetears.enforcement.common import note_unscanned
 from threetears.enforcement.underscore_access.ledger import (
     ledger_entries,
     ledger_paths,
@@ -127,11 +128,13 @@ def scanned_python_files(repo_root: Path) -> list[Path]:
     return sorted(path for path in repo_root.rglob("*.py") if not is_vendored(path, repo_root))
 
 
-def _comments(source: str) -> list[tuple[int, str]]:
+def _comments(source: str, *, origin: Path) -> list[tuple[int, str]]:
     """every comment in ``source`` with the line it sits on.
 
     :param source: python source text
     :ptype source: str
+    :param origin: the file ``source`` was read from, named when it cannot be tokenized
+    :ptype origin: Path
     :return: ``(line, comment text)`` pairs in file order
     :rtype: list[tuple[int, str]]
     """
@@ -140,11 +143,10 @@ def _comments(source: str) -> list[tuple[int, str]]:
         for token in tokenize.generate_tokens(io.StringIO(source).readline):
             if token.type == tokenize.COMMENT:
                 found.append((token.start[0], token.string))
-    except (
-        tokenize.TokenError,
-        SyntaxError,
-    ):  # NOSILENT: an untokenizable file is reported by nothing ruff runs either; what was read so far is kept
-        pass
+    except (tokenize.TokenError, SyntaxError) as exc:
+        # The comments before the failure are kept and checked; the ones after it are not, and a
+        # pragma among them would pass unseen -- so the file is named as not fully scanned.
+        note_unscanned(origin, f"comments read only up to a tokenize failure: {type(exc).__name__}: {exc}")
     return found
 
 
@@ -168,7 +170,7 @@ def slf001_pragma_offenders(repo_root: Path) -> list[str]:
             continue
         rel = path.relative_to(repo_root).as_posix()
         private_lines = {line for line, _symbol in private_accesses(path)}
-        for line, comment in _comments(source):
+        for line, comment in _comments(source, origin=path):
             names_slf = _SLF_CODE_PRAGMA.search(comment) is not None
             bare_on_access = _BARE_LINE_PRAGMA.search(comment) is not None and line in private_lines
             bare_file_wide = _BARE_FILE_PRAGMA.search(comment) is not None and bool(private_lines)

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from threetears.enforcement.underscore_access import (
     is_src_module,
     ledger_entries_outside_src,
@@ -270,3 +272,17 @@ class TestTheCombinedVerdict:
             "per-file SLF001 ignore on a test file",
             "unrecorded per-file SLF001 ignore",
         ]
+
+
+class TestAFileThatDoesNotTokenize:
+    def test_its_pragmas_before_the_failure_are_found_and_the_file_is_named_as_not_fully_scanned(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        repo, _ = _repo(tmp_path)
+        broken = _write(repo / "pkg" / "mod.py", 'value = x._a  # noqa: SLF001\ntext = """never closed\n')
+
+        with caplog.at_level("WARNING"):
+            assert _offending_lines(repo) == {"pkg/mod.py:1"}
+
+        skipped = [r for r in caplog.records if "could not examine" in r.getMessage()]
+        assert str(broken) in {r.__dict__["extra_data"]["target"] for r in skipped}

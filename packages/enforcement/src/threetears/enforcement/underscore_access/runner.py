@@ -35,6 +35,7 @@ from threetears.enforcement.common import (
     emit_report,
     find_local_src_roots,
     find_local_test_roots,
+    note_unscanned,
     parse_exemptions_with_rationale,
     resolve_mode,
 )
@@ -236,10 +237,12 @@ def _read_scopes(path: Path) -> dict[int, str]:
     """
     try:
         scopes = enclosing_scopes(path)
-    except OSError:
+    except OSError as exc:
         # A path the walker reached but this cannot read is not a reason to fail
-        # the whole run: it degrades to module scope, which simply will not match
-        # a scope-keyed entry, so the violation is REPORTED rather than hidden.
+        # the whole run: it degrades to module scope, which will not match a
+        # scope-keyed entry, so the violation is reported rather than hidden --
+        # and the file is named, so the mismatch can be traced to it.
+        note_unscanned(path, f"scopes unreadable, matched at module scope: {type(exc).__name__}: {exc}")
         scopes = {}
     return scopes
 
