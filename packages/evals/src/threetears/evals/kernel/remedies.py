@@ -20,9 +20,19 @@ FIND_TEMPLATE = "templates_list names this scope's templates"
 #: How a caller finds a run's id.
 FIND_RUN = "runs_list names this scope's runs"
 
-#: What a caller does about a stored run this build's model refuses: see each one, and why, so it can be dropped or a
-#: build that reads it deployed.
-FIND_UNREADABLE_RUNS = "runs_unreadable names each stored run of this scope this build cannot read, with why"
+#: What a caller does about a stored run this build's model refuses: see each one, and why, then remove it or deploy a
+#: build that reads it.
+FIND_UNREADABLE_RUNS = (
+    "runs_unreadable names each stored run of this scope this build cannot read, with why; run_delete removes one, "
+    "or deploy a build that reads it"
+)
+
+#: What a caller does about a job record this build's model refuses (a sweep's, a launch's, an analysis attempt's):
+#: the record, or a run it names and settles with it, is what does not read.
+UNREADABLE_JOB_RECORD = (
+    "deploy a build that reads this job's record; if what does not read is a run the job names, runs_unreadable "
+    "names it and run_delete removes it"
+)
 
 #: How a caller finds a campaign's id.
 FIND_CAMPAIGN = "campaigns_list names this scope's campaigns"
@@ -96,5 +106,6 @@ __all__ = [
     "REREAD_AND_RETRY",
     "SCHEMA_REMEDY",
     "SEED_REMEDY",
+    "UNREADABLE_JOB_RECORD",
     "WRITER_REMEDY",
 ]
