@@ -1068,7 +1068,7 @@ def _reject_unestablished_nulls(document: AuthoredAnalysis, bundle: AnalysisCont
     "halving the budget does not change latency, cost or delivery" stops anyone measuring it again. The bundle
     establishes a null in two places only: a ``multiple_comparisons`` comparison reading ``equivalent`` (the
     equivalence test, against a declared margin), and a guardrail check reading ``held`` (shown no worse than its
-    margin). A contrast reading ``not_separated`` says nothing about whether the arms differ (Discodon #2083).
+    margin). A contrast reading ``not_separated`` says nothing about whether the arms differ.
 
     **What is read, and what it is checked against.** The headline and each summary bullet
     (:func:`~threetears.evals.analysis.null_claims.summary_bullets`) are matched against a curated list of null

@@ -1,7 +1,7 @@
 """The ways a headline or summary says two arms are alike — the one place code reads the writer's words for meaning.
 
-**Why it exists (Discodon #2083).** A memo headlined "Halving the token budget from 16384 to 12288 does not change
-this research agent's latency, cost, or delivery" over a contrast its own findings left unresolved (adjusted p 0.13 at
+**Why it exists.** A production memo (2026-10) was headlined "Halving the token budget from 16384 to 12288 does not
+change this agent's latency, cost, or delivery" over a contrast its own findings left unresolved (adjusted p 0.13 at
 five cases, its first caveat saying it "has not confirmed a null so much as failed to separate two arms"). Rule 4 of
 the writer's prompt forbade that in a finding; the headline is what most readers read, and nothing checked it. A null
 is established only by the bundle: a comparison ``multiple_comparisons`` reads ``equivalent``, or a guardrail

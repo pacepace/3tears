@@ -29,7 +29,7 @@ points at it by its heading.
 Whether an analysis follows this guidance is measured by evaluating the report writer
 (``analysis_reporter_v1``), and no rule here exists to satisfy a validator. The one check on the words is
 the generator's refusal of a headline or summary bullet in a common null phrasing when no finding cites a null the
-bundle established (:mod:`threetears.evals.analysis.null_claims`, Discodon #2083). Rule 9 states what it
+bundle established (:mod:`threetears.evals.analysis.null_claims`). Rule 9 states what it
 trips on as a rule for the reader, and name none of the phrases it matches: a prompt coaching toward a check's words
 teaches the writer to reword the claim, not to drop it.
 

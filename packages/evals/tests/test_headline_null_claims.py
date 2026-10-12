@@ -1,6 +1,6 @@
-"""A headline or summary that says arms are alike needs a null the analysis cites (Discodon #2083).
+"""A headline or summary that says arms are alike needs a null the analysis cites.
 
-The instance: "Halving the token budget from 16384 to 12288 does not change this research agent's latency, cost, or
+The instance, from a production memo (2026-10): "Halving the token budget from 16384 to 12288 does not change this research agent's latency, cost, or
 delivery", over a contrast that did not separate at five cases and whose own caveat said it "has not confirmed a null
 so much as failed to separate two arms". A null is established by the bundle alone — a comparison reading
 ``equivalent``, or a guardrail reading ``held`` — and a ``not_separated`` contrast is unresolved.

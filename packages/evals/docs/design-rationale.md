@@ -219,7 +219,7 @@ a case is a frozen campaign bundle, and the judge reads what the writer read and
 checks the structure of model output and never its prose; a judge never grades a fact code can check.
 
 **One tripwire reads the words** (2026-10). A headline said halving a token budget "does not change" latency,
-cost or delivery, over a contrast that did not separate at five cases (Discodon #2083). The prompt forbade that in
+cost or delivery, over a contrast that did not separate at five cases. The prompt forbade that in
 a finding, and most readers read only the headline. So the headline and each summary bullet are matched against a
 short list of null phrasings (`analysis/null_claims.py`), refused only when no finding cites a reading the bundle
 established alike. It does not parse a claim, so it never converges and is not meant to: a reworded null passes,
