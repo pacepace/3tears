@@ -1707,7 +1707,7 @@
     },
     "threetears.evals.kernel.RefusedRow": {
       "kind": "class",
-      "signature": "RefusedRow(row_id: str | None, status: str | None, refused: ValidationError, lease_expires_at: str | None = None)"
+      "signature": "RefusedRow(row_id: str | None, status: str | None, refused: ValidationError, lease_expires_at: str | None = None, lease_stated: bool = False)"
     },
     "threetears.evals.kernel.RELAUNCH_TO_REJUDGE": {
       "kind": "constant (str)",

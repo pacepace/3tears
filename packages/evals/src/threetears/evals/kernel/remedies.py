@@ -27,6 +27,13 @@ FIND_UNREADABLE_RUNS = (
     "or deploy a build that reads it"
 )
 
+#: What an operator does about a run this build cannot read, stored not ended under a lease it cannot read either: this
+#: build cannot tell whether a process holds it, so it will not delete it; the build that wrote it can.
+UNREADABLE_LEASE = (
+    "deploy the build that wrote this run: it reads the run and its lease, so it can settle the run once no process "
+    "holds it, or delete it. This build cannot tell whether a process holds it, and so will not delete it"
+)
+
 #: What a caller does about a job record this build's model refuses (a sweep's, a launch's, an analysis attempt's):
 #: the record, or a run it names and settles with it, is what does not read.
 UNREADABLE_JOB_RECORD = (
@@ -107,5 +114,6 @@ __all__ = [
     "SCHEMA_REMEDY",
     "SEED_REMEDY",
     "UNREADABLE_JOB_RECORD",
+    "UNREADABLE_LEASE",
     "WRITER_REMEDY",
 ]

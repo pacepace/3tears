@@ -35,7 +35,7 @@ from threetears.evals.kernel.campaign_writes import serialized_campaign_write
 from threetears.evals.kernel.errors import NotFoundError, StorageError, ValidationFailedError
 from threetears.evals.kernel.storage import LeaseClock
 from threetears.evals.schema.logs import get_logger
-from threetears.evals.kernel.remedies import FIND_ANALYSIS, FIND_CAMPAIGN, FIND_INSIGHT, FIND_RUN
+from threetears.evals.kernel.remedies import FIND_ANALYSIS, FIND_CAMPAIGN, FIND_INSIGHT, FIND_RUN, UNREADABLE_LEASE
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage, RefusedRow
@@ -623,9 +623,13 @@ def delete_unreadable_run(
     and lease are read off the stored row, since the model never accepted it. Stored ``pending`` or ``running`` with a
     lease that has not lapsed in the store's time means a process — of the build that wrote it, sharing this store —
     may be persisting results still, and deleting would orphan them. Stored not ended with no lease, or one that has
-    lapsed, is stranded: no process holds it, as the reclaim reads such a run, and it is deleted. A lease this build
-    cannot read as a time is read as none, by the same rule the reclaim reads a lease-less run by: every process
-    sharing a store runs a build that keeps leases this build reads (``MIGRATIONS.toml``).
+    lapsed, is stranded: no process holds it, as the reclaim reads such a run, and it is deleted.
+
+    **A lease this build cannot read refuses the delete.** Stored not ended under a lease whose expiry is not a time
+    this build reads (no ``expires_at`` as text, not ISO-8601, or with no zone), whether some process holds the run
+    cannot be told, and a destructive call errs on the side of not destroying: it may be a newer build's run, still
+    going. The refusal says so, and names the way on — deploy the build that wrote the run, which reads its lease and
+    can settle or delete it.
 
     Args:
         storage: Eval storage backend.
@@ -640,16 +644,23 @@ def delete_unreadable_run(
 
     Raises:
         ValidationFailedError: ``confirm`` does not echo the run id, or the row is stored ``pending`` / ``running``
-            under a lease that has not lapsed.
+            under a lease that has not lapsed, or under one this build cannot read.
         StorageError: A result, a campaign detach, or the run itself failed to persist; the message names how far the
             delete got.
     """
     from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES
 
     require_delete_confirmation("run", run_id, confirm)
-    if row.status in NON_TERMINAL_RUN_STATUSES:
+    if row.status in NON_TERMINAL_RUN_STATUSES and row.lease_stated:
         held_until = _lease_expiry(row.lease_expires_at)
-        if held_until is not None and held_until > storage.store_time():
+        if held_until is None:
+            raise ValidationFailedError(
+                f"run '{run_id}' cannot be read by this build, and is stored {row.status} under a lease this build "
+                f"cannot read either (expires_at {row.lease_expires_at!r}) — whether a process still holds it cannot "
+                "be told, and it may be a run a newer build is still persisting results for, so it is not deleted",
+                remedy=UNREADABLE_LEASE,
+            )
+        if held_until > storage.store_time():
             raise ValidationFailedError(
                 f"run '{run_id}' cannot be read by this build, and is stored {row.status} under a lease held until "
                 f"{row.lease_expires_at} — a process of the build that wrote it may still be persisting its results, "
@@ -675,8 +686,7 @@ def _lease_expiry(expires_at: str | None) -> datetime | None:
     try:
         expiry = datetime.fromisoformat(expires_at)
     except ValueError:
-        # NOSILENT(expected): a lease this build cannot read as a time is read as none, the reclaim's rule for a
-        # lease-less run; delete_unreadable_run's docstring states it, and the delete is logged with the row's reasons
+        # NOSILENT(expected): None is the answer "no expiry this build reads", which delete_unreadable_run refuses on
         return None
     return expiry if expiry.tzinfo is not None else None
 
