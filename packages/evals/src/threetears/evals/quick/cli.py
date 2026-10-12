@@ -118,7 +118,7 @@ from threetears.evals.analysis import (
     serialize_report,
 )
 from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, OutOfRunPurpose
-from threetears.evals.kernel import DEFAULT_TEMPERATURE_REPEATS, EvalServiceError, JobLeases
+from threetears.evals.kernel import DEFAULT_TEMPERATURE_REPEATS, EvalServiceError, JobLeases, RefusedInput
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.analysis.summary import summarize_run
 from threetears.evals.run import (
@@ -527,7 +527,7 @@ def run_cli(
         else:
             _say(inspect_campaign_bundle(eval_host, args.campaign, args.scope).model_dump_json(indent=2))
         return EXIT_OK
-    except (_Refused, EvalServiceError) as refused:
+    except (_Refused, EvalServiceError, RefusedInput) as refused:
         sys.stderr.write(f"{prog} {args.command}: {refused}\n")
         return EXIT_REFUSED
     except Exception:

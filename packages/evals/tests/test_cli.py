@@ -430,6 +430,20 @@ async def test_a_run_eval_host_is_one_the_cli_can_read(capsys: pytest.CaptureFix
     assert f"  {summary.run_id}  completed  _unused  template {summary.template_id}" in out
 
 
+async def test_judge_temperature_on_a_host_with_no_clients_is_refused(capsys: pytest.CaptureFixture[str]) -> None:
+    """A host that supplies no completion clients cannot run a comparison that calls a model: that is a refusal
+    naming the remedy (exit 2), never an unanticipated error with a traceback (exit 3)."""
+    host = callable_host([_graded])
+    summary = await run_eval([{"q": "a"}], _unused, [_graded], scope_id="no-clients", host=host)
+    capsys.readouterr()
+    given = ["judge-temperature", summary.run_id, "--scope", "no-clients", "--no-cap", "--estimate"]
+    assert off_loop(run_cli, given, host_factory=lambda: host) == EXIT_REFUSED
+    said = capsys.readouterr().err
+    assert "supplies no completion clients" in said
+    assert "build the host with clients=" in said
+    assert "Traceback" not in said
+
+
 @pytest.mark.parametrize(
     ("given", "said"),
     [

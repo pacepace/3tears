@@ -47,6 +47,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol
 
+from threetears.evals.kernel.errors import RefusedInput
+
 if TYPE_CHECKING:
     # Type-only: the storage module imports the stored models, which import this package for the
     # subject type, so a runtime import here would be a cycle. Nothing below needs them at runtime.
@@ -151,12 +153,13 @@ class EvalHost:
             The factory.
 
         Raises:
-            ValueError: This host supplies no completion clients.
+            RefusedInput: This host supplies no completion clients — a :class:`ValueError`, as every caller
+                documents, that a surface reports as a refusal rather than as an unanticipated error.
         """
         if self.clients is None:
-            raise ValueError(
-                f"host {self.profile.host_id!r} supplies no completion clients, and {purpose} calls a model; "
-                "build the host with clients=<its client factory>"
+            raise RefusedInput(
+                f"host {self.profile.host_id!r} supplies no completion clients, and {purpose} calls a model",
+                remedy="build the host with clients=<its client factory>",
             )
         return self.clients
 
