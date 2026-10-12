@@ -38,6 +38,7 @@ from threetears.evals.run.curation import (
     delete_insight,
     delete_result,
     delete_run,
+    delete_unreadable_run,
     load_run_as_listed,
     require_delete_confirmation,
     set_analysis_archived,
@@ -219,7 +220,7 @@ from threetears.evals.run.ceilings import (
     resolve_ceiling_origin,
     resolve_effective_ceiling,
 )
-from threetears.evals.run.curation import CurationStore
+from threetears.evals.run.curation import CurationStore, UnreadableRunDeleteStore
 from threetears.evals.run.definition_seed import SeedCorpus, SeedOutcome
 from threetears.evals.run.jobs import WorkFn
 from threetears.evals.run.judge_service import JudgeClientFactory, JudgeContext, JudgeOutcome
@@ -263,6 +264,7 @@ __all__ = [
     "CellWork",
     "CheckFlip",
     "CurationStore",
+    "UnreadableRunDeleteStore",
     "ErrorLedger",
     "EvalJobManager",
     "EveryCellApparatusFailedError",
@@ -336,6 +338,7 @@ __all__ = [
     "delete_result",
     "delete_rubric_dim",
     "delete_run",
+    "delete_unreadable_run",
     "drive_conversation",
     "evaluate_goal_state",
     "execute_run",

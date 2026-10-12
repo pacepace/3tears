@@ -352,6 +352,7 @@ from threetears.evals.kernel.storage import (
     NonTerminalRunScan,
     RefusedRow,
     RunsRead,
+    UnreadableRecordError,
     UnreadableRunError,
 )
 from threetears.evals.kernel.surface import (
@@ -594,6 +595,7 @@ __all__ = [
     "NonTerminalRunScan",
     "RefusedRow",
     "RunsRead",
+    "UnreadableRecordError",
     "UnreadableRunError",
     "NotFoundError",
     "AdmittedCall",

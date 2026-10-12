@@ -251,8 +251,9 @@ upgrade the older one. A core document from before the first release (below core
 A refused run stays as stored, and the boot reclaim (`sweep_abandoned_runs`) counts it `unreadable` rather than
 settling it. `runs_unreadable` (operation and action) names each stored run of the scope the current model refuses,
 of any status, with the fields it refused and why. The ones stored pending or running are marked stranded: they are
-the reclaim's `unreadable` count for that scope, and nothing settles them until the document is dropped or a build
-that reads it is deployed. Every other read of such a run refuses with `UnreadableRunError` (in
+the reclaim's `unreadable` count for that scope, and nothing settles them. `run_delete` removes any of them from its
+stored row, with the results and campaign memberships a readable run's delete removes (a stranded one is refused only
+while its stored lease has not lapsed); or deploy a build that reads them. Every other read of such a run refuses with `UnreadableRunError` (in
 `threetears.evals.kernel`, status 500, remedy naming `runs_unreadable`), except the `runs_list` inventory, which lists
 the runs that read and counts the rest; map it in your own routes like any other engine refusal.
 

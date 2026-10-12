@@ -27,7 +27,7 @@ from threetears.evals.ops.jobs import AdmittedJob, JobsStarted, start_job
 from threetears.evals.analysis.summary import EvalSummary, summarize_run
 from threetears.evals.run.authoring import list_judge_configs, list_templates
 from threetears.evals.run.case_sets import mint_case_set
-from threetears.evals.run.curation import delete_run, set_run_archived
+from threetears.evals.run.curation import delete_run, delete_unreadable_run, set_run_archived
 from threetears.evals.run.run_document import set_run_labels
 from threetears.evals.run.launch import admit_launch
 from threetears.evals.run.launch_job import launch_job_work
@@ -126,7 +126,7 @@ class UnreadableRunLine(EvalBaseModel):
     stranded: bool = Field(
         description=(
             "Stored pending or running: the boot sweep counts it unreadable and can never settle it, so it reads "
-            "as not ended until its document is dropped or a build that reads it is deployed."
+            "as not ended until run_delete removes it or a build that reads it is deployed."
         )
     )
     reasons: list[str] = Field(
@@ -944,6 +944,11 @@ async def judge_drift_check(
 def run_delete(host: EvalHost, run_id: str, scope_id: str, *, confirm: str | None) -> RunDeleted:
     """Destroy a run, its results and its campaign memberships — unrecoverable; archive is the safe answer.
 
+    A run this build's model cannot read is destroyed from its stored row
+    (:func:`~threetears.evals.run.curation.delete_unreadable_run`), removing exactly what a readable run's delete
+    removes: the way out of a corpus the model has outlived, which ``runs_unreadable`` lists. Its results are found
+    by the run id they carry, never read, and it is refused only while a process may still hold it.
+
     Args:
         host: The host whose store holds the run.
         run_id: The run.
@@ -955,10 +960,17 @@ def run_delete(host: EvalHost, run_id: str, scope_id: str, *, confirm: str | Non
 
     Raises:
         NotFoundError: No run with that id in the scope — refused before ``confirm`` is read.
-        ValidationFailedError: ``confirm`` does not echo the id, or the run is still running.
+        ValidationFailedError: ``confirm`` does not echo the id, or the run is still running (one this build
+            cannot read: stored running under a lease that has not lapsed).
         StorageError: The cascade stopped partway; the message says how far it got.
     """
-    removed = delete_run(host.storage, get_run(host.storage, run_id, scope_id), scope_id, confirm=confirm)
+    found = host.storage.scan_eval_run(run_id, scope_id)
+    if found.unreadable:
+        # The way out of a run this build cannot read: every read of it refuses, so it is deleted from its row.
+        (row,) = found.unreadable
+        removed = delete_unreadable_run(host.storage, run_id, row, scope_id, confirm=confirm)
+    else:
+        removed = delete_run(host.storage, get_run(host.storage, run_id, scope_id), scope_id, confirm=confirm)
     return RunDeleted(
         run_id=removed["run_id"],
         results_deleted=removed["results_deleted"],

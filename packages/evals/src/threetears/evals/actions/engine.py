@@ -1379,8 +1379,9 @@ def engine_actions() -> tuple[Action, ...]:
                 "each run document this build's model refuses, with the fields it refused and why. A row that "
                 "does not read never stops the rest from being read. Stranded ones were stored pending or running: "
                 "the boot sweep counts them unreadable and can never settle them. runs_list leaves every row named "
-                "here out and counts it; every other read that reaches one refuses, naming this action. Most useful after an upgrade, when the "
-                "corpus has outlived the model that wrote it."
+                "here out and counts it; every other read that reaches one refuses, naming this action. run_delete "
+                "removes one from its stored row. Most useful after an upgrade, when the corpus has outlived the "
+                "model that wrote it."
             ),
         ),
         Action(
@@ -2216,6 +2217,13 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_run_delete,
             render=render.render_run_deleted,
             example={"run_id": run_id, "confirm": run_id},
+            detail=(
+                "Removes the run's results (each with its trace) and its campaign memberships, then the run; "
+                "insights citing it and ratings of its results stay. A run this build cannot read (runs_unreadable "
+                "lists them) is deleted from its stored row, removing the same: its results are found by the run id "
+                "they carry, never read. A pending or running run is refused; one this build cannot read only while "
+                "its stored lease has not lapsed, since a stranded one can never be settled."
+            ),
         ),
         Action(
             name="analysis_delete",

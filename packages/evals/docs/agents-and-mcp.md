@@ -54,7 +54,10 @@ still running. A run whose stored document this build's model refuses cannot be 
 it `unreadable` and leaves it, and `runs_unreadable` names each such run of the scope with why. `runs_list` leaves
 such a run out and says how many it left out (`unreadable`). Every other read that reaches one (`run_get`,
 `job_poll`, a comparison, a campaign's report, a launch's pricing) refuses with `UnreadableRunError` (status 500),
-whose remedy names `runs_unreadable`: an answer over the runs that happened to read would be a wrong one. A launch or a sweep
+whose remedy names `runs_unreadable`: an answer over the runs that happened to read would be a wrong one.
+`run_delete` removes such a run from its stored row, with what a readable run's delete removes. A `job_poll` of
+another job whose record this build cannot read (a sweep's, a launch's, an analysis attempt's) refuses with
+`UnreadableRecordError` (status 500), naming the record and why. A launch or a sweep
 written lost settles the runs it names with it. A cancel is written on the record
 too, so `job_cancel` works from any process: the job ends `cancelled` within one renewal interval. A graceful
 shutdown writes every job its process holds `lost` at once. A job is answered only in the caller's scope:
