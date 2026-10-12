@@ -143,6 +143,8 @@ class ScheduledJobsMetricsEmitter:
         try:
             from prometheus_client import REGISTRY, Counter, Histogram
         except ImportError:
+            # NOSILENT(optional-import): prometheus_client is an extra; without it ``_available`` stays False and every
+            # emit is a no-op
             log.debug("prometheus_client not installed -- scheduled-jobs metrics disabled")
             return
 
@@ -200,6 +202,7 @@ class ScheduledJobsMetricsEmitter:
                 self._resolved_registry.unregister(collector)
             except KeyError:
                 # collector wasn't on the registry -- benign race; continue.
+                # NOSILENT(expected): a collector already off the registry is the state this unregister was reaching for
                 log.debug(
                     "metrics collector was already off the registry",
                     extra={"extra_data": {"collector": type(collector).__name__}},
@@ -209,7 +212,9 @@ class ScheduledJobsMetricsEmitter:
                 # Registered against a different registry than ours. Benign for this best-effort
                 # unregister, but a steady stream of it means the resolved registry is not the one
                 # the collectors were built against, which is a wiring mistake worth seeing.
-                log.debug(
+                # NOSILENT(logged): a best-effort teardown: the collector stays where it is and the wiring mistake is
+                # logged at WARNING
+                log.warning(
                     "metrics collector belongs to a different registry; left in place",
                     extra={"extra_data": {"collector": type(collector).__name__}},
                 )
