@@ -82,6 +82,7 @@ def spent(reply: Completion, value: Any) -> Answer:
     return Answer(
         value,
         model=reply.model,
+        served_model=reply.served_model,  # what the response named, so the run can say which model answered
         input_tokens=reply.input_tokens,
         output_tokens=reply.output_tokens,
         cost_usd=reply.cost_usd,

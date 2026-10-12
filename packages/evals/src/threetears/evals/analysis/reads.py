@@ -44,9 +44,11 @@ from pydantic import ValidationError
 from threetears.evals.analysis.contention import marked_latency_sentence, withheld_latency
 from threetears.evals.analysis.reporting import (
     METRIC_COMPOSITE,
+    model_identity_disclosure,
     pooled_composite_basis,
     pooled_served_models,
     project_score_records,
+    unconfirmed_model_identities,
 )
 from threetears.evals.analysis.lenses.aggregation import DEFAULT_WEIGHTING
 from threetears.evals.analysis.lenses.comparison_sets import compute_comparison_sets
@@ -972,6 +974,10 @@ def run_summary(
         recorded, whose cells executed one at a time); ``latency_disclosure`` is the line to render beside the
         latency keys when any of them was read under concurrency (the results' ``execution_mode``), null
         otherwise — the figures describe this run as it ran and are never compared with another run's.
+        ``model_identity_disclosure`` is the sentence to render beside the ``model`` the rows name when some of
+        the candidate's calls or the judge's scores came back from a response that named no model, so the record
+        holds only the id asked for (:func:`~threetears.evals.analysis.reporting.model_identity_disclosure`);
+        null when every response named its model.
         ``completeness`` and ``completeness_disclosure``
         are both null when the run carries no completeness record (it has not
         reached a terminal state), and the disclosure alone is null when the
@@ -1064,6 +1070,8 @@ def run_summary(
         "measure_latency": run.measure_latency,
         "cell_concurrency": run.cell_concurrency,
         "latency_disclosure": marked_latency_sentence(len(withheld_latency(results, profile.measures)), len(results)),
+        # Which model answered, where the responses did not say: the rows are keyed by the id each call asked for.
+        "model_identity_disclosure": model_identity_disclosure(unconfirmed_model_identities([run], results)),
         "rows": rows,
         "dimension_rows": dimension_rows,
     }
