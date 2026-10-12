@@ -473,7 +473,7 @@ class EvalJobManager:
         try:
             self._on_progress(job_id, payload)
         except Exception:  # prawduct:ok-broad-except — best-effort broadcast must not corrupt job state
-            # Log only: the broadcast tells live readers what the record already says, and its failure is the
+            # NOSILENT: the broadcast tells live readers what the record already says, and its failure is the
             # host's channel breaking, not the job — an error_details entry would count it as one of the run's faults.
             log.exception("on_progress broadcast failed for job %s payload=%s", job_id, payload)
 
@@ -771,7 +771,7 @@ class EvalJobManager:
                 await discard()
             # prawduct:ok-broad-except — a release that fails is logged; the task it belonged to has already ended
             except Exception:
-                # Log only: the task never began, so its work wrote no record; what failed is releasing what its
+                # NOSILENT: the task never began, so its work wrote no record; what failed is releasing what its
                 # admission held, which is this process's resources, not the job's.
                 log.exception("eval.task %s ended before its work began, and releasing what it held failed", job_id)
 
@@ -862,12 +862,14 @@ class EvalJobManager:
         except asyncio.CancelledError:
             raise
         except EvalJobTimeout as timed_out:
+            # NOSILENT: its record is written lost below, its cause the budget, unless its work ended it first.
             log.error(
                 "Task %s timed out after %.0fs (attribution=%s)", job_id, timed_out.elapsed_s, timed_out.attribution
             )
             await self._end_task_record(job_id, f"its task ran out of its {timed_out.elapsed_s:.0f}s budget")
         # prawduct:ok-broad-except — top-level task boundary: the work records its own ending; one it did not is written lost
         except Exception as broke:
+            # NOSILENT: its record is written lost below, its cause this error, unless its work ended it first.
             log.exception("Task %s failed", job_id)
             await self._end_task_record(job_id, f"its task raised past its own ending: {type(broke).__name__}: {broke}")
         finally:
@@ -1028,7 +1030,9 @@ class EvalJobManager:
             try:
                 self._storage.save_eval_run(run)
             except ConflictError, StorageError:
-                # Log only: the failed write IS the run record's own; nothing is left to carry the error.
+                # NOSILENT: the caller re-raises what abandoned the group (a failed save, a cancel); the failed write
+                # IS the run record's own, so nothing is left to carry this one, and the run, with no task, reads lost
+                # once its lease lapses, or is reclaimed by the boot sweep of abandoned runs.
                 log.exception(
                     "eval.start_group run=%s left pending: its cancellation (%s) could not be saved", run.id, reason
                 )
@@ -1095,6 +1099,7 @@ class EvalJobManager:
             # Graceful mid-run cost-cap stop: already-delivered results
             # are persisted. This is an honest terminal outcome, NOT an infra
             # failure — record it as its own ``budget_stopped`` status.
+            # NOSILENT: written below as the run's own ``budget_stopped`` status, the cap's reason beside it.
             log.info("Job %s stopped by per-run cost cap: %s", run_id, stop)
             # The reason goes to its own channel, not to ``error_details``, on the
             # cancel's precedent: a cap the operator configured doing what it was
@@ -1114,6 +1119,7 @@ class EvalJobManager:
             # stops do: nobody configured the account to run dry, and an operator has to act on it
             # (top up, raise the key's limit) before another launch can measure anything. The
             # message carries the spend the run had already incurred.
+            # NOSILENT: written below as the run's ``exhausted`` status, the refusal in its error_details.
             log.warning("Job %s stopped: %s", run_id, exhausted)
             await self._set_status(run_id, scope_id, "exhausted", error=str(exhausted))
         except EvalJobTimeout as timed_out:
@@ -1132,6 +1138,7 @@ class EvalJobManager:
             # `inner_op` is empty in exactly the case this one reads `eval_job`, so borrowing the
             # key would answer their grep with a value none of them can produce. Nothing is lost:
             # a host whose layer logs its own breach line has already emitted one.
+            # NOSILENT: written below as the run's ``budget_stopped`` status, the reason naming the clock.
             log.warning(
                 "Job %s timed out: its wall-clock budget stopped it after %.0fs (attribution=%s)",
                 run_id,
@@ -1142,6 +1149,7 @@ class EvalJobManager:
         except (
             Exception
         ) as exc:  # prawduct:ok-broad-except — top-level job boundary; must catch all to set failed status
+            # NOSILENT: written below as the run's ``failed`` status, this error in its error_details.
             log.exception("Job %s failed", run_id)
             await self._set_status(run_id, scope_id, "failed", error=str(exc))
         finally:
@@ -1168,7 +1176,7 @@ class EvalJobManager:
         try:
             await self._on_run_end(run_id, scope_id, status)
         except Exception:  # prawduct:ok-broad-except — a hook's failure must not corrupt the run's ending
-            # Log only: the run's ending is stored and final before the hook is told; the hook's failure is the host's
+            # NOSILENT: the run's ending is stored and final before the hook is told; the hook's failure is the host's
             # follow-up breaking, and an error_details entry would count it as one of the run's faults.
             log.exception("eval.run_end hook failed for run=%s status=%s; the run's status stands", run_id, status)
 

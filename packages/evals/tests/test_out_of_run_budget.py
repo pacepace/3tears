@@ -11,7 +11,7 @@ rest. These do, one refusal per forbidden shape, beside the accepted one:
   that is not positive and finite, are refused.
 - **A paid call is always ledgered**: a completion reporting what the row cannot hold is recorded with those
   attributes unreadable, not dropped; a ledger write that fails while the call itself raised leaves the
-  call's own failure to propagate.
+  call's own failure to propagate; and a call whose row the ledger could not hold is kept on ``unrecorded``.
 - **Usage is read by the completion protocol's names**: ``served_model`` is the model the response named,
   and a result offering only ``model`` records none.
 - **A ledger row leaves the loop**: it is written on the executor the budget names, for a completed call and a
@@ -245,6 +245,9 @@ async def test_a_ledger_write_failing_while_the_call_raised_leaves_the_calls_own
     with pytest.raises(TimeoutError, match="the provider timed out"):
         await budget.generate(writer, admitted)
     assert ledger.attempts == 1, "the row was attempted"
+    assert budget.recorded == () and [(row.outcome, row.failure) for row in budget.unrecorded] == [
+        ("raised", "TimeoutError")
+    ], "the call is kept on the budget, so a report summing its calls still counts it"
 
 
 async def test_a_ledger_write_failing_for_a_completed_call_raises():
@@ -254,6 +257,9 @@ async def test_a_ledger_write_failing_for_a_completed_call_raises():
 
     with pytest.raises(StorageError, match="the ledger store is down"):
         await budget.generate(writer, admitted)
+    assert budget.recorded == () and [(row.outcome, row.cost_usd) for row in budget.unrecorded] == [
+        ("completed", 0.002)
+    ], "the paid call is kept on the budget, so a report summing its calls still counts it and its cost"
 
 
 # =============================================================================

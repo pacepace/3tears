@@ -712,6 +712,8 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
             await run_blocking(eval_host.blocking_executor, write_held_record, eval_host.storage, ANALYSIS_JOB, refused)
         # prawduct:ok-broad-except — the reason the start stopped is what the caller is told; this is logged beside it
         except Exception:
+            # NOSILENT: every caller of refuse raises the reason this start stopped right after it, and the attempt,
+            # which made no call, reads lost once its lease lapses rather than running.
             log.exception(
                 "eval.generate_analysis campaign=%s scope=%s attempt %s stopped before its job started (%s), and "
                 "its ending could not be written; it reads lost once its lease lapses",
@@ -750,6 +752,8 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
                 leases=leases,
             )
         except JobFenced as fenced:
+            # NOSILENT: the attempt's record, written lost elsewhere, is the answer every poll reads; nothing here
+            # wrote after it.
             # Another process wrote the attempt lost (its lease lapsed): its record is the answer, and the
             # generation has stored nothing more.
             log.warning("eval.generate_analysis campaign=%s scope=%s stopped: %s", campaign_id, scope_id, fenced)

@@ -553,6 +553,7 @@ class JudgeKind:
             except (
                 Exception
             ) as exc:  # prawduct:allow prawduct/broad-except -- one client's teardown must not strand the others
+                # NOSILENT: the first failure is raised once every client has been offered its release.
                 log.warning("releasing a judge kind's client failed; its pool may leak", exc_info=True)
                 first = first or exc
         if first is not None:

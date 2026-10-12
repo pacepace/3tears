@@ -281,6 +281,11 @@ far it meters what that job spends is the host's handler's; the jobs conformance
 **Reading it back.** What was spent out of run is read back by `scope_out_of_run_spend` — the
 `scope_out_of_run_spend` action, and the CLI's `spend` — narrowed by purpose, launch group or template.
 
+**A ledger write that fails.** The row of a call the store would not take is logged at ERROR — and raised, for a
+call that completed — and kept on the budget (`OutOfRunBudget.unrecorded`), so a judge repeat's, second judge's
+or temperature comparison's own report still counts that call and its cost rather than a total missing it. What
+reads the store alone, `scope_out_of_run_spend`, cannot see it: the log line is where it is.
+
 ## How a result's cost is counted
 
 Each completion your client returns names its own `price_source`; the engine stores what it is told and
