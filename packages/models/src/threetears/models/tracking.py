@@ -588,6 +588,8 @@ class _PrometheusEmitter:
         try:
             from prometheus_client import Counter, Histogram
         except ImportError:
+            # NOSILENT(optional-import): prometheus_client is an extra; without it emission is disabled and every emit
+            # is a no-op
             logger.debug(
                 "prometheus_client not installed -- LLM Prometheus emission disabled",
             )
@@ -803,6 +805,8 @@ class UsageTracker:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
+            # NOSILENT(expected): get_running_loop's RuntimeError IS its "no loop is running" answer;
+            # the synchronous fallback below handles that case
             loop = None
 
         if loop is not None:

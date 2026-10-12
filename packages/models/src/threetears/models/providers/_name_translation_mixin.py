@@ -238,7 +238,8 @@ class NameTranslatingChatMixin:
                         chunk = await anext(stream)
                     released = junk.feed(chunk)
                 except StopAsyncIteration:
-                    # NOSILENT: the parent's stream ended; what the filter still holds goes out last.
+                    # NOSILENT(expected): StopAsyncIteration IS the parent stream's end; what the
+                    # filter still holds goes out last
                     ended = True
                     released = junk.finish()
                 except TimeoutError as exc:

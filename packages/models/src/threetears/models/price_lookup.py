@@ -30,7 +30,7 @@ import html
 import json
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
@@ -75,6 +75,11 @@ class PriceLookup:
     ``source`` / ``source_url`` carry provenance so a consumer can show *where* the price came
     from (e.g. ``"openrouter"`` vs ``"voyage"``). They default to the OpenRouter source so existing
     callers and the all-``None`` "no match" result stay unchanged.
+
+    ``unpriced_reason`` says why a price is missing when the source could not supply it: the model
+    is not listed, or it is listed but its price did not parse, or the source's page could not be
+    read at all. Those look identical in the price fields, and only the last two mean the source
+    changed under us. ``None`` when every published price was read.
     """
 
     provider: str
@@ -85,6 +90,7 @@ class PriceLookup:
     context_window_tokens: int | None
     source: str = "openrouter"
     source_url: str | None = OPENROUTER_MODELS_URL
+    unpriced_reason: str | None = None
 
 
 class HttpClient(Protocol):
@@ -141,18 +147,50 @@ def _normalise(name: str) -> str:
 
 
 def _to_per_million(per_token: object) -> Decimal | None:
-    """Convert OpenRouter's per-token price string to a per-1M ``Decimal``; ``None`` if absent/zero/bad."""
+    """Convert OpenRouter's per-token price string to a per-1M ``Decimal``; ``None`` if absent or zero.
+
+    :param per_token: the catalogue's per-token price (a decimal string, usually)
+    :ptype per_token: object
+    :return: the per-1M price, or ``None`` when none is published
+    :rtype: Decimal | None
+    :raises ValueError: a price is published but is not a number -- the upstream encoding changed,
+        which must not read as "no price published"
+    """
     if per_token in (None, "", "0"):
         return None
     try:
         value = Decimal(str(per_token)) * _PER_MILLION
     except InvalidOperation, ValueError:
-        # An upstream price that is present but unreadable. The model ends up unpriced, which the
-        # caller handles, but a run of these means the upstream price encoding changed and every
-        # cost figure downstream is quietly missing.
-        log.debug("upstream per-token price did not parse", extra={"extra_data": {"raw": str(per_token)[:64]}})
-        return None
+        raise ValueError(f"{str(per_token)[:64]!r} is not a number") from None
     return value if value > 0 else None
+
+
+def _catalogue_prices(entry_id: str, pricing: dict[str, Any]) -> tuple[Decimal | None, Decimal | None, str | None]:
+    """The per-1M input and output prices of one catalogue entry, and why either is missing though published.
+
+    :param entry_id: the catalogue id, for the reason and the log line
+    :ptype entry_id: str
+    :param pricing: the entry's ``pricing`` mapping
+    :ptype pricing: dict[str, Any]
+    :return: ``(input, output, unpriced_reason)``; the reason is ``None`` when every published price read
+    :rtype: tuple[Decimal | None, Decimal | None, str | None]
+    """
+    costs: list[Decimal | None] = []
+    problems: list[str] = []
+    for side in ("prompt", "completion"):
+        try:
+            costs.append(_to_per_million(pricing.get(side)))
+        except ValueError as exc:
+            costs.append(None)
+            problems.append(f"its published {side} price {exc}")
+    reason = f"{entry_id} is listed, but " + " and ".join(problems) if problems else None
+    if reason is not None:
+        log.warning(
+            "an upstream price did not parse; the model is left unpriced: %s",
+            reason,
+            extra={"extra_data": {"entry_id": entry_id}},
+        )
+    return costs[0], costs[1], reason
 
 
 def _candidate_ids(provider: str, api_name: str) -> tuple[str, ...]:
@@ -200,31 +238,46 @@ def match_price(catalogue: Sequence[dict[str, Any]], *, provider: str, api_name:
     chosen = suffix_hit or norm_hit
     if chosen is not None:
         return _result(chosen, provider, api_name)
-    return PriceLookup(provider, api_name, None, None, None, None)
+    return PriceLookup(
+        provider,
+        api_name,
+        None,
+        None,
+        None,
+        None,
+        unpriced_reason=f"no catalogue entry matches {provider}/{api_name}",
+    )
 
 
 def _result(entry: dict[str, Any], provider: str, api_name: str) -> PriceLookup:
     pricing = entry.get("pricing") or {}
     context = entry.get("context_length")
+    entry_id = str(entry.get("id"))
+    cost_in, cost_out, reason = _catalogue_prices(entry_id, pricing)
     return PriceLookup(
         provider=provider,
         api_name=api_name,
-        matched_id=str(entry.get("id")),
-        cost_per_1m_input=_to_per_million(pricing.get("prompt")),
-        cost_per_1m_output=_to_per_million(pricing.get("completion")),
+        matched_id=entry_id,
+        cost_per_1m_input=cost_in,
+        cost_per_1m_output=cost_out,
         context_window_tokens=int(context) if isinstance(context, int) else None,
+        unpriced_reason=reason,
     )
 
 
 @dataclass(frozen=True)
 class ModelOption:
-    """One pickable model from the catalogue — the api_name to register + its pre-fill metadata."""
+    """One pickable model from the catalogue — the api_name to register + its pre-fill metadata.
+
+    ``unpriced_reason`` names a published price that did not parse (see :class:`PriceLookup`).
+    """
 
     api_name: str
     display_name: str
     context_window_tokens: int | None
     cost_per_1m_input: Decimal | None
     cost_per_1m_output: Decimal | None
+    unpriced_reason: str | None = None
 
 
 def list_provider_models(catalogue: Sequence[dict[str, Any]], *, provider: str) -> list[ModelOption]:
@@ -255,13 +308,15 @@ def list_provider_models(catalogue: Sequence[dict[str, Any]], *, provider: str) 
             api_name = entry_id.split("/", 1)[1]
         pricing = entry.get("pricing") or {}
         context = entry.get("context_length")
+        cost_in, cost_out, reason = _catalogue_prices(entry_id, pricing)
         out.append(
             ModelOption(
                 api_name=api_name,
                 display_name=str(entry.get("name") or api_name),
                 context_window_tokens=int(context) if isinstance(context, int) else None,
-                cost_per_1m_input=_to_per_million(pricing.get("prompt")),
-                cost_per_1m_output=_to_per_million(pricing.get("completion")),
+                cost_per_1m_input=cost_in,
+                cost_per_1m_output=cost_out,
+                unpriced_reason=reason,
             )
         )
     out.sort(key=lambda m: m.api_name)
@@ -366,31 +421,29 @@ def _parse_voyage_prices(body_html: str) -> dict[str, Decimal]:
     ``Price per million tokens`` column of ``$X`` values. We locate that column by its header text
     (so the per-*thousand* and per-*pixel* columns are ignored), then map each model id in the row
     to the row's per-1M price. A cell may list several models (``<br/>``-joined ``<code>``) sharing
-    one price. Rows/tables that don't fit the shape are skipped — never guessed.
+    one price. Rows/tables that don't fit the shape are skipped — never guessed. ``_PRICE_RE`` only
+    matches a decimal literal, so a matched price always converts.
 
     :param body_html: the decoded page body HTML (the value of the ``"body"`` hydration field).
     :ptype body_html: str
-    :return: model id → per-1M USD price (may be empty if no priced rows were found).
+    :return: model id → per-1M USD price
     :rtype: dict[str, Decimal]
+    :raises ValueError: no table on the page has a per-million-tokens column -- the column label
+        changed, which must not read as "no prices published"
     """
     prices: dict[str, Decimal] = {}
+    priced_tables = 0
     for table_html in _TABLE_RE.findall(body_html):
         rows = _ROW_RE.findall(table_html)
         if not rows:
             continue
-        # The header row carries the column labels; find the per-1M column index.
+        # The header row carries the column labels; find the per-1M column index. A table without
+        # one (multimodal per-pixel, per-request) is not a token price table.
         headers = [_cell_text(h).lower() for h in _TH_RE.findall(rows[0])]
-        try:
-            price_col = headers.index(_PER_MILLION_HEADER)
-        except ValueError:
-            # Not a per-1M-token table (e.g. multimodal per-pixel), so skipping is right. Recorded
-            # because if the page's column label ever changes, EVERY table skips here and the
-            # parser returns an empty price map that reads exactly like "no prices published".
-            log.debug(
-                "pricing table has no per-1M column; skipped",
-                extra={"extra_data": {"headers": headers[:8]}},
-            )
+        if _PER_MILLION_HEADER not in headers:
             continue
+        price_col = headers.index(_PER_MILLION_HEADER)
+        priced_tables += 1
         for row_html in rows[1:]:
             cells = _TD_RE.findall(row_html)
             if len(cells) <= price_col:
@@ -401,66 +454,55 @@ def _parse_voyage_prices(body_html: str) -> dict[str, Decimal]:
             price_match = _PRICE_RE.search(_cell_text(cells[price_col]))
             if not price_match:
                 continue
-            try:
-                price = Decimal(price_match.group(1))
-            except InvalidOperation:
-                # The cell matched the price regex but is not a number. Skipping leaves those
-                # models unpriced, which the "never a near price" contract prefers to guessing --
-                # but unpriced-because-unparsed and unpriced-because-absent look identical to the
-                # caller, so the difference is recorded here.
-                log.debug(
-                    "pricing cell matched the price pattern but did not parse",
-                    extra={"extra_data": {"raw": price_match.group(1)[:32], "model_ids": model_ids[:4]}},
-                )
-                continue
+            price = Decimal(price_match.group(1))
             if price <= 0:
                 continue
             for model_id in model_ids:
                 if model_id:
                     prices.setdefault(model_id, price)
+    if priced_tables == 0:
+        raise ValueError(f"no pricing table has a {_PER_MILLION_HEADER!r} column")
     return prices
 
 
-def _extract_voyage_body(page_html: str) -> str | None:
+def _extract_voyage_body(page_html: str) -> str:
     """Pull the decoded page-body HTML out of the readme.io hydration blob.
 
     The page embeds its rendered body as a JSON string under a ``"body":`` key. We grab that string
-    and JSON-decode it (handling the ``\\uXXXX`` / ``\\n`` escapes). Returns ``None`` if the field
-    isn't present or doesn't decode — the caller then fails safe to all-``None``.
+    and JSON-decode it (handling the ``\\uXXXX`` / ``\\n`` escapes).
 
     :param page_html: the raw pricing-page HTML fetched over HTTP.
     :ptype page_html: str
-    :return: the decoded body HTML, or ``None`` on any structural surprise.
-    :rtype: str | None
+    :return: the decoded body HTML
+    :rtype: str
+    :raises ValueError: the field is absent, does not decode, or is empty -- the page changed shape
     """
     match = _VOYAGE_BODY_FIELD.search(page_html)
     if not match:
-        return None
+        raise ValueError('the page has no "body" hydration field')
     try:
         decoded = json.loads(f'"{match.group(1)}"')
     except json.JSONDecodeError, ValueError:
-        # The pricing page's embedded body field is no longer a JSON string literal. Voyage prices
-        # go empty from here on, so record the shape change rather than returning a bare None.
-        log.debug("voyage pricing page body field did not decode as JSON")
-        return None
-    return decoded if isinstance(decoded, str) and decoded else None
+        raise ValueError('the page\'s "body" hydration field is not a JSON string') from None
+    if not isinstance(decoded, str) or not decoded:
+        raise ValueError('the page\'s "body" hydration field is empty')
+    return decoded
 
 
 def parse_voyage_pricing(page_html: str) -> dict[str, Decimal]:
-    """Parse a fetched Voyage pricing page into ``{model_id: per_1M_usd}`` (empty on any surprise).
+    """Parse a fetched Voyage pricing page into ``{model_id: per_1M_usd}``.
 
     Extracts the hydration body then parses its pricing tables (see :func:`_parse_voyage_prices`).
-    Never raises on a structural mismatch — a parse miss yields an empty map so the caller hand-enters.
 
     :param page_html: the raw pricing-page HTML fetched over HTTP.
     :ptype page_html: str
-    :return: model id → per-1M USD price (empty if the page couldn't be parsed).
+    :return: model id → per-1M USD price.
     :rtype: dict[str, Decimal]
+    :raises ValueError: the page could not be read -- no hydration body, a body that does not
+        decode, or no per-million-tokens table. Before, these all answered an empty map, which
+        reads exactly like "Voyage publishes no prices".
     """
-    body = _extract_voyage_body(page_html)
-    if body is None:
-        return {}
-    return _parse_voyage_prices(body)
+    return _parse_voyage_prices(_extract_voyage_body(page_html))
 
 
 def _match_voyage_model(prices: dict[str, Decimal], api_name: str) -> tuple[str, Decimal] | None:
@@ -492,7 +534,8 @@ class VoyagePriceSource:
     the per-1M column out of its pricing tables. Embeddings/rerankers are input-priced, so the
     result sets ``cost_per_1m_input`` and leaves ``cost_per_1m_output`` / ``context_window_tokens``
     ``None``. A fetch transport error propagates (like the OpenRouter path); any *parse* miss
-    (page restructured, model not listed) fails safe to an all-``None`` result — never a wrong price.
+    (page restructured, model not listed) fails safe to an all-``None``
+    result — never a wrong price — whose ``unpriced_reason`` says which of those it was.
     """
 
     source_name = "voyage"
@@ -511,7 +554,7 @@ class VoyagePriceSource:
         """Scrape Voyage pricing and conservatively match ``api_name``.
 
         A transport/HTTP error propagates; a parse miss or no-match returns all-``None`` (with the
-        Voyage provenance still attached) so the admin hand-enters.
+        Voyage provenance still attached, and ``unpriced_reason`` naming which) so the admin hand-enters.
 
         :param client: an async HTTP client exposing ``get(url)`` (e.g. ``httpx.AsyncClient``).
         :ptype client: HttpClient
@@ -536,11 +579,20 @@ class VoyagePriceSource:
         response.raise_for_status()
         page_html = response.text
         if not isinstance(page_html, str):
-            return empty
-        prices = parse_voyage_pricing(page_html)
+            return replace(empty, unpriced_reason="the Voyage pricing page's body is not text")
+        try:
+            prices = parse_voyage_pricing(page_html)
+        except ValueError as exc:
+            log.warning(
+                "the Voyage pricing page could not be read; %s is left unpriced: %s",
+                api_name,
+                exc,
+                extra={"extra_data": {"api_name": api_name}},
+            )
+            return replace(empty, unpriced_reason=f"the Voyage pricing page could not be read: {exc}")
         matched = _match_voyage_model(prices, api_name)
         if matched is None:
-            return empty
+            return replace(empty, unpriced_reason=f"{api_name} is not listed on the Voyage pricing page")
         matched_id, price = matched
         return PriceLookup(
             provider=provider,

@@ -89,7 +89,7 @@ from threetears.models._claude_sdk_internals import (
     remove_tool_server,
     send_control_request,
 )
-from threetears.observe import BuildOnce, get_logger
+from threetears.observe import BuildOnce, cancel_and_wait, get_logger
 
 __all__ = [
     "POOL_MARKER_ENV",
@@ -149,14 +149,15 @@ def _stat_tokens(pid: int) -> list[str] | None:
 
     :param pid: the process to read
     :ptype pid: int
-    :return: the fields, or ``None`` when the process or ``/proc`` is gone
+    :return: the fields, or ``None`` when the process is gone or is not this user's to read
     :rtype: list[str] | None
+    :raises OSError: any other failure to read ``/proc`` -- an answer this function cannot give
     """
     try:
         raw = (_PROC / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
-    except OSError, ValueError:
-        # NOSILENT: a process that exited between listing and reading is the normal case in a
-        # /proc walk, and None is the documented "gone" answer every caller already handles.
+    except FileNotFoundError, ProcessLookupError, PermissionError:
+        # NOSILENT(expected): the process exited between listing and reading (the normal case in a
+        # /proc walk), or /proc hides it from this user; None is the documented "gone or not ours"
         return None
     close = raw.rfind(")")
     if close == -1:
@@ -172,17 +173,14 @@ def _process_start_ticks(pid: int) -> int | None:
 
     :param pid: the process to read
     :ptype pid: int
-    :return: the start time, or ``None`` when it cannot be read
+    :return: the start time, or ``None`` when the process is gone or not ours to read
     :rtype: int | None
+    :raises ValueError: the kernel's start-time field is not a number -- a ``/proc`` this code misreads
     """
     tokens = _stat_tokens(pid)
     if tokens is None or len(tokens) < 20:
         return None
-    try:
-        return int(tokens[19])
-    except ValueError:
-        # NOSILENT: an unparseable start time means "cannot identify", the documented None.
-        return None
+    return int(tokens[19])
 
 
 def _parent_pid(pid: int) -> int | None:
@@ -192,30 +190,28 @@ def _parent_pid(pid: int) -> int | None:
     :ptype pid: int
     :return: the parent pid
     :rtype: int | None
+    :raises ValueError: the kernel's parent-pid field is not a number -- a ``/proc`` this code misreads
     """
     tokens = _stat_tokens(pid)
     if tokens is None or len(tokens) < 2:
         return None
-    try:
-        return int(tokens[1])
-    except ValueError:
-        # NOSILENT: an unparseable parent pid means "not a child of anything we track", the documented None.
-        return None
+    return int(tokens[1])
 
 
 def _process_environ(pid: int) -> dict[str, str]:
-    """The process's environment, or an empty mapping when it cannot be read.
+    """The process's environment, or an empty mapping when it is gone or not this user's to read.
 
     :param pid: the process to read
     :ptype pid: int
     :return: the environment
     :rtype: dict[str, str]
+    :raises OSError: any other failure to read ``/proc`` -- an answer this function cannot give
     """
     try:
         raw = (_PROC / str(pid) / "environ").read_bytes()
-    except OSError, ValueError:
-        # NOSILENT: another user's or an exited process's environment is unreadable by design; an
-        # empty mapping means "carries no pool marker", so the sweep never touches it.
+    except FileNotFoundError, ProcessLookupError, PermissionError:
+        # NOSILENT(expected): an exited process, or another user's, whose environment is unreadable
+        # by design -- and no CLI this pool started is either; {} carries no marker, so it is never touched
         return {}
     env: dict[str, str] = {}
     for chunk in raw.split(b"\0"):
@@ -227,15 +223,15 @@ def _process_environ(pid: int) -> dict[str, str]:
 
 
 def _live_pids() -> list[int]:
-    """Every pid currently in ``/proc``, or an empty list where there is none.
+    """Every pid currently in ``/proc``, or an empty list on a platform without one.
 
     :return: the pids
     :rtype: list[int]
+    :raises OSError: ``/proc`` exists and cannot be listed -- not the same answer as "no processes"
     """
-    try:
-        return sorted(int(entry.name) for entry in _PROC.iterdir() if entry.name.isdigit())
-    except OSError:
+    if not _PROC.is_dir():
         return []
+    return sorted(int(entry.name) for entry in _PROC.iterdir() if entry.name.isdigit())
 
 
 def _descendants(pid: int) -> list[int]:
@@ -275,14 +271,19 @@ def _signal(pid: int, sig: int) -> bool:
     try:
         os.kill(pid, sig)
     except ProcessLookupError:
+        # NOSILENT(expected): no such process; False is this function's documented "did not land"
         return False
     except PermissionError:
+        # NOSILENT(logged): False is this function's documented 'did not land', which is true: the signal was not
+        # delivered
         _logger.warning(
             "Not permitted to signal a pooled Claude CLI process",
             extra={"extra_data": {"pid": pid, "signal": sig}},
         )
         return False
     except OSError as exc:
+        # NOSILENT(logged): False is this function's documented 'did not land', which is true: the signal was not
+        # delivered
         _logger.warning(
             "Signalling a pooled Claude CLI process failed",
             extra={"extra_data": {"pid": pid, "signal": sig, "error": str(exc)}},
@@ -320,9 +321,9 @@ def kill_process_tree(pid: int, *, grace_seconds: float = 2.0) -> int:
     """
     targets = [pid, *_descendants(pid)]
     group = -1
-    # NOSILENT: a process that already exited has no group to test; the descendant walk below
-    # still runs, so nothing is skipped by staying silent here.
-    with suppress(ProcessLookupError, PermissionError, OSError):
+    # NOSILENT(expected): a process that already exited, or one whose group this user may not
+    # test, is not a group leader to signal; the per-process signalling below still runs
+    with suppress(ProcessLookupError, PermissionError):
         if os.getpgid(pid) == pid:
             group = pid
 
@@ -368,15 +369,13 @@ def _owner_is_alive(marker: str) -> bool:
     :ptype marker: str
     :return: whether the owner is alive
     :rtype: bool
+    :raises ValueError: the marker does not name an owner -- not the same answer as "its owner is gone"
     """
     parts = marker.split(":")
     if len(parts) < 2:
-        return False
-    try:
-        owner_pid = int(parts[0])
-        owner_ticks = int(parts[1])
-    except ValueError:
-        return False
+        raise ValueError(f"pool marker {marker!r} names no owner pid and start time")
+    owner_pid = int(parts[0])
+    owner_ticks = int(parts[1])
     if not _alive(owner_pid):
         return False
     if owner_ticks == 0:
@@ -407,7 +406,21 @@ def sweep_orphaned_claude_clis(*, grace_seconds: float = 2.0) -> int:
         if pid == self_pid:
             continue
         marker = _process_environ(pid).get(POOL_MARKER_ENV)
-        if not marker or _owner_is_alive(marker):
+        if not marker:
+            continue
+        try:
+            owned = _owner_is_alive(marker)
+        except ValueError as exc:
+            # A marker this pool cannot read is not proof of an orphan: the process is left alone,
+            # and said to be, rather than killed on a guess or skipped without a word.
+            # NOSILENT(logged): the process is left alone, which is what the sweep then does; no caller reads it as
+            # killed
+            _logger.warning(
+                "A process carries a Claude CLI pool marker that names no owner; leaving it alone",
+                extra={"extra_data": {"pid": pid, "error": str(exc)}},
+            )
+            continue
+        if owned:
             continue
         _logger.warning(
             "Killing an orphaned Claude CLI left by a previous process",
@@ -635,6 +648,30 @@ def _discover_pid(client: Any, marker: str) -> int | None:
     return None
 
 
+async def _disconnect_or_log(client: Any, *, when: str) -> None:
+    """Disconnect a CLI within 5 s; a failure is logged at WARNING, never raised.
+
+    Every caller is somewhere a raise would do harm: an error is already on its way out (a failed
+    start, a cancellation) and would be replaced, or the process-tree kill that follows is what
+    guarantees the CLI is gone and would be skipped. A CLI that would not disconnect may still be
+    running, so the failure is recorded for the operator instead.
+
+    :param client: the ``ClaudeSDKClient``
+    :ptype client: Any
+    :param when: what the disconnect was part of, for the log line
+    :ptype when: str
+    """
+    try:
+        await asyncio.wait_for(client.disconnect(), timeout=5.0)
+    except (
+        Exception
+    ) as exc:  # prawduct:allow prawduct/broad-except -- recorded below; see the docstring for why it is not raised
+        _logger.warning(
+            "A Claude CLI did not disconnect cleanly",
+            extra={"extra_data": {"when": when, "error": f"{type(exc).__name__}: {exc}"}},
+        )
+
+
 def _context_bound_server(server: Any, context: contextvars.Context) -> Any:
     """A copy of an in-process MCP server whose tool calls run in one borrower's context.
 
@@ -829,18 +866,16 @@ class PooledCliSession:
         try:
             await client.connect()
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- any start failure (including an SDK whose surface moved) must become "no pooled session", so the call falls back to its own CLI instead of failing the turn
-            # NOSILENT: best-effort cleanup of a CLI that never came up; the start failure itself is
-            # raised immediately below as ClaudeCliSessionError and logged by the caller.
-            with suppress(Exception):  # prawduct:allow prawduct/broad-except -- see NOSILENT above
-                await asyncio.wait_for(client.disconnect(), timeout=5.0)
+            # The start failure itself is raised below as ClaudeCliSessionError; the disconnect's own
+            # failure is logged rather than allowed to replace it.
+            await _disconnect_or_log(client, when="after a failed start")
             raise ClaudeCliSessionError(f"could not start a Claude CLI: {exc}") from exc
         except BaseException:
             # A cancellation (a turn stopped while its CLI starts) must not leave a connected
             # subprocess behind -- disconnect before the cancellation continues.
-            # NOSILENT: the cancellation being re-raised below is the event that matters; this only
-            # makes sure the half-started CLI does not outlive it.
-            with suppress(Exception):  # prawduct:allow prawduct/broad-except -- see NOSILENT above
-                await asyncio.shield(asyncio.wait_for(client.disconnect(), timeout=5.0))
+            # The cancellation re-raised below is the event that matters; a disconnect failure is
+            # logged rather than allowed to replace it.
+            await asyncio.shield(_disconnect_or_log(client, when="after a start was cancelled"))
             raise
         session = cls(client, key=key, pid=_discover_pid(client, marker), marker=marker)
         session._model = getattr(options, "model", None)
@@ -970,10 +1005,9 @@ class PooledCliSession:
         if self.closed:
             return
         self.closed = True
-        # NOSILENT: whatever disconnect raises, the process-tree kill below is what guarantees the CLI
-        # is gone; a disconnect failure changes nothing about that outcome.
-        with suppress(Exception):  # prawduct:allow prawduct/broad-except -- see NOSILENT above
-            await asyncio.wait_for(self.client.disconnect(), timeout=5.0)
+        # Whatever disconnect raises, the process-tree kill below is what guarantees the CLI is gone;
+        # the disconnect's failure is logged, and the kill still runs.
+        await _disconnect_or_log(self.client, when="disposing of a pooled session")
         await asyncio.to_thread(self._kill_if_still_ours, grace_seconds)
 
     async def abandon(self, *, grace_seconds: float) -> None:
@@ -1402,15 +1436,18 @@ class ClaudeCliPool:
         spares = list(self._spares)
         for spare in spares:
             spare.cancel()
-        # NOSILENT: each spare was cancelled one line above; a spare that had already failed logged
-        # its own failure. Neither is this close's to raise.
-        await asyncio.gather(*spares, return_exceptions=True)
+        # Each spare was cancelled one line above, and those cancellations come back as
+        # CancelledError, which is not an Exception. A spare that failed otherwise is not this
+        # close's to raise -- the close must still finish -- so it is logged here, where it surfaces.
+        outcomes = await asyncio.gather(*spares, return_exceptions=True)
+        for outcome in outcomes:
+            if isinstance(outcome, Exception):
+                _logger.warning(
+                    "A spare Claude CLI failed before the pool closed",
+                    extra={"extra_data": {"error": f"{type(outcome).__name__}: {outcome}"}},
+                )
         if self._reaper is not None:
-            self._reaper.cancel()
-            # NOSILENT: we cancelled the reaper ourselves one line above; its CancelledError is the
-            # expected result of that, not a failure.
-            with suppress(asyncio.CancelledError):
-                await self._reaper
+            await cancel_and_wait(self._reaper)
             self._reaper = None
         for session in sessions:
             await session.dispose(grace_seconds=self._kill_grace)
