@@ -139,6 +139,8 @@ def open_session_state(sealed: str, key: SecretStr, *, target_id: str | None = N
     try:
         plaintext = open_secret(sealed, key)
     except DecryptionError as exc:
+        # NOSILENT(logged): None is the documented "no usable state", which is true of a token that will not
+        # open; the fetch goes without it and the warning says the target needs a human again
         log.warning(
             "scrape session state: stored state could not be opened (%s); this target needs a human again",
             exc,
@@ -150,6 +152,7 @@ def open_session_state(sealed: str, key: SecretStr, *, target_id: str | None = N
     except json.JSONDecodeError:
         # Opened but not parseable: the key was right, so this is a format change rather than
         # a tamper. Same operational answer, different cause, and worth not conflating.
+        # NOSILENT(logged): None is the documented "no usable state", true of state that will not parse
         log.warning(
             "scrape session state: stored state opened but is not valid JSON; ignoring it",
             extra={"extra_data": {"target_id": target_id}},

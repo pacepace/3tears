@@ -423,6 +423,8 @@ class MultiDocumentDriver(ScrapeDriver):
                 doc_extra: dict[str, Any] = {"session_state": session_state} if session_state else {}
                 page = await self._document_driver.render(doc_url, timeout=timeout, **doc_extra)
             except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- one bad document must never sink the others: a single unreachable or malformed document would otherwise discard every sibling already fetched in this poll
+                # NOSILENT(logged): the failed document is not marked seen, so the next poll fetches it again --
+                # nothing it holds is lost, only delayed -- and the warning names its URL
                 log.warning(
                     "multi-document: one document fetch failed, skipping",
                     extra={"extra_data": {"url": doc_url, "error": str(exc)}},
