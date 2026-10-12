@@ -135,6 +135,10 @@ class RefusedRow(NamedTuple):
     """The ``lease.expires_at`` the row states, as stored, or ``None`` when it states none as text: for a caller that
     must tell whether some process may still hold the row (a delete of a run this build cannot read)."""
 
+    lease_stated: bool = False
+    """Whether the row states a lease at all (a ``lease`` that is not null), whether or not its expiry reads: a row
+    with a lease this build cannot read is not a row with none."""
+
     @property
     def reasons(self) -> list[str]:
         """Each distinct refusal, as ``field: what the model said``, sorted; the refused value is never repeated."""
@@ -1795,6 +1799,7 @@ class EvalStorage:
                         status=status if isinstance(status, str) else None,
                         refused=why,
                         lease_expires_at=expires_at if isinstance(expires_at, str) else None,
+                        lease_stated=lease is not None,
                     )
                 )
         return read, refused

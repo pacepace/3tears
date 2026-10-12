@@ -23,7 +23,7 @@ import pytest
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools
 from threetears.evals.kernel import EvalStorage, UnreadableRunError, ValidationFailedError
 from threetears.evals.kernel.campaign import EvalSweep, SweepArmRecord
-from threetears.evals.kernel.remedies import FIND_UNREADABLE_RUNS, UNREADABLE_JOB_RECORD
+from threetears.evals.kernel.remedies import FIND_UNREADABLE_RUNS, UNREADABLE_JOB_RECORD, UNREADABLE_LEASE
 from threetears.evals.ops import RunDeleted, RunListing, run_delete, runs_list, runs_unreadable
 from threetears.evals.run import EvalActionJob, EvalLaunch
 from threetears.evals.schema import JobLease
@@ -405,3 +405,30 @@ async def test_a_job_whose_record_this_build_cannot_read_is_refused_naming_the_r
     assert (outcome.refusal.kind, outcome.refusal.status) == ("refused", 500), outcome.text
     assert record.id in outcome.text and RETIRED in outcome.text, outcome.text
     assert f"remedy: {UNREADABLE_JOB_RECORD}" in outcome.text, outcome.text
+
+
+@pytest.mark.parametrize(
+    "lease",
+    [
+        {"holder": "newer-build", "expires_at": "in about a minute"},
+        {"holder": "newer-build", "expires_at": "2099-01-01T00:00:00"},
+        {"holder": "newer-build", "until_epoch_s": 4070908800},
+        "newer-build-lease-token",
+    ],
+    ids=["an expiry that is no time", "an expiry with no zone", "no expires_at", "not an object"],
+)
+async def test_an_unreadable_run_whose_lease_cannot_be_read_either_is_refused_and_left_whole(lease: Any) -> None:
+    store = InMemoryDocumentStore()
+    fixture = off_loop(ops_fixture, store=store)
+    run = make_eval_run(id="run-newer", scope_id=TOYHOST_SCOPE, status="running")
+    store.upsert(run.to_dict() | {"retired_knob": 1, "lease": lease})
+
+    outcome = await _tools()["run_delete"].call(
+        {"action": "run_delete", "run_id": run.id, "confirm": run.id}, host=fixture.host, caller=CALLER
+    )
+
+    assert outcome.is_error and outcome.refusal is not None, outcome.text
+    assert outcome.refusal.kind == "validation_failed", outcome.text
+    assert "under a lease this build cannot read either" in outcome.text, outcome.text
+    assert f"remedy: {UNREADABLE_LEASE}" in outcome.text, outcome.text
+    assert [line.run_id for line in off_loop(runs_unreadable, fixture.host.eval_host, TOYHOST_SCOPE).runs] == [run.id]
