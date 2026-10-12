@@ -1157,6 +1157,10 @@
       "kind": "model",
       "signature": "EvalJudgeProfile(doc_type: Literal['eval_judge_profile'] = 'eval_judge_profile', schema_version: SchemaVersion = 8, scope_id: str, rubric_dim: DimName, scale: RubricScale, judge_model: str, judge_config_id: str | None, judge_temperature: JudgeTemperature, criterion_digest: str, id: str = <lambda>(), cases: int, trials: int, case_set_fingerprint: str, run_ids: list[str], label_agreement: JudgeProfileAgreement | None, self_agreement: JudgeProfileAgreement | None, parse_replies: int, parse_valid: int, parse_validity: float | None, measured_at: str, recorded_at: str = utc_now_iso())"
     },
+    "threetears.evals.kernel.EvalRunScan": {
+      "kind": "class",
+      "signature": "EvalRunScan(readable: int, unreadable: list[RefusedRow])"
+    },
     "threetears.evals.kernel.EvalServiceError": {
       "kind": "exception",
       "signature": "EvalServiceError(message: str, status_code: int = 400, details: dict[str, Any] = <factory>, *, remedy: str) -> None"
@@ -1684,6 +1688,10 @@
     "threetears.evals.kernel.RefusedInput": {
       "kind": "exception",
       "signature": "RefusedInput(fault: str, *, remedy: str) -> None"
+    },
+    "threetears.evals.kernel.RefusedRow": {
+      "kind": "class",
+      "signature": "RefusedRow(row_id: str | None, status: str | None, refused: ValidationError)"
     },
     "threetears.evals.kernel.RELAUNCH_TO_REJUDGE": {
       "kind": "constant (str)",
@@ -5481,6 +5489,10 @@
       "kind": "function",
       "signature": "runs_list(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False, label: str | None = None) -> RunListing"
     },
+    "threetears.evals.ops.runs_unreadable": {
+      "kind": "function",
+      "signature": "runs_unreadable(host: EvalHost, scope_id: str) -> UnreadableRunsListing"
+    },
     "threetears.evals.ops.RunsBisected": {
       "kind": "model",
       "signature": "RunsBisected(baseline_run_id: str, candidate_run_id: str, differs: list[str], same: list[str], unknown: list[str], details: dict[str, dict[str, Any]], completeness_disclosures: dict[str, str], measurement_window_disclosure: str | None)"
@@ -5600,6 +5612,14 @@
     "threetears.evals.ops.UnreadableReporterCase": {
       "kind": "model",
       "signature": "UnreadableReporterCase(test_case_id: str, reason: str)"
+    },
+    "threetears.evals.ops.UnreadableRunLine": {
+      "kind": "model",
+      "signature": "UnreadableRunLine(run_id: str | None, status: str | None, stranded: bool, reasons: list[str])"
+    },
+    "threetears.evals.ops.UnreadableRunsListing": {
+      "kind": "model",
+      "signature": "UnreadableRunsListing(scope_id: str, runs_read: int, stranded: int, runs: list[UnreadableRunLine])"
     },
     "threetears.evals.actions.Action": {
       "kind": "dataclass",

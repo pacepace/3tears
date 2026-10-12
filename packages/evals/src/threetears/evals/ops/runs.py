@@ -10,11 +10,18 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationError, model_validator
 
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.schema.models import DEFAULT_LAUNCH_K_RUNS, CaseSet, CaseSetRef, EvalRun, SecondJudge
+from threetears.evals.schema.models import (
+    DEFAULT_LAUNCH_K_RUNS,
+    NON_TERMINAL_RUN_STATUSES,
+    CaseSet,
+    CaseSetRef,
+    EvalRun,
+    SecondJudge,
+)
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.jobs import AdmittedJob, JobsStarted, start_job
 from threetears.evals.analysis.summary import EvalSummary, summarize_run
@@ -82,6 +89,40 @@ class RunListing(EvalBaseModel):
     runs: list[RunLine]
     include_archived: bool = Field(description="Whether archived runs were listed; they are left out by default.")
     label: str | None = Field(default=None, description="The label the runs were listed by; None lists every run.")
+
+
+class UnreadableRunLine(EvalBaseModel):
+    """One stored run this build's model cannot read, and why."""
+
+    run_id: str | None = Field(description="The id the stored row states; None when it states none as text.")
+    status: str | None = Field(
+        description="The status the row was stored with, as stored; None when it states none as text."
+    )
+    stranded: bool = Field(
+        description=(
+            "Stored pending or running: the boot sweep counts it unreadable and can never settle it, so it reads "
+            "as not ended until its document is dropped or a build that reads it is deployed."
+        )
+    )
+    reasons: list[str] = Field(
+        description="Each distinct refusal the model gave, as `field: what it said`, sorted.", min_length=1
+    )
+
+
+class UnreadableRunsListing(EvalBaseModel):
+    """The scope's stored runs that this build's model cannot read, each with why."""
+
+    scope_id: str
+    runs_read: int = Field(
+        description="Every stored run row in the scope that was read, of any status, archived and unreadable included."
+    )
+    stranded: int = Field(
+        description=(
+            "Of the unreadable, those stored pending or running: the count the boot sweep reports as unreadable "
+            "for this scope, unless a readable run's lost write was also refused while it ran."
+        )
+    )
+    runs: list[UnreadableRunLine] = Field(description="Every row that does not read, stranded ones first, then by id.")
 
 
 class LaunchArguments(EvalBaseModel):
@@ -326,6 +367,61 @@ def runs_list(
     label = None if label is None else label.strip()
     runs = list_runs(host, scope_id, status=status, include_archived=include_archived, label=label)
     return RunListing(runs=[_line(run) for run in runs], include_archived=include_archived, label=label)
+
+
+def _refusal_reasons(refused: ValidationError) -> list[str]:
+    """Each distinct thing the model refused in a row, as ``field: what it said``, sorted — never the value itself."""
+    return sorted(
+        {
+            f"{'.'.join(str(part) for part in error['loc']) or '(the run)'}: {error['msg']}"
+            for error in refused.errors(include_url=False)
+        }
+    ) or [str(refused)]
+
+
+def runs_unreadable(host: EvalHost, scope_id: str) -> UnreadableRunsListing:
+    """The scope's stored runs this build's model cannot read, each with why, and how many of them are stranded.
+
+    A run's document is what is read: a run whose own document reads but one of whose results does not is not
+    here, as the boot sweep does not count it either — settling such a run reads past the result, writing its
+    completeness unknown and naming the result in its ``error_details``, so it ends and says why. Every run in the scope is read, of any status, archived
+    ones included, through the store's isolating scan (:meth:`~threetears.evals.kernel.EvalStorage.scan_eval_runs`):
+    the same refusal the boot sweep's scan counts, so ``stranded`` here and the sweep's ``unreadable`` for the scope
+    are the same rows. A sweep that also had a readable run's lost write refused counts that one too, and it is not
+    here, since it reads.
+
+    Derived on every call and never stored, as :func:`~threetears.evals.ops.analyses_undescribable` is. One row that
+    does not read never stops the rest from being read, and every such row is named; a store that fails to answer
+    raises rather than reading as a scope with none.
+
+    Args:
+        host: The host whose store is read; its listing elisions are left out of every row, which never changes
+            whether a row reads.
+        scope_id: The scope.
+
+    Returns:
+        The listing.
+
+    Raises:
+        StorageError: The store failed to answer.
+    """
+    scan = host.storage.scan_eval_runs(scope_id, elide_payload=host.profile.listing_elisions)
+    lines = [
+        UnreadableRunLine(
+            run_id=row.row_id,
+            status=row.status,
+            stranded=row.status in NON_TERMINAL_RUN_STATUSES,
+            reasons=_refusal_reasons(row.refused),
+        )
+        for row in scan.unreadable
+    ]
+    lines.sort(key=lambda line: (not line.stranded, line.run_id is None, line.run_id or ""))
+    return UnreadableRunsListing(
+        scope_id=scope_id,
+        runs_read=scan.readable + len(scan.unreadable),
+        stranded=sum(line.stranded for line in lines),
+        runs=lines,
+    )
 
 
 def run_get(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
@@ -827,6 +923,8 @@ __all__ = [
     "RunListing",
     "TemplateLine",
     "TemplateListing",
+    "UnreadableRunLine",
+    "UnreadableRunsListing",
     "run_archive",
     "run_label",
     "run_delete",
@@ -834,6 +932,7 @@ __all__ = [
     "result_rate",
     "run_launch",
     "runs_list",
+    "runs_unreadable",
     "templates_list",
     "case_set_mint",
     "case_sets_list",

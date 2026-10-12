@@ -500,6 +500,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`EvalInsight`** · model · A durable, subject-scoped insight extracted from an analysis.
 - **`EvalJobTimeout`** · exception · A job outlived the wall-clock budget its timeout context was enforcing.
 - **`EvalJudgeProfile`** · model · What one judge was measured to be on one criterion, over frozen cases, by a judge campaign — stored for reuse.
+- **`EvalRunScan`** · class · What a scan of every run in one scope found (`EvalStorage.scan_eval_runs`): how many read, which did not.
 - **`EvalServiceError`** · exception · Structured error from the eval service layer.
 - **`EvalStorage`** · class · Storage for v1-shape eval documents over one document store.
 - **`EvalSweep`** · model · A multi-arm launch run arm after arm: its arms, its campaign, and how it ended — the record its job reads.
@@ -559,6 +560,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`Recordable`** · protocol · The two members the cassette layer uses on whatever it records: an action result or a delivered payload.
 - **`RecordedCompletion`** · class · What an admitted call returned, and the ledger row written for it.
 - **`RefusedInput`** · exception · A lower layer's refusal of what a caller asked for, held as its fault and its remedy apart.
+- **`RefusedRow`** · class · One stored row the current model refused to reconstruct: what the row itself says it is, and why.
 - **`ReplayedDelivery`** · dataclass · One recorded piece of background work, served in place of running it.
 - **`ResolvedUsage`** · model · The per-role usage a read surface should show for one result, and how it got there.
 - **`ResultCondition`** · model · The condition one result is in, on every axis that is a property of the result.
@@ -2157,6 +2159,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`runs_compared_text(compared: RunsCompared) -> str`
 - **`runs_list`** · function · The scope's runs.
   <br>`runs_list(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False, label: str | None = None) -> RunListing`
+- **`runs_unreadable`** · function · The scope's stored runs this build's model cannot read, each with why, and how many of them are stranded.
+  <br>`runs_unreadable(host: EvalHost, scope_id: str) -> UnreadableRunsListing`
 - **`scope_export`** · function · The scope's observations as flat rows, in CSV or JSON, for analysis elsewhere.
   <br>`scope_export(host: EvalHost, scope_id: str, *, format: str | None = None, status: str | None = 'completed', run_ids: list[str] | None = None) -> ScoreExport`
 - **`scope_frontier`** · function · Each subject's variants ranked on quality, cost and latency, and the cheapest that clears `bar`.
@@ -2248,6 +2252,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`UndescribableArmsLine`** · model · One stored analysis holding at least one arm whose levels this build cannot describe.
 - **`UndescribableArmsListing`** · model · The scope's stored analyses that hold an arm whose levels this build cannot describe.
 - **`UnreadableReporterCase`** · model · A stored case carrying a reporter case this build cannot read.
+- **`UnreadableRunLine`** · model · One stored run this build's model cannot read, and why.
+- **`UnreadableRunsListing`** · model · The scope's stored runs that this build's model cannot read, each with why.
 
 **Types**
 
@@ -2880,6 +2886,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 |---|---|---|---|
 | `templates_list` | `read` | — | List the scope's active templates — what a launch can run. |
 | `runs_list` | `read` | `status?`, `include_archived?`, `label?` | List the scope's runs, newest first. |
+| `runs_unreadable` | `read` | — | List the scope's stored runs this build cannot read, each with why. |
 | `case_sets_list` | `read` | `case_set_filter?` | List the scope's named case sets, every version — what a launch can target by name. |
 | `campaigns_list` | `read` | `include_archived?` | List the scope's campaigns — the sets of runs an analysis reads. |
 
