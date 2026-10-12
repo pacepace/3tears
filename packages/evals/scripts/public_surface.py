@@ -555,6 +555,9 @@ REGENERATE_SNAPSHOT = "uv run python packages/evals/scripts/generate_api_snapsho
 #: What a change's ``to`` says when a name has no new home.
 REMOVED = "removed"
 
+#: The version of the section for the release being prepared, before it is named for its version.
+UNRELEASED = "unreleased"
+
 #: The snapshot file's own format version, so a reader of an older layout is refused rather than misread.
 SNAPSHOT_FORMAT = 1
 
@@ -621,19 +624,39 @@ class NameChange(_Record):
 
 class Release(_Record):
     """One ``[[release]]``: what one version moved or removed from the public roots, and anything else a porter
-    must change that is not a public name (a field, a submodule)."""
+    must change that is not a public name (a field, a submodule).
 
-    version: str = Field(min_length=1, description="The version, as its tag reads without the leading 'v'.")
+    A section is a final release's (``version = "0.66.0"``) or the one being prepared (``"unreleased"``), and its
+    ``since`` is a final release's tag. A pre-release is neither: nothing it shipped is a promise, so it has no
+    section and no section is measured from it.
+    """
+
+    version: str = Field(
+        min_length=1, description="The version, as its tag reads without the leading 'v', or 'unreleased'."
+    )
     since: str | None = Field(
         default=None,
         description=(
-            "The tag of the release before this one. Given, the section is checked against what actually left a "
-            "root between that tag and this version's (or the working tree, before this version is tagged)."
+            "The tag of the final release before this one. Given, the section is checked against what actually "
+            "left a root between that tag and this version's (or the working tree, before this version is tagged). "
+            "A tag at which the package did not exist has an empty surface, so nothing can have left since it."
         ),
     )
     summary: str = Field(default="", description="What this section covers, in a paragraph.")
     changes: list[NameChange] = Field(default_factory=list, alias="change")
     notes: list[str] = Field(default_factory=list, description="Breaking changes that are not a public name.")
+
+    @model_validator(mode="after")
+    def _final_releases_only(self) -> Release:
+        if self.version != UNRELEASED and _version_key(f"v{self.version}") is None:
+            raise ValueError(
+                f"section {self.version!r} is not a final release: a section's version is x.y.z or 'unreleased'"
+            )
+        if self.since is not None and _version_key(self.since) is None:
+            raise ValueError(
+                f"section {self.version} is since {self.since!r}, which is not a final release tag (v<x>.<y>.<z>)"
+            )
+        return self
 
     @model_validator(mode="after")
     def _each_name_once(self) -> Release:
@@ -735,7 +758,10 @@ class Finding:
 
 
 def snapshot_findings(
-    installed: dict[str, SurfaceEntry], recorded: dict[str, SurfaceEntry], newest: Release
+    installed: dict[str, SurfaceEntry],
+    recorded: dict[str, SurfaceEntry],
+    newest: Release,
+    released: set[str] | None,
 ) -> list[Finding]:
     """How the installed surface differs from the snapshot, each difference with its remedy.
 
@@ -743,6 +769,10 @@ def snapshot_findings(
         installed: The surface the package exports now.
         recorded: The checked-in snapshot.
         newest: ``MIGRATIONS.toml``'s first section, where a name leaving a root now is recorded.
+        released: Every ``root.name`` the final release the newest section follows exported
+            (:func:`released_names`), or ``None`` when that is not known, and then every name that left needs a
+            record. A name outside it never shipped in a release: it may leave with only a regeneration, and
+            ``MIGRATIONS.toml`` must not record it.
 
     Returns:
         The findings: removals in snapshot order, then additions and changes in walk order.
@@ -753,6 +783,14 @@ def snapshot_findings(
         if name in moved:
             findings.append(
                 Finding(f"{name} left the surface ({_destination(moved[name])}): run `{REGENERATE_SNAPSHOT}`.", True)
+            )
+        elif released is not None and name not in released:
+            findings.append(
+                Finding(
+                    f"{name} left the surface, and no release shipped it ({newest.since} did not export it), so "
+                    f"nothing records it: run `{REGENERATE_SNAPSHOT}`.",
+                    True,
+                )
             )
         else:
             findings.append(
@@ -884,12 +922,13 @@ def all_findings(
     exports = exports_by_name()
     homes = {name: home_root(where[0][0], name) for name, where in exports.items() if len(where) > 1}
     newest = migrations.releases[0]
+    tag = newest_tag()
     return [
         *duplicate_findings(exports, homes, reexports),
         *record_findings(installed, newest),
-        *snapshot_findings(installed, recorded, newest),
+        *snapshot_findings(installed, recorded, newest, released_names(newest)),
         *(f for release in migrations.releases if release.since for f in history_findings(release)),
-        *labelling_findings(migrations, newest_tag()),
+        *labelling_findings(migrations, tag, shipped=tag is not None and package_at(tag)),
     ]
 
 
@@ -897,6 +936,9 @@ def all_findings(
 
 #: The package's source tree, as a path inside the repository: what a tagged tree is read under.
 _SOURCE = "packages/evals/src"
+
+#: The package's own module, as a path inside the repository: present in every tree the package is in.
+_PACKAGE_INIT = f"{_SOURCE}/threetears/evals/__init__.py"
 
 
 def _git(*args: str) -> subprocess.CompletedProcess[str]:
@@ -906,6 +948,17 @@ def _git(*args: str) -> subprocess.CompletedProcess[str]:
 def tag_exists(tag: str) -> bool:
     """Whether this checkout has ``tag``."""
     return _git("rev-parse", "--verify", "--quiet", f"refs/tags/{tag}").returncode == 0
+
+
+def package_at(tag: str) -> bool:
+    """Whether the package is in the tree at ``tag``: a release from before it was added shipped none of its names.
+
+    Raises:
+        SystemExit: When the checkout lacks ``tag``, which says nothing about the package.
+    """
+    if not tag_exists(tag):
+        raise SystemExit(f"{tag} is not a tag in this checkout: fetch the tags (git fetch --tags)")
+    return _git("cat-file", "-e", f"{tag}:{_PACKAGE_INIT}").returncode == 0
 
 
 def _source_at(ref: str | None, path: str) -> str | None:
@@ -926,10 +979,16 @@ def _literal_assignment(source: str, name: str) -> Any:
 
 def exports_at(ref: str | None) -> dict[str, set[str]]:
     """Each public root at ``ref`` (a tag, or ``None`` for the working tree) → its ``__all__``, read from the source
-    as written there rather than imported, so a release's surface is read without installing it."""
-    package = _source_at(ref, f"{_SOURCE}/threetears/evals/__init__.py")
+    as written there rather than imported, so a release's surface is read without installing it.
+
+    A tag from before the package existed has no public root, so its surface is empty: every name is new since
+    it, and none has left.
+    """
+    if ref is not None and not package_at(ref):
+        return {}
+    package = _source_at(ref, _PACKAGE_INIT)
     if package is None:
-        raise SystemExit(f"threetears.evals is not in the tree at {ref}")
+        raise SystemExit(f"threetears.evals is not in the tree at {ref or 'the working tree'}")
     roots = _literal_assignment(package, "PUBLIC_ROOTS")
     found: dict[str, set[str]] = {}
     for root in roots:
@@ -947,27 +1006,30 @@ def departures(before: dict[str, set[str]], after: dict[str, set[str]]) -> set[s
     return {f"{root}.{name}" for root, names in before.items() for name in names - after.get(root, set())}
 
 
-def history_findings(release: Release) -> list[Finding]:
-    """Where a section disagrees with the two releases it sits between.
+def released_names(release: Release) -> set[str] | None:
+    """Every ``root.name`` exported by the final release ``release`` follows (its ``since``): the names a porter
+    may import, and so the only ones whose leaving is recorded. ``None`` when that is not known (no ``since``, or a
+    checkout without the tag, which :func:`history_findings` reports)."""
+    if release.since is None or not tag_exists(release.since):
+        return None
+    return {f"{root}.{name}" for root, names in exports_at(release.since).items() for name in names}
 
-    It must record exactly the names that left a root between ``since`` and its own version (the version's tag,
-    or the working tree before that tag exists), and each new home it names must export the name in that release.
-    Both surfaces are read from git, so a checkout without the tags cannot check it and says so rather than
-    passing.
+
+def section_findings(
+    release: Release, before: dict[str, set[str]], after: dict[str, set[str]], after_label: str
+) -> list[Finding]:
+    """Where a section disagrees with the surfaces of the two releases it sits between.
+
+    It must record exactly the names that left a root between ``before`` and ``after`` (:func:`departures`), and
+    each new home it names must export the name in ``after``. A name that was not in ``before`` never shipped,
+    so it has not left whatever happened to it since, and recording it is refused.
+
+    Args:
+        release: The section, with its ``since``.
+        before: The surface at ``since`` (:func:`exports_at`); empty when the package was not in that release.
+        after: The surface at the section's own tag, or the working tree before it is tagged.
+        after_label: How ``after`` is named in a finding.
     """
-    assert release.since is not None
-    tag = f"v{release.version}"
-    if not tag_exists(release.since):
-        return [
-            Finding(
-                f"MIGRATIONS.toml's {release.version} section is checked against {release.since}, a tag "
-                f"this checkout lacks: fetch the tags (git fetch --tags, or fetch-depth: 0 in CI).",
-                False,
-            )
-        ]
-    after_ref = tag if tag_exists(tag) else None
-    after_label = tag if after_ref else "the working tree"
-    before, after = exports_at(release.since), exports_at(after_ref)
     left = departures(before, after)
     recorded = {m.old: m for m in release.migrations()}
     findings = [
@@ -1001,58 +1063,66 @@ def history_findings(release: Release) -> list[Finding]:
     return findings
 
 
+def history_findings(release: Release) -> list[Finding]:
+    """Where a section disagrees with the two releases it sits between (:func:`section_findings`), both read from
+    git: ``since``, and the version's own tag, or the working tree before that tag exists. A checkout without the
+    tags cannot check it and says so rather than passing.
+    """
+    assert release.since is not None
+    tag = f"v{release.version}"
+    if not tag_exists(release.since):
+        return [
+            Finding(
+                f"MIGRATIONS.toml's {release.version} section is checked against {release.since}, a tag "
+                f"this checkout lacks: fetch the tags (git fetch --tags, or fetch-depth: 0 in CI).",
+                False,
+            )
+        ]
+    after_ref = tag if tag_exists(tag) else None
+    after_label = tag if after_ref else "the working tree"
+    return section_findings(release, exports_at(release.since), exports_at(after_ref), after_label)
+
+
 # --- labelling: a tagged release has its own section -------------------------------------------------------------
 
 
-#: A release tag: ``v<major>.<minor>.<patch>``, and a pre-release of that version with a suffix
-#: (``v0.66.0-evaladopt.7``). Every package of the family releases at one version, so every such tag is the
-#: package's too.
-_RELEASE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.]+))?$")
-
-#: A version as tags and ``pyproject.toml`` spell it, ordered: ``(major, minor, patch, final, suffix parts)``.
-_VersionKey = tuple[int, int, int, int, tuple[tuple[int, int | str], ...]]
+#: A release tag: ``v<major>.<minor>.<patch>`` and nothing more. Every package of the family releases at one
+#: version, so every such tag is the package's too. A tag with any suffix is not a release: a semver pre-release
+#: (``v0.66.0-rc.1``, ``v0.66.0-evaladopt.7``), a PEP 440 one (``v0.66.0rc1``, ``v0.66.0a1``, ``v0.66.0.dev1``),
+#: or anything else. A pre-release promises nothing, so the records neither follow one nor are measured from one.
+_RELEASE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 
 
-def _version_key(tag: str) -> _VersionKey | None:
-    """``tag``'s place in release order, or ``None`` for a tag that is no release's.
-
-    A pre-release sorts below its final release (``v0.66.0-evaladopt.7`` < ``v0.66.0``) and above every earlier
-    one; two pre-releases of one version sort by their suffixes, numeric parts as numbers (``.10`` after ``.9``).
-    """
+def _version_key(tag: str) -> tuple[int, int, int] | None:
+    """``tag``'s place in release order, or ``None`` for a tag that is no final release's."""
     matched = _RELEASE_TAG.match(tag)
     if matched is None:
         return None
-    major, minor, patch, suffix = matched.groups()
-    parts = tuple((0, int(part)) if part.isdigit() else (1, part) for part in (suffix or "").split(".") if part)
-    return int(major), int(minor), int(patch), 0 if suffix else 1, parts
+    major, minor, patch = matched.groups()
+    return int(major), int(minor), int(patch)
 
 
-def newest_release_tag(reachable: Iterable[str], every: Iterable[str], version: str) -> str | None:
-    """The release the working tree's records follow: the newest of the tags it has shipped past, by release order.
+def newest_release_tag(every: Iterable[str], version: str) -> str | None:
+    """The release the working tree's records follow: the newest final release tag at or below ``version``.
 
-    **Not by reachability alone.** A release is tagged on ``main``, and ``develop`` never merges ``main`` back, so a
-    final release's tag is never behind ``develop``'s HEAD: read by reachability, ``develop`` would hold its records
-    against the release before, and fail the moment a real release is cut. So a final tag (``v<x>.<y>.<z>``, no
-    suffix) counts wherever it is, up to the version the tree prepares — a final release at or below it has shipped,
-    and the tree's records follow it. A pre-release tag (``v0.66.0-evaladopt.7``) is cut on the branch that carries
-    its work, so it counts only where HEAD has it: a branch that has not merged that work has not shipped past it.
+    **Wherever the tag is.** A release is tagged on ``main``, and ``develop`` never merges ``main`` back, so a
+    release's tag is never behind ``develop``'s HEAD: read by reachability, ``develop`` would hold its records
+    against the release before, and fail the moment a real release is cut. A final release at or below the version
+    the tree prepares has shipped, and the tree's records follow it. A pre-release tag is not a release
+    (:data:`_RELEASE_TAG`) and is never followed, wherever it is.
 
     Args:
-        reachable: The release tags behind HEAD.
-        every: Every release tag in the checkout, on any ref.
+        every: Every tag in the checkout, on any ref.
         version: The version the tree prepares, as ``pyproject.toml`` states it.
 
     Returns:
         The newest such tag, or ``None`` when there is none.
     """
     prepared = _version_key(f"v{version}")
-    finals = [
-        tag
-        for tag in every
-        if (key := _version_key(tag)) is not None and key[3] == 1 and (prepared is None or key <= prepared)
-    ]
-    candidates = [tag for tag in {*reachable, *finals} if _version_key(tag) is not None]
-    return max(candidates, key=lambda tag: _version_key(tag) or (0, 0, 0, 0, ()), default=None)
+    finals = {
+        tag: key for tag in every if (key := _version_key(tag)) is not None and (prepared is None or key <= prepared)
+    }
+    return max(finals, key=finals.__getitem__, default=None)
 
 
 def package_version() -> str:
@@ -1064,20 +1134,25 @@ def package_version() -> str:
 def newest_tag() -> str | None:
     """The release tag the working tree's records follow (:func:`newest_release_tag`), or ``None`` without tags."""
     every = _git("tag", "--list", "v[0-9]*")
-    reachable = _git("tag", "--merged", "HEAD", "--list", "v[0-9]*")
-    if every.returncode != 0 or reachable.returncode != 0:
+    if every.returncode != 0:
         return None
-    return newest_release_tag(reachable.stdout.split(), every.stdout.split(), package_version())
+    return newest_release_tag(every.stdout.split(), package_version())
 
 
-def labelling_findings(migrations: Migrations, tag: str | None) -> list[Finding]:
+def labelling_findings(migrations: Migrations, tag: str | None, *, shipped: bool) -> list[Finding]:
     """Where the sections disagree with the newest release the working tree follows (:func:`newest_tag`).
 
     A release is tagged with its section already named for it, and the next release's work goes in a new
     ``unreleased`` section ``since`` that tag. A tag cut with its section still called ``unreleased`` leaves that
     section open: the next release's records pile into it, are checked against the working tree from the tag
-    before, and ``release_notes.py v<tag>`` finds nothing. v0.66.0-evaladopt.7 shipped that way. So once the tree
-    follows a tag, that tag must have a section of its own, and an ``unreleased`` section must start at it.
+    before, and ``release_notes.py v<tag>`` finds nothing. So once the tree follows a tag, that tag must have a
+    section of its own, and an ``unreleased`` section must start at it.
+
+    Args:
+        migrations: The sections.
+        tag: The newest release the tree follows, or ``None`` when the checkout has no release tag.
+        shipped: Whether the package was in the tree at ``tag`` (:func:`package_at`). A release from before the
+            package existed shipped nothing of it and has no section; the package's first section starts at it.
     """
     if tag is None:
         return [
@@ -1089,7 +1164,7 @@ def labelling_findings(migrations: Migrations, tag: str | None) -> list[Finding]
         ]
     version = tag.removeprefix("v")
     findings: list[Finding] = []
-    if migrations.release(version) is None:
+    if shipped and migrations.release(version) is None:
         findings.append(
             Finding(
                 f"{tag} is tagged, and MIGRATIONS.toml has no section for it: the section it shipped is still "
@@ -1100,7 +1175,7 @@ def labelling_findings(migrations: Migrations, tag: str | None) -> list[Finding]
             )
         )
     newest = migrations.releases[0]
-    if newest.version == "unreleased" and newest.since != tag:
+    if newest.version == UNRELEASED and newest.since != tag:
         findings.append(
             Finding(
                 f"the unreleased section is since {newest.since}, but {tag} is the newest release this tree follows: "
