@@ -59,6 +59,8 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`is_builtin_judge_config_id(config_id: str | None) -> bool`
 - **`is_pass`** · function · Whether `call` is the engine's deliberate-pass entry rather than a call the candidate made.
   <br>`is_pass(call: RecordedCall) -> bool`
+- **`judge_config_of`** · function · The `JudgeConfig` a recorded judge config id names, or `None` when it names none.
+  <br>`judge_config_of(recorded: str | None) -> str | None`
 - **`judges_sharing_a_candidate_model`** · function · The dims whose judge is one of the run's candidate models: a model grading its own output.
   <br>`judges_sharing_a_candidate_model(effective_judges: dict[str, str] | None, candidate_models: Sequence[str]) -> dict[str, str]`
 - **`keep_fields`** · function · Return `document` reduced to the top-level `fields` it has — the meaning of `keep`.

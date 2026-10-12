@@ -594,10 +594,12 @@ groups, tiers and apparatus comparisons are keyed by it, and a repeat at another
 or run stored before this recorded none and reads as not recorded, never as 0; such a run is not re-judged or
 repeated, and its cells keep their old ids.
 
-**Which prompt asked.** A judge is also the prompt that asked: a `JudgeConfig`'s id, or, for a dimension with no
-config, `builtin:<sha12>`, the identity of the engine's built-in wording. A release that rewords the built-in prompt
-makes a new judge, whose tiers and agreement are read apart from the old one's. A result stored before
-`v0.66.0-evaladopt.19` recorded no identity for a built-in prompt and reads as config `None`, a judge of its own
+**Which prompt asked.** A judge is also the prompt that asked: a `JudgeConfig`'s id with a fingerprint of the
+reply-format suffix the engine appended to it (`<config id>@<sha12>`), or, for a dimension with no config,
+`builtin:<sha12>`, the identity of the engine's built-in wording. A release that rewords the built-in prompt or the
+suffix makes a new judge, whose tiers and agreement are read apart from the old one's. A result stored before
+`v0.66.0-evaladopt.19` recorded no identity for a built-in prompt and only the id for a configured one; it reads as
+config `None` or the bare config id, a judge of its own
 ([judges and calibration](judges-and-calibration.md#step-4-run-the-judge)).
 
 **Where tiers appear.** The bundle lists each judge's tier per dimension with both criteria

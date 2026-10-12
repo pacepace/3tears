@@ -122,9 +122,10 @@ class EvalJudgeProfile(EvalDocumentModel):
     judge_model: str = Field(min_length=1, description="The model the judge's replies named as having answered.")
     judge_config_id: str | None = Field(
         description=(
-            "The versioned JudgeConfig that asked, or a ``builtin:`` id = the built-in prompt, by its wording. None = "
-            "a built-in prompt whose wording was not recorded (judged before evaladopt.19), which a profile measured "
-            "on it never lends to a ``builtin:`` judge."
+            "The versioned JudgeConfig that asked, with the reply format it was sent (``<config id>@<sha12>``), or a "
+            "``builtin:`` id = the built-in prompt, by its wording. None, or a bare config id = a prompt whose "
+            "wording was not recorded (judged before evaladopt.19), which a profile measured on it never lends to "
+            "a judge recorded since."
         )
     )
     judge_temperature: JudgeTemperature = Field(

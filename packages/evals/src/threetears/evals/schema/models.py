@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -1644,6 +1645,50 @@ def is_builtin_judge_config_id(config_id: str | None) -> bool:
     return config_id is not None and config_id.startswith(BUILTIN_JUDGE_CONFIG_PREFIX)
 
 
+#: A configured judge's recorded identity: its config's id, ``@``, and the fingerprint of the reply-format wording the
+#: engine appended to its prompt (:func:`configured_judge_config_id`).
+_CONFIGURED_JUDGE_ID = re.compile(r"^(?P<config>.+)@(?P<format>[0-9a-f]{12})$")
+
+
+def configured_judge_config_id(config_id: str, reply_format: str) -> str:
+    """The identity of a configured judge's prompt as sent: its config's id and a fingerprint of the engine's suffix.
+
+    A configured judge reads its :class:`JudgeConfig`'s ``prompt_template`` AND the reply-format contract the engine
+    appends to every prompt, so the config's id alone names only part of what it read: a release that rewords the
+    suffix changes every configured judge's prompt while every config id stays the same. Recorded as
+    ``<config id>@<sha12>`` where the config's id stood, so a configured judge sent another suffix is another judge
+    to everything that keys a judge by its config, as two built-in wordings are
+    (:func:`builtin_judge_config_id`). :func:`judge_config_of` reads the config's id back.
+
+    Args:
+        config_id: The :class:`JudgeConfig`'s id.
+        reply_format: The suffix's fixed wording, as the judge service renders it for the dimension's family.
+
+    Returns:
+        ``<config id>@<sha12>``.
+    """
+    return f"{config_id}@{bytes_digest(reply_format.encode('utf-8'))[:12]}"
+
+
+def judge_config_of(recorded: str | None) -> str | None:
+    """The :class:`JudgeConfig` a recorded judge config id names, or ``None`` when it names none.
+
+    A configured judge's identity (:func:`configured_judge_config_id`) names its config before the ``@``; a bare id
+    is one recorded before the reply format was identified (before ``v0.66.0-evaladopt.19``), and names its config
+    whole. A built-in prompt's identity, or ``None``, names no config.
+
+    Args:
+        recorded: A recorded judge config id, or ``None``.
+
+    Returns:
+        The config's id, or ``None``.
+    """
+    if recorded is None or is_builtin_judge_config_id(recorded):
+        return None
+    match = _CONFIGURED_JUDGE_ID.match(recorded)
+    return match["config"] if match is not None else recorded
+
+
 class JudgeConfig(CoreDocumentModel):
     """Versioned judge configuration for one rubric dimension.
 
@@ -1716,6 +1761,11 @@ class JudgeConfig(CoreDocumentModel):
             raise ValueError(
                 f"judge config id {v!r} starts with {BUILTIN_JUDGE_CONFIG_PREFIX!r}, which names the judge's "
                 "built-in prompts; give the config another id, or leave it to the default"
+            )
+        if _CONFIGURED_JUDGE_ID.match(v):
+            raise ValueError(
+                f"judge config id {v!r} ends in '@' and 12 hex characters, the form a configured judge's recorded "
+                "identity takes; give the config another id, or leave it to the default"
             )
         return v
 
@@ -4714,17 +4764,21 @@ class EvalResult(CoreDocumentModel):
     outcome_score: RubricScore | None = Field(default=None)
 
     # Which judge prompt asked each axis/dim — keyed by rubric_dim_id (the reserved
-    # axis ids or a template dim name). The value is the versioned JudgeConfig's id,
-    # or, for a dim no config scored, the built-in prompt's identity: ``builtin:<sha12>``,
-    # a fingerprint of the engine's wording (``builtin_judge_config_id``), so a change to
-    # that wording is a new judge to everything that keys a judge by this map. A map
+    # axis ids or a template dim name). The value is the versioned JudgeConfig's id with a
+    # fingerprint of the reply-format suffix the engine appended to its prompt,
+    # ``<config id>@<sha12>`` (``configured_judge_config_id``; ``judge_config_of`` reads the
+    # id back), or, for a dim no config scored, the built-in prompt's identity:
+    # ``builtin:<sha12>``, a fingerprint of the engine's wording (``builtin_judge_config_id``).
+    # A change to either wording is a new judge to everything that keys a judge by this map. A map
     # (not a scalar ``judge_config_id``) because per-dim configs make a single id
     # insufficient for honest score bisection.
     #
     # Since evaladopt.19 every dim the judge phase asked has a key, whether its call
     # scored, failed, raised or was cut off with the cell. An absent key on a dim the
     # result was judged on is a result judged before then: a built-in prompt whose
-    # wording nobody recorded, which no ``builtin:`` judge is the same as.
+    # wording nobody recorded, which no ``builtin:`` judge is the same as. A bare config
+    # id is one too: a config sent a suffix nobody recorded, never the same judge as a
+    # ``<config id>@<sha12>`` one.
     #
     # Same name as ``EvalRun.judge_config_ids`` and NOT the same fact. This is what
     # OBSERVABLY asked this result; the run's is the config set it committed to at
@@ -5285,7 +5339,9 @@ __all__ = [
     "BUILTIN_JUDGE_CONFIG_PREFIX",
     "JudgeConfig",
     "builtin_judge_config_id",
+    "configured_judge_config_id",
     "is_builtin_judge_config_id",
+    "judge_config_of",
     "JudgeEvidence",
     "JudgeRepeat",
     "JudgeRescore",

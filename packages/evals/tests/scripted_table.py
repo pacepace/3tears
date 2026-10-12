@@ -114,12 +114,14 @@ class FakeCellSink:
     #: The reservations of the calls in flight.
     held: list[_HeldOnFakeSink] = field(default_factory=list)
     pending: list[CellPending] = field(default_factory=list)
+    #: The kind's last reading of its candidate side (``report_progress``), or ``None`` when it registered none.
+    progress: Callable[[], CandidateOutput] | None = None
 
     def waiting_on(self, pending: CellPending) -> None:
         self.pending.append(pending)
 
     def report_progress(self, read: Callable[[], CandidateOutput]) -> None:
-        del read
+        self.progress = read
 
     @property
     def pending_usd(self) -> float | None:
