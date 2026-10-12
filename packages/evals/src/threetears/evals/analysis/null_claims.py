@@ -53,15 +53,15 @@ NULL_CLAIM_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
             "an unaffected reading",
             rf"\b(?:is|are|was|were)(?:\s+not|n't)\s+{_ADVERB}(?:affected|changed|altered|hurt|harmed|impacted)\b",
         ),
-        ("no effect, difference or impact", r"\bno\s+(?:\w+\s+)?(?:effects?|differences?|impacts?)\b"),
+        ("no effect, difference or impact", r"\bno\s+(?:\w+\s+)?(?:effects|effect|differences|difference|impacts|impact)\b"),
         ("no worse or better", r"\bno\s+(?:worse|slower|better|faster)\b"),
         (
             "a reading that held still",
-            rf"\b(?:is|are|was|were|stays?|stayed|remains?|remained)\s+{_ADVERB}(?:unchanged|unaffected|unaltered)\b",
+            rf"\b(?:is|are|was|were|stays|stay|stayed|remains|remain|remained)\s+{_ADVERB}(?:unchanged|unaffected|unaltered)\b",
         ),
         (
             "a flat reading",
-            rf"\b(?:is|are|was|were|stays?|stayed|remains?|remained|holds?|held)\s+{_ADVERB}(?:steady|flat)\b",
+            rf"\b(?:is|are|was|were|stays|stay|stayed|remains|remain|remained|holds|hold|held)\s+{_ADVERB}(?:steady|flat)\b",
         ),
         (
             "about the same",
