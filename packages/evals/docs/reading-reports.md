@@ -454,6 +454,32 @@ verdict, each history series and each of its points, each pivot cell on a table 
 `served_models_b`). `served_model` is also a coordinate: pivot on it to read each model alone, and the export
 carries it as a column. A response that named no model reads `unrecorded`, never the alias.
 
+## Which model answered
+
+A run records the model id each call asked for. Which model answered is recorded only where the completion client
+reported the model the provider's response named (`served_model`): on each candidate usage row and on each judge
+score. Where it reported none, the record holds the requested id alone, and a provider may answer an id with a
+model of its choosing. Nothing refuses such a run, and the package never guesses which ids float: that is the
+provider's vocabulary. It says so instead, once, in one sentence every surface prints verbatim
+(`model_identity_disclosure`): the run's summary (`run_get`, its `model_identity_warning` and `unconfirmed_models`),
+`run_summary` (`model_identity_disclosure`), the analysis bundle (`model_identity_disclosure`, which the writer is
+told never to read as the model that ran) and the campaign report's methods, whether an analysis wrote it or code
+alone. Per role, the candidate then the judge, it counts the results whose candidate made a call no response named
+a model for, and the scores no response named a model for, out of all of them, with the ids asked for and any
+model the other responses did name:
+
+```text
+Model identity unconfirmed: the candidate (asked for vendor/model-latest) made calls whose response named no model
+in 4 of 10 result(s) (the responses that named one named vendor/model-2026-05). The record keeps the model id asked
+for, and a provider may answer an id with a model of its choosing (a floating alias), so these numbers cannot say
+which model produced them; a completion client that reports the model its provider's response named
+(served_model) confirms it.
+```
+
+A run whose responses all named their model prints nothing, and neither does one whose candidate called nothing.
+The fix is in the host's completion client ([Adopting a host](adopting-a-host.md)); a quick candidate passes
+`Answer(served_model=...)`.
+
 ## Results by kind of case: strata
 
 A pooled accuracy can hide that a variant does well on easy tickets and badly on the hard ones you care
