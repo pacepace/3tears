@@ -1425,8 +1425,9 @@ class CallProxy:
                 return
             except Exception as exc:  # noqa: BLE001 — the tool already ran; retry beats discarding it
                 if attempt == _RESULT_DELIVERY_ATTEMPTS:
-                    # NOSILENT: the answer is now lost. name it, rather than letting it surface as an
-                    # unexplained timeout at the agent.
+                    # NOSILENT: logged at ERROR, not swallowed -- the delivery channel itself is what failed,
+                    # so no caller is reachable to raise to. the answer is now lost: name it, rather than
+                    # letting it surface as an unexplained timeout at the agent.
                     log.error(
                         "tool result could not be delivered to the caller after %d attempts; the "
                         "answer is lost (subject=%s bytes=%d): %s",
@@ -2027,7 +2028,7 @@ def _parse_pod_accept(payload: bytes) -> "CallAccepted | None":
     try:
         decoded = json.loads(payload)
     except ValueError, TypeError:
-        # NOSILENT: "this is not an acknowledgement" is the answer this function exists to give.
+        # NOSILENT(expected): "this is not an acknowledgement" is the answer this function exists to give.
         # the caller then parses the same bytes as a full response, and reports the failure there
         # with the detail, so raising or logging here would double-report one bad payload.
         return None
@@ -2035,7 +2036,7 @@ def _parse_pod_accept(payload: bytes) -> "CallAccepted | None":
         try:
             result = CallAccepted.model_validate(decoded)
         except ValidationError:
-            # NOSILENT: same contract as above -- a body carrying ``accepted`` but not matching the
+            # NOSILENT(expected): same contract as above -- a body carrying ``accepted`` but not matching the
             # model is handed on as a response and reported there rather than twice.
             result = None
     return result
