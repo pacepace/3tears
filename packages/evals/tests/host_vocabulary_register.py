@@ -103,6 +103,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "analysis/report/model.py": {},
     "analysis/report/serialize.py": {},
     "analysis/report/serialize_html.py": {},
+    "analysis/standing.py": {},
     "analysis/summary.py": {},
     "analysis/lens_text.py": {},
     "analysis/out_of_run_spend.py": {},

@@ -63,6 +63,11 @@ def _text(block: TextBlock) -> list[str]:
     body = block.body.strip()
     rests = f" Rests on finding {', '.join(map(str, block.rests_on_numbers))}." if block.rests_on else ""
     facts = _facts(block.facts)
+    if block.role == "headline":
+        # The title prints the headline's words; this line says what they stand on.
+        return [f"_The headline: {facts}.{rests}_"]
+    if block.role == "summary" and block.facts:
+        return [f"- {_one_line(body)} — {facts}.{rests}"]
     if block.role == "finding_title":
         heading = f"### {block.finding_number}. {_one_line(body)}"
         return [heading, "", facts] if facts else [heading]

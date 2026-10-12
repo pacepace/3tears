@@ -39,7 +39,16 @@ from threetears.evals.run import (
     judge_kind,
     rate_result,
 )
-from threetears.evals.schema import DEFAULT_JUDGE_TEMPERATURE, EvalResult, EvalRun, EvalTemplate, JudgeConfig
+from threetears.evals.run.judge_service import builtin_judge_config_ids
+from threetears.evals.schema import (
+    DEFAULT_JUDGE_TEMPERATURE,
+    CompletionProtocolDefect,
+    EvalResult,
+    EvalRun,
+    EvalTemplate,
+    JudgeConfig,
+    JudgedArtifact,
+)
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.scripted_table import FakeCellSink
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT, TOYHOST_SCOPE
@@ -295,7 +304,11 @@ async def test_two_judge_configs_as_arms_produce_label_agreement_self_agreement_
     readings = judge_kind_readings(campaign.results)
 
     assert not readings.unread
-    builtin = readings.reading(JudgeKey(FAITHFULNESS_DIM, "ordinal", None, None, DEFAULT_JUDGE_TEMPERATURE))
+    # The arm with no config is asked by the built-in prompt, which its trials record by its identity.
+    builtin_id = builtin_judge_config_ids(toyhost_judged_template().rubric, judged_artifact=JudgedArtifact.DOCUMENT)[
+        FAITHFULNESS_DIM
+    ]
+    builtin = readings.reading(JudgeKey(FAITHFULNESS_DIM, "ordinal", None, builtin_id, DEFAULT_JUDGE_TEMPERATURE))
     harsh = readings.reading(JudgeKey(FAITHFULNESS_DIM, "ordinal", None, campaign.harsh.id, DEFAULT_JUDGE_TEMPERATURE))
     assert builtin is not None and harsh is not None and len(readings.readings) == 2
     cases = len(campaign.case_ids)
@@ -424,8 +437,15 @@ class _Untempered:
         return types.SimpleNamespace(**{name: value for name, value in kept.items() if not callable(value)})
 
 
-async def test_a_trial_whose_completion_carries_no_temperature_still_counts_what_its_call_cost() -> None:
-    """The temperature was read after the billed call and raised: the cap never saw the spend, nor the result."""
+async def test_a_trial_whose_completion_carries_no_temperature_fails_the_run_and_holds_nothing_against_the_cap() -> (
+    None
+):
+    """The host's completion type breaks the protocol: every trial would, so it is not folded into this one.
+
+    It used to be recorded as the trial's apparatus error, its spend counted, and the campaign finished with every
+    trial failed the same way. A protocol defect is the host's code, so it is raised through ``invoke`` to fail the
+    run, as a kind's defect is, and the call's hold on the cap is released on the way out.
+    """
     campaign = await _campaign()
     stored = off_loop(campaign.host.storage.load_test_case, campaign.case_ids[0], TOYHOST_SCOPE)
     assert stored is not None
@@ -455,12 +475,11 @@ async def test_a_trial_whose_completion_carries_no_temperature_still_counts_what
         world=None,
     )
     room = FakeCellSink(cap_usd=10.0)
-    answered = await kind.invoke(prepared, stored, sink=room)
 
-    spent = sum(row.cost_usd or 0.0 for row in answered.telemetry.usage)
-    assert spent > 0, "the call's spend is on the cell"
-    assert room.spent == {"candidate": pytest.approx(spent)} and room.held == [], "and the cap counted it"
-    assert answered.infra_errors and "check_completion_conformance" in answered.infra_errors[0]
+    with pytest.raises(CompletionProtocolDefect, match="check_completion_conformance"):
+        await kind.invoke(prepared, stored, sink=room)
+
+    assert room.held == [], "nothing is left held against the cap"
 
 
 def test_a_config_pinning_another_model_than_the_arm_is_refused() -> None:

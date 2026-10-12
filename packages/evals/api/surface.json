@@ -41,6 +41,10 @@
       "kind": "protocol",
       "signature": "BoundCompletionClient{__aenter__(self) -> Self; __aexit__(self, exc_type: object, exc: object, tb: object) -> None; aclose(self) -> None; generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> CompletionResult; model_name: str; price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None}"
     },
+    "threetears.evals.schema.BUILTIN_JUDGE_CONFIG_PREFIX": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
     "threetears.evals.schema.CalibrationRating": {
       "kind": "model",
       "signature": "CalibrationRating(doc_type: Literal['calibration_rating'] = 'calibration_rating', schema_version: CoreSchemaVersion = 13, scope_id: str, run_id: str, result_id: str, rubric_dim: DimName, rater: str, rater_kind: RaterKind, id: str = <lambda>(), scale: RubricScale, score: int, reason: str, rated_at: str = utc_now_iso(), output_fingerprint: str | None = None, criterion_fingerprint: str | None = None)"
@@ -120,6 +124,10 @@
     "threetears.evals.schema.CompletionGenerator": {
       "kind": "protocol",
       "signature": "CompletionGenerator{generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> CompletionResult}"
+    },
+    "threetears.evals.schema.CompletionProtocolDefect": {
+      "kind": "exception",
+      "signature": "CompletionProtocolDefect(completion: object, member: str, why: str) -> None"
     },
     "threetears.evals.schema.CompletionResult": {
       "kind": "protocol",
@@ -312,6 +320,10 @@
     "threetears.evals.schema.IntervalScale": {
       "kind": "model",
       "signature": "IntervalScale(kind: Literal['interval'] = 'interval', value: float, unit: str | None = None)"
+    },
+    "threetears.evals.schema.is_builtin_judge_config_id": {
+      "kind": "function",
+      "signature": "is_builtin_judge_config_id(config_id: str | None) -> bool"
     },
     "threetears.evals.schema.is_pass": {
       "kind": "function",
@@ -767,7 +779,7 @@
     },
     "threetears.evals.kernel.AuthoredAnalysis": {
       "kind": "model",
-      "signature": "AuthoredAnalysis(headline: ModelProse, summary: ModelProse, findings: list[Finding], decisions: list[Decision], questions: list[QuestionAnswer], next: list[NextStep])"
+      "signature": "AuthoredAnalysis(headline: ModelProse, headline_rests_on: list[int] = list(), summary: ModelProse, summary_rests_on: list[list[int]] = list(), findings: list[Finding], decisions: list[Decision], questions: list[QuestionAnswer], next: list[NextStep])"
     },
     "threetears.evals.kernel.BarAdjudication": {
       "kind": "model",
@@ -1156,6 +1168,10 @@
     "threetears.evals.kernel.EvalJudgeProfile": {
       "kind": "model",
       "signature": "EvalJudgeProfile(doc_type: Literal['eval_judge_profile'] = 'eval_judge_profile', schema_version: SchemaVersion = 8, scope_id: str, rubric_dim: DimName, scale: RubricScale, judge_model: str, judge_config_id: str | None, judge_temperature: JudgeTemperature, criterion_digest: str, id: str = <lambda>(), cases: int, trials: int, case_set_fingerprint: str, run_ids: list[str], label_agreement: JudgeProfileAgreement | None, self_agreement: JudgeProfileAgreement | None, parse_replies: int, parse_valid: int, parse_validity: float | None, measured_at: str, recorded_at: str = utc_now_iso())"
+    },
+    "threetears.evals.kernel.EvalRunScan": {
+      "kind": "class",
+      "signature": "EvalRunScan(readable: int, unreadable: list[RefusedRow])"
     },
     "threetears.evals.kernel.EvalServiceError": {
       "kind": "exception",
@@ -1684,6 +1700,10 @@
     "threetears.evals.kernel.RefusedInput": {
       "kind": "exception",
       "signature": "RefusedInput(fault: str, *, remedy: str) -> None"
+    },
+    "threetears.evals.kernel.RefusedRow": {
+      "kind": "class",
+      "signature": "RefusedRow(row_id: str | None, status: str | None, refused: ValidationError)"
     },
     "threetears.evals.kernel.RELAUNCH_TO_REJUDGE": {
       "kind": "constant (str)",
@@ -2727,7 +2747,7 @@
     },
     "threetears.evals.run.JudgeRequest": {
       "kind": "class",
-      "signature": "JudgeRequest(dim_id: str, config: JudgeConfig | None, system_prompt: str, user_prompt: str, scale: RubricScale, label: str, include_goal_outcomes: bool, response_format: dict[str, Any], axis: RubricAxis = 'capability', label_key: LabelKey | None = None)"
+      "signature": "JudgeRequest(dim_id: str, config: JudgeConfig | None, system_prompt: str, user_prompt: str, scale: RubricScale, label: str, include_goal_outcomes: bool, response_format: dict[str, Any], judge_config_id: str, axis: RubricAxis = 'capability', label_key: LabelKey | None = None)"
     },
     "threetears.evals.run.JudgeService": {
       "kind": "class",
@@ -2939,7 +2959,7 @@
     },
     "threetears.evals.run.reproducible_judge_inputs": {
       "kind": "function",
-      "signature": "reproducible_judge_inputs(storage: JudgeInputStore, result: EvalResult, run: EvalRun, scope_id: str, *, request_settings: RequestSettingsPolicy, config_dims: Collection[str] | None = None) -> ReproducibleJudgeInputs"
+      "signature": "reproducible_judge_inputs(storage: JudgeInputStore, result: EvalResult, run: EvalRun, scope_id: str, *, request_settings: RequestSettingsPolicy, config_dims: Collection[str] | None = None, same_judge_dims: Collection[str] = ()) -> ReproducibleJudgeInputs"
     },
     "threetears.evals.run.ReproducibleJudgeInputs": {
       "kind": "class",
@@ -4087,7 +4107,7 @@
     },
     "threetears.evals.analysis.Report": {
       "kind": "model",
-      "signature": "Report(report_version: Literal[8] = 8, basis: ReportBasis, headline: ModelProse, finding_count: int, source: ReportSource, blocks: list[ReportBlock], verdicts: list[Verdict] = list())"
+      "signature": "Report(report_version: Literal[9] = 9, basis: ReportBasis, headline: ModelProse, finding_count: int, source: ReportSource, blocks: list[ReportBlock], verdicts: list[Verdict] = list())"
     },
     "threetears.evals.analysis.report_html": {
       "kind": "function",
@@ -4371,7 +4391,7 @@
     },
     "threetears.evals.analysis.TextRole": {
       "kind": "literal",
-      "signature": "'summary'` | `'answer'` | `'decision'` | `'revisit_when'` | `'finding_title'` | `'finding_body'` | `'caveat'` | `'carried_forward'` | `'next_step'` | `'next_step_why'"
+      "signature": "'headline'` | `'summary'` | `'answer'` | `'decision'` | `'revisit_when'` | `'finding_title'` | `'finding_body'` | `'caveat'` | `'carried_forward'` | `'next_step'` | `'next_step_why'"
     },
     "threetears.evals.analysis.tier_for_judges": {
       "kind": "function",
@@ -4979,7 +4999,7 @@
     },
     "threetears.evals.ops.AnalysisLine": {
       "kind": "model",
-      "signature": "AnalysisLine(id: str, campaign_id: str, headline: str, generator_model: str, generated_at: str, archived: bool)"
+      "signature": "AnalysisLine(id: str, campaign_id: str, headline: str, headline_standing: str, generator_model: str, generated_at: str, archived: bool)"
     },
     "threetears.evals.ops.AnalysisListing": {
       "kind": "model",
@@ -5509,6 +5529,10 @@
       "kind": "function",
       "signature": "runs_list(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False, label: str | None = None) -> RunListing"
     },
+    "threetears.evals.ops.runs_unreadable": {
+      "kind": "function",
+      "signature": "runs_unreadable(host: EvalHost, scope_id: str) -> UnreadableRunsListing"
+    },
     "threetears.evals.ops.RunsBisected": {
       "kind": "model",
       "signature": "RunsBisected(baseline_run_id: str, candidate_run_id: str, differs: list[str], same: list[str], unknown: list[str], details: dict[str, dict[str, Any]], completeness_disclosures: dict[str, str], measurement_window_disclosure: str | None)"
@@ -5628,6 +5652,14 @@
     "threetears.evals.ops.UnreadableReporterCase": {
       "kind": "model",
       "signature": "UnreadableReporterCase(test_case_id: str, reason: str)"
+    },
+    "threetears.evals.ops.UnreadableRunLine": {
+      "kind": "model",
+      "signature": "UnreadableRunLine(run_id: str | None, status: str | None, stranded: bool, reasons: list[str])"
+    },
+    "threetears.evals.ops.UnreadableRunsListing": {
+      "kind": "model",
+      "signature": "UnreadableRunsListing(scope_id: str, runs_read: int, stranded: int, runs: list[UnreadableRunLine])"
     },
     "threetears.evals.actions.Action": {
       "kind": "dataclass",

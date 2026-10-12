@@ -348,7 +348,9 @@ from threetears.evals.kernel.storage import (
     RunStore,
     save_document,
     CaseRecordings,
+    EvalRunScan,
     NonTerminalRunScan,
+    RefusedRow,
 )
 from threetears.evals.kernel.surface import (
     STRATUM_MIN_CASES,
@@ -586,7 +588,9 @@ __all__ = [
     "run_margin_refusal",
     "NextStep",
     "CaseRecordings",
+    "EvalRunScan",
     "NonTerminalRunScan",
+    "RefusedRow",
     "NotFoundError",
     "AdmittedCall",
     "AdmittedGeneration",

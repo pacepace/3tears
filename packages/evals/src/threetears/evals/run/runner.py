@@ -87,6 +87,7 @@ from threetears.evals.kernel.dsl import evaluate_with_detail
 from threetears.evals.kernel.errors import StorageError
 from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.schema.completion import CompletionProtocolDefect
 from threetears.evals.schema.external_spend import ExternalSpend
 from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.kernel.host.timeouts import EvalCellTimeout
@@ -498,11 +499,15 @@ class _JudgePhase:
         judged_artifact: The kind's declaration, which picked the axes.
         evidence: What the kind rendered for its judge.
         dims: Every dim the phase asks, in the order it asks them (:func:`scored_dim_ids`).
+        judge_config_ids: What asks each of them — its config's id, or the built-in prompt's identity
+            (:meth:`JudgeService.judge_config_ids`) — recorded for every dim, so one whose call raised or was
+            cut off with its cell still says which judge it was to be asked by.
     """
 
     judged_artifact: JudgedArtifact
     evidence: JudgeEvidence
     dims: tuple[str, ...]
+    judge_config_ids: Mapping[str, str]
     #: The asked dims on the boundary axis (guardrails), stamped onto a can't-tell as a score's axis is.
     boundary_dims: frozenset[str] = frozenset()
 
@@ -570,7 +575,12 @@ def _judge_record(
         outcome_score=outcome_score,
         rubric_scores=[oc.score for dim, oc in settled if dim not in axes and oc.score is not None],
         judge_reasoning=outcome_score.reasoning if outcome_score is not None else "",
-        judge_config_ids=folded.config_ids,
+        # Every dim the phase asked, whatever became of its call: a dim whose call raised or was cut off names the
+        # judge it was to be asked by, so a re-judge of it can tell whether today's judge is that one.
+        judge_config_ids={
+            **{dim: phase.judge_config_ids[dim] for dim in phase.dims if dim in phase.judge_config_ids},
+            **folded.config_ids,
+        },
         judge_error="; ".join(f"{dim}: {error}" for dim, error in errors) or None,
         judge_cannot_tell=folded.cannot_tell,
         judge_cannot_tell_boundary=sorted(dim for dim in folded.cannot_tell if dim in phase.boundary_dims),
@@ -1632,6 +1642,7 @@ async def _run_one_result(
             judged_artifact=judged_artifact,
             evidence=judge_evidence,
             dims=tuple(scored_dim_ids([dim.name for dim in template.rubric], judged_artifact)),
+            judge_config_ids=judge_service.judge_config_ids(template.rubric, judged_artifact=judged_artifact),
             boundary_dims=boundary_dim_names(template.rubric),
         )
         sink.begin_judging(phase)
@@ -1713,6 +1724,10 @@ async def _run_judge_phase(
 
     Returns:
         What the phase leaves on the result, and its wall clock in milliseconds.
+
+    Raises:
+        CompletionProtocolDefect: A judge completion does not meet the protocol. Every other failure of the phase
+            is folded into the record; this one is the host's code, which every cell would meet, so it fails the run.
     """
     judge_started = time.monotonic()
     try:
@@ -1730,6 +1745,11 @@ async def _run_judge_phase(
                 judge_evidence=phase.evidence,
             ),
         )
+    except CompletionProtocolDefect:
+        # The host's completion type breaks the protocol: not a judging outcome, and every cell would meet it,
+        # so it fails the run (as a kind's defect does) instead of becoming an error on each dimension.
+        log.error("Eval run %s: a judge completion breaks the protocol; the run fails", eval_run_id)
+        raise
     except Exception as e:  # prawduct:ok-broad-except — judge boundary; a judge failure must not wedge the slot
         log.exception("Judge service failed during eval run %s", eval_run_id)
         # The calls that returned before it raised were paid for and keep their scores; the
@@ -1775,6 +1795,10 @@ async def judge_witnessed_output(
 
     Returns:
         What the phase left and its wall clock; ``(None, None)`` when the output gave it nothing to judge.
+
+    Raises:
+        CompletionProtocolDefect: A judge completion does not meet the protocol — the host's defect, never a
+            judge error on the cell.
     """
     if not output.output or output.judge_evidence is None:
         return None, None
@@ -1782,6 +1806,7 @@ async def judge_witnessed_output(
         judged_artifact=judged_artifact,
         evidence=output.judge_evidence,
         dims=tuple(scored_dim_ids([dim.name for dim in template.rubric], judged_artifact)),
+        judge_config_ids=judge_service.judge_config_ids(template.rubric, judged_artifact=judged_artifact),
         boundary_dims=boundary_dim_names(template.rubric),
     )
     return await _run_judge_phase(
@@ -3135,7 +3160,10 @@ async def judge_dims(
 
     A call that RAISES (a client factory refusing, a prompt builder failing) is caught per
     dimension and returned as an outcome carrying the exception's type as its error, so one
-    dimension's crash does not discard the scores its siblings paid for.
+    dimension's crash does not discard the scores its siblings paid for. **Except a host's
+    completion breaking the protocol** (:class:`~threetears.evals.schema.completion.CompletionProtocolDefect`):
+    that is the host's code, which every call would meet, so it is raised — the call's hold on the cap
+    released, every sibling call still in flight cancelled — and fails whatever is judging, a run included.
 
     Args:
         template: The run's template, whose ``rubric`` names the per-dim calls.
@@ -3154,6 +3182,9 @@ async def judge_dims(
 
     Returns:
         ``(dim_id, outcome)`` for every call made, in dimension order.
+
+    Raises:
+        CompletionProtocolDefect: A judge completion does not meet the protocol; the other calls are cancelled first.
     """
     gate = asyncio.Semaphore(concurrency)
 
@@ -3170,6 +3201,12 @@ async def judge_dims(
             else:
                 try:
                     outcome = await judge_service.score_request(request, case_id=context.case_id)
+                except CompletionProtocolDefect:
+                    # The host's completion type, not this dim's luck: every call would meet it, so it fails
+                    # the run rather than this dim. Nothing it holds against the cap outlives it.
+                    if held is not None:
+                        held.release()
+                    raise
                 except (
                     Exception
                 ) as e:  # prawduct:ok-broad-except — judge boundary; one dim's crash must not discard its siblings
@@ -3189,10 +3226,19 @@ async def judge_dims(
         return outcome
 
     requests = judge_requests(template=template, judge_service=judge_service, context=context, only=only)
-    # ``return_exceptions`` stays False on purpose: every Exception is already caught per
-    # call above, so anything that reaches gather is a BaseException — a cell timeout's
-    # cancellation — and must propagate, not be recorded as a score.
-    outcomes = await asyncio.gather(*(_judge_one(request) for request in requests))
+    # ``return_exceptions`` stays False on purpose: every other Exception is caught per call above, so
+    # anything that reaches gather is a BaseException — a cell timeout's cancellation — or a host's
+    # protocol defect, and must propagate, not be recorded as a score. Each call is a task of its own so
+    # that, when one raises, the rest are cancelled and waited for (each releasing what it held) rather
+    # than left running behind a phase that has already failed.
+    calls = [asyncio.ensure_future(_judge_one(request)) for request in requests]
+    try:
+        outcomes = await asyncio.gather(*calls)
+    except BaseException:
+        for call in calls:
+            call.cancel()
+        await asyncio.gather(*calls, return_exceptions=True)
+        raise
     return [(request.dim_id, oc) for request, oc in zip(requests, outcomes, strict=True)]
 
 

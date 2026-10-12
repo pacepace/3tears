@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
-from threetears.evals.schema import GoalStateOutcome
+from threetears.evals.schema import GoalStateOutcome, is_builtin_judge_config_id
 from threetears.evals.kernel import ResultOutcome, counted_goal_verdicts
 from threetears.evals.kernel.errors import EvalServiceError
 from threetears.evals.ops import (
@@ -71,6 +71,7 @@ from threetears.evals.ops import (
     TemplateListing,
     bar_proposals_text,
     UndescribableArmsListing,
+    UnreadableRunsListing,
     dollars_text,
     estimate_text,
     format_number,
@@ -290,6 +291,20 @@ def render_runs(listing: RunListing) -> str:
     if listing.label is not None:
         scope += f", labelled {listing.label}"
     return "\n".join([f"runs ({len(listing.runs)}, {scope})", *(render_run_line(run) for run in listing.runs)])
+
+
+def render_unreadable_runs(listing: UnreadableRunsListing) -> str:
+    """The scope's stored runs this build cannot read, stranded ones marked."""
+    lines = [
+        f"runs in scope {listing.scope_id} this build cannot read: {len(listing.runs)} of {listing.runs_read}, "
+        f"{listing.stranded} stranded (stored pending or running; the boot sweep can never settle them)"
+    ]
+    for line in listing.runs:
+        status = line.status if line.status is not None else "no status recorded"
+        stranded = ", stranded" if line.stranded else ""
+        run_id = line.run_id if line.run_id is not None else "(no id on the row)"
+        lines.append(f"- {run_id} ({status}{stranded}): {'; '.join(line.reasons)}")
+    return "\n".join(lines)
 
 
 def render_summary(summary: EvalSummary) -> str:
@@ -553,7 +568,10 @@ def render_campaigns(listing: CampaignListing) -> str:
 def render_analysis_line(analysis: AnalysisLine) -> str:
     """One stored analysis on one line."""
     archived = ", archived" if analysis.archived else ""
-    return f"- {analysis.id}: {analysis.headline} ({analysis.generator_model}, {analysis.generated_at}{archived})"
+    return (
+        f"- {analysis.id}: {analysis.headline} [{analysis.headline_standing}] "
+        f"({analysis.generator_model}, {analysis.generated_at}{archived})"
+    )
 
 
 def render_analyses(listing: AnalysisListing) -> str:
@@ -625,7 +643,9 @@ def render_judge_case_freeze(report: JudgeCaseFreezeReport) -> str:
 def _judge_profile_line(entry: JudgeProfileEntry) -> str:
     """One stored judge profile as a line: the judge, the criterion, what it was measured on and when, its tier."""
     profile = entry.profile
-    judge = profile.judge_model + (f", config {profile.judge_config_id}" if profile.judge_config_id else "")
+    config = profile.judge_config_id
+    what = "built-in prompt" if is_builtin_judge_config_id(config) else "config"
+    judge = profile.judge_model + (f", {what} {config}" if config else "")
     temperature = profile.judge_temperature
     judge += f", temperature {temperature if isinstance(temperature, str) else format_number(temperature)}"
     measures = []
@@ -936,6 +956,7 @@ __all__ = [
     "render_run_deleted",
     "render_run_line",
     "render_runs",
+    "render_unreadable_runs",
     "render_summary",
     "render_templates",
 ]

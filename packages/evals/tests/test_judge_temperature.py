@@ -27,6 +27,7 @@ from threetears.evals.analysis.agreement import judge_agreement, judge_self_agre
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.kernel.host.sweepables import CORE_ROLES, CORE_SWEEPABLES, SHARED_CORE, SweepableRegistry
 from threetears.evals.kernel.identity import derive_context_identity
+from threetears.evals.schema import CompletionProtocolDefect
 from threetears.evals.schema.models import (
     DEFAULT_JUDGE_TEMPERATURE,
     EvalRun,
@@ -141,11 +142,11 @@ class TestTheTemperatureRecordedIsWhatWasSent:
     async def test_a_client_reporting_nothing_is_a_defect_never_an_unrecorded_judge(self) -> None:
         """Recorded as "not recorded", every judge of such a client was unrecordable as a profile and "unknown" in
         every comparison, with no error anywhere; the temperature is the protocol's, so its absence is refused — as
-        the dimension's error, carrying what the billed call cost, never a score."""
+        the host's defect, raised to fail the run and carrying what the billed call cost, never a score."""
         service, _asked = _service(reports=False)
-        outcome = await service.score_dimension(_dim(), _context())
-        assert outcome.score is None and outcome.error is not None and "check_completion_conformance" in outcome.error
-        assert outcome.usage is not None and outcome.usage.calls == 1, "the refused call's spend is kept"
+        with pytest.raises(CompletionProtocolDefect, match="check_completion_conformance") as raised:
+            await service.score_dimension(_dim(), _context())
+        assert raised.value.calls == 1, "the refused call's spend goes up with it"
 
 
 def _scored(result_id: str, score: int, temperature: float | str | None) -> Any:
