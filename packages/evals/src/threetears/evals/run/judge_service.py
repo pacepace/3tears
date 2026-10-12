@@ -919,7 +919,7 @@ class JudgeService:
                 served_model=result.get("judge_served_model"),
                 # What the call was sent at, as the client reported it — not what was asked for, since
                 # a model that refuses a temperature is sent none.
-                judge_temperature=result.get("judge_temperature"),
+                judge_temperature=result["judge_temperature"],
                 # What was read on what criterion: the key a person's label of this output pairs by.
                 output_fingerprint=None if request.label_key is None else request.label_key.output_fingerprint,
                 criterion_fingerprint=None if request.label_key is None else request.label_key.criterion_fingerprint,

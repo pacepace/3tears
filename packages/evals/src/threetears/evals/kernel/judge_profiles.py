@@ -63,7 +63,7 @@ def judge_profile_id(
     rubric_dim: str,
     scale: str,
     judge_model: str,
-    judge_config_id: str | None,
+    judge_config_id: str,
     judge_temperature: JudgeTemperature,
     criterion_digest: str,
 ) -> str:
@@ -74,7 +74,7 @@ def judge_profile_id(
         scale: Its scale.
         judge_model: The model that served the judge's replies.
         judge_config_id: The versioned config that asked, or a ``builtin:`` id for the built-in prompt, by its
-            wording; None for a built-in prompt whose wording was not recorded (judged before evaladopt.19).
+            wording.
         judge_temperature: What the judge's calls were sent at.
         criterion_digest: The criterion's wording (:func:`~threetears.evals.kernel.judge_criterion_digest`).
 
@@ -120,13 +120,12 @@ class EvalJudgeProfile(EvalDocumentModel):
     rubric_dim: DimName = Field(description="The criterion's dim.")
     scale: RubricScale = Field(description="The scale it was asked on.")
     judge_model: str = Field(min_length=1, description="The model the judge's replies named as having answered.")
-    judge_config_id: str | None = Field(
+    judge_config_id: str = Field(
+        min_length=1,
         description=(
             "The versioned JudgeConfig that asked, with the reply format it was sent (``<config id>@<sha12>``), or a "
-            "``builtin:`` id = the built-in prompt, by its wording. None, or a bare config id = a prompt whose "
-            "wording was not recorded (judged before evaladopt.19), which a profile measured on it never lends to "
-            "a judge recorded since."
-        )
+            "``builtin:`` id = the built-in prompt, by its wording."
+        ),
     )
     judge_temperature: JudgeTemperature = Field(
         description="What the judge's calls were sent at ('model_default' = sent none, the model refusing one)."

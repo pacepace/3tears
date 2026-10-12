@@ -329,11 +329,6 @@ def _boundary_dimensions(results: Iterable[EvalResult]) -> set[str]:
     return {score.dim for result in results for score in result.rubric_scores if score.axis == "boundary"}
 
 
-def _unstamped_dimensions(results: Iterable[EvalResult]) -> list[str]:
-    """The judged dimensions carrying a score judged before the rubric axis was stamped, sorted."""
-    return sorted({score.dim for result in results for score in result.rubric_scores if score.axis is None})
-
-
 def _non_faulted(members: list[EvalResult]) -> list[EvalResult]:
     """A cell's results the harness did not fault — the one population every bar is adjudicated over.
 

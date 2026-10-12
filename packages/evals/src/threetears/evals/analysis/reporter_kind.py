@@ -64,7 +64,6 @@ from threetears.evals.analysis.report.words import (
 from threetears.evals.analysis.report.model import Fact
 from threetears.evals.analysis.standing import headline_standing, summary_standings
 from threetears.evals.kernel.authored import NO_CHART
-from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.kernel.campaign import ConfidenceTier, EvalAnalysis, FindingResolution, Viz
 from threetears.evals.kernel.candidate_kind import (
     CandidateOutput,
@@ -408,58 +407,33 @@ def reporter_case_of(test_case: EvalTestCase) -> ReporterCase | None:
     return ReporterCase.model_validate(payload[REPORTER_CASE_KEY])
 
 
-def _renamed_keys() -> dict[str, str]:
-    """Every key a document model renamed within the current schema version: old name → new name.
-
-    Read off the models' own ``__retired_fields__``, so a frozen bundle's renamed key is followed by the
-    same declaration its stored read follows. Renames only: a key removed outright is a frozen value the
-    rebuild does not carry, and stays a loss here.
-    """
-    renamed: dict[str, str] = {}
-    pending: list[type[EvalDocumentModel]] = [EvalDocumentModel]
-    while pending:
-        model = pending.pop()
-        pending.extend(model.__subclasses__())
-        renamed.update({old: new for old, new in model.__retired_fields__.items() if new is not None})
-    return renamed
-
-
-def _losses(frozen: Any, rebuilt: Any, path: str, added: list[str], renamed: dict[str, str] | None = None) -> list[str]:
+def _losses(frozen: Any, rebuilt: Any, path: str, added: list[str]) -> list[str]:
     """Name every frozen value the rebuild dropped or changed, collecting the keys it only ADDED.
-
-    A frozen key a model renamed within the schema version (``__retired_fields__``) is compared with the
-    rebuilt value under its new name: the stored read moved it there, so it was carried, not dropped.
 
     Args:
         frozen: A node of the frozen document.
         rebuilt: The same node of the rebuilt bundle's ``to_dict()``.
         path: Where the node sits, for the message.
         added: Receives the path of every key the rebuild has and the frozen document lacks.
-        renamed: Old key → new key for every rename; read once from the models when omitted.
 
     Returns:
         One entry per lost or changed value; empty when every frozen value survived.
     """
-    renames = _renamed_keys() if renamed is None else renamed
     if isinstance(frozen, dict) and isinstance(rebuilt, dict):
         losses: list[str] = []
-        moved: set[str] = set()
         for key, value in frozen.items():
             if key in rebuilt:
-                losses.extend(_losses(value, rebuilt[key], f"{path}.{key}", added, renames))
-            elif (renamed_to := renames.get(key)) is not None and renamed_to in rebuilt and renamed_to not in frozen:
-                moved.add(renamed_to)
-                losses.extend(_losses(value, rebuilt[renamed_to], f"{path}.{renamed_to}", added, renames))
+                losses.extend(_losses(value, rebuilt[key], f"{path}.{key}", added))
             else:
                 losses.append(f"{path}.{key} dropped")
-        added.extend(f"{path}.{key}" for key in rebuilt if key not in frozen and key not in moved)
+        added.extend(f"{path}.{key}" for key in rebuilt if key not in frozen)
         return losses
     if isinstance(frozen, list) and isinstance(rebuilt, list):
         if len(frozen) != len(rebuilt):
             return [f"{path} held {len(frozen)} items and rebuilds with {len(rebuilt)}"]
         losses = []
         for index, (old, new) in enumerate(zip(frozen, rebuilt, strict=True)):
-            losses.extend(_losses(old, new, f"{path}[{index}]", added, renames))
+            losses.extend(_losses(old, new, f"{path}[{index}]", added))
         return losses
     return [] if frozen == rebuilt else [f"{path} changed from {_clipped(frozen)} to {_clipped(rebuilt)}"]
 
@@ -480,10 +454,7 @@ def rebuild_bundle(case: ReporterCase) -> AnalysisContextBundle:
       holds the bundle it says it holds;
     - it must validate strictly — a field the bundle model no longer declares is refused, as on
       every stored read;
-    - every frozen value must survive the rebuild unchanged — none altered by validation. A value under
-      a key renamed within the schema version (``__retired_fields__``) survives under its new name, and
-      a bundle frozen before shape 49 has each divergence's whole-run swing moved into ``whole_swings``
-      first (:func:`_with_whole_swings_hoisted`), where it survives once rather than once per divergence.
+    - every frozen value must survive the rebuild unchanged — none altered by validation.
 
     **A field the bundle model gained after the freeze is NOT a loss, and that tolerance is
     deliberate** — the one place a read here accepts an older shape. The frozen bundle is the
@@ -512,7 +483,7 @@ def rebuild_bundle(case: ReporterCase) -> AnalysisContextBundle:
             f"{case.bundle_fingerprint} — the case does not hold the bundle it names, so neither the "
             "generator nor the judge would see the bundle this case pins"
         )
-    frozen = _with_whole_swings_hoisted(case.bundle)
+    frozen = case.bundle
     bundle = AnalysisContextBundle.from_dict(frozen)
     added: list[str] = []
     losses = _losses(frozen, bundle.to_dict(), "bundle", added)
@@ -530,58 +501,6 @@ def rebuild_bundle(case: ReporterCase) -> AnalysisContextBundle:
             ", ".join(sorted({_indexless(path) for path in added})),
         )
     return bundle
-
-
-#: The bundle shape that moved where a diverging whole-run movement went off each divergence and into
-#: ``whole_swings``, and the three per-divergence keys it moved.
-_WHOLE_SWINGS_SHAPE = 49
-_PER_DIVERGENCE_SWING_KEYS = {
-    "whole_components": "components",
-    "carried_by": "carried_by",
-    "carried_share": "carried_share",
-}
-
-
-def _with_whole_swings_hoisted(frozen: dict[str, Any]) -> dict[str, Any]:
-    """A bundle frozen before shape 49, with where each whole moved read off its divergences into ``whole_swings``.
-
-    Before 49 every divergence carried its whole's components and carrier, and divergences sharing a lever,
-    level pair and whole carried identical copies — which is why the copies moved. Moving
-    them loses no value, so a case frozen over the older shape rebuilds with every one; :func:`_losses`
-    then compares the moved document, so a copy that did not survive is still named. A later shape, or one
-    whose divergences carry none of the keys, is returned as it is.
-
-    Args:
-        frozen: The case's frozen bundle document.
-
-    Returns:
-        The document to rebuild from: ``frozen`` itself, or a copy with the keys moved.
-
-    Raises:
-        ValueError: Two divergences sharing a lever, level pair and whole carry different copies, so no one
-            swing is what the case pins.
-    """
-    divergences = frozen.get("scope_divergences")
-    version = frozen.get("schema_version")
-    if not isinstance(version, int) or version >= _WHOLE_SWINGS_SHAPE or not isinstance(divergences, list):
-        return frozen
-    if not any(isinstance(d, dict) and _PER_DIVERGENCE_SWING_KEYS.keys() & d.keys() for d in divergences):
-        return frozen
-    swings: dict[tuple[str, str, str, str], dict[str, Any]] = {}
-    moved: list[dict[str, Any]] = []
-    for divergence in divergences:
-        kept = {key: value for key, value in divergence.items() if key not in _PER_DIVERGENCE_SWING_KEYS}
-        moved.append(kept)
-        whole = divergence["end_to_end"]["name"]
-        key = (divergence["lever"], divergence["level_a"], divergence["level_b"], whole)
-        swing = {"lever": key[0], "level_a": key[1], "level_b": key[2], "whole": whole}
-        swing |= {new: divergence[old] for old, new in _PER_DIVERGENCE_SWING_KEYS.items() if old in divergence}
-        if swings.setdefault(key, swing) != swing:
-            raise ValueError(
-                f"the case's frozen bundle states two different swings of {whole} for {key[0]} "
-                f"{key[1]} → {key[2]}, so no one swing is what the case pins"
-            )
-    return {**frozen, "scope_divergences": moved, "whole_swings": [swings[key] for key in sorted(swings)]}
 
 
 def _indexless(path: str) -> str:

@@ -743,6 +743,7 @@ class JudgeKind:
             test_case_id=test_case.id,
             dim=case.dim,
             scale=case.scale,
+            axis=request.axis,
             criterion_digest=case.criterion_digest(),
             case_digest=case.content_digest(),
             source_result_id=case.source.result_id,

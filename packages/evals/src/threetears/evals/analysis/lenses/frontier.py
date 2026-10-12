@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from collections.abc import Hashable, Iterable, Mapping, Sequence
 from fractions import Fraction
-from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.analysis.agreement import judge_key, tier_for_judges
@@ -656,13 +656,7 @@ class FrontierResult(EvalDocumentModel):
     subject says how its boundary pillar was read. ``exclusions`` and the
     ``n_*`` counts keep an all-excluded corpus from rendering as an empty one,
     exactly as :class:`PivotTable` does.
-
-    ``two_pillar`` (``TwoPillarDisclosure``, the statement that the boundary pillar was descoped) is retired: the
-    pillar is decided (#613). A frozen bundle carrying it reads with it discarded — what it said is no longer true
-    of any answer this build gives.
     """
-
-    __retired_fields__: ClassVar[dict[str, str | None]] = {"two_pillar": None}
 
     bar: float | None = None
     #: The control the boundary pillar held every contestant against — the campaign's control arm on the bundle's

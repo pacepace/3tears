@@ -23,7 +23,7 @@ so it can never drift from the runs it summarises.
 from __future__ import annotations
 
 import uuid
-from typing import Annotated, Any, ClassVar, Literal, Self, TypeVar, get_args
+from typing import Annotated, Any, Literal, Self, TypeVar, get_args
 
 from pydantic import BeforeValidator, Field, ValidationInfo, computed_field, field_validator, model_validator
 
@@ -174,11 +174,7 @@ class EvalCampaign(CoreDocumentModel):
     which runs they gathered to learn it, and nothing stored can make that again, so a later release reads it
     and upgrades it rather than refusing it.
 
-    A campaign has no open/closed status. ``status`` was retired within schema v8: nothing could
-    change it after creation and nothing enforced it — runs were added to, and analyses generated
-    over, a ``closed`` campaign alike — so it was a label that read as frozen membership while
-    freezing nothing. The core's v8 step discards it from a stored campaign. ``archived`` is the
-    lifecycle a campaign has.
+    A campaign has no open/closed status: ``archived`` is the lifecycle a campaign has.
 
     Lives in one ``scope_id``, and so do its member runs: a run in another scope is
     refused at attachment (:mod:`threetears.evals.analysis.campaigns`), because every
@@ -450,14 +446,8 @@ class LeverCoverage(EvalDocumentModel):
     without its sample size and spread is a rendering bug, so the model
     refuses to construct one that omits them.
 
-    It carries no confidence. ``confidence`` was retired within schema v8: it was a fixed lookup on
-    ``status`` (measured → high, thin → medium, unswept → low), so it said nothing ``status`` does not,
-    while reading as a confidence in the lever's estimate — an unswept lever, which nothing measured, read
-    as "low confidence" in a measurement that does not exist. How firmly a reading stands is the evidence
-    tier on the reading itself. A stored analysis carrying the key reads with it discarded.
+    It carries no confidence: how firmly a reading stands is the evidence tier on the reading itself.
     """
-
-    __retired_fields__: ClassVar[dict[str, str | None]] = {"confidence": None}
 
     name: str = Field(min_length=1, description="Lever name, as its host declares it, e.g. 'search.model'.")
     cells: int = Field(ge=0, description="Number of matrix cells measured for this lever.")

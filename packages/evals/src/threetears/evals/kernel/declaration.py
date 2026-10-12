@@ -37,7 +37,7 @@ import uuid
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
+from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
 
 from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_validator
 
@@ -412,12 +412,8 @@ class CampaignDesign(EvalDocumentModel):
     no longer destroys the design if another observation carries the same variant — a state that
     previously needed its own field because it was a live failure.
 
-    ``held_fixed`` says what held still while the campaign ran. It was named ``controls`` until it
-    was renamed within schema v8, because one letter apart from ``control`` it named a different
-    thing; a stored campaign or analysis carrying ``controls`` reads it as ``held_fixed``.
+    ``held_fixed`` says what held still while the campaign ran.
     """
-
-    __retired_fields__: ClassVar[dict[str, str | None]] = {"controls": "held_fixed"}
 
     axes: list[SweptAxis] = Field(
         min_length=1,

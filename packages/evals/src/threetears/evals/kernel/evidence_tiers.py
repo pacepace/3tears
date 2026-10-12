@@ -317,13 +317,14 @@ class JudgeEvidenceTier(EvalDocumentModel):
             "a judge nobody observed, never read as a match for a named one."
         )
     )
-    judge_config_id: str | None = Field(
+    judge_config_id: str = Field(
+        min_length=1,
         description=(
             "The versioned JudgeConfig that asked for the scores, or a ``builtin:`` id = the built-in prompt, by "
-            "its wording; None = a built-in prompt whose wording was not recorded (judged before evaladopt.19). "
+            "its wording. "
             "Part of the judge's identity: a changed judge prompt, built-in wording included, is a different "
             "judge, so its readings get their own tier."
-        )
+        ),
     )
     judge_temperature: JudgeTemperature | None = Field(
         default=None,

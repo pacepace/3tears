@@ -11,7 +11,7 @@ imports none of them.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar, Literal
+from typing import Literal
 
 from pydantic import Field, model_validator
 
@@ -1894,12 +1894,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     completeness record has not finished, or had its record's write refused, rather than having
     delivered everything — absence is not zero, and reporting unknown as complete re-commits the
     error one layer down.
-
-    ``held_fixed_reading`` was ``controls_reading`` until the declaration's ``controls`` was renamed
-    ``held_fixed``; a frozen bundle (a reporter case's) carrying the old key reads it under the new one.
     """
-
-    __retired_fields__: ClassVar[dict[str, str | None]] = {"controls_reading": "held_fixed_reading"}
 
     # The bundle's shape version. It reaches `fingerprint()`, so bump it whenever a fingerprinted
     # field is added, renamed or removed — and whenever a PACKAGE change moves a fingerprinted VALUE

@@ -759,18 +759,6 @@ def _guardrail_blocks(
             )
         )
         blocks.append(DisclosureBlock(section="guardrails", source="guardrails", text=_GUARDRAILS_DISCLOSURE))
-    if guardrails.unstamped_dimensions:
-        blocks.append(
-            DisclosureBlock(
-                section="guardrails",
-                source="guardrails",
-                text=(
-                    f"{_listed(guardrails.unstamped_dimensions)} carry scores judged before the rubric axis was "
-                    "recorded. They are read as capability, as they were then; a guardrail among them is not "
-                    "recognised until it is re-judged."
-                ),
-            )
-        )
     return blocks
 
 

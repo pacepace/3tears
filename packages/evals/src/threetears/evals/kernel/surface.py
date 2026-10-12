@@ -747,13 +747,6 @@ class GuardrailReadings(EvalDocumentModel):
             "None when checks could run, or when there is no guardrail."
         ),
     )
-    unstamped_dimensions: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Judged dimensions carrying scores judged before the rubric axis was stamped, sorted. They are read as "
-            "capability, as they were then; a guardrail among them is not recognised until it is re-judged."
-        ),
-    )
 
     def of_arm(self, variant_key: str) -> ArmGuardrails:
         """Where one arm stands: breached anywhere, else undecided anywhere, else held everywhere it was checked."""

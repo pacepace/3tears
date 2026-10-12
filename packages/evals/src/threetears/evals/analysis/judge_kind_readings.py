@@ -86,14 +86,15 @@ class JudgeKindReading(EvalDocumentModel):
     rubric_dim: str = Field(min_length=1, description="The criterion's dim.")
     scale: RubricScale = Field(description="The scale it was asked on.")
     judge_model: str | None = Field(description="The model the judge's responses named; None when none named one.")
-    judge_config_id: str | None = Field(
+    judge_config_id: str = Field(
+        min_length=1,
         description=(
-            "The versioned JudgeConfig that asked, or a ``builtin:`` id = the built-in prompt, by its wording. None "
-            "only on a trial recorded before evaladopt.19: a built-in prompt whose wording was not recorded."
-        )
+            "The versioned JudgeConfig that asked, or a ``builtin:`` id = the built-in prompt, by its wording."
+        ),
     )
     judge_temperature: JudgeTemperature | None = Field(
-        description="The temperature the calls were sent at, as the client reported it; None = not reported."
+        default=None,
+        description="The temperature the calls were sent at, as the client reported it; None = not reported.",
     )
     criterion_digest: str = Field(min_length=1, description="The criterion as the cases worded it (its digest).")
     case_set_fingerprint: str = Field(
@@ -178,10 +179,11 @@ def _order(entry: tuple[EvalResult, JudgeTrial]) -> tuple[str, int, str]:
 
 def _score_of(trial: JudgeTrial) -> RubricScore:
     """A scored trial's answer as the score a judged result would hold."""
-    assert trial.score is not None
+    assert trial.score is not None and trial.judge_temperature is not None
     return RubricScore(
         dim=trial.dim,
         scale=trial.scale,
+        axis=trial.axis,
         score=trial.score,
         reasoning=trial.reasoning or "",
         served_model=trial.served_model,
@@ -202,7 +204,7 @@ def _reading_of_case(
         return None
     base, first = entries[first_index]
     first_score = _score_of(first)
-    configs = {first.dim: first.judge_config_id} if first.judge_config_id is not None else {}
+    configs = {first.dim: first.judge_config_id}
     repeats = []
     for index, (_, trial) in enumerate(entries):
         if index == first_index:
@@ -213,7 +215,7 @@ def _reading_of_case(
             first_score=first_score.score,
             first_served_model=first.served_model,
             first_judge_config_id=first.judge_config_id,
-            first_judge_temperature=first.judge_temperature,
+            first_judge_temperature=first_score.judge_temperature,
             repeat=_score_of(trial) if trial.outcome == "scored" else None,
             cannot_tell=(trial.cannot_tell or "the judge gave no reason") if trial.outcome == "cannot_tell" else None,
             error=(trial.error or "the reply broke the protocol") if trial.outcome == "invalid" else None,

@@ -30,9 +30,9 @@ for is the judge under test, and its spend is recorded under the ``judge`` role 
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from threetears.evals.kernel.host.kinds import KindContract
 from threetears.evals.kernel.metrics import MetricDescriptor
@@ -45,6 +45,7 @@ from threetears.evals.schema.models import (
     JudgedArtifact,
     JudgeEvidence,
     JudgeTemperature,
+    RubricAxis,
     RubricDim,
     RubricScale,
     UsageRole,
@@ -250,6 +251,7 @@ class JudgeTrial(EvalBaseModel):
     test_case_id: str = Field(min_length=1, description="The judge case the trial asked about.")
     dim: DimName = Field(description="The criterion asked.")
     scale: RubricScale = Field(description="The scale it was asked on.")
+    axis: RubricAxis = Field(description="The axis the criterion was asked on, as the judge request stated it.")
     criterion_digest: str = Field(min_length=1, description="The case's criterion digest (JudgeCase.criterion_digest).")
     case_digest: str = Field(min_length=1, description="The case's content digest (JudgeCase.content_digest).")
     source_result_id: str = Field(min_length=1, description="The stored result whose output the case replays.")
@@ -262,16 +264,24 @@ class JudgeTrial(EvalBaseModel):
     served_model: str | None = Field(
         default=None, description="The model the response named as having answered; None when it named none."
     )
-    judge_config_id: str | None = Field(
-        default=None,
-        description=(
-            "The versioned JudgeConfig that asked, or a ``builtin:`` id = the built-in prompt, by its wording; None = "
-            "a built-in prompt whose wording was not recorded (asked before evaladopt.19)."
-        ),
+    judge_config_id: str = Field(
+        min_length=1,
+        description="The versioned JudgeConfig that asked, or a ``builtin:`` id = the built-in prompt, by its wording.",
     )
     judge_temperature: JudgeTemperature | None = Field(
-        default=None, description="What the call was sent at, as its client reported it; None = not reported."
+        default=None,
+        description=(
+            "What the call was sent at, as its client reported it; None only for a call that returned no completion "
+            "to read it from (a trial with no reply). A scored trial always carries it."
+        ),
     )
+
+    @model_validator(mode="after")
+    def _a_score_says_what_it_was_sent_at(self) -> Self:
+        """Refuse a scored trial with no temperature: its score could not be told from another judge's."""
+        if self.outcome == "scored" and self.judge_temperature is None:
+            raise ValueError("a scored judge trial records the temperature its call was sent at")
+        return self
 
 
 def judge_trial_of(kind_payload: object) -> JudgeTrial | None:
