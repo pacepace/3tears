@@ -86,6 +86,10 @@ class CampaignListing(EvalBaseModel):
     campaigns: list[CampaignLine]
 
 
+#: How long a start waits for an in-process generation whose attempt has already ended to finish unwinding (releasing
+#: its client and its slot) before refusing it as still running. Unwinding is a few store writes, so this is generous.
+ENDED_TASK_UNWIND_S = 30.0
+
 #: What a declared design is, said once for the operations and the actions that take it — creating and updating alike,
 #: since a tool's flat parameters give one name one meaning.
 DECLARED_DESIGN_DESCRIPTION = (
@@ -650,6 +654,16 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
     key = generation_key(campaign_id, scope_id)
     eval_host = host.eval_host
     held = manager.active_task_ids(key)
+    if held and not await run_blocking(eval_host.blocking_executor, _live_attempt, eval_host, held[0], scope_id):
+        # The task still holding the key in this process has already written its attempt's ending, so job_poll says
+        # it is done: it is unwinding (releasing its client and its slot). Wait for that rather than refusing a start
+        # its caller was just told it may make; a task that does not finish unwinding is refused as running.
+        try:
+            await asyncio.wait_for(manager.wait_for(held), timeout=ENDED_TASK_UNWIND_S)
+        except TimeoutError:
+            # NOSILENT(expected): a task still unwinding after the wait keeps the key, and is refused as running below
+            pass
+        held = manager.active_task_ids(key)
     holder = (
         held[0]
         if held
