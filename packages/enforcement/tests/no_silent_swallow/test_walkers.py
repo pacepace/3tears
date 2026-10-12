@@ -86,19 +86,46 @@ class TestBodySilentCategory:
     def test_non_silent_returns_none(self) -> None:
         import ast
 
-        body = ast.parse("def f():\n    x = 1\n").body[0].body  # type: ignore[attr-defined]
+        body = ast.parse("def f():\n    x = recover()\n").body[0].body  # type: ignore[attr-defined]
         assert body_silent_category(body) is None
 
-    def test_return_value_not_none(self) -> None:
+    def test_a_returned_constant_is_silent(self) -> None:
+        # ``except ValueError: return False`` dropped unreadable judge cases from an arm while
+        # the old one-shape walker looked straight past it.
         import ast
 
-        body = ast.parse("def f():\n    return 42\n").body[0].body  # type: ignore[attr-defined]
+        body = ast.parse("def f():\n    return False\n").body[0].body  # type: ignore[attr-defined]
+        assert body_silent_category(body) == "return-constant"
+
+    def test_a_returned_empty_collection_is_silent(self) -> None:
+        import ast
+
+        for value in ("[]", "{}", "()", "dict()", "frozenset()"):
+            body = ast.parse(f"def f():\n    return {value}\n").body[0].body  # type: ignore[attr-defined]
+            assert body_silent_category(body) == "return-empty", value
+
+    def test_an_assigned_default_is_silent(self) -> None:
+        import ast
+
+        body = ast.parse("def f():\n    ok = False\n").body[0].body  # type: ignore[attr-defined]
+        assert body_silent_category(body) == "assign-default"
+
+    def test_an_inert_multi_statement_body_is_silent_and_named_by_its_last_statement(self) -> None:
+        import ast
+
+        body = ast.parse("for x in y:\n    ok = None\n    continue\n").body[0].body  # type: ignore[attr-defined]
+        assert body_silent_category(body) == "continue"
+
+    def test_a_returned_value_that_is_not_a_default_is_not_silent(self) -> None:
+        import ast
+
+        body = ast.parse("def f():\n    return Failure(reason=str(exc))\n").body[0].body  # type: ignore[attr-defined]
         assert body_silent_category(body) is None
 
-    def test_multi_statement_returns_none(self) -> None:
+    def test_a_body_that_calls_anything_is_not_silent(self) -> None:
         import ast
 
-        body = ast.parse("def f():\n    x = 1\n    pass\n").body[0].body  # type: ignore[attr-defined]
+        body = ast.parse("def f():\n    x = compute()\n    pass\n").body[0].body  # type: ignore[attr-defined]
         assert body_silent_category(body) is None
 
 
@@ -323,7 +350,7 @@ class TestTypedExceptAccepted:
             "def f():\n"
             "    try:\n"
             "        do()\n"
-            "    except ValueError:  # NOSILENT: legitimate cleanup path\n"
+            "    except ValueError:  # NOSILENT(expected): the refusal is this probe's answer\n"
             "        pass\n",
         )
         assert _scan(src, repo) == []
@@ -337,19 +364,19 @@ class TestTypedExceptAccepted:
             "def f():\n"
             "    try:\n"
             "        do()\n"
-            "    # NOSILENT: shutdown is the expected path here\n"
+            "    # NOSILENT(expected): shutdown is the expected path here\n"
             "    except asyncio.CancelledError:\n"
             "        pass\n",
         )
         assert _scan(src, repo) == []
 
     def test_non_silent_body_not_flagged(self, tmp_path: Path) -> None:
-        # ``except: x = 1`` is recovery code, not a silent swallow.
+        # ``except: x = recover()`` is recovery code, not a silent swallow.
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "def f():\n    try:\n        do()\n    except ValueError:\n        x = 1\n",
+            "def f():\n    try:\n        do()\n    except ValueError:\n        x = recover()\n",
         )
         assert _scan(src, repo) == []
 
@@ -432,7 +459,7 @@ class TestSuppress:
             "from contextlib import suppress\n"
             "\n"
             "def f():\n"
-            "    # NOSILENT: race-condition cleanup, key may already be gone\n"
+            "    # NOSILENT(expected): race-condition cleanup, key may already be gone\n"
             "    with suppress(KeyError):\n"
             "        del cache[key]\n",
         )
@@ -449,7 +476,7 @@ class TestSuppress:
             "from contextlib import suppress\n"
             "\n"
             "def f():\n"
-            "    with suppress(KeyError):  # NOSILENT: idempotent delete\n"
+            "    with suppress(KeyError):  # NOSILENT(expected): idempotent delete\n"
             "        del cache[key]\n",
         )
         assert _scan(src, repo) == []
@@ -567,3 +594,210 @@ class TestHandlerSymbol:
         violations = _scan(src, repo)
         assert len(violations) == 1
         assert violations[0].symbol == "(KeyError, ValueError)"
+
+
+# ------------------------------------------------------------------
+# walker — the shapes the one-statement walker missed
+# ------------------------------------------------------------------
+
+
+class TestShapesTheOldWalkerMissed:
+    def test_a_handler_returning_false_is_flagged(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py", "def f():\n    try:\n        do()\n    except ValueError:\n        return False\n"
+        )
+        violations = _scan(src, repo)
+        assert len(violations) == 1
+        assert "return-constant" in violations[0].reason
+
+    def test_a_handler_assigning_a_default_is_flagged(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", "def f():\n    try:\n        x = do()\n    except KeyError:\n        x = None\n")
+        violations = _scan(src, repo)
+        assert len(violations) == 1
+        assert "assign-default" in violations[0].reason
+
+    def test_an_except_star_handler_is_scanned(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", "def f():\n    try:\n        do()\n    except* ValueError:\n        pass\n")
+        assert len(_scan(src, repo)) == 1
+
+
+# ------------------------------------------------------------------
+# walker — a reason no longer excuses silence; a checked kind does
+# ------------------------------------------------------------------
+
+
+def _handler(marker: str, caught: str = "ValueError", body: str = "return None", prefix: str = "") -> str:
+    return f"def f():\n{prefix}    try:\n        do()\n    except {caught}:\n        {marker}\n        {body}\n"
+
+
+class TestMarkerKinds:
+    def test_a_bare_reason_no_longer_excuses_a_silent_handler(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", _handler("# NOSILENT: the caller treats None as absent"))
+        violations = _scan(src, repo)
+        assert len(violations) == 1
+        assert "no longer excuses" in violations[0].reason
+
+    def test_a_bare_reason_still_sits_harmlessly_on_a_handler_that_logs(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", _handler("# NOSILENT: logged below", body="log.warning('x')"))
+        assert _scan(src, repo) == []
+
+    def test_an_unknown_kind_is_flagged(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", _handler("# NOSILENT(harmless): trust me"))
+        violations = _scan(src, repo)
+        assert len(violations) == 1
+        assert "unknown NOSILENT kind 'harmless'" in violations[0].reason
+
+    def test_a_kind_without_a_reason_is_flagged(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", _handler("# NOSILENT(expected):"))
+        assert len(_scan(src, repo)) == 1
+
+    def test_expected_is_accepted_for_a_narrow_type(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", _handler("# NOSILENT(expected): a miss is the documented None", "KeyError"))
+        assert _scan(src, repo) == []
+
+    def test_expected_is_refused_for_a_broad_type(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", _handler("# NOSILENT(expected): anything at all", "(KeyError, Exception)"))
+        violations = _scan(src, repo)
+        assert len(violations) == 1
+        assert "narrower than Exception" in violations[0].reason
+
+    def test_optional_import_is_accepted_around_an_import(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            "try:\n    import numpy\nexcept ImportError:  # NOSILENT(optional-import): numpy is an extra\n"
+            "    numpy = None\n",
+        )
+        assert _scan(src, repo) == []
+
+    def test_optional_import_is_refused_around_no_import(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", _handler("# NOSILENT(optional-import): not really", "ImportError"))
+        violations = _scan(src, repo)
+        assert len(violations) == 1
+        assert "guards no import" in violations[0].reason
+
+    def test_optional_import_is_refused_for_another_type(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            "try:\n    import x\nexcept OSError:  # NOSILENT(optional-import): no\n    x = None\n",
+        )
+        assert len(_scan(src, repo)) == 1
+
+    def test_attempt_is_accepted_inside_a_loop(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            "def f(formats):\n"
+            "    for fmt in formats:\n"
+            "        try:\n"
+            "            return parse(fmt)\n"
+            "        except ValueError:  # NOSILENT(attempt): one format of several; none raises below\n"
+            "            continue\n"
+            "    raise ValueError('no format')\n",
+        )
+        assert _scan(src, repo) == []
+
+    def test_attempt_is_accepted_when_a_raise_follows_the_try(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            _handler("# NOSILENT(attempt): one parse of two", body="pass")
+            + "    try:\n        return other()\n    except ValueError as exc:\n        raise Bad() from exc\n",
+        )
+        assert _scan(src, repo) == []
+
+    def test_attempt_is_refused_with_no_loop_and_no_raise_after(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", _handler("# NOSILENT(attempt): one parse of several"))
+        violations = _scan(src, repo)
+        assert len(violations) == 1
+        assert "inside a loop" in violations[0].reason
+
+    def test_attempt_does_not_count_a_raise_in_a_nested_function(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            _handler("# NOSILENT(attempt): one parse of several") + "    def g():\n        raise Bad()\n",
+        )
+        assert len(_scan(src, repo)) == 1
+
+    def test_cleanup_is_accepted_inside_an_except_that_reraises(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            "from contextlib import suppress\n"
+            "def f():\n"
+            "    try:\n"
+            "        write()\n"
+            "    except BaseException:\n"
+            "        # NOSILENT(cleanup): the temp file goes; the write's own error is re-raised below\n"
+            "        with suppress(OSError):\n"
+            "            unlink()\n"
+            "        raise\n",
+        )
+        assert _scan(src, repo) == []
+
+    def test_cleanup_is_refused_outside_a_reraising_except(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            "from contextlib import suppress\n"
+            "def f():\n"
+            "    # NOSILENT(cleanup): best effort\n"
+            "    with suppress(Exception):\n"
+            "        close()\n",
+        )
+        violations = _scan(src, repo)
+        assert len(violations) == 1
+        assert "re-raises the primary error" in violations[0].reason
+
+    def test_a_bare_reason_no_longer_excuses_a_suppress(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            "from contextlib import suppress\ndef f():\n    # NOSILENT: idempotent delete\n"
+            "    with suppress(KeyError):\n        del cache[key]\n",
+        )
+        violations = _scan(src, repo)
+        assert len(violations) == 1
+        assert "no longer excuses" in violations[0].reason
+
+    def test_expected_is_refused_on_a_suppress_of_exception(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            "from contextlib import suppress\ndef f():\n    # NOSILENT(expected): whatever happens\n"
+            "    with suppress(Exception):\n        close()\n",
+        )
+        assert len(_scan(src, repo)) == 1

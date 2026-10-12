@@ -164,7 +164,8 @@ def allow_tracer_provider_reset() -> bool:
     try:
         trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined, unused-ignore]
     except AttributeError:
-        # NOSILENT: the False return is the report; the caller logs what it costs at its own site
+        # NOSILENT(expected): False is this function's documented "the guard moved" answer, and every
+        # caller logs what that costs at WARNING at its own site
         cleared = False
     return cleared
 

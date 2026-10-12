@@ -82,6 +82,7 @@ def is_trusted_peer(peer: str, trusted: Sequence[TrustedProxyCidr]) -> bool:
     try:
         addr = ipaddress.ip_address(peer)
     except ValueError:
+        # NOSILENT(expected): fail-closed by contract -- an unparseable peer is never a trusted proxy
         return False
     return any(addr.version == network.version and addr in network for network in trusted)
 

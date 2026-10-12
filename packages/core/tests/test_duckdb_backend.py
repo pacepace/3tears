@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import sys
 import threading
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -361,3 +363,31 @@ class TestUpsertFiltersToTheRegisteredSchema:
         assert row is not None
         assert row["name"] == "alice"
         assert row["age"] == 30
+
+
+class _UnclosableDuckDB:
+    """a real DuckDB connection whose close refuses, as a wedged one would, after closing for real."""
+
+    def __init__(self, real: Any) -> None:
+        self.real = real
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.real, name)
+
+    def close(self) -> None:
+        self.real.close()
+        raise duckdb.Error("this database will not close")
+
+
+def test_reset_reports_a_database_that_will_not_close(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """the reset still clears its state, and the database it could not close is logged, not swallowed."""
+    real_connect = duckdb.connect
+    monkeypatch.setattr(duckdb, "connect", lambda *args, **kwargs: _UnclosableDuckDB(real_connect(*args, **kwargs)))
+    backend = DuckDBBackend()
+    backend.initialize(_make_metadata())
+    with caplog.at_level(logging.WARNING):
+        backend.reset()
+    assert not backend.is_initialized()
+    assert any("would not close" in record.getMessage() for record in caplog.records)

@@ -470,7 +470,8 @@ def _recount_rejudged_exclusion(
         try:
             storage.save_eval_run(run.model_copy(update={"completeness": recounted}), if_match=etag)
         except ConflictError:
-            # NOSILENT: a lost conditional write is re-read and re-applied; exhausting the retries is logged and raised below
+            # NOSILENT(attempt): a lost conditional write is re-read and re-applied; exhausting the retries is
+            # logged and raised below
             continue
         return
     log.error("eval.rejudge_result run=%s completeness NOT recounted after a re-judge scored a result", run_id)

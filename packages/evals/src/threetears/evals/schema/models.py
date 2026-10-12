@@ -1297,6 +1297,8 @@ def _derived_rating_id(data: dict[str, Any]) -> str:
     try:
         return _calibration_rating_id(data["result_id"], data["rubric_dim"], data["rater"], data["rater_kind"])
     except KeyError:
+        # NOSILENT(expected): a field this id is derived from failed its own validation, so it is absent here;
+        # that failure is what the construction raises, and the blank id never outlives it
         return ""
 
 

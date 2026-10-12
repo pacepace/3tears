@@ -134,8 +134,8 @@ class LocalHttpServer:
             while True:
                 try:
                     head = await reader.readuntil(b"\r\n\r\n")
-                # NOSILENT: a client that hung up between requests is done
                 except asyncio.IncompleteReadError, ConnectionError:
+                    # NOSILENT(expected): a client that hung up between requests has ended its connection
                     return
                 self.requests.append(head.decode("latin-1"))
                 reply = self._replies.popleft() if self._replies else self._last
@@ -152,8 +152,8 @@ class LocalHttpServer:
                 writer.write(f"HTTP/1.1 {reply.status} SCRIPTED\r\n{rendered}\r\n".encode("latin-1") + reply.body)
                 try:
                     await writer.drain()
-                # NOSILENT: a byte-cap pin aborts the read by design, closing this socket
                 except ConnectionError:
+                    # NOSILENT(expected): a byte-cap pin aborts the read by design, closing this socket
                     return
                 if reply.undeclared_length:
                     # the body's end is signalled by the close, so there is

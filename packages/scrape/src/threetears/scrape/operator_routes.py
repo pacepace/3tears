@@ -22,7 +22,6 @@ worked around.
 
 from __future__ import annotations
 
-from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -133,17 +132,19 @@ def build_router(
                 exc_info=True,
                 extra={"extra_data": {"session_id": session_id, "host": host, "port": port}},
             )
-            # Suppressed, because the most likely reason this close fails is that the client is
+            # Caught and logged, because the most likely reason this close fails is that the client is
             # already gone -- and a client going away is one of the things that gets us here. The
             # close raising would escape the handler and replace the warning above, which is the
             # only line carrying the session id, with a framework traceback that carries none. The
             # socket is finished either way; telling it so is a courtesy, not a step.
-            # NOSILENT: the reason is already logged above with the session id; this close is a
-            # courtesy to a peer that is probably gone, and cannot change the outcome either way.
-            with suppress(
-                Exception
-            ):  # prawduct:allow prawduct/broad-except -- see above; the diagnosis is already logged and this close cannot change the outcome
+            try:
                 await websocket.close(code=1011, reason="the display is not available")
+            except Exception as close_exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the close cannot change the outcome; it is recorded, not raised
+                log.info(
+                    "operator: closing the socket after the display was unreachable failed: %s",
+                    close_exc,
+                    extra={"extra_data": {"session_id": session_id}},
+                )
 
     @router.get("/", include_in_schema=False)
     async def operator_page() -> FileResponse:

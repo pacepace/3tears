@@ -129,6 +129,7 @@ try:
 
     _HAS_ANTHROPIC = True
 except ImportError:
+    # NOSILENT(optional-import): the anthropic SDK is optional; without it no error can come from it
     _HAS_ANTHROPIC = False
 
 

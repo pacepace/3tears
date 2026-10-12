@@ -216,6 +216,8 @@ def _derived_profile_id(data: dict[str, object]) -> str:
             str(data["criterion_digest"]),
         )
     except KeyError:
+        # NOSILENT(expected): a field this id is derived from failed its own validation, so it is absent here;
+        # that failure is what the construction raises, and the blank id never outlives it
         return ""
 
 

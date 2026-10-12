@@ -295,8 +295,9 @@ def _as_published_at(value: object) -> datetime | None:
     # defect here, and logging once per result would be noise.
     try:
         parsed = datetime.fromisoformat(value)
-    # NOSILENT: an unparseable provider date leaves published_at unset, raw kept
     except ValueError:
+        # NOSILENT(expected): an unparseable provider date is no date; the raw string is kept on the
+        # result's provenance as published_date_raw, so nothing is lost and nothing invented.
         return None
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 

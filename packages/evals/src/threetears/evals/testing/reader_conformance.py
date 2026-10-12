@@ -130,7 +130,7 @@ def _json_or_none(value: Any) -> str | None:
     try:
         return canonical_json(value)
     except UnhashableContentError:
-        # NOSILENT: a deferral, not a verdict -- the same read fails sweepable.json_safe, a mandatory case in the
+        # NOSILENT(expected): a deferral, not a verdict -- the same read fails sweepable.json_safe, a mandatory case in the
         # same kit (READER_CONFORMANCE_CASES), which names the value; one broken promise turns one case red.
         return None
 

@@ -589,6 +589,22 @@ async def test_an_unparseable_timestamp_is_a_corrupt_cache_entry(
     assert refused[0].__dict__["extra_data"]["column"] == "date_updated"
 
 
+def test_a_stored_timestamp_that_does_not_parse_is_refused_rather_than_read_as_absent(
+    health: ScrapeTargetHealthCollection,
+) -> None:
+    """``blocked_until`` read as ``None`` means "no backoff in force": an unreadable one must not lift a block."""
+    entity = health.create({"target_id": "warn_garbled", "blocked_until": "not-a-timestamp"})
+
+    with pytest.raises(ValueError, match="not-a-timestamp"):
+        _ = entity.blocked_until
+
+
+def test_an_absent_stored_timestamp_still_reads_as_none(health: ScrapeTargetHealthCollection) -> None:
+    entity = health.create({"target_id": "warn_absent", "blocked_until": ""})
+
+    assert entity.blocked_until is None
+
+
 async def test_the_fingerprint_merge_carries_the_lock_forward(health: ScrapeTargetHealthCollection) -> None:
     """The read-modify-write path fences on the row it read.
 
