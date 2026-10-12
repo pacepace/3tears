@@ -6,6 +6,60 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Agent tools: one primitive for a pod's operation coordinated across replicas
+
+- **Added, `threetears.agent.tools.coalesced_operation.CoalescedOperation(name, lease, key, unit, *,
+  ttl, renew_every, lease_retry_seconds=None, render_result=None, ran_nothing=None)`:** what the
+  geography and ENR reports pods each wrote by hand around a coalesced load. It owns the
+  `CoalescedRun` on the lease (one unit at a time across replicas; a request during a unit is run
+  once after it), the `BackgroundOperation` over it (`.operation`, which a pod registers
+  `RequestOperationTool` and `OperationStatusTool` on) with its shared outcome record, the first
+  run (`start_when_needed`, which also resumes a request still recorded when the pod starts), the
+  look-again after a run that found the lease held (it survives a bucket that cannot be asked, and
+  starts nothing while a live holder holds the lease or once the holder took the request), the
+  progress of the unit in progress (`report_progress`), and `stop(within=)`, which answers whether
+  everything ended. A run answers `Drained(results=...)`: each unit's own result, in order;
+  `rendered_drain` renders it when the pod gives no `render_result`.
+- **One behaviour for a run that ran nothing.** A run on a replica that cannot hold the lease, or
+  started for a request the run before it already took, runs no unit: it is `Drained()`, it is not
+  written to the shared record, and it does not replace the replica's last run that did run a unit.
+  Neither pod's branch for it is needed (geography's repeat of the previous result and its
+  `NothingLeftToLoadError`; the reports pod's kept last result).
+- **Added, `SharedProgress(lease, key)` and `BackgroundOperation(..., shared_progress=)`**
+  (`RunningElsewhere` is what it answers): the lease holder writes what its run is doing to
+  `<key>.progress` beside the lease, and `status_across_replicas` on a replica that is not running
+  reports `state: running`, `running: true` and `elsewhere: {replica, progress}` while another
+  replica holds the lease; `OperationStatusTool` says `running on another replica (<pod_id>): <summary>`.
+  **What makes an entry count is the lease, never the entry's age:** a reader asks who holds the
+  lease, and the entry is that holder's progress only when it names that holder (an entry naming no
+  writer, as code before this wrote, is taken for the holder's). A holder that died is shown as
+  running for as long as its lease still names it (the lease's own expiry) and not after; nothing
+  here reads a clock or expires an entry. The holder removes its entry when its unit ends. It is
+  read when the status is asked (one read of the lease, and one of the entry while it is held), not
+  followed in the background.
+- **Changed, `BackgroundOperation` with `shared=`:** a run that did nothing (`SharedOutcome(ran=)`)
+  no longer replaces `last` when the replica has a last run that did something, so that run stays
+  reported, and stays the one written to a record that lacks it.
+- **Changed, `OperationStatusTool(progress=)`** may be a coroutine function, awaited when the tool
+  is called; `answer(operation)`, which cannot await, says the progress is unavailable.
+- **Added, `CoalescedRun.drain_results()`:** `drain`, answering what each run returned, in order,
+  rather than how many there were; `drain()` is its length, as before.
+- **Added, `KVLease.holder(key)`:** who holds a lease now, without contending for it: the holder's
+  `pod_id`, or `None` when the key is free, its entry has expired, or it is not an entry a lease wrote.
+
+### Datasources: the query client can limit its asks at once
+
+- **Added, `DatasourceQueryClient(..., max_concurrent_asks=None)`:** how many asks the client has
+  out at once; the rest wait their turn. The hub runs at most a datasource's cap at once and refuses
+  the rest `DATASOURCE_BUSY`, so a caller that reads side by side (a bulk read's pages, several
+  tables at once, through `read_all`, `read_parts`, `read_partitions` or its own calls) sets this to
+  that cap and stays under it as a whole. The turn is taken in the one method every operation
+  reaches the bus through, so `query`, `relation_fingerprint`, `relation_fingerprint_groups`,
+  `export` and `delete_export` all take it, and it is held while a busy hub is asked again. A test
+  lists every public coroutine of the client and fails when one is added that is not shown to take
+  its turn. `None` (the default) sends every ask as it is made, as before; a limit below one raises
+  `ValueError`. The ENR reports pod's own wrapper class did this until now.
+
 ### Agent tools: a run that did nothing is not the newest run, and a lost record is written again
 
 - **Added, `SharedOutcome(..., ran=)`:** whether a succeeded run's result is of a run that did the
