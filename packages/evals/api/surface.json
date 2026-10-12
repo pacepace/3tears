@@ -4227,7 +4227,7 @@
     },
     "threetears.evals.analysis.RoleSpend": {
       "kind": "model",
-      "signature": "RoleSpend(role: UsageRole, calls: int, cost_usd: float | None, unpriced_calls: int = 0, counted: bool = True, units: list[ProviderUnits] = [])"
+      "signature": "RoleSpend(role: UsageRole, calls: int, cost_usd: float | None, unpriced_calls: int = 0, uncounted_rows: int = 0, counted: bool = True, units: list[ProviderUnits] = [])"
     },
     "threetears.evals.analysis.RowColumns": {
       "kind": "type alias",

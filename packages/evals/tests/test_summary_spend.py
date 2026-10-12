@@ -106,6 +106,25 @@ def test_an_unpriced_role_makes_the_total_unknown_and_states_what_was_priced() -
     assert "total spend: unknown in full: $0.00100 over the priced calls, plus 1 call(s) unpriced" in text
 
 
+def test_a_row_that_reported_no_call_count_is_never_read_as_zero_calls() -> None:
+    usage = [RoleUsage(role="candidate", model="m-cand", cost_usd=0.002, price_source="provider")]
+    summary = _summary([_result(usage, case=f"tc-{i}") for i in range(3)])
+    (candidate,) = [spend for spend in summary.spend if spend.role == "candidate"]
+    assert (candidate.calls, candidate.uncounted_rows) == (0, 3)
+    text = summary.render()
+    assert "candidate spend: $0.00600 over 3 usage row(s) that reported no call count" in text
+    assert "over 0 call(s)" not in text
+
+
+def test_counted_and_uncounted_rows_are_stated_side_by_side() -> None:
+    counted = [RoleUsage(role="candidate", model="m-cand", cost_usd=0.002, call_count=2, price_source="provider")]
+    uncounted = [RoleUsage(role="candidate", model="m-cand", cost_usd=0.002, price_source="provider")]
+    summary = _summary([_result(counted, case="tc-0"), _result(uncounted, case="tc-1")])
+    assert "candidate spend: $0.00400 over 2 call(s) and 1 usage row(s) that reported no call count" in (
+        summary.render()
+    )
+
+
 def _counted_dollars(summary) -> float:  # type: ignore[no-untyped-def]
     return math.fsum(spend.cost_usd for spend in summary.spend if spend.counted and spend.cost_usd is not None)
 

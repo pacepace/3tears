@@ -550,6 +550,8 @@ class RoleSpend(BaseModel):
     Attributes:
         role: The role (:data:`~threetears.evals.schema.UsageRole`).
         calls: How many calls its rows count.
+        uncounted_rows: How many of its usage rows reported no call count. Their calls are not in ``calls``, and
+            how many there were is unknown, never 0.
         cost_usd: What its priced calls cost, summed as priced when they were made; ``None`` when none was priced.
         unpriced_calls: How many of its calls carry no dollars.
         counted: Whether the run's total (each result's blended cost) sums this role. Every model-metered role is;
@@ -563,6 +565,7 @@ class RoleSpend(BaseModel):
     calls: int
     cost_usd: float | None
     unpriced_calls: int = 0
+    uncounted_rows: int = 0
     counted: bool = True
     units: list[ProviderUnits] = []
 
@@ -575,10 +578,17 @@ class RoleSpend(BaseModel):
             return MODEL_CALL_UNPRICED
         return EXTERNAL_CALL_UNPRICED if self.counted else EXTERNAL_NOT_COUNTED
 
+    def calls_text(self) -> str:
+        """How many calls its rows count, and how many rows counted none: an uncounted row is never read as 0 calls."""
+        if not self.uncounted_rows:
+            return f"{self.calls} call(s)"
+        rows = f"{self.uncounted_rows} usage row(s) that reported no call count"
+        return f"{self.calls} call(s) and {rows}" if self.calls else rows
+
     def money_text(self) -> str:
         """Its dollars over its calls: the priced calls' cost (or :data:`UNPRICED`), and how many are unpriced and why."""
         money = UNPRICED if self.cost_usd is None else dollars_text(self.cost_usd)
-        text = f"{money} over {self.calls} call(s)"
+        text = f"{money} over {self.calls_text()}"
         if (because := self.unpriced_because) is None:
             return text
         if self.cost_usd is None:
@@ -793,7 +803,7 @@ class EvalSummary(BaseModel):
         so they print only when they do.
         """
         judge = self.role_spend("judge")
-        return bool(self.judged) or (judge is not None and judge.calls > 0)
+        return bool(self.judged) or (judge is not None and (judge.calls > 0 or judge.uncounted_rows > 0))
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description="The run's first line: its id, how it ended, the candidate (or arm), its cases and repeats."
@@ -1337,6 +1347,7 @@ def _role_spend(results: list[EvalResult]) -> list[RoleSpend]:
                 calls=sum(row.call_count or 0 for row in rows),
                 cost_usd=math.fsum(priced) if priced else None,
                 unpriced_calls=sum(row.call_count or 0 for row in rows if row.cost_usd is None),
+                uncounted_rows=sum(1 for row in rows if row.call_count is None),
                 counted=all(role in result.cost_roles for result in carrying),
                 units=[
                     ProviderUnits(provider=provider, unit=unit, units=units)
