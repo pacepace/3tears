@@ -27,6 +27,7 @@ from threetears.agent.memory.retrieval import (
     MemoryRetriever,
     RetrievalResult,
 )
+from threetears.agent.memory.embedding_utils import EmbeddingUnavailableError
 from threetears.agent.memory.integration import retrieve_memories
 from threetears.agent.memory.types import MemoryConfig
 from threetears.core.collections.registry import CollectionRegistry
@@ -604,6 +605,24 @@ class TestFormatMemoryContext:
         assert "written" not in result
         assert "] undated" in result
 
+    async def test_a_memory_whose_stored_date_is_unreadable_says_so_rather_than_reading_as_current(
+        self, render: Render
+    ) -> None:
+        """An unreadable date used to render as no date at all, the shape that reads as current."""
+        memories = [
+            {
+                "memory_id": uuid.uuid7(),
+                "content": "garbled",
+                "summary": None,
+                "hybrid_score": 0.5,
+                "date_created": "last tuesday",
+            }
+        ]
+
+        result = await render(memories, user_timezone="UTC")
+
+        assert "(written at an unknown time: its stored date is unreadable) garbled" in result
+
     async def test_the_header_does_not_claim_every_memory_is_about_the_user(self, render: Render) -> None:
         """Memories are extracted from conversations, so many are about the agent.
 
@@ -1116,7 +1135,7 @@ class TestMemoryRetrieverE2E:
         )
         assert result is None
 
-    async def test_embedding_failure_returns_none(
+    async def test_an_embedding_failure_is_refused_not_read_as_nothing_relevant(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
@@ -1170,13 +1189,13 @@ class TestMemoryRetrieverE2E:
             memory_chunk_collection=chunks,
         )
 
-        result = await retriever.retrieve(
-            uuid.uuid7(),
-            "hello world",
-            agent_id=uuid.uuid7(),
-            customer_id=uuid.uuid7(),
-        )
-        assert result is None
+        with pytest.raises(EmbeddingUnavailableError, match="embedding service down"):
+            await retriever.retrieve(
+                uuid.uuid7(),
+                "hello world",
+                agent_id=uuid.uuid7(),
+                customer_id=uuid.uuid7(),
+            )
 
     async def test_no_results_returns_none(
         self,
