@@ -162,6 +162,8 @@ async def reapply_on_lost_race(
         try:
             landed = (await attempt(),)
         except ConcurrentModificationError as refusal:
+            # NOSILENT(attempt): a lost race re-reads and re-applies; the last refusal is raised once every
+            # attempt has lost
             last_refusal = refusal
             log.info(
                 f"{what} lost a compare-and-swap race (attempt {attempt_number}/{max_attempts}); re-reading the row"

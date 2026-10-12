@@ -1295,6 +1295,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         try:
             return await source.current(self.table_name)
         except GenerationUnavailableError as exc:
+            # NOSILENT(logged): None is the documented "no absence may be trusted", so the caller asks L3 --
+            # the safe answer, never a wrong one; warned once per interval while the source is down.
             # every lookup lands here while the source is down; one warning per interval says so.
             # absence of a previous warning means never warned, not a warning at time zero.
             now = time.monotonic()
@@ -1819,9 +1821,17 @@ class BaseCollection(ABC, Generic[EntityT]):
         """write entity payload to the L2 NATS KV bucket.
 
         narrow exception scope: only :class:`KvError` degrades to
-        ``False``. programming errors propagate. bucket resolution
-        (:meth:`_ensure_kv`) is covered by this same catch -- see
-        :meth:`_get_from_l2`'s docstring for why.
+        ``False``, which means exactly "not written". programming errors
+        propagate. bucket resolution (:meth:`_ensure_kv`) is covered by
+        this same catch -- see :meth:`_get_from_l2`'s docstring for why.
+
+        **A caller with no L3 must read the answer.** behind an L3 a
+        missed write is a cache miss, pulled through again; for an
+        L1+L2-only collection L2 IS the store, and ``False`` means the
+        row was not saved.
+
+        :return: whether L2 now holds the row
+        :rtype: bool
         """
         try:
             kv = await self._ensure_kv()
@@ -1838,6 +1848,8 @@ class BaseCollection(ABC, Generic[EntityT]):
             else:
                 await kv.put(key=key, value=value, ttl=lifetime)
         except KvError as exc:
+            # NOSILENT(logged): False is the documented "not written", which is true; behind an L3 the next
+            # read pulls the row through, and the warning names the key and the error
             log.warning(
                 "L2 cache write failed",
                 extra={
@@ -1882,9 +1894,10 @@ class BaseCollection(ABC, Generic[EntityT]):
         """delete entity payload from the L2 NATS KV bucket.
 
         narrow exception scope: only :class:`KvError` degrades to
-        ``False``. programming errors propagate. bucket resolution
-        (:meth:`_ensure_kv`) is covered by this same catch -- see
-        :meth:`_get_from_l2`'s docstring for why.
+        ``False``, which means "not deleted" -- read it, as for
+        :meth:`_save_to_l2`, wherever L2 is the store. programming errors
+        propagate. bucket resolution (:meth:`_ensure_kv`) is covered by
+        this same catch -- see :meth:`_get_from_l2`'s docstring for why.
         """
         try:
             kv = await self._ensure_kv()
@@ -1892,6 +1905,8 @@ class BaseCollection(ABC, Generic[EntityT]):
                 return False
             return await kv.delete(key=self.l2_key(entity_id))
         except KvError as exc:
+            # NOSILENT(logged): False is "not deleted", which is true; behind an L3 a stale key is replaced on
+            # the next write or pull-through, and the warning names the key and the error
             log.warning(
                 "L2 cache delete failed",
                 extra={
@@ -1903,6 +1918,40 @@ class BaseCollection(ABC, Generic[EntityT]):
                 },
             )
             return False
+
+    async def _store_in_l2(self, entity_id: Any, data: dict[str, Any]) -> None:
+        """write ``data`` to L2 where L2 IS the store: a write that did not land raises.
+
+        an L1+L2-only collection (no L3) has nowhere to pull a missed write back from, so
+        :meth:`_save_to_l2`'s ``False`` is a lost row, not a cache miss -- and a ``save`` that
+        returned normally would report it saved. a collection with no NATS client at all keeps
+        its rows in L1 alone, as before, and does not raise.
+
+        :param entity_id: the row's primary key
+        :ptype entity_id: Any
+        :param data: the row
+        :ptype data: dict[str, Any]
+        :return: nothing, once L2 holds the row
+        :rtype: None
+        :raises KvError: L2 is configured and the write did not land
+        """
+        if not await self._save_to_l2(entity_id, data) and await self._ensure_kv() is not None:
+            raise KvError(f"{self.table_name}: row {entity_id} was not written to L2, which is its only store")
+
+    async def _remove_from_l2(self, entity_id: Any) -> None:
+        """delete ``entity_id`` from L2 where L2 IS the store: a delete that did not land raises.
+
+        the delete-side twin of :meth:`_store_in_l2`: without an L3, a key :meth:`_delete_from_l2`
+        failed to remove is a row that comes back on the next read.
+
+        :param entity_id: the row's primary key
+        :ptype entity_id: Any
+        :return: nothing, once L2 no longer holds the row
+        :rtype: None
+        :raises KvError: L2 is configured and the delete did not land
+        """
+        if not await self._delete_from_l2(entity_id) and await self._ensure_kv() is not None:
+            raise KvError(f"{self.table_name}: row {entity_id} was not deleted from L2, which is its only store")
 
     async def delete_l2_entry(self, entity_id: Any) -> bool:
         """evict this pod's OWN scoped L2 entry for one pk, when one exists.
@@ -1959,6 +2008,8 @@ class BaseCollection(ABC, Generic[EntityT]):
                 return False
             return await kv.delete(key=key)
         except KvError as exc:
+            # NOSILENT(logged): False ("no entry was evicted") is true; the only caller is the invalidation
+            # listener, which has no caller of its own, and the warning names the key left stale
             log.warning(
                 "L2 cache eviction failed",
                 extra={
@@ -2331,6 +2382,8 @@ class BaseCollection(ABC, Generic[EntityT]):
             # one's, and CancelledError is not an Exception. Only an Exception is swallowed: this
             # path is fire-and-forget, so there is no caller to hand it to.
             except BaseException as exc:
+                # NOSILENT(logged): fire-and-forget, so there is no caller to tell; the row is withdrawn from
+                # every tier so readers go to L3, the ERROR line names it, and a non-Exception re-raises
                 log.error(
                     "Background L3 write failed; withdrawing it from L1 and L2",
                     extra={
@@ -3244,6 +3297,8 @@ class BaseCollection(ABC, Generic[EntityT]):
                     # compare-and-swaps the marker away rather than creating over it.
                     row = None if isinstance(decoded, _AbsentMarker) else decoded
                 except CorruptCacheEntry as exc:
+                    # NOSILENT(logged): a corrupt entry holds no value anyone can read, so "no prior row" is
+                    # the truest reading, and replacing it is the only way the key ever answers again.
                     # Treated as no prior row, but the REVISION is kept deliberately. The write
                     # below then takes the `update` branch and compare-and-swaps the corrupt
                     # entry away at the revision that held it, which self-heals the key.
