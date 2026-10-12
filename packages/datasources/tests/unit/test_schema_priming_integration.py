@@ -17,6 +17,8 @@ import asyncio
 from typing import Any
 from uuid import uuid7
 
+import pytest
+
 from threetears.datasources.schema_priming import SchemaPrimingIntegration
 
 
@@ -85,7 +87,7 @@ class TestDatasourceIds:
         assert asyncio.run(integration.datasource_ids()) == [ds_id]
         assert pool.calls == 2
 
-    def test_transient_fault_soft_fails_and_retries(self) -> None:
+    def test_a_transient_fault_is_raised_not_answered_as_no_datasource_and_the_next_call_retries(self) -> None:
         ds_id = uuid7()
         pool = _StubPool([RuntimeError("proxy not ready"), [_row(ds_id)]])
         integration = SchemaPrimingIntegration(
@@ -93,8 +95,10 @@ class TestDatasourceIds:
             customer_id=uuid7(),
             datasource_names=["sales"],
         )
-        # the fault soft-fails to [] WITHOUT memoizing; the next turn retries.
-        assert asyncio.run(integration.datasource_ids()) == []
+        # [] would read as "this agent has no datasource"; the fault is raised instead, and
+        # nothing is memoized, so the next turn retries.
+        with pytest.raises(RuntimeError, match="proxy not ready"):
+            asyncio.run(integration.datasource_ids())
         assert asyncio.run(integration.datasource_ids()) == [ds_id]
         assert pool.calls == 2
 
