@@ -1289,7 +1289,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`build_code_only_report`** · function · Lay a campaign's assembled evidence out as a report, when no analysis exists to report through.
   <br>`build_code_only_report(bundle: AnalysisContextBundle, *, measures: MeasureRegistry, assembled_at: str, campaign_name: str | None = None) -> Report`
 - **`build_report`** · function · Lay one stored analysis out as a report.
-  <br>`build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None) -> Report`
+  <br>`build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None, model_identity: str | None = None) -> Report`
 - **`campaign_report`** · function · The campaign's report — THE answer to "what is this campaign's report", for every caller.
   <br>`campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report`
 - **`campaign_verdicts`** · function · Every verdict code reaches on the campaign's evidence as it stands now, typed — what a CI gate reads.
@@ -1620,6 +1620,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`TemperatureSide`** · model · One dimension at one setting: how much its cases' scores moved across repeats, and the judge's self-agreement.
 - **`TextBlock`** · model · What the analysis's author wrote, exactly as written, with the facts code states beside it.
 - **`TokenRollup`** · model · Summed token usage across results — visible cost of generation (§Visible Costs).
+- **`UnconfirmedModelIdentity`** · model · One role whose calls the record cannot tie to the model that answered them (#2025).
 - **`UnpairedRating`** · model · A rating with no judge score to set it against, and why.
 - **`UnpairedSecondScore`** · model · A second judge's score with no pair to read, and why.
 - **`UnreadJudgeTrial`** · model · A result the readout left out, and why.
@@ -1661,6 +1662,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`'regressed'` | `'not-separated'` | `'untested'` | `'breached'` | `'undecided-guardrail'` | `'missed'` | `'undecided-bar'`
 - **`GuardrailOutcome`** · literal · What a guardrail came to for one arm against the control (`GuardrailCheck.decision`).
   <br>`'held'` | `'breached'` | `'undecided'`
+- **`IdentityRole`** · literal · The roles whose model identity a run's record is read for: the model under test and the model grading it.
+  <br>`'candidate'` | `'judge'`
 - **`LabelDirection`** · literal · Where a person reading a memo places it on a rubric dimension, low to high.
   <br>`'low'` | `'low_mid'` | `'mid'` | `'mid_high'` | `'high'`
 - **`MeasureState`** · literal · How one measure came out over a run, as the summary states it: `measured` (a mean), `not_a_number` (it is carried, as words, and never averaged), `in_confusion_matrix` (a classifier's cells, counted in the matrix), `no_successful_results` (every result carrying it took no turn), `all_excluded` (every result carrying it was excluded as a fault of the rig) or `not_carried` (no result carries it).
@@ -2564,7 +2567,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schema_version` | `int` | `48` | Bundle-shape version, for future evolution + fingerprint clarity. |
+| `schema_version` | `int` | `49` | Bundle-shape version, for future evolution + fingerprint clarity. |
 | `campaign_id` | `str` | required | The campaign this bundle summarises. |
 | `subject_id` | `str` | required | The analysed subject's stable id. |
 | `subject_kind` | `str` | `''` | Discriminator; data, never a code branch. |
@@ -2615,6 +2618,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `verdict_order` | `VerdictOrder` | `VerdictOrder(merit_priority=[], tiers=[], unranked_bar_measure_ids=[], questions=[])` | The order verdicts are read in, as declared: the bars on each axis of `merit_priority`, strongest first, the bars on no ranked axis, and for each live question the bars on the axes it names. |
 | `measurement_windows` | `list[MeasurementWindow]` | `[]` | Each resolved member run's wall-clock measurement span, derived from that run's own scored_at stamps. |
 | `launch_disclosure` | `str \| None` | `None` | Set when the member runs were NOT all started by one campaign launch — some came from different launches, or were started on their own. |
+| `model_identity_disclosure` | `str \| None` | `None` | Set when some of the member runs' candidate calls or judge scores came back from a response that named no model, so the record holds only the model id each asked for — and a provider may answer an id with a model of its choosing (a floating alias). |
 | `measurement_window_disclosure` | `str \| None` | `None` | Set when AT LEAST ONE PAIR of member runs was measured over spans of wall-clock time that do not overlap — so anything that moved between those spans (a model revision, a provider's load, a rate limit) moved with the runs, and a difference between the two runs of such a pair is not attributable to the runs alone. |
 | `apparatus_confounds` | `list[Confound]` | `[]` | Apparatus dimensions that varied across the WHOLE campaign, scanned independently of any lever. |
 | `aliased_factors` | `list[AliasedFactors]` | `[]` | Factors that moved in lockstep across the campaign: each group's factors split the runs identically, so no comparison separates them. |

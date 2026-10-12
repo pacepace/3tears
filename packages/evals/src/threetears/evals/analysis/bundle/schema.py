@@ -1880,7 +1880,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # A/B set spanning a bump must be read as spanning it. Why each earlier version moved is in
     # this file's history.
     schema_version: int = Field(
-        default=48, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=49, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -2273,6 +2273,17 @@ class AnalysisContextBundle(EvalDocumentModel):
             "overlap only by the scheduler's chance, and a difference between them can be when they ran "
             "as well as what they ran. None when every run shares one launch group, or there are fewer "
             "than two runs."
+        ),
+    )
+    model_identity_disclosure: str | None = Field(
+        default=None,
+        description=(
+            "Set when some of the member runs' candidate calls or judge scores came back from a response that "
+            "named no model, so the record holds only the model id each asked for — and a provider may answer an "
+            "id with a model of its choosing (a floating alias). Says once, for the campaign, how many results "
+            "and scores that covers, per role. Never name a requested id as the model that ran where this is "
+            "set: `model_versions` and every arm's model are what was asked for, and `arm_served_models` says "
+            "per arm what the responses named. None when every response named its model."
         ),
     )
     measurement_window_disclosure: str | None = Field(

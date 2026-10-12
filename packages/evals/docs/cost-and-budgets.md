@@ -292,6 +292,9 @@ plain function returns. Return `Answer(value, model=..., input_tokens=..., outpu
 and the call becomes the cell's `candidate` usage row: `value` is graded as a plain return would be, the
 result's `cost_usd` is derived from the row, the summary prints `candidate spend: $... over N call(s)`, and
 `compare` tests the arms' spend against the control. A field left `None` is unreported, not zero.
+Pass `served_model=` too, the model the provider's response named: without it the run records only the model
+asked for, and its summary says which model answered is unconfirmed
+([Reading reports](reading-reports.md#which-model-answered)).
 `examples/compare_two_models.py` prices each call this way.
 
 **Every surface that states what an arm costs reads `production_replicating_cost`**, the spend of the roles

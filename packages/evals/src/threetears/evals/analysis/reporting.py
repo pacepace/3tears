@@ -396,6 +396,163 @@ def _reading_of_coordinate(coordinate: str | None, requested: str) -> ResultServ
     )
 
 
+#: The roles whose model identity a run's record is read for: the model under test and the model grading it.
+IdentityRole = Literal["candidate", "judge"]
+
+
+class UnconfirmedModelIdentity(EvalBaseModel):
+    """One role whose calls the record cannot tie to the model that answered them (#2025).
+
+    A run records the model id each call ASKED for, and a provider may answer an id with a model of its choosing
+    (a floating alias resolves on its side). Only the response names the model that answered —
+    ``RoleUsage.served_model`` for the candidate's calls, ``RubricScore.served_model`` for each judge score — and
+    where the completion client reported none, the requested id is all the record holds. This says so rather than
+    let the requested id read as the model that ran. Derived on every read, never stored, and blind to which ids
+    float: which names a provider resolves is its vocabulary, so every answer that named no model is disclosed
+    alike. Calls that named a model other than the one requested are not this: their usage rows already keep the
+    two apart.
+    """
+
+    role: IdentityRole = Field(description="Whose calls: the candidate's, or the judge's scores.")
+    requested: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The model ids those unconfirmed calls asked for, sorted. Empty where the record names none: a judge "
+            "score whose run recorded no per-dimension attribution."
+        ),
+    )
+    served_models: list[str] = Field(
+        default_factory=list,
+        description="Every model the role's responses did name, sorted; empty when none named one.",
+    )
+    n_unrecorded: int = Field(
+        ge=1,
+        description=(
+            "Candidate: the results with at least one candidate call whose response named no model. Judge: the "
+            "scores whose response named no model."
+        ),
+    )
+    n_total: int = Field(
+        ge=1,
+        description="Candidate: the results whose candidate made a call. Judge: the stored scores.",
+    )
+
+    @model_validator(mode="after")
+    def _counts_nest(self) -> UnconfirmedModelIdentity:
+        """The unconfirmed count is part of the total, never more.
+
+        Returns:
+            The validated reading.
+
+        Raises:
+            ValueError: ``n_unrecorded`` exceeds ``n_total``.
+        """
+        if self.n_unrecorded > self.n_total:
+            raise ValueError(f"{self.n_unrecorded} unconfirmed of {self.n_total} is more than there are")
+        return self
+
+    def clause(self) -> str:
+        """The role's half of :func:`model_identity_disclosure`.
+
+        Returns:
+            One clause: who asked for what, and how many of its results or scores no response named a model for.
+        """
+        asked = f" (asked for {', '.join(self.requested)})" if self.requested else ""
+        named = f" (the responses that named one named {', '.join(self.served_models)})" if self.served_models else ""
+        if self.role == "candidate":
+            return (
+                f"the candidate{asked} made calls whose response named no model in {self.n_unrecorded} of "
+                f"{self.n_total} result(s){named}"
+            )
+        return (
+            f"the judge{asked} produced {self.n_unrecorded} of {self.n_total} score(s) whose response named no "
+            f"model{named}"
+        )
+
+
+def unconfirmed_model_identities(
+    runs: Iterable[EvalRun], results: Iterable[EvalResult]
+) -> list[UnconfirmedModelIdentity]:
+    """Each role whose calls some response named no model for, over the results given (#2025).
+
+    The candidate is read off its usage rows (:func:`served_reading`, the rule every served-model reading uses), so a
+    result whose candidate made no call says nothing. The judge is read off every stored score
+    (:func:`~threetears.evals.kernel.host.sweepables.served_models_by_score`), and what a score asked for off its
+    run's recorded attribution (:func:`dim_judge_model`), never the run's pin, which a per-dimension config overrides.
+
+    Args:
+        runs: The runs the results belong to; a result whose run is absent names no requested judge.
+        results: The results.
+
+    Returns:
+        The candidate's reading then the judge's, each only where some call or score is unconfirmed; empty when
+        every response named its model, or nothing was called.
+    """
+    by_id = {run.id: run for run in runs}
+    readings: list[UnconfirmedModelIdentity] = []
+    candidate: list[ResultServedReading] = []
+    judge_served: set[str] = set()
+    judge_requested: set[str] = set()
+    n_scores = n_unnamed = 0
+    for result in results:
+        if (reading := served_reading(result)) is not None:
+            candidate.append(reading)
+        run = by_id.get(result.eval_run_id)
+        axes = (score for score in (result.transcript_score, result.outcome_score) if score is not None)
+        for score in (*result.rubric_scores, *axes):
+            n_scores += 1
+            if score.served_model:
+                judge_served.add(score.served_model)
+                continue
+            n_unnamed += 1
+            if run is not None and (asked := dim_judge_model(run, score.dim)) is not None:
+                judge_requested.add(asked)
+    unconfirmed = [reading for reading in candidate if reading.unrecorded]
+    if unconfirmed:
+        readings.append(
+            UnconfirmedModelIdentity(
+                role="candidate",
+                requested=sorted({reading.requested for reading in unconfirmed}),
+                served_models=sorted(frozenset[str]().union(*(reading.served for reading in candidate))),
+                n_unrecorded=len(unconfirmed),
+                n_total=len(candidate),
+            )
+        )
+    if n_unnamed:
+        readings.append(
+            UnconfirmedModelIdentity(
+                role="judge",
+                requested=sorted(judge_requested),
+                served_models=sorted(judge_served),
+                n_unrecorded=n_unnamed,
+                n_total=n_scores,
+            )
+        )
+    return readings
+
+
+def model_identity_disclosure(identities: Sequence[UnconfirmedModelIdentity]) -> str | None:
+    """The one sentence every surface shows when a run's record cannot say which model answered (#2025).
+
+    Rendered verbatim by the run summary (``run_get``), :func:`~threetears.evals.analysis.reads.run_summary`, the
+    analysis bundle and the campaign report, so no surface words it its own way.
+
+    Args:
+        identities: The unconfirmed roles, from :func:`unconfirmed_model_identities`.
+
+    Returns:
+        The disclosure, or ``None`` when every call's response named the model that answered it.
+    """
+    if not identities:
+        return None
+    return (
+        f"Model identity unconfirmed: {'; '.join(identity.clause() for identity in identities)}. The record keeps "
+        "the model id asked for, and a provider may answer an id with a model of its choosing (a floating alias), "
+        "so these numbers cannot say which model produced them; a completion client that reports the model its "
+        "provider's response named (served_model) confirms it."
+    )
+
+
 class ScoreRecord(EvalBaseModel):
     """One measurement at one fully-specified cell.
 
@@ -1444,6 +1601,7 @@ def pooled_cost_compositions(results: Sequence[EvalResult] | Sequence[ScoreRecor
 __all__ = [
     "dim_judge_model",
     "FrontierDominance",
+    "IdentityRole",
     "lever_level",
     "METRIC_COMPOSITE",
     "METRIC_COST_USD",
@@ -1452,6 +1610,7 @@ __all__ = [
     "METRIC_SCORE",
     "METRIC_TOTAL_MS",
     "METRIC_TRANSCRIPT",
+    "model_identity_disclosure",
     "NULL_LEVEL",
     "place_results",
     "PlacedResult",
@@ -1465,4 +1624,6 @@ __all__ = [
     "SCOPED_METRICS_HELP",
     "ScoreProjection",
     "ScoreRecord",
+    "unconfirmed_model_identities",
+    "UnconfirmedModelIdentity",
 ]

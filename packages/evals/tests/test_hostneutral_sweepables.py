@@ -185,6 +185,9 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # test read (#595), and an `unverified_fold` confound's sentence names a host residual reader as the second way
     # to test it (#605); the apparatus partition is unchanged.
     ((48, 11), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
+    # 49/11: the bundle says once, in `model_identity_disclosure`, when some candidate call or judge score came back
+    # from a response that named no model (Discodon #2025); the apparatus partition is unchanged.
+    ((49, 11), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
 )
 
 

@@ -78,7 +78,14 @@ pass it to every entrypoint. It holds:
   "unreported" in silence. Check your completion type in your own suite with
   `threetears.evals.testing.check_completion_conformance(an_instance)`, which fails naming the attribute.
   `served_model` must be the model the provider's RESPONSE named, never the request: it is how a candidate
-  launched on a floating alias records which model answered it. `temperature` must be what the request
+  launched on a floating alias records which model answered it. Read it off the provider's response (the
+  `model` its reply body names), and report `None` when the response names none rather than copying the
+  request in, which would make two different models compare equal. A `None` is never refused: the judge's
+  scores and the usage rows keep the id requested, and the run's summary (`run_get`), `run_summary`, the
+  analysis bundle and the campaign report each say once that which model answered is unconfirmed, counting
+  the results and scores it covers ([Reading reports](reading-reports.md#which-model-answered)). Your
+  candidate kind's own usage rows (`CandidateTelemetry.usage`, below) carry it the same way: fold each
+  completion with `RoleUsageLedger.add_llm_result`, which reads it. `temperature` must be what the request
   carried: the judge asks for 0 unless a config says otherwise, and a client whose model refuses a temperature
   sends none and reports `None`, which the score records as `model_default`;
 - your `failure_describer` — how a raised provider call reads. It is the only thing that can say a call
