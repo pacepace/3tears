@@ -5,11 +5,11 @@ keys each arm by its level of each thing varied (``(model, "v2")``), and ``Compa
 tested against one control, (older model, v1), so the prompt's effect on the newer model is read against a
 second control over the same runs, with nothing run again. Levers and arms: ``docs/concepts.md``.
 
-Run it with ``python packages/evals/examples/prompt_x_model.py``. With ``ANTHROPIC_API_KEY`` set it calls
-Claude 112 times (14 tickets x 2 repeats x 4 arms) for about two US cents. Without it, keyword stand-ins for an
-older and a newer model play each combination and say nothing about Claude. The stand-ins are built to differ.
-Live, current models may get every ticket right, and then "not separated" is the right answer: these tickets
-cannot tell the arms apart, and harder ones are needed.
+Run it with ``python prompt_x_model.py`` (``README.md`` beside it says how). With ``ANTHROPIC_API_KEY`` set it
+calls Claude 112 times (14 tickets x 2 repeats x 4 arms) for about two US cents. Without it, keyword stand-ins for
+an older and a newer model play each combination and say nothing about Claude. The stand-ins are built to differ.
+Live, current models may get every ticket right, and then "not separated" is the right answer: these tickets cannot
+tell the arms apart, and harder ones are needed.
 """
 
 import asyncio

@@ -6,14 +6,15 @@ checks, code over the end state and the calls made, grade it with no judge. New 
 and ``goal_checks=``; unlike ``cassettes.py``'s ``tools=``, the tools act on the cell's world. The engine's
 words for this: ``docs/concepts.md`` (World, Goal-state check).
 
-Run it with ``python packages/evals/examples/world.py``. With ``ANTHROPIC_API_KEY`` set, Claude runs a real
-tool-use loop (about 16 short calls, well under a cent); without it, a rule-based stand-in runs, with one
+Run it with ``python world.py`` (``README.md`` beside it says how). With ``ANTHROPIC_API_KEY`` set, Claude runs a
+real tool-use loop (about 16 short calls, well under a cent); without it, a rule-based stand-in runs, with one
 deliberate mistake so that a check fails, and its numbers say nothing about Claude.
 """
 
 import asyncio
 import os
 
+from _live import anthropic_sdk
 from threetears.evals.quick import Dimension, World, WorldTool, WorldTools, callable_host, run_eval
 from threetears.evals.analysis import EvalSummary
 from threetears.evals.run import get_result_trace, list_results, run_blocking
@@ -76,8 +77,7 @@ SYSTEM = "You control the lights in the user's room. Keep the light on when it i
 
 async def claude_assistant(case: dict, room: WorldTools) -> str:
     """Claude, with the room's sensor readings and the switch_light tool, until it stops calling tools."""
-    import anthropic  # imported here so the offline path does not need the package
-
+    anthropic = anthropic_sdk()  # main() has already checked it is installed
     tools = [{"name": t.name, "description": t.description, "input_schema": t.input_schema} for t in room.declared]
     messages: list = [{"role": "user", "content": f"Sensors: {await room.view()}\n\n{case['ask']}"}]
     async with anthropic.AsyncAnthropic() as client:  # reads ANTHROPIC_API_KEY
@@ -117,6 +117,7 @@ async def offline_assistant(case: dict, room: WorldTools) -> str:
 async def main() -> EvalSummary:
     online = bool(os.environ.get("ANTHROPIC_API_KEY"))
     if online:
+        anthropic_sdk()  # without it every cell would fail as the candidate's error; say so before any cell runs
         print(f"Running against Claude ({MODEL}).\n")
     else:
         print("ANTHROPIC_API_KEY is not set: running OFFLINE, with a rule-based stand-in for the model.\n")

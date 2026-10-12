@@ -84,7 +84,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 
 - **`ActorPolicy`** · model · One simulated actor in a template's conversation.
 - **`AsyncDelivery`** · model · One piece of background work the candidate started: acknowledged at once, delivered later.
-- **`AsyncDocumentStore`** · protocol · `DocumentStore`, every method a coroutine: the port for a host whose database driver is async.
+- **`AsyncDocumentStore`** · protocol · `DocumentStore`, every method awaited: the port for a host whose database driver is async.
 - **`AsyncExternalSpend`** · model · Paid non-LLM calls one piece of background work made at one provider, as the work reports them.
 - **`AsyncStoreClock`** · protocol · `StoreClock` for an `AsyncDocumentStore`: the store's own time, awaited.
 - **`BoundCompletionClient`** · protocol · A completion client built for one model, which it names.

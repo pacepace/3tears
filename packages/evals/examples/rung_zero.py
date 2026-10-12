@@ -1,9 +1,9 @@
 """Does my function give the right answer on my cases?
 
-The first rung: cases, an async function, and what a right answer is. New here: ``run_eval``, and code grading
-each answer two ways: ``expected=`` grades a classifier (accuracy, confusion matrix, each label's precision and
-recall), and a scorer checks one thing. Then ``summary.misses()``: every miss, and why. Most answers have no
-exact right label; ``llm_judge.py`` grades those with a model. Run ``python packages/evals/examples/rung_zero.py``.
+The first rung: cases, an async function, and what a right answer is. New here: ``run_eval``, and code grading each
+answer two ways: ``expected=`` grades a classifier (accuracy, confusion matrix, each label's precision and recall),
+and a scorer checks one thing. Then ``summary.misses()``: every miss, and why. Most answers have no exact right
+label; ``llm_judge.py`` grades those with a model. Run ``python rung_zero.py`` (``README.md`` beside it says how).
 It calls no model, so it is free.
 """
 

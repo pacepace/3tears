@@ -54,8 +54,9 @@ Live runs use the cheapest Haiku models over 5 to 14 cases, so each costs cents.
 docstring gives its call count and rough live cost. `reports.py` and `llm_analysis.py` write their files under
 the directory you run from (`./eval-report/` and `./eval-analysis/`).
 
-Every example ends by reading what it measured, not only the rate: `summary.misses()` (each miss and why), or,
-in a comparison, where the arms disagree (`comparison.results(arm)`). Read them before you trust the numbers.
+Every example that grades ends by reading what it measured, not only the rate: `summary.misses()` (each miss and
+why), or, in a comparison, where the arms disagree (`comparison.results(arm)`). Read them before you trust the
+numbers. `cassettes.py`, `reports.py` and `llm_analysis.py` grade nothing new: they show what to do with a run.
 
 ## The ladder
 

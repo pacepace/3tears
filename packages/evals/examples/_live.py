@@ -33,8 +33,8 @@ def online() -> bool:
     return bool(os.environ.get("ANTHROPIC_API_KEY"))
 
 
-def claude(model: str, *, max_tokens: int = 1024) -> Any:
-    """``model`` behind the engine's ``CompletionClient`` protocol, priced at its list price."""
+def anthropic_sdk() -> Any:
+    """The ``anthropic`` module, or an exit saying how to get it. Called before a live run starts."""
     try:
         import anthropic  # imported here so the offline path does not need the package
     except ModuleNotFoundError as missing:
@@ -42,8 +42,12 @@ def claude(model: str, *, max_tokens: int = 1024) -> Any:
             "ANTHROPIC_API_KEY is set, so this example runs live, which needs the anthropic SDK: pip install anthropic "
             "(a checkout's `uv sync` has it). Unset the key to run offline instead."
         ) from missing
+    return anthropic
 
-    client = anthropic.AsyncAnthropic()  # reads ANTHROPIC_API_KEY
+
+def claude(model: str, *, max_tokens: int = 1024) -> Any:
+    """``model`` behind the engine's ``CompletionClient`` protocol, priced at its list price."""
+    client = anthropic_sdk().AsyncAnthropic()  # reads ANTHROPIC_API_KEY
     effort = {"effort": "low"} if model in TAKES_EFFORT else {}
     input_rate, output_rate = PRICES[model]
 

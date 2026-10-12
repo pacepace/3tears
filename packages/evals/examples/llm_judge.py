@@ -6,9 +6,10 @@ it calls, that client's model, the rubric, and ``case_material``, what it reads 
 here is pass/fail, so a fail is a miss and ``summary.misses()`` carries the judge's reason. Read them: offline,
 the script judge fails an honest "I don't know". How far to trust a judge: ``docs/judges-and-calibration.md``.
 
-Run it with ``python packages/evals/examples/llm_judge.py``. With ``ANTHROPIC_API_KEY`` set, Claude answers and
-judges: 30 short calls (5 questions x 2 repeats, each answered once and judged on 2 dimensions), well under a
-cent. Without it, a keyword matcher answers and a word-overlap script judges; they say nothing about Claude.
+Run it with ``python llm_judge.py`` (``README.md`` beside it says how). With ``ANTHROPIC_API_KEY`` set, Claude
+answers and judges: 30 short calls (5 questions x 2 repeats, each answered once and judged on 2 dimensions), well
+under a cent. Without it, a keyword matcher answers and a word-overlap script judges; they say nothing about
+Claude.
 """
 
 import asyncio
@@ -87,7 +88,10 @@ async def offline_judge(*, system: str, user: str, response_format: dict | None 
         why = "it answers the question" if passed else "it shares no word with the question"
     verdict = "pass" if passed else "fail"
     reply = {"reasoning": f"offline stand-in, word overlap: {why}", "criteria_scores": {dimension: verdict}}
-    return Completion(json.dumps(reply), None, None, None, 0.0, "offline", "offline-judge", None, "end_turn", None)
+    # No provider resolves a stand-in, so the model that answered is the one asked for: say so as served_model.
+    return Completion(
+        json.dumps(reply), None, None, None, 0.0, "offline", "offline-judge", "offline-judge", "end_turn", None
+    )
 
 
 # -----------------------------------------------------------------------------

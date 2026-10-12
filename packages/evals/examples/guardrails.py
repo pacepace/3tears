@@ -14,9 +14,9 @@ worse on, decided apart from everything it gained.
   assumes one. The tighter it is, the more cases it takes to show an arm held: a perfect record over these 50
   cases shows an arm within 0.08 of the control, and no closer; over 40 it would not show 0.1.
 
-Run it with ``python packages/evals/examples/guardrails.py``. With ``ANTHROPIC_API_KEY`` set it calls Claude
-150 times (50 questions x 3 prompts), for under a cent. Without it, scripted stand-ins play the three prompts,
-and their numbers say nothing about any model. How a guardrail is read: ``docs/reading-reports.md``.
+Run it with ``python guardrails.py`` (``README.md`` beside it says how). With ``ANTHROPIC_API_KEY`` set it calls
+Claude 150 times (50 questions x 3 prompts), for under a cent. Without it, scripted stand-ins play the three
+prompts, and their numbers say nothing about any model. How a guardrail is read: ``docs/reading-reports.md``.
 """
 
 import asyncio

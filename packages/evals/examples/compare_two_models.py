@@ -17,9 +17,10 @@ Twelve emails cannot show a margin of 0.05. Two models that agree on every email
 emails (in this package's runs, 80 did not show it and 120 did). So expect "not separated" here, and read the
 interval: it is how much worse the cheaper model could plausibly be. The verdicts: ``docs/reading-reports.md``.
 
-Run it with ``python packages/evals/examples/compare_two_models.py``. With ``ANTHROPIC_API_KEY`` set it calls
-Claude 48 times (12 emails x 2 repeats x 2 models), for well under a cent. Without it, two keyword stand-ins,
-with made-up token counts and prices, play a current model and a cheaper one. Their numbers say nothing about Claude.
+Run it with ``python compare_two_models.py`` (``README.md`` beside it says how). With ``ANTHROPIC_API_KEY`` set it
+calls Claude 48 times (12 emails x 2 repeats x 2 models), for well under a cent. Without it, two keyword stand-ins,
+with made-up token counts and prices, play a current model and a cheaper one. Their numbers say nothing about
+Claude.
 """
 
 import asyncio

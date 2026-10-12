@@ -13,10 +13,10 @@ and every one after it, runs against exactly the same cases. When production get
 history, store it as a case set with ``mint_case_set`` or the ``case_set_mint`` action (``docs/concepts.md``,
 "Case set").
 
-Run it with ``python packages/evals/examples/compare_two_prompts.py``. With ``ANTHROPIC_API_KEY`` set it calls
-Claude 48 times (12 tickets x 2 repeats x 2 prompts) for well under a cent; without it, keyword stand-ins play
-the prompts and say nothing about Claude. The stand-ins are built to differ. Live, a current model may get every
-ticket right under both prompts, and then "not separated" is the right answer: these tickets cannot tell the
+Run it with ``python compare_two_prompts.py`` (``README.md`` beside it says how). With ``ANTHROPIC_API_KEY`` set it
+calls Claude 48 times (12 tickets x 2 repeats x 2 prompts) for well under a cent; without it, keyword stand-ins
+play the prompts and say nothing about Claude. The stand-ins are built to differ. Live, a current model may get
+every ticket right under both prompts, and then "not separated" is the right answer: these tickets cannot tell the
 prompts apart, and harder ones are needed. It never means the prompts are equally good.
 """
 
