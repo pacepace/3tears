@@ -250,7 +250,7 @@ class FsWriteTool(TearsTool):
                         nats_client=self._nats_client,
                         namespace=self._namespace,
                     )
-            # NOSILENT: logged, not swallowed: a failed audit never turns a true write into an error
+            # NOSILENT(logged): a failed audit never turns a true write into an error
             except Exception as audit_exc:
                 log.exception(
                     "fs_write audit publish swallow caught: %s",

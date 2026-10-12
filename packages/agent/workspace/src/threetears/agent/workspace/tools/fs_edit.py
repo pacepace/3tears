@@ -271,7 +271,7 @@ class FsEditTool(TearsTool):
                                         nats_client=self._nats_client,
                                         namespace=self._namespace,
                                     )
-                            # NOSILENT: logged, not swallowed: a failed audit never turns a true edit into an error
+                            # NOSILENT(logged): a failed audit never turns a true edit into an error
                             except Exception as audit_exc:
                                 log.exception(
                                     "fs_edit audit publish swallow caught: %s",

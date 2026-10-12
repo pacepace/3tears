@@ -109,7 +109,7 @@ async def publish_audit(
             subject=subject,
             payload=event.model_dump_json().encode(),
         )
-    # NOSILENT: logged, not swallowed -- the lost event is written at WARN naming its subject and
+    # NOSILENT(logged): the lost event is written at WARN naming its subject and
     # type. this function returns nothing, so no caller can read a lost event as a delivered one,
     # and the producing call path (whose own answer is true) is never blocked by audit health.
     except Exception as exc:
