@@ -31,7 +31,7 @@
 # callers.
 
 [[release]]
-version = "unreleased"
+version = "0.66.0-evaladopt.19"
 since = "v0.66.0-evaladopt.18"
 summary = """
 Every action job names its wall-clock budget; a campaign is created declared or exploratory and is declared,
