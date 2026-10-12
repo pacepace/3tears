@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, model_validator
 
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.host import EvalHost
@@ -52,7 +52,7 @@ from threetears.evals.run.judge_temperature import (
 )
 from threetears.evals.run.lifecycle import get_run
 from threetears.evals.run.ratings import rate_result
-from threetears.evals.run.reads import list_runs
+from threetears.evals.run.reads import list_runs_disclosing
 
 
 class TemplateLine(EvalBaseModel):
@@ -106,6 +106,14 @@ class RunListing(EvalBaseModel):
     runs: list[RunLine]
     include_archived: bool = Field(description="Whether archived runs were listed; they are left out by default.")
     label: str | None = Field(default=None, description="The label the runs were listed by; None lists every run.")
+    unreadable: int = Field(
+        ge=0,
+        description=(
+            "Stored runs the listing matched by status that this build's model cannot read, so they are not "
+            "listed; runs_unreadable names each with why. Their archive flag and labels cannot be read, so the "
+            "archive and label filters do not narrow this count."
+        ),
+    )
 
 
 class UnreadableRunLine(EvalBaseModel):
@@ -395,7 +403,11 @@ def runs_list(
     include_archived: bool = False,
     label: str | None = None,
 ) -> RunListing:
-    """The scope's runs.
+    """The scope's runs, and how many it matched that this build cannot read.
+
+    An inventory, so a run this build's model cannot read is left out and counted rather than refusing the listing
+    (:func:`~threetears.evals.run.list_runs_disclosing`): the operator opening it is looking for a run, and one row
+    nothing can read must not hide every other. ``unreadable`` says how many, and ``runs_unreadable`` names them.
 
     Args:
         host: The host whose store is read.
@@ -409,20 +421,16 @@ def runs_list(
 
     Raises:
         ValidationFailedError: ``status`` is not a run status.
+        UnreadableRunError: A run read, but writing it lost was refused by a model.
     """
     label = None if label is None else label.strip()
-    runs = list_runs(host, scope_id, status=status, include_archived=include_archived, label=label)
-    return RunListing(runs=[_line(run) for run in runs], include_archived=include_archived, label=label)
-
-
-def _refusal_reasons(refused: ValidationError) -> list[str]:
-    """Each distinct thing the model refused in a row, as ``field: what it said``, sorted — never the value itself."""
-    return sorted(
-        {
-            f"{'.'.join(str(part) for part in error['loc']) or '(the run)'}: {error['msg']}"
-            for error in refused.errors(include_url=False)
-        }
-    ) or [str(refused)]
+    read = list_runs_disclosing(host, scope_id, status=status, include_archived=include_archived, label=label)
+    return RunListing(
+        runs=[_line(run) for run in read.runs],
+        include_archived=include_archived,
+        label=label,
+        unreadable=len(read.unreadable),
+    )
 
 
 def runs_unreadable(host: EvalHost, scope_id: str) -> UnreadableRunsListing:
@@ -457,7 +465,7 @@ def runs_unreadable(host: EvalHost, scope_id: str) -> UnreadableRunsListing:
             run_id=row.row_id,
             status=row.status,
             stranded=row.status in NON_TERMINAL_RUN_STATUSES,
-            reasons=_refusal_reasons(row.refused),
+            reasons=row.reasons,
         )
         for row in scan.unreadable
     ]

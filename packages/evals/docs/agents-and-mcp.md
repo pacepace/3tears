@@ -51,7 +51,10 @@ lapsed reads `lost`, and the first read to see that writes it on the record: not
 of the record — `run_get`, `runs_list`, a campaign's or a report's read of its runs, a sweep's, an analysis
 attempt's — so a job whose process died reads `lost` everywhere once its lease lapses, and nothing counts it as
 still running. A run whose stored document this build's model refuses cannot be written lost: the boot reclaim counts
-it `unreadable` and leaves it, and `runs_unreadable` names each such run of the scope with why. A launch or a sweep
+it `unreadable` and leaves it, and `runs_unreadable` names each such run of the scope with why. `runs_list` leaves
+such a run out and says how many it left out (`unreadable`). Every other read that reaches one (`run_get`,
+`job_poll`, a comparison, a campaign's report, a launch's pricing) refuses with `UnreadableRunError` (status 500),
+whose remedy names `runs_unreadable`: an answer over the runs that happened to read would be a wrong one. A launch or a sweep
 written lost settles the runs it names with it. A cancel is written on the record
 too, so `job_cancel` works from any process: the job ends `cancelled` within one renewal interval. A graceful
 shutdown writes every job its process holds `lost` at once. A job is answered only in the caller's scope:
