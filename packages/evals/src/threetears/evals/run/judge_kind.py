@@ -718,13 +718,9 @@ class JudgeKind:
         else:
             outcome_kind = "invalid"
         score = outcome.score
-        try:
-            sent = (
-                score.judge_temperature if score is not None else (sent_temperature(last) if last is not None else None)
-            )
-        except TypeError as refused:
-            # Refused after the call was billed: the cell's telemetry carries its spend all the same.
-            return CandidateOutput(infra_errors=[f"apparatus: judge: {refused}"], telemetry=telemetry)
+        # A completion carrying no temperature is the host's defect (CompletionProtocolDefect), raised through invoke
+        # to fail the run as it does on every other judge path, never folded into this one trial.
+        sent = score.judge_temperature if score is not None else (sent_temperature(last) if last is not None else None)
         trial = JudgeTrial(
             test_case_id=test_case.id,
             dim=case.dim,
@@ -739,7 +735,7 @@ class JudgeKind:
             cannot_tell=outcome.cannot_tell,
             error=outcome.error,
             served_model=(score.served_model if score is not None else (getattr(last, "served_model", None) or None)),
-            judge_config_id=request.config.id if request.config is not None else None,
+            judge_config_id=request.judge_config_id,
             judge_temperature=sent,
         )
         payload = trial.model_dump(mode="json")

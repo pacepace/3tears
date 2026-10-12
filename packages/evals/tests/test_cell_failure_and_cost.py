@@ -27,7 +27,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.schema import CallLedger, EvalResult
+from threetears.evals.schema import CallLedger, CompletionProtocolDefect, EvalResult
 from threetears.evals.kernel import EvalStorage, WorldSession
 from threetears.evals.kernel.candidate_kind import (
     CandidateOutput,
@@ -62,7 +62,9 @@ from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.usage_capture import RoleUsageLedger
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
+from threetears.evals.run.jobs import EvalJobManager
 from threetears.evals.run.runner import EveryCellApparatusFailedError, RunnerOptions, execute_run, grade_goal_checks
+from packages.evals.tests.job_support import InMemoryRunStore, settled
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.scripted_table import ScriptedTable, actor
 from threetears.evals.schema.models import ConversationSpec, ConversationStopCause
@@ -136,6 +138,7 @@ def _drive(
     cell_timeout_s: float | None = None,
     template: EvalTemplate | None = None,
     cap: EvalRunCostCap | None = None,
+    max_concurrent_cells: int = 1,
 ) -> tuple[_Drive, Callable[[], Any]]:
     """Set up a toy run over ``n_cases`` invoices at ``k=1``, judged by ``judge`` when one is given.
 
@@ -154,6 +157,7 @@ def _drive(
         template: The template; ``None`` is the toy template, with its rubric when judged.
         cap: The run's cost cap, gating each cell and recording each result's cost as a launch
             wires it; ``None`` for none.
+        max_concurrent_cells: How many cells run at once.
 
     Returns:
         The drive, and the no-argument coroutine function that runs it — and, however it ends,
@@ -192,7 +196,9 @@ def _drive(
         }
     run = toyhost_run(model=RUN_MODELS[0], template=template, kind=kind, world=world).model_copy(update=run_fields)
     host.storage.save_eval_run(run)
-    options = RunnerOptions(candidate_kinds={TOY_EXTRACTOR_KIND: lambda _cell: kind})
+    options = RunnerOptions(
+        candidate_kinds={TOY_EXTRACTOR_KIND: lambda _cell: kind}, max_concurrent_cells=max_concurrent_cells
+    )
     if cell_timeout_s is not None:
         options.cell_timeout_s = cell_timeout_s
 
@@ -241,6 +247,12 @@ class _ScriptedJudge:
     cost_usd: float | None = 0.0004
     #: The dim of every call, in call order.
     calls: list[str] = field(default_factory=list)
+    #: How many of the first calls answer with a completion carrying no ``temperature`` — a host's type that
+    #: breaks the protocol. Every call after them waits until something cancels it, when ``then_hang``.
+    temperatureless: int = 0
+    then_hang: bool = False
+    #: The dims whose call raises, as a provider that is down does.
+    raises: set[str] = field(default_factory=set)
 
     async def generate(
         self, *, system: str, user: str, response_format: dict[str, str] | None = None
@@ -257,10 +269,14 @@ class _ScriptedJudge:
         """
         dim = _dim_of(system)
         self.calls.append(dim)
-        if dim in self.hangs:
+        if dim in self.raises:
+            raise RuntimeError("the judge provider is down")
+        if len(self.calls) > self.temperatureless and (dim in self.hangs or (self.temperatureless and self.then_hang)):
             await asyncio.Event().wait()
         reply = self.replies.get(dim, self.default)
         assert reply is not None, f"no reply scripted for {dim}"
+        if len(self.calls) <= self.temperatureless:
+            return _TemperaturelessCompletion(content=json.dumps(reply))  # type: ignore[return-value]
         return ToyJudgeCompletion(
             content=json.dumps(reply),
             input_tokens=100,
@@ -272,6 +288,21 @@ class _ScriptedJudge:
 
     async def aclose(self) -> None:
         """Nothing to release."""
+
+
+@dataclass(frozen=True)
+class _TemperaturelessCompletion:
+    """A host's completion type that left ``temperature`` out of the CompletionResult protocol."""
+
+    content: str
+    input_tokens: int | None = 100
+    output_tokens: int | None = 40
+    cost_usd: float | None = 0.0004
+    model: str = TOY_JUDGE_MODEL
+    price_source: str | None = "toyhost_script"
+    reasoning_tokens: int | None = None
+    stop_reason: str = "end_turn"
+    served_model: str | None = None
 
 
 def _scored(dim: str, score: int = 4) -> dict[str, Any]:
@@ -490,6 +521,70 @@ async def test_a_cell_whose_judging_the_deadline_cut_is_recovered_by_a_rejudge_o
     assert [(score.dim, score.score) for score in rejudged.rubric_scores] == [(FAITHFULNESS_DIM, 5), (_SECOND_DIM, 3)]
     assert rejudged.judge_error is None
     assert classify_result(rejudged) is ResultOutcome.OK
+
+
+# =============================================================================
+# A judge completion breaking the protocol is the host's defect, and fails the run
+# =============================================================================
+
+
+async def test_a_judge_completion_carrying_no_temperature_fails_the_run_naming_the_conformance_check():
+    """Not an error on the dim: every call through the host's client returns the same type, so every cell would."""
+    judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM), temperatureless=1, then_hang=True)
+    drive, go = off_loop(_drive, judge=judge, template=_two_dim_template(), cell_timeout_s=30)
+
+    with pytest.raises(CompletionProtocolDefect, match="check_completion_conformance") as raised:
+        await go()
+
+    assert isinstance(raised.value, TypeError), "a caller catching TypeError still catches it"
+    assert raised.value.member == "temperature"
+    # The run stopped on the defect: the sibling dim's call, still waiting, was cancelled rather than awaited
+    # to the cell's deadline, and no cell was recorded as if the judge had merely failed a dim.
+    assert len(judge.calls) == 2
+    assert drive.results == []
+
+
+async def test_a_running_cell_beside_the_defect_ends_as_a_run_stopping_cell_s_siblings_do():
+    judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM), temperatureless=1, then_hang=True)
+    drive, go = off_loop(_drive, judge=judge, n_cases=2, max_concurrent_cells=2, cell_timeout_s=30)
+
+    with pytest.raises(CompletionProtocolDefect):
+        await go()
+
+    # The sibling was waiting on its judge when the defect stopped the run: cancelled, its spend recorded.
+    (sibling,) = drive.results
+    assert sibling.termination == "cancelled"
+
+
+async def test_a_run_failed_by_a_judge_completion_s_defect_says_so_where_an_operator_reads_it():
+    judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM), temperatureless=1)
+    _, go = off_loop(_drive, judge=judge)
+    storage = InMemoryRunStore()
+    manager = EvalJobManager(storage)
+    run = make_eval_run()
+
+    async def work(progress: Any) -> None:
+        await go()
+
+    await manager.start_group([(run, work, None)])
+    await settled(manager, run.id, timeout=10)
+
+    persisted = storage.runs[run.id]
+    assert persisted.status == "failed"
+    assert any("check_completion_conformance" in detail for detail in persisted.error_details)
+    await manager.shutdown()
+
+
+async def test_a_provider_error_on_a_judge_call_stays_that_dim_s_error_and_the_run_completes():
+    """The counterpart: a provider's failure is a judging outcome, recorded on the dim it struck."""
+    judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM), raises={_SECOND_DIM})
+
+    drive = await _driven(judge=judge, template=_two_dim_template())
+
+    (result,) = drive.results
+    assert [score.dim for score in result.rubric_scores] == [FAITHFULNESS_DIM]
+    assert result.judge_error is not None and result.judge_error.startswith(f"{_SECOND_DIM}: ")
+    assert "LLM call failed: RuntimeError" in result.judge_error
 
 
 # =============================================================================

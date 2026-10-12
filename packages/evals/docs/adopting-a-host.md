@@ -87,7 +87,12 @@ pass it to every entrypoint. It holds:
   candidate kind's own usage rows (`CandidateTelemetry.usage`, below) carry it the same way: fold each
   completion with `RoleUsageLedger.add_llm_result`, which reads it. `temperature` must be what the request
   carried: the judge asks for 0 unless a config says otherwise, and a client whose model refuses a temperature
-  sends none and reports `None`, which the score records as `model_default`;
+  sends none and reports `None`, which the score records as `model_default`. A judge completion with no
+  `temperature` attribute at all is your code's defect, not a judging outcome: the engine raises
+  `CompletionProtocolDefect` (a `TypeError`, in `threetears.evals.schema`) and the run fails with that message,
+  as it does for a kind's `CandidateKindDefect`, rather than finishing with an error on every dimension. The
+  error carries the calls already billed and their cost (`calls`, `cost_usd`), and the cell it surfaced in is not
+  recorded. A re-judge, a judge repeat, a second judge and a witnessed cell's judging raise it the same way;
 - your `failure_describer` — how a raised provider call reads. It is the only thing that can say a call
   was refused for the calling account, which stops a run rather than excluding its cells;
   `withhold_failure_detail` is the honest one for an app with no error types of its own;
@@ -859,4 +864,7 @@ nothing, and ends `failed`.
 A cell cut off by its deadline or by its run's cancel is recorded the same way, from its sink; when the
 cut lands while the cell is being judged, the evidence and the scores that came back are kept and the
 unfinished dims are the cell's judge errors, which a re-judge can repair. A re-judge re-asks only dims
-that errored: a judge's "can't tell" is an answer.
+that errored: a judge's "can't tell" is an answer. Every dim the judge phase asked records the prompt that asked
+it in `EvalResult.judge_config_ids`, an unfinished one included: a config's id, or the built-in prompt's
+`builtin:` identity. A re-judge refuses a built-in dim whose recorded identity is not the built-in prompt it would
+send today.

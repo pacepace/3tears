@@ -476,8 +476,9 @@ class TestAClientThatIgnoresTemperature:
         assert (row.pinned.cases, row.pinned.mean_variance) == (0, None)
         assert "NOT COMPARABLE" in comparison.render()
 
-    async def test_a_client_that_reports_no_temperature_fails_every_call_naming_the_protocol(self):
-        """Not two "unrecorded" settings read as a comparison: each call fails, its error naming the protocol member."""
+    async def test_a_client_that_reports_no_temperature_fails_the_comparison_naming_the_protocol(self):
+        """Not two "unrecorded" settings read as a comparison, nor every call failed one by one: the host's completion
+        type breaks the protocol, so the comparison's job fails at the first call, naming the check."""
         judge = _Judge()
         host, run_id = await _judged_run(judge)
         judge.sends = _UNREPORTED
@@ -489,15 +490,10 @@ class TestAClientThatIgnoresTemperature:
         finally:
             await leases.shut_down()
 
-        assert ended.answers is not None
-        errors = [answer.error for case in ended.answers.answers for answer in case.answers]
-        assert errors and all(error and "check_completion_conformance" in error for error in errors)
-        # Every call failed, so neither side scored a case twice: there is nothing to compare, and it says so.
-        comparison = read_judge_temperatures(ended.answers)
-        assert not comparison.comparable
-        assert comparison.incomparable is not None and "scored no case it answered twice" in comparison.incomparable
-        assert "call(s) failed" in comparison.incomparable
-        assert "NOT COMPARABLE" in comparison.render()
+        assert ended.outcome == "failed"
+        assert ended.detail is not None and "check_completion_conformance" in ended.detail
+        # The call it made was billed, and is on the out-of-run ledger like any other.
+        assert len(off_loop(host.storage.query_out_of_run_spend, _SCOPE, purpose="judge")) >= 1
 
 
 #: The judge request settings a run recorded before ``strict_output`` joined the engine's defaults.

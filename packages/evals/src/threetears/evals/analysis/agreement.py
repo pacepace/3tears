@@ -32,7 +32,9 @@ floor counts (:mod:`threetears.evals.kernel.evidence_tiers`).
 
 **One group per dimension, scale and judge** (:class:`JudgeKey`). The judge is the model that served the
 score (:attr:`~threetears.evals.schema.models.RubricScore.served_model`), the versioned judge config
-that asked for it (the result's ``judge_config_ids``; ``None`` = the built-in prompt) AND the temperature the
+that asked for it (the result's ``judge_config_ids``: a config's id, or ``builtin:<sha12>`` for the built-in
+prompt, by its wording; ``None`` = a built-in prompt judged before its wording was recorded, never the same
+judge as a ``builtin:`` one) AND the temperature the
 call was sent at (:attr:`~threetears.evals.schema.models.RubricScore.judge_temperature`), so a campaign
 sweeping its judge — model, prompt or sampling — reads each judge's agreement separately: pooling them would
 credit one judge with the other's calibration, which is the comparison a judge swap is decided on. A dimension rated on a
@@ -90,7 +92,13 @@ from threetears.evals.kernel.evidence_tiers import (
     tier_of,
     weakest_judged_tier,
 )
-from threetears.evals.schema.models import MODEL_DEFAULT_TEMPERATURE, SCALES, JudgeTemperature, RubricScale
+from threetears.evals.schema.models import (
+    MODEL_DEFAULT_TEMPERATURE,
+    SCALES,
+    JudgeTemperature,
+    RubricScale,
+    is_builtin_judge_config_id,
+)
 
 if TYPE_CHECKING:
     from threetears.evals.schema.models import CalibrationRating, EvalResult, JudgeRepeat, LabelKey, RubricScore
@@ -163,7 +171,11 @@ class DimensionAgreement(EvalDocumentModel):
         ),
     )
     judge_config_id: str | None = Field(
-        description="The versioned JudgeConfig that asked for the scores; None = the built-in prompt."
+        description=(
+            "The versioned JudgeConfig that asked for the scores, or a ``builtin:`` id = the built-in prompt, by its "
+            "wording. None = a built-in prompt whose wording was not recorded (judged before evaladopt.19): never "
+            "the same judge as a ``builtin:`` one."
+        )
     )
     judge_temperature: JudgeTemperature | None = Field(
         default=None,
@@ -705,7 +717,10 @@ class SelfAgreementDimension(EvalDocumentModel):
         ),
     )
     judge_config_id: str | None = Field(
-        description="The versioned JudgeConfig that asked both times; None = the built-in prompt."
+        description=(
+            "The versioned JudgeConfig that asked both times, or a ``builtin:`` id = the built-in prompt, by its "
+            "wording. None = a built-in prompt whose wording was not recorded (judged before evaladopt.19)."
+        )
     )
     judge_temperature: JudgeTemperature | None = Field(
         default=None,
@@ -902,14 +917,20 @@ class InterJudgeDimension(EvalDocumentModel):
         description="The model that served the first scores, as the provider named it; None when it named none."
     )
     judge_config_id: str | None = Field(
-        description="The versioned JudgeConfig that asked for the first scores; None = the built-in prompt."
+        description=(
+            "The versioned JudgeConfig that asked for the first scores, or a ``builtin:`` id = the built-in prompt, "
+            "by its wording. None = a built-in prompt whose wording was not recorded (judged before evaladopt.19)."
+        )
     )
     judge_temperature: JudgeTemperature | None = Field(
         default=None, description="The temperature the first scores were sent at; None = not recorded."
     )
     second_model: str = Field(min_length=1, description="The model the second judge was asked as.")
     second_judge_config_id: str | None = Field(
-        description="The versioned JudgeConfig that asked the second judge; None = the built-in prompt."
+        description=(
+            "The versioned JudgeConfig that asked the second judge, or a ``builtin:`` id = the built-in prompt, by "
+            "its wording. None = a built-in prompt whose wording was not recorded (asked before evaladopt.19)."
+        )
     )
     second_temperature: float | None = Field(
         description="The temperature the second judge was requested at; None = what each dimension's prompt asks for."
@@ -1152,7 +1173,8 @@ def tier_sentence(tier: JudgeEvidenceTier) -> str:
     """
     judge = tier.judge_model or "an unnamed judge"
     if tier.judge_config_id is not None:
-        judge = f"{judge}, config {tier.judge_config_id}"
+        what = "built-in prompt" if is_builtin_judge_config_id(tier.judge_config_id) else "config"
+        judge = f"{judge}, {what} {tier.judge_config_id}"
     temperature = tier.judge_temperature
     judge += (
         ", temperature not recorded"
