@@ -988,8 +988,8 @@ class RedshiftDriver(Driver):
             if row is not None:
                 pid = int(row[0])
         except Exception as exc:  # noqa: BLE001 -- best-effort pid read
-            # non-fatal: the connection is still usable; only the
-            # server-side cancel degrades. log + continue.
+            # NOSILENT(logged): None is the documented "pid unknown", which is true; the connection is still
+            # usable, only the server-side cancel degrades, and the warning says so.
             log.warning("redshift backend pid read failed: %s; server-side cancel will degrade", exc)
             pid = None
         return pid
@@ -1208,6 +1208,8 @@ class RedshiftDriver(Driver):
                     cancel_cb=lambda: None,
                 )
             except Exception as exc:  # noqa: BLE001 -- release path must not raise over the caller's result
+                # NOSILENT(logged): the failure is recorded on the checkout -- it is poisoned, so the connection
+                # is evicted below, never pooled dirty -- and the caller's result is already true
                 log.warning(
                     "redshift release-path rollback / timeout reset failed: %s; evicting connection",
                     exc,

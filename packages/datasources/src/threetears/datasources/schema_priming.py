@@ -89,13 +89,16 @@ class SchemaPrimingIntegration:
         restricted datasources (both public and restricted carry NULL
         customer_id), so it is NOT used. memoized only on a NON-EMPTY
         success: the first turn that resolves something caches it and later
-        turns reuse; a transient fault OR a zero-row result returns ``[]``
-        for that turn WITHOUT memoizing, so the next turn retries (priming
-        recovers once the proxy is back / the datasource appears; it never
-        bricks for the pod life).
+        turns reuse; a zero-row result returns ``[]`` for that turn WITHOUT
+        memoizing, so the next turn retries (priming recovers once the
+        datasource appears; it never bricks for the pod life). A transient
+        fault is RAISED, also without memoizing, so the next call retries:
+        it used to answer ``[]``, which no caller can tell from "this agent
+        has no datasource".
 
         :return: the resolved active datasource ids, or ``[]``
         :rtype: list[UUID]
+        :raises Exception: whatever the resolution query raised; nothing is memoized
         """
         if self._resolved_ids is not None:
             return self._resolved_ids
@@ -144,17 +147,17 @@ class SchemaPrimingIntegration:
                 self.customer_id,
                 self.datasource_names,
             )
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- proxy fault must soft-fail this turn and retry next, never brick the pod
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- named and re-raised; nothing is memoized, so the next turn retries
             # a TRANSIENT fault (proxy not ready, NATS hiccup) must NOT
             # memoize: leave _resolved_ids None so the next turn retries.
-            # priming injects nothing THIS turn, but recovers -- never
-            # silently bricks for the pod lifetime.
+            # And it is RAISED, not answered as []: [] means "this agent has
+            # no datasource", and a fault is not that.
             log.warning(
-                "schema-priming datasource resolution failed (soft-fail this turn, will retry): %s: %s",
+                "schema-priming datasource resolution failed (nothing memoized, the next turn retries): %s: %s",
                 type(exc).__name__,
                 exc,
             )
-            return []
+            raise
         resolved = [row["id"] for row in rows]
         # only memoize a NON-EMPTY result. a successful zero-row query means
         # the declared datasource does not resolve YET (not created/applied,
