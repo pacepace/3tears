@@ -58,8 +58,11 @@ from threetears.evals.analysis.report.words import (
     arm_namer,
     evidence_rows,
     positions,
+    standing_facts,
     stands_on_words,
 )
+from threetears.evals.analysis.report.model import Fact
+from threetears.evals.analysis.standing import headline_standing, summary_standings
 from threetears.evals.kernel.authored import NO_CHART
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.kernel.campaign import ConfidenceTier, EvalAnalysis, FindingResolution, Viz
@@ -1012,13 +1015,20 @@ def _chart_notes(viz: Viz) -> list[str]:
     return ["", _CHART_NOTES_LABEL, *(f"- {_one_line(line)}" for line in printed)]
 
 
+def _facts_line(facts: list[Fact]) -> str:
+    """Facts code states beside an author's words, on one line, as the report's Markdown prints them."""
+    return " · ".join(f"{fact.name}: {fact.value}" for fact in facts)
+
+
 def render_memo_as_written(analysis: EvalAnalysis) -> str:
     """The memo as authored: the model's words, code's figures, in one canonical layout a reader follows.
 
     Markdown, in the order a reader acts on it: the headline, the summary, where each declared
     question stands, the decisions, the findings in the order the model wrote them, and what to run
     next — each section omitted when the model wrote nothing for it. Findings are numbered from one,
-    and every link the model made by position is printed that way. Arms are named by
+    and every link the model made by position is printed that way. The headline and each summary bullet carry the
+    confidence and evidence code derives from the findings they rest on, as the report prints them
+    (:mod:`threetears.evals.analysis.standing`). Arms are named by
     :func:`~threetears.evals.analysis.arms.arm_label`, numbers by :func:`~threetears.evals.analysis.numbers.format_number`.
 
     The numbers code resolved from the model's own readings are printed beside them, because they are
@@ -1040,7 +1050,20 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
         list(analysis.resolutions) if analysis.resolutions else [None] * len(document.findings)
     )
     sections: list[list[str]] = [[f"# {_one_line(document.headline) or '(blank headline)'}"]]
-    if document.summary.strip():
+    if document.headline.strip():
+        headline = headline_standing(analysis)
+        rests = f" Rests on finding {positions(headline.rests_on)}." if headline and headline.rests_on else ""
+        sections[0] += ["", f"The headline: {_facts_line(standing_facts(analysis, headline))}.{rests}"]
+    bullets = summary_standings(analysis)
+    if bullets:
+        sections.append(
+            [
+                f"- {_one_line(bullet)} — {_facts_line(standing_facts(analysis, standing))}."
+                + (f" Rests on finding {positions(standing.rests_on)}." if standing.rests_on else "")
+                for bullet, standing in bullets
+            ]
+        )
+    elif document.summary.strip():
         sections.append([document.summary.strip()])
 
     if document.questions:

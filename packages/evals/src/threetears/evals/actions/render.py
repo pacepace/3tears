@@ -540,7 +540,10 @@ def render_campaigns(listing: CampaignListing) -> str:
 def render_analysis_line(analysis: AnalysisLine) -> str:
     """One stored analysis on one line."""
     archived = ", archived" if analysis.archived else ""
-    return f"- {analysis.id}: {analysis.headline} ({analysis.generator_model}, {analysis.generated_at}{archived})"
+    return (
+        f"- {analysis.id}: {analysis.headline} [{analysis.headline_standing}] "
+        f"({analysis.generator_model}, {analysis.generated_at}{archived})"
+    )
 
 
 def render_analyses(listing: AnalysisListing) -> str:

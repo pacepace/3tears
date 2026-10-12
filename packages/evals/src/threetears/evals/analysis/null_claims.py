@@ -8,13 +8,15 @@ is established only by the bundle: a comparison ``multiple_comparisons`` reads `
 ``held``. A contrast that did not separate is unresolved, and "does not change" asserts a result the campaign did not
 measure.
 
-**A tripwire, not a gate.** The package's rule is that code never grades prose, because a gate over free text never
-converges: every generation finds a phrasing it does not parse (``docs/measuring-soundly.md``). This does not try to.
-It matches a short, curated list of the commonest null phrasings (:data:`NULL_CLAIM_PATTERNS`) and nothing else, so a
-reworded null passes it and the reporter eval's judge is still what measures the rest. What keeps it from refusing a
-true sentence is the condition the generator puts beside it
-(:func:`~threetears.evals.analysis.generator._reject_unestablished_nulls`): it fires only when no finding cites a
-reading the bundle established alike, so whatever the sentence is about, no null in the analysis backs it.
+**A phrase list over a structural join.** The package's rule is that code never grades prose, because a gate over
+free text never converges: every generation finds a phrasing it does not parse (``docs/measuring-soundly.md``). This
+does not parse a claim. The headline and each summary bullet name the findings they rest on
+(``headline_rests_on``, ``summary_rests_on``), and what the generator checks
+(:func:`~threetears.evals.analysis.generator._reject_unestablished_nulls`) is structural: does any finding that
+sentence rests on cite a reading the bundle established alike? Only the question "does this sentence say arms are
+alike" is read off the words, and only by a short, curated list of the commonest null phrasings
+(:data:`NULL_CLAIM_PATTERNS`). A reworded null passes it, and the reporter eval's judge measures the rest; what it
+refuses is a sentence in one of those phrasings resting only on findings that established no null.
 
 **Chosen to miss rather than to refuse a sound sentence.** A false refusal buys a paid repair, and two lose the whole
 analysis; a miss is today's behaviour. So each phrase is an assertion form, and the near-misses a recommendation
@@ -75,9 +77,6 @@ NULL_CLAIM_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
 #: Markdown emphasis and code marks, removed before matching so "does **not** change" reads as written.
 _EMPHASIS = re.compile(r"[*_`]")
 
-#: A summary line that opens a bullet: ``-``, ``*``, ``+``, ``•``, or a number with ``.`` or ``)``.
-_BULLET = re.compile(r"^\s*(?:[-*+•]|\d+[.)])\s+")
-
 
 def null_claims(text: str) -> list[str]:
     """The null claims ``text`` makes, as matched, in the order they appear; empty when it makes none.
@@ -101,27 +100,4 @@ def null_claims(text: str) -> list[str]:
     return claims
 
 
-def summary_bullets(summary: str) -> list[str]:
-    """Split a markdown summary into its bullets, a line that opens none continuing the one before it.
-
-    Text before the first bullet, or a summary with no bullet at all, is one bullet of its own, so every word of the
-    summary is in exactly one of them.
-
-    Args:
-        summary: The authored summary.
-
-    Returns:
-        The bullets in order, each stripped of its marker; empty for a blank summary.
-    """
-    bullets: list[str] = []
-    for line in summary.splitlines():
-        if not line.strip():
-            continue
-        if _BULLET.match(line) or not bullets:
-            bullets.append(_BULLET.sub("", line).strip())
-        else:
-            bullets[-1] += " " + line.strip()
-    return bullets
-
-
-__all__ = ["NULL_CLAIM_PATTERNS", "null_claims", "summary_bullets"]
+__all__ = ["NULL_CLAIM_PATTERNS", "null_claims"]

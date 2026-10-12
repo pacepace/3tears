@@ -57,6 +57,7 @@ from threetears.evals.analysis.report.words import (
     arm_namer,
     evidence_rows,
     positions,
+    standing_facts,
     stands_on_words,
 )
 from threetears.evals.analysis.surface_table import (
@@ -78,6 +79,7 @@ from threetears.evals.kernel.authored import NO_CHART, Finding
 from threetears.evals.kernel.campaign import EvalAnalysis, EvidenceRow, FindingResolution, ReadingKind, Viz
 from threetears.evals.kernel.host.measures import MeasureRegistry
 from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.standing import headline_standing, summary_standings
 from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, INTERVAL_LEVEL
 from threetears.evals.analysis.viz.quantities import with_unit
 from threetears.evals.kernel.analysis_measures import MeasureSummary
@@ -115,9 +117,7 @@ def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None) ->
     arm = arm_namer(analysis)
     surface = analysis.decision_surface
     questions = analysis.design_snapshot.live_questions() if analysis.design_snapshot is not None else []
-    blocks: list[ReportBlock] = []
-    if document.summary.strip():
-        blocks.append(TextBlock(section="summary", role="summary", body=document.summary))
+    blocks: list[ReportBlock] = _summary_blocks(analysis)
     if (exploratory := exploratory_disclosure(analysis.design_snapshot)) is not None:
         # Said once, at the top, rather than on every finding: a label on every row is one readers skip. A
         # campaign that declared no design (`design_snapshot` None) is exploratory, and says so as such.
@@ -226,6 +226,53 @@ def build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None) ->
         blocks=blocks,
         verdicts=[*guardrails_read, *bar_verdicts(surface, cell_name)],
     )
+
+
+def _summary_blocks(analysis: EvalAnalysis) -> list[ReportBlock]:
+    """The headline and the summary, each with the findings it rests on and what those let it stand on.
+
+    The headline block leads, carrying the headline as written, its ``rests_on`` and the weakest confidence and
+    evidence of those findings (:mod:`threetears.evals.analysis.standing`) — the caveat slot a headline lacked, written
+    by code. The summary follows as one block per bullet, each with its own. An analysis stored before the headline
+    and bullets named their findings keeps its summary as one block, and its headline block says the standing was
+    not recorded rather than guessing one.
+
+    Args:
+        analysis: The analysis.
+
+    Returns:
+        The summary section's text blocks, in reading order; none for a blank headline and summary.
+    """
+    document = analysis.document
+    blocks: list[ReportBlock] = []
+    if document.headline.strip():
+        headline = headline_standing(analysis)
+        blocks.append(
+            TextBlock(
+                section="summary",
+                role="headline",
+                body=document.headline,
+                rests_on=list(headline.rests_on) if headline is not None else [],
+                facts=standing_facts(analysis, headline),
+            )
+        )
+    if not document.summary.strip():
+        return blocks
+    bullets = summary_standings(analysis)
+    if bullets is None:
+        blocks.append(TextBlock(section="summary", role="summary", body=document.summary))
+        return blocks
+    blocks.extend(
+        TextBlock(
+            section="summary",
+            role="summary",
+            body=bullet,
+            rests_on=list(standing.rests_on),
+            facts=standing_facts(analysis, standing),
+        )
+        for bullet, standing in bullets
+    )
+    return blocks
 
 
 def _levers_without_finding(analysis: EvalAnalysis) -> list[str]:
