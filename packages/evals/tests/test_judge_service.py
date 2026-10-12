@@ -25,6 +25,7 @@ from threetears.evals.schema.models import (
     JudgeEvidence,
     RubricDim,
     is_builtin_judge_config_id,
+    judge_config_of,
 )
 from threetears.evals.kernel.provider import INCOMPLETE_STOP_REASONS, withhold_failure_detail
 from threetears.evals.run.judge import CANNOT_TELL, judge_reply_format, run_judge_llm
@@ -417,7 +418,8 @@ async def test_config_prompt_template_and_model_and_temperature_honored():
         RubricDim(name="conversation.tone", description="d", scale="ordinal"), _context()
     )
 
-    assert outcome.config_id == config.id
+    # The config that asked, recorded with the reply format the engine appended to its prompt.
+    assert judge_config_of(outcome.config_id) == config.id
     assert client.systems[0].startswith("CUSTOM tone instructions")
     # The config's model + temperature select the client.
     assert calls == [("cfg-model", 0.3)]
@@ -468,7 +470,7 @@ async def test_axis_config_overrides_only_the_matching_axis():
     transcript = await service.score_transcript(_context())
     outcome = await service.score_outcome(_context())
 
-    assert transcript.config_id == config.id
+    assert judge_config_of(transcript.config_id) == config.id
     assert client.systems[0].startswith("TRANSCRIPT OVERRIDE")
     # Still the built-in prompt, which records its own identity where a config's id stands.
     assert is_builtin_judge_config_id(outcome.config_id)

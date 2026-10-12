@@ -41,10 +41,12 @@ from threetears.evals.schema.models import (
     EvalTrace,
     JudgedArtifact,
     JudgeEvidence,
+    JudgeConfig,
     RubricDim,
     builtin_judge_config_id,
     eval_trace_doc_id,
     is_builtin_judge_config_id,
+    judge_config_of,
     scored_dim_ids,
 )
 from threetears.evals.kernel.provider import withhold_failure_detail
@@ -169,7 +171,11 @@ class _JudgedKind:
 
 
 async def _judged_and_stored(
-    judged_artifact: JudgedArtifact, judge: _ScriptedJudge, rubric: list[RubricDim] | None = None, **run_fields: Any
+    judged_artifact: JudgedArtifact,
+    judge: _ScriptedJudge,
+    rubric: list[RubricDim] | None = None,
+    configs: dict[str, JudgeConfig] | None = None,
+    **run_fields: Any,
 ) -> tuple[EvalHost, EvalResult]:
     """Run one judged cell through the real runner, judge it with ``judge``, and store it as a run would.
 
@@ -177,6 +183,8 @@ async def _judged_and_stored(
         judged_artifact: The kind's declaration.
         judge: The judge the cell's judge phase calls, and the host's client for a re-judge.
         rubric: The template's rubric, :data:`_DIM` alone when omitted.
+        configs: The versioned judge config per dim the cell's judge is asked by, stored and recorded on the run;
+            ``None`` for the built-in prompt everywhere.
         **run_fields: Fields the run records beyond the defaults below.
 
     Returns:
@@ -193,6 +201,10 @@ async def _judged_and_stored(
     case = EvalTestCase(template_id=template.id, scope_id=_SCOPE, variation_params={"party": "two"})
     off_loop(host.storage.save_template, template)
     off_loop(host.storage.save_test_case, case)
+    for config in (configs or {}).values():
+        off_loop(host.storage.save_judge_config, config)
+    if configs:
+        run_fields = {"judge_config_ids": {dim: config.id for dim, config in configs.items()}, **run_fields}
     # Attributed the way a launch attributes it: through the launch's own judge build, for the kind.
     built = off_loop(build_judge_service, host, template, _JUDGE, judged_artifact=judged_artifact)
     run_fields = {"effective_judges": built.effective_judges, **run_fields}
@@ -218,7 +230,9 @@ async def _judged_and_stored(
         eval_run_id=run.id,
         scope_id=_SCOPE,
         judge_service=JudgeService(
-            client_factory=lambda _model, _temperature: judge, failure_describer=withhold_failure_detail
+            client_factory=lambda _model, _temperature: judge,
+            configs=configs,
+            failure_describer=withhold_failure_detail,
         ),
         judge_model=_JUDGE,
         options=RunnerOptions(candidate_kinds={_KIND: lambda _cell: _JudgedKind(judged_artifact)}),
@@ -538,6 +552,40 @@ async def test_a_config_its_run_did_not_record_is_still_ambiguous() -> None:
     judge.calls.clear()
 
     with pytest.raises(ValidationFailedError, match="by config 'config-2' while its run recorded 'config-1'"):
+        await rejudge_result(host, result.id, _SCOPE)
+
+    assert judge.calls == []
+
+
+def _config() -> JudgeConfig:
+    return JudgeConfig(
+        scope_id=_SCOPE, name="faithful-v1", rubric_dim_id=_DIM, prompt_template="Rule on the dice, strictly."
+    )
+
+
+async def test_a_rejudged_configured_dim_was_asked_by_its_config_with_the_reply_format_it_records() -> None:
+    judge = _ScriptedJudge(failing={_DIM})
+    config = _config()
+    host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge, configs={_DIM: config})
+    recorded = result.judge_config_ids[_DIM]
+    assert judge_config_of(recorded) == config.id and recorded != config.id
+    judge.failing.clear()
+
+    rejudged = await rejudge_result(host, result.id, _SCOPE)
+
+    assert rejudged.judge_config_ids[_DIM] == recorded and rejudged.judge_error is None
+
+
+async def test_a_configured_result_stored_before_the_reply_format_was_identified_is_not_rejudged() -> None:
+    """Its suffix wording is unknown, so today's configured prompt may be a different judge from its run's."""
+    judge = _ScriptedJudge(failing={_DIM})
+    config = _config()
+    host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge, configs={_DIM: config})
+    _stored_as(host, result, judge_config_ids={_DIM: config.id})
+    judge.failing.clear()
+    judge.calls.clear()
+
+    with pytest.raises(ValidationFailedError, match="without the reply format it was sent with"):
         await rejudge_result(host, result.id, _SCOPE)
 
     assert judge.calls == []

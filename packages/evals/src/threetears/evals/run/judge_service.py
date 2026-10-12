@@ -43,8 +43,11 @@ built-in wording is a new judge to every reader that keys a judge by its config.
 
 The fixed JSON-format instruction is appended to **both** so the response stays
 parseable regardless of an operator's prompt wording. That suffix is therefore part
-of a configured judge's prompt too, and a change to it is NOT captured by the config's
-id: rules meant for the built-in judge go in the built-in instructions, never in it.
+of a configured judge's prompt too, so a configured call records ``<config id>@<sha12>``
+(:func:`judge_config_ids_for`): the config's id and a fingerprint of the suffix's wording.
+A release that rewords the suffix makes every configured judge a new judge, as a new
+config version would. Rules meant for the built-in judge still go in the built-in
+instructions, never in the suffix, which would change every operator's judge with them.
 
 The multi-dim composite prompt builder (``judge_prompts.build_rubric_prompt``)
 is retired; the per-axis / per-dim builders here replace it. The underlying LLM
@@ -54,7 +57,7 @@ call + parse + cost-log still flow through
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
 from typing import Any, NamedTuple, Self
@@ -76,6 +79,7 @@ from threetears.evals.schema.models import (
     RubricScore,
     UsageRole,
     builtin_judge_config_id,
+    configured_judge_config_id,
     label_key_of,
 )
 from threetears.evals.kernel.host.eval_host import CompletionClients
@@ -158,7 +162,8 @@ class JudgeOutcome:
     ``score`` is ``None`` exactly when ``error`` or ``cannot_tell`` is set: the call
     failed (LLM call raised, parse failed, an error envelope), or the judge answered
     that the evidence does not let it score the dim. ``config_id`` names what asked:
-    the versioned :class:`JudgeConfig` used, or the built-in prompt's identity
+    the versioned :class:`JudgeConfig` used with the reply format it was sent
+    (:func:`judge_config_ids_for`), or the built-in prompt's identity
     (:func:`builtin_judge_config_ids`) when no config supplied the instructions. It is
     ``None`` only for an outcome a caller made up for a call that never reached the
     service (one that raised, or a cost cap refused).
@@ -402,6 +407,56 @@ def _builtin_dimension_config_id(scale: RubricScale, document: bool) -> str:
     )
 
 
+@cache
+def _reply_format_wording(scale: RubricScale, document: bool) -> str:
+    """The reply-format contract appended to every prompt of ``scale``, for a document or not, with a placeholder key.
+
+    What a configured judge reads beside its config's own instructions, and so the rest of its identity
+    (:func:`~threetears.evals.schema.models.configured_judge_config_id`): the suffix with no instructions before it,
+    its one per-dimension part (the reply's key) a placeholder.
+    """
+    return _system_prompt(dim_id=_PLACEHOLDER_DIM, instructions="", scale=scale, document=document)
+
+
+def _configured_id(config: JudgeConfig, scale: RubricScale, document: bool) -> str:
+    """A configured judge's recorded identity: its config's id and the fingerprint of the suffix it was sent."""
+    return configured_judge_config_id(config.id, _reply_format_wording(scale, document))
+
+
+def judge_config_ids_for(
+    rubric: Sequence[RubricDim], configs: Mapping[str, str], *, judged_artifact: JudgedArtifact
+) -> dict[str, str]:
+    """What each dim a result is judged on would be asked by today, as a result records it.
+
+    A dim with a config is asked by that config's prompt and the engine's reply-format suffix
+    (:func:`~threetears.evals.schema.models.configured_judge_config_id`); every other dim by the built-in prompt
+    (:func:`builtin_judge_config_ids`). What a caller re-asking a dim as the judge that first asked it compares the
+    result's record with.
+
+    Args:
+        rubric: The template's rubric.
+        configs: ``{dim_id: JudgeConfig id}`` for the dims a config asks, as a run records its set.
+        judged_artifact: What the kind's judge reads, which picks the axes and the wording.
+
+    Returns:
+        ``{dim_id: recorded id}``, in judge-phase order.
+
+    Raises:
+        ValueError: ``judged_artifact`` declares a kind no judge reads.
+    """
+    builtin = builtin_judge_config_ids(rubric, judged_artifact=judged_artifact)
+    document = judged_artifact is JudgedArtifact.DOCUMENT
+    scales: dict[str, RubricScale] = {dim.name: dim.scale for dim in rubric}
+    return {
+        dim: (
+            configured_judge_config_id(configs[dim], _reply_format_wording(scales.get(dim, "ordinal"), document))
+            if dim in configs
+            else builtin_id
+        )
+        for dim, builtin_id in builtin.items()
+    }
+
+
 def builtin_judge_config_ids(rubric: Sequence[RubricDim], *, judged_artifact: JudgedArtifact) -> dict[str, str]:
     """The identity of the built-in prompt each dim a result is judged on would be asked with, today.
 
@@ -455,8 +510,9 @@ class JudgeRequest(NamedTuple):
     #: The directive the call sends: its reply as a strict schema (:func:`~threetears.evals.run.judge.judge_reply_format`),
     #: built from the same criterion and offer :func:`run_judge_llm` sends it from, so what is priced is what is sent.
     response_format: dict[str, Any]
-    #: What asks: ``config``'s id, or the built-in prompt's identity (:func:`builtin_judge_config_ids`) when no config
-    #: supplied the instructions — what the call's outcome records, so two wordings are never one judge.
+    #: What asks: ``config``'s id with the reply format's fingerprint (``<config id>@<sha12>``), or the built-in
+    #: prompt's identity (:func:`builtin_judge_config_ids`) when no config supplied the instructions — what the
+    #: call's outcome records, so two wordings are never one judge.
     judge_config_id: str
     #: The dimension's rubric axis, stamped onto its score: a boundary dimension is a guardrail.
     axis: RubricAxis = "capability"
@@ -501,7 +557,7 @@ def _request(
         label=label,
         include_goal_outcomes=include_goal_outcomes,
         response_format=judge_reply_format([_criterion(dim_id, scale)], cannot_tell_offered=True),
-        judge_config_id=config.id if config is not None else builtin_config_id,
+        judge_config_id=_configured_id(config, scale, document) if config is not None else builtin_config_id,
         axis=axis,
         label_key=label_key,
     )
@@ -732,7 +788,7 @@ class JudgeService:
         ]
 
     def judge_config_ids(self, rubric: Sequence[RubricDim], *, judged_artifact: JudgedArtifact) -> dict[str, str]:
-        """What asks each dim a result is judged on: its config's id, or the built-in prompt's identity.
+        """What asks each dim a result is judged on: its config's id and reply format, or the built-in prompt's identity.
 
         What a result records for each dim its judge phase asks (``EvalResult.judge_config_ids``), whether the dim's
         call returns, raises or is cut off with its cell — the same ids its calls' outcomes carry.
@@ -747,10 +803,9 @@ class JudgeService:
         Raises:
             ValueError: ``judged_artifact`` declares a kind no judge reads.
         """
-        return {
-            dim: config.id if (config := self._configs.get(dim)) is not None else builtin
-            for dim, builtin in builtin_judge_config_ids(rubric, judged_artifact=judged_artifact).items()
-        }
+        return judge_config_ids_for(
+            rubric, {dim: config.id for dim, config in self._configs.items()}, judged_artifact=judged_artifact
+        )
 
     def _transcript_call(self, user_prompt: str, label_key: LabelKey | None) -> JudgeRequest:
         """The transcript axis's call over ``user_prompt``."""
@@ -1008,4 +1063,5 @@ __all__ = [
     "JudgeRequest",
     "JudgeService",
     "builtin_judge_config_ids",
+    "judge_config_ids_for",
 ]

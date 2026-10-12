@@ -34,6 +34,7 @@ from threetears.evals.run.judge_service import (
     JudgeService,
     builtin_judge_config_ids,
     fold_judge_outcomes,
+    judge_config_ids_for,
 )
 from threetears.evals.schema.models import (
     BUILTIN_JUDGE_CONFIG_PREFIX,
@@ -45,7 +46,9 @@ from threetears.evals.schema.models import (
     JudgeEvidence,
     RubricDim,
     builtin_judge_config_id,
+    configured_judge_config_id,
     is_builtin_judge_config_id,
+    judge_config_of,
 )
 from packages.evals.tests.factories import make_calibration_rating, make_eval_result
 
@@ -186,7 +189,9 @@ def test_an_unjudged_kind_has_no_built_in_prompt() -> None:
         builtin_judge_config_ids([_TONE], judged_artifact=JudgedArtifact.UNJUDGED)
 
 
-async def test_a_configured_judge_records_its_config_id_and_its_siblings_their_built_in_prompt() -> None:
+async def test_a_configured_judge_records_its_config_with_the_reply_format_and_its_siblings_the_built_in_prompt() -> (
+    None
+):
     config = JudgeConfig(
         scope_id="uni-1", name="tone-v2", rubric_dim_id=_TONE.name, prompt_template="CUSTOM tone instructions"
     )
@@ -195,9 +200,74 @@ async def test_a_configured_judge_records_its_config_id_and_its_siblings_their_b
     outcomes = await _judged(service, _context())
 
     folded = fold_judge_outcomes(outcomes)
-    assert folded.config_ids[_TONE.name] == config.id
+    recorded = folded.config_ids[_TONE.name]
+    assert recorded.startswith(f"{config.id}@") and judge_config_of(recorded) == config.id
+    assert not is_builtin_judge_config_id(recorded)
     assert is_builtin_judge_config_id(folded.config_ids[TRANSCRIPT_DIM_ID])
     assert service.judge_config_ids([_TONE], judged_artifact=JudgedArtifact.TRANSCRIPT) == folded.config_ids
+
+
+def test_a_configured_judge_s_identity_moves_with_the_reply_format_appended_to_its_prompt() -> None:
+    """The suffix the engine appends to an operator's prompt is part of what the judge read."""
+    assert configured_judge_config_id("cfg", "Return JSON.") != configured_judge_config_id("cfg", "Return JSON. ")
+    assert configured_judge_config_id("cfg", "Return JSON.") != configured_judge_config_id("cfg-2", "Return JSON.")
+    assert judge_config_of(configured_judge_config_id("cfg", "Return JSON.")) == "cfg"
+    # Read back as they were recorded: a bare id (before the reply format was identified) names its config whole,
+    # and a built-in prompt or nothing names none.
+    assert judge_config_of("cfg") == "cfg"
+    assert judge_config_of(builtin_judge_config_id("Score it.")) is None
+    assert judge_config_of(None) is None
+
+
+#: A configured judge's reply-format fingerprints as this build words the suffix. **When this goes red the suffix
+#: changed**, and with it every configured judge: profiles and agreement measured under the old suffix stop applying,
+#: though no config changed. Re-pin only when it is meant, and say so in the release's notes.
+_PINNED_FORMATS: dict[tuple[JudgedArtifact, str], str] = {
+    (JudgedArtifact.TRANSCRIPT, TRANSCRIPT_DIM_ID): "cfg@48f825101269",
+    (JudgedArtifact.TRANSCRIPT, OUTCOME_DIM_ID): "cfg@48f825101269",
+    (JudgedArtifact.TRANSCRIPT, _TONE.name): "cfg@48f825101269",
+    (JudgedArtifact.TRANSCRIPT, _PASS.name): "cfg@77f5d3e70b47",
+    (JudgedArtifact.DOCUMENT, _TONE.name): "cfg@c31b0cac0f26",
+    (JudgedArtifact.DOCUMENT, _PASS.name): "cfg@469f6f5d4bdb",
+}
+
+
+@pytest.mark.parametrize("judged_artifact", [JudgedArtifact.TRANSCRIPT, JudgedArtifact.DOCUMENT])
+def test_the_reply_format_s_fingerprints_are_pinned_so_a_suffix_change_is_seen(judged_artifact: JudgedArtifact) -> None:
+    every_dim = {TRANSCRIPT_DIM_ID: "cfg", OUTCOME_DIM_ID: "cfg", _TONE.name: "cfg", _PASS.name: "cfg"}
+    ids = judge_config_ids_for([_TONE, _PASS], every_dim, judged_artifact=judged_artifact)
+    pinned = {dim: config_id for (artifact, dim), config_id in _PINNED_FORMATS.items() if artifact is judged_artifact}
+    assert ids == pinned, "the reply-format suffix changed: every configured judge is a new judge (see _PINNED_FORMATS)"
+
+
+async def test_a_configured_result_stored_before_the_reply_format_was_identified_is_another_judge() -> None:
+    config = JudgeConfig(scope_id="uni-1", name="tone-v2", rubric_dim_id=_TONE.name, prompt_template="CUSTOM tone")
+    first = await _service(_Client(), {_TONE.name: config}).score_dimension(_TONE, _context(artifact="Candidate: nine"))
+    second = await _service(_Client(), {_TONE.name: config}).score_dimension(_TONE, _context(artifact="Candidate: ten"))
+    assert first.score is not None and second.score is not None
+    current = make_eval_result(
+        id="r-1", rubric_scores=[first.score], judge_config_ids=fold_judge_outcomes([(_TONE.name, first)]).config_ids
+    )
+    # As a pre-evaladopt.19 build stored it: the config's id alone.
+    stored_before = make_eval_result(
+        id="r-old", eval_run_id="run-old", rubric_scores=[second.score], judge_config_ids={_TONE.name: config.id}
+    )
+
+    agreement = judge_agreement(_ratings("r-1", "r-old"), [current, stored_before])
+
+    assert judge_key(stored_before, _TONE.name) != judge_key(current, _TONE.name)
+    assert len(agreement.dimensions) == 2
+
+
+def test_a_judge_config_may_not_take_an_id_spelled_as_a_configured_judge_s_identity() -> None:
+    with pytest.raises(ValidationError, match="a configured judge's recorded"):
+        JudgeConfig(
+            id="tone@48f825101269",
+            scope_id="uni-1",
+            name="impostor",
+            rubric_dim_id=TRANSCRIPT_DIM_ID,
+            prompt_template="Score it.",
+        )
 
 
 def test_a_judge_config_may_not_take_an_id_spelled_as_a_built_in_prompt_s() -> None:
