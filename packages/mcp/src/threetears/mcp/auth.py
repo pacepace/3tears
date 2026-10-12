@@ -451,6 +451,9 @@ class LocalGrantAuthorizer:
         # is the grant; we don't store False entries because absence
         # means "no grant" by default-deny semantics.
         self._cache: set[tuple[UUID, str]] = set()
+        # set while the last reload failed: the cache serves the grants of the last load that
+        # landed, and the catch-up tick retries until one lands again.
+        self._reload_owed = False
         self._started = False
         self._catchup_task: PeriodicTask | None = None
 
@@ -484,6 +487,10 @@ class LocalGrantAuthorizer:
             primed_epoch = await self._epoch_client.current(Subjects.mcp_rbac_epoch())
         await self._reload_cache()
         epoch_mode = self._epoch_listener is not None
+        if self._reload_owed and not epoch_mode:
+            # nothing would ever retry it: with no epoch listener there is no bump and no catch-up tick,
+            # so this authorizer would deny every grant for its whole life while reading as started.
+            raise RuntimeError("MCP grant cache could not be loaded at start, and nothing would retry it")
         if epoch_mode:
             assert self._epoch_listener is not None  # narrowed by epoch_mode
             await self._epoch_listener.subscribe(
@@ -578,6 +585,13 @@ class LocalGrantAuthorizer:
         """
         # only ever started under epoch_mode, so the listener is non-None here.
         assert self._epoch_listener is not None
+        if self._reload_owed:
+            await self._reload_cache()
+            if self._reload_owed:
+                raise RuntimeError(
+                    "MCP grant cache reload is still failing; authorization is served from the last load "
+                    "that landed, so a grant revoked since then is still honoured"
+                )
         # the pass itself is the framework's: which subjects to poll, and whether one failing
         # subject abandons the rest, are not decisions this consumer should hold its own opinion about.
         await catchup_tick(self._epoch_listener, [(Subjects.mcp_rbac_epoch(), self._on_rbac_bump)])
@@ -618,7 +632,13 @@ class LocalGrantAuthorizer:
         narrow exception scope: a load failure logs and leaves the
         prior cache in place rather than emptying it (denying every
         grant on a transient L3 hiccup would be a worse outcome
-        than serving stale grants for one tick).
+        than serving stale grants for one tick). it also marks the
+        reload OWED: the bump that asked for it has already been
+        counted as seen, so without that mark nothing would ask
+        again until the next grant change, and a revoked grant would
+        stay honoured indefinitely. the catch-up tick retries an owed
+        reload first, raising (and so logging, every interval) while
+        it keeps failing.
 
         :return: nothing
         :rtype: None
@@ -626,8 +646,11 @@ class LocalGrantAuthorizer:
         try:
             rows = await self._grant_loader()
         except Exception:
+            # NOSILENT(logged): no caller is waiting on this (start and the epoch callbacks only ask it to happen);
+            # the prior cache stays, and _reload_owed has the catch-up tick retry until a load lands
+            self._reload_owed = True
             log.warning(
-                "MCP grant cache reload failed; keeping prior cache",
+                "MCP grant cache reload failed; keeping prior cache, and retrying on the next catch-up tick",
                 exc_info=True,
                 extra={"extra_data": {"prior_grant_count": len(self._cache)}},
             )
@@ -640,6 +663,7 @@ class LocalGrantAuthorizer:
                 principal_id = UUID(str(principal_id))
             new_cache.add((principal_id, permission))
         self._cache = new_cache
+        self._reload_owed = False
         log.info(
             "MCP grant cache reloaded",
             extra={"extra_data": {"grant_count": len(self._cache)}},
