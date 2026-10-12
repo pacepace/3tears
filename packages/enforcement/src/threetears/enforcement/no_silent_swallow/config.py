@@ -1,12 +1,14 @@
 """configuration dataclass for no-silent-swallow enforcement.
 
 the no-silent-swallow domain enforces a single contract: every
-exception handler (and every ``contextlib.suppress(...)`` invocation)
-in production code must either log, re-raise, or carry an explicit
-``# NOSILENT: <reason>`` or ``# NOSILENT(<kind>): <reason>`` marker
-justifying silence; a named kind is checked against the code. bare ``except:``
-clauses (which catch ``SystemExit`` / ``KeyboardInterrupt`` and are
-never correct in production) are flagged unconditionally.
+exception handler that turns an error into an inert answer, logged
+first or not (and every ``contextlib.suppress(...)`` invocation) in
+production code must either re-raise, return a typed failure, or carry
+a ``# NOSILENT(<kind>): <reason>`` marker whose kind the walker checks
+against the code. bare
+``except:`` clauses (which catch ``SystemExit`` /
+``KeyboardInterrupt`` and are never correct in production) are
+flagged unconditionally.
 
 the policy is universal — there is no per-repo override of the
 contract itself — but logger conventions vary: most repos use ``log``
@@ -73,12 +75,11 @@ class NoSilentSwallowConfig:
     :ivar logger_methods: method names recognised on a logger. matches
         the python stdlib + ``exception`` (which is ``logging.Logger``
         idiomatic) by default.
-    :ivar nosilent_marker: the comment-marker substring that justifies
-        a silent handler / suppress. defaults to ``# NOSILENT:``. the
-        kinded form is the marker's stem plus ``(<kind>):`` --
-        ``# NOSILENT(expected): <reason>`` -- and its kind is checked.
-        either way the text after the colon (the "reason") must be
-        non-empty.
+    :ivar nosilent_marker: the comment-marker substring. defaults to
+        ``# NOSILENT:``. a silent handler / suppress is excused only by
+        the kinded form, the marker's stem plus ``(<kind>):`` --
+        ``# NOSILENT(expected): <reason>`` -- with a non-empty reason
+        and a kind the walker's check accepts for that code.
     """
 
     repo_root: Path

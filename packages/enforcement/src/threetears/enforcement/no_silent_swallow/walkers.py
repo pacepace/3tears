@@ -3,52 +3,62 @@
 the single walker, :func:`find_silent_swallows`, scans every module
 under the configured src trees for two violation shapes:
 
-- ``ast.ExceptHandler`` whose body is "silent" (``pass``, ``...``,
-  ``return None``, ``continue``, ``break``) and which neither logs nor
-  re-raises and lacks a ``# NOSILENT`` marker in the source window
-  between the line above the ``except`` and the first body statement
-  (inclusive). bare ``except:`` clauses are flagged unconditionally
-  because they swallow ``SystemExit`` and ``KeyboardInterrupt``.
+- ``ast.ExceptHandler`` whose body is "silent" and which neither logs
+  nor re-raises and lacks a valid ``# NOSILENT(<kind>): <reason>``
+  marker in the source window between the line above the ``except``
+  and the first body statement (inclusive). a body is silent when
+  every statement in it is inert: ``pass``, ``...``, ``continue``,
+  ``break``, a ``return`` of ``None`` / a constant / an empty
+  collection, or an assignment of one of those (the "default" shape,
+  ``except ValueError: ok = False``). such a body turns the error into
+  an answer the caller cannot tell from a real one. bare ``except:``
+  clauses are flagged unconditionally because they swallow
+  ``SystemExit`` and ``KeyboardInterrupt``.
+- ``ast.ExceptHandler`` that LOGS and then still leaves with an inert
+  answer -- a ``return`` of ``None`` / a constant / an empty
+  collection, a ``continue`` or ``break``, or a last statement that
+  assigns a default -- without a valid kinded marker. a log line
+  tells the operator; it does not tell the caller, who still gets a
+  value it cannot tell from success. a handler that logs and then
+  raises, returns a typed failure, or does other work stays accepted.
 - ``contextlib.suppress(...)`` (or bare ``suppress(...)``) call
-  expressions without a ``# NOSILENT`` marker within 2 lines above.
+  expressions without a valid ``# NOSILENT(<kind>): <reason>`` marker
+  within 2 lines above.
 
-**a marker may name a kind, and a named kind is checked against the
-code.** two forms are accepted while the codebase moves to the second
-(issue #715):
+**the marker names a kind, and the walker checks the kind against the
+code.** a bare ``# NOSILENT: <reason>`` no longer excuses a silent
+handler: a reason is prose, and prose was accepted for handlers that
+returned ``False`` for an unreadable case and dropped it from an arm.
+the kinds, and what the walker verifies for each:
 
-- ``# NOSILENT: <reason>`` -- the bare form, accepted as before.
-- ``# NOSILENT(<kind>): <reason>`` -- the kinded form. the kind must be
-  one of these, and the walker verifies it:
+- ``expected`` -- the exception IS the answer the code asked for (a
+  timeout that is the interval elapsing, a "not found" that is the
+  documented miss, the refusal a conformance check exists to see).
+  every caught type must be named and narrower than ``Exception``:
+  "expected" cannot be said of everything.
+- ``attempt`` -- one attempt of several (a retry, a candidate parse,
+  a polling loop); exhaustion is raised or reported elsewhere. the
+  handler must sit inside a loop in its function, or a ``raise`` must
+  follow the ``try`` in that function.
+- ``cleanup`` -- best-effort cleanup while another error is already
+  propagating. the handler or ``suppress`` must sit inside an
+  ``except`` body that re-raises, so it cannot mask the primary error.
+- ``optional-import`` -- an optional-dependency probe. every caught
+  type must be ``ImportError`` / ``ModuleNotFoundError`` and the
+  guarded body must import something.
+- ``logged`` -- the handler logs the error and the answer it then
+  gives is still TRUE for the caller (a health probe's ``False``, a
+  background loop with no caller, a side effect whose failure does not
+  change what was asked). the handler must log at WARNING or above;
+  a DEBUG / INFO line is not an operator-visible record.
 
-  - ``expected`` -- the exception IS the answer the code asked for (a
-    timeout that is the interval elapsing, a "not found" that is the
-    documented miss, the refusal a conformance check exists to see).
-    every caught type must be named and narrower than ``Exception``:
-    "expected" cannot be said of everything.
-  - ``attempt`` -- one attempt of several (a retry, a candidate parse,
-    a polling loop); exhaustion is raised or reported elsewhere. the
-    handler must sit inside a loop in its function, or a ``raise`` must
-    follow the ``try`` in that function.
-  - ``cleanup`` -- best-effort cleanup while another error is already
-    propagating. the handler or ``suppress`` must sit inside an
-    ``except`` body that re-raises, so it cannot mask the primary error.
-  - ``optional-import`` -- an optional-dependency probe. every caught
-    type must be ``ImportError`` / ``ModuleNotFoundError`` and the
-    guarded body must import something.
-  - ``logged`` -- the handler logs the error and the answer it then
-    gives is still TRUE for the caller. the handler must log at WARNING
-    or above; a DEBUG / INFO line is not an operator-visible record.
-
-  an unknown kind, or a kind whose check fails, is a violation wherever
-  the marker sits -- on a silent handler, on one that logs, or on a
-  comment line no handler owns: a marker that states a kind is a claim
-  a reader will trust, so it must hold.
-
-this is the transitional contract. nothing that passed before fails
-now unless it carries a kinded marker whose kind does not hold. the
-strict contract (a kind required on every marker, a logged-then-default
-handler flagged, ``except*`` scanned) follows once every package's
-markers name their kind.
+an unknown kind, or a kind whose check fails, is itself a violation,
+wherever the marker sits -- on a silent handler or on one that logs.
+and a bare ``# NOSILENT: <reason>`` comment is a violation anywhere:
+every marker states its kind, so none is left over from the days when
+prose was enough.
+exemptions live on the code, as the marker, never in a central file:
+a marker moves with the handler it describes.
 
 implementation notes:
 
@@ -61,12 +71,12 @@ implementation notes:
   ``self.foo.error(...)`` is not). reusing the broader common helper
   here would silently weaken the contract.
 - the marker contract is "the marker followed by a non-empty
-  rationale". ``# NOSILENT:`` or ``# NOSILENT(expected):`` with nothing
-  after the colon does not count.
-- ``ast.walk`` is used to find every ``ast.Try`` and every
-  ``contextlib.suppress(...)`` call regardless of nesting -- silent
-  swallowing in nested functions, conditional branches, etc. is still
-  flagged.
+  rationale". ``# NOSILENT(expected):`` with nothing after the colon
+  does not count.
+- ``ast.walk`` is used to find every ``ast.Try`` / ``ast.TryStar`` and
+  every ``contextlib.suppress(...)`` call regardless of nesting --
+  silent swallowing in nested functions, conditional branches, etc. is
+  still flagged.
 - ``__init__.py`` files are scanned same as any other module; the
   canonical excluded them but the new contract is that AST-based
   walking treats every ``.py`` file equally and lets the pyproject
@@ -91,11 +101,16 @@ from threetears.enforcement.common import (
 )
 
 __all__ = [
+    "MARKER_KINDS",
+    "NosilentMarker",
     "body_contains_log",
     "body_reraises",
     "body_silent_category",
+    "body_silent_exit",
+    "find_nosilent_marker",
     "find_silent_swallows",
     "has_nosilent_marker",
+    "marker_kind_problem",
     "suppress_has_nosilent",
 ]
 
@@ -104,11 +119,12 @@ _EXCEPT_CATEGORY = "no_silent_swallow.except"
 _SUPPRESS_CATEGORY = "no_silent_swallow.suppress"
 _MARKER_CATEGORY = "no_silent_swallow.marker"
 
-_MARKER_KINDS: frozenset[str] = frozenset({"expected", "attempt", "cleanup", "optional-import", "logged"})
+MARKER_KINDS: frozenset[str] = frozenset({"expected", "attempt", "cleanup", "optional-import", "logged"})
 """the kinds a ``# NOSILENT(<kind>): <reason>`` marker may name; see the module docstring."""
 
 _BROAD_TYPES: frozenset[str] = frozenset({"Exception", "BaseException"})
 _IMPORT_ERRORS: frozenset[str] = frozenset({"ImportError", "ModuleNotFoundError"})
+_EMPTY_CONSTRUCTORS: frozenset[str] = frozenset({"list", "dict", "set", "tuple", "frozenset"})
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef, ast.Module)
 _LOOPS = (ast.For, ast.AsyncFor, ast.While)
 _OPERATOR_LEVELS: frozenset[str] = frozenset({"warning", "error", "critical", "exception"})
@@ -116,12 +132,11 @@ _DEFAULT_LOGGER_NAMES: frozenset[str] = frozenset({"log", "logger", "_log", "_lo
 
 
 @dataclass(frozen=True)
-class _NosilentMarker:
+class NosilentMarker:
     """one ``# NOSILENT`` marker found in a handler's or suppress's window.
 
     :ivar kind: the kind named in parentheses, or ``None`` for the bare
-        ``# NOSILENT: <reason>`` form (still accepted, unchecked, during the
-        transition to the kinded form)
+        ``# NOSILENT: <reason>`` form (which no longer excuses silence)
     :ivar reason: the rationale after the colon, stripped
     :ivar line: 1-indexed line carrying the marker
     """
@@ -206,45 +221,132 @@ def body_contains_log(
     return False
 
 
+def _is_silent_value(node: ast.expr | None) -> bool:
+    """true iff ``node`` is a value that carries no trace of an error.
+
+    ``None`` (or no value), any constant (``False``, ``0``, ``""``,
+    ...), an empty list / tuple / dict / set literal, or a call of an
+    empty builtin constructor (``list()``, ``dict()``, ...).
+
+    :param node: the returned or assigned expression, ``None`` for a bare ``return``
+    :ptype node: ast.expr | None
+    :return: whether the value is indistinguishable from a real answer
+    :rtype: bool
+    """
+    if node is None or isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return not node.elts
+    if isinstance(node, ast.Dict):
+        return not node.keys
+    if isinstance(node, ast.Call):
+        return (
+            isinstance(node.func, ast.Name)
+            and node.func.id in _EMPTY_CONSTRUCTORS
+            and not node.args
+            and not node.keywords
+        )
+    return False
+
+
+def _statement_category(stmt: ast.stmt) -> str | None:
+    """label one inert statement, or ``None`` when it does real work.
+
+    :param stmt: one statement of a handler body
+    :ptype stmt: ast.stmt
+    :return: the inert shape's label, or ``None``
+    :rtype: str | None
+    """
+    if isinstance(stmt, ast.Pass):
+        return "pass"
+    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) and stmt.value.value is Ellipsis:
+        return "ellipsis"
+    if isinstance(stmt, ast.Continue):
+        return "continue"
+    if isinstance(stmt, ast.Break):
+        return "break"
+    if isinstance(stmt, ast.Return):
+        if stmt.value is None or (isinstance(stmt.value, ast.Constant) and stmt.value.value is None):
+            return "return-none"
+        if isinstance(stmt.value, ast.Constant):
+            return "return-constant"
+        return "return-empty" if _is_silent_value(stmt.value) else None
+    if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+        return "assign-default" if stmt.value is not None and _is_silent_value(stmt.value) else None
+    return None
+
+
 def body_silent_category(body: list[ast.stmt]) -> str | None:
     """classify handler body as a silent swallow variant, else ``None``.
 
-    a body is silent iff it is exactly one statement of one of the
-    recognised shapes:
+    a body is silent iff every statement in it is inert -- nothing in
+    it raises, logs, calls, or carries the caught exception anywhere:
 
     - :class:`ast.Pass` -> ``"pass"``
     - :class:`ast.Expr` wrapping ``Ellipsis`` -> ``"ellipsis"``
     - :class:`ast.Return` with no value or a bare ``None`` constant
       -> ``"return-none"``
+    - :class:`ast.Return` of any other constant (``False``, ``0``,
+      ``""``) -> ``"return-constant"``
+    - :class:`ast.Return` of an empty collection (``[]``, ``{}``,
+      ``dict()``) -> ``"return-empty"``
+    - an assignment of any of those values (``ok = False``,
+      ``result = None``) -> ``"assign-default"``
     - :class:`ast.Continue` -> ``"continue"``
     - :class:`ast.Break` -> ``"break"``
 
-    multi-statement bodies and other single-statement shapes (e.g.
-    ``except: x = 1``) are not classified as silent: they are
-    legitimate recovery code that the walker should not flag.
+    a multi-statement inert body (``ok = False`` then ``continue``) is
+    labelled by its last statement. a body with any other statement --
+    a call, a raise, an ``if`` -- is not classified as silent.
 
     :param body: statement list from an ``ExceptHandler.body``
     :ptype body: list[ast.stmt]
     :return: silent-shape label, or ``None`` for non-silent bodies
     :rtype: str | None
     """
-    if len(body) != 1:
+    if not body:
         return None
-    stmt = body[0]
-    if isinstance(stmt, ast.Pass):
-        return "pass"
-    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) and stmt.value.value is Ellipsis:
-        return "ellipsis"
-    if isinstance(stmt, ast.Return):
-        if stmt.value is None:
-            return "return-none"
-        if isinstance(stmt.value, ast.Constant) and stmt.value.value is None:
-            return "return-none"
+    labels = [_statement_category(stmt) for stmt in body]
+    if any(label is None for label in labels):
         return None
-    if isinstance(stmt, ast.Continue):
-        return "continue"
-    if isinstance(stmt, ast.Break):
-        return "break"
+    return labels[-1]
+
+
+def body_silent_exit(body: list[ast.stmt]) -> str | None:
+    """the first inert way out of a handler body that does real work, else ``None``.
+
+    :func:`body_silent_category` answers for a body that is inert
+    throughout. this answers for one that is not -- typically one that
+    logs -- and asks how control LEAVES it: a ``return`` of ``None`` /
+    a constant / an empty collection, a ``continue`` / ``break`` aimed
+    at an enclosing loop, or a last statement that assigns a default.
+    any of those hands the caller an answer it cannot tell from
+    success, whatever was logged on the way. ``raise`` statements do not
+    excuse a silent exit on another branch; nested functions and
+    classes are not part of the handler's flow. a ``continue`` /
+    ``break`` inside a loop the handler itself runs belongs to that loop.
+
+    :param body: statement list from an ``ExceptHandler.body``
+    :ptype body: list[ast.stmt]
+    :return: the silent exit's label (``return-none``, ``return-constant``,
+        ``return-empty``, ``continue``, ``break``, ``assign-default``), or ``None``
+    :rtype: str | None
+    """
+    stack: list[tuple[ast.AST, bool]] = [(stmt, False) for stmt in reversed(body)]
+    while stack:
+        node, in_inner_loop = stack.pop()
+        if isinstance(node, _SCOPES):
+            continue
+        if isinstance(node, ast.Return):
+            label = _statement_category(node)
+            if label is not None:
+                return label
+        elif isinstance(node, (ast.Continue, ast.Break)) and not in_inner_loop:
+            return "continue" if isinstance(node, ast.Continue) else "break"
+        inner = in_inner_loop or isinstance(node, _LOOPS)
+        stack.extend((child, inner) for child in reversed(list(ast.iter_child_nodes(node))))
+    if body and _statement_category(body[-1]) == "assign-default":
+        return "assign-default"
     return None
 
 
@@ -277,7 +379,7 @@ def body_reraises(body: list[ast.stmt]) -> bool:
     return any(isinstance(stmt, ast.Raise) for stmt in body)
 
 
-def _parse_marker(line_text: str, nosilent_marker: str, line_1: int) -> _NosilentMarker | None:
+def _parse_marker(line_text: str, nosilent_marker: str, line_1: int) -> NosilentMarker | None:
     """the marker on ``line_text``, if it carries one with a rationale.
 
     recognises ``<marker-stem>(<kind>): <reason>`` and the bare
@@ -291,18 +393,18 @@ def _parse_marker(line_text: str, nosilent_marker: str, line_1: int) -> _Nosilen
     :param line_1: the line's 1-indexed number
     :ptype line_1: int
     :return: the marker, or ``None`` when absent or reason-less
-    :rtype: _NosilentMarker | None
+    :rtype: NosilentMarker | None
     """
     stem = nosilent_marker.rstrip(":")
     kinded = re.search(re.escape(stem) + r"\(([^)]*)\):(.*)$", line_text)
     if kinded is not None:
         reason = kinded.group(2).strip()
-        return _NosilentMarker(kind=kinded.group(1).strip(), reason=reason, line=line_1) if reason else None
+        return NosilentMarker(kind=kinded.group(1).strip(), reason=reason, line=line_1) if reason else None
     idx = line_text.find(nosilent_marker)
     if idx < 0:
         return None
     reason = line_text[idx + len(nosilent_marker) :].strip()
-    return _NosilentMarker(kind=None, reason=reason, line=line_1) if reason else None
+    return NosilentMarker(kind=None, reason=reason, line=line_1) if reason else None
 
 
 def _marker_with_reason(
@@ -321,12 +423,12 @@ def _marker_with_reason(
     return _parse_marker(line_text, nosilent_marker, 0) is not None
 
 
-def _find_nosilent_marker(
+def find_nosilent_marker(
     source_lines: list[str],
     first_line: int,
     last_line: int,
     nosilent_marker: str,
-) -> _NosilentMarker | None:
+) -> NosilentMarker | None:
     """the first marker with a rationale on lines ``first_line..last_line`` (1-indexed, inclusive).
 
     :param source_lines: file contents split by lines
@@ -338,7 +440,7 @@ def _find_nosilent_marker(
     :param nosilent_marker: the marker substring
     :ptype nosilent_marker: str
     :return: the marker, or ``None`` when the window carries none
-    :rtype: _NosilentMarker | None
+    :rtype: NosilentMarker | None
     """
     for line_1 in range(max(1, first_line), last_line + 1):
         idx = line_1 - 1
@@ -364,7 +466,7 @@ def has_nosilent_marker(
     blocks placed between the ``except`` and its body.
 
     this answers only whether a marker is PRESENT; whether it excuses
-    the handler is :func:`_marker_kind_problem`'s question.
+    the handler is :func:`marker_kind_problem`'s question.
 
     :param source_lines: file contents split by lines
     :ptype source_lines: list[str]
@@ -380,7 +482,7 @@ def has_nosilent_marker(
     :rtype: bool
     """
     end_1 = body_line if body_line is not None else except_line
-    return _find_nosilent_marker(source_lines, except_line - 1, end_1, nosilent_marker) is not None
+    return find_nosilent_marker(source_lines, except_line - 1, end_1, nosilent_marker) is not None
 
 
 def suppress_has_nosilent(
@@ -407,7 +509,7 @@ def suppress_has_nosilent(
     return _suppress_marker(source_lines, call_line, nosilent_marker) is not None
 
 
-def _suppress_marker(source_lines: list[str], call_line: int, nosilent_marker: str) -> _NosilentMarker | None:
+def _suppress_marker(source_lines: list[str], call_line: int, nosilent_marker: str) -> NosilentMarker | None:
     """the marker governing a ``suppress(...)`` call on ``call_line``, nearest line first.
 
     :param source_lines: file contents split by lines
@@ -417,10 +519,10 @@ def _suppress_marker(source_lines: list[str], call_line: int, nosilent_marker: s
     :param nosilent_marker: the marker substring
     :ptype nosilent_marker: str
     :return: the marker, or ``None``
-    :rtype: _NosilentMarker | None
+    :rtype: NosilentMarker | None
     """
     for line_1 in (call_line, call_line - 1, call_line - 2):
-        marker = _find_nosilent_marker(source_lines, line_1, line_1, nosilent_marker)
+        marker = find_nosilent_marker(source_lines, line_1, line_1, nosilent_marker)
         if marker is not None:
             return marker
     return None
@@ -487,8 +589,8 @@ def _raise_follows(anchor: ast.AST, scope: ast.AST) -> bool:
     return False
 
 
-def _marker_kind_problem(
-    marker: _NosilentMarker,
+def marker_kind_problem(
+    marker: NosilentMarker,
     *,
     site: ast.AST,
     anchor: ast.AST,
@@ -500,7 +602,7 @@ def _marker_kind_problem(
     """why ``marker`` does not excuse the silent site, or ``None`` when it does.
 
     :param marker: the marker found in the site's window
-    :ptype marker: _NosilentMarker
+    :ptype marker: NosilentMarker
     :param site: the ``ExceptHandler`` or ``suppress(...)`` call
     :ptype site: ast.AST
     :param anchor: the ``try`` / ``with`` statement the site belongs to
@@ -516,10 +618,14 @@ def _marker_kind_problem(
     :return: the problem, or ``None``
     :rtype: str | None
     """
-    kinds = ", ".join(sorted(_MARKER_KINDS))
+    kinds = ", ".join(sorted(MARKER_KINDS))
     if marker.kind is None:
-        return None  # the bare form: a reason with no kind to check, accepted during the transition
-    if marker.kind not in _MARKER_KINDS:
+        return (
+            "a bare `# NOSILENT: <reason>` no longer excuses an error turned into a quiet answer; "
+            "let the error reach the caller (raise, a typed failure, a log), or name the kind "
+            f"the walker can check: `# NOSILENT(<kind>): <reason>`, kind one of {kinds}"
+        )
+    if marker.kind not in MARKER_KINDS:
         return f"unknown NOSILENT kind {marker.kind!r}; kinds are {kinds}"
     chain = _ancestors(site, parents)
     if marker.kind == "logged":
@@ -650,7 +756,7 @@ def find_silent_swallows(
             source_lines = source_text.splitlines()
             parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
             for node in ast.walk(tree):
-                if isinstance(node, ast.Try):
+                if isinstance(node, (ast.Try, ast.TryStar)):
                     _scan_try(
                         node,
                         module_path,
@@ -702,7 +808,7 @@ def _scan_suppress(
         anchor = parents.get(item) if isinstance(item, ast.withitem) else None
         guarded = list(anchor.body) if isinstance(anchor, (ast.With, ast.AsyncWith)) else []
         caught = [name for arg in call.args for name in _type_names(arg)] or [None]
-        problem = _marker_kind_problem(
+        problem = marker_kind_problem(
             marker,
             site=call,
             anchor=anchor if anchor is not None else call,
@@ -724,7 +830,7 @@ def _scan_suppress(
 
 
 def _scan_try(
-    node: ast.Try,
+    node: ast.Try | ast.TryStar,
     module_path: Path,
     source_lines: list[str],
     logger_names: frozenset[str],
@@ -740,7 +846,7 @@ def _scan_try(
     source order.
 
     :param node: the try node to inspect
-    :ptype node: ast.Try
+    :ptype node: ast.Try | ast.TryStar
     :param module_path: file containing the try
     :ptype module_path: Path
     :param source_lines: file contents split by lines
@@ -769,24 +875,31 @@ def _scan_try(
             )
             continue
         category = body_silent_category(handler.body)
-        if (
-            category is None
-            or body_contains_log(handler.body, logger_names, logger_methods)
-            or body_reraises(handler.body)
-        ):
+        if category is None:
+            # a body that does work and leaves inertly is judged only when the work is a log line:
+            # a log tells the operator, never the caller, who still gets the inert answer.
+            exit_label = body_silent_exit(handler.body)
+            if exit_label is None or not body_contains_log(handler.body, logger_names, logger_methods):
+                _check_stated_kind(
+                    node, handler, module_path, source_lines, nosilent_marker, parents, logger_names, violations
+                )
+                continue
+            category = f"logged-then-{exit_label}"
+        elif body_contains_log(handler.body, logger_names, logger_methods) or body_reraises(handler.body):
             _check_stated_kind(
                 node, handler, module_path, source_lines, nosilent_marker, parents, logger_names, violations
             )
             continue
         body_line = handler.body[0].lineno if handler.body else handler.lineno
-        marker = _find_nosilent_marker(source_lines, handler.lineno - 1, body_line, nosilent_marker)
+        marker = find_nosilent_marker(source_lines, handler.lineno - 1, body_line, nosilent_marker)
         if marker is None:
             problem: str | None = (
-                f"silent swallow (body={category}); add a log call, re-raise, or a "
-                f"`{nosilent_marker.rstrip(':')}(<kind>): <reason>` marker the walker can check"
+                f"silent swallow (body={category}); let the error reach the caller (re-raise, a typed "
+                f"failure{', a log call' if not category.startswith('logged-') else ''}), or add a `{nosilent_marker.rstrip(':')}(<kind>): <reason>` "
+                "marker the walker can check"
             )
         else:
-            problem = _marker_kind_problem(
+            problem = marker_kind_problem(
                 marker,
                 site=handler,
                 anchor=node,
@@ -816,7 +929,7 @@ def _scan_marker_comments(
     nosilent_marker: str,
     violations: list[Violation],
 ) -> None:
-    """flag every marker COMMENT in the module that names an unknown kind.
+    """flag every bare or unknown-kind marker COMMENT in the module.
 
     only real ``#`` comments count (a docstring that quotes the marker
     is documentation, not a marker). a module that does not tokenize was
@@ -841,26 +954,24 @@ def _scan_marker_comments(
     except tokenize.TokenError, SyntaxError:
         # NOSILENT(expected): the parse step already named this module as unscanned; there are no comments to read
         return
-    kinds = ", ".join(sorted(_MARKER_KINDS))
+    kinds = ", ".join(sorted(MARKER_KINDS))
     for token in tokens:
         marker = _parse_marker(token.string, nosilent_marker, token.start[0])
         if marker is None:
             continue
-        if marker.kind is None or marker.kind in _MARKER_KINDS:
+        if marker.kind is None:
+            reason = f"a bare `{nosilent_marker} <reason>` marker; name its kind, one of {kinds}"
+        elif marker.kind not in MARKER_KINDS:
+            reason = f"unknown NOSILENT kind {marker.kind!r}; kinds are {kinds}"
+        else:
             continue
         violations.append(
-            Violation(
-                category=_MARKER_CATEGORY,
-                file=module_path,
-                line=marker.line,
-                symbol="NOSILENT",
-                reason=f"unknown NOSILENT kind {marker.kind!r}; kinds are {kinds}",
-            )
+            Violation(category=_MARKER_CATEGORY, file=module_path, line=marker.line, symbol="NOSILENT", reason=reason)
         )
 
 
 def _check_stated_kind(
-    node: ast.Try,
+    node: ast.Try | ast.TryStar,
     handler: ast.ExceptHandler,
     module_path: Path,
     source_lines: list[str],
@@ -874,11 +985,11 @@ def _check_stated_kind(
     such a handler passes without a marker, but a marker that claims
     ``logged`` over a DEBUG line, or ``expected`` over ``Exception``,
     is a false statement a reader will trust; it is flagged like any
-    other. unknown kinds are reported by the comment scan, and a bare
-    marker states no kind, so only a known kind is checked here.
+    other. unknown kinds and bare markers are reported by the comment
+    scan, so only a known kind is checked here.
 
     :param node: the try the handler belongs to
-    :ptype node: ast.Try
+    :ptype node: ast.Try | ast.TryStar
     :param handler: the handler
     :ptype handler: ast.ExceptHandler
     :param module_path: file containing the try
@@ -897,10 +1008,10 @@ def _check_stated_kind(
     if body_reraises(handler.body):
         return  # it cannot swallow; a marker in its window speaks for a suppress or handler inside it
     body_line = handler.body[0].lineno if handler.body else handler.lineno
-    marker = _find_nosilent_marker(source_lines, handler.lineno - 1, body_line, nosilent_marker)
-    if marker is None or marker.kind not in _MARKER_KINDS:
+    marker = find_nosilent_marker(source_lines, handler.lineno - 1, body_line, nosilent_marker)
+    if marker is None or marker.kind not in MARKER_KINDS:
         return
-    problem = _marker_kind_problem(
+    problem = marker_kind_problem(
         marker,
         site=handler,
         anchor=node,
