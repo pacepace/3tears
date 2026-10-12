@@ -6,8 +6,8 @@ records what they answered, and a ``replay`` run serves that recording instead; 
 the candidate. New here: ``tools=``, which hands the candidate its tools as ``candidate(case, tools)``, and
 ``cassette_mode=`` / ``cassette_corpus_id=``. How replay matches each ask: ``docs/adopting-a-host.md``.
 
-Run it with ``python packages/evals/examples/cassettes.py``. It calls no model, so it needs no API key and
-costs nothing: the candidates are plain code and the search is an offline stand-in.
+Run it with ``python cassettes.py`` (``README.md`` beside it says how). It calls no model, so it needs no API key
+and costs nothing: the candidates are plain code and the search is an offline stand-in.
 """
 
 import asyncio

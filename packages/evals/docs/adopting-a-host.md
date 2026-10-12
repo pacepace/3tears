@@ -73,8 +73,8 @@ pass it to every entrypoint. It holds:
   dropped silently would register a standard other than the one you wrote;
 - the `EvalStorage` you read and write through;
 - a factory for the completion clients the engine's own judge, simulator and analysis roles call. Every
-  completion a client returns is read by `CompletionResult`'s attribute names, and the usage ledger reads its
-  own (`USAGE_LEDGER_ATTRIBUTES`) with a default, so a renamed attribute would degrade every usage row to
+  completion a client returns is read by `CompletionResult`'s attribute names, and the usage ledger reads the
+  token and cost attributes with a default, so a renamed attribute would degrade every usage row to
   "unreported" in silence. Check your completion type in your own suite with
   `threetears.evals.testing.check_completion_conformance(an_instance)`, which fails naming the attribute.
   `served_model` must be the model the provider's RESPONSE named, never the request: it is how a candidate
@@ -157,7 +157,8 @@ fn, ...)`, as the action catalogue does for every synchronous operation. An asyn
 `job_poll`) offloads its own.
 
 **If your database driver is async**, write your adapter against it as an `AsyncDocumentStore` (in
-`threetears.evals.schema`: the same port, every method a coroutine; `AsyncStoreClock` for its clock) and hand the
+`threetears.evals.schema`: the same port, every method awaited and `iter_by_doc_type` an async iterator;
+`AsyncStoreClock` for its clock) and hand the
 engine `bridge_async_store(store, loop)` (in `threetears.evals.storage`), built with the loop the store's
 connections belong to — in an async app, the running loop at startup. Each call the engine makes runs as a task on
 that loop, in the calling context (a context variable your row-level security reads arrives set), while the
@@ -334,8 +335,10 @@ Prove the router as you prove any store: the conformance kit runs over a `Routed
 
 **Every name that leaves a public root is written down, and nothing is kept for compatibility.** When a release
 moves a public name to another root, renames it, or removes it, `packages/evals/MIGRATIONS.toml` records it under
-that release: the old name, its new home or `removed`, and why. There is no shim at the old name. The release
-notes are printed from that record, so they hold the full old-to-new map:
+that release: the old name, its new home or `removed`, and why. There is no shim at the old name. The file is
+in the repository, not the installed package: read it at the tag you are moving to, on GitHub
+(`https://github.com/pacepace/3tears/blob/<tag>/packages/evals/MIGRATIONS.toml`) or in a checkout. In a checkout,
+the release notes are printed from it, so they hold the full old-to-new map:
 
 ```bash
 uv run python packages/evals/scripts/release_notes.py v0.66.0-evaladopt.6
@@ -527,7 +530,7 @@ releases the client on every path that does not reach `make`. Work of any other 
 ```python
 async def _propose(host: OpsHost, caller: Caller, params: ProposeParams) -> JobsStarted:
     budget = my_budget(host, caller.scope_id)
-    call = plan_draft(system_prompt=..., subject_feed=..., catalog_feed=...)
+    call = plan_draft(axis=params.axis, system_prompt=..., subject_feed=..., catalog_feed=...)
 
     async def draft(client: BoundCompletionClient, admitted: AdmittedCall) -> RubricProposal:
         async with client:                                    # the job's work owns the client from here

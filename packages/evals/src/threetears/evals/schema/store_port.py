@@ -439,7 +439,7 @@ class StoreClock(Protocol):
 
 
 class AsyncDocumentStore(Protocol):
-    """:class:`DocumentStore`, every method a coroutine: the port for a host whose database driver is async.
+    """:class:`DocumentStore`, every method awaited: the port for a host whose database driver is async.
 
     The same port, rule for rule — the scope model, the strip on read, the error contract, both write
     preconditions — with each method awaited, and :meth:`iter_by_doc_type` an async iterator. The engine

@@ -63,9 +63,17 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any, TypeVar
 
-from fastmcp import FastMCP
-from fastmcp.tools import Tool
-from fastmcp.tools.base import ToolResult
+try:
+    from fastmcp import FastMCP
+    from fastmcp.tools import Tool
+    from fastmcp.tools.base import ToolResult
+except ModuleNotFoundError as missing:
+    if missing.name != "fastmcp":
+        raise
+    raise ModuleNotFoundError(
+        'threetears.evals.transports.fastmcp needs the fastmcp extra: pip install "3tears-evals[fastmcp]"',
+        name=missing.name,
+    ) from missing
 from pydantic import ConfigDict, Field
 
 from threetears.evals.actions import ActionCatalogue, ActionOutcome, Caller, MountedTool, ToolSpec, standard_tools

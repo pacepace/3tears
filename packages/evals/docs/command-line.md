@@ -14,6 +14,7 @@ returning an `EvalHost`, or a `LaunchHost` for `run`:
 python -m threetears.evals run    --host myapp.evals:build_host --scope dev --template T --subject S [--model M ...]
                                   [--k N] [--max-cost-usd DOLLARS] [--judge-model MODEL] [--simulator-model MODEL]
                                   [--n-variations N] [--variation-model MODEL] [--apparatus-settings JSON]
+                                  [--measure-latency]
 python -m threetears.evals ls     --host myapp.evals:build_host --scope dev
 python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev [--format markdown|html|json] [--out PATH]
 python -m threetears.evals bundle CAMPAIGN --host myapp.evals:build_host --scope dev
@@ -23,6 +24,24 @@ python -m threetears.evals gate   CAMPAIGN --host myapp.evals:build_host --scope
 python -m threetears.evals judge-temperature RUN --host myapp.evals:build_host --scope dev (--max-cost-usd DOLLARS | --no-cap)
                                   [--repeats N] [--all] [--result ID ...] [--estimate] [--json]
 ```
+
+**Runs you made with `run_eval` or `compare`** are read the same way: the factory returns the host the quick path
+built over the store you kept them in ([Keep your runs](tutorial.md#8-keep-your-runs)), with the same scorers:
+
+```python
+# myapp/evals.py
+from threetears.evals.quick import callable_host
+from threetears.evals.storage import SqliteDocumentStore
+
+from myapp.scorers import correct
+
+
+def build_host():
+    return callable_host([correct], store=SqliteDocumentStore("triage.sqlite"))
+```
+
+`ls`, `report`, `bundle`, `spend`, `frontier` and `gate` then read those runs. `run` needs a launch host, and
+`judge-temperature` a host with completion clients (`callable_host(..., clients=...)`).
 
 ### `run`
 
@@ -38,6 +57,7 @@ python -m threetears.evals judge-temperature RUN --host myapp.evals:build_host -
 - `--n-variations` and `--variation-model` generate that many cases first (priced against the host's
   out-of-run cap, outside the runs' caps; see [Cost and budgets](cost-and-budgets.md#spend-outside-any-run)).
 - `--apparatus-settings` sets host-declared apparatus values as a JSON object.
+- `--measure-latency` says latency is under test, so each run's cells run one at a time.
 
 Each flag passes to one `start_run` argument: `--model` to `models`, `--k` to `k_runs`, `--template` to
 `template_id`, `--subject` to `subject_id`, `--scope` to `scope_id`, and the rest to the argument of the same name.

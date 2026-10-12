@@ -6,8 +6,8 @@ come from, and each chart to a Vega-Lite spec (and an SVG, with the ``[vega]`` e
 ``report_markdown``, ``report_html``, ``inspect_campaign_bundle``, ``VegaRenderer`` and ``Comparison.gate``.
 Reading a report further: ``docs/reading-reports.md``.
 
-Run it with ``python packages/evals/examples/reports.py``; the files go to ``./eval-report/``.
-It calls no model: both arms are keyword stand-ins, so it always runs offline and costs nothing.
+Run it with ``python reports.py`` (``README.md`` beside it says how); the files go to ``./eval-report/``. It calls
+no model: both arms are keyword stand-ins, so it always runs offline and costs nothing.
 """
 
 import asyncio

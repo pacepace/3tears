@@ -337,7 +337,7 @@ async def stand_in_judge(*, system: str, user: str, response_format: dict | None
     reply = {"reasoning": "stand-in: looks for an apology", "criteria_scores": {"answer.acknowledges": score}}
     return SimpleNamespace(
         content=json.dumps(reply), input_tokens=None, output_tokens=None, reasoning_tokens=None, cost_usd=0.0,
-        price_source="stand-in", model="stand-in", served_model=None, stop_reason="end_turn", temperature=0.0,
+        price_source="stand-in", model="stand-in", served_model="stand-in", stop_reason="end_turn", temperature=0.0,
     )
 
 
@@ -366,6 +366,7 @@ run 01a12446-2d38-77e1-8185-6b938c406abb completed: draft_reply over 10 case(s) 
   intent (from draft_reply's docstring): Draft the first reply to a support ticket.
   answer.acknowledges (judged 1-5): mean 4.7 (n=20, min 2, max 5)
   judge spend: $0 over 20 call(s)
+  total spend: $0, the results' cost
 hours: answer.acknowledges 2, because stand-in: looks for an apology
 hours: answer.acknowledges 2, because stand-in: looks for an apology
 ```
@@ -375,6 +376,9 @@ hours: answer.acknowledges 2, because stand-in: looks for an apology
 - **With a judge in play** the summary also counts results excluded for a judge's fault, states the spend cap
   (none here; `max_cost_usd=` sets one) and what the judge spent.
 - **`answer.acknowledges`** is the rubric's dimension, placed under the judge's default context, `answer`.
+- **`served_model`** is the model the provider's response says answered. A real client reads it off the response;
+  without it, the summary says it cannot confirm which model produced the scores, since a provider may answer a
+  model id with a model of its choosing.
 - **The judge reads every field of the case** beside the material, `queue` included. Keep out of the case
   anything the judge should not see.
 - **Read the low scores the way you read misses.** The stand-in marked down `hours`, and a model reading this

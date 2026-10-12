@@ -31,8 +31,9 @@ Everything else — the trial loop, the stored documents, the bundle — is the 
 run built and its status set by the caller. :func:`courier_launch_host` is the way a product serving
 launches adopts the engine: a :class:`~threetears.evals.run.LaunchHost` whose one kind's launcher
 :func:`~threetears.evals.run.start_run` dispatches to, which the engine's command line drives
-(``python -m threetears.evals run --host packages.evals.tests.fixtures.courierhost:courier_launch_host``)
-and waits on through the job manager's ``wait_for``.
+(from a checkout's root, ``python -m threetears.evals run --host
+packages.evals.tests.fixtures.courierhost:courier_launch_host``; with this file copied out as ``courierhost.py``,
+``--host courierhost:courier_launch_host`` from beside it) and waits on through the job manager's ``wait_for``.
 """
 
 from __future__ import annotations
@@ -300,7 +301,13 @@ class RoutePlannerKind:
             host_measures={ON_TIME_RATE: (stops - late) / stops, DETOUR_KM: detour, FIELD_ACCURACY: eta_miss_min},
             telemetry=CandidateTelemetry(
                 usage=[
-                    RoleUsage(role="candidate", model=instance.model, cost_usd=0.002, price_source="courier_script")
+                    RoleUsage(
+                        role="candidate",
+                        model=instance.model,
+                        cost_usd=0.002,
+                        price_source="courier_script",
+                        call_count=1,
+                    )
                 ],
             ),
         )

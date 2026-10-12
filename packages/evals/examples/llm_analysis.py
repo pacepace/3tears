@@ -7,10 +7,10 @@ fills the number in, and a reading the bundle lacks is refused and sent back for
 overclaim: hold it against the code's verdict, printed first. The bundle: ``docs/concepts.md#analysis-bundle``.
 Saving it and running a second prompt over the same fingerprint: ``docs/reading-reports.md``.
 
-Run it with ``python packages/evals/examples/llm_analysis.py``; it writes ``./eval-analysis/bundle.json``.
-The campaign's two classifiers are keyword rules, so the campaign always runs offline. With ``ANTHROPIC_API_KEY``
-set, Claude writes the analysis, for about a cent. Without it, a scripted stand-in writes it, and its
-first draft cites a reading the bundle lacks, to show the refusal.
+Run it with ``python llm_analysis.py`` (``README.md`` beside it says how); it writes
+``./eval-analysis/bundle.json``. The campaign's two classifiers are keyword rules, so the campaign always runs
+offline. With ``ANTHROPIC_API_KEY`` set, Claude writes the analysis, for about a cent. Without it, a scripted
+stand-in writes it, and its first draft cites a reading the bundle lacks, to show the refusal.
 """
 
 import asyncio
@@ -88,7 +88,10 @@ def offline_writer() -> Any:
         memo = {"headline": "Offline stand-in: a script wrote this, not a model", "summary": "- Shape only."}
         memo |= {"headline_rests_on": [0], "summary_rests_on": [[0]]}
         memo |= {"findings": [finding], "decisions": [], "questions": [], "next": []}
-        return Completion(json.dumps(memo), None, None, None, 0.0, "offline", "offline-writer", None, "end_turn", None)
+        # No provider resolves a stand-in, so the model that answered is the one asked for: say so as served_model.
+        return Completion(
+            json.dumps(memo), None, None, None, 0.0, "offline", "offline-writer", "offline-writer", "end_turn", None
+        )
 
     return SimpleNamespace(generate=generate)
 
