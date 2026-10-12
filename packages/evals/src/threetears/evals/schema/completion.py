@@ -168,12 +168,19 @@ class CompletionProtocolDefect(TypeError):
         """
         self.completion_type = type(completion).__name__
         self.member = member
-        #: The provider calls already made, and billed, before the defect was found — set by the caller that made
-        #: them (the judge counts its attempts), so the spend goes up with the error rather than vanishing with
-        #: the frame. 0 when no caller counted them.
+        # What the calls already made, and billed, before the defect was found reported — set by the caller that
+        # made them (the judge counts its attempts), so the spend goes up with the error and is counted where the
+        # run's spend is summed rather than vanishing with the frame. Named as a completion names them
+        # (USAGE_LEDGER_ATTRIBUTES), so the error reads as their usage. ``calls`` is 0 when no caller counted them;
+        # every other figure is ``None`` when unreported: unknown, never zero.
         self.calls = 0
-        #: What those calls cost, or ``None`` when any went unpriced or no caller counted them: unknown, never zero.
+        self.model: str | None = None
+        self.served_model: str | None = None
+        self.input_tokens: int | None = None
+        self.output_tokens: int | None = None
+        self.reasoning_tokens: int | None = None
         self.cost_usd: float | None = None
+        self.price_source: str | None = None
         super().__init__(
             f"{self.completion_type} carries no `{member}`, a member of the CompletionResult protocol: {why} — "
             "threetears.evals.testing.check_completion_conformance holds a host's completion type to the protocol"

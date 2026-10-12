@@ -91,8 +91,10 @@ pass it to every entrypoint. It holds:
   `temperature` attribute at all is your code's defect, not a judging outcome: the engine raises
   `CompletionProtocolDefect` (a `TypeError`, in `threetears.evals.schema`) and the run fails with that message,
   as it does for a kind's `CandidateKindDefect`, rather than finishing with an error on every dimension. The
-  error carries the calls already billed and their cost (`calls`, `cost_usd`), and the cell it surfaced in is not
-  recorded. A re-judge, a judge repeat, a second judge and a witnessed cell's judging raise it the same way;
+  error carries the calls already billed and their cost (`calls`, `cost_usd`), and the cell it surfaced in is
+  recorded excluded (`apparatus_failed`) with what it was billed, so the run's totals and its cost cap count it, as
+  a cell failed by a `CandidateKindDefect` is. A judged witnessed cell is not recorded, but its billed judge calls
+  count against the run's judge ceiling. A re-judge, a judge repeat, a second judge and a witnessed cell's judging raise it the same way;
 - your `failure_describer` — how a raised provider call reads. It is the only thing that can say a call
   was refused for the calling account, which stops a run rather than excluding its cells;
   `withhold_failure_detail` is the honest one for an app with no error types of its own;
@@ -873,6 +875,6 @@ A cell cut off by its deadline or by its run's cancel is recorded the same way, 
 cut lands while the cell is being judged, the evidence and the scores that came back are kept and the
 unfinished dims are the cell's judge errors, which a re-judge can repair. A re-judge re-asks only dims
 that errored: a judge's "can't tell" is an answer. Every dim the judge phase asked records the prompt that asked
-it in `EvalResult.judge_config_ids`, an unfinished one included: a config's id, or the built-in prompt's
-`builtin:` identity. A re-judge refuses a built-in dim whose recorded identity is not the built-in prompt it would
-send today.
+it in `EvalResult.judge_config_ids`, an unfinished one included: a config's id with the reply format's
+fingerprint (`<config id>@<sha12>`; `judge_config_of` reads the id back), or the built-in prompt's `builtin:`
+identity. A re-judge refuses a dim whose recorded identity is not the prompt it would send today.

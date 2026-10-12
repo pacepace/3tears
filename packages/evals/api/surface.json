@@ -353,6 +353,10 @@
       "kind": "constant (dict)",
       "signature": ""
     },
+    "threetears.evals.schema.judge_config_of": {
+      "kind": "function",
+      "signature": "judge_config_of(recorded: str | None) -> str | None"
+    },
     "threetears.evals.schema.JudgeAttributionSource": {
       "kind": "literal",
       "signature": "'recorded'` | `'derived'"
