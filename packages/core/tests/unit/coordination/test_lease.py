@@ -577,3 +577,56 @@ class TestAWriteAppliedButNeverAnswered:
             await handle.refresh()
         await handle.release()
         assert await bucket.get(key="lock/a") == stolen
+
+
+class TestHolder:
+    """a reader asks who holds a lease without contending for it."""
+
+    async def test_a_free_key_has_no_holder(self) -> None:
+        lease, _ = await _make_lease()
+        assert await lease.holder("load") is None
+
+    async def test_a_held_lease_names_its_holder_to_every_factory_and_none_once_released(self) -> None:
+        client = FakeNatsClient()
+        holding = KVLease(nats_client=client, pod_id="pod-alpha", key_scope="pod1")  # type: ignore[arg-type]
+        reading = KVLease(nats_client=client, pod_id="pod-beta", key_scope="pod1")  # type: ignore[arg-type]
+
+        handle = await holding.acquire("load", ttl_seconds=30)
+
+        assert await reading.holder("load") == "pod-alpha"
+        assert await holding.holder("load") == "pod-alpha"
+        # asking is not contending: the holder still holds, and can renew
+        await handle.refresh()
+        await handle.release()
+        assert await reading.holder("load") is None
+
+    async def test_a_lease_under_another_owners_scope_is_not_this_ones(self) -> None:
+        client = FakeNatsClient()
+        await KVLease(nats_client=client, pod_id="pod-alpha", key_scope="pod1").acquire("load", ttl_seconds=30)  # type: ignore[arg-type]
+
+        assert await KVLease(nats_client=client, pod_id="pod-beta", key_scope="pod2").holder("load") is None  # type: ignore[arg-type]
+
+    async def test_a_holder_that_died_is_named_until_its_entry_expires_and_not_after(self) -> None:
+        lease, client = await _make_lease(pod_id="pod-reader")
+        bucket = await _bucket_for(client, "test_leases")
+        now = datetime.now(UTC)
+
+        def entry(expires: datetime) -> bytes:
+            return serialize_to_json(
+                {
+                    "holder": "pod-dead",
+                    "expires_at": json_datetime(expires),
+                    "acquired_at": json_datetime(now - timedelta(minutes=5)),
+                }
+            )
+
+        await bucket.put(key="load", value=entry(now + timedelta(seconds=30)))
+        assert await lease.holder("load") == "pod-dead"
+        await bucket.put(key="load", value=entry(now - timedelta(seconds=1)))
+        assert await lease.holder("load") is None
+
+    async def test_an_entry_this_lease_did_not_write_names_no_holder(self) -> None:
+        lease, client = await _make_lease()
+        await (await _bucket_for(client, "test_leases")).put(key="load", value=b"not an envelope")
+
+        assert await lease.holder("load") is None

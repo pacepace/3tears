@@ -18,6 +18,7 @@ from threetears.agent.tools.background_operation import (
     OperationStatusTool,
     RequestOperationTool,
     SharedOutcome,
+    SharedProgress,
     StartOperationTool,
 )
 from threetears.agent.tools.base_tool import CONFLICT, TOOL_NOT_READY
@@ -1132,3 +1133,140 @@ async def test_a_write_that_loses_every_round_gives_up_and_says_so(
     lost = [record for record in caplog.records if "every attempt lost" in record.message]
     assert len(lost) == 1 and lost[0].levelname == "WARNING"
     assert getattr(lost[0], "extra_data", None) == {"key": _OUTCOME_KEY, "attempts": 3}
+
+
+# -- the last run that did something, a run in progress elsewhere, and a progress that is awaited --
+
+
+async def test_a_run_that_did_nothing_does_not_replace_this_replicas_last_run_that_did() -> None:
+    client = FakeNatsClient()
+    results = [{"rows": 3}, {"rows": 0}]
+
+    async def body() -> dict[str, int]:
+        return results.pop(0)
+
+    operation, status, shared = _replica(client, "replica-a", body, ran=_did_load)
+    _, other_status, _ = _replica(client, "replica-b", _gate(), ran=_did_load)
+    bucket = await _bucket(client)
+
+    # the run that loaded could not be recorded when it ended
+    bucket.become_unreachable(ConnectionError("the broker is away"))
+    await _run(operation)
+    loaded = operation.last
+    bucket.become_reachable()
+    assert loaded is not None and loaded.result == {"rows": 3}
+
+    await _run(operation)
+
+    # the run that did nothing is not this replica's last run, so the one that loaded is still the
+    # one reported, and still the one written to the record that lacks it
+    assert results == [] and operation.last is loaded
+    answer = await status.run()
+    assert answer.metadata is not None and answer.metadata["last"]["result"] == {"rows": 3}
+    recorded = await shared.read()
+    assert recorded is not None and recorded.outcome.result == {"rows": 3}
+    elsewhere = await other_status.run()
+    assert elsewhere.metadata is not None
+    assert elsewhere.metadata["last"]["result"] == {"rows": 3} and elsewhere.metadata["last"]["other_replica"] is True
+
+
+async def test_an_operation_that_shares_no_progress_asks_no_lease_and_names_no_run_elsewhere() -> None:
+    client = FakeNatsClient()
+    operation, status, _ = _replica(client, "replica-a", _gate())
+    await KVLease(client, pod_id="replica-b", key_scope="enr").acquire("enr-load", ttl_seconds=30)  # type: ignore[arg-type]
+
+    answer = await status.run()
+
+    assert answer.metadata is not None
+    assert "elsewhere" not in answer.metadata
+    assert answer.metadata["state"] == "idle" and answer.metadata["running"] is False
+    assert await operation.running_elsewhere() is None
+
+
+async def test_clearing_progress_removes_this_replicas_entry_and_leaves_another_replicas() -> None:
+    client = FakeNatsClient()
+    mine = SharedProgress(KVLease(client, pod_id="replica-a", key_scope="enr"), "enr-load")  # type: ignore[arg-type]
+    theirs = SharedProgress(KVLease(client, pod_id="replica-b", key_scope="enr"), "enr-load")  # type: ignore[arg-type]
+    bucket = await _bucket(client)
+
+    assert not await mine.clear()
+    await theirs.publish({"summary": "Loading", "holder": "somebody else"})
+    assert json.loads(await bucket.get(key="enr.enr-load.progress") or b"") == {
+        "summary": "Loading",
+        "holder": "replica-b",
+    }
+    assert not await mine.clear()
+    assert await bucket.get(key="enr.enr-load.progress") is not None
+
+    assert await theirs.clear()
+    assert await bucket.get(key="enr.enr-load.progress") is None
+
+
+async def test_the_status_tool_awaits_a_progress_that_is_a_coroutine_function() -> None:
+    body = _gate()
+    operation = BackgroundOperation("load", body)
+
+    async def progress() -> dict[str, Any]:
+        await asyncio.sleep(0)
+        return {"summary": "Loading · 37 of 51 states", "states_done": 37}
+
+    status = OperationStatusTool(
+        name="enr.load_status", description="Report the load.", operation=lambda: operation, progress=progress
+    )
+
+    answer = await status.run()
+
+    assert answer.metadata is not None
+    assert answer.metadata["progress"] == {"summary": "Loading · 37 of 51 states", "states_done": 37}
+    assert answer.content == "idle; now: Loading · 37 of 51 states"
+    # asked without a call of the tool, it cannot be awaited: said, and nothing is left unawaited
+    direct = status.answer(operation)
+    assert direct.metadata is not None
+    assert direct.metadata["progress"] == {"summary": "progress unavailable (it is read when the tool is called)"}
+
+
+async def test_an_awaited_progress_that_fails_still_answers_the_last_runs_error() -> None:
+    body = _gate()
+    body.fail_with = RuntimeError("the warehouse went away")
+    operation = BackgroundOperation("load", body)
+
+    async def broken() -> dict[str, Any]:
+        raise LookupError("no copy yet")
+
+    status = OperationStatusTool(
+        name="enr.load_status", description="Report the load.", operation=lambda: operation, progress=broken
+    )
+    await _finish(operation, body)
+
+    answer = await status.run()
+
+    assert answer.success and answer.metadata is not None
+    assert "warehouse went away" in answer.metadata["last"]["error"]
+    assert answer.metadata["progress"] == {"summary": "progress unavailable (LookupError)", "error": "no copy yet"}
+
+
+async def test_a_replica_that_holds_the_lease_itself_or_runs_here_reports_no_run_elsewhere() -> None:
+    client = FakeNatsClient()
+    mine = KVLease(client, pod_id="replica-a", key_scope="enr")  # type: ignore[arg-type]
+    theirs = KVLease(client, pod_id="replica-b", key_scope="enr")  # type: ignore[arg-type]
+    progress = SharedProgress(mine, "enr-load")
+    body = _gate()
+    operation: BackgroundOperation[Any] = BackgroundOperation("enr-load", body, shared_progress=progress)
+    status = OperationStatusTool(name="enr.load_status", description="Report.", operation=lambda: operation)
+
+    # this replica's own lease is not a run elsewhere
+    held = await mine.acquire("enr-load", ttl_seconds=30)
+    assert await progress.running_elsewhere() is None
+    await held.release()
+
+    # while a run is in progress here it is the one reported, whoever holds the lease
+    await theirs.acquire("enr-load", ttl_seconds=30)
+    assert await progress.running_elsewhere() is not None
+    operation.start()
+    await asyncio.sleep(0)
+    answer = await status.run()
+    assert answer.metadata is not None
+    assert answer.metadata["elsewhere"] is None and answer.content.startswith("running since ")
+    body.release.set()
+    await operation.wait()
+    assert (await status.run()).content.startswith("running on another replica (replica-b)")

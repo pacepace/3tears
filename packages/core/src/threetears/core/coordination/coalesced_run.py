@@ -118,7 +118,24 @@ class CoalescedRun:
             lease was let go, and its request recorded again
         :raises Exception: what the operation raised; its request is taken and not retried
         """
-        runs = 0
+        return len(await self.drain_results())
+
+    async def drain_results(self) -> list[Any]:
+        """:meth:`drain`, answering what each run returned rather than how many there were.
+
+        For a caller that reports each run (a load's own report), which a count cannot give it.
+
+        :return: each run's result, in the order they ran; empty when nothing was wanted or another
+            replica holds the lease (which then runs what was asked)
+        :rtype: list[Any]
+        :raises LeaseLost: when the lease was lost during a run; the run was cancelled and the
+            request recorded again
+        :raises asyncio.CancelledError: when this call was cancelled; the run was stopped before the
+            lease was let go, and its request recorded again
+        :raises Exception: what the operation raised; its request is taken and not retried, and the
+            results of the runs before it are not answered
+        """
+        results: list[Any] = []
         wanted = await self.requested()
         while wanted:
             try:
@@ -132,11 +149,10 @@ class CoalescedRun:
                 break
             async with held:
                 while await self._take():
-                    await self._run_holding(held)
-                    runs += 1
+                    results.append(await self._run_holding(held))
             # a request may have landed after the last take and before the release
             wanted = await self.requested()
-        return runs
+        return results
 
     async def _take(self) -> bool:
         """take the recorded request, if there is one.
@@ -154,7 +170,7 @@ class CoalescedRun:
                 entry = await bucket.get_entry(key=self._requested_key)
         return taken
 
-    async def _run_holding(self, held: HeldLease) -> None:
+    async def _run_holding(self, held: HeldLease) -> Any:
         """run the operation once, and never let it outlive the lease it runs under.
 
         The run ends before this returns or raises, whichever way it ends: it finishes, the lease is
@@ -164,8 +180,8 @@ class CoalescedRun:
 
         :param held: the lease, renewing
         :ptype held: HeldLease
-        :return: nothing
-        :rtype: None
+        :return: what the run returned
+        :rtype: Any
         :raises LeaseLost: when the lease was lost before the run ended
         :raises asyncio.CancelledError: when the caller was cancelled; the run was stopped first
         """
@@ -201,7 +217,7 @@ class CoalescedRun:
             raise LeaseLost(
                 f"the lease on {self._key!r} was lost during a run; the run was cancelled and asked for again"
             )
-        work.result()
+        return work.result()
 
 
 async def _until_ended(tasks: list[asyncio.Task[Any]]) -> bool:

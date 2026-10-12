@@ -47,6 +47,13 @@ the record's run over it.
 own last run is newer than the record (the bucket was out of reach when the run ended) writes it
 on its next status call, so the other replicas report it from then on.
 
+**A run in progress on another replica.** A replica that is not running knows nothing of a run
+another replica makes under the operation's lease, unless it asks the lease. An operation built
+with ``shared_progress=`` (:class:`SharedProgress`) does: :class:`OperationStatusTool` then reports
+``running`` while another replica holds the lease, with the progress that replica last reported.
+Whether a run is in progress is the lease's to say (held, or not), never the age of a progress
+entry; nothing here expires one.
+
 **The record is an aid to the status, never a condition of the run.** A record that cannot be
 written (the bucket is out of reach, the result does not serialise) or read (absent, written in a
 form this code does not know) is logged, and the replica reports its own outcome as it would
@@ -71,8 +78,9 @@ the call, saying so.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -93,7 +101,9 @@ __all__ = [
     "OperationStatusTool",
     "RecordedOutcome",
     "RequestOperationTool",
+    "RunningElsewhere",
     "SharedOutcome",
+    "SharedProgress",
     "StartOperationTool",
 ]
 
@@ -109,6 +119,12 @@ _DEFAULT_TOOL_VERSION: Final = "1.0"
 
 #: what the shared outcome's key adds to the operation's lease key
 _OUTCOME_SUFFIX: Final = ".outcome"
+
+#: what the shared progress's key adds to the operation's lease key
+_PROGRESS_SUFFIX: Final = ".progress"
+
+#: the field of a progress entry that names the lease holder that wrote it
+_PROGRESS_HOLDER: Final = "holder"
 
 #: how many times a write of the shared outcome is tried again after another replica's write beat it
 _DEFAULT_PUBLISH_ATTEMPTS: Final = 8
@@ -346,6 +362,129 @@ class SharedOutcome:
         return recorded
 
 
+@dataclass(frozen=True)
+class RunningElsewhere:
+    """a run in progress on another replica, as the lease and the shared progress say.
+
+    :ivar replica: the replica running it: the lease's holder (its lease factory's ``pod_id``)
+    :ivar progress: what that replica last reported of the run, as it reported it; None when it has
+        reported nothing, or the entry is not one that holder wrote
+    """
+
+    replica: str
+    progress: dict[str, Any] | None
+
+
+class SharedProgress:
+    """the progress of the run in progress under a lease, kept beside it for every replica to show.
+
+    The replica running under the lease writes what it is doing to one KV entry in the lease's
+    bucket, under the lease's owner scope (``lease.stored_key``). Any replica reads it, so a status
+    answered by a replica that is not running still says a run is in progress and how far it is.
+
+    **What makes an entry count is the lease, not its age.** :meth:`running_elsewhere` asks the
+    lease who holds it. No holder, or this replica: nothing runs elsewhere, whatever the entry
+    says. Another replica holds it: a run is in progress there, and the entry is its progress when
+    that holder wrote it (the entry names its writer). So an entry left by a holder that died is
+    shown for as long as its lease still names it (the lease's own expiry, which is also how long it
+    keeps every other replica out) and is ignored from then on; a later holder's run is never shown
+    with it. Nothing here reads a clock, and nothing expires an entry: the holder replaces it, and
+    removes it when its run ends (:meth:`clear`).
+
+    **The entry's form.** The progress the run reported, a JSON object, with one field added:
+    ``holder``, the writer's ``pod_id``. An entry without it (written by code that did not name its
+    writer) counts as the progress of whoever holds the lease.
+
+    :param lease: the operation's lease factory, whose bucket, owner scope and ``pod_id`` this shares
+    :ptype lease: KVLease
+    :param key: the operation's lease key (the progress's key is this plus ``.progress``)
+    :ptype key: str
+    """
+
+    def __init__(self, lease: KVLease, key: str) -> None:
+        self._lease = lease
+        self._lease_key = key
+        self._key = lease.stored_key(f"{key}{_PROGRESS_SUFFIX}")
+
+    @property
+    def replica(self) -> str:
+        """the name this replica's progress is written under: its lease factory's ``pod_id``.
+
+        :return: the replica's name
+        :rtype: str
+        """
+        return self._lease.pod_id
+
+    async def publish(self, progress: Mapping[str, Any]) -> None:
+        """write the progress of the run this replica makes under the lease.
+
+        :param progress: what the run is doing, as JSON values; a ``holder`` field of its own is replaced
+        :ptype progress: Mapping[str, Any]
+        :return: nothing
+        :rtype: None
+        :raises TypeError: when the progress does not encode as JSON
+        :raises ValueError: when the progress does not encode as JSON
+        """
+        bucket = await self._lease.bucket()
+        await bucket.put(key=self._key, value=serialize_to_json({**progress, _PROGRESS_HOLDER: self.replica}))
+
+    async def clear(self) -> bool:
+        """remove this replica's progress, its run having ended; another replica's is left.
+
+        :return: True when an entry of this replica's was removed
+        :rtype: bool
+        """
+        bucket = await self._lease.bucket()
+        entry = await bucket.get_entry(key=self._key)
+        cleared = False
+        if entry is not None:
+            body = self._decoded(entry[0])
+            if body is not None and body.get(_PROGRESS_HOLDER) == self.replica:
+                # only the revision read: an entry written since is another run's
+                cleared = await bucket.delete(key=self._key, revision=entry[1])
+        return cleared
+
+    async def running_elsewhere(self) -> RunningElsewhere | None:
+        """the run another replica makes under the lease now, with its progress.
+
+        :return: the run; None when the lease is free, expired, or this replica's own
+        :rtype: RunningElsewhere | None
+        """
+        holder = await self._lease.holder(self._lease_key)
+        running: RunningElsewhere | None = None
+        if holder is not None and holder != self.replica:
+            bucket = await self._lease.bucket()
+            value = await bucket.get(key=self._key)
+            body = None if value is None else self._decoded(value)
+            progress: dict[str, Any] | None = None
+            if body is not None and body.get(_PROGRESS_HOLDER, holder) == holder:
+                progress = {name: item for name, item in body.items() if name != _PROGRESS_HOLDER}
+            running = RunningElsewhere(replica=holder, progress=progress)
+        return running
+
+    def _decoded(self, value: bytes) -> dict[str, Any] | None:
+        """the JSON object an entry's value holds.
+
+        :param value: the entry's value
+        :ptype value: bytes
+        :return: the object; None when the value is not one (logged)
+        :rtype: dict[str, Any] | None
+        """
+        body: dict[str, Any] | None = None
+        try:
+            loaded = json.loads(value)
+            if not isinstance(loaded, dict):
+                raise TypeError(f"a progress entry is a JSON object, not {type(loaded).__name__}")
+            body = loaded
+        except (ValueError, TypeError) as exc:
+            # another version of this code may write another form; the reader carries on without it
+            log.warning(
+                "the shared progress is not in a form this reads; it is ignored",
+                extra={"extra_data": {"key": self._key, "error": f"{type(exc).__name__}: {exc}"}},
+            )
+        return body
+
+
 class BackgroundOperation(Generic[ResultT]):
     """one operation, run in the background at most once at a time, its last outcome kept.
 
@@ -359,6 +498,9 @@ class BackgroundOperation(Generic[ResultT]):
     :param shared: where each finished run is also recorded for the other replicas, and read from by
         :meth:`status_across_replicas`; None keeps the outcome in this process only
     :ptype shared: SharedOutcome | None
+    :param shared_progress: where :meth:`status_across_replicas` learns of a run another replica
+        makes under the operation's lease, and its progress; None reports this replica's runs only
+    :ptype shared_progress: SharedProgress | None
     """
 
     def __init__(
@@ -368,11 +510,13 @@ class BackgroundOperation(Generic[ResultT]):
         *,
         request: Callable[[], Awaitable[None]] | None = None,
         shared: SharedOutcome | None = None,
+        shared_progress: SharedProgress | None = None,
     ) -> None:
         self._name = name
         self._run = run
         self._request = request
         self._shared = shared
+        self._shared_progress = shared_progress
         self._again = False
         self._task: asyncio.Task[None] | None = None
         self._watcher: asyncio.Task[None] | None = None
@@ -561,15 +705,20 @@ class BackgroundOperation(Generic[ResultT]):
         be read, or is older than this replica's own run leaves this replica's own, and that run is
         then written to the record (it could not be when it ended), so the other replicas report it
         too. A run of this replica's that did nothing (``SharedOutcome(ran=)``) is reported only
-        while there is no record. ``running`` and
-        the top-level ``started_at`` are this replica's: a run in progress on another replica is not
-        known here.
+        while there is no record.
+
+        Without ``shared_progress=``, ``running`` and the top-level ``started_at`` are this replica's:
+        a run in progress on another replica is not known here. With it, and no run in progress
+        here, the lease is asked: while another replica holds it ``state`` is ``running``,
+        ``running`` is True, ``started_at`` is None (only that replica knows it) and ``elsewhere``
+        names the replica and carries its progress.
 
         :param render_result: turns this replica's own result into JSON values; a result from the
             record is reported as stored, already rendered by the replica that wrote it
         :ptype render_result: Callable[[ResultT], Any] | None
         :return: as :meth:`status`; with ``shared=``, ``last`` also carries ``replica`` (who ran it)
-            and ``other_replica`` (whether that is not this replica)
+            and ``other_replica`` (whether that is not this replica); with ``shared_progress=``,
+            ``elsewhere`` is None or ``replica`` and ``progress`` of the run another replica makes
         :rtype: dict[str, Any]
         """
         rendered = self._rendered_last(render_result)
@@ -594,7 +743,36 @@ class BackgroundOperation(Generic[ResultT]):
                     "replica": recorded.replica,
                     "other_replica": not recorded.own,
                 }
-        return self._status_of(rendered)
+        status = self._status_of(rendered)
+        if self._shared_progress is not None:
+            elsewhere = await self.running_elsewhere()
+            status["elsewhere"] = None
+            if elsewhere is not None:
+                status["elsewhere"] = {"replica": elsewhere.replica, "progress": elsewhere.progress}
+                status["state"] = "running"
+                status["running"] = True
+        return status
+
+    async def running_elsewhere(self) -> RunningElsewhere | None:
+        """the run another replica makes under the operation's lease now, when no run is in progress here.
+
+        Asked of the lease each time, never remembered. A lease or an entry that cannot be read is
+        logged and answered as no run elsewhere: the status answers with what this replica knows.
+
+        :return: the run; None when this replica runs, no other replica holds the lease, or the
+            operation was built without ``shared_progress=``
+        :rtype: RunningElsewhere | None
+        """
+        elsewhere: RunningElsewhere | None = None
+        if self._shared_progress is not None and not self.running:
+            try:
+                elsewhere = await self._shared_progress.running_elsewhere()
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- the status must answer with what this replica knows whatever the bucket's client raises; logged
+                log.warning(
+                    "cannot tell whether another replica runs the operation; this replica reports its own",
+                    extra={"extra_data": {"operation": self._name, "error": f"{type(exc).__name__}: {exc}"}},
+                )
+        return elsewhere
 
     def _rendered_last(self, render_result: Callable[[ResultT], Any] | None) -> dict[str, Any] | None:
         """this replica's own last run, as plain JSON values.
@@ -681,7 +859,11 @@ class BackgroundOperation(Generic[ResultT]):
         return recorded
 
     async def _share(self, outcome: OperationOutcome[ResultT]) -> None:
-        """record a run that just ended for the other replicas, when the operation shares its outcome.
+        """keep a run that just ended as this replica's last, and record it for the other replicas.
+
+        It is kept here before it is written, so this replica's status has it whatever becomes of
+        the record. With ``shared=``, a run that did nothing (``SharedOutcome(ran=)``) replaces
+        neither this replica's last run that did, nor the record.
 
         :param outcome: how the run ended
         :ptype outcome: OperationOutcome[ResultT]
@@ -690,15 +872,26 @@ class BackgroundOperation(Generic[ResultT]):
         """
         # a run counts as one to record until its record says otherwise, so a ``ran`` that raises
         # leaves the status comparing this run by its finish time, as it does without a ``ran``
-        self._last_recordable = True
+        recordable = True
         if self._shared is not None:
             try:
-                self._last_recordable = self._shared.records(outcome)
+                recordable = self._shared.records(outcome)
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- the run has ended and its outcome is kept here; the caller's ran= raising must not make it a failed run; logged
                 log.warning(
                     "cannot tell whether the run is one to record; it is taken for one",
                     extra={"extra_data": {"operation": self._name, "error": f"{type(exc).__name__}: {exc}"}},
                 )
+        if recordable or self._last is None or not self._last_recordable:
+            self._last = outcome
+            self._last_recordable = recordable
+        else:
+            # a run that did nothing is not this replica's last run while it has one that did: that
+            # one stays reported, and stays the one written to a record that lacks it
+            log.info(
+                "the run did nothing here; the last run that did stays the one reported",
+                extra={"extra_data": {"operation": self._name}},
+            )
+        if self._shared is not None:
             await self._publish(self._shared, outcome)
 
     async def _publish(self, shared: SharedOutcome, outcome: OperationOutcome[ResultT]) -> None:
@@ -812,8 +1005,6 @@ class BackgroundOperation(Generic[ResultT]):
         else:
             outcome = OperationOutcome(started_at=started, finished_at=datetime.now(UTC), result=result)
             log.info("background operation finished", extra={"extra_data": {"operation": self._name}})
-        # kept here before it is shared, so this replica's status has it whatever becomes of the record
-        self._last = outcome
         await self._share(outcome)
 
 
@@ -1017,7 +1208,9 @@ class OperationStatusTool(_OperationTool):
     """says whether the operation is running and how the last run ended.
 
     For an operation that shares its outcome (``BackgroundOperation(shared=)``) the last run is the
-    newest any replica finished, and the answer says when it was another replica's.
+    newest any replica finished, and the answer says when it was another replica's. For one that
+    shares its progress (``BackgroundOperation(shared_progress=)``) a run another replica makes is
+    reported as running, on that replica, with the ``summary`` of its progress.
 
     :param name: the tool's namespaced name (``<provider>.<noun>``)
     :ptype name: str
@@ -1030,8 +1223,10 @@ class OperationStatusTool(_OperationTool):
     :ptype render_result: Callable[[Any], Any] | None
     :param progress: what the operation is doing now, as JSON values with a short ``summary`` line
         (phase, counts, timings): answered as ``progress`` whether or not a run is in progress, so a
-        caller sees a long run move and what the operation's other work is doing between runs
-    :ptype progress: Callable[[], dict[str, Any]] | None
+        caller sees a long run move and what the operation's other work is doing between runs. It
+        may be a coroutine function, for a progress that asks what another replica is doing
+        (:meth:`BackgroundOperation.running_elsewhere`)
+    :ptype progress: Callable[[], dict[str, Any] | Awaitable[dict[str, Any]]] | None
     :param version: the tool's version
     :ptype version: str
     """
@@ -1043,7 +1238,7 @@ class OperationStatusTool(_OperationTool):
         description: str,
         operation: Callable[[], BackgroundOperation[Any] | None],
         render_result: Callable[[Any], Any] | None = None,
-        progress: Callable[[], dict[str, Any]] | None = None,
+        progress: Callable[[], dict[str, Any] | Awaitable[dict[str, Any]]] | None = None,
         version: str = _DEFAULT_TOOL_VERSION,
     ) -> None:
         super().__init__(name=name, description=description, operation=operation, version=version)
@@ -1063,39 +1258,103 @@ class OperationStatusTool(_OperationTool):
         if operation is None:
             result = ToolResult(success=False, content="", error=_NOT_READY, error_code=TOOL_NOT_READY)
         else:
-            result = self._answer_with(operation, await operation.status_across_replicas(self._render_result))
+            status = await operation.status_across_replicas(self._render_result)
+            progress = self._asked(operation)
+            if inspect.isawaitable(progress):
+                progress = await self._awaited(operation, progress)
+            result = self._answer_with(status, progress)
         return result
 
     def answer(self, operation: BackgroundOperation[Any]) -> ToolResult:
         """the operation's status on this replica, as a sentence and as metadata.
+
+        A ``progress`` that is a coroutine function cannot be awaited here; it is answered as
+        unavailable, and :meth:`execute` (a call of the tool) is the way to it.
 
         :param operation: the operation
         :ptype operation: BackgroundOperation[Any]
         :return: the status (:meth:`BackgroundOperation.status`)
         :rtype: ToolResult
         """
-        return self._answer_with(operation, operation.status(self._render_result))
+        progress = self._asked(operation)
+        if inspect.isawaitable(progress):
+            if inspect.iscoroutine(progress):
+                progress.close()
+            progress = {"summary": "progress unavailable (it is read when the tool is called)"}
+        return self._answer_with(operation.status(self._render_result), progress)
 
-    def _answer_with(self, operation: BackgroundOperation[Any], status: dict[str, Any]) -> ToolResult:
-        """a status as a sentence and as metadata, with the operation's progress.
+    def _asked(self, operation: BackgroundOperation[Any]) -> Any:
+        """what ``progress`` answers when called: the progress, or an awaitable of it; a failure is said.
 
         :param operation: the operation
         :ptype operation: BackgroundOperation[Any]
-        :param status: the operation's status
-        :ptype status: dict[str, Any]
-        :return: the answer
-        :rtype: ToolResult
+        :return: None without a ``progress``; else its answer, or what stands for one that raised
+        :rtype: Any
         """
-        last = status["last"]
-        sentence = status["state"]
-        if status["running"]:
-            sentence = f"running since {status['started_at']}"
+        progress: Any = None
         if self._progress is not None:
             try:
                 progress = self._progress()
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- the status (the last run's error above all) must answer even when what reports progress fails; logged and said
-                log.exception("operation %s: its progress could not be read", operation.name)
-                progress = {"summary": f"progress unavailable ({type(exc).__name__})", "error": str(exc)}
+                progress = self._unavailable(operation, exc)
+        return progress
+
+    async def _awaited(
+        self, operation: BackgroundOperation[Any], progress: Awaitable[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """the progress an awaitable answers; a failure is said.
+
+        :param operation: the operation
+        :ptype operation: BackgroundOperation[Any]
+        :param progress: what a coroutine ``progress`` returned
+        :ptype progress: Awaitable[dict[str, Any]]
+        :return: the progress, or what stands for one that raised
+        :rtype: dict[str, Any]
+        """
+        answered: dict[str, Any]
+        try:
+            answered = await progress
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- the status (the last run's error above all) must answer even when what reports progress fails; logged and said
+            answered = self._unavailable(operation, exc)
+        return answered
+
+    def _unavailable(self, operation: BackgroundOperation[Any], exc: Exception) -> dict[str, Any]:
+        """what stands for a progress that could not be read, which is logged.
+
+        :param operation: the operation
+        :ptype operation: BackgroundOperation[Any]
+        :param exc: what reading it raised
+        :ptype exc: Exception
+        :return: a ``summary`` saying so, and the ``error``
+        :rtype: dict[str, Any]
+        """
+        log.error(
+            "operation %s: its progress could not be read",
+            operation.name,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return {"summary": f"progress unavailable ({type(exc).__name__})", "error": str(exc)}
+
+    def _answer_with(self, status: dict[str, Any], progress: dict[str, Any] | None) -> ToolResult:
+        """a status as a sentence and as metadata, with the operation's progress.
+
+        :param status: the operation's status
+        :ptype status: dict[str, Any]
+        :param progress: what the operation is doing now, when the tool was given a ``progress``
+        :ptype progress: dict[str, Any] | None
+        :return: the answer
+        :rtype: ToolResult
+        """
+        last = status["last"]
+        elsewhere = status.get("elsewhere")
+        sentence = status["state"]
+        if elsewhere is not None:
+            sentence = f"running on another replica ({elsewhere['replica']})"
+            if (elsewhere["progress"] or {}).get("summary"):
+                sentence += f": {elsewhere['progress']['summary']}"
+        elif status["running"]:
+            sentence = f"running since {status['started_at']}"
+        if progress is not None:
             status["progress"] = progress
             if progress.get("summary"):
                 sentence += f"; now: {progress['summary']}"

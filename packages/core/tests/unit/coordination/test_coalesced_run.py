@@ -248,3 +248,33 @@ async def test_a_second_cancellation_during_the_stop_still_stops_the_run_and_ask
         await draining
     assert refused_meanwhile == [True, True]
     assert await run.requested(), "the second cancellation skipped asking again"
+
+
+async def test_a_drain_answers_what_each_run_returned_in_order_and_none_when_another_replica_holds() -> None:
+    client = FakeNatsClient()
+    started, release = asyncio.Event(), asyncio.Event()
+    runs = 0
+
+    async def body() -> str:
+        nonlocal runs
+        runs += 1
+        number = runs
+        started.set()
+        await release.wait()
+        return f"run {number}"
+
+    lease = KVLease(client, pod_id="pod-a")  # type: ignore[arg-type]
+    run = CoalescedRun(lease, _KEY, body, ttl=_TTL, renew_every=_RENEW)
+    waiting = _replica(client, "pod-b", _Body())
+    await run.request()
+    draining = asyncio.create_task(run.drain_results())
+    await started.wait()
+    # asked during the run: one more run after it, and its result follows the first's
+    await run.request()
+    assert await waiting.drain_results() == []
+    release.set()
+
+    assert await draining == ["run 1", "run 2"]
+    assert await run.drain_results() == []
+    await run.request()
+    assert await run.drain() == 1

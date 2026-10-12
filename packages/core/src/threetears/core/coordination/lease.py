@@ -897,6 +897,26 @@ class KVLease:
         """
         return await self._ensure_bucket()
 
+    async def holder(self, key: str) -> str | None:
+        """who holds the lease named ``key`` now, without contending for it.
+
+        For a reader that reports on work another replica does under a lease (whether a run is
+        in progress, and whose): the lease is the one statement of that which is true or false
+        rather than old or new. A holder that died without letting go is still named until its
+        entry's own expiry, exactly as it still keeps an acquire out until then.
+
+        :param key: the lease's name, as given to :meth:`acquire` or :meth:`hold`
+        :ptype key: str
+        :return: the holder's ``pod_id``; ``None`` when the key is free, its entry has expired, or
+            it is not an entry this lease wrote
+        :rtype: str | None
+        """
+        bucket = await self._ensure_bucket()
+        value = await bucket.get(key=self.stored_key(key))
+        envelope = None if value is None else _decoded_envelope(value)
+        live = envelope is not None and envelope.date_expires > datetime.now(UTC)
+        return envelope.holder if envelope is not None and live else None
+
     async def _ensure_bucket(self) -> "KvBucketLike":
         """open the bucket with history=1 on first call: declare it, or bind only when so configured.
 
