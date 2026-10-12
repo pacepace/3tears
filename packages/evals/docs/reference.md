@@ -575,6 +575,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`RoleUsageLedger`** · dataclass · Accumulates one role's LLM spend across every call it makes in a cell.
 - **`RunIndexEntry`** · model · One row of the analysis's run index — a run's config + key metrics.
 - **`RunRecordStore`** · protocol · A run together with its cells: for an operation that reads one and rewrites the other.
+- **`RunsRead`** · class · A run listing that leaves out what it cannot read, and says so (`EvalStorage.query_eval_runs_isolating`).
 - **`RunStore`** · protocol · The eval runs of a scope: their documents, listings, stamps, archive flag and boot scan.
 - **`SeedPrompt`** · dataclass · Where one shipped default lives, so a host can register it by import.
 - **`SeedSection`** · dataclass · One section of a seeded prompt template.
@@ -597,6 +598,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`UnknownCandidateKind`** · exception · A template names a kind this host did not wire.
 - **`UnportableSchema`** · exception · A schema keyword no strict structured-output mode is known to accept, and none that a reply's validation stands in for: a structural keyword (`allOf`, `not`, `if`), which dropping would change the shape sent.
 - **`UnreadableBarName`** · dataclass · A bar name no verdict can be given on, and why — the text an author or a reader is shown.
+- **`UnreadableRunError`** · exception · A read that cannot leave a run out met one this build's model refuses (status 500).
 - **`ValidationFailedError`** · exception · Validation failed (status 422).
 - **`VariantConfig`** · model · The A/B'd stack one cell runs, as every kind alike receives it.
 - **`VariantIndexEntry`** · model · One observed variant, and the resolved lever map its key was digested from.
@@ -1050,6 +1052,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`list_rubric_dims(storage: DefinitionStore, scope_id: str, *, axis: str | None = None, universal: bool | None = None, archived: bool = False) -> list[CatalogRubricDim]`
 - **`list_runs`** · function · List eval runs in a scope, optionally filtered by status.
   <br>`list_runs(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False, label: str | None = None) -> list[EvalRun]`
+- **`list_runs_disclosing`** · function · `list_runs` for an inventory: every run that reads, and each matched row that does not, named.
+  <br>`list_runs_disclosing(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False, label: str | None = None) -> RunsRead`
 - **`list_templates`** · function · List templates in a scope.
   <br>`list_templates(storage: DefinitionStore, scope_id: str, *, archived: bool = False, required_tool: str | None = None, universal: bool | None = None) -> list[EvalTemplate]`
 - **`load_run_as_listed`** · function · Load one run the way a listing loads it: without the payload paths the host declares a listing leaves out.
@@ -2170,7 +2174,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`runs_compare(host: EvalHost, baseline_run_id: str, candidate_run_id: str, scope_id: str) -> RunsCompared`
 - **`runs_compared_text`** · function · Two runs compared as text: the arms, each reading with its delta and test, then every disclosure.
   <br>`runs_compared_text(compared: RunsCompared) -> str`
-- **`runs_list`** · function · The scope's runs.
+- **`runs_list`** · function · The scope's runs, and how many it matched that this build cannot read.
   <br>`runs_list(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False, label: str | None = None) -> RunListing`
 - **`runs_unreadable`** · function · The scope's stored runs this build's model cannot read, each with why, and how many of them are stranded.
   <br>`runs_unreadable(host: EvalHost, scope_id: str) -> UnreadableRunsListing`

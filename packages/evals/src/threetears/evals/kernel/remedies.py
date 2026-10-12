@@ -20,6 +20,10 @@ FIND_TEMPLATE = "templates_list names this scope's templates"
 #: How a caller finds a run's id.
 FIND_RUN = "runs_list names this scope's runs"
 
+#: What a caller does about a stored run this build's model refuses: see each one, and why, so it can be dropped or a
+#: build that reads it deployed.
+FIND_UNREADABLE_RUNS = "runs_unreadable names each stored run of this scope this build cannot read, with why"
+
 #: How a caller finds a campaign's id.
 FIND_CAMPAIGN = "campaigns_list names this scope's campaigns"
 
@@ -87,6 +91,7 @@ __all__ = [
     "FIND_RUN",
     "FIND_TEMPLATE",
     "FIND_TEST_CASE",
+    "FIND_UNREADABLE_RUNS",
     "RELAUNCH_TO_REJUDGE",
     "REREAD_AND_RETRY",
     "SCHEMA_REMEDY",

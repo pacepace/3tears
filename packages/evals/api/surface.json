@@ -1801,6 +1801,10 @@
       "kind": "protocol",
       "signature": "RunRecordStore{delete_eval_result(self, result_id: str, scope_id: str, /) -> bool; delete_eval_run(self, run_id: str, scope_id: str, /) -> bool; load_eval_result(self, result_id: str, scope_id: str, /) -> EvalResult | None; load_eval_result_with_etag(self, result_id: str, scope_id: str, /) -> tuple[EvalResult | None, str | None]; load_eval_run(self, run_id: str, scope_id: str, /) -> EvalRun | None; load_eval_run_stamps(self, run_ids: Sequence[str], scope_id: str, /) -> list[EvalRunStamp]; load_eval_run_with_etag(self, run_id: str, scope_id: str, /) -> tuple[EvalRun | None, str | None]; load_eval_runs(self, run_ids: Sequence[str], scope_id: str, /, *, elide_payload: frozenset[str] = frozenset()) -> list[EvalRun]; load_eval_trace(self, result_id: str, scope_id: str, /) -> EvalTrace | None; query_eval_results(self, scope_id: str, /, *, run_id: str | None = None, test_case_id: str | None = None, model: str | None = None) -> list[EvalResult]; query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]; query_eval_runs(self, scope_id: str, status: EvalRunStatus | None = None, *, elide_payload: frozenset[str] = frozenset()) -> list[EvalRun]; query_non_terminal_eval_runs(self, scope_id: str, /) -> NonTerminalRunScan; replace_eval_result(self, result: EvalResult, /, *, if_match: str | None) -> None; save_eval_result(self, result: EvalResult, trace: EvalTrace | None = None, /) -> None; save_eval_run(self, run: EvalRun, /, *, if_match: str | None = None) -> None; set_eval_run_archived(self, run_id: str, scope_id: str, /, *, archived: bool) -> bool}"
     },
+    "threetears.evals.kernel.RunsRead": {
+      "kind": "class",
+      "signature": "RunsRead(runs: list[EvalRun], unreadable: list[RefusedRow])"
+    },
     "threetears.evals.kernel.RunStore": {
       "kind": "protocol",
       "signature": "RunStore{delete_eval_run(self, run_id: str, scope_id: str, /) -> bool; load_eval_run(self, run_id: str, scope_id: str, /) -> EvalRun | None; load_eval_run_stamps(self, run_ids: Sequence[str], scope_id: str, /) -> list[EvalRunStamp]; load_eval_run_with_etag(self, run_id: str, scope_id: str, /) -> tuple[EvalRun | None, str | None]; load_eval_runs(self, run_ids: Sequence[str], scope_id: str, /, *, elide_payload: frozenset[str] = frozenset()) -> list[EvalRun]; query_eval_runs(self, scope_id: str, status: EvalRunStatus | None = None, *, elide_payload: frozenset[str] = frozenset()) -> list[EvalRun]; query_non_terminal_eval_runs(self, scope_id: str, /) -> NonTerminalRunScan; save_eval_run(self, run: EvalRun, /, *, if_match: str | None = None) -> None; set_eval_run_archived(self, run_id: str, scope_id: str, /, *, archived: bool) -> bool}"
@@ -1996,6 +2000,10 @@
     "threetears.evals.kernel.UnreadableBarName": {
       "kind": "dataclass",
       "signature": "UnreadableBarName(name: str, refusal: BarNameRefusal, reason: str)"
+    },
+    "threetears.evals.kernel.UnreadableRunError": {
+      "kind": "exception",
+      "signature": "UnreadableRunError(message: str, *, run_ids: Sequence[str])"
     },
     "threetears.evals.kernel.ValidationFailedError": {
       "kind": "exception",
@@ -2852,6 +2860,10 @@
     "threetears.evals.run.list_runs": {
       "kind": "function",
       "signature": "list_runs(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False, label: str | None = None) -> list[EvalRun]"
+    },
+    "threetears.evals.run.list_runs_disclosing": {
+      "kind": "function",
+      "signature": "list_runs_disclosing(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False, label: str | None = None) -> RunsRead"
     },
     "threetears.evals.run.list_templates": {
       "kind": "function",
@@ -5507,7 +5519,7 @@
     },
     "threetears.evals.ops.RunListing": {
       "kind": "model",
-      "signature": "RunListing(runs: list[RunLine], include_archived: bool, label: str | None = None)"
+      "signature": "RunListing(runs: list[RunLine], include_archived: bool, label: str | None = None, unreadable: int)"
     },
     "threetears.evals.ops.runs_bisect": {
       "kind": "function",

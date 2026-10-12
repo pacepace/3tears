@@ -82,6 +82,7 @@ _READS: dict[type, list[Callable[[EvalStorage, Any], Any]]] = {
         lambda storage, run: next(r for r in storage.query_eval_runs(_SCOPE) if r.id == run.id),
         lambda storage, run: next(r for r in storage.query_eval_runs(_SCOPE, status="cancelled") if r.id == run.id),
         lambda storage, run: next(iter(storage.load_eval_runs([run.id], _SCOPE))),
+        lambda storage, run: next(r for r in storage.query_eval_runs_isolating(_SCOPE).runs if r.id == run.id),
     ],
     EvalSweep: [lambda storage, sweep: storage.load_sweep(sweep.id, _SCOPE)],
     EvalAnalysisAttempt: [

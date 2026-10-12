@@ -290,7 +290,13 @@ def render_runs(listing: RunListing) -> str:
     scope = "including archived" if listing.include_archived else "archived runs left out"
     if listing.label is not None:
         scope += f", labelled {listing.label}"
-    return "\n".join([f"runs ({len(listing.runs)}, {scope})", *(render_run_line(run) for run in listing.runs)])
+    lines = [f"runs ({len(listing.runs)}, {scope})", *(render_run_line(run) for run in listing.runs)]
+    if listing.unreadable:
+        lines.append(
+            f"not listed: {listing.unreadable} stored run(s) this build cannot read; runs_unreadable names each "
+            "with why"
+        )
+    return "\n".join(lines)
 
 
 def render_unreadable_runs(listing: UnreadableRunsListing) -> str:

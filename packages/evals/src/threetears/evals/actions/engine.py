@@ -1358,6 +1358,11 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_runs_list,
             render=render.render_runs,
             example={"status": "completed"},
+            detail=(
+                "A stored run this build cannot read is left out and counted in unreadable rather than failing the "
+                "listing; runs_unreadable names each with why. Its archive flag and labels cannot be read, so the "
+                "count is narrowed by status alone."
+            ),
         ),
         Action(
             name="runs_unreadable",
@@ -1373,8 +1378,8 @@ def engine_actions() -> tuple[Action, ...]:
                 "Read from every stored run of the scope on each call, any status, archived included, never stored: "
                 "each run document this build's model refuses, with the fields it refused and why. A row that "
                 "does not read never stops the rest from being read. Stranded ones were stored pending or running: "
-                "the boot sweep counts them unreadable and can never settle them. runs_list, and every other read "
-                "of the scope's runs as a list, fails on the first row named here. Most useful after an upgrade, when the "
+                "the boot sweep counts them unreadable and can never settle them. runs_list leaves every row named "
+                "here out and counts it; every other read that reaches one refuses, naming this action. Most useful after an upgrade, when the "
                 "corpus has outlived the model that wrote it."
             ),
         ),
