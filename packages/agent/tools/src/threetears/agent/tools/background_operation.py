@@ -36,6 +36,17 @@ expires it. Without ``shared=`` a replica knows only its own runs, and a restart
 ``idle`` until its next run ends. An operation whose result must be queried, or kept run by run,
 records it in its own tables; this keeps only what the status tool reports.
 
+**A run that did nothing is not the newest run.** An operation run over a ``CoalescedRun`` returns
+at once, with a result saying so, on a replica that could not hold the lease: it ended, and it ran
+nothing. Recorded, each such return would stand as the newest outcome and hide the load the other
+replica is still running, or the one that last failed. ``SharedOutcome(ran=)`` says which results
+are runs that did the work; one that is not is never written, and the replica it ended on reports
+the record's run over it.
+
+**A record that could not be written is written when the status is next asked.** A replica whose
+own last run is newer than the record (the bucket was out of reach when the run ended) writes it
+on its next status call, so the other replicas report it from then on.
+
 **The record is an aid to the status, never a condition of the run.** A record that cannot be
 written (the bucket is out of reach, the result does not serialise) or read (absent, written in a
 form this code does not know) is logged, and the replica reports its own outcome as it would
@@ -163,6 +174,11 @@ class SharedOutcome:
     is given, and the tool reports a run the same way whichever replica ran it. A result that does
     not encode makes :meth:`publish` raise, and the operation, which logs it, keeps its own outcome.
 
+    **Which runs are recorded.** Every failed run, and every succeeded run whose result ``ran`` says
+    did the work (every one, without ``ran``). A succeeded run that did nothing (another replica
+    held the lease, so this one returned at once) is not the operation's last run: :meth:`publish`
+    writes nothing for it.
+
     Finish times are each replica's own clock, so replicas whose clocks disagree by more than the
     time between two runs can order those runs wrongly.
 
@@ -172,6 +188,9 @@ class SharedOutcome:
     :ptype key: str
     :param render_result: turns a result into JSON values to store; the result as it is when None
     :ptype render_result: Callable[[Any], Any] | None
+    :param ran: whether a succeeded run's result (as the run returned it) is of a run that did the
+        work, and so one to record; every result is when None. Not asked of a failed run
+    :ptype ran: Callable[[Any], bool] | None
     :param attempts: how many compare-and-swap rounds a write is allowed
     :ptype attempts: int
     """
@@ -182,11 +201,13 @@ class SharedOutcome:
         key: str,
         *,
         render_result: Callable[[Any], Any] | None = None,
+        ran: Callable[[Any], bool] | None = None,
         attempts: int = _DEFAULT_PUBLISH_ATTEMPTS,
     ) -> None:
         self._lease = lease
         self._key = lease.stored_key(f"{key}{_OUTCOME_SUFFIX}")
         self._render_result = render_result
+        self._ran = ran
         self._attempts = attempts
 
     @property
@@ -198,13 +219,38 @@ class SharedOutcome:
         """
         return self._lease.pod_id
 
-    async def publish(self, outcome: OperationOutcome[Any]) -> bool:
-        """record a finished run, unless the record already holds one that finished later.
+    def records(self, outcome: OperationOutcome[Any]) -> bool:
+        """whether a finished run is one the record holds: it failed, or it did the work.
 
         :param outcome: how the run ended
         :ptype outcome: OperationOutcome[Any]
-        :return: True when the record now holds this run; False when a later run stands, or every
-            round lost to another replica's write
+        :return: False for a succeeded run whose result ``ran`` says did nothing; True otherwise
+        :rtype: bool
+        """
+        return not outcome.succeeded or self._ran is None or bool(self._ran(outcome.result))
+
+    async def publish(self, outcome: OperationOutcome[Any]) -> bool:
+        """record a finished run, unless it did nothing or the record holds one that finished later.
+
+        :param outcome: how the run ended
+        :ptype outcome: OperationOutcome[Any]
+        :return: True when the record now holds this run; False when the run is not one to record
+            (:meth:`records`), a later run stands, or every round lost to another replica's write
+        :rtype: bool
+        :raises TypeError: when the result does not encode as JSON
+        :raises ValueError: when the result does not encode as JSON, or a time is naive
+        """
+        written = False
+        if self.records(outcome):
+            written = await self._write(outcome)
+        return written
+
+    async def _write(self, outcome: OperationOutcome[Any]) -> bool:
+        """write a run over the entry by compare-and-swap, unless the entry's run finished later.
+
+        :param outcome: how the run ended
+        :ptype outcome: OperationOutcome[Any]
+        :return: True when the entry now holds this run
         :rtype: bool
         :raises TypeError: when the result does not encode as JSON
         :raises ValueError: when the result does not encode as JSON, or a time is naive
@@ -332,6 +378,9 @@ class BackgroundOperation(Generic[ResultT]):
         self._watcher: asyncio.Task[None] | None = None
         self._started_at: datetime | None = None
         self._last: OperationOutcome[ResultT] | None = None
+        # whether the last outcome is a run's and one the shared record holds; not a wait that failed
+        # (no run), nor a run that did nothing
+        self._last_recordable = False
 
     @property
     def name(self) -> str:
@@ -509,7 +558,10 @@ class BackgroundOperation(Generic[ResultT]):
 
         Without ``shared=`` this is :meth:`status`. With it, ``last`` is the newer of this replica's
         own last run and the shared record's, and names its replica; a record that is absent, cannot
-        be read, or is older than this replica's own run leaves this replica's own. ``running`` and
+        be read, or is older than this replica's own run leaves this replica's own, and that run is
+        then written to the record (it could not be when it ended), so the other replicas report it
+        too. A run of this replica's that did nothing (``SharedOutcome(ran=)``) is reported only
+        while there is no record. ``running`` and
         the top-level ``started_at`` are this replica's: a run in progress on another replica is not
         known here.
 
@@ -525,6 +577,14 @@ class BackgroundOperation(Generic[ResultT]):
             if rendered is not None:
                 rendered = {**rendered, "replica": self._shared.replica, "other_replica": False}
             recorded = await self._recorded(self._shared)
+            own = self._last
+            if (
+                own is not None
+                and self._last_recordable
+                and (recorded is None or recorded.outcome.finished_at < own.finished_at)
+            ):
+                # the record lacks this replica's newer run: its write when the run ended did not land
+                await self._publish(self._shared, own)
             if recorded is not None and self._reported_over_own(recorded):
                 rendered = {
                     "started_at": recorded.outcome.started_at.isoformat(),
@@ -588,13 +648,16 @@ class BackgroundOperation(Generic[ResultT]):
 
         :param recorded: the shared record's run
         :ptype recorded: RecordedOutcome
-        :return: True when no run has ended here, the recorded one finished later, or another
-            replica's finished at the same instant (its write is the one the record kept)
+        :return: True when no run has ended here, the last to end here did nothing, the recorded one
+            finished later, or another replica's finished at the same instant (its write is the one
+            the record kept)
         :rtype: bool
         """
         own = self._last
         return (
             own is None
+            # a run that did nothing ended, but is not the operation's last run while one is recorded
+            or (own.succeeded and not self._last_recordable)
             or recorded.outcome.finished_at > own.finished_at
             or (recorded.outcome.finished_at == own.finished_at and not recorded.own)
         )
@@ -618,21 +681,43 @@ class BackgroundOperation(Generic[ResultT]):
         return recorded
 
     async def _share(self, outcome: OperationOutcome[ResultT]) -> None:
-        """record a finished run for the other replicas, when the operation shares its outcome.
+        """record a run that just ended for the other replicas, when the operation shares its outcome.
 
         :param outcome: how the run ended
         :ptype outcome: OperationOutcome[ResultT]
         :return: nothing
         :rtype: None
         """
+        # a run counts as one to record until its record says otherwise, so a ``ran`` that raises
+        # leaves the status comparing this run by its finish time, as it does without a ``ran``
+        self._last_recordable = True
         if self._shared is not None:
             try:
-                await self._shared.publish(outcome)
-            except Exception as exc:  # prawduct:allow prawduct/broad-except -- the run has ended and its outcome is kept here; a record that cannot be written (the bucket's client, the caller's render_result, a result that does not encode) must not make it a failed run; logged
+                self._last_recordable = self._shared.records(outcome)
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- the run has ended and its outcome is kept here; the caller's ran= raising must not make it a failed run; logged
                 log.warning(
-                    "the outcome could not be shared; only this replica reports this run",
+                    "cannot tell whether the run is one to record; it is taken for one",
                     extra={"extra_data": {"operation": self._name, "error": f"{type(exc).__name__}: {exc}"}},
                 )
+            await self._publish(self._shared, outcome)
+
+    async def _publish(self, shared: SharedOutcome, outcome: OperationOutcome[ResultT]) -> None:
+        """write a run to the shared record; a write that fails is logged and the run stays this replica's.
+
+        :param shared: the shared record
+        :ptype shared: SharedOutcome
+        :param outcome: how the run ended
+        :ptype outcome: OperationOutcome[ResultT]
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            await shared.publish(outcome)
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- the run has ended and its outcome is kept here; a record that cannot be written (the bucket's client, the caller's render_result or ran, a result that does not encode) must not make it a failed run nor fail the status; logged
+            log.warning(
+                "the outcome could not be shared; only this replica reports this run",
+                extra={"extra_data": {"operation": self._name, "error": f"{type(exc).__name__}: {exc}"}},
+            )
 
     async def _start_when_needed(
         self,
@@ -675,6 +760,8 @@ class BackgroundOperation(Generic[ResultT]):
                 # unless a run ended after the wait began, which is newer news than this failure
                 if self._last is None or self._last.finished_at < waiting_since:
                     self._last = OperationOutcome(started_at=waiting_since, finished_at=datetime.now(UTC), error=error)
+                    # this replica's failure to decide, not a run: reported here, never recorded
+                    self._last_recordable = False
                 log.error(
                     "cannot tell whether the operation is needed; no run will start",
                     extra={"extra_data": {"operation": self._name, "error": error}},

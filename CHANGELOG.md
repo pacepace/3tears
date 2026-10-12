@@ -6,6 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Agent tools: a run that did nothing is not the newest run, and a lost record is written again
+
+- **Added, `SharedOutcome(..., ran=)`:** whether a succeeded run's result is of a run that did the
+  work (every result is, without it). An operation over a `CoalescedRun` returns at once on a
+  replica that could not hold the lease, with a result saying nothing ran; recorded, each such
+  return stood as the newest outcome and hid the load another replica was still running, or the one
+  that last failed. A succeeded run `ran` refuses is never written (`SharedOutcome.records(outcome)`,
+  which `publish` asks), and in `BackgroundOperation.status_across_replicas` the replica it ended on
+  reports the record's run over it whatever the finish times; with no record it reports its own. A
+  failed run is always recorded and `ran` is not asked. A `ran` that raises is logged and the run is
+  compared by its finish time.
+- **Changed, a run whose record could not be written is written when its replica's status is next
+  asked.** `status_across_replicas` writes this replica's own last run when it is a run to record
+  and the record is absent or holds an earlier one (the bucket was out of reach when the run ended),
+  so the other replicas report it from then on rather than from the next run. A write that fails
+  again is logged and the status answers. A replica whose run the record already holds writes
+  nothing, and a `start_when_needed` wait that failed is reported by its replica and never recorded.
+
 ### Agent tools: every replica's status reports the newest finished run
 
 - **Added, `threetears.agent.tools.background_operation.SharedOutcome(lease, key, *, render_result=None)`
