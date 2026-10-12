@@ -122,7 +122,7 @@ def report_charts[DrawingT](report: Report, renderer: ChartRenderer[DrawingT]) -
         try:
             drawing = renderer.draw(block.intent)
         except ChartRefused as exc:
-            # NOSILENT: the refusal IS the answer -- one chart's failure is returned beside the others, by contract
+            # The refusal IS the answer -- one chart's failure is returned beside the others, by contract
             refused.append(
                 ChartRefusal(
                     block=position,

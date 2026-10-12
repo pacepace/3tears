@@ -399,6 +399,8 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
             fenced(why)
         raise
     except EvalJobTimeout as timed_out:
+        # NOSILENT(logged): the timeout is written on the sweep record itself (outcome "timed_out", its detail), which
+        # is where every reader of the sweep looks; the job boundary has no other caller to tell
         log.warning("eval.sweep sweep=%s scope=%s timed out: %s", sweep.id, scope_id, timed_out)
         await stop_arms(SWEEP_TIMEOUT_REASON)
         sweep.outcome, sweep.detail, sweep.ended_at = "timed_out", timed_out_detail(timed_out), utc_now_iso()
