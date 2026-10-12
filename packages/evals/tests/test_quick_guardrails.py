@@ -279,6 +279,7 @@ def _adopting_writer() -> Any:
             "revisit_when": "",
         }
         memo = {"headline": "Adopt the more accurate arm", "summary": "- It is more accurate."}
+        memo |= {"headline_rests_on": [0], "summary_rests_on": [[0]]}
         memo |= {"findings": [finding], "decisions": [decision], "questions": [], "next": []}
         return _Reply(content=json.dumps(memo), temperature=None, model="offline-writer")
 

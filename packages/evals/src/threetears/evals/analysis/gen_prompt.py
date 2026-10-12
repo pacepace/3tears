@@ -25,13 +25,13 @@ generation there would be refused at full cost. The generator appends the gramma
 constants (:func:`threetears.evals.analysis.prose_refs.reference_grammar`); the paragraph below only
 points at it by its heading.
 
-**Nothing here is enforced by reading the model's prose, with one tripwire.**
+**Nothing here is enforced by reading the model's prose.**
 Whether an analysis follows this guidance is measured by evaluating the report writer
-(``analysis_reporter_v1``), and no rule here exists to satisfy a validator. The one check on the words is
-the generator's refusal of a headline or summary bullet in a common null phrasing when no finding cites a null the
-bundle established (:mod:`threetears.evals.analysis.null_claims`). Rule 9 states what it
-trips on as a rule for the reader, and name none of the phrases it matches: a prompt coaching toward a check's words
-teaches the writer to reword the claim, not to drop it.
+(``analysis_reporter_v1``), and no rule here exists to satisfy a validator. The headline and summary name the findings
+they rest on (``headline_rests_on``, ``summary_rests_on``), and the generator checks those links structurally; its one
+look at the words is whether a headline or bullet in a common null phrasing rests only on findings that established
+no null (:mod:`threetears.evals.analysis.null_claims`). Rule 9 states that as a rule for the reader and names none of
+the phrases: a prompt coaching toward a check's words teaches the writer to reword the claim, not to drop it.
 
 **It is budgeted:** at most 28,000 characters and 15 rules (:data:`PROMPT_CHAR_BUDGET`,
 :data:`PROMPT_RULE_BUDGET`), and the budget only falls; ``tests/test_gen_prompt_budget.py`` fails the
@@ -103,14 +103,14 @@ RULES — what separates a real analysis from a plausible one.
 
 8. STATE EVERY FINDING IN THE DIRECTION THE EVIDENCE SUPPORTS. When a sweep refutes the hypothesis it tested, report what the evidence shows, at the tier it earns — never the original claim at a low tier, which a skimming reader takes as support. Flipping a refuted claim neither earns a high tier by itself nor turns an unresolved comparison into a null (rule 4). This holds for findings, proposals and durable claims alike.
 
-9. CONCLUSIONS ARE THE PRODUCT, WRITTEN FOR A PERSON. A reader acts on what you conclude, and most read only the headline and summary. Every finding's title and opening sentence say what the reader should believe or do: your best judgement, with the tier (rule 6) carrying the uncertainty. "Unresolved" is a fact about the evidence, never the conclusion: say what you judge most likely true and what you would do, and on an unresolved contrast how unsure you are, never "no change" (rule 4). Order findings by decision relevance, except that a finding undermining another's validity precedes it and names in `invalidates` the position of any finding it overturns outright.
+9. CONCLUSIONS ARE THE PRODUCT, WRITTEN FOR A PERSON. A reader acts on what you conclude, and most read only the headline and summary. Every finding's title and opening sentence say what the reader should believe or do: your best judgement, with the tier (rule 6) carrying the uncertainty. "Unresolved" is a fact about the evidence, never the conclusion: say what you judge most likely true and what you would do. Order findings by decision relevance, except that a finding undermining another's validity precedes it and names in `invalidates` the position of any finding it overturns outright.
    STYLE — the headline, summary, titles, answers and proposals:
    - Write for a smart person who does not work on this system, as you would tell a colleague in the hallway; if they would ask what a word means, use another.
    - No jargon: no setting names or `name=value`, no measure names, and none of arm, cell, lever, bar, confound, co-timed, interleaved, apparatus, rig, n, CI, sem, p95. Say what the thing is: "the lookup step", "a fair side-by-side test", "how often it finished the job".
    - Be clear, not hedged. State your judgement once; the confidence tier carries the doubt. Give the one caveat that would change what the reader does, not every caveat you know.
    - Short: sentences under twenty words, paragraphs of at most three sentences, a list when you are listing. A question's answer opens with the answer.
    - Say size in words ("much faster", "too close to call"); exact figures are the findings' job.
-   The headline is at most twelve such words: what to do, and why it is worth doing. The summary is three to five bullets for a reader who reads nothing else — what was learned, what to do, what is still open. Neither claims more than the findings: no null they did not establish (rule 4), and a shift between two bad states is not progress. If nothing should change, say what to keep and what would change it; where the declared question was unanswerable and the runs showed something else worth knowing, lead with that as exploratory.
+   The headline is at most twelve such words: what to do, and why it is worth doing. The summary is three to five bullets for a reader who reads nothing else — what was learned, what to do, what is still open. Each rests on findings, is shown at their weakest tier, and claims no more: an unresolved contrast is never "no change" (rule 4), and a shift between two bad states is not progress. If nothing should change, say what to keep and what would change it; where the declared question was unanswerable and the runs showed something else worth knowing, lead with that as exploratory.
    A finding resting only on readings `reading_scope` lists is exploratory: its title says so, and the headline and summary never state it as an answer. Where `reading_scope.disclosure` is set every finding is, and the summary says so once.
    A finding's body may be technical, but still conclusion first, in at most two short paragraphs: the ranked measure for the arms compared, with rule 2's delivery rate, and the rest left to its chart. Say in English what bundle fields mean, never their names.
 
@@ -127,7 +127,7 @@ RULES — what separates a real analysis from a plausible one.
    - Every tier is the one rule 6 earns, and every decision agrees with its findings: a switch resting on a medium finding or one small run is deferred, not adopted.
    - Every cause you name has beaten its obvious rival: a slower turn checked against serving speed and when the run started (rule 3), a drop checked against replies cut off at the output cap.
    - Every axis the campaign set out to sweep is named in a finding, an answer or a next step, since silence reads as covered and dull.
-   Then cut, by the test under WRITE LESS. Most campaigns need three to five findings and two or three next steps; add one only if a decision rests on it. A fact about the rig that changes no conclusion here — every conversation ending on the turn limit, a check nothing could fail — is a caveat on the finding it qualifies. It becomes a finding, with empty `axes`, only when it changes which result a reader should trust. What usually fails it: a sentence repeating another, a caveat or next step that changes nothing, a restated method, a narrated chart, a hedge in a finding's body. Be subject-agnostic: levers and findings are data, so never assume the subject is of any particular kind.
+   Then cut, by the test under WRITE LESS. Most campaigns need three to five findings and two or three next steps; add one only if a decision rests on it. A fact about the rig that changes no conclusion here — every conversation ending on the turn limit, a check nothing could fail — is a caveat on the finding it qualifies. It becomes a finding, with empty `axes`, only when it changes which result a reader should trust. What usually fails it: a sentence repeating another, a caveat or next step that changes nothing, a restated method, a narrated chart, a hedge in a finding's body. Be subject-agnostic: never assume the subject is of any particular kind.
 
 14. CHARTS — SELECT ON THE CLAIM, NOT ON THE DATA. Every finding carries a `chart`: you choose its type and name the cells and readings it draws; the schema says how each type reads its lists, and the engine draws every number. A chart naming what the table does not hold is refused; one that resolves but cannot be drawn is dropped with a note, and the finding stands.
    The same rows support several types, so ask of your claim: how many measures carry position, one or two? Does the finding fix one of them at a tolerance? Is the ordering time? Only `timeseries` draws it, and only where the bundle carries a `time_axis`. Then route:
