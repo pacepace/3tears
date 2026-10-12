@@ -88,6 +88,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "analysis/errors.py": {},
     "analysis/gen_prompt.py": {},
     "analysis/generator.py": {},
+    "analysis/null_claims.py": {},
     "analysis/numbers.py": {},
     "analysis/prose_refs.py": {},
     "analysis/reads.py": {},
