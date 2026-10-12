@@ -85,6 +85,8 @@ def _decode(raw: bytes) -> Mapping[str, Any] | None:
     try:
         decoded = json.loads(raw.decode("utf-8"))
     except UnicodeDecodeError, json.JSONDecodeError:
+        # NOSILENT(logged): fail-closed: a stored value that will not parse is not a valid ticket, so None (not valid)
+        # is the true answer; the corruption is logged at WARNING
         log.warning("discarding an unparseable KV payload")
         return None
     return decoded if isinstance(decoded, dict) else None

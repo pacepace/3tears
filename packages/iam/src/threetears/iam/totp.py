@@ -79,16 +79,28 @@ def provisioning_uri(secret_b32: str, *, account_name: str, issuer_name: str) ->
 def verify_code(secret_b32: str, code: str) -> bool:
     """Verify a live TOTP code.
 
-    Never raises: a malformed code -- non-numeric, wrong length, empty -- is an
-    authentication failure, not an exception, so no rejection reason is distinguishable by
-    exception shape.
+    Never raises for the CODE: a malformed code -- non-numeric, wrong length, empty -- is
+    an authentication failure, not an exception, so no rejection reason is distinguishable
+    by exception shape.
+
+    A malformed stored SECRET does raise. It is not a rejection reason an attacker can
+    choose -- the seed is generated here and stored by the service -- and reading it as a
+    wrong code would lock its user out of their second factor for good with nobody told.
+
+    :param secret_b32: the stored base32 seed.
+    :ptype secret_b32: str
+    :param code: the code the user typed.
+    :ptype code: str
+    :return: whether the code verifies within the skew window.
+    :rtype: bool
+    :raises ValueError: ``secret_b32`` is not valid base32, so no code can ever verify.
     """
     if not code:
         return False
     try:
         return bool(pyotp.TOTP(secret_b32).verify(code, valid_window=_VALID_WINDOW))
-    except TypeError, ValueError:
-        return False
+    except ValueError as exc:
+        raise ValueError(f"the stored TOTP secret is not valid base32, so no code can verify: {exc}") from exc
 
 
 def generate_backup_codes(count: int = BACKUP_CODE_COUNT) -> list[str]:
