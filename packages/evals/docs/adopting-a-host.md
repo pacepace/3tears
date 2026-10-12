@@ -80,7 +80,12 @@ pass it to every entrypoint. It holds:
   `served_model` must be the model the provider's RESPONSE named, never the request: it is how a candidate
   launched on a floating alias records which model answered it. `temperature` must be what the request
   carried: the judge asks for 0 unless a config says otherwise, and a client whose model refuses a temperature
-  sends none and reports `None`, which the score records as `model_default`;
+  sends none and reports `None`, which the score records as `model_default`. A judge completion with no
+  `temperature` attribute at all is your code's defect, not a judging outcome: the engine raises
+  `CompletionProtocolDefect` (a `TypeError`, in `threetears.evals.schema`) and the run fails with that message,
+  as it does for a kind's `CandidateKindDefect`, rather than finishing with an error on every dimension. The
+  error carries the calls already billed and their cost (`calls`, `cost_usd`), and the cell it surfaced in is not
+  recorded. A re-judge, a judge repeat, a second judge and a witnessed cell's judging raise it the same way;
 - your `failure_describer` — how a raised provider call reads. It is the only thing that can say a call
   was refused for the calling account, which stops a run rather than excluding its cells;
   `withhold_failure_detail` is the honest one for an app with no error types of its own;

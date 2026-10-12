@@ -97,6 +97,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`ClientRequestSettings`** · model · The request parameters a host applied to one apparatus role's LLM client, for one run.
 - **`CompletionClient`** · protocol · The completion port eval is constructed with.
 - **`CompletionGenerator`** · protocol · The one call a consumer of a completion client makes, without the client's lifecycle.
+- **`CompletionProtocolDefect`** · exception · A host's completion does not meet the `CompletionResult` protocol, found while the engine read it.
 - **`CompletionResult`** · protocol · What eval reads off one completion, whatever produced it.
 - **`ContextComponents`** · model · The separately-recorded pieces a run's `context_key` is composed from.
 - **`ControlEndState`** · model · An end state a template's author states, to prove its goal checks can tell outcomes apart.

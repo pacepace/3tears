@@ -36,7 +36,7 @@ from threetears.evals.schema.models import (
     ClientRequestSettings,
     JudgeTemperature,
 )
-from threetears.evals.schema.completion import CompletionResult, ProviderFailureDescriber
+from threetears.evals.schema.completion import CompletionProtocolDefect, CompletionResult, ProviderFailureDescriber
 from threetears.evals.kernel.provider import (
     describe_and_log_failure,
     describe_incomplete_completion,
@@ -382,9 +382,10 @@ async def run_judge_llm(
         ``cost_usd`` is ``None`` when any attempt reported no price — the dim's dollars are then
         unknown, never the priced attempts' partial sum. A reply the
         provider cut short fails with an error naming that cause and its token
-        counts, after one call. A reply whose completion carries no ``temperature`` (its type does not meet the
-        protocol, :func:`sent_temperature`) fails with an error naming the conformance check, after one call and
-        with its spend. A finished reply that will not parse — including one
+        counts, after one call. A completion that carries no ``temperature`` (its type does not meet the
+        protocol, :func:`sent_temperature`) is not a failed reply but the host's defect: it raises
+        :class:`~threetears.evals.schema.completion.CompletionProtocolDefect`, naming the conformance check, after
+        one call. A finished reply that will not parse — including one
         scoring a criterion with anything but an integer on the scale — fails with
         "Failed to parse" after the bounded retries. Each caller
         composites the per-dimension scores itself (``judge_service`` across its
@@ -399,6 +400,10 @@ async def run_judge_llm(
         ``served_model`` and never off ``model``: the host may fill ``model`` from the request,
         and a floating alias in the request would then stand where the concrete scorer belongs,
         making two runs judged by different models compare equal.
+
+    Raises:
+        CompletionProtocolDefect: The client's completion does not meet the protocol (:func:`sent_temperature`),
+            carrying the calls made and what they cost.
     """
     # Retry on parse-failure so a single malformed judge response can't
     # silently drop a rubric dimension. We retry on any parse failure of a FINISHED
@@ -534,13 +539,24 @@ async def run_judge_llm(
                 "judge_usage": _cumulative_usage(),
             }
 
-        # The temperature is read before the reply is, and its refusal returned with the spend: a completion whose type
-        # carries none was still billed, and raising here would lose every attempt's usage, and the cost cap with it.
+        # The temperature is read before the reply is. A completion whose type carries none is the host's defect, not
+        # a judging outcome: it is raised (CompletionProtocolDefect) and fails the run, since every call through this
+        # client returns the same type. The attempts' spend goes up with it (``calls``, ``cost_usd``) and is logged.
         try:
             temperature = sent_temperature(result)
-        except TypeError as refused:
-            log.error("%s reply for case %s cannot be recorded: %s", label, case_id, refused)
-            return {"error": f"{label} reply cannot be recorded: {refused}", "judge_usage": _cumulative_usage()}
+        except CompletionProtocolDefect as defect:
+            spent = _cumulative_usage()
+            defect.calls = attempts_made
+            defect.cost_usd = spent.cost_usd if spent is not None else None
+            log.error(
+                "%s reply for case %s cannot be recorded, after %d attempt(s) costing %s: the completion breaks the "
+                "protocol",
+                label,
+                case_id,
+                attempts_made,
+                "unpriced" if total_cost is None else f"${total_cost:.6f}",
+            )
+            raise
 
         parsed = _process_criteria_response(result, criteria_dicts, cannot_tell_offered=cannot_tell_offered)
         if parsed is not None:
@@ -588,16 +604,18 @@ def sent_temperature(completion: CompletionResult) -> JudgeTemperature:
         The number sent; :data:`~threetears.evals.schema.models.MODEL_DEFAULT_TEMPERATURE` when the client sent none.
 
     Raises:
-        TypeError: The completion carries no ``temperature`` — its type does not meet the
-            :class:`~threetears.evals.schema.completion.CompletionResult` protocol.
+        CompletionProtocolDefect: The completion carries no ``temperature`` — its type does not meet the
+            :class:`~threetears.evals.schema.completion.CompletionResult` protocol. The host's defect, which fails
+            the run rather than one dimension (a ``TypeError``).
     """
     try:
         sent = completion.temperature
     except AttributeError as missing:
-        raise TypeError(
-            f"{type(completion).__name__} carries no `temperature`, a member of the CompletionResult protocol: a judge "
-            "is recorded at the temperature its call was sent at, so report it (None when the request carried none) — "
-            "threetears.evals.testing.check_completion_conformance holds a host's completion type to the protocol"
+        raise CompletionProtocolDefect(
+            completion,
+            "temperature",
+            "a judge is recorded at the temperature its call was sent at, so report it (None when the request "
+            "carried none)",
         ) from missing
     return MODEL_DEFAULT_TEMPERATURE if sent is None else float(sent)
 

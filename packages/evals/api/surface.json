@@ -125,6 +125,10 @@
       "kind": "protocol",
       "signature": "CompletionGenerator{generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> CompletionResult}"
     },
+    "threetears.evals.schema.CompletionProtocolDefect": {
+      "kind": "exception",
+      "signature": "CompletionProtocolDefect(completion: object, member: str, why: str) -> None"
+    },
     "threetears.evals.schema.CompletionResult": {
       "kind": "protocol",
       "signature": "CompletionResult{content: str; cost_usd: float | None; input_tokens: int | None; model: str; output_tokens: int | None; price_source: str | None; reasoning_tokens: int | None; served_model: str | None; stop_reason: StopReason; temperature: float | None}"

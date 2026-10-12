@@ -330,6 +330,8 @@ async def rejudge_result(
             between the read and the write, or the write failed (storage reports both
             as one ``False``). Nothing was stored, and the judge spend is on the log line.
         ValueError: The host supplies no completion clients, so nothing could re-judge.
+        CompletionProtocolDefect: The judge client's completion does not meet the protocol — the host's defect.
+            Nothing is stored; the spend is on the log line.
         StorageError: The result was re-scored and stored but its run's excluded-cell count
             could not be updated.
     """
