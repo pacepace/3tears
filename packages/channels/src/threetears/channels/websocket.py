@@ -198,6 +198,25 @@ class _RoomConnection:
         return first
 
 
+#: the exception class names a peer's ordinary departure raises (Starlette, websockets). a send or
+#: receive failing with one of these is the socket having closed, logged at DEBUG; anything else
+#: is a fault worth a WARNING. matched by name, so no web framework is imported here.
+_DISCONNECT_ERROR_NAMES: Final[frozenset[str]] = frozenset(
+    {"WebSocketDisconnect", "ConnectionClosed", "ConnectionClosedOK", "ConnectionClosedError"}
+)
+
+
+def _is_disconnect(exc: BaseException) -> bool:
+    """whether ``exc`` is a peer's ordinary departure rather than a fault.
+
+    :param exc: the exception a send or receive raised
+    :ptype exc: BaseException
+    :return: whether its class (or a base) is a known disconnect
+    :rtype: bool
+    """
+    return any(cls.__name__ in _DISCONNECT_ERROR_NAMES for cls in type(exc).__mro__)
+
+
 async def _safe_send(websocket: Any, payload: str, *, context: str) -> bool:
     """best-effort send: log and drop on failure, never raise.
 
@@ -221,11 +240,19 @@ async def _safe_send(websocket: Any, payload: str, *, context: str) -> bool:
     ok = True
     try:
         await websocket.send_text(payload)
-    except Exception:  # prawduct:allow prawduct/broad-except -- best-effort notification send: a dead socket must not crash the caller (the message loop or a nested frame handler), which continues or degrades on its own terms
-        log.debug(
-            "best-effort send failed; socket likely gone",
-            extra={"extra_data": {"context": context}},
-        )
+    except Exception as exc:  # prawduct:allow prawduct/broad-except -- best-effort notification send: a dead socket must not crash the caller (the message loop or a nested frame handler), which continues or degrades on its own terms
+        # NOSILENT(logged): False is the documented "the frame did not go out"; a peer that left is logged
+        # at DEBUG, and any other send fault -- a frame lost on a live socket -- at WARNING
+        if _is_disconnect(exc):
+            log.debug(
+                "best-effort send failed; the peer has gone",
+                extra={"extra_data": {"context": context, "error_type": type(exc).__name__}},
+            )
+        else:
+            log.warning(
+                "best-effort send failed; the frame is lost",
+                extra={"extra_data": {"context": context, "error": f"{type(exc).__name__}: {exc}"}},
+            )
         ok = False
     return ok
 
@@ -249,6 +276,8 @@ def parse_attachment_ids(raw: object) -> list[UUID] | None:
         try:
             result = [UUID(item) for item in raw]
         except ValueError:
+            # NOSILENT(expected): an item that is not a uuid makes the value malformed -- the None this
+            # function documents, which the caller refuses as "invalid message" rather than half-reading
             result = None
     return result
 
@@ -772,10 +801,17 @@ class WebSocketHandler:
             else:
                 connection.heard_from_peer = False
                 await self._refresh_presence(connection_id, connection)
-                if not await self._send_ping(websocket):
+                ping_failure = await self._send_ping(websocket)
+                if ping_failure is not None:
                     log.info(
                         "websocket heartbeat ping could not be delivered; closing",
-                        extra={"extra_data": {"connection_id": connection_id, "user_id": connection.user_id}},
+                        extra={
+                            "extra_data": {
+                                "connection_id": connection_id,
+                                "user_id": connection.user_id,
+                                "error": ping_failure,
+                            }
+                        },
                     )
                     ended = await self._close_unresponsive(websocket, connection)
 
@@ -844,20 +880,21 @@ class WebSocketHandler:
                 extra={"extra_data": {"connection_id": connection_id}},
             )
 
-    async def _send_ping(self, websocket: Any) -> bool:
+    async def _send_ping(self, websocket: Any) -> str | None:
         """send one heartbeat ping, bounded by one interval.
 
         :param websocket: the socket
         :ptype websocket: Any
-        :return: ``True`` when the ping was handed to the transport in time
-        :rtype: bool
+        :return: ``None`` when the ping was handed to the transport in time, else why it was not
+            (the error's type and message), which the caller logs as it closes the connection
+        :rtype: str | None
         """
-        delivered = True
+        failure: str | None = None
         try:
             await asyncio.wait_for(websocket.send_text(_HEARTBEAT_PING), timeout=self.heartbeat_interval)
-        except Exception:  # prawduct:allow prawduct/broad-except -- a failed or stalled ping IS the liveness verdict; the caller closes the connection and logs it
-            delivered = False
-        return delivered
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- a failed or stalled ping IS the liveness verdict; the caller closes the connection and logs why
+            failure = f"{type(exc).__name__}: {exc}"
+        return failure
 
     async def _close_unresponsive(self, websocket: Any, connection: _RoomConnection) -> bool:
         """close a connection whose peer stopped answering, bounded by one interval.
@@ -910,6 +947,8 @@ class WebSocketHandler:
                 if data.get("type") == "auth":
                     token = data.get("token")
             except Exception:
+                # NOSILENT(logged): None is _authenticate's documented 'not admitted', and the socket is closed with
+                # UNAUTHENTICATED before it returns
                 log.warning("websocket disconnected during authentication")
                 await self._close_with_error(websocket, UNAUTHENTICATED, "authentication failed")
                 return None
@@ -921,6 +960,8 @@ class WebSocketHandler:
         try:
             payload = await self._auth_validator(token)
         except WebSocketAuthRefused as refusal:
+            # NOSILENT(expected): the validator's refusal IS the answer -- the socket is closed with its code and
+            # message, and None is _authenticate's documented 'not admitted'
             log.info(
                 "websocket connection refused: code=%s",
                 refusal.code,
@@ -985,11 +1026,18 @@ class WebSocketHandler:
             connection.handling_frame = False
             try:
                 raw = await websocket.receive_text()
-            except Exception:
-                log.debug(
-                    "websocket disconnected for user %s",
-                    user_id,
-                )
+            except Exception as exc:
+                # NOSILENT(logged): a receive that fails ends this connection's loop, which is the truth -- the
+                # socket can be read no more; a peer leaving is DEBUG, any other receive fault is a WARNING
+                if _is_disconnect(exc):
+                    log.debug("websocket disconnected for user %s", user_id)
+                else:
+                    log.warning(
+                        "websocket receive failed for user %s; ending the connection: %s: %s",
+                        user_id,
+                        type(exc).__name__,
+                        exc,
+                    )
                 break
             # any frame at all answers the heartbeat; until the loop reads again it is busy, and
             # the heartbeat does not read the peer's silence as absence.
@@ -1030,6 +1078,8 @@ class WebSocketHandler:
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
+                # NOSILENT(logged): the peer is answered with an error frame (never a silent drop, T3-D2) and the loop
+                # keeps serving the connection
                 log.warning(
                     "received non-JSON websocket message from user %s",
                     user_id,
@@ -1052,6 +1102,8 @@ class WebSocketHandler:
                 try:
                     frame = Frame.model_validate(data)
                 except ValidationError:
+                    # NOSILENT(logged): the peer is answered with an error frame (never a silent drop, T3-D2) and the
+                    # loop keeps serving the connection
                     # valid JSON but not a well-formed frame (e.g. no ``type``):
                     # an ``error`` frame, never a silent drop (design T3-D2).
                     log.warning("received malformed websocket frame from user %s", user_id)
@@ -1323,6 +1375,8 @@ class WebSocketHandler:
             try:
                 principal = UUID(user_id) if user_id else None
             except ValueError:
+                # NOSILENT(expected): a principal whose id is not a uuid can hold no namespace grant; the
+                # deny is the fail-closed answer, and the caller refuses the action on it
                 allowed = False
             if allowed:
                 ns_entity = await self._ns_resolver(room_id)
@@ -1335,6 +1389,7 @@ class WebSocketHandler:
                         cache=self._acl_cache,
                     )
                 except AccessDenied:
+                    # NOSILENT(expected): the refusal IS the gate's answer; False is how this gate reports it
                     allowed = False
         if allowed and self._room_policy is not None:
             answer = await self._room_policy(
@@ -1553,6 +1608,8 @@ class WebSocketHandler:
         try:
             from_seq = int(raw_seq)
         except TypeError, ValueError:
+            # NOSILENT(expected): a resume point that is not a number cannot be honoured; replaying the whole
+            # retained tail loses nothing the client asked for, and every frame carries its own seq
             from_seq = 0
         async with connection.lock:
             if not await self._authorize(websocket, room_id, self._join_action, connection):
@@ -1656,6 +1713,8 @@ class WebSocketHandler:
                 try:
                     allowed = await self._decide(room_id, self._join_action, connection.user_id, connection.customer_id)
                 except Exception:  # prawduct:allow prawduct/broad-except -- a member whose access cannot be confirmed is evicted, not kept; logged, and the room's other members are still decided
+                    # NOSILENT(logged): fail-closed -- a member whose access cannot be re-decided is evicted, which is
+                    # what allowed = False decides; the other members are still decided
                     log.warning(
                         "room access could not be re-decided for a member; evicting",
                         exc_info=True,

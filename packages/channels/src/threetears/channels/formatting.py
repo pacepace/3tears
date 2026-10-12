@@ -580,5 +580,7 @@ def _parse_hex_color(color_str: str) -> int | None:
     try:
         result: int | None = int(cleaned, 16)
     except ValueError:
+        # NOSILENT(expected): a color hint that is not hex names no color; None is this function's documented
+        # answer for it, and the embed is rendered without a color rather than with a guessed one
         result = None
     return result
