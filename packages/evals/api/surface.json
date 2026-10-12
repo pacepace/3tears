@@ -1835,7 +1835,7 @@
     },
     "threetears.evals.kernel.SeedPrompt": {
       "kind": "dataclass",
-      "signature": "SeedPrompt(kind: str, prompt_type: str, seed_module: str, definition_path: str, constant: str)"
+      "signature": "SeedPrompt(kind: str, prompt_type: str, seed_module: str, constant: str)"
     },
     "threetears.evals.kernel.SeedSection": {
       "kind": "dataclass",

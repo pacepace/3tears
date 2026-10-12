@@ -257,17 +257,13 @@ class TestEverySurfaceThatShowsTheFigureCarriesIt:
 class TestTheScoreRollupRowCarriesIt:
     """``run_summary``'s rows are the score rollup a host renders; each prod-cost row carries the footing."""
 
-    async def test_a_quick_comparison_row_names_the_model_its_launch_named(self) -> None:
-        async def arm(case: Mapping[str, Any]) -> Answer:
-            return Answer(case["label"], model="m-cheap", input_tokens=10, output_tokens=1, cost_usd=0.001)
-
+    async def _footing(self, arms: Mapping[str, Any], **compare_kwargs: Any) -> tuple[dict[str, Any], EvalRun]:
         cases = [{"text": "a cat", "label": "animal"}, {"text": "an oak", "label": "plant"}]
         comparison = await compare(
-            cases, {"a": arm, "b": arm}, expected=lambda case: str(case["label"]), control="a", scope_id="footing", k=1
+            cases, arms, expected=lambda case: str(case["label"]), scope_id="footing", k=1, **compare_kwargs
         )
         host = comparison.host
-        run_id = comparison.arms["a"].run_id
-
+        run_id = next(iter(comparison.arms.values())).run_id
         summary = off_loop(
             run_summary,
             host.storage,
@@ -277,16 +273,32 @@ class TestTheScoreRollupRowCarriesIt:
             row_columns=lambda _results: {},
             profile=host.profile,
         )
-
         run = off_loop(host.storage.load_eval_run, run_id, "footing")
         assert run is not None
         (row,) = summary["rows"]
         assert row["mean_prod_cost_usd"] is not None
-        footing = row["prod_cost_footing"]
-        # A quick comparison's launch names each arm's model (here the shared placeholder its arms run on), and
-        # the engine cannot see that it is the subject's own, so the model is named beside the cost.
-        assert footing["moved"] == {"model": run.candidate_model}
-        assert footing["moved_nothing"] is False
+        return row["prod_cost_footing"], run
+
+    async def test_a_quick_comparison_that_names_no_model_moves_nothing_off_production(self) -> None:
+        """An arm is its candidate, run as itself: the label its run carries is not a model anyone set."""
+
+        async def arm(case: Mapping[str, Any]) -> Answer:
+            return Answer(case["label"], model="m-cheap", input_tokens=10, output_tokens=1, cost_usd=0.001)
+
+        footing, run = await self._footing({"a": arm, "b": arm}, control="a")
+        assert run.model_role_provenance == {"candidate": "inherited"}
+        assert footing["moved"] == {} and footing["moved_nothing"] is True
+
+    async def test_a_quick_comparison_whose_arms_name_their_models_moved_the_model(self) -> None:
+        """A model the caller named is a setting the run was launched at, and the engine cannot see that it is the
+        subject's own, so the model is named beside the cost."""
+
+        async def arm(case: Mapping[str, Any]) -> Answer:
+            return Answer(case["label"], model="m-cheap", input_tokens=10, output_tokens=1, cost_usd=0.001)
+
+        footing, run = await self._footing({"m-cheap": arm, "m-big": arm}, factors=("model",), control="m-cheap")
+        assert run.model_role_provenance == {"candidate": "chosen"}
+        assert footing["moved"] == {"model": run.candidate_model} and footing["moved_nothing"] is False
         assert f"model={run.candidate_model}" in footing["sentence"]
 
 

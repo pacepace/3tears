@@ -987,7 +987,8 @@ async def compare(
         [
             CallableArm(
                 candidate,
-                model=coordinates[arm].get(CANDIDATE_MODEL_LEVER, SHARED_ARM_MODEL),
+                model=coordinates[arm].get(CANDIDATE_MODEL_LEVER),
+                default_model=SHARED_ARM_MODEL,
                 levers={lever: coordinates[arm][lever] for lever in levers} or None,
                 arm=coordinates[arm].get(ARM_LEVER),
             )

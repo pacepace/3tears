@@ -636,8 +636,8 @@ tunes it with no deploy, and the engine ships only the default a fresh deploymen
 
 `SEED_PROMPTS` (from `threetears.evals.kernel`) is that list, one `SeedPrompt` per prompt. Each names its id
 (`prompt_type`), which registry seeds it (`kind`: `template` or `text`), and where the default lives:
-`seed_ref` is the `(module, constant)` to import it from, and `promotion_ref` the source file a promotion
-writes a tuned preset back into. Seed an empty slot from each entry and never overwrite a stored one:
+`seed_ref` is the `(module, constant)` to import it from. Seed an empty slot from each entry and never overwrite a
+stored one:
 
 ```python
 for entry in SEED_PROMPTS:
