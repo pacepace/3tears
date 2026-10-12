@@ -35,6 +35,7 @@ from typing import Any, Final
 
 from shapely.geometry.base import BaseGeometry
 
+from threetears.geo.geometry import UndecodableGeometry
 from threetears.geo.tiles import TileId
 from threetears.observe import get_logger
 
@@ -85,11 +86,16 @@ class BandResult:
     :ptype truncated: bool
     :param dropped: how many features the cap dropped
     :ptype dropped: int
+    :param undecodable: how many source rows were left out because their geometry could not be
+        read (:class:`~threetears.geo.geometry.UndecodableGeometry`). a malformed row costs its own
+        feature, never the tile, and is counted here rather than passed off as absent
+    :ptype undecodable: int
     """
 
     features: list[TileFeature]
     truncated: bool = False
     dropped: int = 0
+    undecodable: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,8 +181,13 @@ def feature_band(
     """
     tolerance = simplification_tolerance(tile.z)
     candidates: list[tuple[float, TileFeature]] = []
+    undecodable = 0
     for row in rows:
-        geometry = geometry_of(row)
+        try:
+            geometry = geometry_of(row)
+        except UndecodableGeometry:
+            undecodable += 1
+            continue
         if geometry is None:
             continue
         simplified = geometry.simplify(tolerance, preserve_topology=True)
@@ -204,7 +215,7 @@ def feature_band(
         )
 
     if len(candidates) <= spec.max_features_per_tile:
-        return BandResult(features=[feature for _, feature in candidates])
+        return BandResult(features=[feature for _, feature in candidates], undecodable=undecodable)
 
     # descending rank: keep the most important, drop the rest.
     candidates.sort(key=lambda pair: pair[0], reverse=True)
@@ -217,7 +228,7 @@ def feature_band(
         len(candidates),
         spec.rank_column or "source order",
     )
-    return BandResult(features=kept, truncated=True, dropped=dropped)
+    return BandResult(features=kept, truncated=True, dropped=dropped, undecodable=undecodable)
 
 
 def aggregate_band(
@@ -251,8 +262,13 @@ def aggregate_band(
     from shapely.geometry import Point
 
     groups: dict[Any, list[tuple[dict[str, Any], BaseGeometry]]] = {}
+    undecodable = 0
     for row in rows:
-        geometry = geometry_of(row)
+        try:
+            geometry = geometry_of(row)
+        except UndecodableGeometry:
+            undecodable += 1
+            continue
         if geometry is None:
             continue
         bucket = row.get(spec.rollup_column) if spec.rollup_column else tile.key
@@ -279,7 +295,7 @@ def aggregate_band(
                 feature_id=bucket if isinstance(bucket, (str, int)) else None,
             )
         )
-    return BandResult(features=features)
+    return BandResult(features=features, undecodable=undecodable)
 
 
 def _rank_of(row: dict[str, Any], rank_column: str | None) -> float:

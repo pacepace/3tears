@@ -344,8 +344,8 @@ def settle_tolerantly[R: EvalDocumentModel](
     try:
         current, _ = settle_job_record(store, kind, record_id, scope_id)
     except ConflictError:
-        # NOSILENT: a race whose loser re-reads -- a record another writer keeps moving is live, and its own next
-        # read settles it; the caller keeps the record as it read it, which is the record as last written.
+        # NOSILENT(expected): a race whose loser re-reads -- a record another writer keeps moving is live, and its own
+        # next read settles it; None is the documented "keep what you read", which is the record as last written.
         log.warning("eval.job_lease %s=%s scope=%s kept changing while it was settled", kind.name, record_id, scope_id)
         return None
     return current

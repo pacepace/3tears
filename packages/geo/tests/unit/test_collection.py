@@ -20,6 +20,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.geo.bands import AggregateSpec, FeatureSpec
 from threetears.geo.collection import LayerDefinition, TileCollection, ViewportRequest
+from threetears.geo.geometry import UndecodableGeometry
 from threetears.geo.tiles import BoundingBox, TileId, tile_bounds
 from threetears.object_store.filesystem import FilesystemObjectStore
 
@@ -106,6 +107,16 @@ class TestLayerDefinition:
             latitude_column="latitude",
         )
         assert layer.geometry_of({"longitude": None, "latitude": None}) is None
+
+    def test_point_layer_refuses_coordinates_that_are_not_numbers(self) -> None:
+        layer = LayerDefinition(
+            name="locations",
+            feature_id_column="id",
+            longitude_column="longitude",
+            latitude_column="latitude",
+        )
+        with pytest.raises(UndecodableGeometry, match="unparseable coordinates"):
+            layer.geometry_of({"longitude": "east", "latitude": 33.4})
 
 
 class TestQuantization:

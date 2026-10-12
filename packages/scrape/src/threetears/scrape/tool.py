@@ -645,6 +645,8 @@ class ScrapeTool(TearsTool):
         try:
             row = await self._health_collection.get(target_id)
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a health-store outage must degrade to fetching without a solve, exactly as the circuit degrades to fetching; losing the reuse is a cost, losing the fetch is an outage. Logged with its traceback below
+            # NOSILENT(logged): None is "no stored solve to use", true while the row cannot be read; the fetch
+            # still happens (losing reuse is a cost, losing the fetch an outage) and the ERROR line says why
             log.exception(
                 "scrape tool: could not read the health row for target %s; fetching without a stored solve",
                 target_id,

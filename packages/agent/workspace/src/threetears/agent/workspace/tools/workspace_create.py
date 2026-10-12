@@ -374,7 +374,7 @@ class WorkspaceCreateTool(TearsTool):
                             nats_client=self._nats_client,
                             namespace=self._namespace,
                         )
-                # NOSILENT: logged, not swallowed: a failed audit never turns a true create into an error
+                # NOSILENT(logged): a failed audit never turns a true create into an error
                 except Exception as audit_exc:
                     log.exception(
                         "workspace_create audit publish swallow caught: %s",

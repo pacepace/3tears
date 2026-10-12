@@ -1,10 +1,11 @@
 """configuration dataclass for no-silent-swallow enforcement.
 
 the no-silent-swallow domain enforces a single contract: every
-exception handler that turns an error into an inert answer (and every
-``contextlib.suppress(...)`` invocation) in production code must
-either log, re-raise, or carry a ``# NOSILENT(<kind>): <reason>``
-marker whose kind the walker checks against the code. bare
+exception handler that turns an error into an inert answer, logged
+first or not (and every ``contextlib.suppress(...)`` invocation) in
+production code must either re-raise, return a typed failure, or carry
+a ``# NOSILENT(<kind>): <reason>`` marker whose kind the walker checks
+against the code. bare
 ``except:`` clauses (which catch ``SystemExit`` /
 ``KeyboardInterrupt`` and are never correct in production) are
 flagged unconditionally.

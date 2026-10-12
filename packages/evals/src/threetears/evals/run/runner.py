@@ -2742,6 +2742,8 @@ async def _record_contained_faults(host: EvalHost, run: EvalRun, faults: list[st
         )
     # prawduct:ok-broad-except — the loop's own ending is what the caller must see; this is logged with every entry
     except Exception:
+        # NOSILENT(logged): this method answers nothing and must not replace what ended the loop; every entry it
+        # carried is on this ERROR line
         log.exception(
             "eval.run run=%s scope=%s: the errors its loop contained could not be written on the run: %s",
             run.id,
@@ -3692,6 +3694,8 @@ async def execute_run(
                 ),
             )
         except asyncio.CancelledError:
+            # NOSILENT(logged): not dropped -- the cell is recorded as cancelled, and the cancel is re-raised below once
+            # the cell is saved (``cancelled_in_cell``).
             # The run was cancelled while this cell ran. The cancel still ends the run — it is
             # re-raised below, once the cell is accounted for — but the cell's spend was real, and
             # it lives only on this sink, so it is recorded as an excluded cell first rather than

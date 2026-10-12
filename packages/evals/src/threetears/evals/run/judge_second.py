@@ -746,6 +746,8 @@ def _record(storage: EvalStorage, result_id: str, scope_id: str, entry: SecondJu
         try:
             result, etag = storage.load_eval_result_with_etag(result_id, scope_id)
         except StorageError, PydanticValidationError:
+            # NOSILENT(logged): False is the documented "not stored", and the caller names this result in the
+            # report's ``unwritten``
             log.exception("eval.judge_second result=%s could not be read back; its entry is not stored", result_id)
             return False
         if result is None:
@@ -755,9 +757,11 @@ def _record(storage: EvalStorage, result_id: str, scope_id: str, entry: SecondJu
         try:
             storage.replace_eval_result(updated, if_match=etag)
         except ConflictError:
+            # NOSILENT(attempt): a lost conditional write re-reads and re-applies; running out returns False below
             log.info("eval.judge_second result=%s changed between the read and the write; re-applying", result_id)
             continue
         except StorageError:
+            # NOSILENT(logged): False is the documented "not stored", named in the report's ``unwritten``
             log.exception("eval.judge_second result=%s: its entry could not be written", result_id)
             return False
         return True

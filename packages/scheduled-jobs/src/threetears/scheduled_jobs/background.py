@@ -576,6 +576,7 @@ class BackgroundDispatch:
                     latency_ms=result.latency_ms,
                 )
         except Exception:  # noqa: BLE001 - boundary: a lost write leaves the row to the reaper and must not wedge the kind
+            # NOSILENT(logged): no caller to tell: the fire row stays dispatching and the reaper records it as failed
             log.exception(
                 "scheduled_jobs background: could not finalize the fire row; the reaper will record it as failed",
                 extra={

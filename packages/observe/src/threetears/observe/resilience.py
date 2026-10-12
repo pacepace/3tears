@@ -85,6 +85,8 @@ async def retry_with_backoff(
             result = True
             break
         except Exception as exc:
+            # NOSILENT(attempt): a retry loop; exhausting max_attempts is logged at ERROR and answered False, the
+            # function's documented failure
             if max_attempts is not None and attempt >= max_attempts:
                 _logger.error(
                     "%s failed after %d attempts: %s",

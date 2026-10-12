@@ -1698,7 +1698,7 @@ class NatsKvBucket:
         except passthrough:
             raise
         except _OPEN_REFUSALS:
-            # NOSILENT: re-raised as itself -- a refusal the re-bind found is not a KvError
+            # re-raised as itself -- a refusal the re-bind found is not a KvError
             raise
         except Exception as exc:
             raise _kv_error(f"{failure}: {exc}", bucket=self._full_name, cause=exc) from exc
@@ -1916,6 +1916,8 @@ class NatsKvBucket:
                 failure=f"KV create failed: bucket={self._full_name} key={key}",
             )
         except KeyWrongLastSequenceError:
+            # NOSILENT(expected): a lost create is create()'s documented None, distinct from every revision; the debug
+            # line is only for spotting contention
             # A lost create is a documented result (None), but a burst of them is contention on
             # one key -- two writers racing a lock or a leader election -- which only shows up
             # here. The value is not logged; the key is structural, the same identifier already
@@ -1955,6 +1957,7 @@ class NatsKvBucket:
                 failure=f"KV update failed: bucket={self._full_name} key={key} rev={revision}",
             )
         except KeyWrongLastSequenceError:
+            # NOSILENT(expected): a lost compare-and-swap is update()'s documented None, distinct from every revision
             # A lost CAS is a documented result (None), but a burst of them is contention on one
             # key, and a caller that never retries would otherwise drop the write in silence.
             log.debug(
@@ -2009,6 +2012,8 @@ class NatsKvBucket:
                 failure=failure,
             )
         except APIError as exc:
+            # NOSILENT(expected): a wrong-last-sequence refusal is the documented None of a lost compare-and-swap; any
+            # other API error raises KvError
             if exc.err_code in _JS_ERR_WRONG_LAST_SEQUENCE:
                 log.debug(
                     "KV update lost: revision mismatch",
@@ -2378,7 +2383,8 @@ class _KeyWatchConsumer:
                 what=f"key watch consumer create on {stream}",
             )
             consumer = cls(subscription=subscription, name=name, subject=subject, heartbeat=heartbeat, client=client)
-        # NOSILENT: logged naming the grant to check; the caller pauses and creates another
+        # NOSILENT(logged): None is open()'s documented "not created"; the warning names the grant to check,
+        # and the caller pauses and creates another
         except Exception as exc:  # noqa: BLE001 -- a failed create is retried, never raised
             log.warning(
                 "key watch consumer %s on %s could not be created; retrying in %.0fs. an ungranted "
@@ -2414,11 +2420,12 @@ class _KeyWatchConsumer:
             try:
                 msg = await self._subscription.next_msg(timeout=silence)
             except _NatsConnectionClosedError as exc:
+                # NOSILENT(expected): a closed client raises KvError. Otherwise the consumer's connection was
+                # retired by a credential renewal while the client lives on a successor: ending the generator is
+                # how a consumer asks watch_key to replace it, and the replacement redelivers the key's latest
+                # message, so nothing is lost.
                 if self._client.is_closed:
                     raise KvError(f"key watch on {self._subject} ended: the NATS connection is closed") from exc
-                # NOSILENT: the consumer's connection was retired by a credential renewal while the
-                # client lives on a successor; the caller replaces the consumer there, and the
-                # replacement redelivers the key's latest message.
                 log.info(
                     "key watch consumer %s on %s lost its connection to a credential renewal; replacing it",
                     self._name,
@@ -2427,7 +2434,8 @@ class _KeyWatchConsumer:
                 )
                 return
             except TimeoutError:
-                # NOSILENT: a consumer that stopped heartbeating is replaced by the caller
+                # NOSILENT(expected): missed heartbeats end the generator, which is how a consumer asks
+                # watch_key to replace it; the replacement redelivers the key's latest message
                 log.info(
                     "key watch consumer %s on %s missed %d heartbeats; replacing it",
                     self._name,
@@ -2453,29 +2461,34 @@ class _KeyWatchConsumer:
                     extra={"extra_data": {"subject": self._subject, "consumer": self._name, "status": status}},
                 )
                 return
-            yield self._update_of(msg, key=key)
+            try:
+                revision = int(msg.metadata.sequence.stream)
+            except Exception as exc:  # noqa: BLE001 -- any unreadable sequence is the same defect
+                # NOSILENT(logged): a revision is never invented. Ending the generator has watch_key replace
+                # the consumer, whose redelivery carries the key's latest message with its real revision.
+                log.warning(
+                    "key watch message on %s carries no stream sequence; replacing the consumer rather than "
+                    "delivering it with a made-up revision: %s",
+                    self._subject,
+                    exc,
+                    extra={"extra_data": {"subject": self._subject, "consumer": self._name, "error": str(exc)}},
+                )
+                return
+            yield self._update_of(msg, key=key, revision=revision)
 
-    def _update_of(self, msg: Msg, *, key: str) -> KvKeyUpdate:
+    def _update_of(self, msg: Msg, *, key: str, revision: int) -> KvKeyUpdate:
         """the update a delivered data message carries.
 
         :param msg: the delivered message
         :ptype msg: Msg
         :param key: the watched key
         :ptype key: str
+        :param revision: the message's stream sequence
+        :ptype revision: int
         :return: the update
         :rtype: KvKeyUpdate
         """
         headers = msg.headers or {}
-        try:
-            revision = int(msg.metadata.sequence.stream)
-        except Exception as exc:  # noqa: BLE001 -- the value is still delivered; only its revision is unknown
-            log.warning(
-                "key watch message on %s carries no stream sequence; delivering it with revision 0: %s",
-                self._subject,
-                exc,
-                extra={"extra_data": {"subject": self._subject, "consumer": self._name, "error": str(exc)}},
-            )
-            revision = 0
         removed = headers.get(_KV_OPERATION_HEADER) in _KV_REMOVAL_OPERATIONS
         return KvKeyUpdate(key=key, value=None if removed else bytes(msg.data), revision=revision)
 
@@ -2500,7 +2513,8 @@ async def _drop_subscription(subscription: _NatsSubscription, *, subject: str) -
     """
     try:
         await subscription.unsubscribe()
-    # NOSILENT: logged; the consumer behind it is reaped by the server once nothing listens
+    # not a swallow: teardown with no answer to give; the consumer behind it is reaped by the server once nothing
+    # listens
     except Exception as exc:  # noqa: BLE001 -- teardown continues regardless
         log.debug("key watch unsubscribe on %s failed: %s", subject, exc)
 

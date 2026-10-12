@@ -863,6 +863,8 @@ class TargetCircuit:
         try:
             return max(0, await self._blocked_attempts.record_attempt(target_id) - 1)
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the fleet count only ever raises the failure count; losing it degrades to the per-row count, never to a missed block. Logged with its traceback below
+            # NOSILENT(logged): 0 is "no fleet blocks to ADD"; the circuit still trips on the row's own count,
+            # so losing the fleet's only ever delays a trip, never fakes one, and the ERROR line says so
             log.exception(
                 "scrape circuit: fleet blocked-attempt count unavailable for target %s; using the row's own count",
                 target_id,

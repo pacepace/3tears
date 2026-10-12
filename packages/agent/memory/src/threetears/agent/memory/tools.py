@@ -56,7 +56,7 @@ from threetears.agent.memory.collections import (
 )
 from langchain_core.embeddings import Embeddings
 
-from threetears.agent.memory.embedding_utils import _safe_aembed_query
+from threetears.agent.memory.embedding_utils import EmbeddingUnavailableError, _embed_query
 from threetears.agent.memory.entities import MemoryEntity
 from threetears.agent.memory.types import MemoryType
 from threetears.observe import get_logger
@@ -551,9 +551,10 @@ async def load_memory_search_tool(
 
         embedding = None
         if run_semantic:
-            embedding = await _safe_aembed_query(embedding_provider, query)
-            if embedding is None:
-                return _tool_error("memory_search", "embed", "Embedding API request failed")
+            try:
+                embedding = await _embed_query(embedding_provider, query)
+            except EmbeddingUnavailableError as exc:
+                return _tool_error("memory_search", "embed", str(exc))
 
         fts_text = query.strip()[:500] if len(query.strip()) >= 3 else None
 
@@ -917,15 +918,13 @@ async def load_memory_recall_tool(
                         limit=limit,
                     )
                 else:
-                    embedding = await _safe_aembed_query(
-                        embedding_provider,
-                        chunk_query,
-                    )
-                    if embedding is None:
+                    try:
+                        embedding = await _embed_query(embedding_provider, chunk_query)
+                    except EmbeddingUnavailableError as exc:
                         return _tool_error(
                             "memory_recall",
                             "embed",
-                            "embedding unavailable for chunk_query mode",
+                            f"embedding unavailable for chunk_query mode: {exc}",
                         )
                     chunks = await memory_chunk_collection.hybrid_search_within_memory(
                         memory_id=mem_uuid,
@@ -1217,9 +1216,10 @@ async def load_memory_add_tool(
         if mt not in _VALID_MEMORY_TYPES:
             return f"[TOOL ERROR] Invalid memory_type '{memory_type}'. Valid types: {', '.join(sorted(_VALID_MEMORY_TYPES))}"
 
-        embedding = await _safe_aembed_query(embedding_provider, content)
-        if embedding is None:
-            return _tool_error("memory_add", "embed", "embedding provider returned None")
+        try:
+            embedding = await _embed_query(embedding_provider, content)
+        except EmbeddingUnavailableError as exc:
+            return _tool_error("memory_add", "embed", str(exc))
 
         try:
             similar_rows = await memories_collection.find_similar_for_dedup(
@@ -1606,9 +1606,10 @@ async def load_chunk_search_tool(
         if not query or not query.strip():
             return "Empty query. Provide a search term."
 
-        embedding = await _safe_aembed_query(embedding_provider, query)
-        if embedding is None:
-            return "Passage search is down; try memory_search."
+        try:
+            embedding = await _embed_query(embedding_provider, query)
+        except EmbeddingUnavailableError as exc:
+            return f"Passage search is down ({exc}); try memory_search."
 
         # v0.7.5: ``mode`` remaps the semantic/keyword blend so the
         # agent can self-correct between "I want similar concepts"

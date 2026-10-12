@@ -1063,6 +1063,7 @@ def _record_analysis_attempt(
     try:
         write_held_record(storage, ANALYSIS_JOB, attempt, leases=leases)
     except JobFenced as fenced:
+        # NOSILENT(logged): not a default -- "fenced" is the typed outcome the docstring names, and the caller reads it
         log.warning(
             "eval.generate_analysis attempt %s campaign=%s outcome=%s NOT recorded: %s",
             attempt_id,
@@ -1072,7 +1073,7 @@ def _record_analysis_attempt(
         )
         return "fenced"
     except StorageError, ConflictError:
-        # Log only: the failed write IS the attempt record's own write, already retried by write_held_record, so no
+        # NOSILENT(logged): "unrecorded" is the typed outcome the caller reads. Log only: the failed write IS the attempt record's own write, already retried by write_held_record, so no
         # record is left to carry the error — and writing the attempt lost instead would contradict an analysis it
         # may have stored. The whole record is in this line, so what the generation spent can be recovered from it.
         log.exception(

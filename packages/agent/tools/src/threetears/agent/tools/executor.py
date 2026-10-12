@@ -124,6 +124,8 @@ class ToolExecutor:
                 try:
                     invoked = await tool.ainvoke({"name": tc_name, "args": tc_args, "id": tc_id, "type": "tool_call"})
                 except Exception as exc:
+                    # NOSILENT(logged): not a swallow: the failure goes back to the model as this call's ToolMessage
+                    # naming the error, beside the ERROR log; continue moves on to the next tool call of the turn
                     log.error(
                         "Tool execution failed",
                         extra={"extra_data": {"tool_name": tc_name, "error": str(exc)}},

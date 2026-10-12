@@ -2266,7 +2266,7 @@ class EvalStorage:
             try:
                 readable[item["id"]] = self._hydrate(EvalCassette, item)
             except ValueError as refused:
-                # NOSILENT: kept, not dropped: returned as this row's why, and the cell raises it as CassetteCorrupt
+                # Kept, not dropped: returned as this row's why, and the cell raises it as CassetteCorrupt
                 # for the call that asks for this recording, as a point read of the row would.
                 unreadable[item["id"]] = str(refused)
         return CaseRecordings(readable=readable, unreadable=unreadable)

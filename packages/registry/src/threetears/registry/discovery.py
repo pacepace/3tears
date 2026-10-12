@@ -146,10 +146,15 @@ class DiscoverResponse(BaseModel):
     :ptype agent_id: str
     :param tools: list of resolved tool results
     :ptype tools: list[DiscoverResultEntry]
+    :param error: why the request was refused unread, or ``None`` when it was answered. a
+        refused request also carries no tools, and without this its empty list would read as
+        "none of your tools is available"
+    :ptype error: str | None
     """
 
     agent_id: str
     tools: list[DiscoverResultEntry]
+    error: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +244,9 @@ class DiscoveryHandler:
         try:
             request = DiscoverRequest.model_validate_json(msg.data)
         except Exception as exc:
-            response = DiscoverResponse(agent_id="unknown", tools=[])
+            # NOSILENT(logged): the requester's reply carries the refusal in `error`, so its empty tool list
+            # cannot read as "nothing available"; return ends a subscription callback that has no other caller
+            response = DiscoverResponse(agent_id="unknown", tools=[], error=f"malformed discovery request: {exc}")
             _logger.warning(
                 "malformed discovery request",
                 extra={"extra_data": {"error": str(exc)}},

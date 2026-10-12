@@ -20,6 +20,7 @@ from threetears.geo.bands import (
     feature_band,
     simplification_tolerance,
 )
+from threetears.geo.geometry import decode_geometry, point_geometry
 from threetears.geo.tiles import TileId
 
 
@@ -64,6 +65,18 @@ class TestFeatureBand:
             attributes_of=coerce_attributes,
         )
         assert len(result.features) == 2
+
+    def test_a_row_whose_geometry_cannot_be_read_is_left_out_and_counted(self) -> None:
+        rows = _rows(2) + [{"id": 99, "lon": "not-a-number", "lat": 33.4}]
+        result = feature_band(
+            rows,
+            tile=TileId(z=12, x=100, y=200),
+            spec=FeatureSpec(attributes=("id",)),
+            geometry_of=lambda row: point_geometry(row, "lon", "lat"),
+            attributes_of=coerce_attributes,
+        )
+        assert len(result.features) == 2
+        assert result.undecodable == 1
 
     def test_cap_keeps_the_highest_ranked(self) -> None:
         # the cap must drop by declared importance; dropping in source order
@@ -120,6 +133,20 @@ class TestFeatureBand:
 
 
 class TestAggregateBand:
+    def test_a_row_whose_geometry_cannot_be_read_is_counted_not_folded_in_silently(self) -> None:
+        rows = [
+            {"id": 1, "geom": b"\x01\x01\x00\x00\x00\x00", "state": "04"},
+            {"id": 2, "geom": Point(-112.0, 33.4).wkb, "state": "04"},
+        ]
+        result = aggregate_band(
+            rows,
+            tile=TileId(z=4, x=3, y=6),
+            spec=AggregateSpec(rollup_column="state"),
+            geometry_of=lambda row: decode_geometry(row["geom"]),
+        )
+        assert [f.attributes["count"] for f in result.features] == [1]
+        assert result.undecodable == 1
+
     def test_groups_by_declared_rollup_column(self) -> None:
         rows = [
             {"id": 1, "lon": -112.0, "lat": 33.4, "state": "04", "unreg": 100},

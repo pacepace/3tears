@@ -99,6 +99,8 @@ async def _maybe_catalog_object(
     try:
         handle = ObjectHandle.from_metadata(handle_data)
     except (KeyError, ValueError, TypeError) as exc:
+        # NOSILENT(logged): cataloguing is a side effect of a tool result that is already returned unchanged; a handle
+        # that cannot be read is simply not catalogued
         log.warning(
             "produced object handle malformed; not cataloged",
             extra={"extra_data": {"tool_name": tool_name, "error": str(exc)}},

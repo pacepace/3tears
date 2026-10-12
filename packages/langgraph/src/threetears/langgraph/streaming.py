@@ -1073,6 +1073,8 @@ class StreamingResponse:
             # path; any fault in it degrades to "unexpected" rather than displacing the original
             # exception, which is logged at ERROR by the caller and still propagates.
             except Exception:
+                # NOSILENT(logged): a broken caller-supplied predicate classifies the failure as unexpected; the
+                # original exception still propagates
                 log.exception(
                     "stream expected-failure predicate failed; logging the failure as unexpected",
                     extra={"extra_data": {"correlation_id": str(self._correlation_id)}},
@@ -1136,6 +1138,8 @@ class StreamingResponse:
             # any fault in it degrades to no gateway code rather than displacing the original
             # exception, which is logged here and still propagates to the caller.
             except Exception:
+                # NOSILENT(logged): a broken caller-supplied reader publishes no gateway code; the original exception
+                # still propagates
                 log.exception(
                     "stream gateway-code reader failed; publishing no gateway code",
                     extra={"extra_data": {"correlation_id": str(self._correlation_id)}},

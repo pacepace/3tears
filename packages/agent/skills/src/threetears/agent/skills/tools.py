@@ -465,6 +465,7 @@ def _parse_skill_id(raw: str) -> UUID | None:
     try:
         return UUID(candidate)
     except ValueError:
+        # NOSILENT(expected): a string that is not a UUID literal is not a skill id, which is all None claims
         # Malformed UUID literal (typo, wrong format, etc.). The caller turns None into a
         # tool-error the model sees, so this only needs to be legible to an operator asking
         # why a skill lookup keeps missing.
@@ -1877,6 +1878,9 @@ def load_skill_introspect_tool(
         bare_name = candidate
         if bare_name.startswith("[skill:") and bare_name.endswith("]"):
             bare_name = bare_name[len("[skill:") : -1].strip()
+        # a lookup that raised has not shown the name is unknown: if nothing is found, the
+        # answer names the failed lookups instead of claiming there is no such skill or tool.
+        lookup_faults: list[str] = []
         try:
             prose_entity = await skills_collection.find_by_name_for_user(
                 agent_id=agent_id,
@@ -1889,6 +1893,7 @@ def load_skill_introspect_tool(
                 extra={"extra_data": {"name": bare_name, "error": str(exc)}},
             )
             prose_entity = None
+            lookup_faults.append(f"the skill lookup failed ({type(exc).__name__}: {exc})")
         if prose_entity is not None:
             return _render_prose_introspect(prose_entity)
 
@@ -1904,7 +1909,13 @@ def load_skill_introspect_tool(
                 extra={"extra_data": {"mcp_name": bare_name, "error": str(exc)}},
             )
             tool_payload = None
+            lookup_faults.append(f"the tool lookup failed ({type(exc).__name__}: {exc})")
         if tool_payload is None:
+            if lookup_faults:
+                return _tool_error(
+                    "skill_introspect",
+                    f"could not look up {name_or_id!r}: {'; '.join(lookup_faults)}",
+                )
             return _tool_error(
                 "skill_introspect",
                 f"no skill or tool found matching {name_or_id!r}",

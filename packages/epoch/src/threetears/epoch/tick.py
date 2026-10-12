@@ -72,6 +72,8 @@ async def catchup_tick(
         # prawduct:allow prawduct/broad-except -- one domain's failure must not
         # abandon the remaining domains in the same pass. re-raised below.
         except Exception as exc:  # noqa: BLE001
+            # NOSILENT(attempt): one subject's failure does not abandon the rest of the pass; the first failure is
+            # raised after it
             log.warning(
                 "epoch catch-up failed for a subject; continuing with the rest of the pass",
                 exc_info=True,

@@ -511,7 +511,7 @@ def _one_of_many_racing_creates_lands(store: DocumentStore) -> None:
                 # NOSILENT(expected): every losing creator must be refused; the winners are counted below
                 return
             except Exception as error:
-                # NOSILENT: carried to the checking thread, which re-raises it as itself
+                # Carried to the checking thread, which re-raises it as itself
                 failed.append(error)
             else:
                 landed.append(writer)
@@ -564,10 +564,10 @@ def _one_of_many_racing_writers_lands(store: DocumentStore) -> None:
             try:
                 store.upsert(_doc("d1", v=writer, round=round_number), if_match=held)
             except StoreConflict:
-                # NOSILENT: a refusal is the outcome every losing writer must get; it is counted below
+                # NOSILENT(expected): a refusal is the outcome every losing writer must get; it is counted below
                 refused.append(writer)
             except Exception as error:
-                # NOSILENT: carried to the checking thread, which re-raises it as itself
+                # Carried to the checking thread, which re-raises it as itself
                 failed.append(error)
             else:
                 landed.append(writer)

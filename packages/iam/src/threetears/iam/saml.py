@@ -184,6 +184,8 @@ def peek_in_response_to(saml_response_b64: str) -> str | None:
     try:
         xml_bytes = base64.b64decode(saml_response_b64, validate=True)
     except ValueError, TypeError:
+        # NOSILENT(logged): fail-closed: garbage on this externally reachable field correlates to no request, so None
+        # (deny) is the true answer; the WARNING shows the probing
         log.warning("saml: SAMLResponse is not valid base64")
         return None
     root = _parse_xml(xml_bytes, context="SAMLResponse")
@@ -251,5 +253,7 @@ def _parse_xml(payload: bytes, *, context: str) -> Any:
     try:
         return DefusedElementTree.fromstring(payload)
     except Exception:
+        # NOSILENT(logged): fail-closed: an unparseable SAML document authenticates nobody, so None (generic deny) is
+        # the true answer; the WARNING names what failed to parse
         log.warning("saml: failed to parse %s", context)
         return None

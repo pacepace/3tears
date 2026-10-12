@@ -675,6 +675,8 @@ async def _resolve_failure_verdict(
         # Health is a diagnostic aid. A store that cannot be read must degrade this target to
         # the behaviour it had before health existed, not turn every poll into a hard
         # failure. Logged with its traceback, never silenced.
+        # NOSILENT(logged): None is "no opinion", the verdict a target had before health existed, which is
+        # the true answer without a readable health row; the poll proceeds and the ERROR line names why
         log.exception(
             "scrape health: could not read health for target %s; classifying nothing",
             target_id,

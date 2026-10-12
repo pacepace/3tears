@@ -50,7 +50,7 @@ from threetears.agent.memory.collections import (
     MemoriesCollection,
     MemoryConsolidationsCollection,
 )
-from threetears.agent.memory.embedding_utils import _safe_aembed_query
+from threetears.agent.memory.embedding_utils import _embed_query
 from threetears.agent.memory.events import MemoryConsolidatedEvent
 from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.types import MemoryConfig, MemoryType
@@ -100,6 +100,12 @@ class ConsolidationResult:
         reflector failed is counted in ``clusters_formed`` but not here)
     :ivar sources_superseded: source memories pointed at a new gist
     :ivar gist_ids: the committed gist memory ids
+    :ivar clusters_failed: clusters that could not be consolidated because
+        something FAILED -- the reflector's call or reply, the gist's
+        embedding, the commit. a cluster skipped on purpose (the reflector
+        judged it not one subject) is not counted here, so a pass whose
+        reflector is down no longer reads like a pass that found nothing
+        worth merging
     """
 
     __slots__ = (
@@ -108,6 +114,7 @@ class ConsolidationResult:
         "gists_created",
         "sources_superseded",
         "gist_ids",
+        "clusters_failed",
     )
 
     def __init__(
@@ -118,6 +125,7 @@ class ConsolidationResult:
         gists_created: int,
         sources_superseded: int,
         gist_ids: list[UUID],
+        clusters_failed: int = 0,
     ) -> None:
         """initialize the result value object.
 
@@ -131,12 +139,15 @@ class ConsolidationResult:
         :ptype sources_superseded: int
         :param gist_ids: committed gist ids
         :ptype gist_ids: list[UUID]
+        :param clusters_failed: clusters a failure kept from consolidating
+        :ptype clusters_failed: int
         """
         self.memories_considered = memories_considered
         self.clusters_formed = clusters_formed
         self.gists_created = gists_created
         self.sources_superseded = sources_superseded
         self.gist_ids = gist_ids
+        self.clusters_failed = clusters_failed
 
 
 def _cosine(a: list[float], b: list[float], norm_a: float, norm_b: float) -> float:
@@ -316,8 +327,9 @@ class DreamService:
         never leak across users.
 
         Fire-and-forget safe at the cluster grain: a cluster whose reflector
-        or embedding fails is logged and skipped; the pass still returns a
-        result summarizing what committed.
+        or embedding fails is logged, skipped and counted in
+        ``clusters_failed``; the pass still returns a result summarizing what
+        committed.
 
         :param agent_id: partition column (required)
         :ptype agent_id: UUID
@@ -355,6 +367,7 @@ class DreamService:
 
         gists_created = 0
         sources_superseded = 0
+        clusters_failed = 0
         gist_ids: list[UUID] = []
         for idxs in mergeable:
             members = [candidates[i] for i in idxs]
@@ -366,7 +379,9 @@ class DreamService:
                     user_id=user_id,
                 )
             except Exception as exc:
-                # a per-cluster failure (DB write, cycle-guard, dispatch)
+                # NOSILENT(logged): the pass carries on to the other clusters, and this one is counted in
+                # clusters_failed on the result, so a failing reflector never reads as "nothing to merge"
+                # a per-cluster failure (reflector, embedding, DB write, cycle-guard, dispatch)
                 # is logged and skipped so the remaining clusters still
                 # consolidate. A failure AFTER the gist commits but before
                 # supersession leaves a committed-but-unreferenced gist;
@@ -378,6 +393,7 @@ class DreamService:
                     exc,
                     extra={"extra_data": {"agent_id": str(agent_id), "source_count": len(members)}},
                 )
+                clusters_failed += 1
                 continue
             if gist_id is not None:
                 gists_created += 1
@@ -390,6 +406,7 @@ class DreamService:
             gists_created=gists_created,
             sources_superseded=sources_superseded,
             gist_ids=gist_ids,
+            clusters_failed=clusters_failed,
         )
 
     async def _consolidate_cluster(
@@ -402,9 +419,10 @@ class DreamService:
     ) -> UUID | None:
         """synthesize + commit one gist for a cluster; return its id or None.
 
-        Skips (returns ``None``, logs) on reflector failure, unparseable
-        output, or a failed gist embedding so a single bad cluster does not
-        abort the pass.
+        Returns ``None`` only for a cluster skipped on purpose (the reflector
+        judged its sources not one subject). A reflector failure, unparseable
+        output or a failed gist embedding raises, and :meth:`run_consolidation`
+        counts the cluster in ``clusters_failed`` without aborting the pass.
 
         :param members: the cluster's source memory dicts (>= min size)
         :ptype members: list[dict[str, Any]]
@@ -414,8 +432,10 @@ class DreamService:
         :ptype customer_id: UUID | None
         :param user_id: inherited user grain (may be ``None``)
         :ptype user_id: UUID | None
-        :return: the committed gist id, or ``None`` on skip
+        :return: the committed gist id, or ``None`` on a deliberate skip
         :rtype: UUID | None
+        :raises EmbeddingUnavailableError: the gist could not be embedded
+        :raises ValueError: the reflector's reply carries no usable gist
         """
         source_ids: list[UUID] = [m["memory_id"] for m in members]
         # inherit the conversation anchor from the newest source: memories
@@ -430,8 +450,6 @@ class DreamService:
         type_memory = _modal_type([m["type_memory"] for m in members])
 
         gist = await self._reflect(members, user_id=user_id, conversation_id=conversation_id)
-        if gist is None:
-            return None
         gist_text, rationale, one_subject, permanent = gist
         if not one_subject:
             # The guard: memories that are similar but about different people or
@@ -444,13 +462,7 @@ class DreamService:
             )
             return None
 
-        embedding = await _safe_aembed_query(self._embedding_provider, gist_text)
-        if embedding is None:
-            log.warning(
-                "Dream consolidation skipped cluster: gist embedding failed",
-                extra={"extra_data": {"agent_id": str(agent_id), "source_count": len(source_ids)}},
-            )
-            return None
+        embedding = await _embed_query(self._embedding_provider, gist_text)
 
         gist_id = await supersede(
             self._memories,
@@ -487,7 +499,7 @@ class DreamService:
         *,
         user_id: UUID | None,
         conversation_id: UUID,
-    ) -> tuple[str, str | None, bool, bool] | None:
+    ) -> tuple[str, str | None, bool, bool]:
         """call the reflector to synthesize a gist + rationale for a cluster, and judge it.
 
         :param members: the cluster's source memory dicts
@@ -496,11 +508,13 @@ class DreamService:
         :ptype user_id: UUID | None
         :param conversation_id: conversation for gateway-model attribution
         :ptype conversation_id: UUID
-        :return: ``(gist_text, rationale, one_subject, permanent)`` or ``None`` on any
-            failure / empty gist (fail-safe: skip the cluster). ``one_subject`` is the
+        :return: ``(gist_text, rationale, one_subject, permanent)``. ``one_subject`` is the
             reflector's word that the sources are about one person or thing and the gist
             names no one they do not; ``permanent`` that the gist should never fade
-        :rtype: tuple[str, str | None, bool, bool] | None
+        :rtype: tuple[str, str | None, bool, bool]
+        :raises ValueError: the reply is not a JSON object, or carries no gist
+        :raises Exception: whatever the reflector's call raised; :meth:`run_consolidation`
+            counts the cluster in ``clusters_failed``
         """
         # Stored memories: what they say came from conversations and tools, so
         # they are read as material, fenced, and the call is told so.
@@ -508,40 +522,37 @@ class DreamService:
             mint_nonce(), "\n".join(f"- [{m['type_memory']}] {m['content']}" for m in members)
         )
         prompt = self._prompts.consolidation.format(sources_section=sources_section)
+        model = await self._chat_model_factory.create_chat_model(
+            purpose="consolidation",
+        )
+        response = await model.ainvoke(
+            with_fence_rules(
+                [
+                    SystemMessage(
+                        content="You consolidate related memories into a single dense memory. Return only valid JSON.",
+                    ),
+                    HumanMessage(content=prompt),
+                ]
+            ),
+            **_identity_kwargs(user_id, conversation_id),
+        )
+        raw = response.content if hasattr(response, "content") else str(response)
+        content = (raw if isinstance(raw, str) else str(raw)).strip()
         try:
-            model = await self._chat_model_factory.create_chat_model(
-                purpose="consolidation",
-            )
-            response = await model.ainvoke(
-                with_fence_rules(
-                    [
-                        SystemMessage(
-                            content="You consolidate related memories into a single dense memory. Return only valid JSON.",
-                        ),
-                        HumanMessage(content=prompt),
-                    ]
-                ),
-                **_identity_kwargs(user_id, conversation_id),
-            )
-            raw = response.content if hasattr(response, "content") else str(response)
-            content = (raw if isinstance(raw, str) else str(raw)).strip()
             result = json.loads(_strip_code_block(content))
-            gist_text = str(result.get("gist", "")).strip()
-            if not gist_text:
-                log.warning("Dream reflector returned an empty gist; skipping cluster")
-                return None
-            rationale_raw = result.get("rationale")
-            rationale = str(rationale_raw).strip() if rationale_raw else None
-            # absent means the old answer shape: one subject, not permanent
-            one_subject = result.get("one_subject", True) is not False
-            permanent = result.get("permanent") is True
-            return gist_text, rationale, one_subject, permanent
-        except json.JSONDecodeError, KeyError:
-            log.warning("Failed to parse Dream reflector response; skipping cluster")
-            return None
-        except Exception as exc:
-            log.warning("Dream reflector LLM call failed; skipping cluster: %s", exc)
-            return None
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"the Dream reflector's reply is not JSON: {exc}") from exc
+        if not isinstance(result, dict):
+            raise ValueError(f"the Dream reflector's reply is a JSON {type(result).__name__}, not an object")
+        gist_text = str(result.get("gist", "")).strip()
+        if not gist_text:
+            raise ValueError("the Dream reflector returned an empty gist")
+        rationale_raw = result.get("rationale")
+        rationale = str(rationale_raw).strip() if rationale_raw else None
+        # absent means the old answer shape: one subject, not permanent
+        one_subject = result.get("one_subject", True) is not False
+        permanent = result.get("permanent") is True
+        return gist_text, rationale, one_subject, permanent
 
     async def _emit_consolidated_event(
         self,

@@ -266,8 +266,8 @@ async def test_replay_surfaces_transport_error_never_silently_truncates() -> Non
     """A non-timeout fetch failure mid-replay raises OpLogError, not a clean (truncated) stop.
 
     Silent truncation of a WAL replay would corrupt materialise / failover -- the durability
-    invariant the write path must never break. A drained tail (TimeoutError) is the only clean
-    terminator; anything else must surface.
+    invariant the write path must never break. Delivering the head read up front is the only
+    clean terminator; anything else must surface.
     """
     js = _ReplayJetStream(last_seq=5, fetch_error=ConnectionResetError("broker dropped mid-replay"))
     oplog = _make_oplog(js)  # type: ignore[arg-type]
@@ -279,13 +279,19 @@ async def test_replay_surfaces_transport_error_never_silently_truncates() -> Non
     assert js.psub.unsubscribed is True
 
 
-async def test_replay_timeout_is_a_clean_tail_not_an_error() -> None:
-    """A fetch TimeoutError (drained tail) ends replay cleanly -- it is the normal terminator."""
+async def test_a_replay_that_times_out_short_of_the_head_raises_rather_than_ending_clean() -> None:
+    """A fetch TimeoutError before ``last_seq`` arrived is a short replay, raised to the consumer.
+
+    The clean terminator is delivering ``last_seq`` (read up front); a timeout can only land
+    before it. Ending the iterator there handed materialise / failover a truncated log that read
+    as complete, with only a warning in the pod's log to say otherwise.
+    """
     js = _ReplayJetStream(last_seq=5, fetch_error=TimeoutError("nats: timeout"))
     oplog = _make_oplog(js)  # type: ignore[arg-type]
 
-    records = [r async for r in oplog.replay(from_seq=1)]
-    assert records == []  # nothing delivered before the tail timeout; no error raised
+    with pytest.raises(OpLogError, match="short of the stream head"):
+        async for _ in oplog.replay(from_seq=1):
+            pass
     assert js.psub.unsubscribed is True
 
 
