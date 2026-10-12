@@ -132,8 +132,6 @@ class InflightRequestsGauge:
         try:
             from prometheus_client import CollectorRegistry, Gauge
         except ImportError:
-            # NOSILENT(optional-import): prometheus_client is an extra; without it the gauge is unavailable and says so
-            # through ``_available``
             log.debug("prometheus_client not installed -- in-flight gauge disabled")
             return
         self._registry = registry if registry is not None else CollectorRegistry()

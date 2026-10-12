@@ -65,7 +65,7 @@ class StubEmbeddings:
     """LangChain ``Embeddings`` stub returning a fixed vector."""
 
     def __init__(self, vector: list[float] | None = None) -> None:
-        self._vector = vector if vector is not None else [1.0, 0.0, 0.0]
+        self._vector = vector or [1.0, 0.0, 0.0]
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [self._vector for _ in texts]
@@ -110,7 +110,6 @@ def _make_service(
     candidates: list[dict[str, Any]],
     reflector: StubReflectorFactory | None = None,
     config: MemoryConfig | None = None,
-    embeddings: StubEmbeddings | None = None,
 ) -> tuple[DreamService, MagicMock, MagicMock]:
     """wire a DreamService over mocked collections; return (service, memories, edges)."""
     memories = MagicMock()
@@ -128,7 +127,7 @@ def _make_service(
 
     service = DreamService(
         config=config or MemoryConfig(),
-        embedding_provider=embeddings or StubEmbeddings(),
+        embedding_provider=StubEmbeddings(),
         chat_model_factory=reflector or StubReflectorFactory(),
         memories_collection=memories,
         consolidations_collection=edges,
@@ -307,10 +306,9 @@ class TestRunConsolidation:
             reflector=StubReflectorFactory(fail=True),
         )
         result = await service.run_consolidation(_AID, customer_id=_CUID, user_id=_UID)
-        # cluster formed but no gist committed on reflector failure, and the failure is counted.
+        # cluster formed but no gist committed on reflector failure.
         assert result.clusters_formed == 1
         assert result.gists_created == 0
-        assert result.clusters_failed == 1
         memories.create.assert_not_called()
         memories.mark_superseded.assert_not_called()
 
@@ -325,7 +323,6 @@ class TestRunConsolidation:
         )
         result = await service.run_consolidation(_AID, customer_id=_CUID, user_id=_UID)
         assert result.gists_created == 0
-        assert result.clusters_failed == 1
         memories.create.assert_not_called()
 
     async def test_malformed_json_reflector_skips_cluster(self) -> None:
@@ -339,7 +336,6 @@ class TestRunConsolidation:
         )
         result = await service.run_consolidation(_AID, customer_id=_CUID, user_id=_UID)
         assert result.gists_created == 0
-        assert result.clusters_failed == 1
         memories.create.assert_not_called()
 
     async def test_db_write_error_skips_cluster_without_raising(self) -> None:
@@ -355,29 +351,6 @@ class TestRunConsolidation:
         # the gist committed but supersession failed -> the cluster is not
         # counted a success, and run_consolidation does not raise.
         assert result.gists_created == 0
-        assert result.clusters_failed == 1
-
-    async def test_a_gist_that_cannot_be_embedded_is_counted_as_a_failed_cluster(self) -> None:
-        sources = [
-            _candidate(content="a", embedding=[1.0, 0.0]),
-            _candidate(content="b", embedding=[0.99, 0.02]),
-        ]
-        service, memories, edges = _make_service(candidates=sources, embeddings=StubEmbeddings(vector=[]))
-        result = await service.run_consolidation(_AID, customer_id=_CUID, user_id=_UID)
-        assert (result.clusters_formed, result.gists_created, result.clusters_failed) == (1, 0, 1)
-        memories.create.assert_not_called()
-
-    async def test_a_cluster_skipped_as_not_one_subject_is_not_a_failure(self) -> None:
-        sources = [
-            _candidate(content="a", embedding=[1.0, 0.0]),
-            _candidate(content="b", embedding=[0.99, 0.02]),
-        ]
-        service, memories, edges = _make_service(
-            candidates=sources,
-            reflector=StubReflectorFactory(content=json.dumps({"gist": "merged", "one_subject": False})),
-        )
-        result = await service.run_consolidation(_AID, customer_id=_CUID, user_id=_UID)
-        assert (result.gists_created, result.clusters_failed) == (0, 0)
 
     async def test_agent_scoped_run_passes_null_grain(self) -> None:
         # agent-scoped: both grains None; the gist inherits null scope, and

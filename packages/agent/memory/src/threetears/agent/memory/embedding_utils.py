@@ -4,12 +4,9 @@ Adds two thin shims that the agent-memory call sites need now that the
 local ``EmbeddingProvider`` Protocol has been replaced by
 :class:`langchain_core.embeddings.Embeddings`:
 
-- :func:`_embed_query` -- wraps :meth:`Embeddings.aembed_query` and turns
-  every way it can fail to give a usable vector (it raised, it answered an
-  empty vector, there was no text) into one :class:`EmbeddingUnavailableError`
-  naming why. It used to answer ``None`` instead, and every caller read that
-  ``None`` as its own quiet answer -- "no memories", "skip this cluster" --
-  with the cause left only in a log line.
+- :func:`_safe_aembed_query` -- wraps :meth:`Embeddings.aembed_query` in
+  try/except, returning ``None`` on failure (callers used to rely on the
+  ``embed_text`` tuple's ``None`` sentinel for soft-fail).
 - :func:`_estimate_tokens` -- returns a coarse token count estimate. The
   retired ``embed_text`` returned a real token count from the embedding
   provider; LangChain's ``Embeddings`` interface does not surface one, so
@@ -26,53 +23,59 @@ from uuid import UUID
 
 from langchain_core.embeddings import Embeddings
 
+from threetears.observe import get_logger
 
-# ``__all__`` lists the public embedding-attribution scope helper and the refusal
-# the embed shim raises. The two ``_``-prefixed shims (:func:`_embed_query`, :func:`_estimate_tokens`) stay
+# ``__all__`` lists only the public embedding-attribution scope helper. The two
+# ``_``-prefixed shims (:func:`_safe_aembed_query`, :func:`_estimate_tokens`) stay
 # package-private and are intentionally excluded -- listing a private name in
 # ``__all__`` is contradictory and the underscore-access enforcement (shape E)
 # flags it.
-__all__ = ["EmbeddingUnavailableError", "embedding_attribution_scope"]
+__all__ = ["embedding_attribution_scope"]
+
+_log = get_logger(__name__)
 
 # rough words-to-tokens ratio for English. used only for observability
 # (RetrievalResult.embed_tokens), not for billing or rate-limiting.
 _TOKENS_PER_WORD = 1.3
 
 
-class EmbeddingUnavailableError(RuntimeError):
-    """the embedder gave no usable vector for a text; the message says why.
-
-    raised in place of the ``None`` the embed shim used to answer, so a caller that
-    cannot embed says so -- a tool answers an error naming the cause, retrieval
-    refuses rather than reporting "nothing relevant", a dream pass counts the
-    cluster as failed -- instead of reading the outage as its own quiet answer.
-    """
-
-
-async def _embed_query(
+async def _safe_aembed_query(
     embedder: Embeddings,
     text: str,
-) -> list[float]:
-    """invokes :meth:`Embeddings.aembed_query`, refusing anything that is not a usable vector.
+) -> list[float] | None:
+    """invokes :meth:`Embeddings.aembed_query` with soft-fail semantics.
+
+    returns ``None`` when the embedder raises (network error, auth failure,
+    upstream outage). matches the ``embed_text(text) -> (None, 0)``
+    behaviour of the retired protocol so soft-fail call sites continue to
+    work without changes.
 
     :param embedder: LangChain embedding model
     :ptype embedder: Embeddings
     :param text: text to embed
     :ptype text: str
-    :return: the embedding vector
-    :rtype: list[float]
-    :raises EmbeddingUnavailableError: there is no text, the embedder raised (network
-        error, auth failure, upstream outage), or it answered an empty vector
+    :return: embedding vector or ``None`` on failure
+    :rtype: list[float] | None
     """
     if not text:
-        raise EmbeddingUnavailableError("there is no text to embed")
+        return None
     try:
         result = await embedder.aembed_query(text)
-    except Exception as exc:  # prawduct:allow prawduct/broad-except -- every provider fault becomes the one named refusal callers handle
-        raise EmbeddingUnavailableError(f"the embedder failed: {type(exc).__name__}: {exc}") from exc
+    except Exception as exc:
+        _log.warning(
+            "embedding aembed_query failed (soft-fail): %s",
+            exc,
+        )
+        return None
     if not result:
-        raise EmbeddingUnavailableError("the embedder answered an empty vector")
-    return list(result)
+        # SDS-04: an empty vector is a successful call that returns nothing usable.
+        # every caller then behaves exactly like "nothing was relevant", so without
+        # this line a provider degradation is indistinguishable from a quiet turn.
+        _log.warning(
+            "embedding aembed_query returned an empty vector (soft-fail): semantic recall is off for this call"
+        )
+        return None
+    return result
 
 
 def _estimate_tokens(text: str) -> int:

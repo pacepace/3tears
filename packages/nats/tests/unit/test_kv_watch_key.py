@@ -284,20 +284,6 @@ class TestReplacingAConsumer:
         assert len(js.creates) == 2
         assert raw.inboxes[0].unsubscribed
 
-    async def test_a_message_with_no_stream_sequence_replaces_the_consumer_rather_than_inventing_a_revision(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        unsequenced = Msg(_client=None, subject=_SUBJECT, reply="", data=b"3")  # type: ignore[arg-type]
-        bucket, raw, js, _log = _bucket([[unsequenced], [_delivered(b"3", sequence=7)]])
-
-        with caplog.at_level(logging.WARNING, logger="threetears.nats.kv"):
-            updates = await asyncio.wait_for(_take(bucket.watch_key(key=_KEY, heartbeat=_FAST), 1), timeout=2)
-
-        assert updates == [KvKeyUpdate(key=_KEY, value=b"3", revision=7)]
-        assert len(js.creates) == 2
-        assert raw.inboxes[0].unsubscribed
-        assert "carries no stream sequence" in caplog.text
-
     async def test_a_redelivery_after_a_wipe_that_changed_the_value_is_yielded(self) -> None:
         bucket, _raw, _js, _log = _bucket([[_delivered(b"3", sequence=7)], [_delivered(b"5", sequence=1)]])
 

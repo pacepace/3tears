@@ -61,8 +61,6 @@ def _configurable() -> dict[str, Any]:
     try:
         config = get_config()
     except RuntimeError:
-        # NOSILENT(logged): outside a runnable there is no conversation to merge, and the middleware has no caller but
-        # the turn, which proceeds unchanged
         log.warning("no runnable config available: conversation context is skipped for this turn")
         return {}
     return config.get("configurable") or {}

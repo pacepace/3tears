@@ -369,8 +369,6 @@ async def _reap_stale_dispatching(
         try:
             reaped = await fire_store.reap_stale_dispatching(now, older_than=older_than, kinds=kinds)
         except Exception:  # noqa: BLE001 - boundary: a reaper failure must not block the tick
-            # NOSILENT(logged): no caller to tell: the tick dispatches regardless, and the next tick's reaper sweeps
-            # again
             log.exception(
                 "scheduled_tick: reaper sweep raised; continuing with dispatch",
                 extra={"extra_data": {"reap_after_seconds": reap_after_seconds, "kinds": list(kinds)}},
@@ -562,8 +560,6 @@ async def _dispatch_one(
     try:
         result = await dispatch_callback(trigger, fire_id)
     except Exception as exc:  # noqa: BLE001 - boundary: per-fire isolation
-        # NOSILENT(logged): not dropped: the failure is written on the fire row by finalize_failed and counted in the
-        # metrics
         log.exception(
             EVENT_FIRE_FAILED,
             extra={

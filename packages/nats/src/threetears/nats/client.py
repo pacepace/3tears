@@ -705,7 +705,7 @@ class _SubscriptionFeed:
                 _stop_routing_then_drain(raw_subscription, connection),
                 timeout=_HANDOVER_DRAIN_BOUND_SECONDS,
             )
-        # NOSILENT(logged): the successor is already receiving, so the only loss is whatever the
+        # NOSILENT: logged; the successor is already receiving, so the only loss is whatever the
         # closed connection had not yet handed over, and a closed connection cannot hand it over.
         except Exception as exc:  # noqa: BLE001 -- handover is best-effort once the successor receives
             log.warning(
@@ -1066,7 +1066,7 @@ class JetStreamPushConsumer:
                 _stop_routing_then_drain(previous, self._connection),
                 timeout=_HANDOVER_DRAIN_BOUND_SECONDS,
             )
-        # NOSILENT(logged): the durable redelivers anything unacknowledged, so the rebind below
+        # NOSILENT: logged; the durable redelivers anything unacknowledged, so the rebind below
         # loses nothing even when the release could not finish.
         except Exception as exc:  # noqa: BLE001 -- the rebind proceeds either way
             log.warning(
@@ -1078,8 +1078,6 @@ class JetStreamPushConsumer:
             try:
                 bound = await self._resubscribe(js)
             except Exception as exc:  # noqa: BLE001 -- retried: an unbound durable delivers nothing
-                # NOSILENT(attempt): the bind is retried after a backoff until it lands or the consumer closes; an
-                # unbound durable delivers nothing, so giving up would be the swallow
                 log.warning(
                     "durable push consumer could not be bound on the successor connection; retrying in %.1fs: "
                     "durable=%s: %s",
@@ -1503,8 +1501,6 @@ class JetStreamPullConsumer:
         try:
             leftovers = await self._release_inbox()
         except Exception as exc:  # noqa: BLE001 — the plain unsubscribe below still runs; what it costs is logged
-            # NOSILENT(logged): stop() still unsubscribes below and has no answer to give; what the failed release costs
-            # (a message waiting out ack_wait, then redelivered) is in the warning
             log.warning(
                 "durable pull consumer stop: the inbox could not be released at the server first (durable=%s): "
                 "%s: %s -- a message delivered to a request still live there waits out the durable's ack_wait",
@@ -1759,9 +1755,8 @@ class JetStreamResultWaiter:
             try:
                 msg = await self._sub.next_msg(timeout=poll)
             except _NatsTimeoutError:
-                # NOSILENT(expected): an empty poll is the ordinary case -- the tool is still running. only a
-                # consumer that has also stopped heartbeating is replaced, and that is logged; the loop's
-                # deadline still bounds the wait.
+                # NOSILENT: an empty poll is the ordinary case -- the tool is still running. only a
+                # consumer that has also stopped heartbeating is replaced, and that is logged.
                 if time.monotonic() - last_heard >= silence:
                     log.warning(
                         "result waiter consumer went quiet; replacing it (subject=%s stream=%s consumer=%s)",
@@ -1775,8 +1770,6 @@ class JetStreamResultWaiter:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — a transport blip must not discard a live answer
-                # NOSILENT(attempt): the waiter rebuilds its consumer and keeps waiting; the loop's deadline still ends
-                # a wait that never gets an answer
                 log.warning(
                     "result waiter delivery failed; replacing its consumer (subject=%s stream=%s): %s",
                     self._subject.path,
@@ -2476,7 +2469,7 @@ class _ConnectionOpener:
             # a (re)connect mints the connection a fresh credential: the renewal schedule restarts.
             state.connected_at = time.monotonic()
             if state.role is not _Role.CURRENT:
-                # a replaced connection outlived a network drop while it finished its
+                # NOSILENT: a replaced connection outlived a network drop while it finished its
                 # work, or a candidate reconnected before it took over. neither speaks for the
                 # client: the current connection's health and the consumer's reconnect hooks are
                 # not their business.
@@ -2493,8 +2486,8 @@ class _ConnectionOpener:
                 try:
                     await callback()
                 except Exception as exc:  # noqa: BLE001 — one bad hook must not abort the others
-                    # NOSILENT(logged): a callback chain with no caller to answer; a failing hook is logged so a
-                    # recurring failure surfaces, and must never break the chain or the nats-py reconnect path.
+                    # NOSILENT: a failing reconnect hook is logged so a recurring failure surfaces;
+                    # it must never break the reconnect callback chain or the nats-py reconnect path.
                     log.warning("reconnect callback failed: %s", exc)
 
         return _dispatch_reconnected
@@ -2543,7 +2536,7 @@ class _ConnectionOpener:
         async def _dispatch_lame_duck() -> None:
             """move the client off a server that is shutting down, if this connection is the current one."""
             if state.role is not _Role.CURRENT:
-                # a connection being retired or not yet current carries no new work, and
+                # NOSILENT: a connection being retired or not yet current carries no new work, and
                 # is closed either way; the server shutting down under it moves nothing.
                 log.info(
                     "a NATS server entered lame-duck mode under a connection that is not current",
@@ -3403,9 +3396,6 @@ class NatsClient:
         try:
             await js.add_stream(dataclasses.replace(config))
         except Exception as exc:
-            # NOSILENT(logged): a restoration step after a reconnect, with no caller to answer: a refused re-declare
-            # (the inner handler) is logged at ERROR and the bucket left live as it is; any other add_stream failure
-            # re-raises
             if getattr(exc, "err_code", None) != _JS_ERR_STREAM_NAME_IN_USE:
                 raise
             owned = self._owned_buckets.get(stream)
@@ -3423,8 +3413,6 @@ class NatsClient:
                         drop_file_storage=owned.drop_file_storage,
                     )
                 except KvConfigMismatch as refused:
-                    # NOSILENT(logged): a restoration step after a reconnect, with no caller to answer; the refusal is
-                    # logged at ERROR naming the bucket, which is left live as it is
                     log.error(
                         "re-declaring KV bucket %s after a NATS reconnect was refused, and it is left as it is: %s",
                         owned.full_name,
@@ -3539,8 +3527,6 @@ class NatsClient:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a declarer's hook; logged at ERROR, left owed and retried by the next round
-                # NOSILENT(attempt): the refill stays owed and the next refill round retries it, logging at ERROR each
-                # time it fails
                 log.error(
                     "refilling KV bucket %s after it was created again, empty, failed: %s: %s -- it "
                     "answers as though its entries were never written until a refill lands; retrying",
@@ -3746,7 +3732,6 @@ class NatsClient:
         try:
             await _round_trip(self._raw, timeout=timeout)
         except Exception as exc:  # noqa: BLE001 -- any failure IS the unhealthy answer; the reason is logged
-            # NOSILENT(logged): False IS the unhealthy answer ping exists to give; the warning says why it was given
             log.warning(
                 "NATS ping failed; reporting the connection unhealthy: %s: %s",
                 type(exc).__name__,
@@ -4143,7 +4128,7 @@ class NatsClient:
         """
         try:
             await _round_trip(previous)
-        # NOSILENT(logged): the handover must not wedge publishing on a connection that stopped answering
+        # NOSILENT: logged; the handover must not wedge publishing on a connection that stopped answering
         except Exception as exc:  # noqa: BLE001 -- ordering is best-effort once the old connection is unresponsive
             log.warning(
                 "could not confirm the replaced NATS connection delivered its last publishes; a message "
@@ -6414,7 +6399,7 @@ async def _close_quietly(nc: _NatsPyClient) -> None:
     try:
         if not nc.is_closed:
             await nc.close()
-    # not a swallow: the connection is abandoned either way, and the cause that abandoned it is the caller's to raise
+    # NOSILENT: logged; the connection is abandoned either way
     except Exception as exc:  # noqa: BLE001 -- closing an abandoned connection must not mask its cause
         log.debug("closing an abandoned NATS connection failed: %s", exc)
 

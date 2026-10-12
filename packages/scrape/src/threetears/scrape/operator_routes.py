@@ -109,9 +109,7 @@ def build_router(
             # connection that opens and then dies.
             await websocket.accept(subprotocol="binary")
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an operator who navigated away between authorizing and accepting is ordinary, not a fault. Logged with its traceback below
-            # NOSILENT(logged): a websocket route answers nobody once the client has gone; the stream never
-            # opened, and the warning with its traceback is the only record there can be
-            log.warning("operator: the client went away before the stream opened", exc_info=True)
+            log.info("operator: the client went away before the stream opened", exc_info=True)
             return
 
         try:

@@ -263,8 +263,6 @@ class HeartbeatSubscriber:
         try:
             heartbeat = HeartbeatMessage.model_validate_json(msg.data)
         except Exception as exc:
-            # NOSILENT(logged): a subscription callback has no caller to answer; a heartbeat that cannot be read
-            # refreshes nothing, and the pod's endpoints age out as if it were silent
             log.warning(
                 "malformed heartbeat message",
                 extra={"extra_data": {"error": str(exc)}},

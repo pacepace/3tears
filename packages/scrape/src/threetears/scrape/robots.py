@@ -398,9 +398,6 @@ class RobotsGate:
         try:
             requested = float(raw)
         except TypeError, ValueError:
-            # NOSILENT(expected): a Crawl-delay that is not a number expresses no delay, so None (no delay
-            # asked) is what the file said; the rest of the file is still honoured.
-            #
             # A malformed Crawl-delay is not a refusal and not a licence. Ignoring the value
             # while still honouring the rest of the file is the reading that respects what the
             # site could actually express.
@@ -536,9 +533,7 @@ class RobotsGate:
         try:
             status, body = await asyncio.wait_for(self._fetch(url), timeout=_FETCH_TIMEOUT_SECONDS)
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an unreachable robots.txt is not a refusal; letting it raise would turn one 500 on a text file into a stopped scrape the site never objected to. Logged with its traceback below
-            # NOSILENT(logged): None is "the site told us nothing", the policy this class documents for every
-            # unusable robots.txt; the warning names the URL and the error
-            log.warning("scrape robots: could not read %s; proceeding as unrestricted", url, exc_info=True)
+            log.info("scrape robots: could not read %s; proceeding as unrestricted", url, exc_info=True)
             return None
         if status != 200 or not body:
             log.debug("scrape robots: %s returned %s; proceeding as unrestricted", url, status)
@@ -547,9 +542,7 @@ class RobotsGate:
         try:
             parser.parse(body.splitlines())
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the grammar is loose and implementations disagree; an unparseable file is a site that failed to express a restriction, not one that expressed a total ban. Logged with its traceback below
-            # NOSILENT(logged): a file that will not parse expressed no restriction this reader can see --
-            # the same "told us nothing" None as an absent file; the warning names it
-            log.warning("scrape robots: %s did not parse; proceeding as unrestricted", url, exc_info=True)
+            log.info("scrape robots: %s did not parse; proceeding as unrestricted", url, exc_info=True)
             return None
         return parser
 

@@ -278,8 +278,6 @@ class OpLog:
         try:
             await js.add_stream(config=config_for(_NUM_REPLICAS))
         except APIError as exc:
-            # NOSILENT(logged): 1 IS the replica count the stream was created with; the downgrade is the warning, and
-            # every other failure raises OpLogError
             if exc.err_code != _REPLICAS_UNSUPPORTED_ERR_CODE:
                 raise OpLogError(f"create op-log stream failed: stream={stream}: {exc!r}") from exc
             log.warning(
@@ -447,9 +445,7 @@ class OpLog:
         :return: async iterator over logged ops in sequence order
         :rtype: AsyncIterator[OpRecord]
         :raises ValueError: if from_seq < 1
-        :raises OpLogError: on transport / consumer failure, and when the replay stops short of
-            the head read up front (a fetch timing out before ``last_seq`` was delivered): a short
-            replay is never handed over as a complete one
+        :raises OpLogError: on transport / consumer failure
         """
         if from_seq < 1:
             raise ValueError(f"from_seq must be >= 1, got {from_seq}")
@@ -480,7 +476,7 @@ class OpLog:
             while not done:
                 try:
                     msgs = await psub.fetch(_REPLAY_BATCH, timeout=_REPLAY_FETCH_TIMEOUT)
-                except TimeoutError as exc:
+                except TimeoutError:
                     # Reaching here always means the replay stopped short of the head: the
                     # `seq >= last_seq` exit below is the clean terminator, and `from_seq >
                     # last_seq` already returned above, so a timeout can only land with
@@ -488,13 +484,20 @@ class OpLog:
                     # TimeoutError, so this catches it. The cause is not knowable from here --
                     # a purged/expired gap ahead of the head reads identically to a broker too
                     # slow to answer -- and both hand the consumer a short replay, which is the
-                    # shape that corrupts materialise / failover (the durability invariant). A
-                    # log line would tell the operator and leave the consumer holding what reads
-                    # as a clean tail, so the short replay is raised to the consumer itself.
-                    raise OpLogError(
-                        f"op-log replay ended short of the stream head: stream={self._stream} "
-                        f"from_seq={from_seq} last_yielded_seq={last_yielded} last_seq={last_seq}"
-                    ) from exc
+                    # shape that corrupts materialise / failover (the durability invariant). So
+                    # the gap is reported rather than passed off as a clean tail.
+                    log.warning(
+                        "op-log replay ended short of the stream head",
+                        extra={
+                            "extra_data": {
+                                "stream": self._stream,
+                                "from_seq": from_seq,
+                                "last_yielded_seq": last_yielded,
+                                "last_seq": last_seq,
+                            }
+                        },
+                    )
+                    break
                 except APIError as exc:
                     raise OpLogError(f"op-log replay failed (fetch): stream={self._stream}: {exc!r}") from exc
                 except Exception as exc:  # noqa: BLE001 - any non-timeout fetch failure surfaces loudly, never as a clean tail

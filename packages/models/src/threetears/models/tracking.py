@@ -588,8 +588,6 @@ class _PrometheusEmitter:
         try:
             from prometheus_client import Counter, Histogram
         except ImportError:
-            # NOSILENT(optional-import): prometheus_client is an extra; without it emission is disabled and every emit
-            # is a no-op
             logger.debug(
                 "prometheus_client not installed -- LLM Prometheus emission disabled",
             )

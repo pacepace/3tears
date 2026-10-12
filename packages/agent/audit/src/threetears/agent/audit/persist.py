@@ -214,8 +214,6 @@ async def handle_audit_message(db: AuditStore, msg: Any) -> None:  # noqa: ANN40
     try:
         event = AuditEvent.model_validate_json(bytes(msg.data))
     except (ValidationError, ValueError) as exc:
-        # NOSILENT(logged): a poison event is acked and dropped by design (it would redeliver forever); the drop is
-        # logged at WARNING with its subject and stream sequence, and this consumer has no caller
         # it will never parse: dropping it beats redelivering it forever. the subject and stream sequence
         # locate the dropped event in the stream; the exception's text is left out because it can echo the
         # event's personal content.

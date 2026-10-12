@@ -77,8 +77,7 @@ def _parse_tagged(raw: str, tag: str) -> UUID | None:
     try:
         return UUID(candidate)
     except ValueError:
-        # NOSILENT(expected): a non-uuid is 'no such id', and every caller refuses None with a tool error naming the
-        # value. Malformed UUID literal (typo, wrong format, etc.). The caller turns None into a tool-error the model
-        # sees; this line is for an operator asking why a lookup keeps missing.
+        # Malformed UUID literal (typo, wrong format, etc.). The caller turns None into a
+        # tool-error the model sees; this line is for an operator asking why a lookup keeps missing.
         log.debug("id did not parse as a UUID", extra={"extra_data": {"tag": tag, "candidate": candidate[:64]}})
         return None

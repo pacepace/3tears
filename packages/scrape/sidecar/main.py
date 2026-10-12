@@ -586,10 +586,7 @@ async def _render(
                     continue
                 try:
                     body, is_base64 = await tab.send(uc.cdp.network.get_response_body(request_id))
-                except ProtocolException as exc:
-                    # NOSILENT(expected): CDP's refusal means the browser no longer holds this body (evicted
-                    # before we asked); a body it cannot hand over is not a candidate API response, and the
-                    # capture is a filter of candidates -- any other failure is not this, and propagates
+                except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- one failed body fetch (e.g. the response was evicted from the browser's cache before we asked) must not drop every other captured call
                     log.debug("network capture: get_response_body failed for %s: %s", req_meta.get("url"), exc)
                     continue
                 if is_base64 or len(body) > _MAX_NETWORK_BODY_BYTES:
@@ -827,64 +824,25 @@ async def _hide_window_titled(title: str, *, display: str) -> None:
     Split out from its caller so the window-manager plumbing can be exercised without a browser,
     and so the failure of one call does not decide the other's: a window that skipped the taskbar
     but did not iconify is still half-hidden, which is better than neither.
-
-    Never raises: this is startup cosmetics, and a container that refuses to boot because a window
-    would not minimise is worse than the window. But it never says "hidden" unless both calls
-    landed -- a window still on the operator's screen is warned about, naming why.
     """
-    try:
-        found = await _wm_output(["xdotool", "search", "--name", f"^{re.escape(title)}$"], display=display)
-    except _WindowManagerCallFailed as exc:
-        # NOSILENT(logged): this procedure answers nobody; exit 1 is xdotool's own "no such window", and
-        # any other failure is warned, naming the window left on the operator's screen and why
-        if exc.returncode == 1:
-            log.info("hitl: no idle window named %r to hide", title)
-        else:
-            log.warning("hitl: could not look for the idle window %r, so it may still be on screen: %s", title, exc)
-        return
-    window = found.strip().splitlines()
+    found = await _wm_output(["xdotool", "search", "--name", f"^{re.escape(title)}$"], display=display)
+    window = (found or "").strip().splitlines()
     if not window:
         log.info("hitl: no idle window named %r to hide", title)
         return
     wid = window[0].strip()
     # skip_pager as well as skip_taskbar: this image pins one desktop, but a pager that appears
     # later would otherwise list a window nothing should reach.
-    failures: list[str] = []
-    for argv in (
-        ["wmctrl", "-i", "-r", wid, "-b", "add,skip_taskbar,skip_pager"],
-        ["xdotool", "windowminimize", wid],
-    ):
-        try:
-            await _wm_output(argv, display=display)
-        except _WindowManagerCallFailed as exc:
-            failures.append(str(exc))
-    if failures:
-        log.warning(
-            "hitl: idle window %s was not fully hidden and may still be on the operator's screen: %s",
-            wid,
-            "; ".join(failures),
-        )
-        return
+    await _wm_output(["wmctrl", "-i", "-r", wid, "-b", "add,skip_taskbar,skip_pager"], display=display)
+    await _wm_output(["xdotool", "windowminimize", wid], display=display)
     log.info("hitl: idle window %s hidden from the operator's screen and taskbar", wid)
 
 
-class _WindowManagerCallFailed(RuntimeError):
-    """A window-manager command that did not run to a clean exit, and why.
+async def _wm_output(argv: list[str], *, display: str) -> str | None:
+    """Run one window-manager command against *display*, returning its stdout or ``None``.
 
-    :ivar returncode: the command's exit status when it ran and exited non-zero, else ``None``
-    """
-
-    def __init__(self, message: str, *, returncode: int | None = None) -> None:
-        super().__init__(message)
-        self.returncode = returncode
-
-
-async def _wm_output(argv: list[str], *, display: str) -> str:
-    """Run one window-manager command against *display*, returning its stdout.
-
-    :raises _WindowManagerCallFailed: the command could not start, did not answer in time (it is
-        then killed and reaped), failed, or exited non-zero -- each named, so the caller can tell
-        "no such window" from "the window manager is not working" and say which.
+    Never raises. Every caller is startup cosmetics, and a container that refuses to boot because
+    a window would not minimise is worse than the window.
     """
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -894,27 +852,29 @@ async def _wm_output(argv: list[str], *, display: str) -> str:
             stderr=asyncio.subprocess.DEVNULL,
         )
     except OSError as exc:
-        raise _WindowManagerCallFailed(f"{argv[0]} could not be started: {exc}") from exc
+        log.warning("hitl: %s could not be started: %s", argv[0], exc)
+        return None
     timings: SidecarTimings = app.state.timings
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timings.wm_call_timeout_seconds)
-    except TimeoutError as exc:
+    except TimeoutError:
         # KILLED, not just abandoned. `wait_for` cancels the `communicate()` await and leaves the
         # CHILD running, so a hung window-manager call would otherwise leak a process for the life
         # of a container that is meant to be long-lived and unattended. Reaped afterwards so it
         # does not sit as a zombie either.
+        log.warning("hitl: %s did not answer within %ss; killing it", argv[0], timings.wm_call_timeout_seconds)
         proc.kill()
         try:
             await proc.wait()
-        except Exception as reap_exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the child is already being killed; a failure to reap it must not fail startup, and the kill above is what actually matters
-            log.warning("hitl: %s was killed but could not be reaped: %s", argv[0], reap_exc)
-        raise _WindowManagerCallFailed(
-            f"{argv[0]} did not answer within {timings.wm_call_timeout_seconds}s and was killed"
-        ) from exc
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the child is already being killed; a failure to reap it must not fail startup, and the kill above is what actually matters
+            log.warning("hitl: %s was killed but could not be reaped: %s", argv[0], exc)
+        return None
     except OSError as exc:
-        raise _WindowManagerCallFailed(f"{argv[0]} failed: {exc}") from exc
+        log.warning("hitl: %s failed: %s", argv[0], exc)
+        return None
     if proc.returncode != 0:
-        raise _WindowManagerCallFailed(f"{argv[0]} exited {proc.returncode}", returncode=proc.returncode)
+        log.info("hitl: %s exited %s", argv[0], proc.returncode)
+        return None
     return out.decode(errors="replace")
 
 

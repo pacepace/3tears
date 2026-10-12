@@ -854,8 +854,6 @@ class SessionManager:
             # None -- it promises never to raise into the completion -- so a broad catch here
             # would be guarding against nothing while claiming to guard against everything,
             # and would silently start swallowing real errors the day that promise changed.
-            # NOSILENT(logged): no state was exported, and None says exactly that -- the tab still completes,
-            # the solve is simply not reusable, and this warning names the tab and the deadline
             log.warning(
                 "hitl: exporting state for tab %s timed out after %.0fs; completing it without any",
                 tab_id,
@@ -988,8 +986,6 @@ class SessionManager:
         try:
             return await self._contexts.export_state(browser, tab.tab, tab.context_id)
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an export that fails costs the reuse, where raising would additionally cost the operator their completed tab and its slot; the human's work is already done either way. Logged with its traceback below
-            # NOSILENT(logged): None is the documented "nothing exported", which is true -- the completion
-            # carries no reusable state -- and the ERROR line with its traceback says why
             log.exception(
                 "hitl: could not export session state for tab %s; the solve will not be reusable",
                 tab.tab_id,
@@ -1208,9 +1204,7 @@ async def apply_origin_storage(tab: Any, state: dict[str, Any]) -> None:
         try:
             entries = json.loads(raw) if isinstance(raw, str) else raw
         except (TypeError, ValueError):
-            # NOSILENT(logged): a best-effort procedure with no answer to give; the cookies that carry the
-            # cleared challenge and the other origins still apply, and the warning names the origin lost
-            log.warning("hitl: exported localStorage for %s did not parse; the solve is only partly applied", recorded)
+            log.info("hitl: exported localStorage for %s did not parse; skipping it", recorded)
             continue
         if not isinstance(entries, dict):
             continue

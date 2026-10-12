@@ -163,9 +163,6 @@ class RangeApiBreachCorpus:
             response.raise_for_status()
             body = response.text
         except httpx.HTTPError as exc:
-            # NOSILENT(logged): fail-open is this opt-in corpus's documented contract (module docstring): breach
-            # screening is defence in depth over length policy and rate limiting, so an outage reads as unscreened, and
-            # the WARNING says so
             log.warning(
                 "breach-corpus range lookup failed; treating the password as unscreened",
                 extra={"extra_data": {"error": type(exc).__name__}},

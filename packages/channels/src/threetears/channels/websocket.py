@@ -198,25 +198,6 @@ class _RoomConnection:
         return first
 
 
-#: the exception class names a peer's ordinary departure raises (Starlette, websockets). a send or
-#: receive failing with one of these is the socket having closed, logged at DEBUG; anything else
-#: is a fault worth a WARNING. matched by name, so no web framework is imported here.
-_DISCONNECT_ERROR_NAMES: Final[frozenset[str]] = frozenset(
-    {"WebSocketDisconnect", "ConnectionClosed", "ConnectionClosedOK", "ConnectionClosedError"}
-)
-
-
-def _is_disconnect(exc: BaseException) -> bool:
-    """whether ``exc`` is a peer's ordinary departure rather than a fault.
-
-    :param exc: the exception a send or receive raised
-    :ptype exc: BaseException
-    :return: whether its class (or a base) is a known disconnect
-    :rtype: bool
-    """
-    return any(cls.__name__ in _DISCONNECT_ERROR_NAMES for cls in type(exc).__mro__)
-
-
 async def _safe_send(websocket: Any, payload: str, *, context: str) -> bool:
     """best-effort send: log and drop on failure, never raise.
 
@@ -240,19 +221,11 @@ async def _safe_send(websocket: Any, payload: str, *, context: str) -> bool:
     ok = True
     try:
         await websocket.send_text(payload)
-    except Exception as exc:  # prawduct:allow prawduct/broad-except -- best-effort notification send: a dead socket must not crash the caller (the message loop or a nested frame handler), which continues or degrades on its own terms
-        # NOSILENT(logged): False is the documented "the frame did not go out"; a peer that left is logged
-        # at DEBUG, and any other send fault -- a frame lost on a live socket -- at WARNING
-        if _is_disconnect(exc):
-            log.debug(
-                "best-effort send failed; the peer has gone",
-                extra={"extra_data": {"context": context, "error_type": type(exc).__name__}},
-            )
-        else:
-            log.warning(
-                "best-effort send failed; the frame is lost",
-                extra={"extra_data": {"context": context, "error": f"{type(exc).__name__}: {exc}"}},
-            )
+    except Exception:  # prawduct:allow prawduct/broad-except -- best-effort notification send: a dead socket must not crash the caller (the message loop or a nested frame handler), which continues or degrades on its own terms
+        log.debug(
+            "best-effort send failed; socket likely gone",
+            extra={"extra_data": {"context": context}},
+        )
         ok = False
     return ok
 
@@ -947,8 +920,6 @@ class WebSocketHandler:
                 if data.get("type") == "auth":
                     token = data.get("token")
             except Exception:
-                # NOSILENT(logged): None is _authenticate's documented 'not admitted', and the socket is closed with
-                # UNAUTHENTICATED before it returns
                 log.warning("websocket disconnected during authentication")
                 await self._close_with_error(websocket, UNAUTHENTICATED, "authentication failed")
                 return None
@@ -960,8 +931,6 @@ class WebSocketHandler:
         try:
             payload = await self._auth_validator(token)
         except WebSocketAuthRefused as refusal:
-            # NOSILENT(expected): the validator's refusal IS the answer -- the socket is closed with its code and
-            # message, and None is _authenticate's documented 'not admitted'
             log.info(
                 "websocket connection refused: code=%s",
                 refusal.code,
@@ -1026,18 +995,11 @@ class WebSocketHandler:
             connection.handling_frame = False
             try:
                 raw = await websocket.receive_text()
-            except Exception as exc:
-                # NOSILENT(logged): a receive that fails ends this connection's loop, which is the truth -- the
-                # socket can be read no more; a peer leaving is DEBUG, any other receive fault is a WARNING
-                if _is_disconnect(exc):
-                    log.debug("websocket disconnected for user %s", user_id)
-                else:
-                    log.warning(
-                        "websocket receive failed for user %s; ending the connection: %s: %s",
-                        user_id,
-                        type(exc).__name__,
-                        exc,
-                    )
+            except Exception:
+                log.debug(
+                    "websocket disconnected for user %s",
+                    user_id,
+                )
                 break
             # any frame at all answers the heartbeat; until the loop reads again it is busy, and
             # the heartbeat does not read the peer's silence as absence.
@@ -1078,8 +1040,6 @@ class WebSocketHandler:
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
-                # NOSILENT(logged): the peer is answered with an error frame (never a silent drop, T3-D2) and the loop
-                # keeps serving the connection
                 log.warning(
                     "received non-JSON websocket message from user %s",
                     user_id,
@@ -1102,8 +1062,6 @@ class WebSocketHandler:
                 try:
                     frame = Frame.model_validate(data)
                 except ValidationError:
-                    # NOSILENT(logged): the peer is answered with an error frame (never a silent drop, T3-D2) and the
-                    # loop keeps serving the connection
                     # valid JSON but not a well-formed frame (e.g. no ``type``):
                     # an ``error`` frame, never a silent drop (design T3-D2).
                     log.warning("received malformed websocket frame from user %s", user_id)
@@ -1713,8 +1671,6 @@ class WebSocketHandler:
                 try:
                     allowed = await self._decide(room_id, self._join_action, connection.user_id, connection.customer_id)
                 except Exception:  # prawduct:allow prawduct/broad-except -- a member whose access cannot be confirmed is evicted, not kept; logged, and the room's other members are still decided
-                    # NOSILENT(logged): fail-closed -- a member whose access cannot be re-decided is evicted, which is
-                    # what allowed = False decides; the other members are still decided
                     log.warning(
                         "room access could not be re-decided for a member; evicting",
                         exc_info=True,

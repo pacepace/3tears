@@ -24,11 +24,8 @@ marker NAMES ITS KIND -- ``# NOSILENT(expected|attempt|cleanup|optional-import):
 which the walker checks against the code, because a bare reason was accepted for an ``except
 ValueError: return False`` that dropped unreadable judge cases from an arm (issue #715). A
 handler that answers ``None``, a constant, an empty collection or an assigned default is as
-silent as one that ``pass``es, and is held to the same rule -- LOGGING FIRST DOES NOT CHANGE
-THAT: the log tells the operator, the caller still gets the default. Where the caller's answer
-is still true after a logged failure, ``# NOSILENT(logged): <why>`` says so, and the walker
-checks the log is at WARNING or above. Everything else raises, or returns a failure the caller
-can tell from an answer. A bare ``# NOSILENT: <reason>`` comment is flagged wherever it sits.
+silent as one that ``pass``es, and is held to the same rule. Everything else logs, raises, or
+returns a failure the caller can tell from an answer.
 
 **The nodriver sidecar too.** It never enters the workspace venv (AGPL), so discovery cannot
 see it; its modules are scanned by path, its own tests excepted.

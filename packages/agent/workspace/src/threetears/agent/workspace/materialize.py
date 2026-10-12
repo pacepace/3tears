@@ -252,10 +252,10 @@ def _snapshot_disk_sync(disk_root: Path) -> dict[str, tuple[bytes, str]]:
         # reject symlinks (or any entry) whose resolved target escapes
         # the root. is_file() follows symlinks; .resolve() + parentage
         # check closes the symlink-escape hole explicitly.
-        # a symlink whose target escapes the root is not a file of this workspace: it is left out, and said.
-        # a path that cannot be resolved at all raises -- read as absent, capture-back would delete its row.
-        resolved_candidate = candidate.resolve()
-        if not resolved_candidate.is_relative_to(resolved_root):
+        try:
+            resolved_candidate = candidate.resolve()
+            resolved_candidate.relative_to(resolved_root)
+        except OSError, ValueError:
             log.warning(
                 "workspace.snapshot_disk.skip_escape",
                 extra={
@@ -1011,7 +1011,7 @@ async def _watch_loop(
                         "changed_count": len(changed),
                     },
                 )
-        # NOSILENT(logged): logged at exception level -- the watcher has no caller to raise
+        # NOSILENT: logged at exception level, not swallowed -- the watcher has no caller to raise
         # to, and one failed batch must not end mirroring for the rest of the bind window. the
         # files that batch missed are still captured by the capture-back pass when bind exits cleanly.
         # yield to the loop so a persistent failure cannot starve other tasks.
@@ -1280,7 +1280,7 @@ async def _capture_back(
                         nats_client=nats_client,
                         namespace=namespace,
                     )
-        # NOSILENT(logged): logged at exception level. the capture-back commit above is
+        # NOSILENT: logged at exception level, not swallowed. the capture-back commit above is
         # true and already durable, so an audit failure must not turn it into an error;
         # publish_audit logs its own NATS failures at WARN, and this catches a programmer-error
         # regression (AttributeError, NameError) in building the events.

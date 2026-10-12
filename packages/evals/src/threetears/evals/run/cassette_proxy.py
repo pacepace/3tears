@@ -349,7 +349,7 @@ class CassetteCell:
                     scope_id=self._scope_id,
                 )
             except StorageError as exc:
-                # Kept, not dropped: every call that asks for a recording raises it as CassetteCorrupt
+                # NOSILENT: kept, not dropped: every call that asks for a recording raises it as CassetteCorrupt
                 # (_read), as reading that recording would have; a replay that asks for none was served nothing.
                 self._read_failure = str(exc)
                 return

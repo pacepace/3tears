@@ -274,16 +274,12 @@ def _signal(pid: int, sig: int) -> bool:
         # NOSILENT(expected): no such process; False is this function's documented "did not land"
         return False
     except PermissionError:
-        # NOSILENT(logged): False is this function's documented 'did not land', which is true: the signal was not
-        # delivered
         _logger.warning(
             "Not permitted to signal a pooled Claude CLI process",
             extra={"extra_data": {"pid": pid, "signal": sig}},
         )
         return False
     except OSError as exc:
-        # NOSILENT(logged): False is this function's documented 'did not land', which is true: the signal was not
-        # delivered
         _logger.warning(
             "Signalling a pooled Claude CLI process failed",
             extra={"extra_data": {"pid": pid, "signal": sig, "error": str(exc)}},
@@ -413,8 +409,6 @@ def sweep_orphaned_claude_clis(*, grace_seconds: float = 2.0) -> int:
         except ValueError as exc:
             # A marker this pool cannot read is not proof of an orphan: the process is left alone,
             # and said to be, rather than killed on a guess or skipped without a word.
-            # NOSILENT(logged): the process is left alone, which is what the sweep then does; no caller reads it as
-            # killed
             _logger.warning(
                 "A process carries a Claude CLI pool marker that names no owner; leaving it alone",
                 extra={"extra_data": {"pid": pid, "error": str(exc)}},

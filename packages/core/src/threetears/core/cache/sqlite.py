@@ -766,8 +766,6 @@ class SQLiteBackend:
         try:
             self.delete_by_id(table, entity_id, primary_key)
         except sqlite3.OperationalError as exc:
-            # NOSILENT(logged): this procedure answers nothing; the expired row is withheld from the read
-            # either way, and the warning names the table whose row stays on disk
             log.warning(
                 "L1 row past its max age could not be dropped; withholding it anyway",
                 extra={"extra_data": {"table": table, "max_age_seconds": max_age_seconds, "error": str(exc)}},

@@ -513,8 +513,6 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             try:
                 result = await self._l1.get(storage_thread_id, checkpoint_ns)
             except Exception:
-                # NOSILENT(logged): a cache-tier fault reads as a miss, and the caller then reads the next tier and L3,
-                # so the checkpoint it returns is still the true one
                 log.warning("L1 checkpoint read failed", exc_info=True)
                 result = None
         return result
@@ -612,8 +610,6 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             try:
                 result = await self._l2.get(self._l2_bucket, key)
             except Exception:
-                # NOSILENT(logged): a cache-tier fault reads as a miss, and the caller then reads L3, so the checkpoint
-                # it returns is still the true one
                 log.warning("L2 checkpoint read failed", exc_info=True)
                 result = None
         return result
@@ -695,8 +691,6 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         try:
             await self._l2.delete_prefix(self._l2_bucket, prefix)
         except Exception:
-            # NOSILENT(logged): False is this method's documented report that the sweep did not happen, and both
-            # callers act on it
             log.warning("L2 checkpoint prefix sweep failed", extra={"prefix": prefix}, exc_info=True)
             return False
         return True
@@ -1903,8 +1897,6 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         try:
             return self._rewritten_blob(type_tag, blob, unclassified, is_metadata=is_metadata)
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- a serializer raises what it raises on bytes it cannot read; every failure here is one row reported, never silent
-            # NOSILENT(logged): not dropped: the row is appended to ``unreadable``, which the erasure result reports as
-            # incomplete
             reported = replace(where, error_type=type(exc).__name__)
             unreadable.append(reported)
             log.error(

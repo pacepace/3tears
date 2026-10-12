@@ -249,23 +249,6 @@ class TestDiscoveryEmpty:
         nc.publish_reply.assert_called_once()
         response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_data["tools"] == []
-        assert response_data["error"] is None
-
-    @pytest.mark.asyncio
-    async def test_a_malformed_request_is_answered_with_its_refusal_not_an_empty_list(self) -> None:
-        """a request the registry cannot read is refused by name, so its empty list cannot read as "none available"."""
-        catalog = ToolCatalog()
-        await catalog.register(_make_entry())
-        handler = DiscoveryHandler(catalog, namespace="test")
-        nc = AsyncMock()
-        await handler.start(nc)
-
-        await handler.handle_discover(_make_nats_msg(data=b"{not json"))
-
-        nc.publish_reply.assert_called_once()
-        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
-        assert response_data["tools"] == []
-        assert response_data["error"].startswith("malformed discovery request:")
 
 
 # -- multi-endpoint tests --

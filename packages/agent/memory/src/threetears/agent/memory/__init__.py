@@ -76,7 +76,7 @@ if TYPE_CHECKING:
         DreamService,
         ReflectorChatModelFactory,
     )
-    from threetears.agent.memory.embedding_utils import EmbeddingUnavailableError, embedding_attribution_scope
+    from threetears.agent.memory.embedding_utils import embedding_attribution_scope
     from threetears.agent.memory.entities import (
         MediaContentEntity,
         MediaEntity,
@@ -94,7 +94,6 @@ if TYPE_CHECKING:
     from threetears.agent.memory.extraction import (
         ChatModelFactory,
         ExtractionGate,
-        ExtractionModelFailedError,
         ExtractionOutcome,
         ExtractionResult,
         MemoryExtractor,
@@ -139,8 +138,6 @@ _LAZY: dict[str, tuple[str, str]] = {
     "ExtractionOutcome": ("threetears.agent.memory.extraction", "ExtractionOutcome"),
     "ExtractionPrompts": ("threetears.agent.memory.prompts", "ExtractionPrompts"),
     "ExtractionResult": ("threetears.agent.memory.extraction", "ExtractionResult"),
-    "ExtractionModelFailedError": ("threetears.agent.memory.extraction", "ExtractionModelFailedError"),
-    "EmbeddingUnavailableError": ("threetears.agent.memory.embedding_utils", "EmbeddingUnavailableError"),
     "LocalMemoryNamespaceProvisioner": (
         "threetears.agent.memory.local_provisioner",
         "LocalMemoryNamespaceProvisioner",
@@ -236,9 +233,7 @@ __all__ = [
     "ConsolidationCycleError",
     "ConsolidationResult",
     "DreamService",
-    "EmbeddingUnavailableError",
     "ExtractionGate",
-    "ExtractionModelFailedError",
     "ExtractionOutcome",
     "ExtractionPrompts",
     "ExtractionResult",

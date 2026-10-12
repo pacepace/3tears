@@ -282,7 +282,7 @@ class ObjectResolutionCollection(BaseCollection[ObjectResolutionEntity]):
         }
         if self._l1 is not None:
             self._l1.upsert(self.table_name, data, self.primary_key_columns)
-        await self._store_in_l2(entity_id, data)
+        await self._save_to_l2(entity_id, data)
         await self._publish_invalidation(entity_id)
 
     async def forget(self, customer_id: UUID, object_id: UUID) -> None:
@@ -302,7 +302,7 @@ class ObjectResolutionCollection(BaseCollection[ObjectResolutionEntity]):
         entity_id = self._pk(customer_id, object_id)
         if self._l1 is not None:
             self._l1.delete_by_id(self.table_name, entity_id, self.primary_key_columns)
-        await self._remove_from_l2(entity_id)
+        await self._delete_from_l2(entity_id)
         await self._publish_invalidation(entity_id)
 
     @staticmethod

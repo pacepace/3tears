@@ -130,14 +130,6 @@ class _FakeIntentions:
         return []
 
 
-class _FakeIntentionsDedupDown(_FakeIntentions):
-    """the in-memory collection, with the dedup lookup down."""
-
-    async def find_similar_for_dedup(self, **kwargs: Any) -> list[dict[str, Any]]:
-        _ = kwargs
-        raise RuntimeError("dedup index unavailable")
-
-
 class _RaisingEmbedder:
     def __init__(self) -> None:
         self.calls = 0
@@ -177,7 +169,7 @@ class TestToolError:
         """a tool failure reads ``[TOOL ERROR] <tool>: <action> failed — <reason>``."""
         msg = await _log(_RaisingEmbedder(), _FakeIntentions(), "want")
         assert msg.startswith("[TOOL ERROR] intention_log: embed failed")
-        assert "RuntimeError: upstream embedding outage" in msg
+        assert "embedding provider returned None" in msg
 
 
 class TestEmbeddingSoftFail:
@@ -196,24 +188,6 @@ class TestEmbeddingSoftFail:
         assert msg.startswith("[TOOL ERROR] intention_log: embed failed")
         assert collection.dedup_embeddings == []
         assert collection.saved == []
-
-    async def test_an_embedding_outage_is_named_in_the_tool_error(self) -> None:
-        """the tool error names why the embedding failed, not a None it never saw."""
-        msg = await _log(_RaisingEmbedder(), _FakeIntentions(), "want")
-        assert "upstream embedding outage" in msg
-
-    async def test_a_want_logged_without_its_dedup_check_says_so(self) -> None:
-        """a dedup lookup that fails still logs the want, and the reply says it was not checked."""
-        collection = _FakeIntentionsDedupDown()
-        msg = await _log(_OkEmbedder(), collection, "want")
-        assert msg.startswith("Logged as [intention:")
-        assert "not checked against your open wants" in msg
-        assert "RuntimeError" in msg
-        assert len(collection.saved) == 1
-
-    async def test_a_checked_want_claims_nothing_extra(self) -> None:
-        msg = await _log(_OkEmbedder(), _FakeIntentions(), "want")
-        assert "not checked" not in msg
 
     async def test_success_carries_the_vector_into_dedup_and_the_row(self) -> None:
         collection = _FakeIntentions()

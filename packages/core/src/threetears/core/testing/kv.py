@@ -838,8 +838,6 @@ class FakeNatsClient:
             try:
                 await refill.on_restored(self._buckets[name])
             except Exception as exc:  # noqa: BLE001 -- a declarer's hook; logged and left owed, as the real client does
-                # NOSILENT(logged): the failure stays on the record -- the refill remains owed for the next
-                # reconnect -- and the ERROR line names the bucket, as the real client does
                 log.error("refilling KV bucket %s failed: %s: %s -- it stays owed", name, type(exc).__name__, exc)
                 continue
             refill.owed = False

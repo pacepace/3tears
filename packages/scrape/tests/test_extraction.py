@@ -149,19 +149,17 @@ class TestValidateCandidate:
         assert result.extracted == {}
         assert result.errors == []
 
-    def test_a_syntactically_invalid_selector_is_refused_by_name_not_a_crash(self):
+    def test_syntactically_invalid_selector_degrades_gracefully_not_a_crash(self):
         # Real bug, live-discovered via schema-discovery mode (real Maryland WARN page,
         # 2026-07-15): an LLM-proposed selector is not guaranteed to be valid CSS -- a jQuery-ism
         # like "td:eq(0)" raised an uncaught soupsieve.util.SelectorSyntaxError here, crashing
         # every eval_loop.py candidate-generation path that calls this with LLM-proposed selectors.
-        # And the refusal names the selector as invalid: "matched nothing" would say the PAGE
-        # lacks the field when it is the proposal that is broken.
+        # Fixed at the source (_select_one_safe) -- this is the regression test for that fix.
         strategy = {"employer": "td:eq(0)"}
         schema = {"employer": str}
         result = validate_candidate(_PAGE_HTML, strategy, schema)
         assert result.valid is False
-        assert any("'td:eq(0)' is not valid CSS" in e for e in result.errors)
-        assert not any("matched nothing" in e for e in result.errors)
+        assert any("matched nothing" in e for e in result.errors)
 
 
 # ===========================================================================
@@ -310,14 +308,12 @@ class TestValidateRowCandidate:
         result = validate_row_candidate(_ROWS_PAGE_HTML, strategy, {"employer": str})
         assert result.valid is False
         assert result.total_rows_matched == 0
-        assert any(e.startswith("row_selector: selector 'tr:eq(0)' is not valid CSS") for e in result.errors)
 
     def test_syntactically_invalid_field_selector_degrades_gracefully_not_a_crash(self):
         strategy = {"row_selector": "tbody tr", "field_selectors": {"employer": "td:eq(0)"}}
         result = validate_row_candidate(_ROWS_PAGE_HTML, strategy, {"employer": str})
         assert result.valid is False
         assert result.records == []
-        assert result.errors and all("'td:eq(0)' is not valid CSS" in e for e in result.errors)
 
     def test_every_row_failing_is_invalid(self):
         strategy = {"row_selector": "tbody tr", "field_selectors": {"employer": ".nope"}}

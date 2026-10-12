@@ -39,7 +39,7 @@ from threetears.agent.memory.collections import (
 )
 from langchain_core.embeddings import Embeddings
 
-from threetears.agent.memory.embedding_utils import _embed_query, _estimate_tokens
+from threetears.agent.memory.embedding_utils import _estimate_tokens, _safe_aembed_query
 from threetears.agent.memory.types import MemoryConfig
 from threetears.langgraph.fence import nonce_for, untrusted_fence, untrusted_rule
 from threetears.observe import get_logger, traced
@@ -172,8 +172,6 @@ def _written(mem: dict[str, Any], tz: tzinfo | None) -> str:
         try:
             written = datetime.fromisoformat(written)
         except ValueError:
-            # NOSILENT(logged): the returned suffix IS the failure, stated on the memory line the model reads, never a
-            # date
             # an undated line reads as current, which is the defect this suffix exists to prevent:
             # say the date is unreadable, on the line and to the operator, rather than drop it
             log.warning(
@@ -537,7 +535,6 @@ class MemoryRetriever:
         :return: formatted context string or ``None``
         :rtype: str | None
         :raises MemoryAccessDenied: when rbac enforcement denies
-        :raises EmbeddingUnavailableError: the query could not be embedded, so nothing was searched
         """
         result = await self.retrieve_with_candidates(
             user_id,
@@ -590,7 +587,6 @@ class MemoryRetriever:
         :return: structured retrieval results
         :rtype: RetrievalResult
         :raises MemoryAccessDenied: when rbac enforcement denies
-        :raises EmbeddingUnavailableError: the query could not be embedded, so nothing was searched
         """
         empty = RetrievalResult()
         if not user_text.strip():
@@ -606,9 +602,9 @@ class MemoryRetriever:
                 deps=self._authorizer,
             )
 
-        # an embedder that cannot answer raises EmbeddingUnavailableError rather than answering
-        # "nothing relevant": the two read the same downstream and only one of them is true.
-        embedding = await _embed_query(self._embedding, user_text)
+        embedding = await _safe_aembed_query(self._embedding, user_text)
+        if embedding is None:
+            return empty
         embed_tokens = _estimate_tokens(user_text)
 
         cfg = self._config

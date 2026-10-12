@@ -92,6 +92,33 @@ def _tool_error(tool_name: str, action: str, error: str) -> str:
     return f"[TOOL ERROR] {tool_name}: {action} failed — {error}"
 
 
+async def _safe_aembed_query(embedder: Embeddings, text: str) -> list[float] | None:
+    """embed ``text`` with soft-fail semantics (``None`` on any failure).
+
+    Mirrors ``agent-memory``'s private shim so a transient embedding
+    outage degrades the tool to a graceful error rather than a crash;
+    kept local so ``agent-intention`` carries no dependency on the
+    memory package.
+
+    :param embedder: LangChain embedding model
+    :ptype embedder: Embeddings
+    :param text: text to embed
+    :ptype text: str
+    :return: embedding vector, or ``None`` on empty input / failure
+    :rtype: list[float] | None
+    """
+    if not text:
+        return None
+    try:
+        return await embedder.aembed_query(text)
+    except Exception as exc:  # prawduct:allow prawduct/broad-except -- soft-fail embedding boundary; upstream API errors surface as None
+        log.warning(
+            "intention embedding failed; degrading to soft-fail",
+            extra={"extra_data": {"error": str(exc)}},
+        )
+        return None
+
+
 async def _emit_intention_event(event: FrameworkEvent) -> None:
     """dispatch an intention event, tolerating calls outside a langgraph run.
 
@@ -227,20 +254,12 @@ async def load_intention_log_tool(
                     f"invalid source_memory_id '{source_memory_id}'",
                 )
 
-        try:
-            embedding = await embedding_provider.aembed_query(text)
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- an embedding outage becomes the tool's error string, naming the cause
-            log.warning(
-                "intention_log: embedding failed",
-                extra={"extra_data": {"error": f"{type(exc).__name__}: {exc}"}},
-            )
-            return _tool_error("intention_log", "embed", f"{type(exc).__name__}: {exc}")
-        if not embedding:
-            return _tool_error("intention_log", "embed", "the embedding provider answered an empty vector")
+        embedding = await _safe_aembed_query(embedding_provider, text)
+        if embedding is None:
+            return _tool_error("intention_log", "embed", "embedding provider returned None")
 
         # dedup against the user's OPEN wants: refresh the near-duplicate
         # instead of stacking a second row for the same standing want.
-        unchecked = ""
         try:
             similar = await intentions_collection.find_similar_for_dedup(
                 user_id=user_id,
@@ -250,14 +269,11 @@ async def load_intention_log_tool(
                 threshold=0.0,
             )
         except Exception as exc:
-            # the want is still worth writing down, but the answer must not claim it was checked
-            # against the open ones: a duplicate may now stand beside one, and the reply says so.
             log.warning(
                 "intention_log: dedup lookup failed, creating new want",
                 extra={"extra_data": {"error": str(exc)}},
             )
             similar = []
-            unchecked = f" (not checked against your open wants, which could not be read: {type(exc).__name__})"
 
         for row in similar:
             if float(row["similarity"]) >= similarity_dedup_threshold:
@@ -356,7 +372,7 @@ async def load_intention_log_tool(
                     "intention_log: the want is stored but on_logged failed",
                     extra={"extra_data": {"intention_id": str(intention_id), "error": str(exc)}},
                 )
-        return f"Logged as [intention:{intention_id}]: {text}{unchecked}"
+        return f"Logged as [intention:{intention_id}]: {text}"
 
     intention_log.description = (
         "Write down something you want to do, ask or come back to, in any later "

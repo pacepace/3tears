@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import dataclasses
-import logging
 import os
 from contextlib import AsyncExitStack
 from types import SimpleNamespace
@@ -1768,45 +1767,6 @@ class TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn:
         await boot(_FakeStartupBrowser([]))
 
         assert [c[:2] for c in calls] == [["xdotool", "search"]], f"a window that was not found was acted on: {calls}"
-
-    async def test_a_window_that_could_not_be_hidden_is_warned_about_not_reported_hidden(
-        self, boot, monkeypatch, caplog
-    ) -> None:
-        """A failed minimise used to be ignored, and the next line said the window was hidden.
-
-        The operator is the one who pays for that: the window this whole class exists to remove
-        stays on their screen while the log says it is gone.
-        """
-
-        async def _minimise_fails(*argv: str, **_kwargs: object) -> _FakeWmProcess:
-            if argv[0] == "xdotool" and "search" in argv:
-                return _FakeWmProcess(b"6291459\n")
-            if "windowminimize" in argv:
-                return _FakeWmProcess(b"", returncode=2)
-            return _FakeWmProcess(b"")
-
-        monkeypatch.setattr(main.asyncio, "create_subprocess_exec", _minimise_fails)
-        with caplog.at_level(logging.INFO, logger="nodriver_sidecar"):
-            await boot(_FakeStartupBrowser([]))
-
-        messages = [r.getMessage() for r in caplog.records]
-        assert any("not fully hidden" in m and "xdotool exited 2" in m for m in messages), messages
-        assert not any("hidden from the operator's screen" in m for m in messages), (
-            "a window that did not minimise was logged as hidden"
-        )
-
-    async def test_a_search_that_fails_is_told_apart_from_no_window(self, boot, monkeypatch, caplog) -> None:
-        """xdotool exits 1 for "no such window"; any other failure means it could not look at all."""
-
-        async def _search_breaks(*argv: str, **_kwargs: object) -> _FakeWmProcess:
-            return _FakeWmProcess(b"", returncode=3)
-
-        monkeypatch.setattr(main.asyncio, "create_subprocess_exec", _search_breaks)
-        with caplog.at_level(logging.INFO, logger="nodriver_sidecar"):
-            await boot(_FakeStartupBrowser([]))
-
-        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-        assert any("could not look for the idle window" in m for m in warnings), warnings
 
     async def test_a_window_manager_that_will_not_answer_does_not_fail_startup(
         self, client: httpx.AsyncClient, boot, monkeypatch

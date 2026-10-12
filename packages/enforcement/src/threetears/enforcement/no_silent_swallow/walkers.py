@@ -14,13 +14,6 @@ under the configured src trees for two violation shapes:
   an answer the caller cannot tell from a real one. bare ``except:``
   clauses are flagged unconditionally because they swallow
   ``SystemExit`` and ``KeyboardInterrupt``.
-- ``ast.ExceptHandler`` that LOGS and then still leaves with an inert
-  answer -- a ``return`` of ``None`` / a constant / an empty
-  collection, a ``continue`` or ``break``, or a last statement that
-  assigns a default -- without a valid kinded marker. a log line
-  tells the operator; it does not tell the caller, who still gets a
-  value it cannot tell from success. a handler that logs and then
-  raises, returns a typed failure, or does other work stays accepted.
 - ``contextlib.suppress(...)`` (or bare ``suppress(...)``) call
   expressions without a valid ``# NOSILENT(<kind>): <reason>`` marker
   within 2 lines above.
@@ -46,17 +39,8 @@ the kinds, and what the walker verifies for each:
 - ``optional-import`` -- an optional-dependency probe. every caught
   type must be ``ImportError`` / ``ModuleNotFoundError`` and the
   guarded body must import something.
-- ``logged`` -- the handler logs the error and the answer it then
-  gives is still TRUE for the caller (a health probe's ``False``, a
-  background loop with no caller, a side effect whose failure does not
-  change what was asked). the handler must log at WARNING or above;
-  a DEBUG / INFO line is not an operator-visible record.
 
-an unknown kind, or a kind whose check fails, is itself a violation,
-wherever the marker sits -- on a silent handler or on one that logs.
-and a bare ``# NOSILENT: <reason>`` comment is a violation anywhere:
-every marker states its kind, so none is left over from the days when
-prose was enough.
+an unknown kind, or a kind whose check fails, is itself a violation.
 exemptions live on the code, as the marker, never in a central file:
 a marker moves with the handler it describes.
 
@@ -86,9 +70,7 @@ implementation notes:
 from __future__ import annotations
 
 import ast
-import io
 import re
-import tokenize
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -106,7 +88,6 @@ __all__ = [
     "body_contains_log",
     "body_reraises",
     "body_silent_category",
-    "body_silent_exit",
     "find_nosilent_marker",
     "find_silent_swallows",
     "has_nosilent_marker",
@@ -117,9 +98,8 @@ __all__ = [
 
 _EXCEPT_CATEGORY = "no_silent_swallow.except"
 _SUPPRESS_CATEGORY = "no_silent_swallow.suppress"
-_MARKER_CATEGORY = "no_silent_swallow.marker"
 
-MARKER_KINDS: frozenset[str] = frozenset({"expected", "attempt", "cleanup", "optional-import", "logged"})
+MARKER_KINDS: frozenset[str] = frozenset({"expected", "attempt", "cleanup", "optional-import"})
 """the kinds a ``# NOSILENT(<kind>): <reason>`` marker may name; see the module docstring."""
 
 _BROAD_TYPES: frozenset[str] = frozenset({"Exception", "BaseException"})
@@ -127,8 +107,6 @@ _IMPORT_ERRORS: frozenset[str] = frozenset({"ImportError", "ModuleNotFoundError"
 _EMPTY_CONSTRUCTORS: frozenset[str] = frozenset({"list", "dict", "set", "tuple", "frozenset"})
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef, ast.Module)
 _LOOPS = (ast.For, ast.AsyncFor, ast.While)
-_OPERATOR_LEVELS: frozenset[str] = frozenset({"warning", "error", "critical", "exception"})
-_DEFAULT_LOGGER_NAMES: frozenset[str] = frozenset({"log", "logger", "_log", "_logger", "LOGGER"})
 
 
 @dataclass(frozen=True)
@@ -310,57 +288,6 @@ def body_silent_category(body: list[ast.stmt]) -> str | None:
     if any(label is None for label in labels):
         return None
     return labels[-1]
-
-
-def body_silent_exit(body: list[ast.stmt]) -> str | None:
-    """the first inert way out of a handler body that does real work, else ``None``.
-
-    :func:`body_silent_category` answers for a body that is inert
-    throughout. this answers for one that is not -- typically one that
-    logs -- and asks how control LEAVES it: a ``return`` of ``None`` /
-    a constant / an empty collection, a ``continue`` / ``break`` aimed
-    at an enclosing loop, or a last statement that assigns a default.
-    any of those hands the caller an answer it cannot tell from
-    success, whatever was logged on the way. ``raise`` statements do not
-    excuse a silent exit on another branch; nested functions and
-    classes are not part of the handler's flow. a ``continue`` /
-    ``break`` inside a loop the handler itself runs belongs to that loop.
-
-    :param body: statement list from an ``ExceptHandler.body``
-    :ptype body: list[ast.stmt]
-    :return: the silent exit's label (``return-none``, ``return-constant``,
-        ``return-empty``, ``continue``, ``break``, ``assign-default``), or ``None``
-    :rtype: str | None
-    """
-    stack: list[tuple[ast.AST, bool]] = [(stmt, False) for stmt in reversed(body)]
-    while stack:
-        node, in_inner_loop = stack.pop()
-        if isinstance(node, _SCOPES):
-            continue
-        if isinstance(node, ast.Return):
-            label = _statement_category(node)
-            if label is not None:
-                return label
-        elif isinstance(node, (ast.Continue, ast.Break)) and not in_inner_loop:
-            return "continue" if isinstance(node, ast.Continue) else "break"
-        inner = in_inner_loop or isinstance(node, _LOOPS)
-        stack.extend((child, inner) for child in reversed(list(ast.iter_child_nodes(node))))
-    if body and _statement_category(body[-1]) == "assign-default":
-        return "assign-default"
-    return None
-
-
-def _logs_at_operator_level(body: list[ast.stmt], logger_names: frozenset[str]) -> bool:
-    """true iff ``body`` holds a logger call at WARNING or above.
-
-    :param body: statement list from an ``ExceptHandler.body``
-    :ptype body: list[ast.stmt]
-    :param logger_names: known logger receiver names
-    :ptype logger_names: frozenset[str]
-    :return: whether an operator-visible log line is written
-    :rtype: bool
-    """
-    return body_contains_log(body, logger_names, _OPERATOR_LEVELS)
 
 
 def body_reraises(body: list[ast.stmt]) -> bool:
@@ -597,7 +524,6 @@ def marker_kind_problem(
     caught: list[str | None],
     guarded: list[ast.stmt],
     parents: dict[ast.AST, ast.AST],
-    logger_names: frozenset[str] = _DEFAULT_LOGGER_NAMES,
 ) -> str | None:
     """why ``marker`` does not excuse the silent site, or ``None`` when it does.
 
@@ -613,8 +539,6 @@ def marker_kind_problem(
     :ptype guarded: list[ast.stmt]
     :param parents: child -> parent map for the module
     :ptype parents: dict[ast.AST, ast.AST]
-    :param logger_names: known logger receiver names, for the ``logged`` check
-    :ptype logger_names: frozenset[str]
     :return: the problem, or ``None``
     :rtype: str | None
     """
@@ -628,10 +552,6 @@ def marker_kind_problem(
     if marker.kind not in MARKER_KINDS:
         return f"unknown NOSILENT kind {marker.kind!r}; kinds are {kinds}"
     chain = _ancestors(site, parents)
-    if marker.kind == "logged":
-        if isinstance(site, ast.ExceptHandler) and _logs_at_operator_level(site.body, logger_names):
-            return None
-        return "NOSILENT(logged) needs the handler itself to log at WARNING or above"
     if marker.kind == "expected":
         if any(name is None or name in _BROAD_TYPES for name in caught):
             return "NOSILENT(expected) needs every caught type named and narrower than Exception"
@@ -770,7 +690,6 @@ def find_silent_swallows(
                 if is_suppress_call(node):
                     assert isinstance(node, ast.Call)
                     _scan_suppress(node, module_path, source_lines, nosilent_marker, parents, violations)
-            _scan_marker_comments(source_text, module_path, nosilent_marker, violations)
     return violations
 
 
@@ -876,26 +795,17 @@ def _scan_try(
             continue
         category = body_silent_category(handler.body)
         if category is None:
-            # a body that does work and leaves inertly is judged only when the work is a log line:
-            # a log tells the operator, never the caller, who still gets the inert answer.
-            exit_label = body_silent_exit(handler.body)
-            if exit_label is None or not body_contains_log(handler.body, logger_names, logger_methods):
-                _check_stated_kind(
-                    node, handler, module_path, source_lines, nosilent_marker, parents, logger_names, violations
-                )
-                continue
-            category = f"logged-then-{exit_label}"
-        elif body_contains_log(handler.body, logger_names, logger_methods) or body_reraises(handler.body):
-            _check_stated_kind(
-                node, handler, module_path, source_lines, nosilent_marker, parents, logger_names, violations
-            )
+            continue
+        if body_contains_log(handler.body, logger_names, logger_methods):
+            continue
+        if body_reraises(handler.body):
             continue
         body_line = handler.body[0].lineno if handler.body else handler.lineno
         marker = find_nosilent_marker(source_lines, handler.lineno - 1, body_line, nosilent_marker)
         if marker is None:
             problem: str | None = (
                 f"silent swallow (body={category}); let the error reach the caller (re-raise, a typed "
-                f"failure{', a log call' if not category.startswith('logged-') else ''}), or add a `{nosilent_marker.rstrip(':')}(<kind>): <reason>` "
+                f"failure, a log call), or add a `{nosilent_marker.rstrip(':')}(<kind>): <reason>` "
                 "marker the walker can check"
             )
         else:
@@ -906,7 +816,6 @@ def _scan_try(
                 caught=_type_names(handler.type),
                 guarded=list(node.body),
                 parents=parents,
-                logger_names=logger_names,
             )
             if problem is not None:
                 problem = f"silent swallow (body={category}): {problem}"
@@ -919,114 +828,5 @@ def _scan_try(
                 line=handler.lineno,
                 symbol=_handler_symbol(handler),
                 reason=problem,
-            )
-        )
-
-
-def _scan_marker_comments(
-    source_text: str,
-    module_path: Path,
-    nosilent_marker: str,
-    violations: list[Violation],
-) -> None:
-    """flag every bare or unknown-kind marker COMMENT in the module.
-
-    only real ``#`` comments count (a docstring that quotes the marker
-    is documentation, not a marker). a module that does not tokenize was
-    already reported as unscanned by the parse step.
-
-    :param source_text: the module's source
-    :ptype source_text: str
-    :param module_path: the module's path
-    :ptype module_path: Path
-    :param nosilent_marker: the marker substring
-    :ptype nosilent_marker: str
-    :param violations: accumulator, mutated in place
-    :ptype violations: list[Violation]
-    """
-    stem = nosilent_marker.rstrip(":")
-    try:
-        tokens = [
-            token
-            for token in tokenize.generate_tokens(io.StringIO(source_text).readline)
-            if token.type == tokenize.COMMENT and stem in token.string
-        ]
-    except tokenize.TokenError, SyntaxError:
-        # NOSILENT(expected): the parse step already named this module as unscanned; there are no comments to read
-        return
-    kinds = ", ".join(sorted(MARKER_KINDS))
-    for token in tokens:
-        marker = _parse_marker(token.string, nosilent_marker, token.start[0])
-        if marker is None:
-            continue
-        if marker.kind is None:
-            reason = f"a bare `{nosilent_marker} <reason>` marker; name its kind, one of {kinds}"
-        elif marker.kind not in MARKER_KINDS:
-            reason = f"unknown NOSILENT kind {marker.kind!r}; kinds are {kinds}"
-        else:
-            continue
-        violations.append(
-            Violation(category=_MARKER_CATEGORY, file=module_path, line=marker.line, symbol="NOSILENT", reason=reason)
-        )
-
-
-def _check_stated_kind(
-    node: ast.Try | ast.TryStar,
-    handler: ast.ExceptHandler,
-    module_path: Path,
-    source_lines: list[str],
-    nosilent_marker: str,
-    parents: dict[ast.AST, ast.AST],
-    logger_names: frozenset[str],
-    violations: list[Violation],
-) -> None:
-    """hold a kinded marker on a handler that needs none to the kind it states.
-
-    such a handler passes without a marker, but a marker that claims
-    ``logged`` over a DEBUG line, or ``expected`` over ``Exception``,
-    is a false statement a reader will trust; it is flagged like any
-    other. unknown kinds and bare markers are reported by the comment
-    scan, so only a known kind is checked here.
-
-    :param node: the try the handler belongs to
-    :ptype node: ast.Try | ast.TryStar
-    :param handler: the handler
-    :ptype handler: ast.ExceptHandler
-    :param module_path: file containing the try
-    :ptype module_path: Path
-    :param source_lines: file contents split by lines
-    :ptype source_lines: list[str]
-    :param nosilent_marker: the marker substring
-    :ptype nosilent_marker: str
-    :param parents: child -> parent map for the module
-    :ptype parents: dict[ast.AST, ast.AST]
-    :param logger_names: known logger receiver names
-    :ptype logger_names: frozenset[str]
-    :param violations: accumulator, mutated in place
-    :ptype violations: list[Violation]
-    """
-    if body_reraises(handler.body):
-        return  # it cannot swallow; a marker in its window speaks for a suppress or handler inside it
-    body_line = handler.body[0].lineno if handler.body else handler.lineno
-    marker = find_nosilent_marker(source_lines, handler.lineno - 1, body_line, nosilent_marker)
-    if marker is None or marker.kind not in MARKER_KINDS:
-        return
-    problem = marker_kind_problem(
-        marker,
-        site=handler,
-        anchor=node,
-        caught=_type_names(handler.type),
-        guarded=list(node.body),
-        parents=parents,
-        logger_names=logger_names,
-    )
-    if problem is not None:
-        violations.append(
-            Violation(
-                category=_EXCEPT_CATEGORY,
-                file=module_path,
-                line=handler.lineno,
-                symbol=_handler_symbol(handler),
-                reason=f"the marker's kind does not hold: {problem}",
             )
         )

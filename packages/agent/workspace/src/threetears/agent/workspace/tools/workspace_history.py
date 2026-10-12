@@ -202,10 +202,9 @@ class WorkspaceHistoryTool(TearsTool):
                             acl_cache=self._acl_cache,
                         )
                     except (SandboxDenied, WorkspaceAccessDenied) as exc:
-                        # NOSILENT(expected): the gate's refusal IS the answer for this row: the history is of the
-                        # files the caller may read. Correct behaviour -- the caller must not see this path. Recorded
-                        # because a burst of it is what a misconfigured policy looks like from the outside: a history
-                        # that is simply short, with nothing saying rows were withheld.
+                        # Correct behaviour -- the caller must not see this path. Recorded because
+                        # a burst of it is what a misconfigured policy looks like from the outside:
+                        # a history that is simply short, with nothing saying rows were withheld.
                         log.debug(
                             "workspace history withheld a row the caller cannot read",
                             extra={

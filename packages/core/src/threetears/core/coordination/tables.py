@@ -449,8 +449,6 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
         try:
             return await self.sweep_expired()
         except STORAGE_FAILURES as exc:
-            # NOSILENT(logged): 0 IS the rows this call deleted; the write paths that drive it ignore the count,
-            # the sweep is retried after the interval, and the warning names the table
             log.warning(
                 "coordination expiry sweep failed; retrying after the interval",
                 extra={

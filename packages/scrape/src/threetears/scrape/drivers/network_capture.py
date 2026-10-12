@@ -229,8 +229,6 @@ class NetworkCaptureDriver(ScrapeDriver):
             try:
                 data = json.loads(call.body)
             except (json.JSONDecodeError, ValueError) as exc:
-                # NOSILENT(expected): a call body that is not JSON holds no record list; picking the largest
-                # JSON record list is this loop's whole question
                 log.debug(
                     "network_capture: skipping non-JSON call body for %s: %s",
                     call.url,

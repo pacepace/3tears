@@ -431,10 +431,10 @@ def _scan_disk_sync(disk_root: Path) -> dict[str, tuple[bytes, str]]:
     for candidate in sorted(disk_root.rglob("*")):
         if not candidate.is_file():
             continue
-        # a symlink whose target escapes the root is not a file of this workspace: it is left out, and said.
-        # a path that cannot be resolved at all raises, rather than be reported as not on disk.
-        resolved_candidate = candidate.resolve()
-        if not resolved_candidate.is_relative_to(resolved_root):
+        try:
+            resolved_candidate = candidate.resolve()
+            resolved_candidate.relative_to(resolved_root)
+        except OSError, ValueError:
             log.warning(
                 "workspace.refresh_from_disk.skip_escape",
                 extra={

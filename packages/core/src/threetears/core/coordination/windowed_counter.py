@@ -189,8 +189,6 @@ class WindowedCounter:
         try:
             return await self._record_attempt(key)
         except _DEGRADABLE_FAILURES as exc:
-            # NOSILENT(logged): only a counter BUILT fail_open answers 0, which its contract sets apart from any
-            # real count (always >= 1); the warning names the purpose, and a fail-closed counter re-raises
             if self._fail_open:
                 log.warning(
                     "windowed counter failing open; storage failed or every compare-and-swap round was lost",
@@ -232,8 +230,6 @@ class WindowedCounter:
             # read through the collection, so no compare-and-swap runs and
             # ConcurrentModificationError cannot arise here. Catching it anyway would offer an
             # operator a cause this path cannot produce.
-            # NOSILENT(logged): only a counter BUILT fail_open answers None here -- the "no window" its
-            # configurer chose for an unreadable store -- and it warns; a fail-closed counter re-raises
             if self._fail_open:
                 log.warning(
                     "windowed counter failing open on a storage failure",

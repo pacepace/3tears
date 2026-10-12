@@ -531,7 +531,7 @@ def run_cli(
         sys.stderr.write(f"{prog} {args.command}: {refused}\n")
         return EXIT_REFUSED
     except Exception:
-        # Printed whole to stderr; the distinct exit code is the point — uncaught, Python exits 1,
+        # NOSILENT: printed whole to stderr; the distinct exit code is the point — uncaught, Python exits 1,
         # which is the code for runs that finished and did not complete.
         sys.stderr.write(f"{prog} {args.command}: failed on an unanticipated error\n{traceback.format_exc()}")
         return EXIT_FAILED

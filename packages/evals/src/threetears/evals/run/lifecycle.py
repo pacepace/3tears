@@ -253,12 +253,10 @@ def sweep_abandoned_runs(storage: ReclaimStore, scopes: Iterable[str]) -> Abando
         try:
             settled, wrote_lost = settle_job_record(storage, RUN_JOB, run.id, run.scope_id)
         except ConflictError:
-            # NOSILENT(expected): the run kept changing under the write, so something else is writing it — not ours to
-            # settle; it is counted in the result's ``already_settled``
+            # NOSILENT: the run kept changing under the write, so something else is writing it — not ours to settle
             already_settled += 1
             continue
         except ValidationError:
-            # NOSILENT(logged): counted in the result's ``unreadable``, which the sweep reports.
             # The run's OWN document read fine — the scan proved that — but a model refused a value while it was
             # written lost. Caught per row, so the runs already settled by this sweep are still reported.
             unreadable += 1
@@ -502,7 +500,6 @@ def _record_unrecorded_completeness(storage: JobStore, run_id: str, scope_id: st
         outcome = record_run_faults(storage, run_id, scope_id, [entry])
     # prawduct:ok-broad-except — any storage fault here would mislabel a run that succeeded; logged with both errors
     except Exception:
-        # NOSILENT(logged): this method answers nothing and must not raise (see above); both errors are on this line
         log.exception(
             "eval.completeness run=%s scope=%s: why its completeness was not recorded could not be written on the "
             "run either; the first error: %s",
@@ -606,7 +603,6 @@ def record_completeness(
         outcome = update_eval_run(storage, run_id, scope_id, _stamp)
     # prawduct:ok-broad-except — any storage fault here would mislabel a run that succeeded
     except Exception as broke:
-        # NOSILENT(logged): the run keeps its real status, and why its completeness reads unknown is written on the run
         log.exception(
             "eval.completeness run=%s scope=%s NOT recorded — the run keeps its real status "
             "and its completeness reads as unknown",

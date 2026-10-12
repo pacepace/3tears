@@ -2453,8 +2453,6 @@ class ToolServer:
                 timeout=_IDENTITY_REPLY_TIMEOUT,
             )
         except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see docstring; the manifest was published before the reply was awaited, so a failure here costs the answer and never the registration. Logged with its type and message
-            # NOSILENT(logged): None is this method's documented 'no reply arrived' -- the manifest WAS published, so
-            # the registration stands; the missing answer (owned namespaces, refusals) is logged at WARNING
             log.warning(
                 "could not read the registration reply; this pod does not know which namespaces it "
                 "owns or whether any of its tools were refused, and any owner-routed human-in-the-loop "
@@ -3217,14 +3215,13 @@ class ToolServer:
         try:
             request = CallRequest.model_validate_json(msg.data)
         except Exception as exc:
-            # NOSILENT(logged): the caller gets a failure reply naming the parse error (sent below), and the
-            # pod logs it at WARNING; returning None afterwards is this dispatch method's ordinary end.
             error_response = CallResponse(
                 success=False,
                 content="",
                 error=f"malformed call request: {exc}",
             )
-            # This branch refuses the call at the border and, until now, wrote
+            # NOSILENT: not a swallow -- the caller gets a failure reply naming the parse error, and
+            # the pod logs it below. This branch refuses the call at the border and, until now, wrote
             # nothing anywhere -- the reason travelled only in the reply, to a caller that
             # is usually a model. :attr:`CallRequest.model_config` is ``extra="forbid"``,
             # so the ordinary way to arrive here is a CALLER NEWER THAN THIS POD sending a
@@ -3585,11 +3582,10 @@ class ToolServer:
                 await self._nc.jetstream_publish(subject=subject, payload=payload)
                 return
             except Exception as exc:  # noqa: BLE001 — the work is already done; retry beats discarding it
-                # NOSILENT(logged): each failed attempt is logged at WARNING and retried; the last is logged at
-                # ERROR as a lost answer. the reply channel itself is what failed, so no caller is reachable.
                 if attempt == _RESULT_DELIVERY_ATTEMPTS:
-                    # say the answer is lost, with the subject and the size, rather than let it surface as an
-                    # unexplained timeout at the caller.
+                    # NOSILENT: logged at ERROR, not swallowed -- the reply channel itself is what failed, so
+                    # no caller is reachable to raise to. say the answer is lost, with the subject and the
+                    # size, rather than let it surface as an unexplained timeout at the caller.
                     log.error(
                         "tool result could not be delivered after %d attempts; the answer is lost "
                         "(subject=%s pod_id=%s bytes=%d): %s",
@@ -3713,7 +3709,7 @@ class ToolServer:
                 nats_client=self._nc,
                 namespace=self._namespace,
             )
-        # NOSILENT(logged): logged at WARN naming the tool. publish_audit already logs its own
+        # NOSILENT: logged at WARN naming the tool, not swallowed. publish_audit already logs its own
         # transport failures; this guard catches a programmer-error regression (TypeError,
         # AttributeError) that would otherwise turn a tool's true answer into a failure.
         except Exception as exc:

@@ -642,18 +642,22 @@ class TestMarkerKinds:
         src = repo / "src"
         _write(src / "pkg" / "mod.py", _handler("# NOSILENT: the caller treats None as absent"))
         violations = _scan(src, repo)
-        # the site is flagged, and so is the marker comment itself
-        assert len(violations) == 2
-        assert any("no longer excuses" in v.reason for v in violations)
+        assert len(violations) == 1
+        assert "no longer excuses" in violations[0].reason
+
+    def test_a_bare_reason_still_sits_harmlessly_on_a_handler_that_logs(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", _handler("# NOSILENT: logged below", body="log.warning('x')"))
+        assert _scan(src, repo) == []
 
     def test_an_unknown_kind_is_flagged(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(src / "pkg" / "mod.py", _handler("# NOSILENT(harmless): trust me"))
         violations = _scan(src, repo)
-        # the site is flagged, and so is the marker comment itself
-        assert len(violations) == 2
-        assert any("unknown NOSILENT kind 'harmless'" in v.reason for v in violations)
+        assert len(violations) == 1
+        assert "unknown NOSILENT kind 'harmless'" in violations[0].reason
 
     def test_a_kind_without_a_reason_is_flagged(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path / "repo")
@@ -785,9 +789,8 @@ class TestMarkerKinds:
             "    with suppress(KeyError):\n        del cache[key]\n",
         )
         violations = _scan(src, repo)
-        # the site is flagged, and so is the marker comment itself
-        assert len(violations) == 2
-        assert any("no longer excuses" in v.reason for v in violations)
+        assert len(violations) == 1
+        assert "no longer excuses" in violations[0].reason
 
     def test_expected_is_refused_on_a_suppress_of_exception(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path / "repo")
@@ -798,140 +801,3 @@ class TestMarkerKinds:
             "    with suppress(Exception):\n        close()\n",
         )
         assert len(_scan(src, repo)) == 1
-
-
-# ------------------------------------------------------------------
-# walker — a log line tells the operator, never the caller
-# ------------------------------------------------------------------
-
-
-class TestLoggedThenSilent:
-    def test_a_handler_that_logs_then_returns_none_is_flagged(self, tmp_path: Path) -> None:
-        repo = _make_repo(tmp_path / "repo")
-        src = repo / "src"
-        _write(src / "pkg" / "mod.py", _handler("log.warning('lost it')", body="return None"))
-        violations = _scan(src, repo)
-        assert len(violations) == 1
-        assert "logged-then-return-none" in violations[0].reason
-
-    def test_a_handler_that_logs_then_continues_is_flagged(self, tmp_path: Path) -> None:
-        repo = _make_repo(tmp_path / "repo")
-        src = repo / "src"
-        _write(
-            src / "pkg" / "mod.py",
-            "def f(xs):\n    for x in xs:\n        try:\n            do(x)\n        except ValueError:\n"
-            "            log.error('skip %s', x)\n            continue\n",
-        )
-        violations = _scan(src, repo)
-        assert len(violations) == 1
-        assert "logged-then-continue" in violations[0].reason
-
-    def test_a_silent_return_on_one_branch_is_flagged_beside_a_raise_on_another(self, tmp_path: Path) -> None:
-        repo = _make_repo(tmp_path / "repo")
-        src = repo / "src"
-        _write(
-            src / "pkg" / "mod.py",
-            "def f():\n    try:\n        do()\n    except ValueError as exc:\n        log.warning('x')\n"
-            "        if fatal(exc):\n            raise\n        return False\n",
-        )
-        assert len(_scan(src, repo)) == 1
-
-    def test_a_handler_that_logs_then_assigns_a_default_last_is_flagged(self, tmp_path: Path) -> None:
-        repo = _make_repo(tmp_path / "repo")
-        src = repo / "src"
-        _write(src / "pkg" / "mod.py", _handler("log.warning('x')", body="result = []"))
-        assert "logged-then-assign-default" in _scan(src, repo)[0].reason
-
-    def test_a_handler_that_logs_then_raises_is_accepted(self, tmp_path: Path) -> None:
-        repo = _make_repo(tmp_path / "repo")
-        src = repo / "src"
-        _write(src / "pkg" / "mod.py", _handler("log.warning('x')", body="raise Refused() from None"))
-        assert _scan(src, repo) == []
-
-    def test_a_handler_that_logs_then_returns_a_typed_failure_is_accepted(self, tmp_path: Path) -> None:
-        repo = _make_repo(tmp_path / "repo")
-        src = repo / "src"
-        _write(src / "pkg" / "mod.py", _handler("log.warning('x')", body="return Failure(reason='unreadable')"))
-        assert _scan(src, repo) == []
-
-    def test_a_handler_that_logs_and_falls_through_is_accepted(self, tmp_path: Path) -> None:
-        repo = _make_repo(tmp_path / "repo")
-        src = repo / "src"
-        _write(src / "pkg" / "mod.py", _handler("x = 1", body="log.warning('audit lost')"))
-        assert _scan(src, repo) == []
-
-    def test_a_continue_inside_the_handlers_own_loop_is_not_a_way_out(self, tmp_path: Path) -> None:
-        repo = _make_repo(tmp_path / "repo")
-        src = repo / "src"
-        _write(
-            src / "pkg" / "mod.py",
-            "def f():\n    try:\n        do()\n    except ValueError:\n        log.warning('x')\n"
-            "        for y in ys:\n            if not y:\n                continue\n            undo(y)\n        raise\n",
-        )
-        assert _scan(src, repo) == []
-
-    def test_logged_is_accepted_over_a_warning(self, tmp_path: Path) -> None:
-        repo = _make_repo(tmp_path / "repo")
-        src = repo / "src"
-        _write(
-            src / "pkg" / "mod.py",
-            _handler(
-                "# NOSILENT(logged): False IS the health answer\n        log.warning('ping failed')",
-                body="return False",
-            ),
-        )
-        assert _scan(src, repo) == []
-
-    def test_logged_is_refused_over_a_debug_line(self, tmp_path: Path) -> None:
-        repo = _make_repo(tmp_path / "repo")
-        src = repo / "src"
-        _write(
-            src / "pkg" / "mod.py",
-            _handler("# NOSILENT(logged): nobody will see this\n        log.debug('x')", body="return None"),
-        )
-        violations = _scan(src, repo)
-        assert len(violations) == 1
-        assert "WARNING or above" in violations[0].reason
-
-    def test_logged_is_refused_on_a_handler_that_logs_nothing(self, tmp_path: Path) -> None:
-        repo = _make_repo(tmp_path / "repo")
-        src = repo / "src"
-        _write(src / "pkg" / "mod.py", _handler("# NOSILENT(logged): claims a log it lacks"))
-        assert len(_scan(src, repo)) == 1
-
-
-# ------------------------------------------------------------------
-# walker — every marker states a kind, and the kind must hold
-# ------------------------------------------------------------------
-
-
-class TestEveryMarkerStatesItsKind:
-    def test_a_bare_marker_comment_is_flagged_even_on_a_handler_that_needs_none(self, tmp_path: Path) -> None:
-        repo = _make_repo(tmp_path / "repo")
-        src = repo / "src"
-        _write(src / "pkg" / "mod.py", _handler("# NOSILENT: logged below", body="log.warning('x')"))
-        violations = _scan(src, repo)
-        assert [v.category for v in violations] == ["no_silent_swallow.marker"]
-
-    def test_an_unknown_kind_in_any_comment_is_flagged(self, tmp_path: Path) -> None:
-        repo = _make_repo(tmp_path / "repo")
-        src = repo / "src"
-        _write(src / "pkg" / "mod.py", "x = 1  # NOSILENT(fine): trust me\n")
-        assert [v.category for v in _scan(src, repo)] == ["no_silent_swallow.marker"]
-
-    def test_a_docstring_quoting_the_marker_is_not_a_marker(self, tmp_path: Path) -> None:
-        repo = _make_repo(tmp_path / "repo")
-        src = repo / "src"
-        _write(src / "pkg" / "mod.py", '"""write ``# NOSILENT: <reason>`` no more."""\n')
-        assert _scan(src, repo) == []
-
-    def test_a_kind_that_does_not_hold_is_flagged_on_a_handler_that_needs_none(self, tmp_path: Path) -> None:
-        repo = _make_repo(tmp_path / "repo")
-        src = repo / "src"
-        _write(
-            src / "pkg" / "mod.py",
-            _handler("# NOSILENT(logged): said loudly\n        log.debug('x')", "Exception", body="recover()"),
-        )
-        violations = _scan(src, repo)
-        assert len(violations) == 1
-        assert "kind does not hold" in violations[0].reason

@@ -193,8 +193,6 @@ async def _drop_database_best_effort(
             finally:
                 await cleanup.close()
         except Exception:  # noqa: BLE001 - cleanup must not fail the work it follows
-            # NOSILENT(logged): cleanup with no answer to give, after the verification result already stands; a drop
-            # that keeps failing is logged as an orphan to drop by hand
             if attempt == _TEMP_DB_DROP_ATTEMPTS:
                 log.warning(
                     "temp database drop failed; it is orphaned and must be dropped manually",

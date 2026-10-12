@@ -757,8 +757,6 @@ class StandaloneTransport:
                     raise
                 raise stamped from failure
             except (httpx.TimeoutException, httpx.TransportError) as exc:
-                # NOSILENT(attempt): a retryable transport failure; exhaustion falls to _exhausted below, which is
-                # raised as a typed SearchFailure
                 last = exc
                 if attempt >= self._max_attempts:
                     break

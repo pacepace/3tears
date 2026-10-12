@@ -111,8 +111,6 @@ class PeriodicFlusher:
         try:
             flushed = await flush_pending(self._buffer, self._registry)
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- an L3 outage must not end the loop
-            # NOSILENT(logged): a background loop has no caller to tell; the rows stay buffered for the next
-            # interval, and the ERROR line names the outage
             log.error(
                 "coordination write-behind flush failed; retrying on the next interval",
                 extra={"extra_data": {"error": f"{type(exc).__name__}: {exc}", "interval_seconds": self._interval}},

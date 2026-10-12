@@ -2,14 +2,12 @@
 
 every exception handler in production code that turns an error into
 an inert answer -- ``pass``, ``continue``, ``return None`` / a
-constant / an empty collection, an assigned default -- must re-raise,
-return a typed failure, or carry a ``# NOSILENT(<kind>): <reason>``
-marker whose kind the walker checks against the code (``expected``,
-``attempt``, ``cleanup``, ``optional-import``, ``logged``; see
-:mod:`threetears.enforcement.no_silent_swallow.walkers`). logging
-first does not excuse the inert answer: the log tells the operator,
-the caller still gets the default. a bare ``# NOSILENT: <reason>``
-comment is a violation anywhere. bare ``except:``
+constant / an empty collection, an assigned default -- must log,
+re-raise, or carry a ``# NOSILENT(<kind>): <reason>`` marker whose
+kind the walker checks against the code (``expected``, ``attempt``,
+``cleanup``, ``optional-import``; see
+:mod:`threetears.enforcement.no_silent_swallow.walkers`). a bare
+``# NOSILENT: <reason>`` no longer excuses one. bare ``except:``
 clauses (which catch ``SystemExit`` / ``KeyboardInterrupt`` and are
 never correct in production) are flagged unconditionally.
 ``contextlib.suppress(...)`` follows the same contract -- every

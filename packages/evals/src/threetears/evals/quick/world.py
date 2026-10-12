@@ -263,8 +263,6 @@ class World:
                         world=self.registry,
                     )
                 except GoalCheckUnevaluable as unevaluable:
-                    # NOSILENT(logged): the check leaves the returned mapping, which holds only checks evaluable against
-                    # every case (see Returns), so its absence IS "no do-nothing baseline", and the rate shows without one
                     log.warning(
                         "eval.run_eval goal check %r has no do-nothing baseline: %s; its pass rate is shown without one",
                         check,

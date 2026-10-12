@@ -928,8 +928,6 @@ class ToolServerBootstrap:
         try:
             await health_server.start()
         except Exception as exc:
-            # NOSILENT(logged): None is the documented 'running without /healthz', which is true; logged at WARNING, and
-            # kubelet's probes then fail visibly against a pod with no health endpoint
             log.warning(
                 "health server failed to start; tool pod will run without /healthz",
                 extra={

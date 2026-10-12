@@ -28,7 +28,7 @@ from threetears.geo.collection import (
     ViewportRequest,
 )
 from threetears.geo.features import FeatureCache, FeatureEntity, FeatureLoader
-from threetears.geo.geometry import UndecodableGeometry, decode_geometry, geometry_bounds, point_geometry
+from threetears.geo.geometry import decode_geometry, geometry_bounds, point_geometry
 from threetears.geo.mvt import encode_tile, project_to_tile
 from threetears.geo.tiles import (
     MAX_MERCATOR_LATITUDE,
@@ -65,7 +65,6 @@ __all__ = [
     "TILE_EXTENT",
     "BoundingBox",
     "TileId",
-    "UndecodableGeometry",
     "UnsupportedAttributeError",
     "bounds_to_tile_range",
     "coerce_attribute",

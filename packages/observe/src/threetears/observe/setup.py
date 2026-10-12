@@ -363,8 +363,6 @@ class _BoundedFlush:
             try:
                 completed = bool(signal_flush.flush(timeout_millis=remaining_millis))
             except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a vendor exporter can raise anything, and one signal's failure must not stop the others flushing; logged, and reported as not flushed
-                # NOSILENT(logged): reported, not dropped: the signal is recorded as not flushed, which the flush
-                # result returns
                 logger.warning(
                     "telemetry flush failed",
                     exc_info=True,

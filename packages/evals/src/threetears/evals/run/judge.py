@@ -316,8 +316,6 @@ def _process_criteria_response(
     try:
         parsed = _parse_criteria_response(result.content, evaluation_criteria, cannot_tell_offered=cannot_tell_offered)
     except ValueError as e:
-        # NOSILENT(logged): None is this attempt's "unparseable", never a score; the caller retries and, once attempts
-        # run out, returns a result carrying the parse failure as its error
         log.warning("Failed to parse criteria judge response: %s", e)
         return None
 

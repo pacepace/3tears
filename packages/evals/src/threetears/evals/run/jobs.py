@@ -887,8 +887,6 @@ class EvalJobManager:
             written = await self._leases.end_lost(job_id, cause)
         # prawduct:ok-broad-except — the task has already failed; this write is logged beside that failure, never raised
         except Exception:
-            # NOSILENT(logged): the task has already failed and this method answers nothing; the record reads lost once
-            # its lease lapses, and this line carries what ended the task
             log.exception(
                 "Task %s: its record could not be written lost either — it reads lost once its lease lapses. "
                 "What ended the task: %s",

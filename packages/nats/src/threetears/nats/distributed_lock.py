@@ -465,8 +465,6 @@ async def nats_distributed_lock(
             try:
                 loss = await _renew()
             except Exception as exc:  # noqa: BLE001 - boundary: a renewal failure is retried or reported as a loss, never raised into the heartbeat's owner
-                # NOSILENT(attempt): a renewal is retried only while the entry cannot have expired; past that the loss
-                # is reported to the lock's holder (_lose), never swallowed
                 expired_by = last_renewal_sent + ttl_seconds
                 if loop.time() + heartbeat_seconds < expired_by:
                     log.warning(

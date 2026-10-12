@@ -113,7 +113,6 @@ def update_eval_run(
         except (
             Exception
         ):  # prawduct:ok-broad-except — a read fault must not raise into a caller whose run already finished
-            # NOSILENT(attempt): one read of several; running out returns the typed "refused" below
             log.exception(
                 "eval.update_run read failed run=%s scope=%s (attempt %d/%d)", run_id, scope_id, attempt, attempts
             )
@@ -126,7 +125,6 @@ def update_eval_run(
         try:
             store.save_eval_run(EvalRun.from_dict(document), if_match=etag)
         except ConflictError:
-            # NOSILENT(attempt): a lost race re-reads and re-applies; running out returns the typed "refused" below.
             # A lost race: another writer's document now stands. Says what happens NEXT, so the last line does not
             # promise a re-apply that is not coming — the caller's own error log is what follows it.
             log.warning(
@@ -139,7 +137,6 @@ def update_eval_run(
             )
             continue
         except Exception:  # prawduct:ok-broad-except — same boundary as the read above
-            # NOSILENT(attempt): one write of several; running out returns the typed "refused" below
             log.exception(
                 "eval.update_run write failed run=%s scope=%s (attempt %d/%d)", run_id, scope_id, attempt, attempts
             )

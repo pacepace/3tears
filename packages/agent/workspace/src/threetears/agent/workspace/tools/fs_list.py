@@ -209,10 +209,9 @@ class FsListTool(TearsTool):
                     acl_cache=self._acl_cache,
                 )
             except (SandboxDenied, WorkspaceAccessDenied) as exc:
-                # NOSILENT(expected): the gate's refusal IS the answer for this row: the listing is of the files the
-                # caller may read. Correct behaviour -- the caller must not see this path. Recorded because a burst of
-                # it is what a misconfigured policy looks like from the outside: a listing that is simply short, with
-                # nothing anywhere saying rows were withheld.
+                # Correct behaviour -- the caller must not see this path. Recorded because a burst
+                # of it is what a misconfigured policy looks like from the outside: a listing that
+                # is simply short, with nothing anywhere saying rows were withheld.
                 log.debug(
                     "workspace listing withheld a row the caller cannot read",
                     extra={"extra_data": {"workspace_id": str(workspace.id), "denial": type(exc).__name__}},

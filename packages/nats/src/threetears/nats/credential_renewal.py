@@ -230,8 +230,6 @@ def nats_user_jwt_ttl_seconds() -> int | None:
         try:
             parsed = int(raw)
         except ValueError:
-            # NOSILENT(expected): a malformed value is the documented None, 'unknown', which the renewal loop re-checks
-            # rather than guessing on; the warning names the value
             log.warning("invalid %s=%r; treating the NATS credential TTL as unknown", NATS_USER_JWT_TTL_ENV, raw)
             result = None
         else:

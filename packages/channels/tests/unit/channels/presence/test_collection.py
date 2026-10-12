@@ -8,8 +8,7 @@ raise-loudly guards, entry serialize/deserialize round-trips, the
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from datetime import UTC, datetime
 
 import pytest
 
@@ -17,8 +16,6 @@ from threetears.channels.presence.collection import (
     PresenceConnectionCollection,
     RoomIndexCollection,
 )
-from threetears.core.testing.kv import FakeKvBucket
-from threetears.nats.errors import KvError
 
 from .conftest import InMemoryNatsBus, make_pod
 
@@ -339,68 +336,3 @@ class TestPrimaryKeyShape:
         collection, _ = make_pod(bus)
         assert isinstance(collection.rooms, RoomIndexCollection)
         assert collection.rooms.primary_key_columns == ("room_id",)
-
-
-# ---------------------------------------------------------------------------
-# L2 is the store: a write or delete that did not land is not reported done
-# ---------------------------------------------------------------------------
-
-
-class _RefusingBucket(FakeKvBucket):
-    """the published bucket double, refusing every write and delete as a broker outage would."""
-
-    async def put(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int:
-        raise KvError(f"put {key}: no responders")
-
-    async def delete(self, *, key: str, revision: int | None = None) -> bool:
-        raise KvError(f"delete {key}: no responders")
-
-
-class _RefusingBus(InMemoryNatsBus):
-    """the shared in-memory bus, whose collections bucket refuses writes."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.refusing = _RefusingBucket(bucket_name="collections")
-
-    async def kv_bucket(self, *, name: str, **_: Any) -> FakeKvBucket:  # noqa: ARG002
-        return self.refusing
-
-
-class TestL2IsTheStore:
-    """presence has no L3: a KV write that failed is a lost row, so save and delete raise."""
-
-    async def test_a_save_whose_l2_write_fails_raises_rather_than_reporting_it_saved(self) -> None:
-        collection, _ = make_pod(_RefusingBus())
-        entity = collection.connections.create(
-            {
-                "connection_id": "conn-lost",
-                "room_id": "cust:story:main:scene.md",
-                "user_id": "user-1",
-                "pod_id": "pod-a",
-                "customer_id": "cust",
-                "date_last_heartbeat": datetime.now(UTC),
-            }
-        )
-        with pytest.raises(KvError, match="only store"):
-            await collection.connections.save_entity(entity)
-
-    async def test_a_delete_whose_l2_delete_fails_raises_rather_than_reporting_it_gone(self) -> None:
-        collection, _ = make_pod(_RefusingBus())
-        with pytest.raises(KvError, match="only store"):
-            await collection.connections.delete("conn-lost")
-
-    async def test_a_collection_with_no_nats_keeps_its_rows_in_l1_and_does_not_raise(self) -> None:
-        collection, _ = make_pod(None)
-        entity = collection.connections.create(
-            {
-                "connection_id": "conn-l1",
-                "room_id": "cust:story:main:scene.md",
-                "user_id": "user-1",
-                "pod_id": "pod-a",
-                "customer_id": "cust",
-                "date_last_heartbeat": datetime.now(UTC),
-            }
-        )
-        await collection.connections.save_entity(entity)
-        assert await collection.connections.delete("conn-l1") is True

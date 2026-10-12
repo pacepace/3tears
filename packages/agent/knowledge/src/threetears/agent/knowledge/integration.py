@@ -364,7 +364,7 @@ async def retrieve_entries(
             admitted = scope_context_admitted_scopes(scope_context)
             snapshots = [s for s in snapshots if s.scope in admitted]
         effective, layered = merge_entry_views(snapshots)
-    # re-raised as GovernedKnowledgeUnavailableError -- same reason as
+    # NOSILENT: re-raised as GovernedKnowledgeUnavailableError -- same reason as
     # concepts. An invariant entry is a hard rule for every turn, and a fetch we
     # never completed cannot prove one was absent.
     except Exception as exc:
@@ -445,7 +445,7 @@ async def retrieve_concepts(
             admitted = scope_context_admitted_scopes(scope_context)
             snapshots = [s for s in snapshots if s.scope in admitted]
         effective, layered = merge_concept_views(snapshots)
-    # re-raised as GovernedKnowledgeUnavailableError -- a retrieval
+    # NOSILENT: re-raised as GovernedKnowledgeUnavailableError -- a retrieval
     # fault cannot be scored as "no concepts applied", because an always-inject
     # rule may have been among the rows we could not fetch.
     except Exception as exc:
