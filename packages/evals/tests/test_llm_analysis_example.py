@@ -19,6 +19,7 @@ from threetears.evals.analysis import AnalysisContextBundle, inspect_campaign_bu
 from threetears.evals.quick import compare
 from packages.evals.tests.example_loader import EXAMPLES, load_example
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
+from packages.evals.tests.off_loop import off_loop
 
 
 def _load() -> ModuleType:
@@ -63,7 +64,8 @@ async def test_assembling_the_same_campaign_twice_gives_the_same_fingerprint() -
         module.CASES, arms, expected=lambda case: case["queue"], control="baseline", scope_id="determinism", k=2
     )
     once, twice = (
-        inspect_campaign_bundle(comparison.host, comparison.campaign_id, comparison.scope_id).bundle for _ in range(2)
+        off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, comparison.scope_id).bundle
+        for _ in range(2)
     )
     assert once.fingerprint() == twice.fingerprint()
     assert AnalysisContextBundle.from_json(once.to_json(indent=2)).fingerprint() == once.fingerprint()

@@ -40,6 +40,7 @@ from threetears.evals.schema.store_port import StoreConflict
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_analysis_attempt, make_eval_result, make_eval_run
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture
+from packages.evals.tests.off_loop import off_loop
 
 _SCOPE = "uni-1"
 
@@ -172,11 +173,11 @@ def test_a_launch_or_sweep_written_lost_settles_the_runs_it_names(named_by: str)
 
 async def test_after_a_hard_kill_run_get_and_runs_list_alone_report_the_run_lost() -> None:
     """The reported repro: the holder killed mid-run, its lease lapsed; nothing polls the run's job."""
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     storage = fixture.host.eval_host.storage
     expired = JobLease(holder="killed-process", expires_at=(datetime.now(UTC) - timedelta(minutes=5)).isoformat())
     run = make_eval_run(scope_id=TOYHOST_SCOPE, status="running", lease=expired)
-    storage.save_job_record(run.to_dict(), if_match=None)
+    off_loop(storage.save_job_record, run.to_dict(), if_match=None)
     evals, _admin = eval_catalogue().mount_all(standard_tools())
 
     got = await evals.call({"action": "run_get", "run_id": run.id}, host=fixture.host, caller=CALLER)

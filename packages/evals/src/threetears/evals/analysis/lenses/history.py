@@ -28,7 +28,7 @@ from threetears.evals.kernel.scoring import (
     CompositeBasis,
     result_composite,
 )
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.reporting import (
     METRIC_COMPOSITE,

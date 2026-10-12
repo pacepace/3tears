@@ -55,7 +55,7 @@ from threetears.evals.kernel.host import (
     require_resolved_colour,
 )
 from threetears.evals.vega.text_metrics import packaged_font
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 

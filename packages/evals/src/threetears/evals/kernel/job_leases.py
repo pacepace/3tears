@@ -57,7 +57,7 @@ from threetears.evals.kernel.storage import RUN_LOST_STATUS, JobRecordStore, Lea
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.job_lease import JobLease, JobLoss, LeasedRecord, with_fault
 from threetears.evals.schema.models import TERMINAL_RUN_STATUSES, EvalRun
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 

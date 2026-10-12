@@ -46,6 +46,7 @@ from packages.evals.tests.fixtures.toyhost.world import (
     ToyWorldFaults,
     toyhost_world,
 )
+from packages.evals.tests.off_loop import off_loop
 
 _CARRIERS = ("page_reader", "console")
 
@@ -512,8 +513,8 @@ async def test_the_toy_kind_fires_an_event_trigger_at_run_time_and_every_result_
 
     path = await execute_toyhost_run(host=toyhost_host(), template=template)
 
-    assert path.results, "the run stored no results"
-    for result in path.results:
+    assert await path.results(), "the run stored no results"
+    for result in await path.results():
         assert result.termination == "completed"
         assert result.world_events == [
             WorldEvent(
@@ -528,7 +529,7 @@ async def test_the_toy_kind_fires_an_event_trigger_at_run_time_and_every_result_
         ]
         verdicts = {outcome.expression: outcome.passed for outcome in result.goal_state_outcomes}
         assert verdicts[HOLD_FIRED] is True and verdicts[HOLD_IN_FORCE] is True
-        trace = path.trace(result)
+        trace = await path.trace(result)
         assert trace is not None and trace.end_state is not None
         assert trace.end_state[PAYMENT_HOLD] == "held"
 
@@ -541,18 +542,18 @@ async def test_each_toy_cell_seeds_a_world_of_its_own_so_one_cell_s_firing_never
     """
     host = toyhost_host()
     armed = await execute_toyhost_run(host=host, template=toyhost_arming_template())
-    armed_ids = {result.id for result in armed.results}
-    for result in armed.results:
-        trace = armed.trace(result)
+    armed_ids = {result.id for result in (await armed.results())}
+    for result in await armed.results():
+        trace = await armed.trace(result)
         assert trace is not None and trace.end_state is not None and trace.end_state[PAYMENT_HOLD] == "held"
 
     # A toy run's id derives from its arm, so the plain drive's runs are the armed drive's: its own cells are
     # the ones the armed drive did not produce.
     plain = await execute_toyhost_run(host=host, template=toyhost_template())
-    later = [result for result in plain.results if result.id not in armed_ids]
+    later = [result for result in (await plain.results()) if result.id not in armed_ids]
     assert later
     for result in later:
-        trace = plain.trace(result)
+        trace = await plain.trace(result)
         assert trace is not None and trace.end_state is not None
         assert trace.end_state[PAYMENT_HOLD] == "released", "a previous cell's fired hold leaked into this cell"
 
@@ -560,9 +561,9 @@ async def test_each_toy_cell_seeds_a_world_of_its_own_so_one_cell_s_firing_never
 async def test_a_run_whose_seed_arms_nothing_records_an_opened_world_in_which_nothing_moved() -> None:
     path = await execute_toyhost_run(host=toyhost_host())
 
-    for result in path.results:
+    for result in await path.results():
         assert result.world_events == [], "the kind opened the world and nothing moved it: [] and not None"
-        trace = path.trace(result)
+        trace = await path.trace(result)
         assert trace is not None and trace.end_state is not None
         assert trace.end_state[PAYMENT_HOLD] == "released"
 
@@ -638,7 +639,7 @@ async def test_a_launched_run_freezes_its_perturbation_schedule_and_every_cell_r
         update={"world_seed": template.world_seed.model_copy(update={"ambient_perturbation_turns": [1]})}
     )
     storage = EvalStorage(InMemoryDocumentStore())
-    storage.save_template(scheduled)
+    off_loop(storage.save_template, scheduled)
     host, _client = toyhost_launch_host(storage=storage)
 
     runs = await start_run(
@@ -653,9 +654,9 @@ async def test_a_launched_run_freezes_its_perturbation_schedule_and_every_cell_r
             await asyncio.sleep(0.01)
 
     (run,) = runs
-    stored = storage.load_eval_run(run.id, run.scope_id)
+    stored = off_loop(storage.load_eval_run, run.id, run.scope_id)
     assert stored is not None and stored.resolved_ambient_perturbation_turns == [1]
-    results = storage.query_eval_results_by_run(run.id, run.scope_id)
+    results = off_loop(storage.query_eval_results_by_run, run.id, run.scope_id)
     assert results
     for result in results:
         assert result.world_events == [WorldEvent(kind="ambient", caused_by="rig", turn=1, moved=None)]

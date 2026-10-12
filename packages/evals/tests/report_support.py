@@ -20,6 +20,7 @@ from threetears.evals.kernel.host import EvalHost
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, TOYHOST_WIDE, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.toyhost_memo import PROMPT, PROMPT_ID, FixturedClient, alias_at, memo_payload
+from packages.evals.tests.off_loop import off_loop
 
 __all__ = [
     "minimal_report",
@@ -63,7 +64,7 @@ async def toy_report() -> tuple[EvalHost, EvalAnalysis, Report]:
         built.append(client)
         return client
 
-    host, campaign = toy_campaign_host(clients)
+    host, campaign = off_loop(toy_campaign_host, clients)
 
     async def prompt() -> str:
         return PROMPT
@@ -73,7 +74,7 @@ async def toy_report() -> tuple[EvalHost, EvalAnalysis, Report]:
     )
     built[0].completion.content = json.dumps(_with_a_chart(prepared.bundle))
     analysis, _ = await run_analysis_generation(host, prepared, prompt_id=PROMPT_ID, max_output_tokens=4000)
-    return host, analysis, analysis_report(host.storage, analysis.id, analysis.scope_id)
+    return host, analysis, off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id)
 
 
 def minimal_report(**update: Any) -> Report:

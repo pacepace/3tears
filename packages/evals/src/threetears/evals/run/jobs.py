@@ -46,7 +46,7 @@ from threetears.evals.kernel.job_context import job_running
 from threetears.evals.kernel.job_timeout import EvalJobTimeout, JobTimeoutFactory, default_job_timeout
 from threetears.evals.kernel.job_leases import RUN_JOB, JobLeases, LeasedJobKind
 from threetears.evals.run.run_document import update_eval_run
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 

@@ -47,6 +47,7 @@ from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.ops import ResultDetail, ResultListing, results_list
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
+from packages.evals.tests.off_loop import off_loop
 
 RUN_ID = "run-shakedown"
 OTHER_SCOPE = "another-tenant"
@@ -145,7 +146,7 @@ async def _call(tool: Any, fixture: OpsFixture, arguments: dict[str, Any]) -> An
 
 
 async def test_a_runs_results_are_listed_light_in_case_then_repeat_order(tools: dict[str, Any]) -> None:
-    fixture = _seeded()
+    fixture = off_loop(_seeded)
     outcome = await _call(tools["evals"], fixture, {"action": "results_list", "run_id": RUN_ID})
 
     assert not outcome.is_error, outcome.text
@@ -169,7 +170,7 @@ async def test_a_runs_results_are_listed_light_in_case_then_repeat_order(tools: 
 
 
 async def test_a_page_says_where_the_next_one_starts_and_the_filter_narrows_the_total(tools: dict[str, Any]) -> None:
-    fixture = _seeded()
+    fixture = off_loop(_seeded)
     first = await _call(tools["evals"], fixture, {"action": "results_list", "run_id": RUN_ID, "limit": 3})
     page = ResultListing.model_validate(first.structured)
     assert [line.id for line in page.results] == ["res-all-refused", "res-candidate", "res-harness"]
@@ -190,7 +191,9 @@ async def test_a_page_says_where_the_next_one_starts_and_the_filter_narrows_the_
 async def test_a_page_above_the_ceiling_is_refused_naming_the_parameter(tools: dict[str, Any]) -> None:
     action = tools["evals"].action("results_list")
     ceiling = action.params.model_json_schema()["properties"]["limit"]["maximum"]
-    outcome = await _call(tools["evals"], _seeded(), {"action": "results_list", "run_id": RUN_ID, "limit": ceiling + 1})
+    outcome = await _call(
+        tools["evals"], off_loop(_seeded), {"action": "results_list", "run_id": RUN_ID, "limit": ceiling + 1}
+    )
     assert outcome.is_error and "limit" in outcome.text
 
 
@@ -202,7 +205,7 @@ def test_the_condition_filter_offers_exactly_the_conditions_a_result_can_be_in(t
 
 async def test_a_filtered_page_hint_keeps_its_filter_and_its_size(tools: dict[str, Any]) -> None:
     """Following the hint reads the next page of the same rows at the same size, not the first page of all of them."""
-    fixture = _seeded()
+    fixture = off_loop(_seeded)
     outcome = await _call(
         tools["evals"], fixture, {"action": "results_list", "run_id": RUN_ID, "condition_filter": "ok", "limit": 1}
     )
@@ -214,7 +217,7 @@ async def test_a_filtered_page_hint_keeps_its_filter_and_its_size(tools: dict[st
 
 
 async def test_an_offset_past_the_end_is_an_empty_last_page(tools: dict[str, Any]) -> None:
-    outcome = await _call(tools["evals"], _seeded(), {"action": "results_list", "run_id": RUN_ID, "offset": 10})
+    outcome = await _call(tools["evals"], off_loop(_seeded), {"action": "results_list", "run_id": RUN_ID, "offset": 10})
     listing = ResultListing.model_validate(outcome.structured)
     assert (listing.results, listing.total, listing.next_offset) == ([], 4, None)
     assert outcome.text == f"results of run {RUN_ID}: 4, none from row 11"
@@ -229,8 +232,8 @@ def test_the_operation_refuses_a_page_that_cannot_exist(bounds: dict[str, int], 
 
 
 async def test_a_spend_below_a_hundredth_of_a_cent_reads_as_money(tools: dict[str, Any]) -> None:
-    fixture = _seeded()
-    fixture.host.eval_host.storage.save_eval_result(_result("res-cheap", "tc-c", 1, cost_usd=0.00003))
+    fixture = off_loop(_seeded)
+    off_loop(fixture.host.eval_host.storage.save_eval_result, _result("res-cheap", "tc-c", 1, cost_usd=0.00003))
     outcome = await _call(tools["evals"], fixture, {"action": "results_list", "run_id": RUN_ID})
     (line,) = [line for line in outcome.text.splitlines() if line.startswith("- res-cheap:")]
     assert "cost $0.0000300;" in line and "e-" not in line
@@ -258,7 +261,7 @@ async def _get(tool: Any, fixture: OpsFixture, result_id: str, part: str | None 
 
 async def test_a_result_whose_every_action_failed_reads_back_each_failure_as_stored(tools: dict[str, Any]) -> None:
     """The shakedown's cell: delivered, so a summary counts it scored, and only its output says why it did nothing."""
-    outcome, detail = await _get(tools["evals"], _seeded(), "res-all-refused")
+    outcome, detail = await _get(tools["evals"], off_loop(_seeded), "res-all-refused")
 
     assert detail.part == "record" and detail.trace_state == "stored"
     assert detail.condition.scoring.value == "ok" and detail.condition.disclosure is None
@@ -281,7 +284,7 @@ async def test_a_result_whose_every_action_failed_reads_back_each_failure_as_sto
 
 async def test_a_failed_results_checks_read_as_evaluated_and_as_counted(tools: dict[str, Any]) -> None:
     """A check that evaluated True on a candidate failure counts failed, as results_list counts it — both are said."""
-    fixture = _seeded()
+    fixture = off_loop(_seeded)
     candidate, detail = await _get(tools["evals"], fixture, "res-candidate")
     assert detail.condition.scoring.value == "candidate_fail" and detail.condition.disclosure
     assert detail.condition.disclosure in candidate.text
@@ -302,12 +305,14 @@ async def test_a_failed_results_checks_read_as_evaluated_and_as_counted(tools: d
 
 async def test_a_trace_its_record_promises_but_no_document_backs_reads_as_missing(tools: dict[str, Any]) -> None:
     """Never as none stored: the marker is written from the trace write's own outcome, so the two disagreeing is a fault."""
-    fixture = _seeded()
+    fixture = off_loop(_seeded)
     storage = fixture.host.eval_host.storage
     (stored,) = [
-        result for result in storage.query_eval_results_by_run(RUN_ID, TOYHOST_SCOPE) if result.id == "res-harness"
+        result
+        for result in off_loop(storage.query_eval_results_by_run, RUN_ID, TOYHOST_SCOPE)
+        if result.id == "res-harness"
     ]
-    storage.replace_eval_result(stored.model_copy(update={"has_trace": True}), if_match=None)
+    off_loop(storage.replace_eval_result, stored.model_copy(update={"has_trace": True}), if_match=None)
 
     outcome, detail = await _get(tools["evals"], fixture, "res-harness")
     assert detail.trace_state == "missing" and detail.record is None
@@ -340,8 +345,8 @@ def _heavy(fixture: OpsFixture) -> None:
 async def test_the_default_read_leaves_the_judges_evidence_and_the_spans_out_and_says_how_to_ask(
     tools: dict[str, Any],
 ) -> None:
-    fixture = _seeded()
-    _heavy(fixture)
+    fixture = off_loop(_seeded)
+    off_loop(_heavy, fixture)
     outcome, detail = await _get(tools["evals"], fixture, "res-heavy")
 
     assert detail.judge is None and detail.spans is None and detail.record is not None
@@ -355,8 +360,8 @@ async def test_the_default_read_leaves_the_judges_evidence_and_the_spans_out_and
 
 
 async def test_the_judge_part_reads_what_the_judge_was_sent(tools: dict[str, Any]) -> None:
-    fixture = _seeded()
-    _heavy(fixture)
+    fixture = off_loop(_seeded)
+    off_loop(_heavy, fixture)
     outcome, detail = await _get(tools["evals"], fixture, "res-heavy", "judge")
 
     assert detail.part == "judge" and detail.record is None and detail.spans is None
@@ -370,8 +375,8 @@ async def test_the_judge_part_reads_what_the_judge_was_sent(tools: dict[str, Any
 
 
 async def test_the_spans_part_reads_the_spans(tools: dict[str, Any]) -> None:
-    fixture = _seeded()
-    _heavy(fixture)
+    fixture = off_loop(_seeded)
+    off_loop(_heavy, fixture)
     outcome, detail = await _get(tools["evals"], fixture, "res-heavy", "spans")
 
     assert detail.spans == _SPANS and detail.record is None and detail.judge is None
@@ -386,11 +391,12 @@ async def test_the_spans_part_reads_the_spans(tools: dict[str, Any]) -> None:
 
 async def test_a_run_or_result_in_another_scope_is_not_found(tools: dict[str, Any]) -> None:
     """Another tenant's run is refused as not found, never listed as empty, and its results are unreadable."""
-    fixture = _seeded()
+    fixture = off_loop(_seeded)
     storage = fixture.host.eval_host.storage
-    storage.save_eval_run(make_eval_run(id="run-elsewhere", scope_id=OTHER_SCOPE))
-    storage.save_eval_result(
-        make_eval_result(id="res-elsewhere", scope_id=OTHER_SCOPE, eval_run_id="run-elsewhere", model="sonnet")
+    off_loop(storage.save_eval_run, make_eval_run(id="run-elsewhere", scope_id=OTHER_SCOPE))
+    off_loop(
+        storage.save_eval_result,
+        make_eval_result(id="res-elsewhere", scope_id=OTHER_SCOPE, eval_run_id="run-elsewhere", model="sonnet"),
     )
 
     listed = await _call(tools["evals"], fixture, {"action": "results_list", "run_id": "run-elsewhere"})
@@ -413,12 +419,12 @@ async def test_an_id_of_another_type_is_not_found(
     tools: dict[str, Any], action: str, arguments: dict[str, str]
 ) -> None:
     """Ids of every type share a scope, so a run's id handed where a result's belongs resolves — to the wrong document."""
-    outcome = await _call(tools["evals"], _seeded(), {"action": action, **arguments})
+    outcome = await _call(tools["evals"], off_loop(_seeded), {"action": action, **arguments})
     assert outcome.is_error and "not found" in outcome.text, outcome.text
 
 
 async def test_a_result_read_needs_its_id(tools: dict[str, Any]) -> None:
-    outcome = await _call(tools["evals"], _seeded(), {"action": "result_get"})
+    outcome = await _call(tools["evals"], off_loop(_seeded), {"action": "result_get"})
     assert outcome.is_error and "result_id" in outcome.text
 
 
@@ -448,8 +454,9 @@ def _timed(fixture: OpsFixture, result_id: str, k: int, latency: LatencyMetrics)
 
 
 async def test_a_full_latency_block_reads_back_with_its_orchestration_remainder(tools: dict[str, Any]) -> None:
-    fixture = _seeded()
-    _timed(
+    fixture = off_loop(_seeded)
+    off_loop(
+        _timed,
         fixture,
         "res-timed",
         1,
@@ -465,8 +472,8 @@ async def test_a_full_latency_block_reads_back_with_its_orchestration_remainder(
 
 
 async def test_an_unmeasured_component_reads_absent_and_the_remainder_is_withheld(tools: dict[str, Any]) -> None:
-    fixture = _seeded()
-    _timed(fixture, "res-part-timed", 2, LatencyMetrics(total_ms=1500.0, llm_ms=900.0))
+    fixture = off_loop(_seeded)
+    off_loop(_timed, fixture, "res-part-timed", 2, LatencyMetrics(total_ms=1500.0, llm_ms=900.0))
 
     outcome, detail = await _get(tools["evals"], fixture, "res-part-timed")
 
@@ -479,7 +486,7 @@ async def test_an_unmeasured_component_reads_absent_and_the_remainder_is_withhel
 
 
 async def test_a_result_with_no_latency_says_so_and_why_nothing_is_partitioned(tools: dict[str, Any]) -> None:
-    outcome, _detail = await _get(tools["evals"], _seeded(), "res-ok")
+    outcome, _detail = await _get(tools["evals"], off_loop(_seeded), "res-ok")
 
     assert "latency: none recorded" in outcome.text.splitlines()
     assert "orchestration_ms withheld: this cell timed nothing" in outcome.text
@@ -488,8 +495,8 @@ async def test_a_result_with_no_latency_says_so_and_why_nothing_is_partitioned(t
 async def test_a_listing_row_carries_total_ms_so_a_slow_cell_is_found_without_opening_it(
     tools: dict[str, Any],
 ) -> None:
-    fixture = _seeded()
-    _timed(fixture, "res-timed", 1, LatencyMetrics(total_ms=1500.0, llm_ms=900.0, tool_ms=350.0))
+    fixture = off_loop(_seeded)
+    off_loop(_timed, fixture, "res-timed", 1, LatencyMetrics(total_ms=1500.0, llm_ms=900.0, tool_ms=350.0))
 
     outcome = await _call(tools["evals"], fixture, {"action": "results_list", "run_id": RUN_ID})
 

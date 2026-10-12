@@ -60,7 +60,7 @@ from threetears.evals.kernel.metrics import GradedBy, is_code_graded
 from threetears.evals.schema.models import EvalResult
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.ops.lenses import scope_history
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 

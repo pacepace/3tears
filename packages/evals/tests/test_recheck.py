@@ -36,6 +36,7 @@ from packages.evals.tests.fixtures.toyhost.run import (
     execute_toyhost_run,
     toyhost_arming_template,
 )
+from packages.evals.tests.off_loop import off_loop
 
 
 def _every_field(passed: bool) -> GoalStateOutcome:
@@ -58,19 +59,19 @@ async def _toy_run() -> ToyhostRunPath:
     return await execute_toyhost_run(host=toyhost_host())
 
 
-def _drop_last_call(path: ToyhostRunPath, result: EvalResult) -> None:
+async def _drop_last_call(path: ToyhostRunPath, result: EvalResult) -> None:
     """Rewrite one stored trace with the last call of its ledger removed."""
-    trace = path.trace(result)
+    trace = await path.trace(result)
     assert trace is not None and trace.call_ledger is not None
     mutated = trace.call_ledger.model_copy(update={"calls": trace.call_ledger.calls[:-1]})
-    path.host.storage.save_eval_result(result, trace.model_copy(update={"call_ledger": mutated}))
+    off_loop(path.host.storage.save_eval_result, result, trace.model_copy(update={"call_ledger": mutated}))
 
 
 async def test_the_toy_kind_stores_the_ledger_it_graded_its_goal_check_against() -> None:
     path = await _toy_run()
 
-    for result in path.results:
-        trace = path.trace(result)
+    for result in await path.results():
+        trace = await path.trace(result)
         assert trace is not None and trace.call_ledger is not None
         assert [(call.tool, call.action) for call in trace.call_ledger.calls] == [("extractor", "emit_field")] * 4
         (graded,) = [outcome for outcome in result.goal_state_outcomes if outcome.expression == EVERY_FIELD_EMITTED]
@@ -81,7 +82,9 @@ async def test_re_grading_every_stored_toy_result_reproduces_its_verdict() -> No
     path = await _toy_run()
     run = path.runs[0]
 
-    recheck = recheck_goal_states(path.host.storage, run.id, run.scope_id, world=path.host.profile.world, apply=False)
+    recheck = off_loop(
+        recheck_goal_states, path.host.storage, run.id, run.scope_id, world=path.host.profile.world, apply=False
+    )
 
     assert recheck.results, "the run stored no results, so nothing was re-checked"
     for report in recheck.results:
@@ -95,30 +98,36 @@ async def test_re_grading_every_stored_toy_result_reproduces_its_verdict() -> No
 async def test_mutating_a_stored_ledger_flips_exactly_that_result_and_an_apply_stores_it() -> None:
     path = await _toy_run()
     run = path.runs[0]
-    target, *others = path.host.storage.query_eval_results_by_run(run.id, run.scope_id)
-    _drop_last_call(path, target)
+    target, *others = off_loop(path.host.storage.query_eval_results_by_run, run.id, run.scope_id)
+    await _drop_last_call(path, target)
 
-    dry = recheck_goal_states(path.host.storage, run.id, run.scope_id, world=path.host.profile.world, apply=False)
+    dry = off_loop(
+        recheck_goal_states, path.host.storage, run.id, run.scope_id, world=path.host.profile.world, apply=False
+    )
     flipped = {report.result_id: report.flips for report in dry.results if report.flips}
     assert list(flipped) == [target.id]
     (flip,) = flipped[target.id]
     assert (flip.expression, flip.was, flip.now) == (EVERY_FIELD_EMITTED, True, False)
-    assert path.host.storage.load_eval_result(target.id, run.scope_id) == target, "a dry run wrote"
+    assert off_loop(path.host.storage.load_eval_result, target.id, run.scope_id) == target, "a dry run wrote"
 
-    applied = recheck_goal_states(path.host.storage, run.id, run.scope_id, world=path.host.profile.world, apply=True)
+    applied = off_loop(
+        recheck_goal_states, path.host.storage, run.id, run.scope_id, world=path.host.profile.world, apply=True
+    )
     assert applied.write_conflicts == []
-    rewritten = path.host.storage.load_eval_result(target.id, run.scope_id)
+    rewritten = off_loop(path.host.storage.load_eval_result, target.id, run.scope_id)
     assert rewritten is not None
     (graded,) = [o for o in rewritten.goal_state_outcomes if o.expression == EVERY_FIELD_EMITTED]
     assert graded.passed is False
     assert [o for o in rewritten.goal_state_outcomes if o.expression != EVERY_FIELD_EMITTED] == [
         o for o in target.goal_state_outcomes if o.expression != EVERY_FIELD_EMITTED
     ]
-    assert all(path.host.storage.load_eval_result(other.id, run.scope_id) == other for other in others), (
+    assert all(off_loop(path.host.storage.load_eval_result, other.id, run.scope_id) == other for other in others), (
         "a result whose verdict did not move was rewritten"
     )
 
-    again = recheck_goal_states(path.host.storage, run.id, run.scope_id, world=path.host.profile.world, apply=True)
+    again = off_loop(
+        recheck_goal_states, path.host.storage, run.id, run.scope_id, world=path.host.profile.world, apply=True
+    )
     assert not any(report.flips for report in again.results), "an applied re-check is not idempotent"
 
 
@@ -135,7 +144,9 @@ async def test_re_grading_a_world_reading_run_reproduces_every_verdict_from_what
     path = await _arming_run()
     run = path.runs[0]
 
-    recheck = recheck_goal_states(path.host.storage, run.id, run.scope_id, world=path.host.profile.world, apply=False)
+    recheck = off_loop(
+        recheck_goal_states, path.host.storage, run.id, run.scope_id, world=path.host.profile.world, apply=False
+    )
 
     assert recheck.results
     for report in recheck.results:
@@ -149,31 +160,35 @@ async def test_re_grading_a_world_reading_run_reproduces_every_verdict_from_what
 async def test_mutating_a_stored_end_state_flips_exactly_the_check_that_reads_it() -> None:
     path = await _arming_run()
     run = path.runs[0]
-    target, *others = path.host.storage.query_eval_results_by_run(run.id, run.scope_id)
-    trace = path.trace(target)
+    target, *others = off_loop(path.host.storage.query_eval_results_by_run, run.id, run.scope_id)
+    trace = await path.trace(target)
     assert trace is not None and trace.end_state is not None
     released = {**trace.end_state, "payment_hold": "released"}
-    path.host.storage.save_eval_result(target, trace.model_copy(update={"end_state": released}))
+    off_loop(path.host.storage.save_eval_result, target, trace.model_copy(update={"end_state": released}))
 
-    recheck = recheck_goal_states(path.host.storage, run.id, run.scope_id, world=path.host.profile.world, apply=True)
+    recheck = off_loop(
+        recheck_goal_states, path.host.storage, run.id, run.scope_id, world=path.host.profile.world, apply=True
+    )
 
     flipped = {report.result_id: report.flips for report in recheck.results if report.flips}
     assert list(flipped) == [target.id]
     assert [(flip.expression, flip.was, flip.now) for flip in flipped[target.id]] == [(HOLD_IN_FORCE, True, False)]
-    rewritten = path.host.storage.load_eval_result(target.id, run.scope_id)
+    rewritten = off_loop(path.host.storage.load_eval_result, target.id, run.scope_id)
     assert rewritten is not None
     assert {o.expression: o.passed for o in rewritten.goal_state_outcomes}[HOLD_IN_FORCE] is False
-    assert all(path.host.storage.load_eval_result(other.id, run.scope_id) == other for other in others)
+    assert all(off_loop(path.host.storage.load_eval_result, other.id, run.scope_id) == other for other in others)
 
 
 async def test_mutating_stored_world_events_flips_exactly_the_check_that_reads_them() -> None:
     path = await _arming_run()
     run = path.runs[0]
-    target = path.host.storage.query_eval_results_by_run(run.id, run.scope_id)[0]
-    trace = path.trace(target)
-    path.host.storage.save_eval_result(target.model_copy(update={"world_events": []}), trace)
+    target = off_loop(path.host.storage.query_eval_results_by_run, run.id, run.scope_id)[0]
+    trace = await path.trace(target)
+    off_loop(path.host.storage.save_eval_result, target.model_copy(update={"world_events": []}), trace)
 
-    recheck = recheck_goal_states(path.host.storage, run.id, run.scope_id, world=path.host.profile.world, apply=False)
+    recheck = off_loop(
+        recheck_goal_states, path.host.storage, run.id, run.scope_id, world=path.host.profile.world, apply=False
+    )
 
     flipped = {report.result_id: report.flips for report in recheck.results if report.flips}
     assert [(flip.expression, flip.was, flip.now) for flip in flipped[target.id]] == [(HOLD_FIRED, True, False)]

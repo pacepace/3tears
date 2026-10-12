@@ -22,6 +22,7 @@ from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT
 from packages.evals.tests.fixtures.toyhost.launch import toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template, toyhost_test_cases
+from packages.evals.tests.off_loop import off_loop
 
 TEMPLATE = toyhost_template()
 CASES = [case.id for case in toyhost_test_cases(TEMPLATE)]
@@ -53,7 +54,7 @@ async def _launch(host: LaunchHost, storage: EvalStorage, **arguments: Any) -> E
     async with asyncio.timeout(10):
         while host.job_manager.is_active(run.id):
             await asyncio.sleep(0.01)
-    stored = storage.load_eval_run(run.id, TOYHOST_SCOPE)
+    stored = off_loop(storage.load_eval_run, run.id, TOYHOST_SCOPE)
     assert stored is not None and stored.status == "completed"
     return stored
 
@@ -103,20 +104,22 @@ def test_a_set_lists_each_case_once() -> None:
 
 
 async def test_a_launch_against_a_set_runs_exactly_its_cases_and_records_it() -> None:
-    host, storage = _launching()
-    _mint(storage, CASES[:2])
+    host, storage = off_loop(_launching)
+    off_loop(_mint, storage, CASES[:2])
 
     run = await _launch(host, storage, case_set=CaseSetRef(name="smoke", version=1))
 
     assert run.case_set == CaseSetRef(name="smoke", version=1)
     assert run.test_case_ids == CASES[:2]
-    assert {r.test_case_id for r in storage.query_eval_results_by_run(run.id, TOYHOST_SCOPE)} == set(CASES[:2])
+    assert {r.test_case_id for r in off_loop(storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)} == set(
+        CASES[:2]
+    )
 
 
 async def test_a_launch_against_a_set_whose_case_is_gone_is_refused_naming_it() -> None:
-    host, storage = _launching()
-    _mint(storage, CASES[:2])
-    storage.delete_test_case(CASES[1], TOYHOST_SCOPE)
+    host, storage = off_loop(_launching)
+    off_loop(_mint, storage, CASES[:2])
+    off_loop(storage.delete_test_case, CASES[1], TOYHOST_SCOPE)
 
     with pytest.raises(ValidationFailedError, match=f"no longer resolve in this scope: {CASES[1]}"):
         await _launch(host, storage, case_set=CaseSetRef(name="smoke", version=1))
@@ -149,13 +152,13 @@ def test_the_operations_mint_and_list() -> None:
 
 
 async def test_runs_against_two_versions_are_an_epoch_boundary_labelled_with_both() -> None:
-    host, storage = _launching()
-    _mint(storage, CASES[:2])
-    _mint(storage, CASES)
+    host, storage = off_loop(_launching)
+    off_loop(_mint, storage, CASES[:2])
+    off_loop(_mint, storage, CASES)
     first = await _launch(host, storage, case_set=CaseSetRef(name="smoke", version=1))
     second = await _launch(host, storage, case_set=CaseSetRef(name="smoke", version=2))
 
-    history = scope_history(host.eval_host, TOYHOST_SCOPE, metric="cost_usd")
+    history = off_loop(scope_history, host.eval_host, TOYHOST_SCOPE, metric="cost_usd")
 
     (series,) = history.series
     points = {point.run_id: point for point in series.points}
@@ -169,13 +172,13 @@ async def test_runs_against_two_versions_are_an_epoch_boundary_labelled_with_bot
 
 
 async def test_a_run_without_a_set_still_epochs_by_its_frozen_ids() -> None:
-    host, storage = _launching()
-    _mint(storage, CASES[:2])
+    host, storage = off_loop(_launching)
+    off_loop(_mint, storage, CASES[:2])
     with_set = await _launch(host, storage, case_set=CaseSetRef(name="smoke", version=1))
     without = await _launch(host, storage)
     again = await _launch(host, storage)
 
-    (series,) = scope_history(host.eval_host, TOYHOST_SCOPE, metric="cost_usd").series
+    (series,) = off_loop(scope_history, host.eval_host, TOYHOST_SCOPE, metric="cost_usd").series
     points = {point.run_id: point for point in series.points}
     assert without.case_set is None and without.test_case_ids == CASES
     assert points[without.id].epoch_boundary, "the frozen ids changed, so the suite changed, set or no set"

@@ -29,7 +29,7 @@ from typing import Any
 from threetears.evals.kernel.metrics import engine_owned_names
 from threetears.evals.schema.models import RoleUsage
 from threetears.evals.kernel.provider import sum_optional_tokens
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 

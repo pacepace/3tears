@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Protocol
 from threetears.evals.analysis.reporter_bank import case_pair, decidable_reporter_case_bank
 from threetears.evals.analysis.reporter_kind import reporter_case_of
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_TEST_CASE
 
 if TYPE_CHECKING:

@@ -28,6 +28,7 @@ from threetears.evals.testing import (
     jobs_conformance_cases,
 )
 from packages.evals.tests.jobs_conformance_support import CONFORMANCE_SCOPE, conformance_host
+from packages.evals.tests.off_loop import off_loop
 
 
 class _DraftParams(EvalBaseModel):
@@ -134,7 +135,7 @@ async def test_a_conforming_host_action_passes_and_its_job_returns_its_draft() -
     await cases["rubric_propose.call"].check(conformance_host)
     await cases["rubric_propose.happy_path"].check(conformance_host)
 
-    built = conformance_host(CompletionGuard())
+    built = off_loop(conformance_host, CompletionGuard())
     started = await _draft_in_job(built.host, built.caller, _DraftParams())
     (job,) = started.jobs
     assert job.job_id.startswith("action:") and job.kind == "action"

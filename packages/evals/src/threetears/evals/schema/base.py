@@ -81,7 +81,7 @@ from pydantic import (
 )
 
 from threetears.evals.schema.versioning import CoreVersionRefused, upgrade_core_document
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 

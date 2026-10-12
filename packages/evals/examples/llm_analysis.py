@@ -24,6 +24,7 @@ from _live import Completion, claude, online
 from threetears.evals.analysis import EVAL_ANALYSIS_GEN_DEFAULT, generate_analysis, inspect_campaign_bundle
 from threetears.evals.kernel import EvalAnalysis
 from threetears.evals.quick import compare
+from threetears.evals.run import run_blocking
 
 MODEL = "claude-haiku-5-5"
 
@@ -115,7 +116,15 @@ async def main(out_dir: Path = Path("eval-analysis")) -> EvalAnalysis:
     print(f"interval {row['interval']}, Holm-adjusted p {row['p_adjusted']:.2g}: {row['verdict']}\n")
 
     # Freeze: assemble the bundle once and save it. The fingerprint is a sha256 of its canonical JSON.
-    bundle = inspect_campaign_bundle(comparison.host, comparison.campaign_id, comparison.scope_id).bundle
+    # A store read, so it runs off the event loop.
+    inspected = await run_blocking(
+        comparison.host.blocking_executor,
+        inspect_campaign_bundle,
+        comparison.host,
+        comparison.campaign_id,
+        comparison.scope_id,
+    )
+    bundle = inspected.bundle
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "bundle.json").write_text(bundle.to_json(indent=2))
     print(f"Froze the evidence into {out_dir / 'bundle.json'}, fingerprint {bundle.fingerprint()}")

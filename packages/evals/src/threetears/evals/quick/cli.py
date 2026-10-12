@@ -98,6 +98,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, get_args
 
+from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.analysis import (
     read_judge_temperatures,
     DEFAULT_FAIL_ON,
@@ -559,7 +560,10 @@ async def _launch(host: LaunchHost, args: argparse.Namespace) -> int:
         # An interrupted command settles the runs it started rather than leaving them pending.
         await host.job_manager.shutdown()
         raise
-    summaries = [summarize_run(host.eval_host, run.id, args.scope) for run in runs]
+    # Summarizing reads each run back from the store, so it runs off the loop.
+    summaries = await run_blocking(
+        host.eval_host.blocking_executor, lambda: [summarize_run(host.eval_host, run.id, args.scope) for run in runs]
+    )
     for summary in summaries:
         _say(summary.render())
     return EXIT_OK if all(summary.status == "completed" for summary in summaries) else EXIT_RUN_DID_NOT_COMPLETE

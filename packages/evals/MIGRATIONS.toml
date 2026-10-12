@@ -31,6 +31,22 @@
 # callers.
 
 [[release]]
+version = "0.66.0-evaladopt.18"
+since = "v0.66.0-evaladopt.17"
+summary = """
+3tears-evals depends on no other 3tears package (its loggers are stdlib loggers); no store call is made on the event
+loop, which `EvalStorage` now refuses; a host whose database driver is async adopts through `AsyncDocumentStore` and
+`bridge_async_store`; and a host action's one paid model call is started with `ops.start_paid_call`.
+"""
+notes = [
+    "`3tears-observe` is no longer a dependency. The package's loggers are stdlib loggers named for their modules, under `threetears.evals` (which carries a `NullHandler`, as each logger did through observe), so a host's logging configuration reaches them as before; observe's call-site class is no longer added to their records. A host that pinned `3tears-observe` only because 3tears-evals needed it drops the pin.",
+    "`EvalStorage` refuses a store call made on a thread running an event loop, raising `StoreCalledOnEventLoop` (in `threetears.evals.schema`) before the store is reached: a synchronous store called there stalls the loop, and a store bridged from an async one would wait on itself. The engine's own paths that did so now offload: `run_eval` and `compare` (saving the cases, building the judge, summarizing, filing the campaign), `ops.launch_estimate`, `rejudge_result`, the command line's launch, and the cassettes (below). A host that calls a synchronous engine function taking the storage or the host (`list_runs`, `summarize_run`, `inspect_campaign_bundle`, `EvalStorage` itself, ...) from async code offloads it, `await run_blocking(host.blocking_executor, fn, ...)`, as the action catalogue already does for every synchronous operation in `threetears.evals.ops`; the async operations offload their own.",
+    "`Comparison.against` is a coroutine (it reads the comparison's campaign and files another): `await comparison.against(control)`.",
+    "The jobs conformance kit calls a host's `build` function on a worker thread, off the event loop, since a build seeds its store; a `build` that needs the running loop gets none there.",
+    "Cassettes touch the store at a cell's edges only: the runner opens a `CassetteCell` before the kind's `prepare` (`open`: a replay reads the case's recordings once, a capture clears them) and writes what a capture recorded once the cell has ended (`flush`, after `close`), both off the loop. A kind's code is unchanged. `wire` no longer touches the store, and refuses a cell that was never opened; a capture that cannot clear the case now fails the cell when it opens rather than when it wires. A replay whose store failed the read, or whose row does not load, still fails the call that asks for that recording. Recordings land when the cell ends rather than as each call returns. A host or test driving a `CassetteCell` directly calls `open()` before `wire` and `close()` then `flush()` after the cell, off the loop. `CassetteStore` gains `read_case_cassettes` (returning `CaseRecordings`); a host implementing `CassetteStore` itself adds it.",
+]
+
+[[release]]
 version = "0.66.0-evaladopt.17"
 since = "v0.66.0-evaladopt.16"
 summary = """

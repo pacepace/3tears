@@ -57,6 +57,7 @@ from packages.evals.tests.fixtures.courierhost import (
     run_courier_campaign,
 )
 from packages.evals.tests.test_package_matrix import REPO_ROOT
+from packages.evals.tests.off_loop import off_loop
 
 COURIER_FACTORY = "packages.evals.tests.fixtures.courierhost:courier_launch_host"
 
@@ -216,7 +217,7 @@ def test_run_exits_one_when_a_run_does_not_complete(capsys: pytest.CaptureFixtur
     async def launch(request: LaunchRequest) -> EvalRun:
         cases = courier_cases()
         for case in cases:
-            eval_host.storage.save_test_case(case)
+            off_loop(eval_host.storage.save_test_case, case)
         wiring = KindWiring(
             kind_factory=lambda _cell: _Broken(),
             subject=COURIER_SUBJECT,
@@ -424,7 +425,7 @@ async def test_a_run_eval_host_is_one_the_cli_can_read(capsys: pytest.CaptureFix
     host = callable_host([_graded])
     summary = await run_eval([{"q": "a"}], _unused, [_graded], scope_id="batteries", host=host)
     capsys.readouterr()
-    assert run_cli(["ls", "--scope", "batteries"], host_factory=lambda: host) == 0
+    assert off_loop(run_cli, ["ls", "--scope", "batteries"], host_factory=lambda: host) == 0
     out = capsys.readouterr().out
     assert f"  {summary.run_id}  completed  _unused  template {summary.template_id}" in out
 

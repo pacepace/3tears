@@ -45,7 +45,7 @@ from threetears.evals.kernel.provider import (
 )
 from threetears.evals.kernel.authored import strict_response_format
 from threetears.evals.kernel.usage_capture import CallUsage
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 

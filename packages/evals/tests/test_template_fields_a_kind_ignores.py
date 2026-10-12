@@ -30,6 +30,7 @@ from threetears.evals.schema import EvalTemplate, Precondition, WorldSeed
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.off_loop import off_loop
 
 _SCOPE = "judge-template-fields"
 
@@ -82,7 +83,7 @@ async def test_a_judge_template_stating_what_the_judge_kind_ignores_is_refused(
     fields: dict[str, Any], named: str
 ) -> None:
     host = _judge_host()
-    host.eval_host.storage.save_template(_judge_template(**fields))
+    off_loop(host.eval_host.storage.save_template, _judge_template(**fields))
     with pytest.raises(ValidationFailedError, match=named):
         await quote_launch(host, template_id="judge-tpl", subject_id="judge", models=["judge/model"], scope_id=_SCOPE)
 

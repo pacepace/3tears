@@ -44,6 +44,7 @@ from threetears.evals.kernel import (
 from threetears.evals.ops import OpsHost
 from threetears.evals.schema.base import EvalBaseModel
 from packages.evals.tests.ops_support import CALLER, ops_fixture
+from packages.evals.tests.off_loop import off_loop
 
 
 class _Raise(EvalBaseModel):
@@ -85,7 +86,7 @@ def _tool(error: Callable[[], Exception] | None) -> MountedTool:
 
 
 async def _call(tool: MountedTool, arguments: dict[str, Any]) -> ActionOutcome:
-    return await tool.call(arguments, host=ops_fixture().host, caller=CALLER)
+    return await tool.call(arguments, host=off_loop(ops_fixture).host, caller=CALLER)
 
 
 #: One instance of every public error class, as a handler raises it, with the refusal it makes.

@@ -27,6 +27,7 @@ from threetears.evals.ops import CampaignDefinition, campaign_create
 from threetears.evals.quick import Answer, callable_host, compare, run_eval
 from threetears.evals.run import list_results
 from packages.evals.tests.bundle_support import one_batch_bundle
+from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "bounded-interval-tests"
 
@@ -187,7 +188,7 @@ async def test_a_two_classifier_campaign_report_draws_every_interval_inside_its_
     loose = await run_eval(_CASES, _loose, scope_id=SCOPE, expected=_expected, host=host, k=2)
 
     # The bundle: accuracy states the very interval match does, and none exceeds the unit scale.
-    bundle = one_batch_bundle(list_results(host.storage, loose.run_id, SCOPE), profile=host.profile)
+    bundle = one_batch_bundle(off_loop(list_results, host.storage, loose.run_id, SCOPE), profile=host.profile)
     (cell,) = bundle.cell_measures
     measures = {measure.name: measure for measure in cell.measures.measures}
     accuracy, match = measures["accuracy"], measures["match"]
@@ -195,7 +196,8 @@ async def test_a_two_classifier_campaign_report_draws_every_interval_inside_its_
     assert (accuracy.ci_low, accuracy.ci_high) == (match.ci_low, match.ci_high)
     assert accuracy.ci_high is not None and accuracy.ci_high <= 1.0
 
-    campaign = campaign_create(
+    campaign = off_loop(
+        campaign_create,
         host,
         CampaignDefinition(
             name="strict vs loose", subject_id="sentiment", behavior="classify", run_ids=[strict.run_id, loose.run_id]
@@ -203,7 +205,7 @@ async def test_a_two_classifier_campaign_report_draws_every_interval_inside_its_
         SCOPE,
         created_by="test",
     )
-    markdown = report_markdown(campaign_report(host, campaign.id, SCOPE))
+    markdown = report_markdown(off_loop(campaign_report, host, campaign.id, SCOPE))
 
     assert "cannot be drawn" not in markdown
     # Every label's precision and recall is in the per-label table with its interval, each inside [0, 1] and

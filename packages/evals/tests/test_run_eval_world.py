@@ -17,6 +17,7 @@ import pytest
 from threetears.evals.schema import RecordedCall
 from threetears.evals.quick import Dimension, ToolRefused, World, WorldTool, WorldTools, callable_host, run_eval
 from threetears.evals.run import get_result_trace, list_results, list_runs, list_templates
+from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "run-eval-world-tests"
 
@@ -59,7 +60,10 @@ async def sensible(case: Mapping[str, Any], tools: WorldTools) -> str:
 
 async def stored(host: Any, run_id: str) -> list[Any]:
     """Each result with its trace, in case order."""
-    pairs = [(result, get_result_trace(host.storage, result)) for result in list_results(host.storage, run_id, SCOPE)]
+    pairs = [
+        (result, off_loop(get_result_trace, host.storage, result))
+        for result in off_loop(list_results, host.storage, run_id, SCOPE)
+    ]
     return sorted(pairs, key=lambda pair: pair[0].test_case_id)
 
 
@@ -94,7 +98,7 @@ async def test_the_end_state_is_read_back_after_the_last_turn_and_the_goal_check
         # Both cases started wrong, so the stored end state is the candidate's, never the seed.
         assert trace.end_state == {"lamp": "on" if case["dark"] else "off", "dark": case["dark"]} != start(case)
         assert [outcome.passed for outcome in result.goal_state_outcomes] == [True]
-    (run,) = list_runs(host, SCOPE)
+    (run,) = off_loop(list_runs, host, SCOPE)
     assert run.world_placements == {"lamp": "representable", "dark": "representable"}
     assert run.goal_check_proofs == {LIT_IFF_DARK: "unproven"}
 
@@ -194,7 +198,7 @@ async def test_a_world_less_call_is_unchanged_it_opens_no_world_and_keeps_no_led
     ((result, trace),) = await stored(host, summary.run_id)
     assert trace is not None
     assert (trace.end_state, trace.call_ledger, result.goal_state_outcomes) == (None, None, [])
-    assert host.profile.world is None and list_runs(host, SCOPE)[0].world_placements == {}
+    assert host.profile.world is None and off_loop(list_runs, host, SCOPE)[0].world_placements == {}
 
 
 # --- refusals: each made before anything is stored ------------------------------------------------
@@ -252,7 +256,7 @@ async def test_an_incoherent_world_run_is_refused_before_anything_is_stored(kwar
         kwargs = kwargs | {"world": world}
     with pytest.raises(ValueError, match=said):
         await run_eval(CASES, sensible, host=host, scope_id=SCOPE, **kwargs)
-    assert list_templates(host.storage, SCOPE) == []
+    assert off_loop(list_templates, host.storage, SCOPE) == []
 
 
 async def test_a_well_formed_quick_world_passes_the_engine_s_own_conformance_kit() -> None:

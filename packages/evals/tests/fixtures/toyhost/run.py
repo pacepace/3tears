@@ -66,7 +66,7 @@ from threetears.evals.schema import (
     WorldSeed,
 )
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost, WorldRegistry
-from threetears.evals.run import JudgeService, RunnerOptions, execute_run
+from threetears.evals.run import JudgeService, RunnerOptions, execute_run, run_blocking
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_COST_CEILING_USD,
     TOYHOST_GRADER_VERSION,
@@ -348,18 +348,20 @@ class ToyhostRunPath:
     kind: ToyExtractorKind
     client: ScriptedExtractionClient
 
-    @property
-    def results(self) -> list[EvalResult]:
-        """Every cell the drive produced, run by run.
+    async def results(self) -> list[EvalResult]:
+        """Every cell the drive produced, run by run, read from the host's store off the event loop.
 
         Returns:
             Twelve observations for the standard matrix.
         """
-        return [
-            result for run in self.runs for result in self.host.storage.query_eval_results_by_run(run.id, run.scope_id)
-        ]
 
-    def trace(self, result: EvalResult) -> EvalTrace | None:
+        def read() -> list[EvalResult]:
+            storage = self.host.storage
+            return [result for run in self.runs for result in storage.query_eval_results_by_run(run.id, run.scope_id)]
+
+        return await run_blocking(self.host.blocking_executor, read)
+
+    async def trace(self, result: EvalResult) -> EvalTrace | None:
         """The payload document the runner wrote beside one cell, or ``None`` when it wrote none.
 
         Args:
@@ -368,7 +370,9 @@ class ToyhostRunPath:
         Returns:
             Its trace.
         """
-        return self.host.storage.load_eval_trace(result.id, result.scope_id)
+        return await run_blocking(
+            self.host.blocking_executor, self.host.storage.load_eval_trace, result.id, result.scope_id
+        )
 
 
 async def execute_toyhost_run(
@@ -422,7 +426,7 @@ async def execute_toyhost_run(
         for arm in arms
     ]
     for run in runs:
-        host.storage.save_eval_run(run)
+        await run_blocking(host.blocking_executor, host.storage.save_eval_run, run)
         await execute_run(
             host,
             run=run,
@@ -436,7 +440,7 @@ async def execute_toyhost_run(
     # reading a pending run treats its numbers as provisional.
     runs = [run.model_copy(update={"status": "completed"}) for run in runs]
     for run in runs:
-        host.storage.save_eval_run(run)
+        await run_blocking(host.blocking_executor, host.storage.save_eval_run, run)
     return ToyhostRunPath(
         host=host,
         template=template,

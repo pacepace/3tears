@@ -6,15 +6,15 @@ import which:
 ============  ======  ======  =====  ========  ===  =======  =======  =====  ====  ============================================
 from          schema  kernel  run    analysis  gen  storage  testing  quick  vega  third-party
 ============  ======  ======  =====  ========  ===  =======  =======  =====  ====  ============================================
-schema        yes     --      --     --        --   --       --       --     --    pydantic, threetears.observe
-kernel        yes     yes     --     --        --   --       --       --     --    pydantic, threetears.observe
-run           yes     yes     yes    --        --   --       --       --     --    pydantic, threetears.observe
-analysis      yes     yes     --     yes       --   --       --       --     --    pydantic, threetears.observe
-gen           yes     yes     --     --        yes  --       --       --     --    pydantic, threetears.observe
+schema        yes     --      --     --        --   --       --       --     --    pydantic
+kernel        yes     yes     --     --        --   --       --       --     --    pydantic
+run           yes     yes     yes    --        --   --       --       --     --    pydantic
+analysis      yes     yes     --     yes       --   --       --       --     --    pydantic
+gen           yes     yes     --     --        yes  --       --       --     --    pydantic
 storage       yes     --      --     --        --   yes      --       --     --    (none)
 testing       yes     yes     --     --        --   --       yes      --     --    (none)
-quick         yes     yes     yes    yes       --   yes      --       yes    --    pydantic, threetears.observe
-vega          yes     yes     --     yes       --   --       --       --     yes   threetears.observe; ``vl_convert`` only in vega.render
+quick         yes     yes     yes    yes       --   yes      --       yes    --    pydantic
+vega          yes     yes     --     yes       --   --       --       --     yes   ``vl_convert`` only in vega.render
 ============  ======  ======  =====  ========  ===  =======  =======  =====  ====  ============================================
 
 ``schema`` is the stored shapes and the ports a host implements; ``kernel`` is the behaviour every
@@ -29,12 +29,10 @@ the renderer, and the rasteriser it takes (``vl_convert``) is the extra's depend
 Three more sit above the engine, as the surfaces an agent drives it through, and the table does not
 name them:
 
-* ``ops`` -- typed operations and the job contract -- may import schema, kernel, run, analysis and itself;
-  pydantic and threetears.observe.
-* ``actions`` -- the action catalogue -- may import schema, kernel, run, ops and itself; pydantic and
-  threetears.observe. It reaches analysis only through ``ops``.
-* ``transports`` -- one adapter per server -- may import schema, kernel, ops, actions and itself; pydantic,
-  threetears.observe (an adapter logs a host hook's failure rather than fail the call with it), and each
+* ``ops`` -- typed operations and the job contract -- may import schema, kernel, run, analysis and itself; pydantic.
+* ``actions`` -- the action catalogue -- may import schema, kernel, run, ops and itself; pydantic. It reaches
+  analysis only through ``ops``.
+* ``transports`` -- one adapter per server -- may import schema, kernel, ops, actions and itself; pydantic, and each
   adapter its own server alone (``transports.fastmcp``: ``fastmcp``, the package's ``fastmcp`` extra).
 
 Nothing in the engine imports any of the three, ``quick`` included, but ``testing``, whose jobs conformance kit
@@ -55,9 +53,8 @@ the others -- a launch from ``run``, a report from ``analysis``, the reference s
 in-memory store would be the engine reaching an adapter. Nothing imports ``quick``, so composing
 sits above everything it composes. ``python -m threetears.evals`` (``__main__``) is held to its row.
 
-``threetears.observe`` is in every row because the repository's logging convention routes every
-module's logger through it (``get_logger``); it is a declared dependency of the package and itself
-has none.
+No row names a 3tears package: the engine depends on none. Its loggers are stdlib loggers, taken from
+:mod:`threetears.evals.schema.logs`, which every package may import.
 
 **Placement is the path, not a list.** A module is in a package because it lives in that package's
 directory: ``threetears/evals/schema/``, ``kernel/``, ``run/``, ``analysis/``, ``gen/``, ``storage/``,
@@ -128,18 +125,18 @@ ALLOWED_PACKAGES: dict[str, frozenset[str]] = {
 #: The matrix's third-party column, by import root (a ``threetears`` namespace package by its two
 #: leading segments, since the namespace itself is shared by the whole family).
 ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
-    "schema": frozenset({"pydantic", "threetears.observe"}),
-    "kernel": frozenset({"pydantic", "threetears.observe"}),
-    "run": frozenset({"pydantic", "threetears.observe"}),
-    "analysis": frozenset({"pydantic", "threetears.observe"}),
-    "gen": frozenset({"pydantic", "threetears.observe"}),
+    "schema": frozenset({"pydantic"}),
+    "kernel": frozenset({"pydantic"}),
+    "run": frozenset({"pydantic"}),
+    "analysis": frozenset({"pydantic"}),
+    "gen": frozenset({"pydantic"}),
     "storage": frozenset(),
     "testing": frozenset(),
-    "quick": frozenset({"pydantic", "threetears.observe"}),
-    "vega": frozenset({"threetears.observe"}),
-    "ops": frozenset({"pydantic", "threetears.observe"}),
-    "actions": frozenset({"pydantic", "threetears.observe"}),
-    "transports": frozenset({"pydantic", "threetears.observe"}),
+    "quick": frozenset({"pydantic"}),
+    "vega": frozenset(),
+    "ops": frozenset({"pydantic"}),
+    "actions": frozenset({"pydantic"}),
+    "transports": frozenset({"pydantic"}),
 }
 
 #: The module-level third-party exceptions, one per extra: the Vega renderer's rasteriser and nothing
@@ -276,7 +273,7 @@ def test_placed_modules_obey_the_package_matrix() -> None:
 
 
 def test_placed_modules_import_only_their_third_party_column() -> None:
-    """Past the stdlib, the packages reach pydantic and threetears.observe; vl_convert only in vega.render."""
+    """Past the stdlib, the packages reach pydantic; vl_convert only in vega.render."""
     _, third_party_violations = matrix_violations(SOURCE_ROOT)
     assert not third_party_violations, (
         "These third-party imports are outside the matrix's third-party column:\n  "
@@ -802,9 +799,10 @@ def test_the_matrix_admits_each_permitted_edge(tmp_path: Path, relative: str, so
         ("threetears/evals/analysis/lens.py", "import vl_convert\n", ["vl_convert"]),
         # The rasteriser left the core with the renderer: where it used to be admitted, it is refused.
         ("threetears/evals/analysis/viz/render.py", "import vl_convert\n", ["vl_convert"]),
-        ("threetears/evals/vega/render.py", "import vl_convert\nfrom threetears.observe import get_logger\n", []),
+        ("threetears/evals/vega/render.py", "import vl_convert\n", []),
         ("threetears/evals/vega/compiler.py", "import vl_convert\n", ["vl_convert"]),
-        ("threetears/evals/run/loop.py", "from threetears.observe import get_logger\n", []),
+        # The engine depends on no 3tears package, observe included: its loggers are its own.
+        ("threetears/evals/run/loop.py", "from threetears.observe import get_logger\n", ["threetears.observe"]),
         # A sibling family package the manifest does not declare is a dependency like any other.
         ("threetears/evals/run/loop.py", "from threetears.core import thing\n", ["threetears.core"]),
         # A host package, at runtime, under TYPE_CHECKING, deferred, and reached by a relative climb.
@@ -819,7 +817,7 @@ def test_the_matrix_admits_each_permitted_edge(tmp_path: Path, relative: str, so
     ],
 )
 def test_the_third_party_column(tmp_path: Path, relative: str, source: str, refused: list[str]) -> None:
-    """pydantic, observe and the stdlib pass where their row says; vl_convert only in vega.render; the rest is refused."""
+    """pydantic and the stdlib pass where their row says; vl_convert only in vega.render; the rest is refused."""
     _, third_party = matrix_violations(_tree(tmp_path, {**_BASE_FILES, relative: source}))
     assert [v.target for v in third_party] == refused
 

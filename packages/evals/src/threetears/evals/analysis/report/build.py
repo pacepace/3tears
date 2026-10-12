@@ -95,7 +95,7 @@ from threetears.evals.kernel.surface import (
     StratumFacts,
     TimeAxis,
 )
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 

@@ -48,6 +48,7 @@ from packages.evals.tests.factories import (
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.job_support import InMemoryRunStore
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture
+from packages.evals.tests.off_loop import off_loop
 
 # =============================================================================
 # record_completeness: a record that is not written says so on the run
@@ -212,10 +213,10 @@ _CASES = [make_test_case(id="case-1", template_id=_TEMPLATE.id)]
 
 
 async def _execute(host: EvalHost, run: EvalRun, options: RunnerOptions) -> EvalRun:
-    host.storage.save_eval_run(run)
+    off_loop(host.storage.save_eval_run, run)
     await execute_run(host, run=run, template=_TEMPLATE, test_cases=_CASES, judge_service=None, options=options)
     # The etag read, which settles nothing: the run here carries no lease, which a settling read would write lost.
-    stored, _ = host.storage.load_eval_run_with_etag(run.id, run.scope_id)
+    stored, _ = off_loop(host.storage.load_eval_run_with_etag, run.id, run.scope_id)
     assert stored is not None
     return stored
 
@@ -257,7 +258,7 @@ async def test_a_raising_concurrency_probe_is_named_on_the_run_with_the_samples_
     [entry] = stored.error_details
     assert entry.startswith("concurrency probe (RunnerOptions.concurrent_eval_jobs_probe) raised")
     assert ": RuntimeError: the job manager is gone (" in entry and entry.endswith(" samples)")
-    [result] = host.storage.query_eval_results_by_run(run.id, run.scope_id)
+    [result] = off_loop(host.storage.query_eval_results_by_run, run.id, run.scope_id)
     assert "execution_mode" not in result.covariates, "the cell still reads unmeasured, as it did"
 
 
@@ -312,8 +313,8 @@ async def _held_run(store: _RenewalRefusingStore) -> tuple[EvalStorage, JobLease
     storage = EvalStorage(store)
     leases = JobLeases(storage, lease_s=0.3)
     run = make_eval_run(status="running")
-    run.lease = leases.grant()
-    storage.save_eval_run(run)
+    run.lease = off_loop(leases.grant)
+    off_loop(storage.save_eval_run, run)
     stopped = asyncio.Event()
     leases.hold(RUN_JOB, run.id, run.scope_id, cancel=lambda _reason: None, stop=stopped.set)
     store.at = _T0 + timedelta(seconds=0.1)  # inside the lease, so every renewal moves it, for the whole test
@@ -328,7 +329,7 @@ async def test_a_run_whose_renewals_fail_for_a_whole_lease_is_told_why_on_its_re
 
     await asyncio.wait_for(stopped.wait(), timeout=5)
 
-    record, _ = storage.load_job_record(EvalRun, run.id, run.scope_id)
+    record, _ = off_loop(storage.load_job_record, EvalRun, run.id, run.scope_id)
     assert record is not None and (record.status, record.lost) == ("running", None), "no ending of its own"
     assert record.error_details == [], "a lease fault is the job's, kept in faults as on every job record"
     [entry] = record.faults
@@ -352,7 +353,7 @@ async def test_a_run_whose_renewals_fail_and_whose_record_cannot_be_written_logs
     assert "the renewal failure: the last renewal failed: StorageError: " in line.getMessage()
     assert line.exc_info is not None and "the store is unreachable" in str(line.exc_info[1])
     store.unreachable = False
-    record, _ = storage.load_job_record(EvalRun, run.id, run.scope_id)
+    record, _ = off_loop(storage.load_job_record, EvalRun, run.id, run.scope_id)
     assert record is not None and record.faults == []
 
 
@@ -390,15 +391,15 @@ async def _expired(
 ) -> str:
     """Hold ``record`` under a 0.3s lease whose every renewal the store refuses, until its holder stops it; its fault."""
     leases = JobLeases(storage, lease_s=0.3)
-    held = record.model_copy(update={"lease": leases.grant()})
-    storage.save_job_record(held.to_dict(), if_match=None, create_only=True)
+    held = record.model_copy(update={"lease": off_loop(leases.grant)})
+    off_loop(storage.save_job_record, held.to_dict(), if_match=None, create_only=True)
     stopped = asyncio.Event()
     leases.hold(kind, held.id, held.scope_id, cancel=lambda _reason: None, stop=stopped.set)
     store.at = _T0 + timedelta(seconds=0.1)  # inside the lease, so every renewal moves it and is refused
     store.refusing = True
     await asyncio.wait_for(stopped.wait(), timeout=5)
     store.refusing = False
-    stored, _ = storage.load_job_record(kind.model, held.id, held.scope_id)
+    stored, _ = off_loop(storage.load_job_record, kind.model, held.id, held.scope_id)
     assert stored is not None and stored.lost is None and not kind.ended(stored), "no ending of its own yet"
     [fault] = stored.faults
     return fault
@@ -417,7 +418,7 @@ async def test_a_job_whose_renewals_fail_keeps_the_renewal_error_in_its_faults_a
 
     fault = await _expired(store, storage, kind, record)
     store.at = _T0 + timedelta(seconds=5)  # past the expiry: the next reader writes the loss
-    lost, wrote = settle_job_record(storage, kind, record.id, record.scope_id)
+    lost, wrote = off_loop(settle_job_record, storage, kind, record.id, record.scope_id)
 
     assert fault.startswith("job lease: its holder, process ")
     assert "could not renew it for 0.3s, its whole lease, and stopped the job" in fault
@@ -429,7 +430,7 @@ async def test_a_job_whose_renewals_fail_keeps_the_renewal_error_in_its_faults_a
 
 async def test_job_poll_shows_the_faults_of_a_job_read_lost() -> None:
     store = _RenewalRefusingStore()
-    fixture = ops_fixture(store=store)
+    fixture = off_loop(ops_fixture, store=store)
     storage = fixture.host.eval_host.storage
     sweep = _sweep(TOYHOST_SCOPE)
 
@@ -458,8 +459,8 @@ async def test_a_task_that_raises_past_its_own_ending_has_its_record_written_los
     leases = JobLeases(storage)
     manager = EvalJobManager(storage, leases=leases)
     sweep = _sweep()
-    sweep.lease = leases.grant()
-    storage.save_sweep(sweep)
+    sweep.lease = off_loop(leases.grant)
+    off_loop(storage.save_sweep, sweep)
 
     async def work() -> None:
         raise RuntimeError("the arm list could not be read")
@@ -467,7 +468,7 @@ async def test_a_task_that_raises_past_its_own_ending_has_its_record_written_los
     manager.start_task(sweep.id, work, budget_s=None, record=(SWEEP_JOB, sweep.scope_id))
     await asyncio.wait_for(_task_ended(manager, sweep.id), timeout=5)
 
-    record, _ = storage.load_job_record(EvalSweep, sweep.id, sweep.scope_id)
+    record, _ = off_loop(storage.load_job_record, EvalSweep, sweep.id, sweep.scope_id)
     assert record is not None and record.lost is not None
     assert record.lost.cause == "its task raised past its own ending: RuntimeError: the arm list could not be read"
     assert (record.outcome, record.detail) == ("cancelled", f"lost: {record.lost.cause}")
@@ -479,17 +480,17 @@ async def test_a_task_whose_work_recorded_its_own_ending_keeps_it() -> None:
     leases = JobLeases(storage)
     manager = EvalJobManager(storage, leases=leases)
     sweep = _sweep()
-    sweep.lease = leases.grant()
-    storage.save_sweep(sweep)
+    sweep.lease = off_loop(leases.grant)
+    off_loop(storage.save_sweep, sweep)
 
     async def work() -> None:
-        storage.save_sweep(sweep.model_copy(update={"outcome": "failed", "detail": "arm 'a' was refused"}))
+        off_loop(storage.save_sweep, sweep.model_copy(update={"outcome": "failed", "detail": "arm 'a' was refused"}))
         raise RuntimeError("raised after the ending was written")
 
     manager.start_task(sweep.id, work, budget_s=None, record=(SWEEP_JOB, sweep.scope_id))
     await asyncio.wait_for(_task_ended(manager, sweep.id), timeout=5)
 
-    record, _ = storage.load_job_record(EvalSweep, sweep.id, sweep.scope_id)
+    record, _ = off_loop(storage.load_job_record, EvalSweep, sweep.id, sweep.scope_id)
     assert record is not None and (record.outcome, record.detail, record.lost) == (
         "failed",
         "arm 'a' was refused",

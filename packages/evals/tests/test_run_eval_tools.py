@@ -19,6 +19,7 @@ import pytest
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.quick import CandidateTools, callable_host, compare, run_eval
 from threetears.evals.run import get_run, list_runs
+from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "run-eval-tools-tests"
 CASES = [{"n": 1}, {"n": 2}, {"n": 3}]
@@ -86,7 +87,7 @@ async def test_a_replay_serves_the_capture_and_never_calls_the_live_tool() -> No
     for replay in replays:
         assert (replay.status, replay.n_scored, replay.n_excluded) == ("completed", 6, 0)
         assert replay.measures[0].mean == captured
-        run = get_run(host.storage, replay.run_id, SCOPE)
+        run = off_loop(get_run, host.storage, replay.run_id, SCOPE)
         assert (run.cassette_mode, run.cassette_corpus_id) == ("replay", capture.run_id)
 
 
@@ -207,7 +208,7 @@ async def test_a_cassette_run_of_a_candidate_that_declares_no_tools_is_refused_b
         await run_eval(
             CASES, plain, [total], scope_id=SCOPE, host=host, k=1, cassette_mode=mode, cassette_corpus_id=corpus
         )
-    assert list_runs(host, SCOPE) == []
+    assert off_loop(list_runs, host, SCOPE) == []
 
 
 @pytest.mark.parametrize(

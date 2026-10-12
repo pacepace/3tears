@@ -24,6 +24,7 @@ from threetears.evals.actions import Caller, eval_catalogue, standard_tools
 from threetears.evals.ops import OpsHost, frontier_text, scope_frontier
 from threetears.evals.quick import Answer, Judge, compare, run_cli
 from threetears.evals.run import LaunchHost, LaunchSettings
+from packages.evals.tests.off_loop import off_loop
 
 CASES = [{"n": index} for index in range(24)]
 
@@ -68,7 +69,7 @@ async def test_a_comparison_of_two_models_is_one_frontier_naming_the_cheaper_one
     comparison = await compare(
         CASES, {"big": big, "small": small}, control="big", scope_id="ranked", k=2, factors=("model",), judge=_judge()
     )
-    ranked = scope_frontier(comparison.host, "ranked", bar=0.5)
+    ranked = off_loop(scope_frontier, comparison.host, "ranked", bar=0.5)
     (subject,) = ranked.subjects
     assert subject.subject_id == comparison.name
     assert sorted(point.model for point in subject.points) == ["big", "small"]
@@ -79,7 +80,7 @@ async def test_a_comparison_of_two_models_is_one_frontier_naming_the_cheaper_one
 
 async def test_named_arms_share_the_comparison_s_subject_too() -> None:
     comparison = await compare(CASES[:4], {"v1": big, "v2": small}, control="v1", scope_id="named", k=1, judge=_judge())
-    (subject,) = scope_frontier(comparison.host, "named").subjects
+    (subject,) = off_loop(scope_frontier, comparison.host, "named").subjects
     assert len(subject.points) == 2
     assert {summary.arm for summary in comparison.arms.values()} == {"v1", "v2"}
 
@@ -89,7 +90,7 @@ async def test_the_action_and_the_cli_return_the_python_call_s_frontier(capsys: 
         CASES, {"big": big, "small": small}, control="big", scope_id="ranked", k=2, factors=("model",), judge=_judge()
     )
     host = comparison.host
-    expected = scope_frontier(host, "ranked", bar=0.5).model_dump(mode="json")
+    expected = off_loop(scope_frontier, host, "ranked", bar=0.5).model_dump(mode="json")
 
     tool = eval_catalogue().mount_all(standard_tools())[0]
     settings = LaunchSettings(
@@ -114,7 +115,9 @@ async def test_the_action_and_the_cli_return_the_python_call_s_frontier(capsys: 
     )
     assert not called.is_error, called.text
     assert called.structured == expected
-    assert called.text == frontier_text(scope_frontier(host, "ranked", bar=0.5))
+    assert called.text == frontier_text(off_loop(scope_frontier, host, "ranked", bar=0.5))
 
-    assert run_cli(["frontier", "--scope", "ranked", "--bar", "0.5", "--json"], host_factory=lambda: host) == 0
+    assert (
+        off_loop(run_cli, ["frontier", "--scope", "ranked", "--bar", "0.5", "--json"], host_factory=lambda: host) == 0
+    )
     assert json.loads(capsys.readouterr().out) == expected

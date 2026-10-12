@@ -22,7 +22,6 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears-observe>=0.66.0,<0.67.0",
     "pydantic>=2.0",
 ]
 
@@ -46,9 +45,6 @@ fastmcp = ["fastmcp>=3.4.2,<4"]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"
-
-[tool.uv.sources]
-3tears-observe = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/threetears"]

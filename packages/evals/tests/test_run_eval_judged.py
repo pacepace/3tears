@@ -36,6 +36,7 @@ from threetears.evals.run import (
     list_templates,
     update_template,
 )
+from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "run-eval-judged-tests"
 CASES = [{"question": "What is two plus two?"}, {"question": "What is the capital of France?"}]
@@ -130,12 +131,12 @@ async def test_each_dimension_is_scored_by_the_engines_judge_and_summarised_besi
     assert "  answer.honest (judged 1-5): mean 3.5 (n=2, min 2, max 5)" in rendered
     assert "  judge spend: $0.00120 over 4 call(s)" in rendered  # 4 x $0.0003
 
-    (run,) = list_runs(host, SCOPE)
+    (run,) = off_loop(list_runs, host, SCOPE)
     assert run.judge_model == JUDGE_MODEL
-    template = get_template(host, summary.template_id or "", SCOPE)
+    template = off_loop(get_template, host, summary.template_id or "", SCOPE)
     assert template.candidate_kind == JUDGED_CALLABLE_KIND
     assert [dim.name for dim in template.rubric] == ["answer.helpful", "answer.honest"]
-    for result in list_results(host.storage, summary.run_id, SCOPE):
+    for result in off_loop(list_results, host.storage, summary.run_id, SCOPE):
         assert result.judge_model == JUDGE_MODEL and result.judge_error is None
         assert {score.served_model for score in result.rubric_scores} == {"scripted/judge-2026"}
         (judge_row,) = [row for row in result.usage if row.role == "judge"]
@@ -152,8 +153,8 @@ async def test_the_judge_reads_the_answer_against_the_case_material_and_the_trac
     _, user = client.calls[0]
     assert "Reference: arithmetic.\nQuestion: What is two plus two?" in user
     assert user.endswith("# Output under review\n4")
-    (result,) = list_results(host.storage, summary.run_id, SCOPE)
-    trace = get_result_trace(host.storage, result)
+    (result,) = off_loop(list_results, host.storage, summary.run_id, SCOPE)
+    trace = off_loop(get_result_trace, host.storage, result)
     assert trace is not None and trace.judged_artifact is JudgedArtifact.DOCUMENT
     assert trace.judge_evidence is not None
     assert trace.judge_evidence.case_material == "Reference: arithmetic.\nQuestion: What is two plus two?"
@@ -189,8 +190,8 @@ async def test_without_case_material_a_classifier_s_judge_never_reads_the_answer
     (material_sent,) = sent
     assert '"ticket": "I was charged twice."' in material_sent and '"channel": "email"' in material_sent
     assert '"queue"' not in material_sent, "the judge read the expected label it is grading without"
-    (result,) = list_results(host.storage, summary.run_id, SCOPE)
-    trace = get_result_trace(host.storage, result)
+    (result,) = off_loop(list_results, host.storage, summary.run_id, SCOPE)
+    trace = off_loop(get_result_trace, host.storage, result)
     assert trace is not None and trace.judge_evidence is not None
     assert trace.judge_evidence.case_material == '{\n  "channel": "email",\n  "ticket": "I was charged twice."\n}'
     assert trace.judge_evidence.case_material in material_sent, "the trace records exactly the material sent"
@@ -290,7 +291,7 @@ async def test_an_explicit_intent_is_what_the_judge_reads_and_the_summary_says_s
     summary = await run_eval(CASES, answer, judge=_judge(client), intent=stated, scope_id=SCOPE, host=host, k=1)
 
     assert _intents_read(client) == {f"**Intent:** {stated}"}
-    assert get_template(host, summary.template_id or "", SCOPE).intent == stated
+    assert off_loop(get_template, host, summary.template_id or "", SCOPE).intent == stated
     assert (summary.intent, summary.intent_source) == (stated, None)
     assert f"\n  intent: {stated}\n" in summary.render()
 
@@ -318,7 +319,7 @@ async def test_with_no_intent_and_no_docstring_the_summary_says_the_intent_is_a_
 async def test_a_summary_read_back_keeps_the_intent_the_judge_read_but_not_where_it_came_from() -> None:
     host = callable_host()
     run = await run_eval(CASES, answer, judge=_judge(_FakeJudgeClient()), scope_id=SCOPE, host=host, k=1)
-    read_back = summarize_run(host, run.run_id, SCOPE)
+    read_back = off_loop(summarize_run, host, run.run_id, SCOPE)
     assert (read_back.intent, read_back.intent_source) == ("Answer a question in a few words.", None)
     assert "  intent: Answer a question in a few words." in read_back.render()
 
@@ -330,14 +331,15 @@ async def test_two_judged_runs_stating_different_intents_each_keep_the_template_
         CASES, answer, judge=_judge(_FakeJudgeClient()), intent="Reworded.", scope_id=SCOPE, host=host, k=1
     )
     assert first.template_id != second.template_id
-    assert summarize_run(host, first.run_id, SCOPE).intent == "Answer a question in a few words."
-    assert summarize_run(host, second.run_id, SCOPE).intent == "Reworded."
+    assert off_loop(summarize_run, host, first.run_id, SCOPE).intent == "Answer a question in a few words."
+    assert off_loop(summarize_run, host, second.run_id, SCOPE).intent == "Reworded."
 
 
 async def test_a_template_edited_since_the_run_no_longer_says_what_its_judge_read_so_no_intent_is_shown() -> None:
     host = callable_host()
     run = await run_eval(CASES, answer, judge=_judge(_FakeJudgeClient()), scope_id=SCOPE, host=host, k=1)
-    update_template(
+    off_loop(
+        update_template,
         host,
         run.template_id or "",
         SCOPE,
@@ -346,7 +348,7 @@ async def test_a_template_edited_since_the_run_no_longer_says_what_its_judge_rea
         refuse_undeclared_world_seed=lambda _template: None,
         refuse_undeliverable_template=lambda _template: None,
     )
-    assert summarize_run(host, run.run_id, SCOPE).intent is None
+    assert off_loop(summarize_run, host, run.run_id, SCOPE).intent is None
 
 
 async def test_an_unjudged_run_shows_no_intent_since_nothing_that_grades_it_reads_one() -> None:
@@ -404,7 +406,7 @@ async def test_a_callers_host_that_has_not_declared_the_judged_kinds_rig_is_refu
     host = _host_whose_judged_contract_is(contract)
     with pytest.raises(ValueError, match=said):
         await run_eval(CASES, answer, judge=_judge(_FakeJudgeClient()), scope_id=SCOPE, host=host)
-    assert list_templates(host.storage, SCOPE) == []
+    assert off_loop(list_templates, host.storage, SCOPE) == []
 
 
 async def test_a_host_seating_the_judge_by_its_pins_is_accepted() -> None:

@@ -31,6 +31,7 @@ from packages.evals.tests.toyhost_memo import (
     FixturedClient,
     memo_payload,
 )
+from packages.evals.tests.off_loop import off_loop
 
 __all__ = [
     "CALLER",
@@ -78,7 +79,9 @@ class MemoWriter(FixturedClient):
         if self.first_output is not None and not self.calls:
             self.completion.content = self.first_output
             return await super().generate(system=system, user=user, response_format=response_format, tools=tools)
-        bundle = assemble_context_bundle(self._campaign, storage=self._host.storage, profile=self._host.profile)
+        bundle = off_loop(
+            assemble_context_bundle, self._campaign, storage=self._host.storage, profile=self._host.profile
+        )
         self.completion.content = json.dumps(memo_payload(bundle))
         return await super().generate(system=system, user=user, response_format=response_format, tools=tools)
 

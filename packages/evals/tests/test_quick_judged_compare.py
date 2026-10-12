@@ -26,6 +26,7 @@ from threetears.evals.analysis import DisclosureBlock, report_markdown
 from threetears.evals.schema import StopReason
 from threetears.evals.quick import Answer, Judge, callable_host, compare, run_eval
 from threetears.evals.run import get_run, list_results
+from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "quick-judged-compare-tests"
 JUDGE_MODEL = "scripted/judge"
@@ -128,7 +129,7 @@ async def test_a_judged_compare_contrasts_every_arm_on_each_judged_dimension_wit
     (row,) = comparison.contrasts("answer.helpful (judged)")
     assert row["arm"] == "candidate" and row["delta"] == pytest.approx(1.5)
     assert row["verdict"].startswith("improved")
-    runs = [get_run(comparison.host.storage, summary.run_id, SCOPE) for summary in comparison.arms.values()]
+    runs = [off_loop(get_run, comparison.host.storage, summary.run_id, SCOPE) for summary in comparison.arms.values()]
     assert {run.judge_model for run in runs} == {JUDGE_MODEL}
     assert len({run.template_id for run in runs}) == 1, "one template, so one rubric, for every arm"
     assert all(summary.judged[0].name == "answer.helpful" for summary in comparison.arms.values())
@@ -143,7 +144,7 @@ async def test_a_judged_comparison_reads_against_another_control_on_the_judged_k
         scope_id=SCOPE,
         k=1,
     )
-    flipped = comparison.against("candidate")
+    flipped = await comparison.against("candidate")
     (row,) = flipped.contrasts("answer.helpful (judged)")
     assert row["arm"] == "baseline" and row["delta"] == pytest.approx(-1.5)
 
@@ -196,14 +197,14 @@ async def test_a_client_that_takes_no_temperature_is_called_without_one_and_its_
     summary = await run_eval(
         CASES, helpful, judge=_judge(_FakeFixedTemperatureClient()), host=host, scope_id=SCOPE, k=1
     )
-    stored = list_results(host.storage, summary.run_id, SCOPE)
+    stored = off_loop(list_results, host.storage, summary.run_id, SCOPE)
     assert {score.judge_temperature for result in stored for score in result.rubric_scores} == {"model_default"}
 
 
 async def test_a_client_that_takes_the_temperature_has_it_recorded_as_sent_on_every_score() -> None:
     host = callable_host()
     summary = await run_eval(CASES, helpful, judge=_judge(_FakeJudgeClient()), host=host, scope_id=SCOPE, k=1)
-    stored = list_results(host.storage, summary.run_id, SCOPE)
+    stored = off_loop(list_results, host.storage, summary.run_id, SCOPE)
     assert {score.judge_temperature for result in stored for score in result.rubric_scores} == {0.0}
 
 

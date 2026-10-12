@@ -41,6 +41,7 @@ import packages.evals.tests.fixtures.toyhost.launch as toyhost_launch
 from packages.evals.tests.fixtures.toyhost.kind import ScriptedExtractionClient
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.ops_support import RUN_MODELS, TOYHOST_SCOPE, TOYHOST_SUBJECT, ops_fixture, settled
+from packages.evals.tests.off_loop import off_loop
 
 
 class _Draft(EvalBaseModel):
@@ -73,7 +74,7 @@ def _held_extraction(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
 
 
 async def test_a_job_whose_budget_runs_out_reads_timed_out_and_a_cancelled_one_reads_cancelled() -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     (timed,) = (
         await start_action_job(fixture.host, TOYHOST_SCOPE, action="draft", run=_never_answers, budget_s=0.1)
     ).jobs
@@ -97,7 +98,7 @@ async def test_a_launch_whose_run_waits_for_a_slot_past_its_preparation_budget_i
 ) -> None:
     gate = _held_extraction(monkeypatch)
     monkeypatch.setattr(launch_job, "LAUNCH_PREPARATION_BUDGET_S", 0.2)
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     host = dataclasses.replace(fixture.host, launch=dataclasses.replace(fixture.host.launch, max_concurrent_jobs=1))
     (first,) = (await run_launch(host, _launch(RUN_MODELS[0]), TOYHOST_SCOPE)).jobs
     (second,) = (await run_launch(host, _launch(RUN_MODELS[1]), TOYHOST_SCOPE)).jobs
@@ -118,7 +119,7 @@ async def test_a_launch_whose_preparation_hangs_past_its_budget_ends_timed_out_w
 
     monkeypatch.setattr(launch_job, "LAUNCH_PREPARATION_BUDGET_S", 0.2)
     monkeypatch.setattr(toyhost_launch, "launch_run", hangs)
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
 
     (job,) = (await run_launch(fixture.host, _launch(RUN_MODELS[0]), TOYHOST_SCOPE)).jobs
     status = await settled(fixture.host, job.job_id)
@@ -151,7 +152,7 @@ async def test_a_job_whose_ending_write_fails_for_a_moment_still_ends_with_its_r
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(job_work, "ENDING_WRITE_RETRY_DELAYS_S", (0.01, 0.01))
-    fixture = ops_fixture(store=EndingRefusingStore(refusals=2))
+    fixture = off_loop(ops_fixture, store=EndingRefusingStore(refusals=2))
 
     (job,) = (await start_action_job(fixture.host, TOYHOST_SCOPE, action="draft", run=_drafted)).jobs
     status = await settled(fixture.host, job.job_id)
@@ -163,7 +164,7 @@ async def test_a_job_whose_ending_is_never_written_logs_it_whole(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     monkeypatch.setattr(job_work, "ENDING_WRITE_RETRY_DELAYS_S", (0.01, 0.01))
-    fixture = ops_fixture(store=EndingRefusingStore(refusals=100))
+    fixture = off_loop(ops_fixture, store=EndingRefusingStore(refusals=100))
 
     (job,) = (await start_action_job(fixture.host, TOYHOST_SCOPE, action="draft", run=_drafted)).jobs
     record_id = job.job_id.split(":", 1)[1]
@@ -180,7 +181,7 @@ async def test_a_sweep_whose_budget_runs_out_reads_timed_out_and_stops_its_arms(
 ) -> None:
     _held_extraction(monkeypatch)
     monkeypatch.setattr(sweeps, "SWEEP_ARM_BUDGET_S", 0.1)
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     arguments = SweepArguments(
         template_id=toyhost_template().id,
         subject_id=TOYHOST_SUBJECT.subject_id,
@@ -199,16 +200,16 @@ async def test_a_sweep_whose_budget_runs_out_reads_timed_out_and_stops_its_arms(
     assert (status.state, status.status) == ("stopped", "timed_out")
     assert status.detail is not None and status.detail.startswith("timed out: its 0s wall-clock budget ran out")
     storage = fixture.host.eval_host.storage
-    sweep, _ = storage.load_job_record(EvalSweep, job.job_id.removeprefix("sweep:"), TOYHOST_SCOPE)
+    sweep, _ = off_loop(storage.load_job_record, EvalSweep, job.job_id.removeprefix("sweep:"), TOYHOST_SCOPE)
     assert sweep is not None and sweep.arms[0].run_id is not None and sweep.arms[1].run_id is None
-    run = storage.load_eval_run(sweep.arms[0].run_id, TOYHOST_SCOPE)
+    run = off_loop(storage.load_eval_run, sweep.arms[0].run_id, TOYHOST_SCOPE)
     assert run is not None and (run.status, run.cancellation_reason) == ("cancelled", sweeps.SWEEP_TIMEOUT_REASON)
     assert status.progress["arms"]["verbose"] == "not_launched"
 
 
 async def test_a_generation_whose_budget_runs_out_reads_timed_out() -> None:
     gate = asyncio.Event()
-    fixture = ops_fixture(gate=gate)
+    fixture = off_loop(ops_fixture, gate=gate)
     assert fixture.host.generation is not None
     host = dataclasses.replace(fixture.host, generation=dataclasses.replace(fixture.host.generation, budget_s=0.1))
 
@@ -216,8 +217,8 @@ async def test_a_generation_whose_budget_runs_out_reads_timed_out() -> None:
     status = await settled(host, job.job_id)
 
     assert (status.state, status.status) == ("stopped", "timed_out")
-    attempt, _ = host.eval_host.storage.load_job_record(
-        EvalAnalysisAttempt, job.job_id.rsplit(":", 1)[1], TOYHOST_SCOPE
+    attempt, _ = off_loop(
+        host.eval_host.storage.load_job_record, EvalAnalysisAttempt, job.job_id.rsplit(":", 1)[1], TOYHOST_SCOPE
     )
     assert attempt is not None and attempt.error is not None
     assert attempt.error.startswith("timed out: its 0s wall-clock budget ran out")

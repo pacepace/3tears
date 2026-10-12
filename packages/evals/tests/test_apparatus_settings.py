@@ -55,6 +55,7 @@ from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_REVIEWER_POOL, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
 from packages.evals.tests.ops_support import CALLER, launched_runs, ops_fixture
+from packages.evals.tests.off_loop import off_loop
 
 #: The toy host's one launch-settable apparatus dimension: who reviews the extractions.
 POOL = "reviewer_pool"
@@ -92,11 +93,11 @@ async def _launch(host: LaunchHost, **arguments: Any) -> list[EvalRun]:
 
 
 async def test_a_launchs_apparatus_setting_reaches_its_launcher_and_its_run():
-    host, storage = _launching()
+    host, storage = off_loop(_launching)
 
     (run,) = await _launch(host, apparatus_settings={POOL: "pool-b"})
 
-    stored = storage.load_eval_run(run.id, TOYHOST_SCOPE)
+    stored = off_loop(storage.load_eval_run, run.id, TOYHOST_SCOPE)
     assert stored is not None and stored.status == "completed"
     assert stored.apparatus_settings == {POOL: "pool-b"}
     assert stored.host_payload["toyhost"][POOL] == "pool-b", "the launcher set its rig up from the request"
@@ -105,11 +106,11 @@ async def test_a_launchs_apparatus_setting_reaches_its_launcher_and_its_run():
 
 async def test_a_launch_setting_none_records_the_kinds_standing_pool_it_was_reviewed_by():
     """The run records the rig as set up, so it says who reviewed it rather than that nobody chose."""
-    host, storage = _launching()
+    host, storage = off_loop(_launching)
 
     (run,) = await _launch(host)
 
-    stored = storage.load_eval_run(run.id, TOYHOST_SCOPE)
+    stored = off_loop(storage.load_eval_run, run.id, TOYHOST_SCOPE)
     assert stored is not None and stored.apparatus_settings == {POOL: TOYHOST_REVIEWER_POOL}
     assert stored.host_payload["toyhost"][POOL] == TOYHOST_REVIEWER_POOL
     assert host.eval_host.profile.sweepables.read_all(stored)[POOL] == stored.apparatus_settings[POOL]
@@ -121,7 +122,7 @@ async def test_two_values_of_one_template_are_two_conditions_of_one_candidate():
     ``pool-a`` is the kind's standing pool, so the launch naming it and the launch naming nothing set up
     the same rig, and are one condition — as a ``kind_spec`` stating a default and one omitting it are.
     """
-    host, _storage = _launching()
+    host, _storage = off_loop(_launching)
     assert TOYHOST_REVIEWER_POOL == "pool-a", "the fixture's standing pool is the one this test names"
 
     (pool_a,) = await _launch(host, apparatus_settings={POOL: "pool-a"})
@@ -145,7 +146,7 @@ async def test_two_values_of_one_template_are_two_conditions_of_one_candidate():
 
 
 async def test_a_launch_setting_some_of_a_kinds_settings_records_the_rest_at_their_defaults():
-    host, storage = _launching()
+    host, storage = off_loop(_launching)
     (launchable,) = host.kinds.values()
     two = replace(
         host,
@@ -155,7 +156,7 @@ async def test_a_launch_setting_some_of_a_kinds_settings_records_the_rest_at_the
     (run,) = await _launch(two, apparatus_settings={POOL: "pool-b"})
 
     assert run.apparatus_settings == {POOL: "pool-b", "grader_version": "g1"}
-    stored = storage.load_eval_run(run.id, TOYHOST_SCOPE)
+    stored = off_loop(storage.load_eval_run, run.id, TOYHOST_SCOPE)
     assert stored is not None and stored.apparatus_settings == run.apparatus_settings
 
 
@@ -190,7 +191,7 @@ def test_the_component_hashes_the_values_and_their_types():
     ids=["another-apparatus", "the-engines-apparatus", "a-lever", "a-list", "none", "not-finite"],
 )
 async def test_a_setting_the_kind_does_not_read_or_cannot_be_stored_is_refused_before_its_launcher_runs(settings, said):
-    host, storage = _launching()
+    host, storage = off_loop(_launching)
     handed: list[LaunchRequest] = []
     (launchable,) = host.kinds.values()
 
@@ -203,7 +204,7 @@ async def test_a_setting_the_kind_does_not_read_or_cannot_be_stored_is_refused_b
     with pytest.raises(ValidationFailedError, match=said):
         await _launch(watched, apparatus_settings=settings)
 
-    assert handed == [] and storage.query_eval_runs(TOYHOST_SCOPE) == []
+    assert handed == [] and off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
     assert watched.job_manager.admitted_count == 0
 
 
@@ -248,8 +249,8 @@ def test_the_settable_apparatus_is_the_hosts_own_and_none_of_the_engines():
 
 
 async def test_a_battery_sets_every_templates_runs_up_with_it_and_refuses_one_no_kind_reads():
-    host, storage = _launching()
-    storage.save_template(toyhost_template().model_copy(update={"universal": True}))
+    host, storage = off_loop(_launching)
+    off_loop(storage.save_template, toyhost_template().model_copy(update={"universal": True}))
 
     async def preflight(_subject_id: str, _models: Any) -> Any:
         async def check(_template: Any, _cassette_mode: str) -> None:
@@ -268,7 +269,7 @@ async def test_a_battery_sets_every_templates_runs_up_with_it_and_refuses_one_no
             apparatus_settings={"grader_version": "g9"},
             preflight=preflight,
         )
-    assert storage.query_eval_runs(TOYHOST_SCOPE) == []
+    assert off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
 
     run_ids = await start_universal_battery(
         host,
@@ -279,13 +280,13 @@ async def test_a_battery_sets_every_templates_runs_up_with_it_and_refuses_one_no
         preflight=preflight,
     )
     await _settled(host, run_ids)
-    assert [storage.load_eval_run(run_id, TOYHOST_SCOPE).apparatus_settings for run_id in run_ids] == [  # type: ignore[union-attr]
+    assert [off_loop(storage.load_eval_run, run_id, TOYHOST_SCOPE).apparatus_settings for run_id in run_ids] == [  # type: ignore[union-attr]
         {POOL: "pool-c"}
     ]
 
 
 async def test_run_launch_hands_the_launch_its_apparatus_settings():
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     launched = LaunchArguments(
         template_id=toyhost_template().id,
         subject_id=TOYHOST_SUBJECT.subject_id,
@@ -296,12 +297,12 @@ async def test_run_launch_hands_the_launch_its_apparatus_settings():
     started = await run_launch(fixture.host, launched, TOYHOST_SCOPE)
 
     (run_id,) = await launched_runs(fixture.host, started)
-    stored = fixture.host.eval_host.storage.load_eval_run(run_id, TOYHOST_SCOPE)
+    stored = off_loop(fixture.host.eval_host.storage.load_eval_run, run_id, TOYHOST_SCOPE)
     assert stored is not None and stored.apparatus_settings == {POOL: "pool-d"}
 
 
 async def test_the_run_launch_action_hands_the_launch_its_apparatus_settings():
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     evals = eval_catalogue().mount_all(standard_tools())[0]
     call = {
         "action": "run_launch",
@@ -317,7 +318,7 @@ async def test_the_run_launch_action_hands_the_launch_its_apparatus_settings():
 
 
 async def test_the_fastmcp_tool_hands_the_launch_its_apparatus_settings():
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     server = FastMCP("toyhost")
     mount_fastmcp(server, eval_catalogue(), host=fixture.host, caller=lambda: CALLER)
     call = {

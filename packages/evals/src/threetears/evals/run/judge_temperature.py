@@ -90,7 +90,7 @@ from threetears.evals.run.judge_repeat import (
 )
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
 from threetears.evals.run.runner import build_judge_context, judge_dims, judge_requests
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.eval_host import EvalHost

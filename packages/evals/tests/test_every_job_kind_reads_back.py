@@ -27,6 +27,7 @@ from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.testing import CompletionGuard
 from packages.evals.tests.jobs_conformance_support import CONFORMANCE_SCOPE, conformance_host
 from packages.evals.tests.ops_support import CALLER, ops_fixture
+from packages.evals.tests.off_loop import off_loop
 
 
 class _Drafted(EvalBaseModel):
@@ -47,7 +48,7 @@ async def _poll(tool: MountedTool, host: OpsHost, caller: Caller, job_id: str) -
 
 
 async def test_a_completed_job_of_every_kind_renders_through_job_poll() -> None:
-    built = conformance_host(CompletionGuard())
+    built = off_loop(conformance_host, CompletionGuard())
     host, caller = built.host, built.caller
     catalogue = eval_catalogue()
     evals, _admin = catalogue.mount_all(standard_tools())
@@ -55,7 +56,7 @@ async def test_a_completed_job_of_every_kind_renders_through_job_poll() -> None:
 
     #: Each job to settle and render, with the host and caller it is polled through.
     pending: list[tuple[OpsHost, Caller, str]] = []
-    analysis = ops_fixture()
+    analysis = off_loop(ops_fixture)
     generated = await evals.call(
         {"action": "analysis_generate", "campaign_id": analysis.campaign.id}, host=analysis.host, caller=CALLER
     )

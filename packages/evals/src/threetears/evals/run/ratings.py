@@ -36,7 +36,7 @@ from pydantic import ValidationError
 
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.schema.models import CalibrationRating, EvalResult, RaterKind
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_RESULT, SCHEMA_REMEDY
 
 log = get_logger(__name__)

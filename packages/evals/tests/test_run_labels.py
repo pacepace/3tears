@@ -22,6 +22,7 @@ from threetears.evals.ops import RunLine, RunListing
 from threetears.evals.run.run_document import normalized_run_labels
 from threetears.evals.schema import EvalRun
 from packages.evals.tests.ops_support import CALLER, OpsFixture, ops_fixture
+from packages.evals.tests.off_loop import off_loop
 
 
 #: The frozen core corpus, one directory per core version (``test_core_schema_pins.py`` pins it).
@@ -56,16 +57,16 @@ def _keys(fixture: OpsFixture, run_id: str) -> tuple[Any, ...]:
 
 class TestARunIsLabelledListedAndCleared:
     async def test_a_label_is_set_listed_by_and_cleared_and_nothing_moves(self, tools: dict[str, Any]) -> None:
-        fixture = ops_fixture(generation=False)
+        fixture = off_loop(ops_fixture, generation=False)
         run_id, other_id = fixture.campaign.run_ids[:2]
-        before = _keys(fixture, run_id)
+        before = off_loop(_keys, fixture, run_id)
 
         labelled = await _call(
             tools, fixture, {"action": "run_label", "run_id": run_id, "run_labels": [" production ", "baseline"]}
         )
         assert RunLine.model_validate(labelled.structured).labels == ["baseline", "production"]
         assert labelled.text.endswith(", labels baseline, production")
-        assert _stored(fixture, run_id).labels == ["baseline", "production"]
+        assert off_loop(_stored, fixture, run_id).labels == ["baseline", "production"]
 
         listed = await _call(tools, fixture, {"action": "runs_list", "label": "baseline"})
         listing = RunListing.model_validate(listed.structured)
@@ -75,30 +76,30 @@ class TestARunIsLabelledListedAndCleared:
         everything = RunListing.model_validate((await _call(tools, fixture, {"action": "runs_list"})).structured)
         assert {run_id, other_id} <= {line.id for line in everything.runs}, "no label lists every run"
 
-        assert _keys(fixture, run_id) == before, "a label moves no key and no fingerprint"
+        assert off_loop(_keys, fixture, run_id) == before, "a label moves no key and no fingerprint"
 
         cleared = await _call(tools, fixture, {"action": "run_label", "run_id": run_id, "run_labels": []})
         assert RunLine.model_validate(cleared.structured).labels == []
-        assert _stored(fixture, run_id).labels == []
+        assert off_loop(_stored, fixture, run_id).labels == []
         relisted = RunListing.model_validate(
             (await _call(tools, fixture, {"action": "runs_list", "label": "baseline"})).structured
         )
         assert relisted.runs == []
-        assert _keys(fixture, run_id) == before
+        assert off_loop(_keys, fixture, run_id) == before
 
     async def test_setting_the_labels_a_run_carries_writes_nothing(self, tools: dict[str, Any]) -> None:
-        fixture = ops_fixture(generation=False)
+        fixture = off_loop(ops_fixture, generation=False)
         run_id = fixture.campaign.run_ids[0]
         storage = fixture.host.eval_host.storage
         await _call(tools, fixture, {"action": "run_label", "run_id": run_id, "run_labels": ["baseline"]})
-        _, etag = storage.load_eval_run_with_etag(run_id, CALLER.scope_id)
+        _, etag = off_loop(storage.load_eval_run_with_etag, run_id, CALLER.scope_id)
         await _call(tools, fixture, {"action": "run_label", "run_id": run_id, "run_labels": ["baseline", "baseline"]})
-        assert storage.load_eval_run_with_etag(run_id, CALLER.scope_id)[1] == etag
+        assert off_loop(storage.load_eval_run_with_etag, run_id, CALLER.scope_id)[1] == etag
 
     async def test_an_archived_labelled_run_is_listed_by_its_label_only_with_the_archived(
         self, tools: dict[str, Any]
     ) -> None:
-        fixture = ops_fixture(generation=False)
+        fixture = off_loop(ops_fixture, generation=False)
         run_id = fixture.campaign.run_ids[0]
         await _call(tools, fixture, {"action": "run_label", "run_id": run_id, "run_labels": ["baseline"]})
         await _call(tools, fixture, {"action": "run_archive", "run_id": run_id, "archived": True})
@@ -108,7 +109,7 @@ class TestARunIsLabelledListedAndCleared:
         assert [line.id for line in RunListing.model_validate(shown.structured).runs] == [run_id]
 
     async def test_an_unknown_run_is_refused_as_not_found(self, tools: dict[str, Any]) -> None:
-        fixture = ops_fixture(generation=False)
+        fixture = off_loop(ops_fixture, generation=False)
         outcome = await tools["evals"].call(
             {"action": "run_label", "run_id": "no-such-run", "run_labels": ["baseline"]},
             host=fixture.host,

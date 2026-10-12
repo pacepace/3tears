@@ -75,7 +75,7 @@ from threetears.evals.schema.models import EvalTestCase, utc_now_iso
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
 from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
 from threetears.evals.kernel.provider import describe_failure, log_provider_failure, traceback_is_safe
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import (
     FIND_ANALYSIS,
     FIND_CAMPAIGN,

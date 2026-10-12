@@ -77,7 +77,7 @@ from threetears.evals.kernel.scoring import (
     pass_hat_k_at,
 )
 from threetears.evals.kernel.status_filter import StatusFilterError, normalize_status_filter
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_RUN
 
 if TYPE_CHECKING:

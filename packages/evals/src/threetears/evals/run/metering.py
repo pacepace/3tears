@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING
 from threetears.evals.schema.external_spend import ExternalSpend
 from threetears.evals.kernel.provider import sum_optional_tokens
 from threetears.evals.run import ceilings
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 if TYPE_CHECKING:
     from threetears.evals.schema.models import MeteredCallOrigin

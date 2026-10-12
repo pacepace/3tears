@@ -53,7 +53,7 @@ from typing import TYPE_CHECKING, TypeIs
 from threetears.evals.analysis.viz.intent import INTERVAL_ROLES, LENGTH_ROLES, MEASURED_ROLES
 from threetears.evals.kernel.host.style import SERIES_SLOTS, VALIDATED_SLOTS
 from threetears.evals.analysis.viz.quantities import table_spellings
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 if TYPE_CHECKING:
     from threetears.evals.analysis.viz.intent import ChartIntent

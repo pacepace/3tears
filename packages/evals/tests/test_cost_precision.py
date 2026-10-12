@@ -27,6 +27,7 @@ from threetears.evals.kernel.usage_capture import blended_cost, production_repli
 from threetears.evals.quick import Answer, compare
 from threetears.evals.ops import dollars_text
 from threetears.evals.run import list_results
+from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "cost-precision-tests"
 
@@ -93,7 +94,7 @@ async def test_cheap_spend_survives_the_result_the_run_summary_and_the_bundle() 
     summary = comparison.arms["cheap"]
 
     # Each result: the row and the total derived from it carry the price exactly.
-    results = list_results(comparison.host.storage, summary.run_id, SCOPE)
+    results = off_loop(list_results, comparison.host.storage, summary.run_id, SCOPE)
     assert len(results) == 3
     for result in results:
         (row,) = result.usage
@@ -104,7 +105,7 @@ async def test_cheap_spend_survives_the_result_the_run_summary_and_the_bundle() 
     assert "candidate spend: $0.0000370 over 3 call(s)" in summary.render()  # shown, not rounded to $0
 
     # The bundle: the run's total, the cell's mean, and both after a JSON round trip.
-    bundle = inspect_campaign_bundle(comparison.host, comparison.campaign_id, SCOPE).bundle
+    bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, SCOPE).bundle
     (run_summary,) = [s for s in bundle.run_summaries if s.run_id == summary.run_id]
     assert run_summary.cost_usd == THREE
     assert run_summary.prod_cost_usd == THREE
@@ -117,7 +118,7 @@ async def test_cheap_spend_survives_the_result_the_run_summary_and_the_bundle() 
     assert [s["cost_usd"] for s in reread["run_summaries"] if s["run_id"] == summary.run_id] == [THREE]
 
     # Full precision still fingerprints deterministically: the same evidence assembles to the same bytes.
-    again = inspect_campaign_bundle(comparison.host, comparison.campaign_id, SCOPE).bundle
+    again = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, SCOPE).bundle
     assert again.fingerprint() == bundle.fingerprint()
 
 

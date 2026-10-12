@@ -26,6 +26,7 @@ from packages.evals.tests.fixtures.toyhost.kind import TOY_SCRIPTS, ScriptedExtr
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
 from packages.evals.tests.ops_support import launched_runs
+from packages.evals.tests.off_loop import off_loop
 
 #: The kind's own deadline in these tests, and how long the slow extractor takes over each cell.
 KIND_DEADLINE_S = 0.05
@@ -60,7 +61,7 @@ async def _launch(host: LaunchHost, storage: EvalStorage, **arguments: Any) -> E
     async with asyncio.timeout(20):
         while host.job_manager.is_active(run.id):
             await asyncio.sleep(0.01)
-    stored = storage.load_eval_run(run.id, TOYHOST_SCOPE)
+    stored = off_loop(storage.load_eval_run, run.id, TOYHOST_SCOPE)
     assert stored is not None
     return stored
 
@@ -70,33 +71,33 @@ def _terminations(storage: EvalStorage, run: EvalRun) -> set[str]:
 
 
 async def test_a_launch_deadline_above_the_kinds_lets_a_slow_cell_finish_and_is_recorded():
-    host, storage = _launching(max_cell_timeout_s=5.0)
+    host, storage = off_loop(_launching, max_cell_timeout_s=5.0)
 
     short = await _launch(host, storage)
-    assert _terminations(storage, short) == {"cell_timeout"}, "the kind's deadline cuts every slow cell"
+    assert off_loop(_terminations, storage, short) == {"cell_timeout"}, "the kind's deadline cuts every slow cell"
     assert (short.cell_timeout_s, short.cell_timeout_s_origin) == (KIND_DEADLINE_S, "kind")
 
     longer = await _launch(host, storage, cell_timeout_s=2.0)
-    assert _terminations(storage, longer) == {"completed"}, "the launch's deadline lets each cell finish"
+    assert off_loop(_terminations, storage, longer) == {"completed"}, "the launch's deadline lets each cell finish"
     assert (longer.cell_timeout_s, longer.cell_timeout_s_origin) == (2.0, "launch")
 
 
 async def test_a_launch_without_a_deadline_on_a_kind_with_none_records_the_engine_default():
-    host, storage = _launching(kind_deadline_s=None)
+    host, storage = off_loop(_launching, kind_deadline_s=None)
     run = await _launch(host, storage)
     assert (run.cell_timeout_s, run.cell_timeout_s_origin) == (DEFAULT_CELL_TIMEOUT_S, "default")
 
 
 async def test_a_deadline_above_the_hosts_ceiling_is_refused_before_anything_is_built():
-    host, storage = _launching(max_cell_timeout_s=5.0)
+    host, storage = off_loop(_launching, max_cell_timeout_s=5.0)
 
     with pytest.raises(ValidationFailedError, match=r"cell_timeout_s=10 is above the host's ceiling of 5s"):
         await _launch(host, storage, cell_timeout_s=10.0)
-    assert storage.query_eval_runs(TOYHOST_SCOPE) == []
+    assert off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
 
 
 async def test_a_host_declaring_no_ceiling_lets_a_launch_only_lower_its_kinds_deadline():
-    host, storage = _launching(max_cell_timeout_s=None)
+    host, storage = off_loop(_launching, max_cell_timeout_s=None)
 
     with pytest.raises(ValidationFailedError, match=r"above the kind's ceiling of 0.05s"):
         await _launch(host, storage, cell_timeout_s=1.0)
@@ -106,13 +107,13 @@ async def test_a_host_declaring_no_ceiling_lets_a_launch_only_lower_its_kinds_de
 
 @pytest.mark.parametrize("bad", [0.0, -1.0, float("inf"), float("nan")])
 async def test_a_deadline_no_cell_could_run_under_is_refused(bad: float):
-    host, storage = _launching(max_cell_timeout_s=5.0)
+    host, storage = off_loop(_launching, max_cell_timeout_s=5.0)
     with pytest.raises(ValidationFailedError, match="cell_timeout_s must be a finite number"):
         await _launch(host, storage, cell_timeout_s=bad)
 
 
 async def test_the_operation_and_its_estimate_carry_the_deadline():
-    host, storage = _launching(max_cell_timeout_s=5.0)
+    host, storage = off_loop(_launching, max_cell_timeout_s=5.0)
     ops = OpsHost(launch=host)
     arguments = LaunchArguments(
         template_id=toyhost_template().id,
@@ -128,7 +129,7 @@ async def test_the_operation_and_its_estimate_carry_the_deadline():
     started = await run_launch(ops, arguments.model_copy(update={"cell_timeout_s": 2.0}), TOYHOST_SCOPE)
     async with asyncio.timeout(20):
         (run_id,) = await launched_runs(ops, started)
-    stored = storage.load_eval_run(run_id, TOYHOST_SCOPE)
+    stored = off_loop(storage.load_eval_run, run_id, TOYHOST_SCOPE)
     assert stored is not None and (stored.cell_timeout_s, stored.cell_timeout_s_origin) == (2.0, "launch")
 
 

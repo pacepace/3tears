@@ -35,7 +35,7 @@ from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign_writes import serialized_campaign_write
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_RUN, FIND_TEMPLATE, SCHEMA_REMEDY
 
 if TYPE_CHECKING:

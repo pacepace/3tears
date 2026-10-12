@@ -22,6 +22,7 @@ from threetears.evals.run.executor import DEFAULT_MAX_CONCURRENT_CELLS
 from packages.evals.tests.factories import minimal_declaration
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
+from packages.evals.tests.off_loop import off_loop
 
 _PROFILE = toyhost_profile()
 _LATENCY_BAR = BarOverride(measure_id="total_ms", threshold=2000.0, direction="lower_is_better")
@@ -129,8 +130,8 @@ async def test_compare_declaring_latency_runs_every_arm_serially_and_its_campaig
     assert clock.peak == 1, "an arm or a case of a latency comparison ran beside another"
     storage = comparison.host.storage
     for summary in comparison.arms.values():
-        run = storage.load_eval_run(summary.run_id, "latency-compare")
+        run = off_loop(storage.load_eval_run, summary.run_id, "latency-compare")
         assert run is not None and (run.measure_latency, run.cell_concurrency) == (True, 1)
-    campaign = storage.load_campaign(comparison.campaign_id, "latency-compare")
+    campaign = off_loop(storage.load_campaign, comparison.campaign_id, "latency-compare")
     assert campaign is not None and campaign.declared_design is not None
     assert campaign.declared_design.measure_latency is True

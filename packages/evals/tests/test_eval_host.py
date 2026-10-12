@@ -41,6 +41,7 @@ from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template, toyhost_test_cases
 from threetears.evals.storage import InMemoryDocumentStore
+from packages.evals.tests.off_loop import off_loop
 
 
 def _launching(**settings: object) -> tuple[LaunchHost, EvalStorage]:
@@ -69,7 +70,7 @@ async def test_a_launch_runs_through_the_host_it_was_handed():
     placements and identity: the three things ``LaunchContext`` used to carry beside the profile,
     now read off the one value.
     """
-    host, storage = _launching()
+    host, storage = off_loop(_launching)
     template = toyhost_template()
 
     runs = await start_run(
@@ -84,9 +85,9 @@ async def test_a_launch_runs_through_the_host_it_was_handed():
 
     assert [run.candidate_model for run in runs] == list(RUN_MODELS)
     for run in runs:
-        stored = storage.load_eval_run(run.id, run.scope_id)
+        stored = off_loop(storage.load_eval_run, run.id, run.scope_id)
         assert stored is not None and stored.status == "completed", stored
-        assert len(storage.query_eval_results_by_run(run.id, run.scope_id)) == len(run.test_case_ids) * 2
+        assert len(off_loop(storage.query_eval_results_by_run, run.id, run.scope_id)) == len(run.test_case_ids) * 2
         assert run.world_placements, "the host's placement must be stamped before the identity hashes it"
         assert run.context_key is not None
         assert run.variant_levers is not None, "the toy profile wires a lever reader"
@@ -94,7 +95,7 @@ async def test_a_launch_runs_through_the_host_it_was_handed():
 
 async def test_an_oversized_launch_is_refused_naming_the_hosts_setting():
     """The refusal names the knob an operator turns, in the host's own vocabulary."""
-    host, _ = _launching(max_launch_arms=1)
+    host, _ = off_loop(_launching, max_launch_arms=1)
 
     with pytest.raises(ValidationFailedError, match=r"toyhost\.launch\.arms"):
         await start_run(
@@ -108,7 +109,7 @@ async def test_an_oversized_launch_is_refused_naming_the_hosts_setting():
 
 async def test_admission_is_refused_against_the_hosts_ceiling_naming_its_setting():
     """Admission reads the host's ceiling from the same settings, and names the host's knob."""
-    host, _ = _launching(max_admitted_runs=1)
+    host, _ = off_loop(_launching, max_admitted_runs=1)
 
     with pytest.raises(AdmissionRefusedError) as refused:
         await start_run(
@@ -124,7 +125,7 @@ async def test_admission_is_refused_against_the_hosts_ceiling_naming_its_setting
 
 async def test_a_kind_the_host_registers_no_launcher_for_is_refused():
     """The launch registry is the host's: a host with no entry for the template's kind launches nothing."""
-    host, _ = _launching()
+    host, _ = off_loop(_launching)
     bare = replace(host, kinds={})
 
     with pytest.raises(ValidationFailedError, match="has no launcher"):
@@ -143,8 +144,8 @@ async def test_the_battery_reads_its_templates_in_the_scope_it_is_named():
     Both reads it makes — the listing and each launch's template load — name the scope; a scope-free
     listing is the read the port no longer has.
     """
-    host, storage = _launching()
-    storage.save_template(toyhost_template().model_copy(update={"universal": True}))
+    host, storage = off_loop(_launching)
+    off_loop(storage.save_template, toyhost_template().model_copy(update={"universal": True}))
 
     async def preflight(_subject_id, _models):
         async def check(_template, _cassette_mode):
@@ -326,7 +327,7 @@ async def test_the_launch_stamps_the_requests_cassette_mode_and_corpus_with_no_l
     recorded ``off`` and ran a requested replay live — and paid for it. The corpus a replay serves
     is the launch's to name: the id of the capture run whose recording it replays.
     """
-    host, storage, _handed = _launching_with(_wired)
+    host, storage, _handed = off_loop(_launching_with, _wired)
     (capture,) = await _launch_one(host, cassette_mode="capture")
     await _settled(host, [capture.id])
 
@@ -336,7 +337,7 @@ async def test_the_launch_stamps_the_requests_cassette_mode_and_corpus_with_no_l
     assert capture.cassette_mode == "capture" and capture.cassette_corpus_id is None
     assert replay.cassette_mode == "replay" and replay.cassette_corpus_id == capture.id
     assert replay.scope_id == TOYHOST_SCOPE
-    stored = storage.load_eval_run(replay.id, TOYHOST_SCOPE)
+    stored = off_loop(storage.load_eval_run, replay.id, TOYHOST_SCOPE)
     assert stored is not None and (stored.cassette_mode, stored.cassette_corpus_id) == ("replay", capture.id)
 
 
@@ -350,25 +351,25 @@ async def test_the_launch_stamps_the_requests_cassette_mode_and_corpus_with_no_l
     ids=["replay-without-corpus", "corpus-without-replay", "corpus-run-missing"],
 )
 async def test_a_replay_corpus_the_launch_cannot_serve_is_refused_before_anything_runs(arguments, said):
-    host, storage, handed = _launching_with(_wired)
+    host, storage, handed = off_loop(_launching_with, _wired)
 
     with pytest.raises(ValidationFailedError, match=said):
         await _launch_one(host, **arguments)
 
-    assert handed == [] and storage.query_eval_runs(TOYHOST_SCOPE) == []
+    assert handed == [] and off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
     assert host.job_manager.admitted_count == 0
 
 
 async def test_a_replay_corpus_must_be_a_capture_of_this_template_in_this_scope():
     """A run in another scope, a run that captured nothing, and another template's capture are all refused."""
-    host, storage, handed = _launching_with(_wired)
+    host, storage, handed = off_loop(_launching_with, _wired)
     (capture,) = await _launch_one(host, cassette_mode="capture")
     (live,) = await _launch_one(host)
     await _settled(host, [capture.id, live.id])
     elsewhere = capture.model_copy(update={"id": "capture-elsewhere", "scope_id": "another-scope"})
-    storage.save_eval_run(elsewhere)
+    off_loop(storage.save_eval_run, elsewhere)
     other_template = capture.model_copy(update={"id": "capture-of-another", "template_id": "another-template"})
-    storage.save_eval_run(other_template)
+    off_loop(storage.save_eval_run, other_template)
     launched_so_far = len(handed)
 
     for corpus, said in [
@@ -383,8 +384,8 @@ async def test_a_replay_corpus_must_be_a_capture_of_this_template_in_this_scope(
 
 
 async def test_a_battery_cannot_replay_one_corpus_across_its_templates():
-    host, storage = _launching()
-    storage.save_template(toyhost_template().model_copy(update={"universal": True}))
+    host, storage = off_loop(_launching)
+    off_loop(storage.save_template, toyhost_template().model_copy(update={"universal": True}))
 
     async def preflight(_subject_id, _models):
         async def check(_template, _cassette_mode):
@@ -404,17 +405,17 @@ async def test_a_battery_cannot_replay_one_corpus_across_its_templates():
             preflight=preflight,
         )
 
-    assert storage.query_eval_runs(TOYHOST_SCOPE) == []
+    assert off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
 
 
 async def test_a_launch_argument_the_kind_cannot_honour_is_refused_before_its_launcher_runs():
     """Refused at the dispatch, so a launcher that would have ignored it never gets the chance."""
-    host, storage, handed = _launching_with(_wired, unhonoured=frozenset({"cassette_mode"}))
+    host, storage, handed = off_loop(_launching_with, _wired, unhonoured=frozenset({"cassette_mode"}))
 
     with pytest.raises(ValidationFailedError, match="cannot honour cassette_mode='capture'"):
         await _launch_one(host, cassette_mode="capture")
 
-    assert handed == [] and storage.query_eval_runs(TOYHOST_SCOPE) == []
+    assert handed == [] and off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
     assert host.job_manager.admitted_count == 0
 
 
@@ -429,7 +430,7 @@ def test_a_kind_cannot_decline_an_argument_that_is_not_a_launch_argument():
 
 async def test_the_reference_launcher_captures_the_subject_the_launch_names():
     """The toy launcher used to stamp one constant subject whatever the launch asked for."""
-    host, storage = _launching()
+    host, storage = off_loop(_launching)
 
     with pytest.raises(NotFoundError, match="another-config"):
         await start_run(
@@ -440,12 +441,12 @@ async def test_the_reference_launcher_captures_the_subject_the_launch_names():
             models=[RUN_MODELS[0]],
         )
 
-    assert storage.query_eval_runs(TOYHOST_SCOPE) == []
+    assert off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
 
 
 async def test_an_arm_naming_no_model_is_refused_for_a_kind_with_no_default():
     """The toy kind's plan refuses it, before the arm is priced or its launcher runs."""
-    host, _storage = _launching()
+    host, _storage = off_loop(_launching)
 
     with pytest.raises(ValidationFailedError, match="no default candidate model; name one"):
         await _launch_one(host, models=[])
@@ -453,13 +454,13 @@ async def test_an_arm_naming_no_model_is_refused_for_a_kind_with_no_default():
 
 async def test_an_unplanned_arm_naming_no_model_is_refused_at_the_tail_for_a_kind_with_no_default():
     """A kind that plans nothing reaches its launcher under a cap the launch named, and the tail refuses it there."""
-    host, storage, handed = _launching_with(_wired, unhonoured=frozenset({"n_variations"}))
+    host, storage, handed = off_loop(_launching_with, _wired, unhonoured=frozenset({"n_variations"}))
 
     with pytest.raises(ValidationFailedError, match="no default candidate model; name one"):
         await _launch_one(host, models=[], max_cost_usd=1.0)
 
     assert len(handed) == 1, "the launcher ran; the tail refused"
-    assert storage.query_eval_runs(TOYHOST_SCOPE) == []
+    assert off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
 
 
 _OTHER_SCOPE_CASE = EvalTestCase(scope_id="another-scope", template_id=toyhost_template().id)
@@ -495,12 +496,12 @@ _OTHER_TEMPLATE_CASE = EvalTestCase(scope_id=TOYHOST_SCOPE, template_id="another
 )
 async def test_a_wiring_that_contradicts_its_request_is_refused_and_creates_no_run(overrides, arguments, said):
     """Where the request and the wiring speak to one fact they must agree, or the run records one thing and runs another."""
-    host, storage, _handed = _launching_with(lambda request: _wired(request, **overrides))
+    host, storage, _handed = off_loop(_launching_with, lambda request: _wired(request, **overrides))
 
     with pytest.raises(ValueError, match=said):
         await _launch_one(host, **arguments)
 
-    assert storage.query_eval_runs(TOYHOST_SCOPE) == []
+    assert off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
     assert host.job_manager.admitted_count == 0
 
 
@@ -510,13 +511,13 @@ async def test_a_battery_refuses_a_template_its_launch_would_refuse_before_launc
     A battery whose second template names a kind this host cannot launch used to launch the first
     and then be refused — the partial battery it promises never to start.
     """
-    host, storage = _launching()
+    host, storage = off_loop(_launching)
     first = toyhost_template().model_copy(update={"universal": True})
     unlaunchable = toyhost_template().model_copy(
         update={"id": "unlaunchable", "universal": True, "candidate_kind": "a-kind-with-no-launcher"}
     )
-    storage.save_template(first)
-    storage.save_template(unlaunchable)
+    off_loop(storage.save_template, first)
+    off_loop(storage.save_template, unlaunchable)
 
     async def preflight(_subject_id, _models):
         async def check(_template, _cassette_mode):
@@ -529,4 +530,4 @@ async def test_a_battery_refuses_a_template_its_launch_would_refuse_before_launc
             host, TOYHOST_SUBJECT.subject_id, scope_id=TOYHOST_SCOPE, models=[RUN_MODELS[0]], preflight=preflight
         )
 
-    assert storage.query_eval_runs(TOYHOST_SCOPE) == []
+    assert off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []

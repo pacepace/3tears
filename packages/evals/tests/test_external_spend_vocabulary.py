@@ -87,10 +87,7 @@ class TestPricingComesFromASuppliedTable:
             m
             for m in imported
             if m.split(".")[0] not in sys.stdlib_module_names
-            and not any(
-                m == root_ or m.startswith(root_ + ".")
-                for root_ in ("threetears.evals", "pydantic", "threetears.observe")
-            )
+            and not any(m == root_ or m.startswith(root_ + ".") for root_ in ("threetears.evals", "pydantic"))
         )
         assert not foreign, (
             f"usage_capture must not reach outside the engine for a provider's cost table -- found: {foreign}"

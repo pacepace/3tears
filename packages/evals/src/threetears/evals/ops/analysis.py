@@ -52,7 +52,7 @@ from threetears.evals.ops.host import AnalysisGeneration, OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, analysis_job_id, generation_key
 from threetears.evals.run.curation import delete_analysis, delete_insight, set_analysis_archived, set_campaign_archived
 from threetears.evals.schema.models import utc_now_iso
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_INSIGHT
 
 log = get_logger(__name__)

@@ -71,7 +71,7 @@ from threetears.evals.schema.job_lease import (
     LeaseField,
     LostField,
 )
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 

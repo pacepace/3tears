@@ -61,6 +61,7 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.storage import InMemoryDocumentStore
+from packages.evals.tests.off_loop import off_loop
 
 #: Repeats per case in the launch-driven width tests: the toy template has three cases, so twelve cells.
 _K = 4
@@ -126,16 +127,17 @@ async def _launch(host: LaunchHost) -> EvalRun:
 async def test_a_run_executes_at_the_narrower_of_the_hosts_ceiling_and_its_kinds_declaration(
     host_width: int, kind_width: int | None, executed: int
 ) -> None:
-    host, storage, client = _launching(host_width=host_width, kind_width=kind_width)
+    host, storage, client = off_loop(_launching, host_width=host_width, kind_width=kind_width)
 
     run = await _launch(host)
 
-    stored = storage.load_eval_run(run.id, TOYHOST_SCOPE)
+    stored = off_loop(storage.load_eval_run, run.id, TOYHOST_SCOPE)
     assert stored is not None and stored.status == "completed"
     assert stored.cell_concurrency == executed, "the run records the width it executed at"
     assert client.peak == executed
     modes = {
-        result.covariates.get("execution_mode") for result in storage.query_eval_results_by_run(run.id, TOYHOST_SCOPE)
+        result.covariates.get("execution_mode")
+        for result in off_loop(storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
     }
     assert modes == ({"serial"} if executed == 1 else {"concurrent"})
 
@@ -202,7 +204,7 @@ async def test_the_runner_refuses_a_kind_declaring_less_than_the_run_executes_at
         kind = ToyExtractorKind(
             client=client, world=world, goal_checks=tuple(template.goal_state_checks), max_concurrent_cells=declared
         )
-    run, cases = _toy_run(host, kind, template=template)
+    run, cases = off_loop(_toy_run, host, kind, template=template)
 
     with pytest.raises(ValueError, match="declares max_concurrent_cells=1, and this run executes 2 cells at once"):
         await execute_run(
@@ -228,7 +230,7 @@ async def test_a_declaration_no_run_can_execute_at_is_refused_naming_the_kind() 
         goal_checks=tuple(template.goal_state_checks),
         max_concurrent_cells=0,
     )
-    run, cases = _toy_run(host, kind, template=template)
+    run, cases = off_loop(_toy_run, host, kind, template=template)
 
     with pytest.raises(TypeError, match="ToyExtractorKind declares max_concurrent_cells=0"):
         await execute_run(
@@ -321,7 +323,7 @@ async def _capped_run(
     assert world is not None
     template = _no_goal_checks()
     kind = kind_for(world)
-    run, cases = _toy_run(host, kind, template=template, k=k)
+    run, cases = off_loop(_toy_run, host, kind, template=template, k=k)
     if n_cases is not None:
         cases = cases[:n_cases]
         run = run.model_copy(update={"test_case_ids": [case.id for case in cases]})
@@ -340,7 +342,7 @@ async def _capped_run(
         )
     except BudgetStoppedError as error:
         stopped = error
-    return host, run, host.storage.query_eval_results_by_run(run.id, run.scope_id), stopped, cap
+    return host, run, off_loop(host.storage.query_eval_results_by_run, run.id, run.scope_id), stopped, cap
 
 
 async def test_a_tiny_cap_stops_a_two_cell_run_before_the_second_cells_paid_work() -> None:
@@ -361,7 +363,7 @@ async def test_a_tiny_cap_stops_a_two_cell_run_before_the_second_cells_paid_work
     assert stopped.breach.refused_call_usd == pytest.approx(1.0)
     assert "a call priced at up to $1.0000" in str(stopped)
     assert cap.accumulated_usd <= 1.5, "nothing was spent past the cap"
-    refused = [result for result in results if _output(host, run, result) == [{"paid_calls": 0}]]
+    refused = [result for result in results if off_loop(_output, host, run, result) == [{"paid_calls": 0}]]
     assert len(refused) == 1
     assert classify_result(refused[0]) is ResultOutcome.INFRA_EXCLUDE, (
         "a cell the cap cut short is excluded, not failed"
@@ -515,7 +517,7 @@ async def test_the_cap_signal_out_of_a_candidate_turn_ends_the_cell_budget_stopp
     assert result.stop_cause is ConversationStopCause.BUDGET_STOPPED, "the cap's stop reason, never candidate_error"
     assert result.candidate_error is None, "the cap doing its job is no failure of the candidate's"
     assert classify_result(result) is ResultOutcome.INFRA_EXCLUDE
-    assert _output(host, run, result) == [{"answered": ["a1", "a2"]}], "the rounds already answered are kept"
+    assert off_loop(_output, host, run, result) == [{"answered": ["a1", "a2"]}], "the rounds already answered are kept"
     assert stopped is not None, "the run stops budget_stopped once the cell is saved"
     assert cap.accumulated_usd == pytest.approx(0.023) and cap.accumulated_usd <= 0.025
 
@@ -564,9 +566,9 @@ async def _judged_run(judge: _PricedJudge, *, cap_usd: float) -> tuple[list[Eval
     kind = ToyExtractorKind(
         client=ScriptedExtractionClient(), world=world, judged=True, goal_checks=tuple(template.goal_state_checks)
     )
-    run, cases = _toy_run(host, kind, template=template)
+    run, cases = off_loop(_toy_run, host, kind, template=template)
     cases = cases[:1]
-    run_judge = build_judge_service(host, template, TOY_JUDGE_MODEL, judged_artifact=JudgedArtifact.DOCUMENT)
+    run_judge = off_loop(build_judge_service, host, template, TOY_JUDGE_MODEL, judged_artifact=JudgedArtifact.DOCUMENT)
     run = run.model_copy(
         update={
             "test_case_ids": [cases[0].id],
@@ -577,7 +579,7 @@ async def _judged_run(judge: _PricedJudge, *, cap_usd: float) -> tuple[list[Eval
             "judge_temperature": DEFAULT_JUDGE_TEMPERATURE,
         }
     )
-    host.storage.save_eval_run(run)
+    off_loop(host.storage.save_eval_run, run)
     cap = EvalRunCostCap(run.id, cap_usd, enabled=True)
     stopped: BudgetStoppedError | None = None
     try:
@@ -593,7 +595,7 @@ async def _judged_run(judge: _PricedJudge, *, cap_usd: float) -> tuple[list[Eval
         )
     except BudgetStoppedError as error:
         stopped = error
-    return host.storage.query_eval_results_by_run(run.id, run.scope_id), stopped
+    return off_loop(host.storage.query_eval_results_by_run, run.id, run.scope_id), stopped
 
 
 async def test_a_judge_call_the_cap_has_no_room_for_is_not_sent_and_its_dim_names_the_cap() -> None:

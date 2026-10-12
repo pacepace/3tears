@@ -1,13 +1,13 @@
 """Typed operations over a host: what every surface — a CLI, an MCP tool, a REST route — calls.
 
-Each operation takes the host and the scope and returns a typed value, so the surfaces above read one
-shape rather than each re-typing an untyped ``dict``. Long or model-calling work follows **one job contract**:
-an operation that starts it (:func:`run_launch`, :func:`sweep_launch`, :func:`analysis_generate`,
-:func:`judge_second`, :func:`judge_drift_check`, :func:`judge_temperature`, a host's :func:`start_action_job`)
-prices and admits it in the call and returns a :class:`JobsStarted` naming one job per piece of work, and
-:func:`job_poll` / :func:`job_cancel` take any job id one returned; :func:`await_job` awaits them in the
-foreground instead. A job is the name of the durable record its work writes, so a job id stays answerable across
-a restart.
+Each operation takes the host and the scope and returns a typed value, so the surfaces above read one shape rather
+than each re-typing an untyped ``dict``. Long or model-calling work follows **one job contract**: an operation that
+starts it (:func:`run_launch`, :func:`sweep_launch`, :func:`analysis_generate`, :func:`judge_second`,
+:func:`judge_drift_check`, :func:`judge_temperature`, a host's :func:`start_action_job`, or :func:`start_paid_call`
+for one paid model call) prices and admits it in the call and returns a :class:`JobsStarted` naming one job per
+piece of work, and :func:`job_poll` / :func:`job_cancel` take any job id one returned; :func:`await_job` awaits them
+in the foreground instead. A job is the name of the durable record its work writes, so a job id stays answerable
+across a restart.
 
 The operations are named as the actions over them are (``noun_verb``), so a name in the action
 catalogue (:mod:`threetears.evals.actions`) is the operation it calls.
@@ -94,6 +94,7 @@ from threetears.evals.ops.jobs import (
     launch_progress,
     second_judge_job_id,
     start_action_job,
+    start_paid_call,
     start_job,
     ANALYSIS_JOB_PREFIX,
     RUN_JOB_PREFIX,
@@ -238,6 +239,7 @@ __all__ = [
     "launch_progress",
     "second_judge_job_id",
     "start_action_job",
+    "start_paid_call",
     "start_job",
     "SWEEP_JOB_PREFIX",
     "SweepArguments",

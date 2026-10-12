@@ -30,6 +30,7 @@ from threetears.evals.kernel.host import EvalHost
 from threetears.evals.quick import Comparison, Guardrail, callable_host, compare
 from threetears.evals.run import list_runs
 from threetears.evals.storage import SqliteDocumentStore
+from packages.evals.tests.off_loop import off_loop
 
 #: Enough agreeing cases for a 0.1 margin to be shown on a pass rate, and a guardrail held within it.
 CASES = [{"n": index} for index in range(48)]
@@ -163,8 +164,8 @@ async def test_runs_launched_under_different_declarations_read_no_margin(tmp_pat
 
     with SqliteDocumentStore(path) as store:
         host = callable_host([correct, no_leak], arms=True, margins={"correct": 0.1}, store=store)
-        _rewrite_runs(host, moved)
-        bundle = _bundle(host, comparison)
+        off_loop(_rewrite_runs, host, moved)
+        bundle = off_loop(_bundle, host, comparison)
     assert [text for text in bundle.launch_declarations if "different declarations of correct" in text]
     assert bundle.measure_catalog["correct"].materiality_threshold is None
 
@@ -179,7 +180,7 @@ async def test_runs_stored_before_declarations_were_recorded_read_on_the_reader(
 
     with SqliteDocumentStore(path) as store:
         host = callable_host([correct, no_leak], arms=True, margins={"correct": 0.3}, store=store)
-        _rewrite_runs(host, unrecorded)
-        bundle = _bundle(host, comparison)
+        off_loop(_rewrite_runs, host, unrecorded)
+        bundle = off_loop(_bundle, host, comparison)
     assert bundle.launch_declarations == []
     assert bundle.measure_catalog["correct"].materiality_threshold == 0.3

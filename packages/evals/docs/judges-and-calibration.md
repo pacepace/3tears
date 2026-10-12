@@ -149,7 +149,8 @@ case.
   another scale, you get a new criterion, and no earlier label claims it. The rubric axis is not part of the
   criterion. A reserved transcript or outcome axis is its id and its 1-5 scale.
 
-To find the labels of an output you hold, build its key and read the store:
+To find the labels of an output you hold, build its key and read the store. The store reads on this page are
+synchronous: from async code, run each off the event loop, as `await run_blocking(host.blocking_executor, fn, ...)`.
 
 ```python
 from threetears.evals.schema import label_key_of

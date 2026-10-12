@@ -18,6 +18,21 @@ store forwarding writes to a backend must pass through, never drop.
     def test_my_store_conforms(case: StoreConformanceCase, tmp_path) -> None:
         case.run(MyDocumentStore(tmp_path / "evals.sqlite"))
 
+**An async adapter is proved through its bridge.** A case calls the store synchronously, so an
+:class:`~threetears.evals.schema.AsyncDocumentStore` runs on a loop of its own thread, and the case calls
+it through :func:`~threetears.evals.storage.bridge_async_store`, exactly as the engine does::
+
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        store = asyncio.run_coroutine_threadsafe(open_my_async_store(), loop).result()
+        case.run(bridge_async_store(store, loop))
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        loop.close()
+
 **Every case is mandatory.** There is no capability flag and no skip: a store that cannot do one of
 these is a store the engine cannot run on — in particular, a store without conditional writes turns
 every read-modify-write into a blind overwrite. Each case is handed its own store, writes only under

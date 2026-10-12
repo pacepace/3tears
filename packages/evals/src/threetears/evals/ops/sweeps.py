@@ -54,7 +54,7 @@ from threetears.evals.run.jobs import JOB_TIMEOUT_CAP_S
 from threetears.evals.run.launch import quote_launch, start_run
 from threetears.evals.kernel.job_leases import SWEEP_JOB, require_held, write_held_record
 from threetears.evals.run.lifecycle import get_run
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 

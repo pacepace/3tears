@@ -4,7 +4,7 @@ Identity and the keys it derives, scoring and the metric catalogue, the goal-che
 world session, usage capture, the typed repositories over the document store (:class:`EvalStorage`),
 the campaign and analysis documents with the design and decision surface that validate them, and
 the candidate kind with its cassette seams. It imports nothing but itself, the schema, pydantic and
-:mod:`threetears.observe` (for logging), which is what lets ``run``, ``analysis`` and ``gen`` all
+the standard library, which is what lets ``run``, ``analysis`` and ``gen`` all
 depend on it without depending on each other. The host contract a consuming product declares is the
 sibling root :mod:`threetears.evals.kernel.host`.
 
@@ -336,6 +336,7 @@ from threetears.evals.kernel.storage import (
     RunRecordStore,
     RunStore,
     save_document,
+    CaseRecordings,
     NonTerminalRunScan,
 )
 from threetears.evals.kernel.surface import (
@@ -564,6 +565,7 @@ __all__ = [
     "materiality",
     "run_margin_refusal",
     "NextStep",
+    "CaseRecordings",
     "NonTerminalRunScan",
     "NotFoundError",
     "AdmittedCall",

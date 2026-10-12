@@ -7,8 +7,8 @@ embedded in them, plus the three ports a host builds and hands in — the docume
 (:class:`TraceSink`). The goal-check grammar is here too, because a stored template validates its
 expressions through it.
 
-It imports only itself, pydantic and :mod:`threetears.observe` (for logging), and nothing of the
-engine's behaviour, which lives in :mod:`threetears.evals.kernel`. That is what keeps it small and
+It imports only itself, pydantic and the standard library (its loggers are :mod:`~threetears.evals.schema.logs`),
+and nothing of the engine's behaviour, which lives in :mod:`threetears.evals.kernel`. That is what keeps it small and
 slow-moving: an adapter author or a reader in another language finds what they bind to here, and a
 change here is a change to what is stored.
 
@@ -144,7 +144,17 @@ from threetears.evals.schema.models import (
 from threetears.evals.schema.out_of_run_spend import OutOfRunOutcome, OutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
 from threetears.evals.schema.prose import PROSE_SCHEMA_KEY
 from threetears.evals.schema.schema_nesting import NestedSchema, nested_schemas
-from threetears.evals.schema.store_port import DocumentStore, StoreClock, StoreConflict, keep_fields, omit_paths
+from threetears.evals.schema.store_port import (
+    AsyncDocumentStore,
+    AsyncStoreClock,
+    DocumentStore,
+    StoreCalledOnEventLoop,
+    StoreClock,
+    StoreConflict,
+    keep_fields,
+    omit_paths,
+    refuse_on_event_loop,
+)
 from threetears.evals.schema.job_lease import (
     JOB_FAULT_MAX_CHARS,
     JOB_FAULTS_MAX,
@@ -231,8 +241,10 @@ __all__ = [
     "ActorPolicy",
     "ApparatusProvenance",
     "AsyncDelivery",
+    "AsyncDocumentStore",
     "AsyncDeliveryStatus",
     "AsyncExternalSpend",
+    "AsyncStoreClock",
     "BoundCompletionClient",
     "CalibrationRating",
     "CallLedger",
@@ -323,6 +335,7 @@ __all__ = [
     "SimulatorLLM",
     "SimulatorPurpose",
     "StopReason",
+    "StoreCalledOnEventLoop",
     "StoreConflict",
     "UsageRole",
     "VariationAxis",
@@ -343,6 +356,7 @@ __all__ = [
     "keep_fields",
     "omit_paths",
     "referenced_actions",
+    "refuse_on_event_loop",
     "utc_now_iso",
     "CellIdentity",
     "CellTrace",

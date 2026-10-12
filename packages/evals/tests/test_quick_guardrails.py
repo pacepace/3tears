@@ -39,6 +39,7 @@ from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.analysis.summary import CaseResult
 from threetears.evals.quick import Comparison, Guardrail, Judge, callable_host, compare, run_eval
 from packages.evals.tests.factories import make_eval_result
+from packages.evals.tests.off_loop import off_loop
 
 #: Fifty cases: an arm alike with the control on every one is shown within 0.1 of it (the bounded test's interval
 #: at n=50 is ±0.081; at 40 it is ±0.1002, which does not), and twenty leaks in fifty are shown worse by more.
@@ -171,7 +172,7 @@ class TestAScorerGuardrail:
 
     async def test_a_second_control_reads_the_same_guardrail(self) -> None:
         comparison = await _compare()
-        again = comparison.against("same")
+        again = await comparison.against("same")
         assert {row["arm"]: row["outcome"] for row in again.guardrails()}["leaky"] == "breached"
 
     async def test_lower_is_better_runs_the_other_way(self) -> None:
@@ -228,7 +229,7 @@ class TestAScorerGuardrail:
 class TestABreachedArmIsNeverRecommended:
     async def test_the_analysis_writer_cannot_adopt_it_whatever_it_gained(self) -> None:
         comparison = await _compare()
-        bundle = inspect_campaign_bundle(comparison.host, comparison.campaign_id, comparison.scope_id).bundle
+        bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, comparison.scope_id).bundle
         adopting = _adopting_writer()
         with pytest.raises(SoundnessRefusal, match="breached the guardrail no_leak"):
             await generate_analysis(
@@ -450,11 +451,13 @@ class TestAJudgedGuardrail:
         assert outcomes == {"same": ("answer.private", "held", "0.1"), "leaky": ("answer.private", "breached", "0.1")}
         assert {row["measure_id"] for row in comparison.contrasts()} == {"correct", "answer.clear"}
 
-        design = get_campaign(comparison.host.storage, comparison.campaign_id, comparison.scope_id).declared_design
+        design = off_loop(
+            get_campaign, comparison.host.storage, comparison.campaign_id, comparison.scope_id
+        ).declared_design
         assert design is not None and design.guardrail_margins == [
             GuardrailMargin(dimension="answer.private", margin=0.1)
         ]
-        again = comparison.against("same")
+        again = await comparison.against("same")
         assert {row["arm"]: row["outcome"] for row in again.guardrails()}["leaky"] == "breached"
 
     async def test_with_no_margin_declared_it_is_held_at_zero_change_and_never_reads_held_when_alike(self) -> None:

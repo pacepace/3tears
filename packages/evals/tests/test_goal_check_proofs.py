@@ -43,6 +43,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_
 from packages.evals.tests.fixtures.toyhost.launch import toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import EVERY_FIELD_EMITTED, RUN_MODELS, toyhost_template
+from packages.evals.tests.off_loop import off_loop
 
 
 def _uncontrolled() -> Any:
@@ -87,13 +88,13 @@ class TestALaunchFreezesWhetherEachCheckIsProven:
 
     async def test_the_launched_run_records_them_and_its_summary_marks_the_unproven(self) -> None:
         storage = EvalStorage(InMemoryDocumentStore())
-        storage.save_template(_uncontrolled())
+        off_loop(storage.save_template, _uncontrolled())
         host, _client = toyhost_launch_host(storage=storage)
         (run,) = await _launch(host)
-        stored = storage.load_eval_run(run.id, TOYHOST_SCOPE)
+        stored = off_loop(storage.load_eval_run, run.id, TOYHOST_SCOPE)
         assert stored is not None
         assert stored.goal_check_proofs == dict.fromkeys(toyhost_template().goal_state_checks, "unproven")
-        summary = summarize_run(host.eval_host, run.id, TOYHOST_SCOPE)
+        summary = off_loop(summarize_run, host.eval_host, run.id, TOYHOST_SCOPE)
         lines = [line for line in summary.render().splitlines() if "goal check" in line]
         assert lines and all(
             "— unproven: no control shows it tells acting from doing nothing" in line for line in lines
@@ -305,10 +306,10 @@ class TestAProofRecordedUnderAnEarlierRuleNeedsReProof:
 
     async def test_a_launch_stamps_the_current_rules(self) -> None:
         storage = EvalStorage(InMemoryDocumentStore())
-        storage.save_template(toyhost_template())
+        off_loop(storage.save_template, toyhost_template())
         host, _client = toyhost_launch_host(storage=storage)
         (run,) = await _launch(host)
-        stored = storage.load_eval_run(run.id, TOYHOST_SCOPE)
+        stored = off_loop(storage.load_eval_run, run.id, TOYHOST_SCOPE)
         assert stored is not None
         assert stored.goal_check_proof_rules == GOAL_CHECK_PROOF_RULES
         assert set((goal_check_proofs_as_read(stored) or {}).values()) == {"proven"}
@@ -332,21 +333,21 @@ class TestACheckTheCurrentGrammarRefusesIsExcludedAndNamed:
         template = _uncontrolled()
         template = template.model_copy(update={"goal_state_checks": [*template.goal_state_checks, _REFUSED]})
         storage = EvalStorage(InMemoryDocumentStore())
-        storage.save_template(template)
+        off_loop(storage.save_template, template)
         host, _client = toyhost_launch_host(storage=storage)
 
         (run,) = await _launch(host)
 
-        stored = storage.load_eval_run(run.id, TOYHOST_SCOPE)
+        stored = off_loop(storage.load_eval_run, run.id, TOYHOST_SCOPE)
         assert stored is not None and stored.refused_goal_checks is not None
         assert list(stored.refused_goal_checks) == [_REFUSED]
         assert "intersects() over variation.p" in stored.refused_goal_checks[_REFUSED]
-        results = storage.query_eval_results_by_run(run.id, TOYHOST_SCOPE)
+        results = off_loop(storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
         assert results and all(result.infra_error is None for result in results), "no cell is a rig fault"
         graded = {outcome.expression for result in results for outcome in result.goal_state_outcomes}
         assert _REFUSED not in graded and set(toyhost_template().goal_state_checks) <= graded
 
-        summary = summarize_run(host.eval_host, run.id, TOYHOST_SCOPE)
+        summary = off_loop(summarize_run, host.eval_host, run.id, TOYHOST_SCOPE)
         (refused,) = [goal for goal in summary.goal_checks if goal.refused is not None]
         assert (refused.check, refused.excluded) == (_REFUSED, len(results))
         assert "refused under the current grammar" in refused.line()

@@ -133,6 +133,38 @@ def test_my_store_conforms(case: StoreConformanceCase, tmp_path: Path) -> None:
     case.run(MyDocumentStore(tmp_path / "evals.sqlite"))
 ```
 
+**The store is called off the event loop.** The port is synchronous and the engine is async: every store call
+the engine makes runs on the host's `blocking_executor`, never on the loop, and `EvalStorage` refuses a call made
+on a thread running an event loop with `StoreCalledOnEventLoop` (in `threetears.evals.schema`). Your own async
+code follows the same rule. A synchronous function that takes the storage or the host — most operations in
+`threetears.evals.ops` (`runs_list`, `report_read`, `scope_history`), and the reads in `threetears.evals.run` and
+`threetears.evals.analysis` — blocks: from async code, offload it with `await run_blocking(host.blocking_executor,
+fn, ...)`, as the action catalogue does for every synchronous operation. An async operation (`run_launch`,
+`job_poll`) offloads its own.
+
+**If your database driver is async**, write your adapter against it as an `AsyncDocumentStore` (in
+`threetears.evals.schema`: the same port, every method a coroutine; `AsyncStoreClock` for its clock) and hand the
+engine `bridge_async_store(store, loop)` (in `threetears.evals.storage`), built with the loop the store's
+connections belong to — in an async app, the running loop at startup. Each call the engine makes runs as a task on
+that loop, in the calling context (a context variable your row-level security reads arrives set), while the
+executor thread waits. Keep `blocking_executor` a thread pool. Prove the adapter through the bridge, with its loop
+on a thread of its own, since a conformance case calls the store synchronously:
+
+```python
+@pytest.mark.parametrize("case", STORE_CONFORMANCE_CASES, ids=lambda case: case.name)
+def test_my_async_store_conforms(case: StoreConformanceCase) -> None:
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        store = asyncio.run_coroutine_threadsafe(open_my_async_store(), loop).result()
+        case.run(bridge_async_store(store, loop))
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        loop.close()
+```
+
 The engine reads and writes through `EvalStorage`, built over that one store. Its consumers name the
 area they touch rather than the whole of it — `RunStore`, `ResultStore`, `RunRecordStore`,
 `DefinitionStore`, `CassetteStore` and `JobStore` (in `threetears.evals.kernel`) — so a function
@@ -459,18 +491,26 @@ makes no completion request.** It prices and refuses in the call, then starts th
 `start_action_job`, which writes an `EvalActionJob` record carrying the job's lease and, once the work returns,
 its typed result as JSON — what `job_poll` returns. Declare it `long_running=True` with result `JobsStarted`. It
 needs no `render`: long work reads back as the jobs it started, with `render_jobs_started` (exported from
-`threetears.evals.actions`), which is the default, and which an action returning anything else may not use:
+`threetears.evals.actions`), which is the default, and which an action returning anything else may not use.
+
+An action whose work is **one paid model call** takes `start_paid_call` (in `threetears.evals.ops`), which keeps
+the whole rule for it: it builds the role's client, admits the call against your out-of-run budget in the action's
+call (refusing, with nothing started or spent, a call the cap cannot pay for), starts `make` as the job, and
+releases the client on every path that does not reach `make`. Work of any other shape builds the same steps on
+`start_action_job`:
 
 ```python
 async def _propose(host: OpsHost, caller: Caller, params: ProposeParams) -> JobsStarted:
     budget = my_budget(host, caller.scope_id)
-    client = my_proposer_client(host)
     call = plan_draft(system_prompt=..., subject_feed=..., catalog_feed=...)
-    [admitted] = budget.admit(client, "proposer", [call])   # price and refuse here, spending nothing
-    async def draft() -> RubricProposal:                     # the job's work: the admitted call, made
-        proposed = await propose_draft(client, admitted, budget=budget, axis=params.axis, subject_id=...)
+
+    async def draft(client: BoundCompletionClient, admitted: AdmittedCall) -> RubricProposal:
+        async with client:                                    # the job's work owns the client from here
+            proposed = await propose_draft(client, admitted, budget=budget, axis=params.axis, subject_id=...)
         return proposed.proposal
-    return await start_action_job(host, caller.scope_id, action="rubric_propose", run=draft, label=params.topic)
+
+    return await start_paid_call(host, caller.scope_id, action="rubric_propose", role="proposer", model=None,
+                                 purpose="proposer", budget=budget, call=call, make=draft, label=params.topic)
 
 async def _propose_happy_path(stage: ConformanceStage) -> Mapping[str, Any]:
     return {"topic": "tone"}                             # what reaches the work, with anything it must arrange

@@ -257,6 +257,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # become so: it is in the dependency closure of `identity.py` and the whole `analysis` tree,
     # so a host noun reaching here reaches every key and every bundle at once.
     "schema/hashing.py",
+    # The package's stdlib loggers: a logger name and a handler, nothing a host could own.
+    "schema/logs.py",
     "kernel/provider.py",
     # The completion port itself, split from how the engine reads what it returns.
     "schema/completion.py",

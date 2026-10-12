@@ -32,6 +32,7 @@ from threetears.evals.ops import (
 )
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
+from packages.evals.tests.off_loop import off_loop
 
 #: Two of five cells delivered: a run that came up short.
 SHORT = RunCompleteness(
@@ -89,8 +90,8 @@ async def _call(tool: MountedTool, fixture: OpsFixture, arguments: dict[str, Any
 
 
 async def test_the_action_returns_the_lens_answer_with_a_short_arm_disclosed(evals: MountedTool) -> None:
-    fixture = ops_fixture()
-    baseline, candidate = _two_runs(fixture, baseline=SHORT, candidate=WHOLE)
+    fixture = off_loop(ops_fixture)
+    baseline, candidate = off_loop(_two_runs, fixture, baseline=SHORT, candidate=WHOLE)
 
     outcome = await _call(
         evals, fixture, {"action": "runs_compare", "baseline_run_id": baseline, "candidate_run_id": candidate}
@@ -98,8 +99,9 @@ async def test_the_action_returns_the_lens_answer_with_a_short_arm_disclosed(eva
 
     assert not outcome.is_error, outcome.text
     compared = RunsCompared.model_validate(outcome.structured)
-    assert compared == runs_compare(fixture.host.eval_host, baseline, candidate, TOYHOST_SCOPE)
-    lens = compare_two_runs(
+    assert compared == off_loop(runs_compare, fixture.host.eval_host, baseline, candidate, TOYHOST_SCOPE)
+    lens = off_loop(
+        compare_two_runs,
         fixture.host.eval_host.storage,
         baseline,
         candidate,
@@ -127,8 +129,8 @@ def test_two_whole_runs_carry_no_completeness_sentence() -> None:
 
 
 async def test_a_run_outside_the_callers_scope_is_not_found(evals: MountedTool) -> None:
-    fixture = ops_fixture()
-    baseline, _ = _two_runs(fixture, baseline=WHOLE, candidate=WHOLE)
+    fixture = off_loop(ops_fixture)
+    baseline, _ = off_loop(_two_runs, fixture, baseline=WHOLE, candidate=WHOLE)
 
     outcome = await _call(
         evals, fixture, {"action": "runs_compare", "baseline_run_id": baseline, "candidate_run_id": "no-such-run"}
@@ -138,8 +140,8 @@ async def test_a_run_outside_the_callers_scope_is_not_found(evals: MountedTool) 
 
 
 async def test_the_bisect_action_returns_the_lens_split_with_a_short_arm_disclosed(evals: MountedTool) -> None:
-    fixture = ops_fixture()
-    baseline, candidate = _two_runs(fixture, baseline=SHORT, candidate=WHOLE)
+    fixture = off_loop(ops_fixture)
+    baseline, candidate = off_loop(_two_runs, fixture, baseline=SHORT, candidate=WHOLE)
 
     outcome = await _call(
         evals, fixture, {"action": "runs_bisect", "baseline_run_id": baseline, "candidate_run_id": candidate}
@@ -148,8 +150,8 @@ async def test_the_bisect_action_returns_the_lens_split_with_a_short_arm_disclos
     assert not outcome.is_error, outcome.text
     bisected = RunsBisected.model_validate(outcome.structured)
     host = fixture.host.eval_host
-    assert bisected == runs_bisect(host, baseline, candidate, TOYHOST_SCOPE)
-    split = bisect_runs(host.storage, baseline, candidate, TOYHOST_SCOPE, profile=host.profile)
+    assert bisected == off_loop(runs_bisect, host, baseline, candidate, TOYHOST_SCOPE)
+    split = off_loop(bisect_runs, host.storage, baseline, candidate, TOYHOST_SCOPE, profile=host.profile)
     assert (bisected.differs, bisected.same, bisected.unknown, bisected.details) == (
         split["differs"],
         split["same"],
@@ -177,8 +179,8 @@ def test_bisecting_two_whole_runs_carries_no_completeness_sentence() -> None:
 
 
 async def test_a_bisect_of_a_run_outside_the_callers_scope_is_not_found(evals: MountedTool) -> None:
-    fixture = ops_fixture()
-    baseline, _ = _two_runs(fixture, baseline=WHOLE, candidate=WHOLE)
+    fixture = off_loop(ops_fixture)
+    baseline, _ = off_loop(_two_runs, fixture, baseline=WHOLE, candidate=WHOLE)
 
     outcome = await _call(
         evals, fixture, {"action": "runs_bisect", "baseline_run_id": baseline, "candidate_run_id": "no-such-run"}

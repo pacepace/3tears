@@ -45,6 +45,7 @@ from packages.evals.tests.ops_support import (
     launched_runs,
     ops_fixture,
 )
+from packages.evals.tests.off_loop import off_loop
 
 
 def test_the_default_is_more_than_one_observation() -> None:
@@ -63,13 +64,15 @@ def evals() -> MountedTool:
 
 async def _stored_k(fixture: OpsFixture, started: JobsStarted) -> set[int]:
     storage = fixture.host.eval_host.storage
-    runs = [storage.load_eval_run(run_id, TOYHOST_SCOPE) for run_id in await launched_runs(fixture.host, started)]
+    runs = [
+        off_loop(storage.load_eval_run, run_id, TOYHOST_SCOPE) for run_id in await launched_runs(fixture.host, started)
+    ]
     assert runs and all(run is not None for run in runs)
     return {run.k_runs for run in runs if run is not None}
 
 
 async def test_ops_run_launch_stores_the_default_when_the_arguments_name_none() -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     arguments = LaunchArguments(
         template_id=toyhost_template().id, subject_id=TOYHOST_SUBJECT.subject_id, models=list(RUN_MODELS)
     )
@@ -80,7 +83,7 @@ async def test_ops_run_launch_stores_the_default_when_the_arguments_name_none() 
 
 
 async def test_the_run_launch_action_stores_the_default_when_the_call_names_none(evals: MountedTool) -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     arguments = {
         "action": "run_launch",
         "template_id": toyhost_template().id,
@@ -95,7 +98,7 @@ async def test_the_run_launch_action_stores_the_default_when_the_call_names_none
 
 
 async def test_ops_launch_estimate_prices_the_default_when_the_call_names_none() -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     arguments = LaunchArguments(
         template_id=toyhost_template().id, subject_id=TOYHOST_SUBJECT.subject_id, models=list(RUN_MODELS)
     )
@@ -110,7 +113,7 @@ async def test_ops_launch_estimate_prices_the_default_when_the_call_names_none()
 
 
 async def test_the_launch_estimate_action_prices_the_default_when_the_call_names_none(evals: MountedTool) -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     arguments = {
         "action": "launch_estimate",
         "template_id": toyhost_template().id,

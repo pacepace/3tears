@@ -28,6 +28,7 @@ from threetears.evals.quick import (
     run_eval,
 )
 from threetears.evals.run import list_runs, list_templates
+from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "compare-factors"
 
@@ -71,9 +72,9 @@ async def test_a_lever_beside_the_model_is_frozen_on_the_run_and_splits_the_vari
     two = await run_eval(
         CASES, careful, expected=_expected, scope_id=SCOPE, host=host, k=1, model="m", levers={"prompt": "v2"}
     )
-    runs = {run.id: run for run in list_runs(host, SCOPE)}
+    runs = {run.id: run for run in off_loop(list_runs, host, SCOPE)}
     assert runs[one.run_id].overlays == {"prompt": "v1"} and runs[two.run_id].overlays == {"prompt": "v2"}
-    keys = [variant_key_of_run(host.storage.query_eval_results_by_run(s.run_id, SCOPE)) for s in (one, two)]
+    keys = [variant_key_of_run(off_loop(host.storage.query_eval_results_by_run, s.run_id, SCOPE)) for s in (one, two)]
     assert keys[0] != keys[1], "same model, same cases, different prompt: two variants"
     assert host.profile.sweepables.get("callable.prompt") is not None
 
@@ -148,13 +149,13 @@ async def test_each_cell_runs_as_one_arm_at_its_model_and_its_lever() -> None:
     assert comparison.factors == ("model", "prompt")
     assert comparison.name == "model × prompt"
     assert [summary.candidate_model for summary in comparison.arms.values()] == ["a", "a", "b", "b"]
-    runs = {run.id: run for run in list_runs(comparison.host, SCOPE)}
+    runs = {run.id: run for run in off_loop(list_runs, comparison.host, SCOPE)}
     assert [runs[s.run_id].overlays for s in comparison.arms.values()] == [{"prompt": p} for p in ("v1", "v2") * 2]
 
 
 async def test_the_campaign_declares_one_axis_per_factor_at_the_levels_the_runs_carry() -> None:
     comparison = await _factorial()
-    campaign = comparison.host.storage.load_campaign(comparison.campaign_id, SCOPE)
+    campaign = off_loop(comparison.host.storage.load_campaign, comparison.campaign_id, SCOPE)
     assert campaign is not None and campaign.declared_design is not None
     design = campaign.declared_design
     model_axis, prompt_axis = design.axes
@@ -163,7 +164,7 @@ async def test_the_campaign_declares_one_axis_per_factor_at_the_levels_the_runs_
         SweepableValue.of(level, display=level).content_hash for level in ("v1", "v2")
     ]
     assert design.control == variant_key_of_run(
-        comparison.host.storage.query_eval_results_by_run(comparison.arms[("a", "v1")].run_id, SCOPE)
+        off_loop(comparison.host.storage.query_eval_results_by_run, comparison.arms[("a", "v1")].run_id, SCOPE)
     )
     assert design.intended_repetitions == 2
 
@@ -180,9 +181,9 @@ async def test_every_arm_is_named_by_both_coordinates_and_tested_against_the_con
 
 async def test_against_reads_the_same_runs_against_another_control_and_runs_nothing() -> None:
     comparison = await _factorial()
-    n_runs = len(list_runs(comparison.host, SCOPE))
-    on_b = comparison.against(("b", "v1"))
-    assert len(list_runs(comparison.host, SCOPE)) == n_runs
+    n_runs = len(off_loop(list_runs, comparison.host, SCOPE))
+    on_b = await comparison.against(("b", "v1"))
+    assert len(off_loop(list_runs, comparison.host, SCOPE)) == n_runs
     assert on_b.campaign_id != comparison.campaign_id
     assert on_b.arms == comparison.arms and on_b.control == ("b", "v1")
     assert on_b.name == "model × prompt, against model=b, prompt=v1"
@@ -191,7 +192,7 @@ async def test_against_reads_the_same_runs_against_another_control_and_runs_noth
     assert rows["callable.prompt=v2, model=b"]["verdict"] == "not separated from the control"
     assert rows["callable.prompt=v1, model=a"]["delta"] == pytest.approx(-0.5)
     with pytest.raises(ValueError, match="names no arm"):
-        comparison.against(("c", "v1"))
+        await comparison.against(("c", "v1"))
 
 
 async def test_a_one_factor_comparison_is_read_against_another_control_too() -> None:
@@ -199,7 +200,7 @@ async def test_a_one_factor_comparison_is_read_against_another_control_too() -> 
         CASES, {"hasty": hasty, "careful": careful}, expected=_expected, control="hasty", scope_id=SCOPE, k=2
     )
     assert comparison.factors == ("candidate",)
-    flipped = comparison.against("careful")
+    flipped = await comparison.against("careful")
     (row,) = flipped.contrasts("accuracy")
     assert (row["contrast"], row["control"], row["verdict"]) == (
         "candidate=hasty",
@@ -235,7 +236,7 @@ async def test_an_unusable_factorial_is_refused_before_anything_runs(overrides: 
     host = callable_host(levers=("prompt",))
     with pytest.raises(ValueError, match=said):
         await _factorial(host=host, **overrides)
-    assert list_templates(host.storage, SCOPE) == []
+    assert off_loop(list_templates, host.storage, SCOPE) == []
 
 
 async def test_arms_keyed_as_models_with_factors_model_keep_their_names_as_the_runs_models() -> None:

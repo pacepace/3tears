@@ -21,6 +21,7 @@ from threetears.evals.ops import OutOfRunSpendReport, out_of_run_spend_text, sco
 from threetears.evals.quick import run_cli
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE
 from packages.evals.tests.ops_support import CALLER, ops_fixture
+from packages.evals.tests.off_loop import off_loop
 
 _GROUP = "launch-1"
 
@@ -108,7 +109,7 @@ def test_an_empty_ledger_says_so():
 
 
 async def test_the_action_reads_the_ledger_through_the_lens():
-    fixture, _rows = _ledgered()
+    fixture, _rows = off_loop(_ledgered)
     evals = eval_catalogue().mount_all(standard_tools())[0]
 
     outcome = await evals.call(

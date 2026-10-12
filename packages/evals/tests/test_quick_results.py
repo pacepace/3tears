@@ -17,6 +17,7 @@ import pytest
 
 from threetears.evals.quick import UNUSABLE_ANSWER, callable_host, compare, run_eval
 from threetears.evals.analysis import summarize_run
+from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "quick-results-tests"
 
@@ -122,7 +123,7 @@ async def test_case_ids_that_cannot_name_one_case_each_are_refused_before_anythi
     host = callable_host([even])
     with pytest.raises(ValueError, match=said.replace("(", r"\(").replace("{", r"\{")):
         await run_eval(cases, hasty_n, [even], host=host, scope_id=SCOPE, k=1)
-    assert host.storage.query_templates(SCOPE) == []
+    assert off_loop(host.storage.query_templates, SCOPE) == []
 
 
 async def test_an_expected_label_refusal_names_the_case_by_its_id() -> None:
@@ -133,7 +134,7 @@ async def test_an_expected_label_refusal_names_the_case_by_its_id() -> None:
 async def test_a_summary_read_back_without_its_cases_says_so_rather_than_reading_as_no_misses() -> None:
     host = callable_host()
     summary = await run_eval(CASES, hasty, expected=_queue, host=host, scope_id=SCOPE, k=1)
-    read_back = summarize_run(host, summary.run_id, SCOPE)
+    read_back = off_loop(summarize_run, host, summary.run_id, SCOPE)
     assert read_back.case_results is None
     with pytest.raises(ValueError, match="carries no per-case results"):
         read_back.misses()
@@ -180,4 +181,4 @@ async def test_a_sync_candidate_handed_tools_is_refused_once_before_anything_run
     host = callable_host()
     with pytest.raises(ValueError, match="sync_agent is not an async function, and a candidate handed tools must be"):
         await run_eval(CASES, sync_agent, expected=_queue, tools={"lookup": lookup}, host=host, scope_id=SCOPE)
-    assert host.storage.query_templates(SCOPE) == []
+    assert off_loop(host.storage.query_templates, SCOPE) == []

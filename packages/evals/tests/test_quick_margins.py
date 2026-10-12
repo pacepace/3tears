@@ -29,6 +29,7 @@ import pytest
 from threetears.evals.analysis import DisclosureBlock, TableBlock, inspect_campaign_bundle
 from threetears.evals.kernel import RUN_MARGIN_MEASURES, run_margin_refusal
 from threetears.evals.quick import Answer, Comparison, callable_host, compare
+from packages.evals.tests.off_loop import off_loop
 
 #: Enough cases for two arms that agree on every one to be shown within 0.1 of each other.
 CASES = [{"n": index} for index in range(48)]
@@ -94,7 +95,7 @@ class TestADeclaredMargin:
 
     async def test_a_second_control_reads_the_same_margin(self) -> None:
         comparison = await _compare(margins={"correct": 0.1}, cheaper_misses=0)
-        assert _row(comparison.against("cheaper"), "correct")["verdict"].startswith("equivalent to the control")
+        assert _row(await comparison.against("cheaper"), "correct")["verdict"].startswith("equivalent to the control")
 
 
 class TestHowManyCasesEquivalenceTakes:
@@ -222,9 +223,9 @@ class TestAMarginOnAccuracy:
         comparison = await _classify({"accuracy": 0.1}, scope_id="acc-stored")
         storage = comparison.host.storage
         for summary in comparison.arms.values():
-            (run,) = storage.load_eval_runs([summary.run_id], comparison.scope_id, elide_payload=frozenset())
+            (run,) = off_loop(storage.load_eval_runs, [summary.run_id], comparison.scope_id, elide_payload=frozenset())
             assert run.declared_margins == {"accuracy": 0.1}
-        bundle = inspect_campaign_bundle(comparison.host, comparison.campaign_id, comparison.scope_id).bundle
+        bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, comparison.scope_id).bundle
         assert bundle.run_margins == {"accuracy": 0.1} and bundle.run_margins_withheld is None
         (tested,) = bundle.multiple_comparisons.families[0].comparisons
         assert (tested.equivalence_margin, tested.margin_source, tested.verdict) == (0.1, "run", "equivalent")
@@ -233,9 +234,9 @@ class TestAMarginOnAccuracy:
         comparison = await _classify({"accuracy": 0.1}, scope_id="acc-disagree")
         storage = comparison.host.storage
         cheaper = comparison.arms["cheaper"].run_id
-        (run,) = storage.load_eval_runs([cheaper], comparison.scope_id, elide_payload=frozenset())
-        storage.save_eval_run(run.model_copy(update={"declared_margins": {"accuracy": 0.2}}))
-        bundle = inspect_campaign_bundle(comparison.host, comparison.campaign_id, comparison.scope_id).bundle
+        (run,) = off_loop(storage.load_eval_runs, [cheaper], comparison.scope_id, elide_payload=frozenset())
+        off_loop(storage.save_eval_run, run.model_copy(update={"declared_margins": {"accuracy": 0.2}}))
+        bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, comparison.scope_id).bundle
         assert bundle.run_margins == {}
         assert bundle.run_margins_withheld is not None and "do not all declare one margin on accuracy" in (
             bundle.run_margins_withheld
@@ -246,8 +247,8 @@ class TestAMarginOnAccuracy:
     async def test_a_run_stored_before_run_margins_declares_none(self) -> None:
         comparison = await _classify(None, scope_id="acc-none")
         storage = comparison.host.storage
-        (run,) = storage.load_eval_runs(
-            [comparison.arms["current"].run_id], comparison.scope_id, elide_payload=frozenset()
+        (run,) = off_loop(
+            storage.load_eval_runs, [comparison.arms["current"].run_id], comparison.scope_id, elide_payload=frozenset()
         )
         stored = run.model_dump(mode="json")
         del stored["declared_margins"]

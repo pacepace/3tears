@@ -69,6 +69,10 @@ from threetears.evals.kernel.job_leases import (
 )
 from threetears.evals.run.lifecycle import require_cancellable
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
+from threetears.evals.kernel.host.eval_host import CompletionRole
+from threetears.evals.schema.completion import BoundCompletionClient
+from threetears.evals.schema.out_of_run_spend import OutOfRunPurpose
 from threetears.evals.analysis.agreement import InterJudgeAgreement, inter_judge_agreement
 from threetears.evals.analysis.judge_drift import JudgeDrift, judge_drift
 from threetears.evals.analysis.judge_temperature import read_judge_temperatures
@@ -745,6 +749,69 @@ async def start_action_job(
     """
     work = action_job_work(scope_id, action=action, run=run, label=label, budget_s=budget_s, discard=discard)
     return await start_job(host, AdmittedJob(work=work, kind="action", target_id=action, label=label))
+
+
+async def start_paid_call[R: BaseModel](
+    host: OpsHost,
+    scope_id: str,
+    *,
+    action: str,
+    role: CompletionRole,
+    model: str | None,
+    purpose: OutOfRunPurpose,
+    budget: OutOfRunBudget,
+    call: PlannedCall,
+    make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]],
+    label: str,
+    budget_s: float = DEFAULT_ACTION_JOB_BUDGET_S,
+) -> JobsStarted:
+    """Start a host action's one paid model call: admitted against its cap in the call, made in a job.
+
+    The shape every spend action takes, for a host action that makes one model call and returns a value (a
+    drafted rubric, drafted cases): the role's client is built, ``call`` is priced and admitted on it against
+    ``budget`` **here**, so a call the cap cannot pay for is refused with no job started and nothing spent; then
+    ``make`` runs **as a job** (:func:`start_action_job`), since no transport call waits on a model. The client
+    is the work's from the moment it is built: released here if admission refuses, by the job's ``discard`` if
+    the job never starts, and by ``make`` otherwise.
+
+    Args:
+        host: The host the action runs on; its client factory builds the client.
+        scope_id: The caller's scope, where the job's record lives.
+        action: The action's name, as the job records it.
+        role: The completion role the client is built for.
+        model: The model named, or ``None`` for the role's default as the host resolves it.
+        purpose: What the call is for, as the out-of-run ledger records it.
+        budget: The out-of-run budget that admits the call and ledgers it once made.
+        call: The call, as planned.
+        make: Makes the admitted call on the client (through ``budget``) and reads its result; owns the client's
+            release from the moment it is called.
+        label: What the job is, for a reader of ``job_poll``.
+        budget_s: The job's wall-clock ceiling.
+
+    Returns:
+        The started job; ``job_poll`` returns ``make``'s result once it completes.
+
+    Raises:
+        ValueError: The host supplies no completion clients, or ``budget_s`` is not positive.
+        ValidationFailedError: The cap cannot pay for the call, or an enforced cap cannot price it; nothing was made.
+        StorageError: The job's record could not be written; the client was released and nothing was made.
+    """
+    eval_host = host.eval_host
+    client = eval_host.completion_clients(label)(role, model)
+    try:
+        # Pricing reads the store's ledger of what the cap has already spent, so it runs off the loop.
+        (admitted,) = await run_blocking(eval_host.blocking_executor, budget.admit, client, purpose, [call])
+    # prawduct:ok-broad-except — not handled: a client that admitted nothing is released, and what refused is re-raised
+    except BaseException:
+        await client.aclose()
+        raise
+
+    async def made() -> R:
+        return await make(client, admitted)
+
+    return await start_action_job(
+        host, scope_id, action=action, run=made, label=label, budget_s=budget_s, discard=client.aclose
+    )
 
 
 def _record_id(job_id: str) -> str:

@@ -15,16 +15,14 @@ matrix judges an edge only once its target is placed, so an import of a module s
 and it is still a module that arrives broken wherever the set is consumed alone.
 
 **Installability.** Every member imports in an interpreter whose importable world is the standard
-library, pydantic (with pydantic's own dependencies), ``threetears.observe`` (which has none), and
-the staged package -- with this repository off ``sys.path`` entirely. That is the claim an AST walk
-is structurally unable to check: a walk sees the imports a file *names*, never whether the thing
-they name can be loaded. A member whose module-level code reads host configuration, or whose
+library, pydantic (with pydantic's own dependencies) and the staged package -- with this repository
+off ``sys.path`` entirely. That is the claim an AST walk is structurally unable to check: a walk sees
+the imports a file *names*, never whether the thing they name can be loaded. A member whose module-level code reads host configuration, or whose
 pydantic model resolves an annotation only a host defines, names nothing and still fails to import.
 
 **Nothing is downloaded.** The isolated environment is built from what is already present:
 pydantic's requirement closure is resolved from installed distribution metadata and symlinked into
-one directory, ``threetears.observe`` is copied from its workspace source tree, the members are
-copied into another, and the probe runs with ``-S`` (no site-packages) and ``-P`` (no implicit
+one directory, the members are copied into another, and the probe runs with ``-S`` (no site-packages) and ``-P`` (no implicit
 ``cwd``) so those directories plus the standard library are the whole of ``sys.path``.
 """
 
@@ -49,10 +47,6 @@ from packages.evals.tests.package_placement import modules_placed_in
 
 #: The package's ``src``: the directory holding the ``threetears`` namespace. Member paths are relative to it.
 SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
-
-#: ``threetears.observe``'s source, in the workspace: the one family dependency the schema and kernel take.
-OBSERVE_SOURCE = Path(__file__).resolve().parents[2] / "observe" / "src" / "threetears" / "observe"
-
 
 #: The sets probed standalone: the schema alone, and the schema with the kernel.
 PACKAGE_SETS: tuple[tuple[str, ...], ...] = (("schema",), ("schema", "kernel"))
@@ -261,11 +255,11 @@ def _pydantic_distributions() -> list[metadata.Distribution]:
 
 
 def _stage_the_package(stage: Path, packages: tuple[str, ...]) -> None:
-    """Copy a set of packages, and the one family package they depend on, into ``stage``.
+    """Copy a set of packages into ``stage``.
 
     The members keep their own import paths under the ``threetears`` namespace, which carries no
-    ``__init__.py`` of its own, exactly as an installed family package does not. ``threetears.observe``
-    is copied whole from its workspace source: it declares no dependencies, so it brings nothing else.
+    ``__init__.py`` of its own, exactly as an installed family package does not. No other 3tears package
+    is staged: the engine depends on none.
 
     Args:
         stage: Directory to build the importable tree in.
@@ -275,7 +269,6 @@ def _stage_the_package(stage: Path, packages: tuple[str, ...]) -> None:
         destination = stage / rel
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(SOURCE_ROOT / rel, destination)
-    shutil.copytree(OBSERVE_SOURCE, stage / "threetears" / "observe", ignore=shutil.ignore_patterns("__pycache__"))
 
 
 def _stage_pydantic(deps: Path) -> None:
@@ -326,7 +319,7 @@ print(json.dumps({"failed": failed, "outside": outside, "path": sys.path}))
 def test_every_member_imports_with_nothing_but_its_declared_dependencies(
     tmp_path: Path, packages: tuple[str, ...]
 ) -> None:
-    """The set loads in an interpreter that has the standard library, pydantic and observe.
+    """The set loads in an interpreter that has the standard library and pydantic.
 
     The claim the AST canaries cannot reach. They see the imports a file *names*; this sees whether
     the named thing loads when nothing else is there. Those come apart in both directions:

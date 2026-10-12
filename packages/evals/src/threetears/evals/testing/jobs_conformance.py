@@ -47,6 +47,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.actions import Action, ActionCatalogue, Caller, ConformanceSample, ConformanceStage
 from threetears.evals.kernel import EvalServiceError, running_job
 from threetears.evals.kernel.host import CompletionClients
@@ -218,6 +219,7 @@ class JobsConformanceHost:
 
 
 #: Builds a fresh host for one case, its completion clients wrapped by the guard it is handed.
+#: Builds a fresh host for one case. Called off the event loop, on a worker thread, since a build seeds its store.
 BuildConformanceHost = Callable[[CompletionGuard], JobsConformanceHost]
 
 
@@ -261,7 +263,8 @@ def _call_case(action: Action, call_return_timeout_s: float) -> JobsConformanceC
 
     async def check(build: BuildConformanceHost) -> None:
         guard = CompletionGuard(call_return_timeout_s=call_return_timeout_s)
-        built = build(guard)
+        # A host's build seeds its store, and a store is never called on the loop.
+        built = await run_blocking(None, build, guard)
         try:
             params = action.params.model_validate(dict(action.example))
             guard.call_started()
@@ -290,7 +293,8 @@ def _happy_path_case(action: Action, timeout_s: float, call_return_timeout_s: fl
     async def check(build: BuildConformanceHost) -> None:
         assert action.happy_path is not None  # a spend action declares one, or is refused when declared
         guard = CompletionGuard(call_return_timeout_s=call_return_timeout_s)
-        built = build(guard)
+        # A host's build seeds its store, and a store is never called on the loop.
+        built = await run_blocking(None, build, guard)
         host, caller = built.host, built.caller
         try:
             arranged = await action.happy_path(ConformanceStage(host=host, caller=caller, sample=built.sample))

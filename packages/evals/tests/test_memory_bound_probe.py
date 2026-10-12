@@ -41,6 +41,7 @@ from packages.evals.tests.fixtures.toyhost.kind import (
     ToyExtractorKind,
 )
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_run, toyhost_template, toyhost_test_cases
+from packages.evals.tests.off_loop import off_loop
 
 pytestmark = pytest.mark.memory_probe
 
@@ -114,9 +115,9 @@ async def _peak_bytes(tmp_path: Path, *, padding_bytes: int) -> int:
     run = toyhost_run(model=RUN_MODELS[0], template=template, kind=kind, world=world).model_copy(
         update={"k_runs": K_RUNS, "test_case_ids": [case.id for case in cases]}
     )
-    host.storage.save_eval_run(run)
+    off_loop(host.storage.save_eval_run, run)
     for case in cases:
-        host.storage.save_test_case(case)
+        off_loop(host.storage.save_test_case, case)
     # At the launch's default width, so the probe holds the run as a launched run executes it: several cells at once.
     options = RunnerOptions(
         candidate_kinds={TOY_EXTRACTOR_KIND: lambda _cell: kind}, max_concurrent_cells=DEFAULT_MAX_CONCURRENT_CELLS
@@ -134,7 +135,7 @@ async def _peak_bytes(tmp_path: Path, *, padding_bytes: int) -> int:
     finally:
         tracemalloc.stop()
     assert len(summaries) == N_CELLS and all(summary.persisted for summary in summaries)
-    stored = host.storage.query_eval_results_by_run(run.id, run.scope_id)
+    stored = off_loop(host.storage.query_eval_results_by_run, run.id, run.scope_id)
     assert len(stored) == N_CELLS, "every cell's record reached the store, so its trace volume was produced"
     return peak - baseline
 

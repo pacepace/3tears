@@ -28,18 +28,19 @@ from threetears.evals.kernel.host import CompletionClients, HostProfile
 from threetears.evals.schema import TraceSink
 from threetears.evals.schema import WorldPlacement
 from threetears.evals.run import (
-    UnknownSubject,
     ArmPlan,
-    CellExecutor,
     ArmPrice,
     ArmQuote,
+    CellExecutor,
     KindWiring,
-    LaunchableKind,
     LaunchHost,
     LaunchRequest,
     LaunchSettings,
+    LaunchableKind,
+    UnknownSubject,
     launch_run,
     require_candidate_model,
+    run_blocking,
 )
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_COST_CEILING_USD,
@@ -179,7 +180,7 @@ def toyhost_launch_host(
         # The launch's case set when it names one, else every invoice. A set's cases are already stored.
         cases = request.cases_or(toyhost_test_cases(request.template))
         for case in cases:
-            eval_host.storage.save_test_case(case)
+            await run_blocking(eval_host.blocking_executor, eval_host.storage.save_test_case, case)
         # What the template states for the kind, as the dispatch validated it: the fields this run
         # grades. The run records the same validated spec, so what it graded and what it says it
         # graded are one value.

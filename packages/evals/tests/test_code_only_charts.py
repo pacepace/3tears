@@ -25,6 +25,7 @@ from threetears.evals.analysis import ChartBlock, DisclosureBlock, TableBlock, i
 from threetears.evals.schema.models import RoleUsage
 from threetears.evals.kernel.usage_capture import spend_observed
 from threetears.evals.quick import Answer, Comparison, compare
+from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "code-only-chart-tests"
 
@@ -107,7 +108,7 @@ class TestUnobservedCost:
         (said,) = _cost_disclosures(comparison)
         assert "no result reported its spend" in said and "returning an Answer" in said
 
-        bundle = inspect_campaign_bundle(comparison.host, comparison.campaign_id, SCOPE).bundle
+        bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, SCOPE).bundle
         assert len(bundle.cost_unmeasured_cells) == len(bundle.cell_measures) == 2
         assert bundle.cost_unmeasured == said
         assert not any(m.name == "cost_usd" for cell in bundle.cell_measures for m in cell.measures.measures)
@@ -123,7 +124,7 @@ class TestUnobservedCost:
     async def test_a_measured_zero_is_a_reading_not_an_unmeasured_cost(self) -> None:
         comparison = await _compare(right_free, guess_priced)
         assert _cost_disclosures(comparison) == []
-        bundle = inspect_campaign_bundle(comparison.host, comparison.campaign_id, SCOPE).bundle
+        bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, SCOPE).bundle
         assert bundle.cost_unmeasured_cells == [] and bundle.cost_unmeasured is None
         costs = sorted(
             next(m.mean for m in cell.measures.measures if m.name == "cost_usd") for cell in bundle.cell_measures
@@ -138,7 +139,7 @@ class TestUnobservedCost:
         assert said.startswith("Cost was not measured in 1 of 2 cells") and said.endswith(
             "Unmeasured: candidate=candidate."
         )
-        bundle = inspect_campaign_bundle(comparison.host, comparison.campaign_id, SCOPE).bundle
+        bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, SCOPE).bundle
         (unmeasured,) = bundle.cost_unmeasured_cells
         (cell,) = [c for c in bundle.cell_measures if c.variant_key == unmeasured.variant_key]
         assert not any(m.name == "cost_usd" for m in cell.measures.measures)

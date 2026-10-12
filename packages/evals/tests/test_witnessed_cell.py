@@ -51,6 +51,7 @@ from packages.evals.tests.fixtures.toyhost.run import (
     toyhost_run,
     toyhost_test_cases,
 )
+from packages.evals.tests.off_loop import off_loop
 
 #: The instant every hand-recorded cell here is stamped with.
 _AT = "2026-10-05T12:00:00+00:00"
@@ -92,7 +93,7 @@ async def _runner_cells() -> tuple[EvalHost, EvalRun, list[EvalTestCase], list[t
     kind = _RecordingKind(inner)
     cases = toyhost_test_cases(template)
     run = toyhost_run(model=RUN_MODELS[0], template=template, kind=inner, world=world)
-    host.storage.save_eval_run(run)
+    off_loop(host.storage.save_eval_run, run)
     paired: list[tuple[EvalResult, CandidateOutput]] = []
 
     async def on_result(result: EvalResult) -> None:
@@ -136,7 +137,7 @@ async def test_a_witnessed_cell_is_the_runners_cell_for_the_same_output() -> Non
             event.model_copy(update={"caused_by": "world", "armed": False}) for event in runner_result.world_events
         ]
         assert observed and all(event.caused_by == "rig" for event in runner_result.world_events)
-        runner_trace = host.storage.load_eval_trace(runner_result.id, runner_result.scope_id)
+        runner_trace = off_loop(host.storage.load_eval_trace, runner_result.id, runner_result.scope_id)
         assert runner_trace is not None
         result, trace = await record_witnessed_cell(
             host,
@@ -209,10 +210,10 @@ async def test_a_session_its_participants_ended_is_recorded_under_no_template_wi
     assert result.judge_model is None and result.termination == "completed"
     assert result.cost_usd == 0.5
     # Persisted by the host, not by the op: the case and the pair round-trip through the engine's store.
-    host.storage.save_test_case(case)
-    host.storage.save_eval_result(result, trace)
-    assert host.storage.load_test_case("session-1", "toy") == case
-    stored = host.storage.load_eval_result("result-1", "toy")
+    off_loop(host.storage.save_test_case, case)
+    off_loop(host.storage.save_eval_result, result, trace)
+    assert off_loop(host.storage.load_test_case, "session-1", "toy") == case
+    stored = off_loop(host.storage.load_eval_result, "result-1", "toy")
     assert stored is not None and stored.stop_cause is ConversationStopCause.PARTICIPANTS_ENDED
 
 

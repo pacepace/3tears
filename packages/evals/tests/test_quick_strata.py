@@ -23,6 +23,7 @@ from threetears.evals.analysis.report.build import NO_STRATUM, TOO_FEW_CASES
 from threetears.evals.kernel.surface import STRATUM_MIN_CASES
 from threetears.evals.quick import callable_host, compare, run_eval
 from threetears.evals.storage import InMemoryDocumentStore
+from packages.evals.tests.off_loop import off_loop
 
 #: Ten plain tickets and four lookalikes: enough plain ones to read alone, too few lookalikes.
 CASES = [{"ticket": f"plain {index}", "queue": "a" if index % 2 else "b", "kind": "plain"} for index in range(10)] + [
@@ -123,7 +124,9 @@ class TestRelabellingKeepsHistory:
         # The same template and the same cases: the stratum addresses nothing.
         assert first.template_id == second.template_id
         host = callable_host([], store=store)
-        stored = host.storage.load_case_strata([f"{first.template_id}-{index}" for index in range(len(CASES))], "s")
+        stored = off_loop(
+            host.storage.load_case_strata, [f"{first.template_id}-{index}" for index in range(len(CASES))], "s"
+        )
         assert sorted({case.stratum for case in stored if case.stratum is not None}) == ["hard", "plain"]
         assert [stratum.stratum for stratum in second.strata] == ["hard", "plain"]
 

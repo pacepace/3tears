@@ -45,6 +45,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture, settled
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient
+from packages.evals.tests.off_loop import off_loop
 
 GROUNDED = "reporter.groundedness"
 USEFUL = "reporter.usefulness"
@@ -122,13 +123,13 @@ def test_a_freeze_without_an_analysis_pins_the_bundle_alone() -> None:
 
 
 async def test_a_freeze_with_an_analysis_pins_its_memo_and_stamps_each_label_with_the_criterion() -> None:
-    fixture = _fixture()
+    fixture = off_loop(_fixture)
     analysis_id = await _analysis_id(fixture)
     # The reader's words verbatim, surrounding whitespace included: nothing on the way tidies a quote.
     label = {"dimension": GROUNDED, "direction": "high", "quote": "  every number traces to a run\n"}
-    receipt = _freeze(fixture, recorded_analysis_id=analysis_id, labels=[label])
+    receipt = off_loop(_freeze, fixture, recorded_analysis_id=analysis_id, labels=[label])
 
-    (stored,) = _stored_cases(fixture, _reporter_template().id)
+    (stored,) = off_loop(_stored_cases, fixture, _reporter_template().id)
     case = reporter_case_of(stored)
     assert case is not None and case.recorded_memo, "the memo the campaign got is frozen with the case"
     assert receipt.test_case_id == stored.id and receipt.recorded_analysis_id == analysis_id
@@ -196,7 +197,7 @@ def test_labels_with_no_memo_to_be_about_are_refused() -> None:
 
 
 async def test_an_agent_freezes_a_case_through_the_action_and_reads_its_receipt() -> None:
-    fixture = _fixture()
+    fixture = off_loop(_fixture)
     tools = _tools()
     action = tools["evals"].action("reporter_case_freeze")
     assert action is not None and action.permission == "write"
@@ -208,7 +209,7 @@ async def test_an_agent_freezes_a_case_through_the_action_and_reads_its_receipt(
     )
     assert not outcome.is_error, outcome.text
     receipt = FrozenReporterCase.model_validate(outcome.structured)
-    (stored,) = _stored_cases(fixture, _reporter_template().id)
+    (stored,) = off_loop(_stored_cases, fixture, _reporter_template().id)
     assert receipt.test_case_id == stored.id
     assert outcome.text.startswith(f"reporter case {stored.id} of template {_reporter_template().id}")
     assert f"bundle fingerprint {receipt.bundle_fingerprint}" in outcome.text
@@ -216,7 +217,7 @@ async def test_an_agent_freezes_a_case_through_the_action_and_reads_its_receipt(
 
 
 async def test_the_actions_refusals_teach() -> None:
-    fixture = _fixture()
+    fixture = off_loop(_fixture)
     tools = _tools()
     other_kind = await tools["evals"].call(
         {"action": "reporter_case_freeze", "template_id": toyhost_template().id, "campaign_id": fixture.campaign.id},
@@ -234,7 +235,7 @@ async def test_the_actions_refusals_teach() -> None:
         caller=Caller(scope_id=ELSEWHERE, identity="agent:elsewhere"),
     )
     assert another.is_error and f"template '{_reporter_template().id}' not found" in another.text
-    assert _stored_cases(fixture, _reporter_template().id) == []
+    assert off_loop(_stored_cases, fixture, _reporter_template().id) == []
 
 
 # =============================================================================
@@ -243,29 +244,32 @@ async def test_the_actions_refusals_teach() -> None:
 
 
 async def test_the_listing_says_which_case_launches_and_what_replaced_or_retired_the_rest() -> None:
-    fixture = _fixture()
+    fixture = off_loop(_fixture)
     eval_host = fixture.host.eval_host
     analysis_id = await _analysis_id(fixture)
-    bundle_only = _freeze(fixture)
-    first = _freeze(
+    bundle_only = off_loop(_freeze, fixture)
+    first = off_loop(
+        _freeze,
         fixture,
         recorded_analysis_id=analysis_id,
         labels=[{"dimension": GROUNDED, "direction": "high", "quote": "traces"}],
     )
     with pytest.raises(ValidationFailedError, match="supersedes"):
-        _freeze(
+        off_loop(
+            _freeze,
             fixture,
             recorded_analysis_id=analysis_id,
             labels=[{"dimension": GROUNDED, "direction": "low", "quote": "on reflection, no"}],
         )
-    revised = _freeze(
+    revised = off_loop(
+        _freeze,
         fixture,
         recorded_analysis_id=analysis_id,
         labels=[{"dimension": GROUNDED, "direction": "low", "quote": "on reflection, no"}],
         supersedes=[first.test_case_id],
     )
 
-    listing = reporter_cases_list(eval_host, _reporter_template().id, TOYHOST_SCOPE)
+    listing = off_loop(reporter_cases_list, eval_host, _reporter_template().id, TOYHOST_SCOPE)
     states = {entry.case.test_case_id: (entry.live, entry.superseded_by) for entry in listing.cases}
     assert states == {
         bundle_only.test_case_id: (True, []),
@@ -274,17 +278,22 @@ async def test_the_listing_says_which_case_launches_and_what_replaced_or_retired
     }
     assert (listing.unreadable, listing.ambiguous) == ([], [])
 
-    retired = reporter_case_archive(
-        eval_host, bundle_only.test_case_id, TOYHOST_SCOPE, archived=True, reason="bundle orphaned"
+    retired = off_loop(
+        reporter_case_archive,
+        eval_host,
+        bundle_only.test_case_id,
+        TOYHOST_SCOPE,
+        archived=True,
+        reason="bundle orphaned",
     )
     assert (retired.archived, retired.archived_reason) == (True, "bundle orphaned")
-    active = reporter_cases_list(eval_host, _reporter_template().id, TOYHOST_SCOPE)
+    active = off_loop(reporter_cases_list, eval_host, _reporter_template().id, TOYHOST_SCOPE)
     assert bundle_only.test_case_id not in {entry.case.test_case_id for entry in active.cases}
-    everything = reporter_cases_list(eval_host, _reporter_template().id, TOYHOST_SCOPE, include_archived=True)
+    everything = off_loop(reporter_cases_list, eval_host, _reporter_template().id, TOYHOST_SCOPE, include_archived=True)
     (entry,) = [entry for entry in everything.cases if entry.case.test_case_id == bundle_only.test_case_id]
     assert not entry.live and entry.case.archived
 
-    restored = reporter_case_archive(eval_host, bundle_only.test_case_id, TOYHOST_SCOPE, archived=False)
+    restored = off_loop(reporter_case_archive, eval_host, bundle_only.test_case_id, TOYHOST_SCOPE, archived=False)
     assert (restored.archived, restored.archived_reason) == (False, None)
 
 
@@ -325,12 +334,12 @@ def test_the_listing_refuses_a_template_that_is_not_a_reporters() -> None:
 
 
 async def test_an_agent_lists_retires_and_restores_through_the_actions() -> None:
-    fixture = _fixture()
+    fixture = off_loop(_fixture)
     tools = _tools()
     assert tools["evals"].action("reporter_cases_list") is not None
     archive = tools["evals"].action("reporter_case_archive")
     assert archive is not None and archive.permission == "write"
-    case_id = _freeze(fixture).test_case_id
+    case_id = off_loop(_freeze, fixture).test_case_id
 
     listed = await tools["evals"].call(
         {"action": "reporter_cases_list", "template_id": _reporter_template().id}, host=fixture.host, caller=CALLER
@@ -377,11 +386,11 @@ async def _reporter_result(client: FixturedClient, *, cap: EvalRunCostCap | None
     Under ``cap`` the run is held to it as a launch holds one, and a stop it causes is left to the caller to see on
     the result.
     """
-    fixture = _fixture()
+    fixture = off_loop(_fixture)
     host = fixture.host.eval_host
-    receipt = _freeze(fixture)
-    case = host.storage.load_test_case(receipt.test_case_id, TOYHOST_SCOPE)
-    template = host.storage.load_template(_reporter_template().id, TOYHOST_SCOPE)
+    receipt = off_loop(_freeze, fixture)
+    case = off_loop(host.storage.load_test_case, receipt.test_case_id, TOYHOST_SCOPE)
+    template = off_loop(host.storage.load_template, _reporter_template().id, TOYHOST_SCOPE)
     assert case is not None and template is not None
     kind = ReporterKind(prompt=PROMPT, prompt_id=PROMPT_ID, prompt_version=None, client=client, model=MODEL, host=host)
     run = make_eval_run(
@@ -392,7 +401,7 @@ async def _reporter_result(client: FixturedClient, *, cap: EvalRunCostCap | None
         k_runs=1,
         test_case_ids=[case.id],
     )
-    host.storage.save_eval_run(run)
+    off_loop(host.storage.save_eval_run, run)
     options = RunnerOptions(candidate_kinds={REPORTER_KIND: lambda _cell: kind})
     try:
         await execute_run(
@@ -407,9 +416,9 @@ async def _reporter_result(client: FixturedClient, *, cap: EvalRunCostCap | None
         )
     except BudgetStoppedError:
         assert cap is not None
-    (result,) = host.storage.query_eval_results_by_run(run.id, TOYHOST_SCOPE)
+    (result,) = off_loop(host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
     campaign = make_campaign(scope_id=TOYHOST_SCOPE, run_ids=[run.id])
-    return result, assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
+    return result, off_loop(assemble_context_bundle, campaign, storage=host.storage, profile=host.profile)
 
 
 async def test_a_memo_refused_after_its_billed_calls_returned_keeps_their_cost() -> None:

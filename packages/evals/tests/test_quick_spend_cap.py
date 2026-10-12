@@ -17,6 +17,7 @@ import pytest
 from threetears.evals.kernel.host.sweepables import UNCAPPED_SPEND
 from threetears.evals.quick import Answer, callable_host, compare, run_eval
 from threetears.evals.run import get_run
+from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "quick-spend-cap-tests"
 CASES = [{"n": n} for n in range(4)]
@@ -38,7 +39,7 @@ async def silent(case: Mapping[str, Any]) -> int:
 async def test_with_no_cap_the_run_is_uncapped_and_the_summary_says_so() -> None:
     host = callable_host([even])
     summary = await run_eval(CASES, costly, [even], host=host, scope_id=SCOPE, k=1)
-    run = get_run(host.storage, summary.run_id, SCOPE)
+    run = off_loop(get_run, host.storage, summary.run_id, SCOPE)
     assert run.max_cost_usd is None and run.max_cost_usd_origin == "uncapped"
     assert summary.status == "completed" and summary.max_cost_usd_origin == "uncapped"
     assert f"spend cap: {UNCAPPED_SPEND}" in summary.render()
@@ -47,7 +48,7 @@ async def test_with_no_cap_the_run_is_uncapped_and_the_summary_says_so() -> None
 async def test_a_cap_stops_the_run_between_cases_once_its_spend_passes_it_and_the_summary_says_why() -> None:
     host = callable_host([even])
     summary = await run_eval(CASES, costly, [even], host=host, scope_id=SCOPE, k=1, max_cost_usd=0.5)
-    run = get_run(host.storage, summary.run_id, SCOPE)
+    run = off_loop(get_run, host.storage, summary.run_id, SCOPE)
     assert (run.max_cost_usd, run.max_cost_usd_origin) == (0.5, "chosen")
     # 30 cents, then 60: the second case passes the cap, so the run stops before the third.
     assert summary.status == "budget_stopped" and summary.n_results == 2
@@ -83,7 +84,7 @@ async def test_a_cap_that_is_not_a_positive_number_is_refused_before_anything_ru
     host = callable_host([even])
     with pytest.raises(ValueError, match="max_cost_usd= is a spend ceiling in US dollars"):
         await run_eval(CASES, costly, [even], host=host, scope_id=SCOPE, max_cost_usd=cap)
-    assert host.storage.query_templates(SCOPE) == []
+    assert off_loop(host.storage.query_templates, SCOPE) == []
 
 
 async def test_compare_caps_the_whole_comparison_each_arm_at_an_equal_share() -> None:

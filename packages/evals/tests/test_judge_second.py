@@ -69,6 +69,7 @@ from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.kernel import EvalStorage
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.off_loop import off_loop
 
 _SCOPE = "scope-second"
 _KIND = "second-probe"
@@ -184,15 +185,15 @@ async def _judged_run(
             RubricDim(name=_STEADY, description="the GM is clear", scale="ordinal"),
         ],
     )
-    if host.storage.load_template(template.id, _SCOPE) is None:
-        host.storage.save_template(template)
+    if off_loop(host.storage.load_template, template.id, _SCOPE) is None:
+        off_loop(host.storage.save_template, template)
     test_cases = [
         EvalTestCase(template_id=template.id, scope_id=_SCOPE, variation_params={"party": f"p{index}"})
         for index in range(cases)
     ]
     for case in test_cases:
-        host.storage.save_test_case(case)
-    built = build_judge_service(host, template, judge_model, judged_artifact=JudgedArtifact.DOCUMENT)
+        off_loop(host.storage.save_test_case, case)
+    built = off_loop(build_judge_service, host, template, judge_model, judged_artifact=JudgedArtifact.DOCUMENT)
     run = make_eval_run(
         scope_id=_SCOPE,
         template_id=template.id,
@@ -204,7 +205,7 @@ async def _judged_run(
         effective_judges=built.effective_judges,
         judge_request_settings=JUDGE_REQUEST_SETTINGS,
     )
-    host.storage.save_eval_run(run)
+    off_loop(host.storage.save_eval_run, run)
     scorer = judges.second if judge_model == _SECOND else judges.first
     for case in test_cases:
         outcome = await run_one_result(
@@ -223,7 +224,7 @@ async def _judged_run(
             options=RunnerOptions(candidate_kinds={_KIND: lambda _cell: _Kind()}),
             variant=resolve_variant_identity(run=run, profile=host.profile),
         )
-        host.storage.save_eval_result(outcome.result, outcome.trace)
+        off_loop(host.storage.save_eval_result, outcome.result, outcome.trace)
     return host, run.id
 
 
@@ -250,20 +251,20 @@ class TestASecondJudgeOnHalfTheResults:
     async def test_agreement_is_reported_beside_each_judged_dimension_and_the_spend_apart(self) -> None:
         judges = _Judges(first=_ScriptedJudge(_FIRST), second=_ScriptedJudge(_SECOND, shift={_SHIFTED: 1}))
         host, run_id = await _judged_run(judges)
-        before = _results(host, run_id)
-        summary_before = summarize_run(host, run_id, _SCOPE)
+        before = off_loop(_results, host, run_id)
+        summary_before = off_loop(summarize_run, host, run_id, _SCOPE)
 
         report = await _asked(
             host, run_id, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=10.0, sample_fraction=0.5
         )
 
         assert len(report.sampled) == _CASES // 2 and sorted(report.judged) == report.sampled
-        after = _results(host, run_id)
+        after = off_loop(_results, host, run_id)
         for old, new in zip(before, after, strict=True):
             assert new.rubric_scores == old.rubric_scores, "a second judge never rewrites the scores it pairs with"
             assert new.cost_usd == old.cost_usd, "a second judge's spend is never the candidate's"
             assert new.usage == old.usage
-        summary = summarize_run(host, run_id, _SCOPE)
+        summary = off_loop(summarize_run, host, run_id, _SCOPE)
         by_name = {dim.name: dim for dim in summary.judged}
         for name in (_SHIFTED, _STEADY):
             (row,) = by_name[name].second_judges
@@ -272,13 +273,13 @@ class TestASecondJudgeOnHalfTheResults:
         assert by_name[_STEADY].second_judges[0].exact_agreement == 1.0
         assert by_name[_SHIFTED].second_judges[0].exact_agreement < 1.0
         # The spend: its own line, from the ledger, and nowhere in the run's judge spend or the candidate's.
-        rows = [row for row in host.storage.query_out_of_run_spend(_SCOPE, purpose="second_judge")]
+        rows = [row for row in off_loop(host.storage.query_out_of_run_spend, _SCOPE, purpose="second_judge")]
         assert len(rows) == report.calls_made == (_CASES // 2) * 2
         assert {(row.run_id, row.purpose) for row in rows} == {(run_id, "second_judge")}
         assert summary.second_judge_calls == len(rows)
         assert summary.second_judge_cost_usd == pytest.approx(sum(row.cost_usd or 0 for row in rows))
         assert (summary.spend, summary.total_cost_usd) == (summary_before.spend, summary_before.total_cost_usd)
-        assert host.storage.query_out_of_run_spend(_SCOPE, purpose="judge") == []
+        assert off_loop(host.storage.query_out_of_run_spend, _SCOPE, purpose="judge") == []
 
     async def test_the_sample_is_seeded_recorded_and_drawn_again_by_the_same_seed(self) -> None:
         judges = _Judges(first=_ScriptedJudge(_FIRST), second=_ScriptedJudge(_SECOND))
@@ -292,10 +293,10 @@ class TestASecondJudgeOnHalfTheResults:
         )
 
         assert again.sampled == first.sampled
-        for result in _results(host, run_id):
+        for result in off_loop(_results, host, run_id):
             for judging in result.judge_seconds:
                 assert (judging.pass_id, judging.sample_fraction, judging.sample_seed) == (first.pass_id, 0.5, 7)
-        assert {result.id for result in _results(host, run_id) if result.judge_seconds} == set(first.sampled)
+        assert {result.id for result in off_loop(_results, host, run_id) if result.judge_seconds} == set(first.sampled)
 
     async def test_an_undefined_kappa_says_why_and_is_never_zero(self) -> None:
         judges = _Judges(first=_ScriptedJudge(_FIRST, constant=4), second=_ScriptedJudge(_SECOND, constant=4))
@@ -303,7 +304,7 @@ class TestASecondJudgeOnHalfTheResults:
 
         report = await _asked(host, run_id, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=10.0)
 
-        agreement = inter_judge_agreement(_results(host, run_id), pass_id=report.pass_id)
+        agreement = inter_judge_agreement(off_loop(_results, host, run_id), pass_id=report.pass_id)
         for row in agreement.dimensions:
             assert row.kappa is None and row.kappa_undefined == KAPPA_UNDEFINED_ONE_SCORE
             assert row.exact_agreement == 1.0 and row.agreement_interval is None
@@ -337,10 +338,10 @@ class TestThePassIsItsOwnRecord:
         assert work.kind is SECOND_JUDGE_JOB and work.record.outcome == "running"
         report = await _asked(host, run_id, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=10.0)
 
-        stored, _ = host.storage.load_job_record(EvalSecondJudgePass, report.pass_id, _SCOPE)
+        stored, _ = off_loop(host.storage.load_job_record, EvalSecondJudgePass, report.pass_id, _SCOPE)
         assert stored is not None and stored.outcome == "completed" and stored.report == report
         assert stored.lease is not None and stored.ended_at is not None
-        assert {judging.pass_id for result in _results(host, run_id) for judging in result.judge_seconds} == {
+        assert {judging.pass_id for result in off_loop(_results, host, run_id) for judging in result.judge_seconds} == {
             report.pass_id
         }
         await work.discard()  # an admitted pass never run releases the clients it was admitted on
@@ -354,7 +355,7 @@ class TestThePassIsItsOwnRecord:
 
         assert judges.second.calls == []
         assert judges.second.closed, "the clients the refused pass was built over are released"
-        assert host.storage.query_out_of_run_spend(_SCOPE, purpose="second_judge") == []
+        assert off_loop(host.storage.query_out_of_run_spend, _SCOPE, purpose="second_judge") == []
 
 
 class TestNothingIsPaidForThatCannotBeRead:
@@ -367,7 +368,7 @@ class TestNothingIsPaidForThatCannotBeRead:
             await _asked(host, run_id, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=priced - 0.001)
 
         assert judges.second.calls == []
-        assert host.storage.query_out_of_run_spend(_SCOPE, purpose="second_judge") == []
+        assert off_loop(host.storage.query_out_of_run_spend, _SCOPE, purpose="second_judge") == []
 
     async def test_the_runs_own_judge_is_refused_as_a_second_one(self) -> None:
         judges = _Judges(first=_ScriptedJudge(_FIRST), second=_ScriptedJudge(_SECOND))
@@ -392,17 +393,20 @@ class TestDriftAcrossAJudgeChange:
     async def test_a_judge_shifting_one_dimension_by_one_is_read_as_moved_and_the_other_as_not_separated(self) -> None:
         judges = _Judges(first=_ScriptedJudge(_FIRST), second=_ScriptedJudge(_SECOND, shift={_SHIFTED: 1}))
         host, run_id = await _judged_run(judges)
-        before = _results(host, run_id)
+        before = off_loop(_results, host, run_id)
 
         report = await _asked(host, run_id, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=10.0)
 
-        drift = {row.rubric_dim: row for row in judge_drift(_results(host, run_id), pass_id=report.pass_id).dimensions}
+        drift = {
+            row.rubric_dim: row
+            for row in judge_drift(off_loop(_results, host, run_id), pass_id=report.pass_id).dimensions
+        }
         moved, steady = drift[_SHIFTED], drift[_STEADY]
         assert moved.verdict == "separated" and moved.delta is not None and moved.delta > 0
         assert moved.interval is not None and moved.interval[0] > 0, "the interval on the movement excludes 0"
         assert (moved.n_cases, moved.interval_level) == (_CASES, pytest.approx(1 - 0.05 / 2))
         assert steady.verdict == "not_separated" and steady.delta == 0
-        after = _results(host, run_id)
+        after = off_loop(_results, host, run_id)
         assert [result.rubric_scores for result in after] == [result.rubric_scores for result in before], (
             "re-scoring under the new judge leaves every stored score as it was"
         )
@@ -422,9 +426,9 @@ class TestDriftAcrossAJudgeChange:
             created_by="test:fixture",
         )
 
-        unlinked = assemble_context_bundle(campaign, storage=storage, profile=host.profile).judge_change
+        unlinked = off_loop(assemble_context_bundle, campaign, storage=storage, profile=host.profile).judge_change
         await _asked(host, before_id, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=10.0)
-        linked = assemble_context_bundle(campaign, storage=storage, profile=host.profile).judge_change
+        linked = off_loop(assemble_context_bundle, campaign, storage=storage, profile=host.profile).judge_change
 
         assert [level.judge_model for level in unlinked.levels] == [_FIRST, _SECOND]
         assert unlinked.drift_links == [] and unlinked.sentence is not None

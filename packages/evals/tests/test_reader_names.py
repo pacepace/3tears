@@ -41,6 +41,7 @@ from packages.evals.tests.fixtures.toyhost.campaign import (
 )
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
 from packages.evals.tests.report_support import toy_report
+from packages.evals.tests.off_loop import off_loop
 
 
 @pytest.fixture
@@ -92,7 +93,7 @@ async def test_no_surface_table_or_compiled_chart_of_a_toy_campaign_heads_anythi
     # The key a reader cites stays on the column; the header is what they read.
     assert {"total_ms", "field_accuracy"} & {column.measure_id for column in surface.columns}
 
-    code_only = campaign_report(host, analysis.campaign_id, analysis.scope_id)
+    code_only = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
     charts = 0
     for each in (report, code_only):
         for block in each.blocks:

@@ -49,6 +49,7 @@ from threetears.evals.kernel.authored import AuthoredAnalysis
 from threetears.evals.kernel.metrics import classifier_label_of
 from threetears.evals.quick import Comparison, compare
 from packages.evals.tests.test_surface_table import CANDIDATE, analysis, key, two_arm_surface
+from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "compact-code-only-report"
 
@@ -108,7 +109,7 @@ class TestPerLabelStatisticsAreOneTable:
         assert [column.key for column in table.columns] == ["label", "arm", "precision", "recall", "f1"]
 
         # What the bundle holds, per label: one (precision, recall, F1) triple per arm.
-        bundle = inspect_campaign_bundle(comparison.host, comparison.campaign_id, SCOPE).bundle
+        bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, SCOPE).bundle
         held: dict[str, Counter[tuple[str | None, ...]]] = {}
         for cell in bundle.cell_measures:
             by_label: dict[str, dict[str, str]] = {}
