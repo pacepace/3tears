@@ -89,6 +89,7 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
     names = {action.name: action.permission for action in engine_actions()}
     assert names == {
         "templates_list": "read",
+        "judge_configs_list": "read",
         "runs_list": "read",
         "campaigns_list": "read",
         "case_sets_list": "read",
@@ -103,6 +104,8 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "result_get": "read",
         "campaign_create": "write",
         "campaign_update": "write",
+        "campaign_runs_add": "write",
+        "campaign_runs_remove": "write",
         "analysis_generate": "spend",
         "analysis_estimate": "read",
         "judge_second": "spend",

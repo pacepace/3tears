@@ -4383,7 +4383,7 @@
     },
     "threetears.evals.analysis.update_campaign": {
       "kind": "function",
-      "signature": "update_campaign(storage: CampaignStore, campaign_id: str, scope_id: str, updates: dict[str, Any], *, updated_by: str, profile: HostProfile, exploratory: bool = False) -> EvalCampaign"
+      "signature": "update_campaign(storage: CampaignStore, campaign_id: str, scope_id: str, updates: dict[str, Any], *, updated_by: str, profile: HostProfile, exploratory: bool = False, control_from_run_id: str | None = None, clear_control: bool = False) -> EvalCampaign"
     },
     "threetears.evals.analysis.variant_key_of_run": {
       "kind": "function",
@@ -4961,13 +4961,21 @@
       "kind": "function",
       "signature": "campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: str, *, created_by: str) -> CampaignLine"
     },
+    "threetears.evals.ops.campaign_runs_add": {
+      "kind": "function",
+      "signature": "campaign_runs_add(host: EvalHost, campaign_id: str, run_ids: list[str], scope_id: str) -> CampaignLine"
+    },
+    "threetears.evals.ops.campaign_runs_remove": {
+      "kind": "function",
+      "signature": "campaign_runs_remove(host: EvalHost, campaign_id: str, run_ids: list[str], scope_id: str) -> CampaignLine"
+    },
     "threetears.evals.ops.campaign_update": {
       "kind": "function",
       "signature": "campaign_update(host: EvalHost, campaign_id: str, changes: CampaignChanges, scope_id: str, *, updated_by: str) -> CampaignLine"
     },
     "threetears.evals.ops.CampaignChanges": {
       "kind": "model",
-      "signature": "CampaignChanges(name: str | None = None, description: str | None = None, declared_design: dict[str, Any] | None = None, exploratory: bool = False)"
+      "signature": "CampaignChanges(name: str | None = None, description: str | None = None, declared_design: dict[str, Any] | None = None, exploratory: bool = False, control_from_run_id: str | None = None)"
     },
     "threetears.evals.ops.CampaignDefinition": {
       "kind": "model",
@@ -5137,6 +5145,10 @@
       "kind": "function",
       "signature": "judge_cases_freeze(host: EvalHost, freeze: JudgeCasesFreeze, scope_id: str) -> JudgeCaseFreezeReport"
     },
+    "threetears.evals.ops.judge_configs_list": {
+      "kind": "function",
+      "signature": "judge_configs_list(host: EvalHost, scope_id: str, *, rubric_dim_id: str | None = None, archived: bool = False) -> JudgeConfigListing"
+    },
     "threetears.evals.ops.judge_drift_check": {
       "kind": "async function",
       "signature": "judge_drift_check(host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, result_ids: list[str] | None = None) -> JobsStarted"
@@ -5188,6 +5200,14 @@
     "threetears.evals.ops.JudgeCasesFreeze": {
       "kind": "model",
       "signature": "JudgeCasesFreeze(template_id: Annotated[str, LaunchArguments.model_fields['template_id']], judged_run_ids: list[str], criteria: list[str] | None = None, judged_result_ids: list[str] | None = None, into_case_set: str | None = None)"
+    },
+    "threetears.evals.ops.JudgeConfigLine": {
+      "kind": "model",
+      "signature": "JudgeConfigLine(id: str, name: str, rubric_dim_id: str, model: str, temperature: float, archived: bool)"
+    },
+    "threetears.evals.ops.JudgeConfigListing": {
+      "kind": "model",
+      "signature": "JudgeConfigListing(judge_configs: list[JudgeConfigLine])"
     },
     "threetears.evals.ops.JudgeProfileEntry": {
       "kind": "model",
