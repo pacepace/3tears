@@ -278,6 +278,7 @@ from threetears.evals.analysis.bundle.schema import (
     TelemetryRollup,
     TokenRollup,
     VerdictOrder,
+    WholeSwing,
 )
 from threetears.evals.analysis.campaigns import CampaignStore, OpenAxisFamily
 from threetears.evals.analysis.cells import Cell, NextExperiment, RefusedMerge, SubjectKeyInstability
@@ -308,9 +309,11 @@ from threetears.evals.analysis.reporter_kind import (
 )
 from threetears.evals.analysis.reporting import (
     FrontierDominance,
+    IdentityRole,
     ProjectionExclusions,
     ServedModelReading,
     ServedModelState,
+    UnconfirmedModelIdentity,
 )
 from threetears.evals.analysis.latency_partition import LatencyPartition
 from threetears.evals.analysis.measurement_windows import MeasurementWindow
@@ -552,8 +555,10 @@ __all__ = [
     "ScoreExport",
     "SelfAgreementDimension",
     "SeriesPoint",
+    "IdentityRole",
     "ServedModelReading",
     "ServedModelState",
+    "UnconfirmedModelIdentity",
     "SimpsonsFlag",
     "AnalysisGenerationEstimate",
     "CallAdmission",
@@ -598,6 +603,7 @@ __all__ = [
     "UnrepeatedScore",
     "UnpairedReason",
     "VerdictOrder",
+    "WholeSwing",
     "WriterMessageCheck",
     "add_runs_to_campaign",
     "analysis_report",

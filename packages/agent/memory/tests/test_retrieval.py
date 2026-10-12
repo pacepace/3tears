@@ -604,6 +604,24 @@ class TestFormatMemoryContext:
         assert "written" not in result
         assert "] undated" in result
 
+    async def test_a_memory_whose_stored_date_is_unreadable_says_so_rather_than_reading_as_current(
+        self, render: Render
+    ) -> None:
+        """An unreadable date used to render as no date at all, the shape that reads as current."""
+        memories = [
+            {
+                "memory_id": uuid.uuid7(),
+                "content": "garbled",
+                "summary": None,
+                "hybrid_score": 0.5,
+                "date_created": "last tuesday",
+            }
+        ]
+
+        result = await render(memories, user_timezone="UTC")
+
+        assert "(written at an unknown time: its stored date is unreadable) garbled" in result
+
     async def test_the_header_does_not_claim_every_memory_is_about_the_user(self, render: Render) -> None:
         """Memories are extracted from conversations, so many are about the agent.
 

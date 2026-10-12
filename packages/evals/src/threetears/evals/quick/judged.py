@@ -217,6 +217,9 @@ def _takes_temperature(client: CompletionClient) -> bool:
     try:
         parameters = inspect.signature(client.generate).parameters.values()
     except TypeError, ValueError:
+        # NOSILENT(expected): no readable signature names no `temperature` keyword, so none is sent -- sending one
+        # a call may not take would raise; the owner's completion reports the temperature it used, and the judge
+        # records that, so the run never claims a temperature it did not send
         return False
     return any(
         parameter.kind is inspect.Parameter.VAR_KEYWORD

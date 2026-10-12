@@ -453,7 +453,11 @@ def _extract_pdf_headings(
     text: str,
     page_number: int,
 ) -> list[DocumentSection]:
-    """Use font-size heuristic to identify headings on a PDF page."""
+    """Use font-size heuristic to identify headings on a PDF page.
+
+    :return: the page's sections, or ``[]`` when it has no text spans -- or when the heuristic
+        itself failed, which is logged at WARNING; the caller then keeps the page as one section
+    """
     try:
         blocks = page.get_text("dict")["blocks"]
         if not blocks:
@@ -528,7 +532,14 @@ def _extract_pdf_headings(
 
         return sections
 
-    except Exception:
+    except Exception as exc:
+        # the heuristic only adds structure: the caller keeps the page's whole text as one section
+        # either way, so nothing is lost but the headings -- and that loss is said, not hidden
+        log.warning(
+            "PDF heading detection failed; the page is kept as one section without headings",
+            extra={"extra_data": {"page_number": page_number, "error": f"{type(exc).__name__}: {exc}"}},
+            exc_info=True,
+        )
         return []
 
 
@@ -677,6 +688,8 @@ def _parse_docx(
                 try:
                     level = int(style_name.replace("heading", "").strip())
                 except ValueError:
+                    # NOSILENT(expected): a heading style that carries no number ("Heading", "Heading Title")
+                    # is a top-level heading -- level 1 is what the style means, not a stand-in for an error
                     level = 1
 
                 current_heading = para.text.strip()

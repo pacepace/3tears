@@ -225,12 +225,14 @@ async def test_an_action_job_returns_its_typed_result_and_its_failure() -> None:
 
     (done,) = await await_job(
         built.host,
-        await start_action_job(built.host, CONFORMANCE_SCOPE, action="rubric_propose", run=draft, label="tone"),
+        await start_action_job(
+            built.host, CONFORMANCE_SCOPE, action="rubric_propose", run=draft, label="tone", budget_s=60.0
+        ),
         CONFORMANCE_SCOPE,
     )
     (failed,) = await await_job(
         built.host,
-        await start_action_job(built.host, CONFORMANCE_SCOPE, action="rubric_propose", run=broken),
+        await start_action_job(built.host, CONFORMANCE_SCOPE, action="rubric_propose", run=broken, budget_s=60.0),
         CONFORMANCE_SCOPE,
     )
 
@@ -252,7 +254,9 @@ async def test_an_action_job_is_answered_only_in_its_scope() -> None:
     async def draft() -> _Draft:
         return _Draft(text="x")
 
-    (job,) = (await start_action_job(built.host, CONFORMANCE_SCOPE, action="rubric_propose", run=draft)).jobs
+    (job,) = (
+        await start_action_job(built.host, CONFORMANCE_SCOPE, action="rubric_propose", run=draft, budget_s=60.0)
+    ).jobs
     await _settled(built.host, job.job_id)
     other = Caller(scope_id="another", identity="agent:other")
 

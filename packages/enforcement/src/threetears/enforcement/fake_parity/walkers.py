@@ -355,6 +355,9 @@ def _check_marker_parity(fake: _FakeDecl) -> list[Violation]:
                 ),
             )
             continue
+        if prod_method is None:
+            # no introspectable signature: presence is all that can be compared, and it was.
+            continue
         missing_params = _missing_required_params(prod_method, fake.methods[method_name])
         for param_name in missing_params:
             violations.append(
@@ -406,8 +409,12 @@ def _import_marker_target(fqname: str) -> type | None:
 
 def _public_methods(
     cls: type,
-) -> dict[str, inspect.Signature]:
+) -> dict[str, inspect.Signature | None]:
     """return ``{name: signature}`` for every public method of ``cls``.
+
+    a method whose signature cannot be introspected (a builtin, a
+    C-implemented callable) maps to ``None``: it is still a method the
+    fake must have, and only its parameters go uncompared.
 
     public = does not start with ``_``. inherited methods count;
     static methods + class methods + async methods are all included.
@@ -425,10 +432,10 @@ def _public_methods(
 
     :param cls: production class to introspect
     :ptype cls: type
-    :return: mapping of public method name to its signature
-    :rtype: dict[str, inspect.Signature]
+    :return: mapping of public method name to its signature, ``None`` when it has none
+    :rtype: dict[str, inspect.Signature | None]
     """
-    methods: dict[str, inspect.Signature] = {}
+    methods: dict[str, inspect.Signature | None] = {}
     for name, member in inspect.getmembers(cls):
         if name.startswith("_"):
             continue
@@ -437,13 +444,14 @@ def _public_methods(
         if isinstance(member, type):
             # nested class on the production type -- skip; not a method
             continue
+        signature: inspect.Signature | None = None
         try:
-            methods[name] = inspect.signature(member)
+            signature = inspect.signature(member)
         except TypeError, ValueError:
-            # NOSILENT: this is the probe that decides whether a member HAS an introspectable
-            # signature. Builtins and C-implemented callables do not, and having no signature to
-            # compare is the expected answer for them, not a failure to look.
-            continue
+            # NOSILENT(expected): "this callable has no introspectable signature" is the answer for a
+            # builtin; the method is still recorded, so the fake must still define it.
+            signature = None
+        methods[name] = signature
     return methods
 
 

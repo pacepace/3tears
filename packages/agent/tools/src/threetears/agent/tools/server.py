@@ -87,7 +87,7 @@ from threetears.nats import (
     set_default_namespace,
 )
 from threetears.nats.errors import NatsClientError
-from threetears.observe import InflightRequestsGauge, clear_context, get_logger, traced
+from threetears.observe import InflightRequestsGauge, cancel_and_wait, clear_context, get_logger, traced
 from threetears.observe.resilience import retry_bounded
 
 __all__ = [
@@ -1511,7 +1511,8 @@ class ToolServer:
             try:
                 scope = kv_key_scope_for(Principal.TOOL_POD, pod_id=self._pod_id)
             except ValueError:
-                # NOSILENT: a non-uuid pod-id is not a platform tool pod, whose grant needs a uuid scope
+                # NOSILENT(expected): for a str pod_id the only ValueError kv_key_scope_for raises is "not a
+                # uuid" -- and a non-uuid pod-id is no platform tool pod, so None is the documented answer
                 scope = None
         return scope
 
@@ -3068,8 +3069,8 @@ class ToolServer:
         try:
             await asyncio.wait_for(self._calls_idle.wait(), timeout=timeout)
         except TimeoutError:
-            # NOSILENT: reported to the caller as False; the caller owns the log line, because what
-            # an unsettled wait MEANS differs by caller.
+            # NOSILENT(expected): the wait running out IS the False this method documents -- a typed answer the
+            # caller reads, not a lost error; the caller owns the log line, because what it means differs by caller
             result = False
         return result
 
@@ -3219,7 +3220,8 @@ class ToolServer:
                 content="",
                 error=f"malformed call request: {exc}",
             )
-            # NOSILENT: this branch refuses the call at the border and, until now, wrote
+            # NOSILENT: not a swallow -- the caller gets a failure reply naming the parse error, and
+            # the pod logs it below. This branch refuses the call at the border and, until now, wrote
             # nothing anywhere -- the reason travelled only in the reply, to a caller that
             # is usually a model. :attr:`CallRequest.model_config` is ``extra="forbid"``,
             # so the ordinary way to arrive here is a CALLER NEWER THAN THIS POD sending a
@@ -3581,8 +3583,9 @@ class ToolServer:
                 return
             except Exception as exc:  # noqa: BLE001 — the work is already done; retry beats discarding it
                 if attempt == _RESULT_DELIVERY_ATTEMPTS:
-                    # NOSILENT: the answer is now lost. say so, with the subject and the size, rather
-                    # than letting it surface as an unexplained timeout at the caller.
+                    # NOSILENT: logged at ERROR, not swallowed -- the reply channel itself is what failed, so
+                    # no caller is reachable to raise to. say the answer is lost, with the subject and the
+                    # size, rather than let it surface as an unexplained timeout at the caller.
                     log.error(
                         "tool result could not be delivered after %d attempts; the answer is lost "
                         "(subject=%s pod_id=%s bytes=%d): %s",
@@ -3706,11 +3709,9 @@ class ToolServer:
                 nats_client=self._nc,
                 namespace=self._namespace,
             )
-        # NOSILENT: audit publish is fire-and-forget; publish_audit
-        # already swallows inside, but the belt-and-braces guard here
-        # protects against any programmer-error regression (TypeError,
-        # AttributeError) that could otherwise taint a successful
-        # tool return.
+        # NOSILENT: logged at WARN naming the tool, not swallowed. publish_audit already logs its own
+        # transport failures; this guard catches a programmer-error regression (TypeError,
+        # AttributeError) that would otherwise turn a tool's true answer into a failure.
         except Exception as exc:
             log.warning(
                 "tool server baseline audit publish failed",
@@ -3883,12 +3884,7 @@ class ToolServer:
         # propagates to the caller, which decides what a failed shutdown means for the process.
         try:
             if self._heartbeat_task is not None:
-                self._heartbeat_task.cancel()
-                try:
-                    await self._heartbeat_task
-                except asyncio.CancelledError:
-                    # NOSILENT: this IS the cancellation requested on the line above
-                    pass
+                await cancel_and_wait(self._heartbeat_task)
                 self._heartbeat_task = None
 
             if self._owned_jwks_provider is not None:

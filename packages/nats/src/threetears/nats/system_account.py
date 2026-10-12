@@ -358,7 +358,8 @@ async def kick_connection(
     try:
         reply = await system_client.request_raw(subject=subject, payload=payload, timeout=timeout)
     except NoRespondersError:
-        # NOSILENT: no server holds this id any more, which is itself the answer (SERVER_GONE below)
+        # NOSILENT(expected): no server answers for this id any more -- the typed SERVER_GONE outcome
+        # below; every other request failure raises
         reply = None
     except RequestError as exc:
         raise ConnectionKickError(
@@ -438,7 +439,8 @@ async def probe_connection(
     try:
         reply = await system_client.request_raw(subject=subject, payload=payload, timeout=timeout)
     except NoRespondersError:
-        # NOSILENT: no server holds this id any more, which is itself the answer (SERVER_GONE below)
+        # NOSILENT(expected): no server answers for this id any more -- the typed SERVER_GONE outcome
+        # below; every other request failure raises
         reply = None
     except RequestError as exc:
         raise ConnectionProbeError(

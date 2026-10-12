@@ -379,6 +379,40 @@ def _format_schedule_line(
     )
 
 
+async def _skill_label(
+    registry: WakeRegistryClient,
+    *,
+    user_id: UUID,
+    agent_id: UUID,
+    skill_id: UUID,
+) -> str | None:
+    """the attached skill's name for a catalog line, or a label saying the name could not be read.
+
+    a lookup that raised used to answer ``None``, which the line renders as NO skill: the model
+    read a schedule that runs a skill as one that does not. a failed lookup now names the skill by
+    id and says the name is unreadable, and is logged.
+
+    :param registry: the consumer's registry client
+    :ptype registry: WakeRegistryClient
+    :param user_id: caller's user UUID
+    :ptype user_id: UUID
+    :param agent_id: caller's agent UUID
+    :ptype agent_id: UUID
+    :param skill_id: the attached skill
+    :ptype skill_id: UUID
+    :return: the name; ``None`` only when the registry answered that it does not know the skill
+    :rtype: str | None
+    """
+    try:
+        return await registry.skill_name_for_id(user_id=user_id, agent_id=agent_id, skill_id=skill_id)
+    except Exception as exc:  # noqa: BLE001 -- a name is decoration; the line still carries the skill, by id
+        log.warning(
+            "skill name lookup raised; the catalog line names the skill by id",
+            extra={"extra_data": {"skill_id": str(skill_id), "error": f"{type(exc).__name__}: {exc}"}},
+        )
+        return f"[skill:{skill_id}] (its name could not be read: {type(exc).__name__})"
+
+
 async def _check_skill_acl(
     *,
     registry: WakeRegistryClient,
@@ -541,16 +575,9 @@ def load_wake_schedule_create_tool(
                 )
             if stripped.startswith("[skill:") and stripped.endswith("]"):
                 stripped = stripped[len("[skill:") : -1].strip()
-            parsed_skill: UUID | None
             try:
                 parsed_skill = UUID(stripped)
             except ValueError:
-                parsed_skill = None
-            except AttributeError:
-                parsed_skill = None
-            except TypeError:
-                parsed_skill = None
-            if parsed_skill is None:
                 return _tool_error(
                     "wake_schedule_create",
                     f"invalid skill_id {skill_id!r} (use [skill:<uuid>] or bare UUID)",
@@ -692,18 +719,7 @@ def load_wake_schedule_create_tool(
 
         skill_name: str | None = None
         if attached_skill is not None:
-            try:
-                skill_name = await registry.skill_name_for_id(
-                    user_id=user_id,
-                    agent_id=agent_id,
-                    skill_id=attached_skill,
-                )
-            except Exception as exc:  # noqa: BLE001 - name lookup is best-effort
-                log.warning(
-                    "wake_schedule_create skill_name lookup raised",
-                    extra={"extra_data": {"skill_id": str(attached_skill), "error": str(exc)}},
-                )
-                skill_name = None
+            skill_name = await _skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=attached_skill)
 
         log.info(
             "wake_schedule_create persisted",
@@ -977,14 +993,7 @@ def load_wake_schedule_update_tool(
 
         skill_name: str | None = None
         if entity.skill_id is not None:
-            try:
-                skill_name = await registry.skill_name_for_id(
-                    user_id=user_id,
-                    agent_id=agent_id,
-                    skill_id=entity.skill_id,
-                )
-            except Exception:  # noqa: BLE001 - name lookup is best-effort
-                skill_name = None
+            skill_name = await _skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=entity.skill_id)
         return _format_schedule_line(entity, skill_name=skill_name)
 
     wake_schedule_update.description = (
@@ -1037,14 +1046,7 @@ def load_wake_schedule_list_tool(
         for entity in visible:
             skill_name: str | None = None
             if entity.skill_id is not None:
-                try:
-                    skill_name = await registry.skill_name_for_id(
-                        user_id=user_id,
-                        agent_id=agent_id,
-                        skill_id=entity.skill_id,
-                    )
-                except Exception:  # noqa: BLE001 - best-effort
-                    skill_name = None
+                skill_name = await _skill_label(registry, user_id=user_id, agent_id=agent_id, skill_id=entity.skill_id)
             lines.append("- " + _format_schedule_line(entity, skill_name=skill_name))
         return "\n".join(lines)
 

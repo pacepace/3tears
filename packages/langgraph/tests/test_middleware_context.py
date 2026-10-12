@@ -19,6 +19,8 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
+
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelRequest
 from langchain_core.language_models import BaseChatModel
@@ -126,6 +128,21 @@ class TestMiddleware:
     def test_noop_on_empty_context(self) -> None:
         req_in = _request(SystemMessage(content="base"))
         assert _drive(req_in, {"context_manager": _Manager("")}) is req_in
+
+    def test_outside_a_runnable_the_request_passes_through_and_the_skip_is_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        captured: dict[str, ModelRequest] = {}
+
+        async def _handler(req: ModelRequest) -> Any:
+            captured["req"] = req
+            return SimpleNamespace(result=[AIMessage(content="ok")])
+
+        req_in = _request(SystemMessage(content="base"))
+        with caplog.at_level("WARNING"):
+            asyncio.run(ContextMergeMiddleware().awrap_model_call(req_in, _handler))
+        assert captured["req"] is req_in
+        assert "conversation context is skipped" in caplog.text
 
     def test_soft_fails_on_manager_error(self) -> None:
         req_in = _request(SystemMessage(content="base"))

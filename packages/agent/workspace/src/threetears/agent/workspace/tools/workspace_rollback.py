@@ -287,7 +287,7 @@ class WorkspaceRollbackTool(TearsTool):
                         nats_client=self._nats_client,
                         namespace=self._namespace,
                     )
-            # NOSILENT: audit failure never taints rollback
+            # NOSILENT: logged, not swallowed: a failed audit never turns a true rollback into an error
             except Exception as audit_exc:
                 log.exception(
                     "workspace_rollback audit publish swallow caught: %s",

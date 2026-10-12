@@ -366,9 +366,9 @@ def _requester_agent_id(claimed: str) -> UUID | None:
             parsed = UUID(claimed)
             result = parsed if str(parsed) == claimed else None
     except ValueError:
-        # NOSILENT: "this requester names no agent" is the answer; it is shown the Tool Pod
-        # tools, which every caller may use. logging each such request would log every readiness
-        # poll a non-agent pod makes.
+        # NOSILENT(expected): "this requester names no agent" is the answer; it is shown the Tool Pod
+        # tools, which every caller may use, and ownership is enforced on the verified identity anyway.
+        # logging each such request would log every readiness poll a non-agent pod makes.
         result = None
     return result
 

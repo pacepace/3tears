@@ -534,7 +534,7 @@ async def _finished_within(hook: AsyncGenerator[None, ActionOutcome], call: Tool
             try:
                 await hook.asend(outcome)
             except StopAsyncIteration:
-                # NOSILENT: the hook took its outcome and finished — the one way a hook is meant to end
+                # NOSILENT(expected): the hook took its outcome and finished — the one way a hook is meant to end
                 return
             except Exception:
                 # Log only: a tool call is a transport exchange with no record of its own, and its outcome is already the caller's.
@@ -584,7 +584,7 @@ async def _close(hook: AsyncGenerator[None, ActionOutcome], call: ToolCall, defe
             await hook.aclose()
             return
     except StopAsyncIteration:
-        # NOSILENT: the hook took the defect at its yield and finished — the one way a hook is meant to end
+        # NOSILENT(expected): the hook took the defect at its yield and finished — the one way a hook is meant to end
         # here; the caller re-raises the defect itself, so there is nothing to report on the hook's behalf.
         return
     except Exception as raised:

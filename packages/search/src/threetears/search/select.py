@@ -392,20 +392,16 @@ def _within_window(entry: CorpusEntry, value: object) -> bool | None:
 
 
 def _parse_bound(raw: object) -> datetime | None:
-    """Read one validated ISO-8601 window bound, tolerating an absent one."""
+    """Read one validated ISO-8601 window bound, tolerating an absent one.
+
+    `_malformed` parses both bounds and refuses the criterion before any entry is judged, so a
+    value reaching here already parsed once. Should the two ever drift apart, the ValueError
+    propagates: reading an unparseable bound as absent would let the window stop constraining
+    without anyone being told.
+    """
     if not isinstance(raw, str):
         return None
-    try:
-        return datetime.fromisoformat(raw)
-    except ValueError:  # pragma: no cover
-        # NOSILENT: unreachable by construction -- `_malformed` parses both
-        # bounds and refuses the criterion before any entry is judged, so a
-        # value reaching here already parsed once. Kept as a guard rather than
-        # deleted because the two functions could drift apart, and returning
-        # None means exactly what an absent bound means: this edge does not
-        # constrain. Logging an unreachable branch would be noise, and raising
-        # would turn a defensive guard into the crash it exists to prevent.
-        return None
+    return datetime.fromisoformat(raw)
 
 
 def _meets_resolution(entry: CorpusEntry, value: object) -> bool | None:

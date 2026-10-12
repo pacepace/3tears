@@ -33,6 +33,10 @@ class Answer:
         output_tokens: Completion tokens, any thinking included; ``None`` when unreported.
         cost_usd: What the call cost in US dollars, as you priced it; ``None`` when unpriced, which the
             engine records as unknown and never as $0.
+        served_model: The model the provider's RESPONSE named as having answered (a completion's
+            ``served_model``), never the one requested. ``None`` when the response named none: the run then records
+            only the id asked for, and its summary says which model answered is unconfirmed, since a provider may
+            answer an id with a model of its choosing.
     """
 
     value: Any
@@ -40,6 +44,7 @@ class Answer:
     input_tokens: int | None = None
     output_tokens: int | None = None
     cost_usd: float | None = None
+    served_model: str | None = None
 
     def __post_init__(self) -> None:
         """Refuse a spend no usage row can hold, so the candidate that built it fails rather than the run.

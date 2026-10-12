@@ -5,7 +5,23 @@ order: each builds on the ones before it. They all run offline with no API key, 
 
 ## Running them
 
-From the repo root, after `uv sync`:
+**Outside a checkout** (you installed the package with pip): the examples are not part of the installed package,
+so copy this whole directory from the repository, at the tag or version you installed. Copy all of it: the
+examples import `_live.py` and read `tickets.jsonl` from beside themselves. Then, from inside the copy:
+
+```bash
+python rung_zero.py
+```
+
+Running live needs the Anthropic SDK, which 3tears-evals does not depend on:
+
+```bash
+pip install anthropic
+export ANTHROPIC_API_KEY=sk-ant-...
+python llm_judge.py
+```
+
+**In a checkout of this repo**, from the repo root, after `uv sync` (which installs the SDK too):
 
 ```bash
 uv run python packages/evals/examples/rung_zero.py

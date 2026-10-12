@@ -36,7 +36,7 @@ async def _failing_job(raised: Exception) -> tuple[OpsFixture, str]:
     async def draft() -> _Draft:
         raise raised
 
-    work = action_job_work(TOYHOST_SCOPE, action="rubric_propose", run=draft)
+    work = action_job_work(TOYHOST_SCOPE, action="rubric_propose", run=draft, budget_s=60.0)
     await start_job_work(fixture.host.launch.job_manager, work, store=storage, executor=executor)
     return fixture, f"action:{work.record_id}"
 

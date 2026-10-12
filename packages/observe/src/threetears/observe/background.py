@@ -28,7 +28,7 @@ import logging
 from collections.abc import Coroutine
 from typing import Any
 
-__all__ = ["spawn_background"]
+__all__ = ["cancel_and_wait", "spawn_background"]
 
 
 def spawn_background(
@@ -90,3 +90,36 @@ def spawn_background(
 
     task.add_done_callback(_on_done)
     return task
+
+
+async def cancel_and_wait(task: asyncio.Task[Any]) -> None:
+    """cancel ``task`` and wait for it to end, swallowing nothing but the cancellation asked for.
+
+    the hand-written form -- ``task.cancel()``, then ``await task`` under ``except
+    CancelledError: pass`` -- swallows two cancellations that look the same: the one it asked
+    for, and the caller's own, when the caller is cancelled while it waits. the second is a
+    real swallow: the caller carries on as though nobody had asked it to stop. this waits with
+    :func:`asyncio.wait`, which never raises the task's outcome, so a ``CancelledError`` raised
+    here is always the caller's own, and propagates.
+
+    the task's own failure -- anything but its cancellation -- is raised, as ``await task``
+    would raise it. a task that returns rather than re-raising its cancellation ends normally,
+    which is fine too: either way it has ended.
+
+    :param task: the task to stop; not the current task, which could never see itself end
+    :ptype task: asyncio.Task[Any]
+    :return: nothing, once the task has ended
+    :rtype: None
+    :raises RuntimeError: ``task`` is the current task
+    :raises asyncio.CancelledError: the CALLER was cancelled while waiting
+    :raises BaseException: whatever the task itself raised other than its cancellation
+    """
+    if task is asyncio.current_task():
+        raise RuntimeError("a task cannot wait for its own cancellation to finish")
+    task.cancel()
+    await asyncio.wait([task])
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is not None:
+        raise error

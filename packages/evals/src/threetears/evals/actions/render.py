@@ -28,6 +28,7 @@ from threetears.evals.kernel.errors import EvalServiceError
 from threetears.evals.ops import (
     AnalysisDeleted,
     JudgeProfileEntry,
+    JudgeConfigListing,
     JudgeProfileListing,
     JudgeProfileRecording,
     CaseSetLine,
@@ -262,6 +263,17 @@ def render_templates(listing: TemplateListing) -> str:
     """A scope's templates."""
     lines = [f"templates ({len(listing.templates)})"]
     lines += [f"- {t.id}: {t.name} — kind {t.candidate_kind}; {t.intent}" for t in listing.templates]
+    return "\n".join(lines)
+
+
+def render_judge_configs(listing: JudgeConfigListing) -> str:
+    """A scope's judge configs, one per line with the dimension each asks for."""
+    lines = [f"judge configs ({len(listing.judge_configs)})"]
+    for config in listing.judge_configs:
+        model = f", model {config.model}" if config.model else ""
+        lines.append(
+            f"- {config.id}: {config.name} — dimension {config.rubric_dim_id}{model}, temperature {config.temperature}"
+        )
     return "\n".join(lines)
 
 
@@ -510,11 +522,12 @@ def _render_result(status: JobStatus) -> str:
 
 
 def render_campaign(campaign: CampaignLine) -> str:
-    """One campaign on one line."""
+    """One campaign on one line, declared or exploratory."""
+    kind = "exploratory" if campaign.exploratory else "declared"
     archived = ", archived" if campaign.archived else ""
     return (
         f"- {campaign.id}: {campaign.name} — subject {campaign.subject_id}, {campaign.behavior}; "
-        f"{campaign.run_count} run(s){archived}"
+        f"{campaign.run_count} run(s), {kind}{archived}"
     )
 
 
@@ -916,6 +929,7 @@ __all__ = [
     "render_insight_deleted",
     "render_insights",
     "render_job_status",
+    "render_judge_configs",
     "render_jobs_started",
     "render_pivot",
     "render_report",

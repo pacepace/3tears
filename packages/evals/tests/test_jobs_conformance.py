@@ -53,7 +53,9 @@ async def _draft_in_job(host: OpsHost, caller: Caller, params: _DraftParams) -> 
         await client.aclose()
         return _Draft(text=str(completion.content))
 
-    return await start_action_job(host, caller.scope_id, action="rubric_propose", run=draft, label=params.subject_area)
+    return await start_action_job(
+        host, caller.scope_id, action="rubric_propose", run=draft, label=params.subject_area, budget_s=60.0
+    )
 
 
 async def _draft_in_call(host: OpsHost, caller: Caller, params: _DraftParams) -> JobsStarted:
@@ -64,7 +66,7 @@ async def _draft_in_call(host: OpsHost, caller: Caller, params: _DraftParams) ->
     async def keep() -> _Draft:
         return _Draft(text=str(completion.content))
 
-    return await start_action_job(host, caller.scope_id, action="rubric_propose", run=keep)
+    return await start_action_job(host, caller.scope_id, action="rubric_propose", run=keep, budget_s=60.0)
 
 
 async def _waits_on_its_job(host: OpsHost, caller: Caller, params: _DraftParams) -> JobsStarted:
@@ -80,7 +82,7 @@ async def _nothing_in_job(host: OpsHost, caller: Caller, params: _DraftParams) -
     async def nothing() -> _Draft:
         return _Draft(text="")
 
-    return await start_action_job(host, caller.scope_id, action="rubric_propose", run=nothing)
+    return await start_action_job(host, caller.scope_id, action="rubric_propose", run=nothing, budget_s=60.0)
 
 
 async def _topic(_stage: ConformanceStage) -> Mapping[str, Any]:
@@ -150,6 +152,16 @@ async def test_the_kit_catches_a_spend_action_that_calls_its_model_in_the_call()
     with pytest.raises(JobsConformanceFailure, match="its call made a completion request"):
         await cases["rubric_propose.happy_path"].check(conformance_host)
     with pytest.raises(JobsConformanceFailure, match="its example call made a proposer request"):
+        await cases["rubric_propose.call"].check(conformance_host)
+
+
+async def test_the_call_case_names_how_a_call_that_made_a_request_then_ended() -> None:
+    """The guard refuses the request inside the call; that refusal is named beside the failure, not dropped."""
+    cases = _cases(_draft_in_call)
+
+    with pytest.raises(
+        JobsConformanceFailure, match=r"proposer request to proposer/default \(it then raised Completion"
+    ):
         await cases["rubric_propose.call"].check(conformance_host)
 
 

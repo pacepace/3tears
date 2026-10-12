@@ -109,9 +109,9 @@ async def publish_audit(
             subject=subject,
             payload=event.model_dump_json().encode(),
         )
-    # NOSILENT: audit publish is fire-and-forget at the producer; failures
-    # (JetStream outage, no stream, broker timeout) log at WARN so the
-    # producing call path is never blocked by audit health.
+    # NOSILENT: logged, not swallowed -- the lost event is written at WARN naming its subject and
+    # type. this function returns nothing, so no caller can read a lost event as a delivered one,
+    # and the producing call path (whose own answer is true) is never blocked by audit health.
     except Exception as exc:
         log.warning(
             "audit publish failed",

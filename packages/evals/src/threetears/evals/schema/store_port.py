@@ -76,6 +76,8 @@ compare a real adapter against.
 from __future__ import annotations
 
 import asyncio
+import inspect
+import sys
 from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
@@ -102,6 +104,10 @@ class StoreCalledOnEventLoop(RuntimeError):
     A caller in async code offloads the call, ``await run_blocking(host.blocking_executor, fn, ...)``, as the
     action catalogue does for every synchronous operation in :mod:`threetears.evals.ops`; an async operation there
     (a launch, a job's poll) offloads its own.
+
+    The message names the call site to fix: the innermost frame outside ``threetears.evals`` and the standard
+    library, which is the host's (or a test's) own code, not the engine function it called. A synchronous helper
+    in between is named, since that helper is where the offload belongs.
     """
 
 
@@ -114,13 +120,41 @@ def refuse_on_event_loop() -> None:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        # NOSILENT: the answer, not a failure: no loop runs on this thread (an executor's worker, or synchronous
+        # NOSILENT(expected): the answer, not a failure: no loop runs on this thread (an executor's worker, or synchronous
         # code), so the store may be called here.
         return
     raise StoreCalledOnEventLoop(
-        f"a document store was called on the thread running event loop {loop!r}; a store call blocks, so it runs "
-        "off the loop: await run_blocking(host.blocking_executor, fn, ...) runs it on the host's executor"
+        f"a document store was called on the thread running event loop {loop!r}, from {_call_site()}; a store call "
+        "blocks, so it runs off the loop: await run_blocking(host.blocking_executor, fn, ...) runs it on the host's "
+        "executor"
     )
+
+
+#: The package whose frames a call site skips: the engine's own, between the caller and the store.
+_ENGINE_PACKAGE = "threetears.evals"
+
+
+def _call_site() -> str:
+    """Name the innermost frame calling into the engine from outside it: the line a caller fixes.
+
+    Walks out from here past the engine's own frames and the standard library's (an executor, the event loop), so
+    the frame named is the code that called the engine. Where every frame is the engine's or the standard
+    library's, the engine itself made the call, and its outermost frame is named instead, as the engine's.
+
+    Returns:
+        ``module.function (file:line)``, or that prefixed ``the engine's own`` when no frame is outside it.
+    """
+    frame = inspect.currentframe()
+    outermost_engine: str | None = None
+    while frame is not None:
+        module = str(frame.f_globals.get("__name__", "?"))
+        where = f"{module}.{frame.f_code.co_name} ({frame.f_code.co_filename}:{frame.f_lineno})"
+        if module == _ENGINE_PACKAGE or module.startswith(f"{_ENGINE_PACKAGE}."):
+            outermost_engine = where
+        elif module.split(".", 1)[0] not in sys.stdlib_module_names:
+            return where
+        frame = frame.f_back
+    return f"the engine's own {outermost_engine}" if outermost_engine is not None else "an unknown call site"
 
 
 def omit_paths(document: dict[str, Any], paths: Sequence[str]) -> dict[str, Any]:

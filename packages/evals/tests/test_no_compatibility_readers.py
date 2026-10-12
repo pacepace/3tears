@@ -47,7 +47,7 @@ from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.schema import SweepableValue
 from threetears.evals.schema.models import CalibrationRating, JudgeRescore, RubricScore, RunCompleteness
 from threetears.evals.kernel.surface import DecisionSurface, JudgedDimensionFacts, JudgedReading
-from threetears.evals.gen import plan_draft, propose_draft
+from threetears.evals.gen import RUBRIC_PROPOSAL_CONTRACT, plan_draft, propose_draft
 from threetears.evals.gen.prompts.boundary_gen import EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT
 from threetears.evals.gen.prompts.proposer import EVAL_PROPOSER_TEMPLATE_DEFAULT
 from threetears.evals.storage import InMemoryDocumentStore
@@ -236,6 +236,10 @@ class _ScriptedClient(ReleasableClientMixin):
         return SimpleNamespace(content=self.content)
 
 
+#: A system prompt written for the draft's output contract, as every stored proposer prompt has to be.
+_SYSTEM = f"SYSTEM TEXT\n{RUBRIC_PROPOSAL_CONTRACT.line}"
+
+
 def _budget() -> OutOfRunBudget:
     return OutOfRunBudget(
         EvalStorage(InMemoryDocumentStore()), scope_id="proposals", cap_usd=1.0, blocking_executor=None
@@ -253,7 +257,7 @@ async def _proposed(
     catalog_feed: str,
 ) -> Any:
     """A host's proposal: planned and admitted in its call, then made, as the job makes it."""
-    call = plan_draft(system_prompt=system_prompt, subject_feed=subject_feed, catalog_feed=catalog_feed)
+    call = plan_draft(axis=axis, system_prompt=system_prompt, subject_feed=subject_feed, catalog_feed=catalog_feed)
     [admitted] = budget.admit(client, "proposer", [call])
     return await propose_draft(client, admitted, budget=budget, axis=axis, subject_id=subject_id)
 
@@ -280,7 +284,7 @@ async def test_a_proposer_draft_naming_a_bare_dim_is_refused_naming_it(axis: str
             budget=_budget(),
             axis=axis,
             subject_id="s",
-            system_prompt="",
+            system_prompt=_SYSTEM,
             subject_feed="F",
             catalog_feed="C",
         )
@@ -289,7 +293,7 @@ async def test_a_proposer_draft_naming_a_bare_dim_is_refused_naming_it(axis: str
         budget=_budget(),
         axis=axis,
         subject_id="s",
-        system_prompt="",
+        system_prompt=_SYSTEM,
         subject_feed="F",
         catalog_feed="C",
     )
@@ -305,7 +309,7 @@ async def test_a_proposer_draft_dimension_with_no_scale_is_refused(axis: str) ->
             budget=_budget(),
             axis=axis,
             subject_id="s",
-            system_prompt="",
+            system_prompt=_SYSTEM,
             subject_feed="F",
             catalog_feed="C",
         )

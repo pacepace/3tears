@@ -35,6 +35,7 @@ from threetears.evals.analysis.bundle.schema import (
     MovementDirection,
     RealizedDesign,
     ScopeDivergence,
+    WholeSwing,
 )
 from threetears.evals.analysis.bundle.measures import (
     _collect_measures,
@@ -274,14 +275,16 @@ def _unsound_subtraction(
     return remainder_withheld_reason(part.name, whole.name, catalog.get(part.name), catalog, measures=profile.measures)
 
 
-def _carried_by(
+def _whole_swing(
+    lever: str,
+    level_names: tuple[str, str],
     whole: MeasureMovement,
     level_a: _PerCaseMeasures,
     level_b: _PerCaseMeasures,
     catalog: dict[str, MetricDescriptor],
     *,
     profile: HostProfile,
-) -> tuple[list[MeasureMovement], str | None, float | None]:
+) -> WholeSwing:
     """Grade each declared component of a whole between two levels, and name the one carrying it.
 
     The components are read from the same declarations :func:`_unsound_subtraction` reads —
@@ -292,6 +295,8 @@ def _carried_by(
     reader handed only that rule and no components has nothing to report.
 
     Args:
+        lever: The lever whose levels are compared.
+        level_names: The two levels, in the order the divergences name them.
         whole: The whole-run measure's movement.
         level_a: Per-case measures at the first level.
         level_b: Per-case measures at the second level.
@@ -299,7 +304,7 @@ def _carried_by(
         profile: The host whose vocabulary this reads.
 
     Returns:
-        ``(components, carried_by, carried_share)``, the carrier decided by :func:`component_carrier`.
+        The swing, its carrier decided by :func:`component_carrier`.
     """
     components = [
         measure_movement(catalog[name], level_a[name], level_b[name])
@@ -307,9 +312,15 @@ def _carried_by(
         if level_a.get(name) and level_b.get(name)
     ]
     carrier = component_carrier(whole, components, level_a, level_b)
-    if carrier is None:
-        return components, None, None
-    return components, carrier.name, carrier.delta / whole.delta
+    return WholeSwing(
+        lever=lever,
+        level_a=level_names[0],
+        level_b=level_names[1],
+        whole=whole.name,
+        components=components,
+        carried_by=None if carrier is None else carrier.name,
+        carried_share=None if carrier is None else carrier.delta / whole.delta,
+    )
 
 
 def component_carrier(
@@ -378,6 +389,19 @@ class _DivergenceCount(NamedTuple):
     untested: int
 
 
+#: A whole-run swing's key: the lever, its two levels in name order, and the whole-run measure.
+_SwingKey = tuple[str, str, str, str]
+
+
+class _Divergences(NamedTuple):
+    """What the divergence lens publishes: the divergences, where each one's whole moved, and what it counted."""
+
+    published: list[ScopeDivergence]
+    swings: list[WholeSwing]
+    omitted: int
+    counted: _DivergenceCount
+
+
 def _scope_divergences(
     runs: list[EvalRun],
     results_by_run: dict[str, list[EvalResult]],
@@ -389,7 +413,7 @@ def _scope_divergences(
     observations: _MechanismObservations,
     served: _ServedModels,
     profile: HostProfile,
-) -> tuple[list[ScopeDivergence], int, _DivergenceCount]:
+) -> _Divergences:
     """Find the lever changes where the whole run moved by a different amount than the part under test.
 
     Each level of each swept lever gets its own measure collection, built from that level's
@@ -412,6 +436,10 @@ def _scope_divergences(
     :func:`_unsound_subtraction`, which names the reason when it is not, so a reader gets a
     sentence rather than a null.
 
+    Where each divergence's whole moved is graded once per lever, level pair and whole
+    (:func:`_whole_swing`), never once per part: one whole diverges from several parts at once, and
+    the answer is the same for all of them.
+
     Args:
         runs: The campaign's resolved runs.
         results_by_run: Each run's results, keyed by run id.
@@ -430,10 +458,11 @@ def _scope_divergences(
         profile: The host whose vocabulary this reads.
 
     Returns:
-        The divergences to report (strongest first, capped), the count dropped by the cap, and how
-        many pairs were tested and could not be.
+        The divergences to report (strongest first, capped); a :class:`WholeSwing` for each lever, level pair
+        and whole among them; the count dropped by the cap; and how many pairs were tested and could not be.
     """
     found: list[tuple[float, ScopeDivergence]] = []
+    swings: dict[_SwingKey, WholeSwing] = {}
     n_tested = n_untested = 0
     all_run_ids = [run.id for run in runs]
     lever_levels = _lever_levels(runs, results_by_run, profile=profile)
@@ -489,6 +518,11 @@ def _scope_divergences(
                         continue
                     whole = measure_movement(catalog[e_a.name], at_a[e_a.name], at_b[e_a.name])
                     part = measure_movement(catalog[s_a.name], at_a[s_a.name], at_b[s_a.name])
+                    swing_key = (lever, level_a, level_b, whole.name)
+                    if swing_key not in swings:
+                        swings[swing_key] = _whole_swing(
+                            lever, (level_a, level_b), whole, at_a, at_b, catalog, profile=profile
+                        )
                     withheld = _unsound_subtraction(
                         whole=e_a,
                         part=s_a,
@@ -496,7 +530,6 @@ def _scope_divergences(
                         observation_units=[units[level_a], units[level_b]],
                         profile=profile,
                     )
-                    components, carried_by, carried_share = _carried_by(whole, at_a, at_b, catalog, profile=profile)
                     assert tested.test is not None
                     family.append(
                         (
@@ -520,9 +553,6 @@ def _scope_divergences(
                                     described.contained_by if (described := catalog.get(part.name)) else None
                                 ),
                                 "confounded_by": confounded,
-                                "whole_components": components,
-                                "carried_by": carried_by,
-                                "carried_share": carried_share,
                             },
                         )
                     )
@@ -552,8 +582,13 @@ def _scope_divergences(
             item[1].subsystem.name,
         )
     )
-    return (
-        [divergence for _, divergence in found[:_MAX_DIVERGENCES]],
+    published = [divergence for _, divergence in found[:_MAX_DIVERGENCES]]
+    # A swing is published only beside a divergence it explains: a whole whose every divergence the
+    # cap dropped, or that diverged from nothing, has no entry for a reader to join it to.
+    explained = {(d.lever, d.level_a, d.level_b, d.end_to_end.name) for d in published}
+    return _Divergences(
+        published,
+        [swings[key] for key in sorted(explained)],
         max(0, len(found) - _MAX_DIVERGENCES),
         _DivergenceCount(n_tested, n_untested),
     )
