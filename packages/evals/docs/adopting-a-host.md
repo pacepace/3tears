@@ -335,13 +335,15 @@ Prove the router as you prove any store: the conformance kit runs over a `Routed
 
 **Every name that leaves a public root is written down, and nothing is kept for compatibility.** When a release
 moves a public name to another root, renames it, or removes it, `packages/evals/MIGRATIONS.toml` records it under
-that release: the old name, its new home or `removed`, and why. There is no shim at the old name. The file is
+that release: the old name, its new home or `removed`, and why. There is no shim at the old name. The record starts
+at 0.66.0, the package's first release, which moved nothing. Pre-release tags are not releases and are not in it.
+The file is
 in the repository, not the installed package: read it at the tag you are moving to, on GitHub
 (`https://github.com/pacepace/3tears/blob/<tag>/packages/evals/MIGRATIONS.toml`) or in a checkout. In a checkout,
 the release notes are printed from it, so they hold the full old-to-new map:
 
 ```bash
-uv run python packages/evals/scripts/release_notes.py v0.66.0-evaladopt.6
+uv run python packages/evals/scripts/release_notes.py v0.66.0
 ```
 
 Each line reads `old → new`, grouped under the reason for the move. Changes that are not a public name, such as
@@ -362,11 +364,14 @@ snapshot:
   change shows up as a diff in review. A signature change needs no record in `MIGRATIONS.toml`. When it breaks
   callers, add it to the newest section's `notes`.
 - **A name moved, renamed or removed.** The test fails until `MIGRATIONS.toml`'s first section (the release being
-  prepared) records it. The generator refuses to write a snapshot that drops an unrecorded name.
+  prepared) records it. The generator refuses to write a snapshot that drops an unrecorded name. A name the last
+  final release did not export never reached a porter, so it needs only a regeneration, and a record of it is
+  refused.
 - **A section that names the tag before it (`since`).** The test reads both surfaces from git and holds the
   section to exactly the names that left a root between that tag and this version's. Before the version is
-  tagged, it compares against the working tree. A checkout without the tags fails this check rather than passing
-  it.
+  tagged, it compares against the working tree. `since` is always a final release tag (`v<x>.<y>.<z>`). A tag
+  from before the package existed (`v0.65.0`, for 0.66.0) has an empty surface. A checkout without the tags fails
+  this check rather than passing it.
 - **A name exported from two roots.** The test fails unless it is one object and `api/reexports.toml` declares
   it. Two different objects under one name always fail: rename one.
 
@@ -376,8 +381,9 @@ uv run python packages/evals/scripts/generate_api_snapshot.py --check  # report 
 ```
 
 **When a version is tagged**, rename the `unreleased` section of `MIGRATIONS.toml` to the version, without the
-leading `v`. Then paste the output of `release_notes.py v<version>` into the release description. The next change
-that moves a name starts a new `unreleased` section at the top, with `since` set to the tag just cut.
+leading `v`. Then paste the output of `release_notes.py v<version>` into the release description. The next release
+starts a new `unreleased` section at the top, with `since` set to the tag just cut. A pre-release tag (any suffix
+after `v<x>.<y>.<z>`) gets no section, and the record never follows one.
 
 ## The kind: what you are evaluating
 

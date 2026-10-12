@@ -3,7 +3,7 @@
 Dev tooling for ``3tears-evals``: it lives beside the package, not in it, and is not installed.
 
     # The notes for a tag (the leading "v" is optional):
-    uv run python packages/evals/scripts/release_notes.py v0.66.0-evaladopt.6
+    uv run python packages/evals/scripts/release_notes.py v0.66.0
 
     # The release being prepared:
     uv run python packages/evals/scripts/release_notes.py unreleased
@@ -55,7 +55,7 @@ def render(release: Release) -> Iterator[str]:
 def main(argv: list[str] | None = None) -> int:
     """Print one release's notes, or name the versions there are."""
     parser = argparse.ArgumentParser(description=typing.cast(str, __doc__).splitlines()[0])
-    parser.add_argument("version", help="the version or tag, e.g. v0.66.0-evaladopt.6, or 'unreleased'")
+    parser.add_argument("version", help="the version or tag, e.g. v0.66.0, or 'unreleased'")
     args = parser.parse_args(argv)
     migrations = load_migrations(MIGRATIONS_PATH)
     release = migrations.release(args.version)
