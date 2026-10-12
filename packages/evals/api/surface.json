@@ -993,6 +993,18 @@
       "kind": "function",
       "signature": "confusion_of(cell: str) -> tuple[str, str] | None"
     },
+    "threetears.evals.kernel.CONTRACT_MARKER": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
+    "threetears.evals.kernel.contract_state": {
+      "kind": "function",
+      "signature": "contract_state(text: str, contract: OutputContract | None) -> ContractState"
+    },
+    "threetears.evals.kernel.ContractState": {
+      "kind": "literal",
+      "signature": "'current'` | `'outdated'` | `'undeclared'` | `'unbound'"
+    },
     "threetears.evals.kernel.ControlDeclaration": {
       "kind": "model",
       "signature": "ControlDeclaration(stimulus: Literal['controlled', 'uncontrolled'], stimulus_reason: str = '', apparatus: ApparatusProvenance)"
@@ -1036,6 +1048,10 @@
     "threetears.evals.kernel.DecisionSurface": {
       "kind": "model",
       "signature": "DecisionSurface(control_variant_key: str | None = None, cells: list[CellFacts] = list(), bars: list[BarAdjudication] = list(), measures: dict[str, MeasureFacts] = dict(), dimensions: dict[DimName, JudgedDimensionFacts] = dict(), time_axis: TimeAxis | None = None, frontier_dominance: dict[str, FrontierDominance] | None = None, frontier_disqualified: dict[str, list[DimName]] | None = None, rubric_threshold: int = 3, guardrails: GuardrailReadings | None = None)"
+    },
+    "threetears.evals.kernel.declared_contracts": {
+      "kind": "function",
+      "signature": "declared_contracts(text: str) -> tuple[OutputContract, ...]"
     },
     "threetears.evals.kernel.DEFAULT_JOB_LEASE_S": {
       "kind": "constant (float)",
@@ -1573,6 +1589,10 @@
       "kind": "dataclass",
       "signature": "OutOfRunBudget(store: OutOfRunSpendStore, scope_id: str, cap_usd: float | None, template_id: str | None = None, subject_id: str | None = None, launch_group_id: str | None = None, campaign_id: str | None = None, run_id: str | None = None, blocking_executor: Executor | None, _committed_usd: float (derived), _admitted: dict[str, tuple[AdmittedCall, PricedCompletion]] (derived), _recorded: list[OutOfRunSpend] (derived))"
     },
+    "threetears.evals.kernel.OutputContract": {
+      "kind": "dataclass",
+      "signature": "OutputContract(name: str, fingerprint: str)"
+    },
     "threetears.evals.kernel.PassHatPoint": {
       "kind": "typed dict",
       "signature": "PassHatPoint(k: int, pass_hat_k: float | None, n_cases: int)"
@@ -1609,9 +1629,13 @@
       "kind": "function",
       "signature": "prompt_drift(entry: SeedPrompt, *, shipped: SeedTemplate | str, stored: SeedTemplate | str, seeded_digest: str | None, customized: bool = False) -> PromptDrift"
     },
+    "threetears.evals.kernel.PromptContractError": {
+      "kind": "exception",
+      "signature": "PromptContractError(prompt_type: str, *, state: ContractState, expected: OutputContract, declared: tuple[OutputContract, ...]) -> None"
+    },
     "threetears.evals.kernel.PromptDrift": {
       "kind": "dataclass",
-      "signature": "PromptDrift(prompt_type: str, state: DriftState, shipped_digest: str, stored_digest: str, remedy: str = '')"
+      "signature": "PromptDrift(prompt_type: str, state: DriftState, shipped_digest: str, stored_digest: str, remedy: str = '', contract: ContractState = 'unbound', expected_contract: str = '')"
     },
     "threetears.evals.kernel.PROPOSER_PROMPT": {
       "kind": "constant (str)",
@@ -1649,6 +1673,10 @@
       "kind": "function",
       "signature": "refuse_an_undeclarable_design(design: CampaignDesign, *, behavior: str, template: EvalTemplate | None, profile: HostProfile) -> None"
     },
+    "threetears.evals.kernel.REFUSED_CONTRACT_STATES": {
+      "kind": "constant (frozenset)",
+      "signature": ""
+    },
     "threetears.evals.kernel.REFUSED_TOOL_ATTACHES_KEY": {
       "kind": "constant (str)",
       "signature": ""
@@ -1676,6 +1704,10 @@
     "threetears.evals.kernel.require_held": {
       "kind": "function",
       "signature": "require_held(store: LeaseStore, kind: LeasedJobKind[R], record_id: str, scope_id: str, *, leases: JobLeases | None = None) -> None"
+    },
+    "threetears.evals.kernel.require_output_contract": {
+      "kind": "function",
+      "signature": "require_output_contract(prompt_type: str, text: str, contract: OutputContract) -> None"
     },
     "threetears.evals.kernel.REREAD_AND_RETRY": {
       "kind": "constant (str)",
@@ -1880,6 +1912,10 @@
     "threetears.evals.kernel.TemperatureSkip": {
       "kind": "model",
       "signature": "TemperatureSkip(result_id: str, reason: str)"
+    },
+    "threetears.evals.kernel.template_text": {
+      "kind": "function",
+      "signature": "template_text(sections: tuple[SeedSection, ...]) -> str"
     },
     "threetears.evals.kernel.tier_of": {
       "kind": "function",
@@ -4519,7 +4555,7 @@
     },
     "threetears.evals.gen.plan_draft": {
       "kind": "function",
-      "signature": "plan_draft(*, system_prompt: str, subject_feed: str, catalog_feed: str) -> PlannedCall"
+      "signature": "plan_draft(*, axis: RubricAxis, system_prompt: str, subject_feed: str, catalog_feed: str) -> PlannedCall"
     },
     "threetears.evals.gen.price_variations": {
       "kind": "async function",
@@ -4535,6 +4571,10 @@
     },
     "threetears.evals.gen.PROPOSER_MAX_TOKENS": {
       "kind": "constant (int)",
+      "signature": ""
+    },
+    "threetears.evals.gen.RUBRIC_PROPOSAL_CONTRACT": {
+      "kind": "constant (OutputContract)",
       "signature": ""
     },
     "threetears.evals.storage.AsyncStoreBridge": {

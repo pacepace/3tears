@@ -275,6 +275,17 @@ from threetears.evals.kernel.prompts.catalogue import (
     PROPOSER_PROMPT,
     SEED_PROMPTS,
 )
+from threetears.evals.kernel.prompts.contract import (
+    CONTRACT_MARKER,
+    REFUSED_CONTRACT_STATES,
+    ContractState,
+    OutputContract,
+    PromptContractError,
+    contract_state,
+    declared_contracts,
+    require_output_contract,
+    template_text,
+)
 from threetears.evals.kernel.prompts.drift import DriftState, PromptDrift, prompt_drift, seed_digest
 from threetears.evals.kernel.prompts.seed import KIND_TEMPLATE, KIND_TEXT, SeedPrompt, SeedSection, SeedTemplate
 from threetears.evals.kernel.provider import (
@@ -435,6 +446,15 @@ __all__ = [
     "PromptDrift",
     "prompt_drift",
     "seed_digest",
+    "CONTRACT_MARKER",
+    "REFUSED_CONTRACT_STATES",
+    "ContractState",
+    "OutputContract",
+    "PromptContractError",
+    "contract_state",
+    "declared_contracts",
+    "require_output_contract",
+    "template_text",
     "METRIC_DESCRIPTORS",
     "DROPPED_TOOL_CALLS_KEY",
     "REASONING_RATIO_KEY",
