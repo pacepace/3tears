@@ -489,7 +489,9 @@ A host adds its own actions to the catalogue (`eval_catalogue(my_actions)`). One
 rubric proposer, a drafter of a classifier's cases — is a `spend` action and keeps the engine's rule: **its call
 makes no completion request.** It prices and refuses in the call, then starts the work as a job with
 `start_action_job`, which writes an `EvalActionJob` record carrying the job's lease and, once the work returns,
-its typed result as JSON — what `job_poll` returns. Declare it `long_running=True` with result `JobsStarted`. It
+its typed result as JSON — what `job_poll` returns. **Name its wall-clock ceiling** (`budget_s`): no action job
+has a default, so a forgotten one is a `TypeError` where you start it rather than an hour nobody chose. Declare
+it `long_running=True` with result `JobsStarted`. It
 needs no `render`: long work reads back as the jobs it started, with `render_jobs_started` (exported from
 `threetears.evals.actions`), which is the default, and which an action returning anything else may not use.
 
@@ -510,7 +512,8 @@ async def _propose(host: OpsHost, caller: Caller, params: ProposeParams) -> Jobs
         return proposed.proposal
 
     return await start_paid_call(host, caller.scope_id, action="rubric_propose", role="proposer", model=None,
-                                 purpose="proposer", budget=budget, call=call, make=draft, label=params.topic)
+                                 purpose="proposer", budget=budget, call=call, make=draft, label=params.topic,
+                                 budget_s=600.0)                  # required: how long a draft may take
 
 async def _propose_happy_path(stage: ConformanceStage) -> Mapping[str, Any]:
     return {"topic": "tone"}                             # what reaches the work, with anything it must arrange

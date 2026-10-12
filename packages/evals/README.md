@@ -49,11 +49,15 @@ It also holds a set of measurement rules, each explained on its page:
    pip install "3tears-evals[fastmcp]"   # adds the FastMCP transport, for driving evals from an agent
    ```
 
-2. **Run the first example.** It grades a small sentiment classifier on six cases, offline and free:
+2. **Run the first example.** It grades a small sentiment classifier on six cases, offline and free. In a
+   checkout:
 
    ```bash
    uv run python packages/evals/examples/rung_zero.py
    ```
+
+   After a pip install, copy the [`examples/`](examples/) directory from the repository and run
+   `python rung_zero.py` inside it; [examples/README.md](examples/README.md) says how, and what a live run needs.
 
 3. **Point it at your own function.** Any async function from a case to an answer works. Put your prompt and
    model call where the comment says:

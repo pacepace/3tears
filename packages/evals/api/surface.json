@@ -2331,7 +2331,7 @@
     },
     "threetears.evals.run.action_job_work": {
       "kind": "function",
-      "signature": "action_job_work(scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], label: str = '', budget_s: float = 3600.0, discard: Callable[[], Awaitable[None]] | None = None) -> JobWork[EvalActionJob]"
+      "signature": "action_job_work(scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], budget_s: float, label: str = '', discard: Callable[[], Awaitable[None]] | None = None) -> JobWork[EvalActionJob]"
     },
     "threetears.evals.run.AdmissionTicket": {
       "kind": "class",
@@ -5475,7 +5475,7 @@
     },
     "threetears.evals.ops.start_action_job": {
       "kind": "async function",
-      "signature": "start_action_job(host: OpsHost, scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], label: str = '', budget_s: float = 3600.0, discard: Callable[[], Awaitable[None]] | None = None) -> JobsStarted"
+      "signature": "start_action_job(host: OpsHost, scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], budget_s: float, label: str = '', discard: Callable[[], Awaitable[None]] | None = None) -> JobsStarted"
     },
     "threetears.evals.ops.start_job": {
       "kind": "async function",
@@ -5483,7 +5483,7 @@
     },
     "threetears.evals.ops.start_paid_call": {
       "kind": "async function",
-      "signature": "start_paid_call(host: OpsHost, scope_id: str, *, action: str, role: CompletionRole, model: str | None, purpose: OutOfRunPurpose, budget: OutOfRunBudget, call: PlannedCall, make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]], label: str, budget_s: float = 3600.0) -> JobsStarted"
+      "signature": "start_paid_call(host: OpsHost, scope_id: str, *, action: str, role: CompletionRole, model: str | None, purpose: OutOfRunPurpose, budget: OutOfRunBudget, call: PlannedCall, make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]], label: str, budget_s: float) -> JobsStarted"
     },
     "threetears.evals.ops.sweep_job_id": {
       "kind": "function",
