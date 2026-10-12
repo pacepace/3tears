@@ -1457,6 +1457,8 @@ def _method_accepts_partition(method: Any, partition_column: str) -> bool:
     try:
         sig = inspect.signature(method)
     except TypeError, ValueError:
+        # NOSILENT(expected): a method with no introspectable signature cannot be shown to take the
+        # partition column; False makes __init_subclass__ refuse the class, naming the method
         return False
     return partition_column in sig.parameters
 

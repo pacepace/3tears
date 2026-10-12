@@ -175,7 +175,7 @@ class SQLiteBackend:
                 from uuid_utils import UUID as UuidUtilsUUID
 
                 sqlite3.register_adapter(UuidUtilsUUID, str)
-            # NOSILENT: optional dependency probe; absence is a supported configuration
+            # NOSILENT(optional-import): uuid_utils is optional; without it there is no such UUID to adapt
             except ImportError:
                 pass
             self._initialized = True
@@ -624,9 +624,12 @@ class SQLiteBackend:
             for conn in self._pooled_connections:
                 try:
                     conn.close()
-                # NOSILENT: teardown best-effort; a connection that will not close is already gone
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as exc:  # noqa: BLE001 -- the reset still drops the pool; the leak is reported
+                    log.warning(
+                        "L1 cache reset: a pooled connection would not close; it is dropped unclosed: %s: %s",
+                        type(exc).__name__,
+                        exc,
+                    )
             self._pooled_connections = []
         self._local = threading.local()
         if self._anchor_conn is not None:
@@ -763,6 +766,8 @@ class SQLiteBackend:
         try:
             self.delete_by_id(table, entity_id, primary_key)
         except sqlite3.OperationalError as exc:
+            # NOSILENT(logged): this procedure answers nothing; the expired row is withheld from the read
+            # either way, and the warning names the table whose row stays on disk
             log.warning(
                 "L1 row past its max age could not be dropped; withholding it anyway",
                 extra={"extra_data": {"table": table, "max_age_seconds": max_age_seconds, "error": str(exc)}},
@@ -846,7 +851,7 @@ class SQLiteBackend:
 
             if isinstance(sa_type, Vector):
                 return "TEXT_VECTOR"
-        # NOSILENT: optional dependency probe; absence is a supported configuration
+        # NOSILENT(optional-import): pgvector is an optional extra; without it no column can be a Vector
         except ImportError:
             pass
 
