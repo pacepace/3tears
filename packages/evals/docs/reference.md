@@ -1641,6 +1641,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`UnrepeatedScore`** · model · A repeated score with no pair to read, and why.
 - **`Verdict`** · model · One verdict the report states, typed: what a program reads instead of the words printed from it.
 - **`VerdictOrder`** · model · The order verdicts are read in, as the campaign declared it — never as the writer would choose.
+- **`WholeSwing`** · model · Where one whole-run measure's movement between two levels of a lever went, by its declared components.
 
 **Types**
 
@@ -2583,7 +2584,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schema_version` | `int` | `48` | Bundle-shape version, for future evolution + fingerprint clarity. |
+| `schema_version` | `int` | `49` | Bundle-shape version, for future evolution + fingerprint clarity. |
 | `campaign_id` | `str` | required | The campaign this bundle summarises. |
 | `subject_id` | `str` | required | The analysed subject's stable id. |
 | `subject_kind` | `str` | `''` | Discriminator; data, never a code branch. |
@@ -2602,6 +2603,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `telemetry` | `TelemetryRollup` | required | Campaign-wide descriptive telemetry. |
 | `coverage` | `list[LeverCoverageInput]` | `[]` | Per-lever structural coverage map (the analysis's spine). |
 | `scope_divergences` | `list[ScopeDivergence]` | `[]` | Lever changes where the whole-run measure moved by a different amount than the isolating measure, the difference itself tested and Holm-corrected within the lever — each one is a finding. |
+| `whole_swings` | `list[WholeSwing]` | `[]` | Where each diverging whole-run movement went: one entry per lever, level pair and whole-run measure among `scope_divergences`, naming the component that carried it. |
 | `divergences_omitted` | `int` | `0` | Gated divergences beyond the reporting cap, dropped weakest-first. Stated so a short list is not read as a complete one. |
 | `divergences_tested` | `int` | `0` | Whole-and-part pairs across every lever whose divergence test carried a p, published or not. |
 | `divergences_untested` | `int` | `0` | Whole-and-part pairs whose divergence could not be tested: fewer than two cases carrying both measures on a side, or a remainder (whole minus part) that moved by the same amount on every case where the two measures do not both declare value_range, so no test of the mean can call it; declare value_range on both for the bounded test to read it. |

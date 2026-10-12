@@ -278,6 +278,7 @@ from threetears.evals.analysis.bundle.schema import (
     TelemetryRollup,
     TokenRollup,
     VerdictOrder,
+    WholeSwing,
 )
 from threetears.evals.analysis.campaigns import CampaignStore, OpenAxisFamily
 from threetears.evals.analysis.cells import Cell, NextExperiment, RefusedMerge, SubjectKeyInstability
@@ -598,6 +599,7 @@ __all__ = [
     "UnrepeatedScore",
     "UnpairedReason",
     "VerdictOrder",
+    "WholeSwing",
     "WriterMessageCheck",
     "add_runs_to_campaign",
     "analysis_report",
