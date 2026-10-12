@@ -542,13 +542,11 @@ GoalCheckIntent = Literal["act", "hold"]
 GoalCheckProof = Literal["proven", "unproven", "refuted"]
 
 #: The rules a run's goal-check proofs are derived under, stamped on the run beside them
-#: (``EvalRun.goal_check_proof_rules``). ``1``: a control's case parameters were read under the types it stated,
-#: so a check reading a parameter as a list could pass its control and be stamped proven, then fail every case
-#: (#665). ``2``: a control's parameters are read as a case stores them, one string each, and a control stating
-#: another type is refuted. A ``proven`` recorded under an older rule is read as ``unproven``
-#: (:func:`goal_check_proofs_as_read`): the controls are editable and were not frozen with the run, so the proof
-#: cannot be re-derived for the template the run actually graded, and a proof earned under a rule since found
-#: wrong is not one.
+#: (``EvalRun.goal_check_proof_rules``): a control's parameters are read as a case stores them, one string each, and
+#: a control stating another type is refuted (#665). When the rules change, this number moves, and a ``proven``
+#: recorded under older rules is read as ``unproven`` (:func:`goal_check_proofs_as_read`): the controls are editable
+#: and were not frozen with the run, so the proof cannot be re-derived for the template the run actually graded,
+#: and a proof earned under a rule since found wrong is not one.
 GOAL_CHECK_PROOF_RULES = 2
 
 #: The words every surface uses for a goal check the current grammar refuses, frozen on the run that excluded it.
@@ -3092,16 +3090,16 @@ class EvalRun(CoreDocumentModel):
             "Each goal check the run grades -> whether it was shown to tell its outcomes apart when the run "
             "launched (`GoalCheckProof`), frozen for the reason `resolved_world_seed` is: the template's controls "
             "are editable. Only `proven` reads as measuring the behaviour; every surface showing an `unproven` or "
-            "`refuted` check's pass rate marks it. None = NOT RECORDED: a run launched before proofs were frozen, "
-            "or assembled without a launch — read as unproven, never as proven. Optional within v8 for that reason."
+            "`refuted` check's pass rate marks it. None = NOT RECORDED: a run its host assembled without a launch — "
+            "read as unproven, never as proven."
         ),
     )
     goal_check_proof_rules: int | None = Field(
         default=None,
         description=(
-            "The proof rules `goal_check_proofs` were derived under (`GOAL_CHECK_PROOF_RULES`). None on a run "
-            "launched before the rules were stamped, which are rules 1. A `proven` recorded under rules older than "
-            "the current ones reads as unproven (`goal_check_proofs_as_read`), and is counted as needing re-proof."
+            "The proof rules `goal_check_proofs` were derived under (`GOAL_CHECK_PROOF_RULES`): set exactly when "
+            "they are. A `proven` recorded under rules older than the current ones reads as unproven "
+            "(`goal_check_proofs_as_read`), and is counted as needing re-proof."
         ),
     )
     refused_goal_checks: dict[str, str] | None = Field(
@@ -3150,19 +3148,18 @@ class EvalRun(CoreDocumentModel):
             "Whether the launch declared latency under test (`start_run(measure_latency=True)`). True: the run "
             "executed its cells one at a time, with no other run executing beside it, so the latency it recorded "
             "is read clean. False: it was not under test, and the run executed its cells as many at once as its "
-            "kind declared safe and the host allowed (`cell_concurrency`). None: launched before 3tears-evals recorded the declaration (or recorded by a "
-            "writer that is no launch) — such a run executed its cells one at a time, and whether it ran beside "
-            "another run is what its results' `execution_mode` says."
+            "kind declared safe and the host allowed (`cell_concurrency`). None: a run its host assembled without a "
+            "launch, which declared nothing; whether it ran beside another run is what its results' "
+            "`execution_mode` says."
         ),
     )
-    cell_concurrency: int | None = Field(
-        default=None,
+    cell_concurrency: int = Field(
+        default=1,
         ge=1,
         description=(
             "How many of the run's cells executed at once: 1 is serial. Above 1, every result stamps "
             "`execution_mode` `concurrent` and its latency is kept out of every comparison, bar and ranking. "
-            "None: a run stored before the width was recorded, whose cells executed one at a time — read as 1, "
-            "never as unknown, because the runner of that build could not run them otherwise."
+            "A run its host assembled without a launch states its own width, and is serial unless it says otherwise."
         ),
     )
 
@@ -3196,9 +3193,7 @@ class EvalRun(CoreDocumentModel):
             "(a config states its own, and its id is already part of the judge's identity). Stamped at launch, and "
             "part of the measurement context's roles: a run judged at another temperature is judged by another "
             "judge and never pools with this one. What each call was actually sent at — none, for a model that "
-            "refuses a temperature — is on each score. None = no judge was pinned, or the run was launched before "
-            "this was recorded, when such dimensions were requested at the provider's default; its roles component "
-            "is then not composable, never equal to today's."
+            "refuses a temperature — is on each score. Set exactly when a judge is pinned (`judge_model`)."
         ),
     )
     simulator_request_settings: ClientRequestSettings | None = Field(
@@ -3540,6 +3535,35 @@ class EvalRun(CoreDocumentModel):
         return self
 
     @model_validator(mode="after")
+    def _proofs_name_their_rules(self) -> Self:
+        """Require goal-check proofs and the rules they were derived under together, or neither.
+
+        Raises:
+            ValueError: One is recorded without the other.
+        """
+        if (self.goal_check_proofs is None) != (self.goal_check_proof_rules is None):
+            raise ValueError(
+                "goal_check_proofs and goal_check_proof_rules are recorded together or not at all: a proof whose "
+                "rules are unknown cannot say whether it still stands"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _a_judged_run_names_its_temperature(self) -> Self:
+        """Require the judge temperature exactly when a judge is pinned.
+
+        Raises:
+            ValueError: A judged run records no temperature, or an unjudged one records one.
+        """
+        if (self.judge_model is None) != (self.judge_temperature is None):
+            raise ValueError(
+                f"judge_temperature is set exactly when judge_model is (got judge {self.judge_model!r}, temperature "
+                f"{self.judge_temperature!r}): a judged run's unconfigured dims were requested at some temperature, "
+                "and an unjudged run requested none"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _cell_timeout_names_its_origin(self) -> Self:
         """Require the per-cell deadline and its origin together, or neither.
 
@@ -3559,8 +3583,8 @@ def goal_check_proofs_as_read(run: EvalRun) -> dict[str, GoalCheckProof] | None:
     """A run's goal-check proofs as every surface reads them: a ``proven`` from an older proof rule is ``unproven``.
 
     ``proven`` is the one proof that reads as measuring the behaviour, so it must have been earned under the rules
-    in force (:data:`GOAL_CHECK_PROOF_RULES`). A run stamped before them may hold a ``proven`` its control earned
-    under a parameter type no case can carry (#665). It cannot be re-derived when read — the controls are editable
+    in force (:data:`GOAL_CHECK_PROOF_RULES`). A run stamped under older rules may hold a ``proven`` its control
+    earned under a rule since found wrong. It cannot be re-derived when read — the controls are editable
     and were not frozen with the run, so a re-derivation would prove the template as it is now, not the one the
     run graded — so it is read as ``unproven`` until the template is launched again.
     ``refuted`` and ``unproven`` stand: an older rule never made a check look worse than it is.
@@ -3573,7 +3597,7 @@ def goal_check_proofs_as_read(run: EvalRun) -> dict[str, GoalCheckProof] | None:
     """
     if run.goal_check_proofs is None:
         return None
-    if (run.goal_check_proof_rules or 1) >= GOAL_CHECK_PROOF_RULES:
+    if run.goal_check_proof_rules == GOAL_CHECK_PROOF_RULES:
         return dict(run.goal_check_proofs)
     return {check: "unproven" if proof == "proven" else proof for check, proof in run.goal_check_proofs.items()}
 
@@ -3587,7 +3611,7 @@ def stale_goal_check_proofs(run: EvalRun) -> list[str]:
     Returns:
         The checks, sorted; empty when the run's proofs are current or it recorded none.
     """
-    if run.goal_check_proofs is None or (run.goal_check_proof_rules or 1) >= GOAL_CHECK_PROOF_RULES:
+    if run.goal_check_proofs is None or run.goal_check_proof_rules == GOAL_CHECK_PROOF_RULES:
         return []
     return sorted(check for check, proof in run.goal_check_proofs.items() if proof == "proven")
 

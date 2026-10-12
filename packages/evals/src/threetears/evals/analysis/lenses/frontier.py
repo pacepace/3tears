@@ -308,9 +308,8 @@ class FrontierDominator(EvalBaseModel):
     variant_identity_version: int
     #: The Holm-adjusted p the domination was decided on, below :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`
     #: (see :func:`_dominance_p`). Carried because a verdict a reader cannot check against its statistic is
-    #: an assertion. ``None`` on a dominator stored before domination was tested: that one was read off
-    #: point estimates.
-    p_value: float | None = None
+    #: an assertion.
+    p_value: float
 
 
 #: How a frontier verdict's pick stands on cost against the other contestants that cleared the bar with a
@@ -505,23 +504,22 @@ class FrontierPoint(EvalBaseModel):
     #: answered, so every axis here is a mixture of them — or ``unrecorded``, where some response named none and
     #: whether one model answered cannot be established. A contestant is keyed at launch, before any response
     #: names a model, so the mixture is disclosed rather than split. ``None`` when no result's candidate made a
-    #: call, and on a point stored before it was read.
+    #: call.
     served_models: ServedModelReading | None = None
 
     # Domination — a dominated point is grayed, never dropped: silently removing a
     # cheap-but-brittle variant looks identical to it never having run.
     #: True only when another point is SHOWN to beat this one (:attr:`dominance` ``dominated``).
-    #: False is not a claim that nothing beats it. On a point stored before domination was tested
-    #: (``dominance`` is ``None``), this was read off point estimates.
+    #: False is not a claim that nothing beats it.
     dominated: bool = False
     #: ``dominated`` — some other point is shown better on every axis this one measured, by the test
     #: :func:`_dominance_p` states; ``not_separated`` — this point was tested against at least one other
     #: and no domination was shown, which says nothing about whether one exists; ``untested`` — no
     #: test against any other point could decide (fewer than two cases on an axis, no shared axis, or an axis
     #: on which every case differed by one amount over too few cases for the exact test to reach α — the
-    #: reading :func:`~threetears.evals.analysis.stats.level_difference` also calls untested).
-    #: ``None`` on a point stored before domination was tested.
-    dominance: FrontierDominance | None = None
+    #: reading :func:`~threetears.evals.analysis.stats.level_difference` also calls untested). Set for every
+    #: point by the frontier's dominance pass, which starts each one untested.
+    dominance: FrontierDominance = "untested"
     #: Every point shown to beat this one on every axis, each carrying the identity a row
     #: carries and the p it was shown at. In the order the points are sorted, which is the order
     #: the table prints them, so a reader scanning for a named dominator meets them in that order.

@@ -1026,7 +1026,7 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
     sections: list[list[str]] = [[f"# {_one_line(document.headline) or '(blank headline)'}"]]
     if document.headline.strip():
         headline = headline_standing(analysis)
-        rests = f" Rests on finding {positions(headline.rests_on)}." if headline and headline.rests_on else ""
+        rests = f" Rests on finding {positions(headline.rests_on)}." if headline.rests_on else ""
         sections[0] += ["", f"The headline: {_facts_line(standing_facts(analysis, headline))}.{rests}"]
     bullets = summary_standings(analysis)
     if bullets:

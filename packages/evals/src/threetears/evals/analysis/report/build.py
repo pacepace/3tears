@@ -268,16 +268,13 @@ def _summary_blocks(analysis: EvalAnalysis) -> list[ReportBlock]:
                 section="summary",
                 role="headline",
                 body=document.headline,
-                rests_on=list(headline.rests_on) if headline is not None else [],
+                rests_on=list(headline.rests_on),
                 facts=standing_facts(analysis, headline),
             )
         )
     if not document.summary.strip():
         return blocks
     bullets = summary_standings(analysis)
-    if bullets is None:
-        blocks.append(TextBlock(section="summary", role="summary", body=document.summary))
-        return blocks
     blocks.extend(
         TextBlock(
             section="summary",

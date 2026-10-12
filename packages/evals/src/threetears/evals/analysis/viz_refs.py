@@ -603,7 +603,7 @@ def _frontier(ref: FrontierRef, surface: DecisionSurface, labels: dict[str, str]
 
     # Domination is the frontier lens's verdict, read off the surface rather than decided again from the
     # means drawn here: the lens tests it over per-case values, and two arms drawn from one distribution
-    # always differ in their means. A surface frozen before standings were carried has none to draw.
+    # always differ in their means.
     standings = surface.frontier_dominance
     points = [
         {
@@ -619,8 +619,8 @@ def _frontier(ref: FrontierRef, surface: DecisionSurface, labels: dict[str, str]
         }
         for cell, quality, cost, latency in zip(cells, qualities, costs, latencies, strict=True)
         for variant in [require_cell(surface, cell).variant_key]
-        for dominance in [None if standings is None else standings.get(variant, "untested")]
-        for breached in [(surface.frontier_disqualified or {}).get(variant, [])]
+        for dominance in [standings.get(variant, "untested")]
+        for breached in [surface.frontier_disqualified.get(variant, [])]
     ]
     cost_unit = surface.measures[cost_id].unit if cost_id in surface.measures else None
     return {

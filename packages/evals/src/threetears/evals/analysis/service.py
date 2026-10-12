@@ -1237,8 +1237,7 @@ def inspect_analysis_bundle(
     ``bundle_schema_version`` differs), the host's declarations moved (the recorded
     ``host_declarations_digest`` differs), or neither did and the evidence moved (a member
     archived, results deleted, an insight the generation read since deleted or superseded, or
-    the analysis that minted one archived — which retracts it from every re-assembly). An
-    analysis stored before both were recorded reads ``cannot_say``. The scope cannot be a fourth
+    the analysis that minted one archived — which retracts it from every re-assembly). The scope cannot be a fourth
     cause: an analysis lives in its campaign's scope, which is the only scope its member runs
     can live in, so the re-assembly reads exactly the partition the generation read.
 

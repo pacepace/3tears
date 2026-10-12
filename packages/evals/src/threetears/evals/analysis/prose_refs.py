@@ -354,7 +354,13 @@ def _example_surface() -> DecisionSurface:
     )
     cells = [
         CellFacts(
-            variant_key=f"arm{index}", apparatus_class_id="rig", run_ids=["run"], n_observations=12, measures=measures
+            variant_key=f"arm{index}",
+            apparatus_class_id="rig",
+            run_ids=["run"],
+            n_observations=12,
+            n_candidate_failed=0,
+            n_no_turn=0,
+            measures=measures,
         )
         for index in range(1, _EXAMPLE_CELLS + 1)
     ]

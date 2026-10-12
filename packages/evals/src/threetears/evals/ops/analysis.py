@@ -452,7 +452,7 @@ def _headline_standing_words(analysis: EvalAnalysis) -> str:
     """The headline's standing on one line, in the report's words (:func:`~threetears.evals.analysis.report.words.standing_facts`)."""
     standing = headline_standing(analysis)
     words = " · ".join(f"{fact.name}: {fact.value}" for fact in standing_facts(analysis, standing))
-    if standing is not None and standing.rests_on:
+    if standing.rests_on:
         words += f" · rests on finding {positions(standing.rests_on)}"
     return words
 

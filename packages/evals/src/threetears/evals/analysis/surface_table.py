@@ -599,9 +599,6 @@ def _bar_value(bar: BarAdjudication, cell: CellFacts, factor: float) -> SurfaceV
     # A bar that read nothing on a cell where no result took a turn read nothing because there was no turn —
     # a latency bar's measure leaves those failures out — and says that rather than a blank number.
     text = NO_SUCCESSFUL_RESULTS if value is None and cell.all_failed else _value_text(value, sem, verdict.n)
-    if verdict.decided_on_the_mean:
-        # Stored before bars read intervals: the word is the old point comparison, and says so.
-        text += ", decided on the mean"
     if verdict.judge_evidence_tier is not None:
         # A judged bar's verdict is as good as the judges behind it, and says which tier they stand on.
         text += f", judge tier {verdict.judge_evidence_tier}"

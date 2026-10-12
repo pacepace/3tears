@@ -8,7 +8,7 @@ name here, so a caller that reads them off the bundle keeps working.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import Field, computed_field, model_validator
 
@@ -341,9 +341,7 @@ class BarVerdict(EvalDocumentModel):
             "on the bad side, so it is shown to fall short by more than the margin. None — no decision: the "
             "interval straddles the line (undecided), the cell has a value but no interval (fewer than two "
             "observations), or no observation. `decision` says which; none of the three is a pass or a failure. "
-            "A stored verdict with `cleared` set and no interval predates interval verdicts: it was the cell's "
-            "mean against the threshold, with no margin — read it as that point comparison "
-            "(`decided_on_the_mean`)."
+            "A verdict is decided on its interval, so `cleared` is set only beside both ends of it."
         ),
     )
 
@@ -378,15 +376,16 @@ class BarVerdict(EvalDocumentModel):
             return "no_interval"
         return "undecided"
 
-    @property
-    def decided_on_the_mean(self) -> bool:
-        """Whether this is a stored verdict from before bars read intervals: decided, with no interval.
+    @model_validator(mode="after")
+    def _decided_on_its_interval(self) -> Self:
+        """Refuse a decision with no interval: a verdict is the interval against the line, never the mean.
 
-        Every verdict decided now is decided on an interval, so a decision with none can only have been
-        the old point comparison — the cell's mean against the threshold. Read structurally rather than
-        from a stored flag, so an analysis frozen before the change needs no migration to say so.
+        Raises:
+            ValueError: ``cleared`` is set while either end of the interval is missing.
         """
-        return self.cleared is not None and (self.ci_low is None or self.ci_high is None)
+        if self.cleared is not None and (self.ci_low is None or self.ci_high is None):
+            raise ValueError("a bar verdict is decided on its interval: cleared is set only beside ci_low and ci_high")
+        return self
 
 
 class BarAdjudication(EvalDocumentModel):

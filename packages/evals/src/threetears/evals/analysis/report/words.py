@@ -83,11 +83,7 @@ _JUDGED_TIERS = frozenset({"calibrated", "separation", "undetermined", "incident
 
 
 def stands_on_words(analysis: EvalAnalysis, tier: EvidenceTier) -> str:
-    """What a finding stands on, as a reader says it, naming the old rule for a tier stored before intervals.
-
-    A judged tier in an analysis stored before tiers were decided on the agreement's interval
-    (``judged_tier_rule`` None) was the point estimate against the bar, so it is never presented as this
-    build's claim: the words say which rule decided it.
+    """What a finding stands on, as a reader says it.
 
     Args:
         analysis: The analysis the tier was stored in.
@@ -96,10 +92,7 @@ def stands_on_words(analysis: EvalAnalysis, tier: EvidenceTier) -> str:
     Returns:
         The words.
     """
-    words = EVIDENCE_TIER_WORDS[tier]
-    if analysis.judged_tier_rule is None and tier in _JUDGED_TIERS:
-        return f"{words} (tier decided on the point estimate of agreement, before tiers required its interval to clear the bar)"
-    return words
+    return EVIDENCE_TIER_WORDS[tier]
 
 
 #: Where an arm stands, as a reader says it.
@@ -255,31 +248,23 @@ def _restated_spread(analysis: EvalAnalysis, row: EvidenceRow, factor: float) ->
     return restated_dispersion(resolved, factor)
 
 
-#: What a headline or summary bullet stands on in an analysis stored before they named the findings they rest on.
-STANDING_NOT_RECORDED = (
-    "not recorded: this analysis was stored before its headline and summary named the findings they rest on"
-)
-
 #: What a headline or summary bullet stands on in an analysis with no findings.
 STANDING_NO_FINDING = "no finding: the analysis has none"
 
 
-def standing_facts(analysis: EvalAnalysis, standing: Standing | None) -> list[Fact]:
+def standing_facts(analysis: EvalAnalysis, standing: Standing) -> list[Fact]:
     """What a headline or summary bullet stands on, as the facts code states beside it.
 
     The same two facts a finding's title carries, read off the weakest of the findings it rests on
-    (:mod:`threetears.evals.analysis.standing`): its confidence, and what its evidence is. An analysis stored before
-    the links existed says so, and is never given a tier guessed from its findings.
+    (:mod:`threetears.evals.analysis.standing`): its confidence, and what its evidence is.
 
     Args:
         analysis: The analysis.
-        standing: The sentence's standing; None when it was not recorded.
+        standing: The sentence's standing.
 
     Returns:
         The facts, in reading order.
     """
-    if standing is None:
-        return [Fact(name="Stands on", value=STANDING_NOT_RECORDED)]
     if standing.confidence is None:
         return [Fact(name="Stands on", value=STANDING_NO_FINDING)]
     facts = [Fact(name="Confidence", value=CONFIDENCE_WORDS[standing.confidence])]
@@ -303,7 +288,6 @@ __all__ = [
     "evidence_rows",
     "stands_on_words",
     "arm_namer",
-    "STANDING_NOT_RECORDED",
     "STANDING_NO_FINDING",
     "positions",
     "standing_facts",

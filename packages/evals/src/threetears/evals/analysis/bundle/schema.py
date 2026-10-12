@@ -2412,15 +2412,14 @@ class AnalysisContextBundle(EvalDocumentModel):
             "are not comparable on any per-cell number, and a fingerprint alone cannot say so."
         ),
     )
-    host_declarations_digest: str | None = Field(
-        default=None,
+    host_declarations_digest: str = Field(
+        min_length=1,
         description=(
             "sha256 of the host's declared sweepables (each one's name, role and blank rule) and world dimension "
             "names — the declarations that partition observations into apparatus classes and arms "
             "(:func:`host_declarations_digest`). Derived from the declarations at assembly, never kept by hand, "
             "so a host that adds, removes or renames one moves it without bumping anything. Two bundles whose "
-            "fingerprints differ while this and `schema_version` agree did not differ in those declarations. "
-            "None on a bundle frozen before it was recorded, which says nothing about them."
+            "fingerprints differ while this and `schema_version` agree did not differ in those declarations."
         ),
     )
     cells: list[Cell] = Field(
@@ -2663,10 +2662,7 @@ class BundleInspection(EvalDocumentModel):
     (:attr:`AnalysisContextBundle.host_declarations_digest` differs — a host added, removed or
     renamed a sweepable, which moves the apparatus partition without touching package code), or
     neither did and the evidence moved — a member archived, a result deleted, an insight the
-    generation read since deleted or superseded, or the analysis that minted one archived. An
-    analysis stored before :class:`~threetears.evals.kernel.campaign.GenerationProvenance`
-    recorded both reads ``cannot_say``: a version that was never written is never read as the
-    same one.
+    generation read since deleted or superseded, or the analysis that minted one archived.
 
     Host-agnostic by construction: campaign, scope, fingerprint and bundle are
     all engine vocabulary, and nothing here branches on what the subject is.
@@ -2702,17 +2698,17 @@ class BundleInspection(EvalDocumentModel):
         default=None,
         description=(
             "The bundle schema version the addressed generation ran over, as its provenance recorded it. None "
-            "when addressed by campaign, or when the analysis was stored before the version was recorded."
+            "when addressed by campaign."
         ),
     )
     recorded_host_declarations_digest: str | None = Field(
         default=None,
         description=(
             "The host declarations digest the addressed generation ran over, as its provenance recorded it. None "
-            "when addressed by campaign, or when the analysis was stored before the digest was recorded."
+            "when addressed by campaign."
         ),
     )
-    mismatch_cause: Literal["package_shape", "host_declarations", "evidence", "cannot_say"] | None = Field(
+    mismatch_cause: Literal["package_shape", "host_declarations", "evidence"] | None = Field(
         default=None,
         description=(
             "Why the re-assembly does not reproduce the generation, set exactly when `reproduces_generation` is "
@@ -2722,8 +2718,7 @@ class BundleInspection(EvalDocumentModel):
             "agrees and `host_declarations_digest` does not — the host changed which sweepables or world "
             "dimensions it declares. `evidence`: both agree, so the inputs moved — a run archived, a result "
             "deleted, an insight the generation read since deleted or superseded, the analysis that minted one "
-            "archived — or a host declaration the digest does not cover (a measure, a bar, prose) changed. "
-            "`cannot_say`: the stored provenance lacks either recorded value, so no cause can be told apart."
+            "archived — or a host declaration the digest does not cover (a measure, a bar, prose) changed."
         ),
     )
     bundle: AnalysisContextBundle = Field(description="The assembled bundle itself, whole.")
@@ -2755,11 +2750,9 @@ class BundleInspection(EvalDocumentModel):
         """
         fingerprint = bundle.fingerprint()
         reproduces = None if recorded_fingerprint is None else fingerprint == recorded_fingerprint
-        cause: Literal["package_shape", "host_declarations", "evidence", "cannot_say"] | None = None
+        cause: Literal["package_shape", "host_declarations", "evidence"] | None = None
         if reproduces is False:
-            if recorded_schema_version is None or recorded_host_declarations_digest is None:
-                cause = "cannot_say"
-            elif recorded_schema_version != bundle.schema_version:
+            if recorded_schema_version != bundle.schema_version:
                 cause = "package_shape"
             elif recorded_host_declarations_digest != bundle.host_declarations_digest:
                 cause = "host_declarations"
