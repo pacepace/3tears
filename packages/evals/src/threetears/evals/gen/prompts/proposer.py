@@ -11,11 +11,18 @@ every template, and a reused catalog dim keeps its ``key``. A draft naming a bar
 dimension fails validation (:data:`~threetears.evals.schema.models.DimName`) and
 the paid call is discarded, so the prompt has to teach the rule.
 
+Its last line is the output contract the draft is read by
+(:data:`~threetears.evals.gen.proposers.RUBRIC_PROPOSAL_CONTRACT`), built from the contract itself so the default
+always states the current one. :func:`~threetears.evals.gen.proposers.plan_draft` refuses a stored copy whose line
+names another, or that has none, before anything is paid for; an operator who edits the stored copy keeps the line
+as long as the edit is written for that draft shape.
+
 Seeded empty-slot-only; the store is master once set.
 """
 
 from __future__ import annotations
 
+from threetears.evals.gen.proposers import RUBRIC_PROPOSAL_CONTRACT
 from threetears.evals.kernel.prompts.catalogue import PROPOSER_PROMPT
 from threetears.evals.kernel.prompts.seed import SeedSection, SeedTemplate
 
@@ -94,10 +101,12 @@ EVAL_PROPOSER_TEMPLATE_DEFAULT = SeedTemplate(
                 "}\n"
                 "\n"
                 "Every dimension in `new_dim_suggestions` must also appear in `template.rubric`. Every key in\n"
-                "`reused_dim_keys` must come from the supplied catalog."
+                "`reused_dim_keys` must come from the supplied catalog.\n"
+                "\n"
+                f"{RUBRIC_PROPOSAL_CONTRACT.line}"
             ),
             cache_class="stable",
-            description="Proposer instructions — two-feed framing, reuse-over-invent rule, strict JSON output shape.",
+            description="Proposer instructions — two-feed framing, reuse-over-invent rule, strict JSON output shape; ends with its output-contract line.",
         ),
     ),
 )

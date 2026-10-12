@@ -4,7 +4,8 @@ The engine never names a provider. A completion client is anything with an async
 ``generate(system=, user=, response_format=)`` that returns a reply carrying the ``Completion`` fields below.
 Pricing is the client's job, and a cost of None means unpriced, never $0. ``llm_judge.py`` hands this client
 to a judge, ``llm_analysis.py`` to the analysis writer, and the comparisons call it as their candidate.
-It reads ``ANTHROPIC_API_KEY``, and ``anthropic`` is imported only when a live client is built.
+It reads ``ANTHROPIC_API_KEY``, and ``anthropic`` is imported only when a live client is built: 3tears-evals does
+not depend on it, so a live run outside a checkout needs ``pip install anthropic``.
 """
 
 import os
@@ -34,7 +35,13 @@ def online() -> bool:
 
 def claude(model: str, *, max_tokens: int = 1024) -> Any:
     """``model`` behind the engine's ``CompletionClient`` protocol, priced at its list price."""
-    import anthropic  # imported here so the offline path does not need the package
+    try:
+        import anthropic  # imported here so the offline path does not need the package
+    except ModuleNotFoundError as missing:
+        raise SystemExit(
+            "ANTHROPIC_API_KEY is set, so this example runs live, which needs the anthropic SDK: pip install anthropic "
+            "(a checkout's `uv sync` has it). Unset the key to run offline instead."
+        ) from missing
 
     client = anthropic.AsyncAnthropic()  # reads ANTHROPIC_API_KEY
     effort = {"effort": "low"} if model in TAKES_EFFORT else {}
@@ -75,6 +82,7 @@ def spent(reply: Completion, value: Any) -> Answer:
     return Answer(
         value,
         model=reply.model,
+        served_model=reply.served_model,  # what the response named, so the run can say which model answered
         input_tokens=reply.input_tokens,
         output_tokens=reply.output_tokens,
         cost_usd=reply.cost_usd,

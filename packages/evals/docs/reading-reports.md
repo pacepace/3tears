@@ -304,6 +304,19 @@ insight retracts it; each insight's `invalidation_trigger` states both rules. Th
 actions show the ledger and each insight's standing (live, retracted or orphaned); `insight_delete` removes one wrong
 insight.
 
+**A headline or summary never states a null the findings did not establish.** Most readers read only those two,
+so "halving the budget does not change latency, cost or delivery" decides as surely as a finding does, and over a
+contrast that did not separate it asserts a result the campaign never measured. The bundle establishes a null in
+two places only: a contrast reading `equivalent` (the equivalence test against a declared margin) and a guardrail
+reading `held`. The writer is told so, and the generator also refuses the headline or a summary bullet that uses
+a common null phrasing ("does not change", "no difference", "no effect", "no worse", "was unchanged", "about the
+same", and a few more, listed in `analysis/null_claims.py`) when no finding cites a reading the bundle
+established alike, through the one repair round like any refusal. It is a tripwire, not a gate: it reads phrases,
+never claims, so a reworded null passes, and once any finding cites an established null it stands down entirely,
+since it cannot tell which contrast a sentence means. An unresolved contrast belongs in the headline as a
+judgement that says how unsure it is ("probably cheaper, too close to call"), never as "no change". The headline
+carries no confidence tier, so its words carry the doubt.
+
 The bundle stays closed: the generator has no tools to fetch more context, such as a `runs_bisect` or `scope_pivot`
 drill-down. A generator that fetched its own context would read different inputs on every call, so nothing could
 be fingerprinted before generation and two prompts could no longer be compared on one bundle. A question the
@@ -440,6 +453,32 @@ verdict, each history series and each of its points, each pivot cell on a table 
 `model` (with `served_model_disclosure` on the table), and each side of `compare_two_runs` (`served_models_a`,
 `served_models_b`). `served_model` is also a coordinate: pivot on it to read each model alone, and the export
 carries it as a column. A response that named no model reads `unrecorded`, never the alias.
+
+## Which model answered
+
+A run records the model id each call asked for. Which model answered is recorded only where the completion client
+reported the model the provider's response named (`served_model`): on each candidate usage row and on each judge
+score. Where it reported none, the record holds the requested id alone, and a provider may answer an id with a
+model of its choosing. Nothing refuses such a run, and the package never guesses which ids float: that is the
+provider's vocabulary. It says so instead, once, in one sentence every surface prints verbatim
+(`model_identity_disclosure`): the run's summary (`run_get`, its `model_identity_warning` and `unconfirmed_models`),
+`run_summary` (`model_identity_disclosure`), the analysis bundle (`model_identity_disclosure`, which the writer is
+told never to read as the model that ran) and the campaign report's methods, whether an analysis wrote it or code
+alone. Per role, the candidate then the judge, it counts the results whose candidate made a call no response named
+a model for, and the scores no response named a model for, out of all of them, with the ids asked for and any
+model the other responses did name:
+
+```text
+Model identity unconfirmed: the candidate (asked for vendor/model-latest) made calls whose response named no model
+in 4 of 10 result(s) (the responses that named one named vendor/model-2026-05). The record keeps the model id asked
+for, and a provider may answer an id with a model of its choosing (a floating alias), so these numbers cannot say
+which model produced them; a completion client that reports the model its provider's response named
+(served_model) confirms it.
+```
+
+A run whose responses all named their model prints nothing, and neither does one whose candidate called nothing.
+The fix is in the host's completion client ([Adopting a host](adopting-a-host.md)); a quick candidate passes
+`Answer(served_model=...)`.
 
 ## Results by kind of case: strata
 

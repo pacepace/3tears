@@ -53,7 +53,9 @@ async def _draft_in_job(host: OpsHost, caller: Caller, params: _DraftParams) -> 
         await client.aclose()
         return _Draft(text=str(completion.content))
 
-    return await start_action_job(host, caller.scope_id, action="rubric_propose", run=draft, label=params.subject_area)
+    return await start_action_job(
+        host, caller.scope_id, action="rubric_propose", run=draft, label=params.subject_area, budget_s=60.0
+    )
 
 
 async def _draft_in_call(host: OpsHost, caller: Caller, params: _DraftParams) -> JobsStarted:
@@ -64,7 +66,7 @@ async def _draft_in_call(host: OpsHost, caller: Caller, params: _DraftParams) ->
     async def keep() -> _Draft:
         return _Draft(text=str(completion.content))
 
-    return await start_action_job(host, caller.scope_id, action="rubric_propose", run=keep)
+    return await start_action_job(host, caller.scope_id, action="rubric_propose", run=keep, budget_s=60.0)
 
 
 async def _waits_on_its_job(host: OpsHost, caller: Caller, params: _DraftParams) -> JobsStarted:
@@ -80,7 +82,7 @@ async def _nothing_in_job(host: OpsHost, caller: Caller, params: _DraftParams) -
     async def nothing() -> _Draft:
         return _Draft(text="")
 
-    return await start_action_job(host, caller.scope_id, action="rubric_propose", run=nothing)
+    return await start_action_job(host, caller.scope_id, action="rubric_propose", run=nothing, budget_s=60.0)
 
 
 async def _topic(_stage: ConformanceStage) -> Mapping[str, Any]:

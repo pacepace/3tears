@@ -67,6 +67,11 @@ from pydantic import BaseModel, ConfigDict, JsonValue, computed_field, model_val
 from threetears.evals.analysis.agreement import InterJudgeDimension, inter_judge_agreement
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, confusion_matrix, label_statistics
 from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.reporting import (
+    UnconfirmedModelIdentity,
+    model_identity_disclosure,
+    unconfirmed_model_identities,
+)
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.surface_table import NO_SUCCESSFUL_RESULTS
 from threetears.evals.analysis.viz.quantities import display_scale, with_unit
@@ -682,6 +687,10 @@ class EvalSummary(BaseModel):
             a model the candidate's usage rows name — sorted; empty when they share none, or for an unjudged run.
             A model tends to rate its own output higher, so a judged score from one of these may favour the
             candidate. Compared on the ids as recorded, so an alias one side spells differently is not caught.
+        unconfirmed_models: Each role — the candidate, then the judge — some of whose calls' responses named no
+            model (:class:`~threetears.evals.analysis.reporting.UnconfirmedModelIdentity`): the record holds only
+            the id asked for there, so which model ran is unconfirmed. Empty when every response named its model,
+            and for a run that called nothing.
         case_results: Every result, read for a person (:class:`CaseResult`), in case order then repeat; ``None``
             when the run was summarised without its cases, as the CLI and ``run_get`` summarise one.
             :meth:`results` and :meth:`misses` read it.
@@ -722,6 +731,7 @@ class EvalSummary(BaseModel):
     max_cost_usd: float | None = None
     max_cost_usd_origin: CostCapOrigin | None = None
     judge_shares_candidate_model: list[str] = []
+    unconfirmed_models: list[UnconfirmedModelIdentity] = []
     case_results: list[CaseResult] | None = None
 
     def results(self) -> list[CaseResult]:
@@ -936,6 +946,17 @@ class EvalSummary(BaseModel):
 
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description=(
+            "That the record cannot say which model answered some of the candidate's calls or the judge's scores — "
+            "their responses named none, so only the id asked for is recorded; null when every response named one."
+        )
+    )
+    @property
+    def model_identity_warning(self) -> str | None:
+        """The unconfirmed-model line (:func:`~threetears.evals.analysis.reporting.model_identity_disclosure`), or None."""
+        return model_identity_disclosure(self.unconfirmed_models)
+
+    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
+        description=(
             "Each role's spend line, in `spend` order: what it cost, or why that is unknown, over how many calls — an "
             "external API's units per provider beside it. Empty for a run whose results reported no spend."
         )
@@ -1008,6 +1029,8 @@ class EvalSummary(BaseModel):
         lines += [f"  {line}" for line in self.dimension_lines]
         if self.self_judging_warning is not None:
             lines.append(f"  {self.self_judging_warning}")
+        if self.model_identity_warning is not None:
+            lines.append(f"  {self.model_identity_warning}")
         lines += [f"  {line}" for line in self.spend_lines]
         if self.total_spend_text is not None:
             lines.append(f"  {self.total_spend_text}")
@@ -1220,6 +1243,7 @@ def summarize_run(
         max_cost_usd=run.max_cost_usd,
         max_cost_usd_origin=run.max_cost_usd_origin,
         judge_shares_candidate_model=_self_judging(run, results),
+        unconfirmed_models=unconfirmed_model_identities([run], results),
     )
 
 

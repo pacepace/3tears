@@ -40,8 +40,11 @@ recorded as witnessed rather than left to chance. See [world model](world-model.
 
 **Code checks facts, a judge assesses judgment, and people check the judge; the three never swap.**
 Code never grades a model's prose: a deterministic gate over free text never converges, because each
-generation finds a phrasing it does not parse. A judge never grades a count or order code can check, and a
-prompt never coaches toward a grader's words, which measures obedience.
+generation finds a phrasing it does not parse. The one check on the words is a tripwire, not a grade: a headline
+or summary in a common null phrasing is refused when no finding cites a null the bundle established
+([Having a model write the analysis](reading-reports.md#having-a-model-write-the-analysis-over-frozen-evidence)).
+A judge never grades a count or order code can check, and a prompt never coaches toward a grader's words, which
+measures obedience.
 
 **Criteria come from observed failures, and judges follow standard practice.**
 Write criteria from failures seen in real transcripts, test each behaviour in both directions, and prefer

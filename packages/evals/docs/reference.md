@@ -334,6 +334,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`confusion_cell(expected: str, predicted: str) -> str`
 - **`confusion_of`** · function · The `(expected, predicted)` labels of a value `confusion_cell` made, or None for anything else.
   <br>`confusion_of(cell: str) -> tuple[str, str] | None`
+- **`contract_state`** · function · How `text` reads against `contract`.
+  <br>`contract_state(text: str, contract: OutputContract | None) -> ContractState`
 - **`count_substituted`** · function · Count the deliveries a harness supplied, over the delivery record itself.
   <br>`count_substituted(deliveries: Sequence[AsyncDelivery] | None) -> int`
 - **`count_substituted_deliveries`** · function · Count the async deliveries in `result` whose payload a harness supplied.
@@ -344,6 +346,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`counted_score(result: EvalResult, score: RubricScore) -> int | None`
 - **`criterion_state`** · function · How one criterion reads, decided on the agreement's interval and never on its point estimate.
   <br>`criterion_state(results: int, agreement: float | None, interval: tuple[float, float] | None, *, threshold: float, min_results: int) -> CriterionState`
+- **`declared_contracts`** · function · Every contract line `text` carries, in order.
+  <br>`declared_contracts(text: str) -> tuple[OutputContract, ...]`
 - **`default_job_timeout`** · function · Enforce a job budget with `asyncio.timeout` and nothing else.
   <br>`default_job_timeout(budget_s: float) -> AsyncIterator[float]`
 - **`delivered_a_turn`** · function · Whether `result` is a turn the candidate took — the one population a cost or latency reading is over.
@@ -396,6 +400,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`request_job_cancel(store: LeaseStore, record_id: str, scope_id: str, *, reason: str | None) -> bool`
 - **`require_held`** · function · Refuse to go on with a job whose record has ended under it: the check a job makes before it spends again.
   <br>`require_held(store: LeaseStore, kind: LeasedJobKind[R], record_id: str, scope_id: str, *, leases: JobLeases | None = None) -> None`
+- **`require_output_contract`** · function · Refuse a prompt that was not written for `contract`.
+  <br>`require_output_contract(prompt_type: str, text: str, contract: OutputContract) -> None`
 - **`resolve_bar_name`** · function · Say what a bar names and where a result carries it, or why no result can.
   <br>`resolve_bar_name(name: str, *, rubric_dimensions: Mapping[str, RubricScale], goal_state_checks: Collection[str], measures: MeasureRegistry) -> BarName | UnreadableBarName`
 - **`resolve_context_identity`** · function · Return the identity a read surface should show for `run`.
@@ -422,6 +428,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`strict_response_format(name: str, schema: Mapping[str, Any]) -> dict[str, Any]`
 - **`summarize_completeness`** · function · Count what a finished run loop delivered against the matrix the run promised.
   <br>`summarize_completeness(run: EvalRun, cells: Sequence[CellSummary]) -> RunCompleteness`
+- **`template_text`** · function · A sectioned template's text as its contract is read from: every section's literal body, in order.
+  <br>`template_text(sections: tuple[SeedSection, ...]) -> str`
 - **`tier_of`** · function · The tier two criteria decide.
   <br>`tier_of(calibration: TierCriterion, separation: TierCriterion) -> JudgedEvidenceTier`
 - **`timed_out_detail`** · function · Why a job's work was stopped by its time budget, in a poll's words — one wording for every job kind.
@@ -539,9 +547,11 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`NonTerminalRunScan`** · class · What one scope's scan for non-terminal runs found.
 - **`NotFoundError`** · exception · Resource not found (status 404).
 - **`OutOfRunBudget`** · dataclass · The cap one out-of-run unit of work is held to, and the ledger its calls are written to.
+- **`OutputContract`** · dataclass · The contract a prompt's reply is read by: its name and the fingerprint of its shape.
 - **`PassHatPoint`** · typed dict · One point of the pass^k curve: the estimate at one depth, and how many cases it rests on.
 - **`PlannedCall`** · dataclass · One call an out-of-run unit of work means to make: the prompt pair and the directive it sends.
 - **`PredictionPoweredReading`** · model · A judged dimension's mean in one cell re-estimated with people's labels (#598) — beside the judge's, never for it.
+- **`PromptContractError`** · exception · A stored prompt was written for another output contract than the one its reply is read by (status 409).
 - **`PromptDrift`** · dataclass · How one stored prompt reads against the package's shipped default.
 - **`ProviderRefusedError`** · exception · A paid provider call made on the caller's behalf raised (status 502).
 - **`Question`** · model · Something this campaign is trying to find out.
@@ -611,6 +621,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`'very_high'` | `'high'` | `'medium'` | `'low'`
 - **`ConfidenceTier`** · literal · How firmly the evidence settles a claim, as a qualitative tier — the tier a stored finding or decision carries.
   <br>`'very_high'` | `'high'` | `'medium'` | `'low'`
+- **`ContractState`** · literal · How a stored copy reads against the output contract the engine reads its reply by: written for it, written for an earlier one, declaring none, or a prompt with no contract to be written for.
+  <br>`'current'` | `'outdated'` | `'undeclared'` | `'unbound'`
 - **`CriterionState`** · literal · How one criterion read: its interval wholly at or above the threshold over enough results (`met`), wholly below it (`not_met`), across it (`undecided`), or too little evidence to say (fewer distinct results than its floor, or a kappa or interval that is undefined).
   <br>`'met'` | `'not_met'` | `'undecided'` | `'insufficient'`
 - **`DeliveryOutcome`** · literal · How a recorded piece of background work ended when its capture cell did: it delivered a payload, it failed, or the cell ended with it still in flight.
@@ -684,6 +696,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`CONFIDENCE_TIERS`** · constant (tuple) · The tiers, strongest first — the order a surface ranks by.
 - **`CONFUSION_CELL_MEASURE`** · constant (str) · The core measure a classification's confusion-matrix cell is reported under.
   <br>`= 'confusion_cell'`
+- **`CONTRACT_MARKER`** · constant (str) · The words a contract line starts with. Hyphenated so no field or action name can be mistaken for it.
+  <br>`= 'eval-output-contract:'`
 - **`DEFAULT_JOB_LEASE_S`** · constant (float) · How long a lease lasts unless renewed, in seconds: the engine's default.
   <br>`= 60.0`
 - **`DEFAULT_TEMPERATURE_REPEATS`** · constant (int) · How many times each dim is judged at each setting when the caller names no number.
@@ -704,8 +718,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`FIND_INSIGHT`** · constant (str) · How a caller finds an insight's id.
   <br>`= "insights_list names this scope's insights"`
 - **`FIND_JOB`** · constant (str) · How a caller finds a job's id.
-- **`FIND_JUDGE_CONFIG`** · constant (str) · How a host finds a judge config's id. No action authors or lists them: they are the host's catalogue.
-  <br>`= "the host's catalogue lists this scope's judge configs (run.list_judge_configs)"`
+- **`FIND_JUDGE_CONFIG`** · constant (str) · How a caller finds a judge config's id. No action authors them — they are the host's catalogue — but one lists them.
 - **`FIND_RESULT`** · constant (str) · How a caller finds a result's id.
   <br>`= "results_list names a run's results"`
 - **`FIND_RUBRIC_DIM`** · constant (str) · How a host finds a rubric dim's id. No action authors or lists them: they are the host's catalogue.
@@ -759,6 +772,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`= 'eval_proposer'`
 - **`REASONING_RATIO_KEY`** · constant (str) · Covariate key: the share of the candidate's generated tokens that were reasoning — candidate `reasoning_tokens` over candidate `completion_tokens`, summed across the candidate's usage rows.
   <br>`= 'reasoning_ratio'`
+- **`REFUSED_CONTRACT_STATES`** · constant (frozenset) · The contract states a call refuses: the copy was written for another contract, or says nothing of one.
 - **`REFUSED_TOOL_ATTACHES_KEY`** · constant (str) · Covariate key: how many times the candidate asked to attach a tool outside its run's `tools_allowed` and the harness refused.
   <br>`= 'refused_tool_attaches'`
 - **`RELAUNCH_TO_REJUDGE`** · constant (str) · What a caller does when a run's judging cannot be reproduced from what it recorded — evidence, attribution, a config set, request settings, a temperature or a template the run no longer matches.
@@ -936,7 +950,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 **Functions**
 
 - **`action_job_work`** · function · A host action's work as a job: `run` awaited to its end, its result written on an `EvalActionJob`.
-  <br>`action_job_work(scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], label: str = '', budget_s: float = 3600.0, discard: Callable[[], Awaitable[None]] | None = None) -> JobWork[EvalActionJob]`
+  <br>`action_job_work(scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], budget_s: float, label: str = '', discard: Callable[[], Awaitable[None]] | None = None) -> JobWork[EvalActionJob]`
 - **`admit_group`** · async function · Admit one group of runs: refuse what cannot start, reserve its room and form it — preparing and spending nothing.
   <br>`admit_group(host: LaunchHost, n_runs: int, *, settings: LaunchSettings, form: Callable[[], Awaitable[tuple[LaunchGroup, _Formed]]], prepare: Callable[[LaunchGroup, _Formed], Awaitable[list[EvalRun]]], event: str, admission: AdmissionTicket | None = None, attach: Callable[[list[EvalRun]], Awaitable[None]] | None = None, detach: Callable[[list[EvalRun]], Awaitable[None]] | None = None) -> AdmittedLaunch`
 - **`admit_launch`** · async function · The first half of `start_run`: every refusal it makes and every arm priced — no launcher run, nothing spent.
@@ -1236,7 +1250,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 **Constants**
 
 - **`ACTION_JOB`** · constant (LeasedJobKind) · An action job's record.
-- **`DEFAULT_ACTION_JOB_BUDGET_S`** · constant (float) · An action job's wall-clock ceiling unless its host names another: an hour, the job manager's own default.
+- **`DEFAULT_ACTION_JOB_BUDGET_S`** · constant (float) · An hour: the job manager's own default ceiling, for an action job whose host means exactly that.
   <br>`= 3600.0`
 - **`DEFAULT_MAX_CONCURRENT_CELLS`** · constant (int) · The host's ceiling on a run's width when latency is not under test and its settings name none: enough to turn hours of a slow candidate into a fraction of that, few enough that a provider's rate limit is not the first thing a default launch meets.
   <br>`= 4`
@@ -1289,7 +1303,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`build_code_only_report`** · function · Lay a campaign's assembled evidence out as a report, when no analysis exists to report through.
   <br>`build_code_only_report(bundle: AnalysisContextBundle, *, measures: MeasureRegistry, assembled_at: str, campaign_name: str | None = None) -> Report`
 - **`build_report`** · function · Lay one stored analysis out as a report.
-  <br>`build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None) -> Report`
+  <br>`build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None, model_identity: str | None = None) -> Report`
 - **`campaign_report`** · function · The campaign's report — THE answer to "what is this campaign's report", for every caller.
   <br>`campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report`
 - **`campaign_verdicts`** · function · Every verdict code reaches on the campaign's evidence as it stands now, typed — what a CI gate reads.
@@ -1305,7 +1319,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`component_carrier`** · function · The component SHOWN to carry the whole's movement, or None where the data cannot name one.
   <br>`component_carrier(whole: MeasureMovement, components: Sequence[MeasureMovement], level_a: Mapping[str, Mapping[str, Fraction]], level_b: Mapping[str, Mapping[str, Fraction]]) -> MeasureMovement | None`
 - **`create_campaign`** · function · Create and persist a campaign from an authoring definition.
-  <br>`create_campaign(storage: CampaignStore, definition: dict[str, Any], *, scope_id: str, created_by: str, profile: HostProfile, control_from_run_id: str | None = None) -> EvalCampaign`
+  <br>`create_campaign(storage: CampaignStore, definition: dict[str, Any], *, scope_id: str, created_by: str, profile: HostProfile, control_from_run_id: str | None = None, exploratory: bool = False) -> EvalCampaign`
 - **`declarable_axes`** · function · The axes a campaign may declare on this host, read off the registry the gate decides with.
   <br>`declarable_axes(profile: HostProfile) -> DeclarableAxes`
 - **`describe_insight_id_filters`** · function · Name the id filters an insight read was narrowed by, for a caller-facing sentence.
@@ -1460,8 +1474,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`tier_sentence(tier: JudgeEvidenceTier) -> str`
 - **`tiers_with_judge_profiles`** · function · A campaign's evidence tiers, each its own evidence left undetermined read from its judge's stored profile.
   <br>`tiers_with_judge_profiles(tiers: Iterable[JudgeEvidenceTier], profiles: Iterable[EvalJudgeProfile], criteria: Mapping[JudgeKey, str | None]) -> list[JudgeEvidenceTier]`
-- **`update_campaign`** · function · Amend a campaign's authored fields — the write half the declaration needs.
-  <br>`update_campaign(storage: CampaignStore, campaign_id: str, scope_id: str, updates: dict[str, Any], *, updated_by: str, profile: HostProfile) -> EvalCampaign`
+- **`update_campaign`** · function · Amend a campaign's authored fields and its control — the write half the declaration needs.
+  <br>`update_campaign(storage: CampaignStore, campaign_id: str, scope_id: str, updates: dict[str, Any], *, updated_by: str, profile: HostProfile, exploratory: bool = False, control_from_run_id: str | None = None, clear_control: bool = False) -> EvalCampaign`
 - **`variant_key_of_run`** · function · Which variant a run's observations carried — the authoring side of the control.
   <br>`variant_key_of_run(results: Sequence[EvalResult]) -> str | None`
 - **`verdict_token`** · function · The gate token a verdict counts under, or None for a decided outcome no gate fails on.
@@ -1620,12 +1634,14 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`TemperatureSide`** · model · One dimension at one setting: how much its cases' scores moved across repeats, and the judge's self-agreement.
 - **`TextBlock`** · model · What the analysis's author wrote, exactly as written, with the facts code states beside it.
 - **`TokenRollup`** · model · Summed token usage across results — visible cost of generation (§Visible Costs).
+- **`UnconfirmedModelIdentity`** · model · One role whose calls the record cannot tie to the model that answered them (#2025).
 - **`UnpairedRating`** · model · A rating with no judge score to set it against, and why.
 - **`UnpairedSecondScore`** · model · A second judge's score with no pair to read, and why.
 - **`UnreadJudgeTrial`** · model · A result the readout left out, and why.
 - **`UnrepeatedScore`** · model · A repeated score with no pair to read, and why.
 - **`Verdict`** · model · One verdict the report states, typed: what a program reads instead of the words printed from it.
 - **`VerdictOrder`** · model · The order verdicts are read in, as the campaign declared it — never as the writer would choose.
+- **`WholeSwing`** · model · Where one whole-run measure's movement between two levels of a lever went, by its declared components.
 
 **Types**
 
@@ -1661,6 +1677,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`'regressed'` | `'not-separated'` | `'untested'` | `'breached'` | `'undecided-guardrail'` | `'missed'` | `'undecided-bar'`
 - **`GuardrailOutcome`** · literal · What a guardrail came to for one arm against the control (`GuardrailCheck.decision`).
   <br>`'held'` | `'breached'` | `'undecided'`
+- **`IdentityRole`** · literal · The roles whose model identity a run's record is read for: the model under test and the model grading it.
+  <br>`'candidate'` | `'judge'`
 - **`LabelDirection`** · literal · Where a person reading a memo places it on a rubric dimension, low to high.
   <br>`'low'` | `'low_mid'` | `'mid'` | `'mid_high'` | `'high'`
 - **`MeasureState`** · literal · How one measure came out over a run, as the summary states it: `measured` (a mean), `not_a_number` (it is carried, as words, and never averaged), `in_confusion_matrix` (a classifier's cells, counted in the matrix), `no_successful_results` (every result carrying it took no turn), `all_excluded` (every result carrying it was excluded as a fault of the rig) or `not_carried` (no result carries it).
@@ -1811,7 +1829,7 @@ The engine's generation package: the prompts and expanders that author test mate
 - **`generate_variations`** · async function · Generate up to `n_variations` test cases for a template.
   <br>`generate_variations(template: EvalTemplate, n_variations: int, *, storage: EvalTestCaseStore, scope_id: str, blocking_executor: Executor | None, generation: AdmittedGeneration | None = None, rng: random.Random | None = None, preview: bool = False) -> GeneratedVariations`
 - **`plan_draft`** · function · The one call a rubric proposal sends, on either axis, built before anything is priced or made.
-  <br>`plan_draft(*, system_prompt: str, subject_feed: str, catalog_feed: str) -> PlannedCall`
+  <br>`plan_draft(*, axis: RubricAxis, system_prompt: str, subject_feed: str, catalog_feed: str) -> PlannedCall`
 - **`price_variations`** · async function · Price the calls `generate_variations` would make, refusing exactly as it would — and make none.
   <br>`price_variations(template: EvalTemplate, n_variations: int, *, storage: EvalTestCaseStore, scope_id: str, blocking_executor: Executor | None, llm: VariationLLM, budget: OutOfRunBudget) -> list[float | None]`
 - **`propose_draft`** · async function · Make an admitted rubric proposal on `axis` and read its draft.
@@ -1829,6 +1847,7 @@ The engine's generation package: the prompts and expanders that author test mate
 - **`EVAL_PROPOSER_TEMPLATE_DEFAULT`** · constant (SeedTemplate) · The seeded default `eval_proposer` template: drafts a capability rubric and the variation axes that stress it.
 - **`PROPOSER_MAX_TOKENS`** · constant (int) · Output-token ceiling for the capability/boundary proposer.
   <br>`= 16384`
+- **`RUBRIC_PROPOSAL_CONTRACT`** · constant (OutputContract) · The output contract both proposer prompts are written for: the draft's schema as the call sends it, and a revision for the rule it is refused by that the schema cannot state (a dimension name's `<context>.<dim>` namespacing, `DimName`).
 
 <a id="api-storage"></a>
 ### `threetears.evals.storage`
@@ -2036,6 +2055,12 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`campaign_archive(host: EvalHost, campaign_id: str, scope_id: str, *, archived: bool) -> CampaignLine`
 - **`campaign_create`** · function · Create a campaign over runs already in the scope, declared as it is created when the definition says so.
   <br>`campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: str, *, created_by: str) -> CampaignLine`
+- **`campaign_runs_add`** · function · Put runs in a campaign — runs launched after it was created, or a run first measured on its own.
+  <br>`campaign_runs_add(host: EvalHost, campaign_id: str, run_ids: list[str], scope_id: str) -> CampaignLine`
+- **`campaign_runs_remove`** · function · Take runs out of a campaign — membership only: the runs and their results stay, in any other campaign too.
+  <br>`campaign_runs_remove(host: EvalHost, campaign_id: str, run_ids: list[str], scope_id: str) -> CampaignLine`
+- **`campaign_update`** · function · Amend a campaign's name, description, declaration or control — declaring a design on an exploratory one included.
+  <br>`campaign_update(host: EvalHost, campaign_id: str, changes: CampaignChanges, scope_id: str, *, updated_by: str) -> CampaignLine`
 - **`campaigns_list`** · function · The scope's campaigns.
   <br>`campaigns_list(host: EvalHost, scope_id: str, *, archived: bool | None = None) -> CampaignListing`
 - **`case_set_mint`** · function · Store the next version of a named case set: append-only, so a change is a new version, never an edit.
@@ -2064,6 +2089,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus`
 - **`judge_cases_freeze`** · function · Freeze stored judged outputs, their criteria and their labels into cases of a judge template.
   <br>`judge_cases_freeze(host: EvalHost, freeze: JudgeCasesFreeze, scope_id: str) -> JudgeCaseFreezeReport`
+- **`judge_configs_list`** · function · The scope's judge configs — what a second judge's `config_ids` and a launch's `judge_config_ids` name.
+  <br>`judge_configs_list(host: EvalHost, scope_id: str, *, rubric_dim_id: str | None = None, archived: bool = False) -> JudgeConfigListing`
 - **`judge_drift_check`** · async function · Admit re-scoring every judged result of a finished run under a changed judge, as a job; poll it for the drift.
   <br>`judge_drift_check(host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, result_ids: list[str] | None = None) -> JobsStarted`
 - **`judge_profiles_list`** · function · The stored judge profiles of a scope, each with the tier it decides.
@@ -2149,11 +2176,11 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`second_judge_job_id`** · function · The job id of a second judge's pass.
   <br>`second_judge_job_id(pass_id: str) -> str`
 - **`start_action_job`** · async function · Start a host action's work as a job whose record (`EvalActionJob`) holds its result.
-  <br>`start_action_job(host: OpsHost, scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], label: str = '', budget_s: float = 3600.0, discard: Callable[[], Awaitable[None]] | None = None) -> JobsStarted`
+  <br>`start_action_job(host: OpsHost, scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], budget_s: float, label: str = '', discard: Callable[[], Awaitable[None]] | None = None) -> JobsStarted`
 - **`start_job`** · async function · Start admitted work as a job: its record written, leased, and the work run in the background.
   <br>`start_job(host: OpsHost, admitted: AdmittedJob) -> JobsStarted`
 - **`start_paid_call`** · async function · Start a host action's one paid model call: admitted against its cap in the call, made in a job.
-  <br>`start_paid_call(host: OpsHost, scope_id: str, *, action: str, role: CompletionRole, model: str | None, purpose: OutOfRunPurpose, budget: OutOfRunBudget, call: PlannedCall, make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]], label: str, budget_s: float = 3600.0) -> JobsStarted`
+  <br>`start_paid_call(host: OpsHost, scope_id: str, *, action: str, role: CompletionRole, model: str | None, purpose: OutOfRunPurpose, budget: OutOfRunBudget, call: PlannedCall, make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]], label: str, budget_s: float) -> JobsStarted`
 - **`sweep_job_id`** · function · The job id of a sweep.
   <br>`sweep_job_id(sweep_id: str) -> str`
 - **`sweep_launch`** · async function · Create the sweep's campaign and start the job that launches its arms in order.
@@ -2171,6 +2198,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`AnalysisListing`** · model · A campaign's stored analyses.
 - **`ArmEstimate`** · model · One arm of a launch estimate: what its kind planned, what the host's pricer predicted, and what the launch would do.
 - **`BarProposals`** · model · What a baseline campaign proposes as its behavior's bars. Read-only: nothing here is registered.
+- **`CampaignChanges`** · model · What an update of a campaign may change: its name, its description, its declaration and the declaration's control — each only when given.
 - **`CampaignDefinition`** · model · What creating a campaign names: what it is called, its subject and behaviour, its runs, and what it set out to learn.
 - **`CampaignLine`** · model · One campaign, as a listing shows it.
 - **`CampaignListing`** · model · A scope's campaigns, newest first.
@@ -2189,6 +2217,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`JobsStarted`** · model · What starting long work returns: one handle per job, in the order the work was asked for.
 - **`JobStatus`** · model · Where one job stands, read from the record its work writes.
 - **`JudgeCasesFreeze`** · model · What freezing judge cases names: the judge template, the judged runs, and optionally which dims and results.
+- **`JudgeConfigLine`** · model · One judge config, as a listing shows it: the versioned prompt a judge is asked one dimension with.
+- **`JudgeConfigListing`** · model · A scope's judge configs.
 - **`JudgeProfileEntry`** · model · One stored profile, with the tier its own measures decide.
 - **`JudgeProfileListing`** · model · The stored judge profiles of a scope.
 - **`JudgeProfileRecording`** · model · What a recording stored, and what it could not.
@@ -2564,7 +2594,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schema_version` | `int` | `48` | Bundle-shape version, for future evolution + fingerprint clarity. |
+| `schema_version` | `int` | `49` | Bundle-shape version, for future evolution + fingerprint clarity. |
 | `campaign_id` | `str` | required | The campaign this bundle summarises. |
 | `subject_id` | `str` | required | The analysed subject's stable id. |
 | `subject_kind` | `str` | `''` | Discriminator; data, never a code branch. |
@@ -2583,6 +2613,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `telemetry` | `TelemetryRollup` | required | Campaign-wide descriptive telemetry. |
 | `coverage` | `list[LeverCoverageInput]` | `[]` | Per-lever structural coverage map (the analysis's spine). |
 | `scope_divergences` | `list[ScopeDivergence]` | `[]` | Lever changes where the whole-run measure moved by a different amount than the isolating measure, the difference itself tested and Holm-corrected within the lever — each one is a finding. |
+| `whole_swings` | `list[WholeSwing]` | `[]` | Where each diverging whole-run movement went: one entry per lever, level pair and whole-run measure among `scope_divergences`, naming the component that carried it. |
 | `divergences_omitted` | `int` | `0` | Gated divergences beyond the reporting cap, dropped weakest-first. Stated so a short list is not read as a complete one. |
 | `divergences_tested` | `int` | `0` | Whole-and-part pairs across every lever whose divergence test carried a p, published or not. |
 | `divergences_untested` | `int` | `0` | Whole-and-part pairs whose divergence could not be tested: fewer than two cases carrying both measures on a side, or a remainder (whole minus part) that moved by the same amount on every case where the two measures do not both declare value_range, so no test of the mean can call it; declare value_range on both for the bounded test to read it. |
@@ -2615,6 +2646,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `verdict_order` | `VerdictOrder` | `VerdictOrder(merit_priority=[], tiers=[], unranked_bar_measure_ids=[], questions=[])` | The order verdicts are read in, as declared: the bars on each axis of `merit_priority`, strongest first, the bars on no ranked axis, and for each live question the bars on the axes it names. |
 | `measurement_windows` | `list[MeasurementWindow]` | `[]` | Each resolved member run's wall-clock measurement span, derived from that run's own scored_at stamps. |
 | `launch_disclosure` | `str \| None` | `None` | Set when the member runs were NOT all started by one campaign launch — some came from different launches, or were started on their own. |
+| `model_identity_disclosure` | `str \| None` | `None` | Set when some of the member runs' candidate calls or judge scores came back from a response that named no model, so the record holds only the model id each asked for — and a provider may answer an id with a model of its choosing (a floating alias). |
 | `measurement_window_disclosure` | `str \| None` | `None` | Set when AT LEAST ONE PAIR of member runs was measured over spans of wall-clock time that do not overlap — so anything that moved between those spans (a model revision, a provider's load, a rate limit) moved with the runs, and a difference between the two runs of such a pair is not attributable to the runs alone. |
 | `apparatus_confounds` | `list[Confound]` | `[]` | Apparatus dimensions that varied across the WHOLE campaign, scanned independently of any lever. |
 | `aliased_factors` | `list[AliasedFactors]` | `[]` | Factors that moved in lockstep across the campaign: each group's factors split the runs identically, so no comparison separates them. |
@@ -2858,6 +2890,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | Action | Class | Parameters | Description |
 |---|---|---|---|
 | `templates_list` | `read` | — | List the scope's active templates — what a launch can run. |
+| `judge_configs_list` | `read` | `dim_filter?` | List the scope's judge configs — the versioned prompts a second judge or a launch can name. |
 | `runs_list` | `read` | `status?`, `include_archived?`, `label?` | List the scope's runs, newest first. |
 | `case_sets_list` | `read` | `case_set_filter?` | List the scope's named case sets, every version — what a launch can target by name. |
 | `campaigns_list` | `read` | `include_archived?` | List the scope's campaigns — the sets of runs an analysis reads. |
@@ -2880,7 +2913,10 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 
 | Action | Class | Parameters | Description |
 |---|---|---|---|
-| `campaign_create` | `write` | `name`, `subject_id`, `behavior`, `description?`, `run_ids?`, `template_id?`, `declared_design?`, `control_from_run_id?` | Create a campaign over runs in the scope, for an analysis to read. |
+| `campaign_create` | `write` | `name`, `subject_id`, `behavior`, `description?`, `run_ids?`, `template_id?`, `declared_design?`, `control_from_run_id?`, `exploratory?` | Create a campaign over runs in the scope, for an analysis to read. |
+| `campaign_update` | `write` | `campaign_id`, `name?`, `description?`, `declared_design?`, `exploratory?`, `control_from_run_id?` | Rename or redescribe a campaign, or declare, amend or withdraw its design. |
+| `campaign_runs_add` | `write` | `campaign_id`, `run_ids` | Put runs in a campaign — runs launched after it was created, or measured on their own first. |
+| `campaign_runs_remove` | `write` | `campaign_id`, `run_ids` | Take runs out of a campaign; the runs and their results stay, in any other campaign too. |
 | `analysis_generate` | `spend`, job | `campaign_id`, `model?` | Generate a campaign's analysis with a paid model call, as a job to poll. |
 | `analysis_estimate` | `read` | `campaign_id`, `model?` | Price a campaign's analysis generation against the host's out-of-run cap, without spending. |
 | `judge_second` | `spend`, job | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?`, `sample_fraction?`, `sample_seed?` | Ask a second judge to score a seeded share of a finished run's judged results, as a job; read agreement. |
@@ -2939,7 +2975,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `campaign_description` | `string` | The sweep's campaign's description. |
 | `campaign_filter` | `string` or `null` | List only the insights this campaign's analyses minted, by id; omitted lists every campaign's. |
 | `campaign_id` | `string` | A campaign's id, as campaigns_list names it. |
-| `campaign_name` | `string` | The campaign every arm's run joins as it is created. |
+| `campaign_name` | `string` | The campaign every arm's run joins as it is created. It is created exploratory, since a sweep takes no design; declare one afterwards with campaign_update. |
 | `candidate_run_id` | `string` | The run read against the baseline (B), as runs_list names it. |
 | `case_set` | `string` | The case set's name; a new name starts at version 1. |
 | `case_set_filter` | `string` or `null` | List only this case set's versions. |
@@ -2949,11 +2985,14 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `column_factor` | `string` | The coordinate the columns are; a pooled ranking across the rows is checked for reversal on it. |
 | `condition_filter` | `'ok'` \| `'candidate_fail'` \| `'infra_exclude'` or `null` | List only results in this condition: ok (delivered, scored), candidate_fail (scored as a hard fail) or infra_exclude (a harness fault, in no aggregate). |
 | `confirm` | `string` | Must echo the id of what is destroyed, exactly. |
-| `control_from_run_id` | `string` or `null` | One of run_ids whose variant becomes the declared control, the cell every other is read against: its variant key is resolved from the run, as designating a control on an existing campaign resolves it. Requires declared_design. |
+| `control_from_run_id` | `string` or `null` | One of the campaign's runs whose variant becomes the declared control, the cell every other is read against: its variant key is resolved from the run, so nobody types it. Requires a declaration — declared_design in the same call, or, on an update, the stored one — and is refused beside a design that types its own control. On an update, null clears the control and omitted leaves it as it is. |
 | `criteria` | array of `string` or `null` | The criteria to freeze; omitted freezes every dim each result was judged on. |
 | `criterion_dim` | `string` or `null` | Only the profiles of this criterion's dim; omitted lists every one. |
-| `declared_design` | `object` or `null` | What the campaign sets out to learn, declared before it learns anything: axes (at least one: {axis_id, values: [{content, display}], rationale?}, each axis_id a lever or open-family member this host declares), held_fixed ({stimulus: controlled\|uncontrolled, stimulus_reason (required when uncontrolled), apparatus: commissioned\|witnessed}), and optionally questions ([{id, text, merit_axes?}]), bars ([{measure_id, threshold, direction}], no looser than the registered ones), merit_priority and intended_repetitions. Validated and gated as every campaign declaration is. Optional: omitted, the campaign is exploratory — its report and analysis say once that its readings confirm nothing, and its design is inferred from the runs. Its control is named by control_from_run_id. |
-| `description` | `string` | A longer description of the campaign. |
+| `declared_design` | `object` or `null` | What the campaign sets out to learn: axes (at least one: {axis_id, values: [{content, display}], rationale?}, each axis_id a lever or open-family member this host declares), held_fixed ({stimulus: controlled\|uncontrolled, stimulus_reason (required when uncontrolled), apparatus: commissioned\|witnessed}), and optionally questions ([{id, text, merit_axes?}]), bars ([{measure_id, threshold, direction}], no looser than the registered ones), merit_priority and intended_repetitions. Validated and gated as every campaign declaration is. A campaign is created with a design or with exploratory: true, never neither and never both; its control is named by control_from_run_id. On an update it replaces the stored declaration, its questions reconciled with the stored ones by id; declaring one on an exploratory campaign makes it declared; null withdraws the declaration, only beside exploratory: true; omitted leaves it as it is. |
+| `description` (on `campaign_create`) | `string` | A longer description of the campaign. |
+| `description` (on `campaign_update`) | `string` or `null` | A longer description of the campaign. |
+| `dim_filter` | `string` or `null` | List only the configs asking for this dimension. |
+| `exploratory` | `boolean` | True says the campaign declares no design: someone learning to run evals, or testing an intuition with no settled question. Its report and analysis say once that its readings confirm nothing, and its design is inferred from the runs. On a create, required without declared_design and refused beside one; on an update, required beside declared_design: null and refused beside a design, or on a declared campaign the update leaves declared. An assertion checked and never stored: a campaign is exploratory exactly while it declares no design, so declaring one later (campaign_update) ends it. |
 | `export_format` | `'csv'` \| `'json'` | The export's form: csv (flat rows, a column per lever) or json (the rows and what was left out). |
 | `export_run_ids` | array of `string` or `null` | Export only these runs, archived ones included since they are named; omitted exports all. |
 | `format` | `'markdown'` \| `'json'` \| `'html'` | The report's form: markdown (the memo), json (the schema's form), html (script-free). |
@@ -2982,7 +3021,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `models` | array of `string` | Candidate models, one arm and one run each; empty runs the kind's own default. |
 | `n_test_cases` | `integer` or `null` | A case count to price each planned arm at in place of its plan's, for a what-if grid. |
 | `n_variations` | `integer` | New cases to generate from the template's variation axes; 0 runs its stored cases. |
-| `name` | `string` | The campaign's name, as an operator reads it. |
+| `name` (on `campaign_create`) | `string` | The campaign's name, as an operator reads it. |
+| `name` (on `campaign_update`) | `string` or `null` | The campaign's name, as an operator reads it. |
 | `offset` | `integer` | Skip this many rows; the previous page's next_offset. |
 | `overlays` | `object` or `null` | The knobs this launch turns on the template's kind, by field. |
 | `part` | `'record'` \| `'judge'` \| `'spans'` | Which part of the stored trace to return: record (the output the kind stored, its call ledger and end state, beside the result), judge (what the judge was sent) or spans (the stored spans). |
@@ -2998,7 +3038,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `row_factor` | `string` | The coordinate the rows are: a declared one (model, template_id, ...) or a lever the host registers. |
 | `rubric_dim` | `string` | The judged dimension rated, spelled as the result's score spells it. |
 | `run_id` | `string` | A run's id, as runs_list or a launch's job names it. |
-| `run_ids` | array of `string` | The runs to put in the campaign, all in the caller's scope. |
+| `run_ids` | array of `string` | The runs, by id, all in the caller's scope: those a campaign is created with, or those added to or taken out of it. |
 | `run_labels` | array of `string` | The run's labels, replacing any it has; [] clears them. Each 1 to 64 characters, stored sorted and each once. A label names the run (a baseline, a production snapshot) and moves no key or fingerprint. |
 | `run_status` | `'pending'` \| `'running'` \| `'completed'` \| `'failed'` \| `'cancelled'` \| `'budget_stopped'` \| `'exhausted'` or `string` | Read only runs with this status, or 'all'. Completed unless named: a run still going is still adding results. |
 | `sample_fraction` | `number` | The share of the run's judged results the second judge is asked about. |

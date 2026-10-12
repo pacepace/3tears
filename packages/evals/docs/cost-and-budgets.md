@@ -242,7 +242,9 @@ returns. Each arm's request carries the admission (`LaunchRequest.generation`); 
 and no others, and each is ledgered as an `OutOfRunSpend` under the launch's group. The launcher's side is in
 [Generating cases at launch](adopting-a-host.md#generating-cases-at-launch).
 
-**A rubric proposal.** A host plans it with `plan_draft`, admits the call with
+**A rubric proposal.** A host plans it with `plan_draft(axis=..., system_prompt=..., ...)`, which refuses a
+stored proposer prompt written for another draft shape before anything is priced (see
+[the engine's prompts](adopting-a-host.md#the-engines-prompts-seeded-into-your-registry)), admits the call with
 `budget.admit(client, "proposer", [call])` in its action's call (refusing there, with nothing called), and makes
 it in the action's job with `propose_draft(client, admitted, budget=..., axis=..., subject_id=...)`, which
 releases the client. A client admitted and never made is the host's to release.
@@ -292,6 +294,9 @@ plain function returns. Return `Answer(value, model=..., input_tokens=..., outpu
 and the call becomes the cell's `candidate` usage row: `value` is graded as a plain return would be, the
 result's `cost_usd` is derived from the row, the summary prints `candidate spend: $... over N call(s)`, and
 `compare` tests the arms' spend against the control. A field left `None` is unreported, not zero.
+Pass `served_model=` too, the model the provider's response named: without it the run records only the model
+asked for, and its summary says which model answered is unconfirmed
+([Reading reports](reading-reports.md#which-model-answered)).
 `examples/compare_two_models.py` prices each call this way.
 
 **Every surface that states what an arm costs reads `production_replicating_cost`**, the spend of the roles

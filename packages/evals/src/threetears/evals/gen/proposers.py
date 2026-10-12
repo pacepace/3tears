@@ -30,6 +30,8 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from pydantic import ValidationError
 
 from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.kernel.prompts.catalogue import BOUNDARY_GEN_PROMPT, PROPOSER_PROMPT
+from threetears.evals.kernel.prompts.contract import OutputContract, require_output_contract
 from threetears.evals.schema.models import SCALE_LEVELS, RubricAxis, RubricProposal
 from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
 from threetears.evals.kernel.out_of_run import AdmittedCall, PlannedCall
@@ -86,6 +88,22 @@ def _proposal_schema() -> dict[str, Any]:
 #: draft the model refuses — a dimension with no ``scale``, say — whatever the stored prompt says.
 _PROPOSAL_RESPONSE_FORMAT: dict[str, Any] = strict_response_format("rubric_proposal", _proposal_schema())
 
+#: The output contract both proposer prompts are written for: the draft's schema as the call sends it, and a
+#: revision for the rule it is refused by that the schema cannot state (a dimension name's ``<context>.<dim>``
+#: namespacing, :data:`~threetears.evals.schema.models.DimName`). Bump the revision when such a rule changes. Each
+#: shipped default ends with its line, and :func:`plan_draft` refuses a stored prompt that does not
+#: (:mod:`threetears.evals.kernel.prompts.contract`); ``tests/test_prompt_contract.py`` pins its fingerprint, so a
+#: change that moves it — and so refuses every stored proposer prompt until it is reset — is made on purpose.
+RUBRIC_PROPOSAL_CONTRACT = OutputContract.of(
+    "rubric_proposal", _PROPOSAL_RESPONSE_FORMAT["json_schema"]["schema"], revision=1
+)
+
+#: The prompt each axis's proposal is steered by, as the refusal of a stale one names it.
+_AXIS_PROMPT: dict[str, str] = {
+    "capability": PROPOSER_PROMPT,
+    "boundary": BOUNDARY_GEN_PROMPT,
+}
+
 
 class ProposedDraft(NamedTuple):
     """A rubric draft, and the ledger row of the call that wrote it."""
@@ -96,7 +114,7 @@ class ProposedDraft(NamedTuple):
     spend: OutOfRunSpend
 
 
-def plan_draft(*, system_prompt: str, subject_feed: str, catalog_feed: str) -> PlannedCall:
+def plan_draft(*, axis: RubricAxis, system_prompt: str, subject_feed: str, catalog_feed: str) -> PlannedCall:
     """The one call a rubric proposal sends, on either axis, built before anything is priced or made.
 
     What a host quotes and admits under its out-of-run budget in its call
@@ -104,7 +122,13 @@ def plan_draft(*, system_prompt: str, subject_feed: str, catalog_feed: str) -> P
     then hands, admitted, to :func:`propose_draft`. The user message is the subject feed, then the catalog
     feed, because the catalog is read against the subject: which dims to reuse depends on what the subject is.
 
+    **A system prompt written for another draft shape is refused here**, before anything is priced: the prompt
+    is the host's stored copy of ``eval_proposer`` or ``eval_boundary_gen``, store-master once seeded, so a copy
+    seeded before the draft's shape changed would otherwise be paid for and then fail draft validation on every
+    call. It must carry :data:`RUBRIC_PROPOSAL_CONTRACT`'s line, as the shipped defaults do.
+
     Args:
+        axis: Which axis the draft is for; names the prompt a refusal is about.
         system_prompt: The rendered system prompt for the axis being proposed on.
         subject_feed: The rendered description of the subject under test.
         catalog_feed: The rendered reusable catalog for the axis, each dim with its ``key`` so the model can
@@ -112,7 +136,13 @@ def plan_draft(*, system_prompt: str, subject_feed: str, catalog_feed: str) -> P
 
     Returns:
         The planned call.
+
+    Raises:
+        PromptContractError: ``system_prompt`` declares another output contract than
+            :data:`RUBRIC_PROPOSAL_CONTRACT`, or none — a stored copy that predates the draft's shape. Its remedy
+            names the prompt to reset.
     """
+    require_output_contract(_AXIS_PROMPT[axis], system_prompt, RUBRIC_PROPOSAL_CONTRACT)
     return PlannedCall(
         system=system_prompt,
         user=f"{subject_feed}\n{catalog_feed}".rstrip() + "\n",
@@ -270,6 +300,7 @@ def _coerce_new_dim_axis(payload: Any, axis: RubricAxis) -> None:
 
 __all__ = [
     "PROPOSER_MAX_TOKENS",
+    "RUBRIC_PROPOSAL_CONTRACT",
     "ProposedDraft",
     "plan_draft",
     "propose_draft",

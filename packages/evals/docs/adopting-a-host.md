@@ -78,7 +78,14 @@ pass it to every entrypoint. It holds:
   "unreported" in silence. Check your completion type in your own suite with
   `threetears.evals.testing.check_completion_conformance(an_instance)`, which fails naming the attribute.
   `served_model` must be the model the provider's RESPONSE named, never the request: it is how a candidate
-  launched on a floating alias records which model answered it. `temperature` must be what the request
+  launched on a floating alias records which model answered it. Read it off the provider's response (the
+  `model` its reply body names), and report `None` when the response names none rather than copying the
+  request in, which would make two different models compare equal. A `None` is never refused: the judge's
+  scores and the usage rows keep the id requested, and the run's summary (`run_get`), `run_summary`, the
+  analysis bundle and the campaign report each say once that which model answered is unconfirmed, counting
+  the results and scores it covers ([Reading reports](reading-reports.md#which-model-answered)). Your
+  candidate kind's own usage rows (`CandidateTelemetry.usage`, below) carry it the same way: fold each
+  completion with `RoleUsageLedger.add_llm_result`, which reads it. `temperature` must be what the request
   carried: the judge asks for 0 unless a config says otherwise, and a client whose model refuses a temperature
   sends none and reports `None`, which the score records as `model_default`;
 - your `failure_describer` — how a raised provider call reads. It is the only thing that can say a call
@@ -489,7 +496,9 @@ A host adds its own actions to the catalogue (`eval_catalogue(my_actions)`). One
 rubric proposer, a drafter of a classifier's cases — is a `spend` action and keeps the engine's rule: **its call
 makes no completion request.** It prices and refuses in the call, then starts the work as a job with
 `start_action_job`, which writes an `EvalActionJob` record carrying the job's lease and, once the work returns,
-its typed result as JSON — what `job_poll` returns. Declare it `long_running=True` with result `JobsStarted`. It
+its typed result as JSON — what `job_poll` returns. **Name its wall-clock ceiling** (`budget_s`): no action job
+has a default, so a forgotten one is a `TypeError` where you start it rather than an hour nobody chose. Declare
+it `long_running=True` with result `JobsStarted`. It
 needs no `render`: long work reads back as the jobs it started, with `render_jobs_started` (exported from
 `threetears.evals.actions`), which is the default, and which an action returning anything else may not use.
 
@@ -510,7 +519,8 @@ async def _propose(host: OpsHost, caller: Caller, params: ProposeParams) -> Jobs
         return proposed.proposal
 
     return await start_paid_call(host, caller.scope_id, action="rubric_propose", role="proposer", model=None,
-                                 purpose="proposer", budget=budget, call=call, make=draft, label=params.topic)
+                                 purpose="proposer", budget=budget, call=call, make=draft, label=params.topic,
+                                 budget_s=600.0)                  # required: how long a draft may take
 
 async def _propose_happy_path(stage: ConformanceStage) -> Mapping[str, Any]:
     return {"topic": "tone"}                             # what reaches the work, with anything it must arrange
@@ -640,6 +650,36 @@ no record of its seeding, and not the default. Pass a template's stored copy as
 number. A copy you tune is never reported stale. A provenance stamp does the same job as a recorded digest: if your registry marks a slot as
 the system's seed until someone edits it, pass `customized=True` for an edited slot and `seeded_digest=None`, and an
 untouched slot the package has moved past reads `stale`.
+
+**A proposer prompt states the draft shape it was written for, and the engine checks it.** A tuned copy is
+never stale, but it can still teach a draft shape the engine no longer reads. So each shipped proposer
+default ends with its output-contract line, `eval-output-contract: rubric_proposal <fingerprint>`
+(`gen.RUBRIC_PROPOSAL_CONTRACT.line`). The fingerprint is the digest of the draft's schema as the call sends
+it, its field documentation aside, and of a revision for the rules the schema cannot state. `plan_draft`
+reads the rendered prompt you hand it, before anything is priced, and raises `PromptContractError` (a
+`ConflictError`, status 409) when the prompt carries another fingerprint (`outdated`) or none
+(`undeclared`, which is every copy seeded before the line existed). The error names the prompt
+(`prompt_type`) and the remedy: reset the slot to the shipped default, or keep an edit by rewriting its
+output instructions for the current shape and making its line read the current one. Name your own reset
+action in what your surface shows; the engine cannot. An edited copy that carries the current line passes:
+the line is the editor's statement that the edit was written for this shape, and the strict response
+format and the draft's validation still stand behind it. The analysis generator's prompt states no shape
+(its schema is sent and its grammar appended by code), so it binds no contract.
+
+`prompt_drift` reads the same thing before any call. Each reading carries `contract` (`current`,
+`outdated`, `undeclared`, or `unbound` for a prompt with no contract), `expected_contract` (the line the
+shipped default carries) and `refused`, which is true when a call the copy steers is refused, whether the
+copy is stale or customized. Show `refused` readings with their `remedy` wherever you list your prompts,
+so an operator sees a copy that will be refused before a call is.
+
+```python
+if drift.stale or drift.refused:
+    log.warning("%s: %s", drift.prompt_type, drift.remedy)
+```
+
+After an upgrade that moves a contract's fingerprint, every stored copy of that prompt is refused until it
+is reset or its line updated. Check `prompt_drift` on start-up, so the reset happens before the first call
+is refused.
 
 ### Launching the analysis reporter
 
