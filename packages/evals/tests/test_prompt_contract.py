@@ -46,6 +46,8 @@ from threetears.evals.kernel import (
     template_text,
 )
 
+_RESET = "call prompt_reset for the slot"
+
 #: The fingerprint the proposal contract has in this build. A change that moves it refuses every stored proposer
 #: prompt in every deployment until each is reset, so it is made on purpose: update this pin and write the reset
 #: into the release's migration notes.
@@ -76,7 +78,7 @@ def _without_line(template: SeedTemplate) -> SeedTemplate:
 
 def _schema() -> dict[str, Any]:
     format_ = plan_draft(
-        axis="capability", system_prompt=RUBRIC_PROPOSAL_CONTRACT.line, subject_feed="F", catalog_feed="C"
+        reset=_RESET, axis="capability", system_prompt=RUBRIC_PROPOSAL_CONTRACT.line, subject_feed="F", catalog_feed="C"
     ).response_format
     assert format_ is not None
     return copy.deepcopy(format_["json_schema"]["schema"])
@@ -92,7 +94,9 @@ def _before_scale_was_required() -> OutputContract:
 
 
 def _plan(axis: RubricAxis, template: SeedTemplate) -> Any:
-    return plan_draft(axis=axis, system_prompt=template_text(template.sections), subject_feed="F", catalog_feed="C")
+    return plan_draft(
+        reset=_RESET, axis=axis, system_prompt=template_text(template.sections), subject_feed="F", catalog_feed="C"
+    )
 
 
 # --- the contract and its line --------------------------------------------------------------------
@@ -153,7 +157,7 @@ def test_a_stored_copy_seeded_before_contracts_were_stated_is_refused_naming_the
         (),
     )
     assert f"'{_PROMPT_TYPE[axis]}'" in error.message and "nothing was paid for" in error.message
-    assert f"reset the stored '{_PROMPT_TYPE[axis]}' prompt" in error.remedy
+    assert f"reset the stored '{_PROMPT_TYPE[axis]}' prompt" in error.remedy and _RESET in error.remedy
     assert RUBRIC_PROPOSAL_CONTRACT.line in error.remedy
 
 
@@ -197,7 +201,7 @@ def test_a_copy_declaring_the_current_contract_beside_another_is_refused() -> No
     text = f"{_before_scale_was_required().line}\nrules\n{RUBRIC_PROPOSAL_CONTRACT.line}"
     assert contract_state(text, RUBRIC_PROPOSAL_CONTRACT) == "outdated"
     with pytest.raises(PromptContractError):
-        require_output_contract("eval_proposer", text, RUBRIC_PROPOSAL_CONTRACT)
+        require_output_contract("eval_proposer", text, RUBRIC_PROPOSAL_CONTRACT, reset=_RESET)
 
 
 def test_a_prompt_with_no_output_contract_is_never_refused() -> None:
@@ -210,18 +214,22 @@ def test_a_prompt_with_no_output_contract_is_never_refused() -> None:
 def test_a_stale_copy_from_before_contracts_reads_refused_with_a_remedy_naming_the_line() -> None:
     shipped = EVAL_PROPOSER_TEMPLATE_DEFAULT
     older = _without_line(shipped)
-    drift = prompt_drift(_entry("eval_proposer"), shipped=shipped, stored=older, seeded_digest=seed_digest(older))
+    drift = prompt_drift(
+        _entry("eval_proposer"), shipped=shipped, stored=older, reset=_RESET, seeded_digest=seed_digest(older)
+    )
 
     assert (drift.state, drift.contract, drift.refused) == ("stale", "undeclared", True)
     assert drift.expected_contract == RUBRIC_PROPOSAL_CONTRACT.line
-    assert "reseed" in drift.remedy and RUBRIC_PROPOSAL_CONTRACT.line in drift.remedy
+    assert _RESET in drift.remedy and RUBRIC_PROPOSAL_CONTRACT.line in drift.remedy
 
 
 def test_a_customized_copy_written_for_an_older_shape_is_kept_but_reads_refused() -> None:
     """Customized is not drift, but an edit written for a draft shape the engine no longer reads is still refused."""
     shipped = EVAL_PROPOSER_TEMPLATE_DEFAULT
     tuned = _with_text(shipped, f"the operator's wording\n{_before_scale_was_required().line}")
-    drift = prompt_drift(_entry("eval_proposer"), shipped=shipped, stored=tuned, seeded_digest=None, customized=True)
+    drift = prompt_drift(
+        _entry("eval_proposer"), shipped=shipped, stored=tuned, reset=_RESET, seeded_digest=None, customized=True
+    )
 
     assert (drift.state, drift.stale, drift.contract, drift.refused) == ("customized", False, "outdated", True)
     assert "refused" in drift.remedy and RUBRIC_PROPOSAL_CONTRACT.line in drift.remedy
@@ -230,20 +238,22 @@ def test_a_customized_copy_written_for_an_older_shape_is_kept_but_reads_refused(
 def test_a_customized_copy_written_for_the_current_shape_is_not_refused_and_names_no_remedy() -> None:
     shipped = EVAL_PROPOSER_TEMPLATE_DEFAULT
     tuned = _with_text(shipped, f"the operator's wording\n{RUBRIC_PROPOSAL_CONTRACT.line}")
-    drift = prompt_drift(_entry("eval_proposer"), shipped=shipped, stored=tuned, seeded_digest=None, customized=True)
+    drift = prompt_drift(
+        _entry("eval_proposer"), shipped=shipped, stored=tuned, reset=_RESET, seeded_digest=None, customized=True
+    )
     assert (drift.state, drift.contract, drift.refused, drift.remedy) == ("customized", "current", False, "")
 
 
 def test_the_shipped_default_reads_current_on_both_counts() -> None:
     shipped = EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT
-    drift = prompt_drift(_entry("eval_boundary_gen"), shipped=shipped, stored=shipped, seeded_digest=None)
+    drift = prompt_drift(_entry("eval_boundary_gen"), shipped=shipped, stored=shipped, reset=_RESET, seeded_digest=None)
     assert (drift.state, drift.contract, drift.refused) == ("current", "current", False)
 
 
 def test_the_analysis_generators_prompt_binds_no_contract() -> None:
     """Its reply shape is sent as a schema and its grammar appended from code, so its text states no shape."""
     entry = _entry("eval_analysis_gen")
-    drift = prompt_drift(entry, shipped="new text", stored="old text", seeded_digest=None)
+    drift = prompt_drift(entry, shipped="new text", stored="old text", reset=_RESET, seeded_digest=None)
     assert (drift.contract, drift.refused, drift.expected_contract) == ("unbound", False, "")
 
 
@@ -252,4 +262,16 @@ def test_a_shipped_default_declaring_two_contracts_is_refused_as_a_defect() -> N
         EVAL_PROPOSER_TEMPLATE_DEFAULT, f"{RUBRIC_PROPOSAL_CONTRACT.line}\n{_before_scale_was_required().line}"
     )
     with pytest.raises(ValueError, match="2 output contracts"):
-        prompt_drift(_entry("eval_proposer"), shipped=shipped, stored=shipped, seeded_digest=None)
+        prompt_drift(_entry("eval_proposer"), shipped=shipped, stored=shipped, reset=_RESET, seeded_digest=None)
+
+
+def test_a_blank_reset_is_refused_before_the_prompt_is_read() -> None:
+    """A refusal's remedy would name no way to reset the slot, so the plan is refused for the blank reset itself."""
+    with pytest.raises(ValueError, match="reset is blank"):
+        plan_draft(
+            axis="capability",
+            system_prompt=template_text(EVAL_PROPOSER_TEMPLATE_DEFAULT.sections),
+            subject_feed="F",
+            catalog_feed="C",
+            reset=" ",
+        )

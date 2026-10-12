@@ -36,6 +36,7 @@ from threetears.evals.kernel.prompts.contract import (
     OutputContract,
     contract_state,
     declared_contracts,
+    require_reset,
     template_text,
 )
 from threetears.evals.kernel.prompts.seed import KIND_TEMPLATE, SeedPrompt, SeedTemplate
@@ -118,6 +119,7 @@ def prompt_drift(
     shipped: SeedTemplate | str,
     stored: SeedTemplate | str,
     seeded_digest: str | None,
+    reset: str,
     customized: bool = False,
 ) -> PromptDrift:
     """Read a stored copy of a catalogue prompt against the package's shipped default.
@@ -129,6 +131,9 @@ def prompt_drift(
             :class:`SeedTemplate` (rebuilt from its payload) for a template seed.
         seeded_digest: :func:`seed_digest` of what the host seeded the slot with, as it recorded it then; ``None``
             when it recorded nothing.
+        reset: How an operator of this host resets the slot to the shipped default — an action or a command,
+            such as ``"call prompt_reset with prompt_type='eval_proposer'"``. The registry is the host's, so the
+            engine cannot name it; the remedy does.
         customized: Whether the host holds the stored copy as deliberately its own — then it is never stale.
 
     Returns:
@@ -137,8 +142,9 @@ def prompt_drift(
 
     Raises:
         TypeError: ``shipped`` or ``stored`` is not of the entry's kind.
-        ValueError: ``shipped`` declares more than one output contract.
+        ValueError: ``shipped`` declares more than one output contract, or ``reset`` is blank.
     """
+    reset = require_reset(reset)
     wanted: type = SeedTemplate if entry.kind == KIND_TEMPLATE else str
     for name, value in (("shipped", shipped), ("stored", stored)):
         if not isinstance(value, wanted):
@@ -155,18 +161,17 @@ def prompt_drift(
         state = "stale"
     expected = _expected_contract(entry.prompt_type, shipped)
     contract = contract_state(_text(stored), expected)
-    module, constant = entry.seed_ref
     remedy = ""
     if state == "stale":
         remedy = (
-            f"reseed the {entry.prompt_type!r} slot from {module}.{constant} and record its digest; or, if the stored "
-            "copy is deliberately your own, mark it customized"
+            f"reset the {entry.prompt_type!r} slot to the shipped default ({reset}); or, if the stored copy is "
+            "deliberately your own, keep it as customized"
         )
     if contract in REFUSED_CONTRACT_STATES and expected is not None:
         written = "for another output contract" if contract == "outdated" else "with no output contract stated"
         remedy = (
             f"{remedy + '. ' if remedy else ''}The stored {entry.prompt_type!r} copy was written {written}, so every "
-            f"call it steers is refused until it is reseeded from {module}.{constant}, or, to keep an edit, its "
+            f"call it steers is refused until it is reset to the shipped default ({reset}), or, to keep an edit, its "
             "output instructions are rewritten for the current reply shape and its contract line made to read "
             f"'{expected.line}'"
         )

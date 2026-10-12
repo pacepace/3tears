@@ -1647,11 +1647,11 @@
     },
     "threetears.evals.kernel.prompt_drift": {
       "kind": "function",
-      "signature": "prompt_drift(entry: SeedPrompt, *, shipped: SeedTemplate | str, stored: SeedTemplate | str, seeded_digest: str | None, customized: bool = False) -> PromptDrift"
+      "signature": "prompt_drift(entry: SeedPrompt, *, shipped: SeedTemplate | str, stored: SeedTemplate | str, seeded_digest: str | None, reset: str, customized: bool = False) -> PromptDrift"
     },
     "threetears.evals.kernel.PromptContractError": {
       "kind": "exception",
-      "signature": "PromptContractError(prompt_type: str, *, state: ContractState, expected: OutputContract, declared: tuple[OutputContract, ...]) -> None"
+      "signature": "PromptContractError(prompt_type: str, *, state: ContractState, expected: OutputContract, declared: tuple[OutputContract, ...], reset: str) -> None"
     },
     "threetears.evals.kernel.PromptDrift": {
       "kind": "dataclass",
@@ -1731,7 +1731,7 @@
     },
     "threetears.evals.kernel.require_output_contract": {
       "kind": "function",
-      "signature": "require_output_contract(prompt_type: str, text: str, contract: OutputContract) -> None"
+      "signature": "require_output_contract(prompt_type: str, text: str, contract: OutputContract, *, reset: str) -> None"
     },
     "threetears.evals.kernel.REREAD_AND_RETRY": {
       "kind": "constant (str)",
@@ -4615,7 +4615,7 @@
     },
     "threetears.evals.gen.plan_draft": {
       "kind": "function",
-      "signature": "plan_draft(*, axis: RubricAxis, system_prompt: str, subject_feed: str, catalog_feed: str) -> PlannedCall"
+      "signature": "plan_draft(*, axis: RubricAxis, system_prompt: str, subject_feed: str, catalog_feed: str, reset: str) -> PlannedCall"
     },
     "threetears.evals.gen.price_variations": {
       "kind": "async function",

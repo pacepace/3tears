@@ -400,7 +400,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`program_cost`** · function · Cost of every role, i.e. what the eval program spent to produce this result.
   <br>`program_cost(usage: list[RoleUsage]) -> float | None`
 - **`prompt_drift`** · function · Read a stored copy of a catalogue prompt against the package's shipped default.
-  <br>`prompt_drift(entry: SeedPrompt, *, shipped: SeedTemplate | str, stored: SeedTemplate | str, seeded_digest: str | None, customized: bool = False) -> PromptDrift`
+  <br>`prompt_drift(entry: SeedPrompt, *, shipped: SeedTemplate | str, stored: SeedTemplate | str, seeded_digest: str | None, reset: str, customized: bool = False) -> PromptDrift`
 - **`refuse_an_undeclarable_design`** · function · Refuse a declaration this host cannot honour — at authoring time, not at analysis time.
   <br>`refuse_an_undeclarable_design(design: CampaignDesign, *, behavior: str, template: EvalTemplate | None, profile: HostProfile) -> None`
 - **`request_job_cancel`** · function · Ask a job to stop by writing the request on its record, from any process.
@@ -408,7 +408,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`require_held`** · function · Refuse to go on with a job whose record has ended under it: the check a job makes before it spends again.
   <br>`require_held(store: LeaseStore, kind: LeasedJobKind[R], record_id: str, scope_id: str, *, leases: JobLeases | None = None) -> None`
 - **`require_output_contract`** · function · Refuse a prompt that was not written for `contract`.
-  <br>`require_output_contract(prompt_type: str, text: str, contract: OutputContract) -> None`
+  <br>`require_output_contract(prompt_type: str, text: str, contract: OutputContract, *, reset: str) -> None`
 - **`resolve_bar_name`** · function · Say what a bar names and where a result carries it, or why no result can.
   <br>`resolve_bar_name(name: str, *, rubric_dimensions: Mapping[str, RubricScale], goal_state_checks: Collection[str], measures: MeasureRegistry) -> BarName | UnreadableBarName`
 - **`resolve_context_identity`** · function · Return the identity a read surface should show for `run`.
@@ -1846,7 +1846,7 @@ The engine's generation package: the prompts and expanders that author test mate
 - **`generate_variations`** · async function · Generate up to `n_variations` test cases for a template.
   <br>`generate_variations(template: EvalTemplate, n_variations: int, *, storage: EvalTestCaseStore, scope_id: str, blocking_executor: Executor | None, generation: AdmittedGeneration | None = None, rng: random.Random | None = None, preview: bool = False) -> GeneratedVariations`
 - **`plan_draft`** · function · The one call a rubric proposal sends, on either axis, built before anything is priced or made.
-  <br>`plan_draft(*, axis: RubricAxis, system_prompt: str, subject_feed: str, catalog_feed: str) -> PlannedCall`
+  <br>`plan_draft(*, axis: RubricAxis, system_prompt: str, subject_feed: str, catalog_feed: str, reset: str) -> PlannedCall`
 - **`price_variations`** · async function · Price the calls `generate_variations` would make, refusing exactly as it would — and make none.
   <br>`price_variations(template: EvalTemplate, n_variations: int, *, storage: EvalTestCaseStore, scope_id: str, blocking_executor: Executor | None, llm: VariationLLM, budget: OutOfRunBudget) -> list[float | None]`
 - **`propose_draft`** · async function · Make an admitted rubric proposal on `axis` and read its draft.

@@ -27,6 +27,8 @@ from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.llm_client_fakes import ReleasableClientMixin
 from packages.evals.tests.off_loop import off_loop
 
+_RESET = "call prompt_reset for the slot"
+
 _SCOPE = "proposals"
 
 #: What one proposal call is priced at, and what it is reported to have cost.
@@ -111,7 +113,9 @@ async def _proposed(
     catalog_feed: str,
 ) -> Any:
     """A host's proposal: planned and admitted in its call, then made, as the job makes it."""
-    call = plan_draft(axis=axis, system_prompt=system_prompt, subject_feed=subject_feed, catalog_feed=catalog_feed)
+    call = plan_draft(
+        reset=_RESET, axis=axis, system_prompt=system_prompt, subject_feed=subject_feed, catalog_feed=catalog_feed
+    )
     [admitted] = budget.admit(client, "proposer", [call])
     return await propose_draft(client, admitted, budget=budget, axis=axis, subject_id=subject_id)
 
@@ -144,7 +148,7 @@ async def test_the_feeds_are_sent_verbatim_subject_first_in_json_mode(axis):
             "system": _SYSTEM,
             "user": "# Subject\n\nName: S\n\n# Catalog\n\n(empty)\n",
             "response_format": plan_draft(
-                axis="capability", system_prompt=_SYSTEM, subject_feed="", catalog_feed=""
+                reset=_RESET, axis="capability", system_prompt=_SYSTEM, subject_feed="", catalog_feed=""
             ).response_format,
         }
     ]
@@ -341,7 +345,7 @@ async def test_a_budget_for_another_subject_is_refused_before_the_call_is_made()
 
 def test_the_plan_is_the_call_as_sent_feeds_subject_first():
     call = plan_draft(
-        axis="capability", system_prompt=_SYSTEM, subject_feed="# Subject\n", catalog_feed="# Catalog\n\n"
+        reset=_RESET, axis="capability", system_prompt=_SYSTEM, subject_feed="# Subject\n", catalog_feed="# Catalog\n\n"
     )
     assert (call.system, call.user) == (_SYSTEM, "# Subject\n\n# Catalog\n")
 
@@ -349,7 +353,7 @@ def test_the_plan_is_the_call_as_sent_feeds_subject_first():
 async def test_a_proposal_makes_the_call_its_host_admitted_and_prices_nothing_itself():
     client = _RecordingClient(_draft(suggestion_axis="capability"))
     budget, _storage = _budget()
-    call = plan_draft(axis="capability", system_prompt=_SYSTEM, subject_feed="F", catalog_feed="C")
+    call = plan_draft(reset=_RESET, axis="capability", system_prompt=_SYSTEM, subject_feed="F", catalog_feed="C")
     [admitted] = budget.admit(client, "proposer", [call])
     priced_in_the_call = list(client.priced)
 
@@ -363,7 +367,9 @@ async def test_an_admission_for_another_purpose_is_refused_and_nothing_is_called
     client = _RecordingClient(_draft(suggestion_axis="capability"))
     budget, storage = _budget()
     [admitted] = budget.admit(
-        client, "variation", [plan_draft(axis="capability", system_prompt=_SYSTEM, subject_feed="F", catalog_feed="C")]
+        client,
+        "variation",
+        [plan_draft(reset=_RESET, axis="capability", system_prompt=_SYSTEM, subject_feed="F", catalog_feed="C")],
     )
 
     with pytest.raises(ValueError, match="admitted for purpose 'proposer'"):
@@ -377,7 +383,9 @@ async def test_an_admission_another_budget_made_is_refused_and_nothing_is_called
     admitting, _ = _budget()
     making, storage = _budget()
     [admitted] = admitting.admit(
-        client, "proposer", [plan_draft(axis="capability", system_prompt=_SYSTEM, subject_feed="F", catalog_feed="C")]
+        client,
+        "proposer",
+        [plan_draft(reset=_RESET, axis="capability", system_prompt=_SYSTEM, subject_feed="F", catalog_feed="C")],
     )
 
     with pytest.raises(ValueError, match="not one this budget admitted"):
