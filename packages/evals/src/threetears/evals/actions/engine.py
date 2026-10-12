@@ -2222,7 +2222,8 @@ def engine_actions() -> tuple[Action, ...]:
                 "insights citing it and ratings of its results stay. A run this build cannot read (runs_unreadable "
                 "lists them) is deleted from its stored row, removing the same: its results are found by the run id "
                 "they carry, never read. A pending or running run is refused; one this build cannot read only while "
-                "its stored lease has not lapsed, since a stranded one can never be settled."
+                "its stored lease has not lapsed, or when its lease cannot be read either, since a stranded one can "
+                "never be settled but one another build may still hold must not be destroyed."
             ),
         ),
         Action(
