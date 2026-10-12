@@ -27,6 +27,7 @@ from threetears.agent.memory.retrieval import (
     MemoryRetriever,
     RetrievalResult,
 )
+from threetears.agent.memory.embedding_utils import EmbeddingUnavailableError
 from threetears.agent.memory.integration import retrieve_memories
 from threetears.agent.memory.types import MemoryConfig
 from threetears.core.collections.registry import CollectionRegistry
@@ -1134,7 +1135,7 @@ class TestMemoryRetrieverE2E:
         )
         assert result is None
 
-    async def test_embedding_failure_returns_none(
+    async def test_an_embedding_failure_is_refused_not_read_as_nothing_relevant(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
@@ -1188,13 +1189,13 @@ class TestMemoryRetrieverE2E:
             memory_chunk_collection=chunks,
         )
 
-        result = await retriever.retrieve(
-            uuid.uuid7(),
-            "hello world",
-            agent_id=uuid.uuid7(),
-            customer_id=uuid.uuid7(),
-        )
-        assert result is None
+        with pytest.raises(EmbeddingUnavailableError, match="embedding service down"):
+            await retriever.retrieve(
+                uuid.uuid7(),
+                "hello world",
+                agent_id=uuid.uuid7(),
+                customer_id=uuid.uuid7(),
+            )
 
     async def test_no_results_returns_none(
         self,

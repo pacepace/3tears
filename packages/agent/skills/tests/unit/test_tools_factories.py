@@ -1043,6 +1043,31 @@ class TestSkillIntrospect:
         assert "[TOOL ERROR]" in out
         assert "no skill or tool" in out
 
+    async def test_a_lookup_that_fails_is_named_rather_than_reported_as_not_found(self) -> None:
+        """a registry that raises has not shown the name is unknown; the error says the lookup failed."""
+
+        class _RegistryDown(FakeRegistry):
+            async def get_tool_introspect(
+                self,
+                *,
+                actor_user_id: UUID,
+                actor_agent_id: UUID,
+                mcp_name: str,
+            ) -> SkillToolIntrospect | None:
+                raise ConnectionError("registry unreachable")
+
+        [tool] = load_skill_introspect_tool(
+            agent_id=_new_uuid(),
+            user_id=_new_uuid(),
+            skills_collection=FakeSkillsCollection(),
+            registry=_RegistryDown(),
+        )
+        out = await tool.ainvoke({"name_or_id": "loki.query"})
+        assert "[TOOL ERROR]" in out
+        assert "could not look up 'loki.query'" in out
+        assert "ConnectionError: registry unreachable" in out
+        assert "no skill or tool" not in out
+
 
 # --- a skill that is one tool call ---
 

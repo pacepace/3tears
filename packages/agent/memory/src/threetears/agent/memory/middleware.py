@@ -118,6 +118,8 @@ def _configurable() -> dict[str, Any]:
     try:
         config = get_config()
     except RuntimeError:
+        # NOSILENT(logged): outside a runnable there IS no configurable, so {} is the truth, not a stand-in; the turn
+        # running without memory retrieval is what the warning names
         # SDS-04: no runnable config means no injected integration, so this whole
         # middleware becomes a pass-through and the turn silently loses memory retrieval.
         log.warning(

@@ -23,6 +23,7 @@ from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.collections import MemoriesCollection
 from threetears.agent.memory.extraction import (
     ExtractionGate,
+    ExtractionModelFailedError,
     ExtractionOutcome,
     ExtractionResult,
     MemoryExtractor,
@@ -836,7 +837,7 @@ class TestExtractCandidates:
         result = await ext.extract_candidates("msg", "resp")
         assert result == []
 
-    async def test_non_list_returns_empty(
+    async def test_a_reply_that_is_not_a_list_is_refused_not_read_as_nothing_found(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
@@ -844,8 +845,8 @@ class TestExtractCandidates:
             extraction_content=json.dumps({"type": "fact", "content": "x"}),
         )
         ext = _make_extractor(permissive_memory_authorizer, factory=factory)
-        result = await ext.extract_candidates("msg", "resp")
-        assert result == []
+        with pytest.raises(ExtractionModelFailedError, match="not a list"):
+            await ext.extract_candidates("msg", "resp")
 
     async def test_markdown_wrapped_json_parsed(
         self,
@@ -1361,6 +1362,23 @@ class TestTheSlowStepsRunAtOnce:
             "summary callback failed"
         ]
 
+    async def test_a_candidate_that_cannot_be_embedded_is_counted_as_failed_beside_the_stored_ones(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        class _OneUnembeddable(StubEmbeddingProvider):
+            async def aembed_query(self, text: str) -> list[float]:
+                if text == "Plays the fiddle":
+                    raise RuntimeError("embedding service down")
+                return await super().aembed_query(text)
+
+        ext = _make_extractor(permissive_memory_authorizer, factory=self._factory(), embedding=_OneUnembeddable())
+        result = await _extract_turn(ext, uuid.uuid7())
+
+        assert result.outcome is ExtractionOutcome.STORED
+        assert result.stored == 2
+        assert "failed=1" in result.reason
+
     async def test_candidates_are_embedded_at_once(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
@@ -1563,12 +1581,13 @@ class TestAFailedExtractionModelIsAFailure:
         result = await _extract_turn(ext, uuid.uuid7())
         assert (result.outcome, result.gate) == (ExtractionOutcome.SKIPPED, ExtractionGate.NOTHING_FOUND)
 
-    async def test_the_public_hook_still_answers_an_empty_list_on_failure(
+    async def test_the_public_hook_raises_a_failed_model_call_rather_than_answering_nothing_found(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         ext = _make_extractor(permissive_memory_authorizer, factory=StubChatModelFactory(error_on={"extraction"}))
-        assert await ext.extract_candidates("msg", "resp") == []
+        with pytest.raises(ExtractionModelFailedError, match="the extraction model call failed"):
+            await ext.extract_candidates("msg", "resp")
 
 
 class TestATurnThatStoresNothingGivesTheCooldownBack:

@@ -250,6 +250,8 @@ def _configurable() -> dict[str, Any]:
     try:
         config = get_config()
     except RuntimeError:
+        # NOSILENT(logged): outside a runnable there IS no configurable, so {} is the truth, not a stand-in; the turn
+        # running without governed knowledge is what the warning names
         # SDS-04: no runnable config means no injected integration, so this whole
         # middleware becomes a pass-through and the turn silently loses governed knowledge.
         log.warning(
@@ -1480,6 +1482,9 @@ async def _embed_turn_query(
                 vector = await model.aembed_query(query_text)
             result = vector if vector else []
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- query embedding is best-effort ranking input; a fault soft-fails to stable order rather than failing the turn
+            # NOSILENT(logged): [] sends the trim to its stable order (KNW-94): invariants still inject in full, and
+            # the situational tail is still a budgeted, true selection -- only its ranking is lost, which the warning
+            # names
             log.warning(
                 "knowledge situational query embedding failed (soft-fail to stable order): %s: %s",
                 type(exc).__name__,
