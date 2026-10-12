@@ -71,6 +71,8 @@ def endpoints_callable_by(endpoints: Iterable[ToolEndpoint], caller_id: UUID | N
         try:
             owner = Subjects.agent_inprocess_owner_id(endpoint.pod_id)
         except ValueError as exc:
+            # NOSILENT(logged): the endpoint is left out, fail-closed -- a pod-id that names no agent cannot be shown
+            # callable by this caller, so excluding it is the true answer
             log.warning(
                 "tool endpoint's pod-id names no agent; it is routable by no caller",
                 extra={"extra_data": {"pod_id": endpoint.pod_id, "detail": str(exc)}},

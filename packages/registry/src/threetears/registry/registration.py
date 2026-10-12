@@ -383,6 +383,8 @@ class RegistrationHandler:
         try:
             manifest = RegistrationManifest.model_validate_json(msg.data)
         except Exception as exc:
+            # NOSILENT(logged): the registrant is answered with a typed refusal (success=False, INVALID_MANIFEST)
+            # before return; the callback has no other caller
             log.error(
                 "registration rejected: malformed manifest",
                 extra={"extra_data": {"error": str(exc), "error_code": RefusalCode.INVALID_MANIFEST.value}},
@@ -899,6 +901,8 @@ class RegistrationHandler:
             try:
                 result = tuple(await self._authenticator.provider_nodes())
             except Exception as exc:  # noqa: BLE001 -- any host failure refuses, never admits
+                # NOSILENT(logged): None IS the refusal -- the docstring's 'could not be read' answer, which refuses
+                # the registration rather than admitting it unfiltered
                 log.error(
                     "tool pod registration refused: the ownership graph could not be read, and a "
                     "manifest must not be admitted unfiltered. the pod retries on its next heartbeat",
@@ -1038,6 +1042,8 @@ class RegistrationHandler:
                 timeout=timedelta(seconds=self._probe_timeout),
             )
         except Exception as exc:
+            # NOSILENT(logged): the endpoints stay pending, which is their true state, and the next registration
+            # probes again; this background step has no caller to raise to
             log.warning(
                 "tool pod reachability probe failed or reply was malformed; endpoints remain pending",
                 extra={

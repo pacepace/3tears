@@ -167,7 +167,7 @@ class _L1L2OnlyCollection(BaseCollection[Any]):
         data["date_updated"] = now
         if self._l1 is not None:
             self._l1.upsert(self.table_name, data, self.primary_key_columns)
-        await self._save_to_l2(entity.id, data)
+        await self._store_in_l2(entity.id, data)
         await self._publish_invalidation(entity.id)
         entity.mark_clean()
         entity.original_date_updated = data.get("date_updated")
@@ -185,7 +185,7 @@ class _L1L2OnlyCollection(BaseCollection[Any]):
         """
         if self._l1 is not None:
             self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
-        await self._delete_from_l2(entity_id)
+        await self._remove_from_l2(entity_id)
         await self._publish_invalidation(entity_id)
         return True
 
