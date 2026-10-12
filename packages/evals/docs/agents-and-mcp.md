@@ -50,7 +50,9 @@ still running is its record's answer: the process running it holds a **lease** o
 lapsed reads `lost`, and the first read to see that writes it on the record: not only `job_poll`, but every read
 of the record — `run_get`, `runs_list`, a campaign's or a report's read of its runs, a sweep's, an analysis
 attempt's — so a job whose process died reads `lost` everywhere once its lease lapses, and nothing counts it as
-still running. A launch or a sweep written lost settles the runs it names with it. A cancel is written on the record
+still running. A run whose stored document this build's model refuses cannot be written lost: the boot reclaim counts
+it `unreadable` and leaves it, and `runs_unreadable` names each such run of the scope with why. A launch or a sweep
+written lost settles the runs it names with it. A cancel is written on the record
 too, so `job_cancel` works from any process: the job ends `cancelled` within one renewal interval. A graceful
 shutdown writes every job its process holds `lost` at once. A job is answered only in the caller's scope:
 another scope's job reads not found, on poll and on cancel.
