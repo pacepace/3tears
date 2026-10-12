@@ -137,6 +137,8 @@ def _run_lost(run: EvalRun, loss: JobLoss, store: LeaseStore) -> EvalRun:
         try:
             completeness = reconstruct_completeness(run, store.query_eval_results_by_run(run.id, run.scope_id))
         except ValidationError as refused:
+            # NOSILENT: the completeness is written None, which every reader reads as unknown, and why is written
+            # on the run itself as an error_details entry below.
             log.exception(
                 "eval run %s (scope %s) is written lost with its completeness unknown: a result it stored cannot "
                 "be read under the current model, so what it delivered cannot be counted",
@@ -670,6 +672,8 @@ class JobLeases:
                     verdict, reason = await run_blocking(self._executor, self._renew, held)
                 # prawduct:ok-broad-except — a failed renewal is retried next interval; the lease outlives two failures
                 except Exception as failed:
+                    # NOSILENT: retried next interval; the verdict stays None, so failures lasting a whole lease stop
+                    # the job as lost (_expire), with this failure written on its record as a fault.
                     # Not written on the record here: the renewal IS this process's write of the record, and the
                     # store just failed it. Kept on the hold instead, and written on the record if the failures go
                     # on to cost the lease (_expire); one a later renewal recovers from cost the job nothing.
@@ -733,6 +737,8 @@ class JobLeases:
             )
         # prawduct:ok-broad-except — the store may be what failed; logged with the renewal failure it was to record
         except Exception:
+            # NOSILENT: the job is still fenced and stopped below and its record still reads lost; only the cause it
+            # was to carry is missing, because the store that would hold it is what failed, so it is logged whole.
             log.exception(
                 "eval.job_lease %s=%s scope=%s: why it was stopped could not be written on its record either; the "
                 "renewal failure: %s",
@@ -745,6 +751,8 @@ class JobLeases:
             await run_blocking(self._executor, settle_job_record, self._store, held.kind, held.record_id, held.scope_id)
         # prawduct:ok-broad-except — the store may be what failed; the record reads lost to the next reader regardless
         except Exception:
+            # NOSILENT: the job is fenced and stopped below regardless, and its lapsed lease reads lost to every
+            # reader, the first of which writes the loss this write could not.
             log.exception(
                 "eval.job_lease %s=%s scope=%s: the loss could not be written here; the next reader writes it. The "
                 "renewal failure: %s",
@@ -871,8 +879,9 @@ class JobLeases:
                     ended.append(one.record_id)
             # prawduct:ok-broad-except — one record's failed write must not keep the rest of a shutdown from ending theirs
             except Exception:
-                # Log only: the failed write IS the write of this record, so there is nothing left to write the error
-                # on; the record reads lost once its lease lapses.
+                # NOSILENT: the record is left out of the records this returns as written lost, which is true; the
+                # failed write IS the write of this record, so nothing is left to carry the error, and its job, not
+                # fenced, writes its own ending as it unwinds — or it reads lost once its lease lapses.
                 log.exception(
                     "eval.job_lease shutdown could not write %s=%s scope=%s lost — it reads lost once its lease lapses",
                     one.kind.name,

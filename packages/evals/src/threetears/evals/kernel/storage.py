@@ -1952,6 +1952,8 @@ class EvalStorage:
             try:
                 self._save(trace.to_dict())
             except StorageError as unstored:
+                # NOSILENT: the result below is written with has_trace=True and no document backs it, which reads
+                # ``missing`` on every surface and is refused by a re-judge — the fault it is, never "no trace".
                 log.error(
                     "eval_result %s (run %s, scope %s) is stored with has_trace=True and its trace was NOT: it reads "
                     "missing on every surface — %s",

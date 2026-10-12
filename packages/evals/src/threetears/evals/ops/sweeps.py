@@ -396,6 +396,7 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
         try:
             await save()
         except JobFenced as why:
+            # NOSILENT: the sweep's record, written lost elsewhere, is its ending; this process writes nothing over it.
             fenced(why)
         raise
     except EvalJobTimeout as timed_out:
@@ -405,6 +406,7 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
         try:
             await save()
         except JobFenced as why:
+            # NOSILENT: the sweep's record, written lost elsewhere, is its ending; this process writes nothing over it.
             fenced(why)
         return
     except JobFenced as why:
@@ -414,6 +416,7 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
         return
     # prawduct:ok-broad-except — the sweep's record is where its ending is stated; the task boundary logs it
     except Exception as broke:
+        # NOSILENT: written below on the sweep's own record: outcome ``failed``, its detail this error, its refusal kept.
         log.exception("eval.sweep sweep=%s scope=%s ended on an error", sweep.id, scope_id)
         failure.append(f"the sweep ended on an error: {broke}")
         if isinstance(broke, EvalServiceError) and len(failure) == 1:
@@ -427,6 +430,7 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
     try:
         await save()
     except JobFenced as why:
+        # NOSILENT: the sweep's record, written lost elsewhere, is its ending; this process writes nothing over it.
         fenced(why)
 
 

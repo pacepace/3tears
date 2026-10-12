@@ -182,7 +182,7 @@ class RegressionWatch:
             try:
                 await self.sink(alert)
             except Exception:  # prawduct:ok-broad-except — a sink's failure must not reach the run or the next alert
-                # Log only: the run is completed and its record final; a sink failing to deliver is the host's
+                # NOSILENT: the run is completed and its record final; a sink failing to deliver is the host's
                 # delivery breaking, not the run, and an error_details entry would count it as one of the run's faults.
                 log.exception(
                     "eval.regression sink failed delivering run=%s measure=%s; the next alert is still delivered",

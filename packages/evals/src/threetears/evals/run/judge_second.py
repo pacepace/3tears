@@ -153,7 +153,7 @@ class SecondJudgeReport(EvalBaseModel):
         unwritten: Results asked and paid for whose record did not land. Their spend is in the ledger.
         stopped: Why the pass stopped before its last result, when it did — the account behind the judge refused a
             call, so every later one would be refused too.
-        calls_made: Calls made, as the ledger recorded them under purpose ``second_judge``.
+        calls_made: Calls made, ledgered under purpose ``second_judge``, and one whose ledger row could not be written counted all the same.
         cost_usd: What they cost together — measurement cost, never the candidate's; ``None`` when any went unpriced.
         cap_usd: The out-of-run cap the calls were admitted under; ``None`` when the host enforces none.
     """
@@ -659,7 +659,7 @@ async def _ask(
                     f"'{planned.result.id}', so every later call would be refused too"
                 )
                 break
-    spends = prepared.budget.recorded
+    spends = [*prepared.budget.recorded, *prepared.budget.unrecorded]
     costs = [spend.cost_usd for spend in spends]
     report = SecondJudgeReport(
         run_id=collected.run.id,
