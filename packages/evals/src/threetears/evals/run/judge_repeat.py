@@ -132,7 +132,7 @@ class JudgeRepeatReport(EvalBaseModel):
             read back, or the write failed). Their spend is in the ledger.
         stopped: Why the repeat stopped before its last result, when it did — the account behind the
             judge refused a call, so every later call would be refused too.
-        calls_made: Judge calls made, as the ledger recorded them.
+        calls_made: Judge calls made, each ledgered, and one whose ledger row could not be written counted all the same.
         cost_usd: What they cost together, as reported; ``None`` when any call went unpriced.
         cap_usd: The out-of-run cap the calls were admitted under; ``None`` when the host enforces none.
     """
@@ -300,7 +300,15 @@ def collect_repeatable(
             continue
         try:
             inputs = reproducible_judge_inputs(
-                storage, result, run, scope_id, request_settings=request_settings, config_dims=scored
+                storage,
+                result,
+                run,
+                scope_id,
+                request_settings=request_settings,
+                config_dims=scored,
+                # A repeat's answers pair with the first scores, so a built-in dim must be asked by the prompt that
+                # asked it; a temperature comparison pairs its answers with each other and nothing stored.
+                same_judge_dims=scored if request_settings == "today" else (),
             )
         except (ValidationFailedError, NotFoundError) as refused:
             skipped.append(JudgeRepeatSkip(result_id=result.id, reason=str(refused)))
@@ -537,7 +545,7 @@ async def _repeat(
                 "so every later call would be refused too"
             )
             break
-    spends = prepared.budget.recorded
+    spends = [*prepared.budget.recorded, *prepared.budget.unrecorded]
     costs = [spend.cost_usd for spend in spends]
     report = JudgeRepeatReport(
         run_id=collected.run.id,

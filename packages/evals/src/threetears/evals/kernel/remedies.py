@@ -20,6 +20,27 @@ FIND_TEMPLATE = "templates_list names this scope's templates"
 #: How a caller finds a run's id.
 FIND_RUN = "runs_list names this scope's runs"
 
+#: What a caller does about a stored run this build's model refuses: see each one, and why, then remove it or deploy a
+#: build that reads it.
+FIND_UNREADABLE_RUNS = (
+    "runs_unreadable names each stored run of this scope this build cannot read, with why; run_delete removes one, "
+    "or deploy a build that reads it"
+)
+
+#: What an operator does about a run this build cannot read, stored not ended under a lease it cannot read either: this
+#: build cannot tell whether a process holds it, so it will not delete it; the build that wrote it can.
+UNREADABLE_LEASE = (
+    "deploy the build that wrote this run: it reads the run and its lease, so it can settle the run once no process "
+    "holds it, or delete it. This build cannot tell whether a process holds it, and so will not delete it"
+)
+
+#: What a caller does about a job record this build's model refuses (a sweep's, a launch's, an analysis attempt's):
+#: the record, or a run it names and settles with it, is what does not read.
+UNREADABLE_JOB_RECORD = (
+    "deploy a build that reads this job's record; if what does not read is a run the job names, runs_unreadable "
+    "names it and run_delete removes it"
+)
+
 #: How a caller finds a campaign's id.
 FIND_CAMPAIGN = "campaigns_list names this scope's campaigns"
 
@@ -47,8 +68,8 @@ FIND_JOB = (
     "runs_list names this scope's runs, each of which job_poll reads as run:<id>"
 )
 
-#: How a host finds a judge config's id. No action authors or lists them: they are the host's catalogue.
-FIND_JUDGE_CONFIG = "the host's catalogue lists this scope's judge configs (run.list_judge_configs)"
+#: How a caller finds a judge config's id. No action authors them — they are the host's catalogue — but one lists them.
+FIND_JUDGE_CONFIG = "judge_configs_list names this scope's judge configs, each with the dimension it asks for"
 
 #: How a host finds a rubric dim's id. No action authors or lists them: they are the host's catalogue.
 FIND_RUBRIC_DIM = "the host's catalogue lists this scope's rubric dims (run.list_rubric_dims)"
@@ -87,9 +108,12 @@ __all__ = [
     "FIND_RUN",
     "FIND_TEMPLATE",
     "FIND_TEST_CASE",
+    "FIND_UNREADABLE_RUNS",
     "RELAUNCH_TO_REJUDGE",
     "REREAD_AND_RETRY",
     "SCHEMA_REMEDY",
     "SEED_REMEDY",
+    "UNREADABLE_JOB_RECORD",
+    "UNREADABLE_LEASE",
     "WRITER_REMEDY",
 ]

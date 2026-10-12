@@ -23,6 +23,10 @@ every later arm is pinned to what that run recorded. A default that moves part-w
 cannot give two arms different instruments. The one exception is an arm whose own candidate is that judge: it
 is left to the launch's own pin resolution, so no model grades its own output.
 
+**Its campaign is exploratory.** A sweep takes no design, so the campaign it creates declares none, and says so
+(``exploratory``) rather than leaving the caller to: what the arms were swept to learn is declared afterwards, once
+the arms are known, with ``campaign_update``.
+
 **When it stops early.** If an arm is refused at its launch (the host's admission ceiling, say), or an arm's run
 ends ``failed``, no further arm is launched and the sweep ends ``failed``, naming it. A harness fault is not
 measured N more times overnight. Runs already launched finish and stay members.
@@ -91,7 +95,11 @@ class SweepSettings(EvalBaseModel):
 
     template_id: Annotated[str, LaunchArguments.model_fields["template_id"]]
     subject_id: Annotated[str, LaunchArguments.model_fields["subject_id"]]
-    campaign_name: str = Field(min_length=1, description="The campaign every arm's run joins as it is created.")
+    campaign_name: str = Field(
+        min_length=1,
+        description="The campaign every arm's run joins as it is created. It is created exploratory, since a sweep "
+        "takes no design; declare one afterwards with campaign_update.",
+    )
     campaign_behavior: str = Field(min_length=1, description="What the sweep's campaign measures.")
     campaign_description: str = Field(default="", description="The sweep's campaign's description.")
     k_runs: Annotated[int, LaunchArguments.model_fields["k_runs"]] = DEFAULT_LAUNCH_K_RUNS
@@ -227,6 +235,7 @@ async def sweep_launch(host: OpsHost, arguments: SweepArguments, scope_id: str, 
                 subject_id=arguments.subject_id,
                 behavior=arguments.campaign_behavior,
                 description=arguments.campaign_description,
+                exploratory=True,
             ),
             scope_id,
             created_by=created_by,
@@ -387,6 +396,7 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
         try:
             await save()
         except JobFenced as why:
+            # NOSILENT: the sweep's record, written lost elsewhere, is its ending; this process writes nothing over it.
             fenced(why)
         raise
     except EvalJobTimeout as timed_out:
@@ -396,6 +406,7 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
         try:
             await save()
         except JobFenced as why:
+            # NOSILENT: the sweep's record, written lost elsewhere, is its ending; this process writes nothing over it.
             fenced(why)
         return
     except JobFenced as why:
@@ -405,6 +416,7 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
         return
     # prawduct:ok-broad-except — the sweep's record is where its ending is stated; the task boundary logs it
     except Exception as broke:
+        # NOSILENT: written below on the sweep's own record: outcome ``failed``, its detail this error, its refusal kept.
         log.exception("eval.sweep sweep=%s scope=%s ended on an error", sweep.id, scope_id)
         failure.append(f"the sweep ended on an error: {broke}")
         if isinstance(broke, EvalServiceError) and len(failure) == 1:
@@ -418,6 +430,7 @@ async def _run_sweep(host: OpsHost, arguments: SweepArguments, sweep: EvalSweep,
     try:
         await save()
     except JobFenced as why:
+        # NOSILENT: the sweep's record, written lost elsewhere, is its ending; this process writes nothing over it.
         fenced(why)
 
 

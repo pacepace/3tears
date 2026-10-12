@@ -165,7 +165,9 @@ def memo_payload(bundle: Any) -> dict[str, Any]:
     narrow, wide = alias_at(bundle, TOYHOST_NARROW), alias_at(bundle, TOYHOST_WIDE)
     return {
         "headline": "the wider chunk costs half again as much wall-clock per document.",
+        "headline_rests_on": [0],
         "summary": "The wide setting is the slower one on every document measured, and nothing was escalated to a reviewer.",
+        "summary_rests_on": [[0]],
         "findings": [
             {
                 "title": "widening the chunk slows every document down",

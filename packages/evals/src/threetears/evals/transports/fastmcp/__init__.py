@@ -545,7 +545,7 @@ async def _finished_within(hook: AsyncGenerator[None, ActionOutcome], call: Tool
             )
             await _close(hook, call, None)
     except TimeoutError:
-        # Log only: a tool call is a transport exchange with no record of its own, and its outcome is already the caller's.
+        # NOSILENT: the hook only observes the call; the outcome it was handed is already the caller's, unchanged.
         log.error(
             "around hook ran past its %gs after its yield on %s/%s and was cut short; the outcome stands",
             HOOK_TAIL_TIMEOUT_S,
@@ -564,7 +564,7 @@ async def _closed_within(hook: AsyncGenerator[None, ActionOutcome], call: ToolCa
         async with asyncio.timeout(HOOK_TAIL_TIMEOUT_S):
             await _close(hook, call, defect)
     except TimeoutError:
-        # Log only: a tool call is a transport exchange with no record of its own, and its outcome is already the caller's.
+        # NOSILENT: the hook only observes the call; the caller re-raises the call's own defect, unchanged.
         log.error(
             "around hook ran past its %gs closing %s/%s and was cut short", HOOK_TAIL_TIMEOUT_S, call.tool, call.action
         )

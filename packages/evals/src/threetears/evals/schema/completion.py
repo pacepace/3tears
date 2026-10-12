@@ -146,6 +146,47 @@ COMPLETION_RESULT_ATTRIBUTES: tuple[str, ...] = tuple(
 )
 
 
+class CompletionProtocolDefect(TypeError):
+    """A host's completion does not meet the :class:`CompletionResult` protocol, found while the engine read it.
+
+    The host's code, not a judging outcome: every call made through the same client returns the same type, so every
+    cell of a run would meet it. It therefore fails the run it surfaces in — passed through every per-dimension and
+    per-phase catch on the judge path, as
+    :class:`~threetears.evals.kernel.candidate_kind.CandidateKindDefect` is — rather than becoming an error on each
+    dimension of a run that then finishes. A ``TypeError``, so a caller already catching one keeps catching it. The
+    message names :func:`~threetears.evals.testing.check_completion_conformance`, which a host runs on its own
+    completion type to find the defect before a run does.
+    """
+
+    def __init__(self, completion: object, member: str, why: str) -> None:
+        """Name the completion's type, the member it lacks, and why the engine reads that member.
+
+        Args:
+            completion: The completion as the client returned it.
+            member: The :class:`CompletionResult` member it does not carry.
+            why: What the engine reads the member for, as a clause.
+        """
+        self.completion_type = type(completion).__name__
+        self.member = member
+        # What the calls already made, and billed, before the defect was found reported — set by the caller that
+        # made them (the judge counts its attempts), so the spend goes up with the error and is counted where the
+        # run's spend is summed rather than vanishing with the frame. Named as a completion names them
+        # (USAGE_LEDGER_ATTRIBUTES), so the error reads as their usage. ``calls`` is 0 when no caller counted them;
+        # every other figure is ``None`` when unreported: unknown, never zero.
+        self.calls = 0
+        self.model: str | None = None
+        self.served_model: str | None = None
+        self.input_tokens: int | None = None
+        self.output_tokens: int | None = None
+        self.reasoning_tokens: int | None = None
+        self.cost_usd: float | None = None
+        self.price_source: str | None = None
+        super().__init__(
+            f"{self.completion_type} carries no `{member}`, a member of the CompletionResult protocol: {why} — "
+            "threetears.evals.testing.check_completion_conformance holds a host's completion type to the protocol"
+        )
+
+
 #: The :class:`CompletionResult` attributes the usage ledger reads off a completion
 #: (:meth:`~threetears.evals.kernel.usage_capture.RoleUsageLedger.add_llm_result`), declared once.
 #:
@@ -440,6 +481,7 @@ __all__ = [
     "COMPLETION_RESULT_ATTRIBUTES",
     "CompletionClient",
     "CompletionGenerator",
+    "CompletionProtocolDefect",
     "CompletionResult",
     "JSON_OBJECT_RESPONSE_FORMAT",
     "PricedCompletion",

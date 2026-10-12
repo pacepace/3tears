@@ -41,6 +41,10 @@
       "kind": "protocol",
       "signature": "BoundCompletionClient{__aenter__(self) -> Self; __aexit__(self, exc_type: object, exc: object, tb: object) -> None; aclose(self) -> None; generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> CompletionResult; model_name: str; price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None}"
     },
+    "threetears.evals.schema.BUILTIN_JUDGE_CONFIG_PREFIX": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
     "threetears.evals.schema.CalibrationRating": {
       "kind": "model",
       "signature": "CalibrationRating(doc_type: Literal['calibration_rating'] = 'calibration_rating', schema_version: CoreSchemaVersion = 13, scope_id: str, run_id: str, result_id: str, rubric_dim: DimName, rater: str, rater_kind: RaterKind, id: str = <lambda>(), scale: RubricScale, score: int, reason: str, rated_at: str = utc_now_iso(), output_fingerprint: str | None = None, criterion_fingerprint: str | None = None)"
@@ -120,6 +124,10 @@
     "threetears.evals.schema.CompletionGenerator": {
       "kind": "protocol",
       "signature": "CompletionGenerator{generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> CompletionResult}"
+    },
+    "threetears.evals.schema.CompletionProtocolDefect": {
+      "kind": "exception",
+      "signature": "CompletionProtocolDefect(completion: object, member: str, why: str) -> None"
     },
     "threetears.evals.schema.CompletionResult": {
       "kind": "protocol",
@@ -313,6 +321,10 @@
       "kind": "model",
       "signature": "IntervalScale(kind: Literal['interval'] = 'interval', value: float, unit: str | None = None)"
     },
+    "threetears.evals.schema.is_builtin_judge_config_id": {
+      "kind": "function",
+      "signature": "is_builtin_judge_config_id(config_id: str | None) -> bool"
+    },
     "threetears.evals.schema.is_pass": {
       "kind": "function",
       "signature": "is_pass(call: RecordedCall) -> bool"
@@ -340,6 +352,10 @@
     "threetears.evals.schema.JSON_OBJECT_RESPONSE_FORMAT": {
       "kind": "constant (dict)",
       "signature": ""
+    },
+    "threetears.evals.schema.judge_config_of": {
+      "kind": "function",
+      "signature": "judge_config_of(recorded: str | None) -> str | None"
     },
     "threetears.evals.schema.JudgeAttributionSource": {
       "kind": "literal",
@@ -767,7 +783,7 @@
     },
     "threetears.evals.kernel.AuthoredAnalysis": {
       "kind": "model",
-      "signature": "AuthoredAnalysis(headline: ModelProse, summary: ModelProse, findings: list[Finding], decisions: list[Decision], questions: list[QuestionAnswer], next: list[NextStep])"
+      "signature": "AuthoredAnalysis(headline: ModelProse, headline_rests_on: list[int] = list(), summary: ModelProse, summary_rests_on: list[list[int]] = list(), findings: list[Finding], decisions: list[Decision], questions: list[QuestionAnswer], next: list[NextStep])"
     },
     "threetears.evals.kernel.BarAdjudication": {
       "kind": "model",
@@ -993,6 +1009,18 @@
       "kind": "function",
       "signature": "confusion_of(cell: str) -> tuple[str, str] | None"
     },
+    "threetears.evals.kernel.CONTRACT_MARKER": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
+    "threetears.evals.kernel.contract_state": {
+      "kind": "function",
+      "signature": "contract_state(text: str, contract: OutputContract | None) -> ContractState"
+    },
+    "threetears.evals.kernel.ContractState": {
+      "kind": "literal",
+      "signature": "'current'` | `'outdated'` | `'undeclared'` | `'unbound'"
+    },
     "threetears.evals.kernel.ControlDeclaration": {
       "kind": "model",
       "signature": "ControlDeclaration(stimulus: Literal['controlled', 'uncontrolled'], stimulus_reason: str = '', apparatus: ApparatusProvenance)"
@@ -1036,6 +1064,10 @@
     "threetears.evals.kernel.DecisionSurface": {
       "kind": "model",
       "signature": "DecisionSurface(control_variant_key: str | None = None, cells: list[CellFacts] = list(), bars: list[BarAdjudication] = list(), measures: dict[str, MeasureFacts] = dict(), dimensions: dict[DimName, JudgedDimensionFacts] = dict(), time_axis: TimeAxis | None = None, frontier_dominance: dict[str, FrontierDominance] | None = None, frontier_disqualified: dict[str, list[DimName]] | None = None, rubric_threshold: int = 3, guardrails: GuardrailReadings | None = None)"
+    },
+    "threetears.evals.kernel.declared_contracts": {
+      "kind": "function",
+      "signature": "declared_contracts(text: str) -> tuple[OutputContract, ...]"
     },
     "threetears.evals.kernel.DEFAULT_JOB_LEASE_S": {
       "kind": "constant (float)",
@@ -1140,6 +1172,10 @@
     "threetears.evals.kernel.EvalJudgeProfile": {
       "kind": "model",
       "signature": "EvalJudgeProfile(doc_type: Literal['eval_judge_profile'] = 'eval_judge_profile', schema_version: SchemaVersion = 8, scope_id: str, rubric_dim: DimName, scale: RubricScale, judge_model: str, judge_config_id: str | None, judge_temperature: JudgeTemperature, criterion_digest: str, id: str = <lambda>(), cases: int, trials: int, case_set_fingerprint: str, run_ids: list[str], label_agreement: JudgeProfileAgreement | None, self_agreement: JudgeProfileAgreement | None, parse_replies: int, parse_valid: int, parse_validity: float | None, measured_at: str, recorded_at: str = utc_now_iso())"
+    },
+    "threetears.evals.kernel.EvalRunScan": {
+      "kind": "class",
+      "signature": "EvalRunScan(readable: int, unreadable: list[RefusedRow])"
     },
     "threetears.evals.kernel.EvalServiceError": {
       "kind": "exception",
@@ -1571,7 +1607,11 @@
     },
     "threetears.evals.kernel.OutOfRunBudget": {
       "kind": "dataclass",
-      "signature": "OutOfRunBudget(store: OutOfRunSpendStore, scope_id: str, cap_usd: float | None, template_id: str | None = None, subject_id: str | None = None, launch_group_id: str | None = None, campaign_id: str | None = None, run_id: str | None = None, blocking_executor: Executor | None, _committed_usd: float (derived), _admitted: dict[str, tuple[AdmittedCall, PricedCompletion]] (derived), _recorded: list[OutOfRunSpend] (derived))"
+      "signature": "OutOfRunBudget(store: OutOfRunSpendStore, scope_id: str, cap_usd: float | None, template_id: str | None = None, subject_id: str | None = None, launch_group_id: str | None = None, campaign_id: str | None = None, run_id: str | None = None, blocking_executor: Executor | None, _committed_usd: float (derived), _admitted: dict[str, tuple[AdmittedCall, PricedCompletion]] (derived), _recorded: list[OutOfRunSpend] (derived), _unrecorded: list[OutOfRunSpend] (derived))"
+    },
+    "threetears.evals.kernel.OutputContract": {
+      "kind": "dataclass",
+      "signature": "OutputContract(name: str, fingerprint: str)"
     },
     "threetears.evals.kernel.PassHatPoint": {
       "kind": "typed dict",
@@ -1609,9 +1649,13 @@
       "kind": "function",
       "signature": "prompt_drift(entry: SeedPrompt, *, shipped: SeedTemplate | str, stored: SeedTemplate | str, seeded_digest: str | None, customized: bool = False) -> PromptDrift"
     },
+    "threetears.evals.kernel.PromptContractError": {
+      "kind": "exception",
+      "signature": "PromptContractError(prompt_type: str, *, state: ContractState, expected: OutputContract, declared: tuple[OutputContract, ...]) -> None"
+    },
     "threetears.evals.kernel.PromptDrift": {
       "kind": "dataclass",
-      "signature": "PromptDrift(prompt_type: str, state: DriftState, shipped_digest: str, stored_digest: str, remedy: str = '')"
+      "signature": "PromptDrift(prompt_type: str, state: DriftState, shipped_digest: str, stored_digest: str, remedy: str = '', contract: ContractState = 'unbound', expected_contract: str = '')"
     },
     "threetears.evals.kernel.PROPOSER_PROMPT": {
       "kind": "constant (str)",
@@ -1649,6 +1693,10 @@
       "kind": "function",
       "signature": "refuse_an_undeclarable_design(design: CampaignDesign, *, behavior: str, template: EvalTemplate | None, profile: HostProfile) -> None"
     },
+    "threetears.evals.kernel.REFUSED_CONTRACT_STATES": {
+      "kind": "constant (frozenset)",
+      "signature": ""
+    },
     "threetears.evals.kernel.REFUSED_TOOL_ATTACHES_KEY": {
       "kind": "constant (str)",
       "signature": ""
@@ -1656,6 +1704,10 @@
     "threetears.evals.kernel.RefusedInput": {
       "kind": "exception",
       "signature": "RefusedInput(fault: str, *, remedy: str) -> None"
+    },
+    "threetears.evals.kernel.RefusedRow": {
+      "kind": "class",
+      "signature": "RefusedRow(row_id: str | None, status: str | None, refused: ValidationError, lease_expires_at: str | None = None, lease_stated: bool = False)"
     },
     "threetears.evals.kernel.RELAUNCH_TO_REJUDGE": {
       "kind": "constant (str)",
@@ -1676,6 +1728,10 @@
     "threetears.evals.kernel.require_held": {
       "kind": "function",
       "signature": "require_held(store: LeaseStore, kind: LeasedJobKind[R], record_id: str, scope_id: str, *, leases: JobLeases | None = None) -> None"
+    },
+    "threetears.evals.kernel.require_output_contract": {
+      "kind": "function",
+      "signature": "require_output_contract(prompt_type: str, text: str, contract: OutputContract) -> None"
     },
     "threetears.evals.kernel.REREAD_AND_RETRY": {
       "kind": "constant (str)",
@@ -1748,6 +1804,10 @@
     "threetears.evals.kernel.RunRecordStore": {
       "kind": "protocol",
       "signature": "RunRecordStore{delete_eval_result(self, result_id: str, scope_id: str, /) -> bool; delete_eval_run(self, run_id: str, scope_id: str, /) -> bool; load_eval_result(self, result_id: str, scope_id: str, /) -> EvalResult | None; load_eval_result_with_etag(self, result_id: str, scope_id: str, /) -> tuple[EvalResult | None, str | None]; load_eval_run(self, run_id: str, scope_id: str, /) -> EvalRun | None; load_eval_run_stamps(self, run_ids: Sequence[str], scope_id: str, /) -> list[EvalRunStamp]; load_eval_run_with_etag(self, run_id: str, scope_id: str, /) -> tuple[EvalRun | None, str | None]; load_eval_runs(self, run_ids: Sequence[str], scope_id: str, /, *, elide_payload: frozenset[str] = frozenset()) -> list[EvalRun]; load_eval_trace(self, result_id: str, scope_id: str, /) -> EvalTrace | None; query_eval_results(self, scope_id: str, /, *, run_id: str | None = None, test_case_id: str | None = None, model: str | None = None) -> list[EvalResult]; query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]; query_eval_runs(self, scope_id: str, status: EvalRunStatus | None = None, *, elide_payload: frozenset[str] = frozenset()) -> list[EvalRun]; query_non_terminal_eval_runs(self, scope_id: str, /) -> NonTerminalRunScan; replace_eval_result(self, result: EvalResult, /, *, if_match: str | None) -> None; save_eval_result(self, result: EvalResult, trace: EvalTrace | None = None, /) -> None; save_eval_run(self, run: EvalRun, /, *, if_match: str | None = None) -> None; set_eval_run_archived(self, run_id: str, scope_id: str, /, *, archived: bool) -> bool}"
+    },
+    "threetears.evals.kernel.RunsRead": {
+      "kind": "class",
+      "signature": "RunsRead(runs: list[EvalRun], unreadable: list[RefusedRow])"
     },
     "threetears.evals.kernel.RunStore": {
       "kind": "protocol",
@@ -1881,6 +1941,10 @@
       "kind": "model",
       "signature": "TemperatureSkip(result_id: str, reason: str)"
     },
+    "threetears.evals.kernel.template_text": {
+      "kind": "function",
+      "signature": "template_text(sections: tuple[SeedSection, ...]) -> str"
+    },
     "threetears.evals.kernel.tier_of": {
       "kind": "function",
       "signature": "tier_of(calibration: TierCriterion, separation: TierCriterion) -> JudgedEvidenceTier"
@@ -1940,6 +2004,14 @@
     "threetears.evals.kernel.UnreadableBarName": {
       "kind": "dataclass",
       "signature": "UnreadableBarName(name: str, refusal: BarNameRefusal, reason: str)"
+    },
+    "threetears.evals.kernel.UnreadableRecordError": {
+      "kind": "exception",
+      "signature": "UnreadableRecordError(message: str, *, remedy: str, details: dict[str, Any] | None = None)"
+    },
+    "threetears.evals.kernel.UnreadableRunError": {
+      "kind": "exception",
+      "signature": "UnreadableRunError(message: str, *, run_ids: Sequence[str])"
     },
     "threetears.evals.kernel.ValidationFailedError": {
       "kind": "exception",
@@ -2331,7 +2403,7 @@
     },
     "threetears.evals.run.action_job_work": {
       "kind": "function",
-      "signature": "action_job_work(scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], label: str = '', budget_s: float = 3600.0, discard: Callable[[], Awaitable[None]] | None = None) -> JobWork[EvalActionJob]"
+      "signature": "action_job_work(scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], budget_s: float, label: str = '', discard: Callable[[], Awaitable[None]] | None = None) -> JobWork[EvalActionJob]"
     },
     "threetears.evals.run.AdmissionTicket": {
       "kind": "class",
@@ -2484,6 +2556,10 @@
     "threetears.evals.run.delete_run": {
       "kind": "function",
       "signature": "delete_run(storage: CurationStore, run: EvalRun, scope_id: str, *, confirm: str | None = None) -> dict[str, Any]"
+    },
+    "threetears.evals.run.delete_unreadable_run": {
+      "kind": "function",
+      "signature": "delete_unreadable_run(storage: UnreadableRunDeleteStore, run_id: str, row: RefusedRow, scope_id: str, *, confirm: str | None = None) -> dict[str, Any]"
     },
     "threetears.evals.run.drive_conversation": {
       "kind": "async function",
@@ -2691,7 +2767,7 @@
     },
     "threetears.evals.run.JudgeRequest": {
       "kind": "class",
-      "signature": "JudgeRequest(dim_id: str, config: JudgeConfig | None, system_prompt: str, user_prompt: str, scale: RubricScale, label: str, include_goal_outcomes: bool, response_format: dict[str, Any], axis: RubricAxis = 'capability', label_key: LabelKey | None = None)"
+      "signature": "JudgeRequest(dim_id: str, config: JudgeConfig | None, system_prompt: str, user_prompt: str, scale: RubricScale, label: str, include_goal_outcomes: bool, response_format: dict[str, Any], judge_config_id: str, axis: RubricAxis = 'capability', label_key: LabelKey | None = None)"
     },
     "threetears.evals.run.JudgeService": {
       "kind": "class",
@@ -2796,6 +2872,10 @@
     "threetears.evals.run.list_runs": {
       "kind": "function",
       "signature": "list_runs(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False, label: str | None = None) -> list[EvalRun]"
+    },
+    "threetears.evals.run.list_runs_disclosing": {
+      "kind": "function",
+      "signature": "list_runs_disclosing(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False, label: str | None = None) -> RunsRead"
     },
     "threetears.evals.run.list_templates": {
       "kind": "function",
@@ -2903,7 +2983,7 @@
     },
     "threetears.evals.run.reproducible_judge_inputs": {
       "kind": "function",
-      "signature": "reproducible_judge_inputs(storage: JudgeInputStore, result: EvalResult, run: EvalRun, scope_id: str, *, request_settings: RequestSettingsPolicy, config_dims: Collection[str] | None = None) -> ReproducibleJudgeInputs"
+      "signature": "reproducible_judge_inputs(storage: JudgeInputStore, result: EvalResult, run: EvalRun, scope_id: str, *, request_settings: RequestSettingsPolicy, config_dims: Collection[str] | None = None, same_judge_dims: Collection[str] = ()) -> ReproducibleJudgeInputs"
     },
     "threetears.evals.run.ReproducibleJudgeInputs": {
       "kind": "class",
@@ -3121,6 +3201,10 @@
       "kind": "dataclass",
       "signature": "UnknownSubject(remedy: str)"
     },
+    "threetears.evals.run.UnreadableRunDeleteStore": {
+      "kind": "protocol",
+      "signature": "UnreadableRunDeleteStore{delete_eval_result(self, result_id: str, scope_id: str, /) -> bool; delete_eval_run(self, run_id: str, scope_id: str, /) -> bool; list_campaigns(self, scope_id: str, /) -> list[EvalCampaign]; query_eval_result_ids_by_run(self, run_id: str, scope_id: str, /) -> list[str]; save_campaign(self, campaign: EvalCampaign, /) -> None; store_time(self) -> datetime}"
+    },
     "threetears.evals.run.update_judge_config": {
       "kind": "function",
       "signature": "update_judge_config(storage: DefinitionStore, config_id: str, scope_id: str, fields: dict[str, Any]) -> JudgeConfig"
@@ -3171,7 +3255,7 @@
     },
     "threetears.evals.analysis.AnalysisContextBundle": {
       "kind": "model",
-      "signature": "AnalysisContextBundle(schema_version: int = 48, campaign_id: str, subject_id: str, subject_kind: str = '', behavior: str, template_id: str | None = None, scope_id: str, run_ids: list[str] = list(), unresolved_run_ids: list[str] = list(), archived_run_ids: list[str] = list(), model_versions: dict[str, str] = dict(), window: CampaignWindow | None = None, run_summaries: list[RunSummary] = list(), comparison: ComparisonSetsResult, frontier: FrontierResult, frontier_bar_withheld: str | None = None, telemetry: TelemetryRollup, coverage: list[LeverCoverageInput] = list(), scope_divergences: list[ScopeDivergence] = list(), divergences_omitted: int = 0, divergences_tested: int = 0, divergences_untested: int = 0, declared_design: CampaignDesign | None = None, design: RealizedDesign = RealizedDesign(), incomplete_runs: dict[str, str] = dict(), short_runs: dict[str, str] = dict(), completeness_unknown_run_ids: list[str] = list(), short_cells: list[ShortCell] = list(), cost_unmeasured_cells: list[CellCoordinate] = list(), cost_unmeasured: str | None = None, all_failed_cells: list[CellCoordinate] = list(), all_failed: str | None = None, latency_contended_cells: list[CellCoordinate] = list(), latency_contended: str | None = None, held_fixed_reading: HeldFixedReading = HeldFixedReading(), judge_agreement: JudgeAgreement = JudgeAgreement(), judge_self_agreement: JudgeSelfAgreement = JudgeSelfAgreement(), judge_evidence_tiers: list[JudgeEvidenceTier] = list(), inter_judge_agreement: InterJudgeAgreement = InterJudgeAgreement(), judge_drift: JudgeDrift = JudgeDrift(), judge_change: JudgeChange = JudgeChange(), goal_check_proofs: list[GoalCheckProofReading] = list(), multiple_comparisons: MultipleComparisons = MultipleComparisons(), guardrails: GuardrailReadings = GuardrailReadings(), run_margins: dict[str, float] = dict(), launch_declarations: list[str] = list(), run_margins_withheld: str | None = None, reading_scope: ReadingScope = ReadingScope(), verdict_order: VerdictOrder = VerdictOrder(), measurement_windows: list[MeasurementWindow] = list(), launch_disclosure: str | None = None, measurement_window_disclosure: str | None = None, apparatus_confounds: list[Confound] = list(), aliased_factors: list[AliasedFactors] = list(), factor_pairs: FactorPairScan | None = None, declared_crossing: DeclaredCrossing | None = None, arm_mechanisms: list[ArmMechanismReading] = list(), arm_served_models: list[ArmServedModel] = list(), arm_production_footings: dict[str, PooledProductionFooting] = dict(), cell_model_version: int = 11, host_declarations_digest: str | None = None, cells: list[Cell] = list(), variant_index: list[VariantIndexEntry] = list(), refused_merges: list[RefusedMerge] = list(), refused_merges_omitted: int = 0, next_experiments: list[NextExperiment] = list(), next_experiments_omitted: int = 0, subject_key_instabilities: list[SubjectKeyInstability] = list(), measure_catalog: dict[str, MetricDescriptor] = dict(), judged_measures: list[JudgedMeasure] = list(), bar_adjudications: list[BarAdjudication] = list(), cell_measures: list[CellFacts] = list(), time_axis: TimeAxis | None = None, time_axis_withheld: str | None = None, confound_catalog: dict[str, str] = dict(), prior_insights: list[EvalInsight] = list(), prior_insights_omitted: int = 0, retracted_insights: dict[str, str] = dict())"
+      "signature": "AnalysisContextBundle(schema_version: int = 49, campaign_id: str, subject_id: str, subject_kind: str = '', behavior: str, template_id: str | None = None, scope_id: str, run_ids: list[str] = list(), unresolved_run_ids: list[str] = list(), archived_run_ids: list[str] = list(), model_versions: dict[str, str] = dict(), window: CampaignWindow | None = None, run_summaries: list[RunSummary] = list(), comparison: ComparisonSetsResult, frontier: FrontierResult, frontier_bar_withheld: str | None = None, telemetry: TelemetryRollup, coverage: list[LeverCoverageInput] = list(), scope_divergences: list[ScopeDivergence] = list(), whole_swings: list[WholeSwing] = list(), divergences_omitted: int = 0, divergences_tested: int = 0, divergences_untested: int = 0, declared_design: CampaignDesign | None = None, design: RealizedDesign = RealizedDesign(), incomplete_runs: dict[str, str] = dict(), short_runs: dict[str, str] = dict(), completeness_unknown_run_ids: list[str] = list(), short_cells: list[ShortCell] = list(), cost_unmeasured_cells: list[CellCoordinate] = list(), cost_unmeasured: str | None = None, all_failed_cells: list[CellCoordinate] = list(), all_failed: str | None = None, latency_contended_cells: list[CellCoordinate] = list(), latency_contended: str | None = None, held_fixed_reading: HeldFixedReading = HeldFixedReading(), judge_agreement: JudgeAgreement = JudgeAgreement(), judge_self_agreement: JudgeSelfAgreement = JudgeSelfAgreement(), judge_evidence_tiers: list[JudgeEvidenceTier] = list(), inter_judge_agreement: InterJudgeAgreement = InterJudgeAgreement(), judge_drift: JudgeDrift = JudgeDrift(), judge_change: JudgeChange = JudgeChange(), goal_check_proofs: list[GoalCheckProofReading] = list(), multiple_comparisons: MultipleComparisons = MultipleComparisons(), guardrails: GuardrailReadings = GuardrailReadings(), run_margins: dict[str, float] = dict(), launch_declarations: list[str] = list(), run_margins_withheld: str | None = None, reading_scope: ReadingScope = ReadingScope(), verdict_order: VerdictOrder = VerdictOrder(), measurement_windows: list[MeasurementWindow] = list(), launch_disclosure: str | None = None, model_identity_disclosure: str | None = None, measurement_window_disclosure: str | None = None, apparatus_confounds: list[Confound] = list(), aliased_factors: list[AliasedFactors] = list(), factor_pairs: FactorPairScan | None = None, declared_crossing: DeclaredCrossing | None = None, arm_mechanisms: list[ArmMechanismReading] = list(), arm_served_models: list[ArmServedModel] = list(), arm_production_footings: dict[str, PooledProductionFooting] = dict(), cell_model_version: int = 11, host_declarations_digest: str | None = None, cells: list[Cell] = list(), variant_index: list[VariantIndexEntry] = list(), refused_merges: list[RefusedMerge] = list(), refused_merges_omitted: int = 0, next_experiments: list[NextExperiment] = list(), next_experiments_omitted: int = 0, subject_key_instabilities: list[SubjectKeyInstability] = list(), measure_catalog: dict[str, MetricDescriptor] = dict(), judged_measures: list[JudgedMeasure] = list(), bar_adjudications: list[BarAdjudication] = list(), cell_measures: list[CellFacts] = list(), time_axis: TimeAxis | None = None, time_axis_withheld: str | None = None, confound_catalog: dict[str, str] = dict(), prior_insights: list[EvalInsight] = list(), prior_insights_omitted: int = 0, retracted_insights: dict[str, str] = dict())"
     },
     "threetears.evals.analysis.AnalysisGenerationEstimate": {
       "kind": "model",
@@ -3239,7 +3323,7 @@
     },
     "threetears.evals.analysis.build_report": {
       "kind": "function",
-      "signature": "build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None) -> Report"
+      "signature": "build_report(analysis: EvalAnalysis, *, campaign_name: str | None = None, model_identity: str | None = None) -> Report"
     },
     "threetears.evals.analysis.BundleInspection": {
       "kind": "model",
@@ -3383,7 +3467,7 @@
     },
     "threetears.evals.analysis.create_campaign": {
       "kind": "function",
-      "signature": "create_campaign(storage: CampaignStore, definition: dict[str, Any], *, scope_id: str, created_by: str, profile: HostProfile, control_from_run_id: str | None = None) -> EvalCampaign"
+      "signature": "create_campaign(storage: CampaignStore, definition: dict[str, Any], *, scope_id: str, created_by: str, profile: HostProfile, control_from_run_id: str | None = None, exploratory: bool = False) -> EvalCampaign"
     },
     "threetears.evals.analysis.CriterionDrift": {
       "kind": "literal",
@@ -3475,7 +3559,7 @@
     },
     "threetears.evals.analysis.EvalSummary": {
       "kind": "model",
-      "signature": "EvalSummary(run_id: str, scope_id: str, template_id: str | None, candidate_model: str, arm: str | None = None, status: str, k_runs: int, n_cases: int, n_results: int, n_scored: int, n_candidate_failed: int, n_excluded: int, measures: list[RunMeasureSummary], confusion: list[ConfusionCount], labels: list[LabelStatistics], judged: list[DimensionSummary] = [], strata: list[StratumSummary] = [], spend: list[RoleSpend] = [], total_cost_usd: float | None = None, second_judge_calls: int = 0, second_judge_cost_usd: float | None = None, goal_checks: list[GoalCheckSummary] = [], intent: str | None = None, intent_source: str | None = None, errors: list[str], stopped_because: str | None = None, max_cost_usd: float | None = None, max_cost_usd_origin: CostCapOrigin | None = None, judge_shares_candidate_model: list[str] = [], case_results: list[CaseResult] | None = None)"
+      "signature": "EvalSummary(run_id: str, scope_id: str, template_id: str | None, candidate_model: str, arm: str | None = None, status: str, k_runs: int, n_cases: int, n_results: int, n_scored: int, n_candidate_failed: int, n_excluded: int, measures: list[RunMeasureSummary], confusion: list[ConfusionCount], labels: list[LabelStatistics], judged: list[DimensionSummary] = [], strata: list[StratumSummary] = [], spend: list[RoleSpend] = [], total_cost_usd: float | None = None, second_judge_calls: int = 0, second_judge_cost_usd: float | None = None, goal_checks: list[GoalCheckSummary] = [], intent: str | None = None, intent_source: str | None = None, errors: list[str], stopped_because: str | None = None, max_cost_usd: float | None = None, max_cost_usd_origin: CostCapOrigin | None = None, judge_shares_candidate_model: list[str] = [], unconfirmed_models: list[UnconfirmedModelIdentity] = [], case_results: list[CaseResult] | None = None)"
     },
     "threetears.evals.analysis.export_results": {
       "kind": "function",
@@ -3652,6 +3736,10 @@
     "threetears.evals.analysis.HistoryResult": {
       "kind": "model",
       "signature": "HistoryResult(metric: str, measure: MetricDescriptor, formula: str, weighting: str, higher_is_better: bool | None = None, min_absolute_change: float, min_relative_change: float, equivalence_margin: float | None = None, series: list[MeasureSeries] = [], n_results: int = 0, n_filtered_out: int = 0, exclusions: ProjectionExclusions = ProjectionExclusions(results_without_run=0, results_outside_queried_runs=0, results_from_archived_runs=0), completeness_disclosures: dict[str, str] = {}, n_degraded_observations: int = 0, identity_version_span: list[int] = [], identity_span_disclosure: str | None = None, attribution_disclosure: str | None = None, contended_latency_disclosure: str | None = None)"
+    },
+    "threetears.evals.analysis.IdentityRole": {
+      "kind": "literal",
+      "signature": "'candidate'` | `'judge'"
     },
     "threetears.evals.analysis.insight_standing": {
       "kind": "function",
@@ -4047,7 +4135,7 @@
     },
     "threetears.evals.analysis.Report": {
       "kind": "model",
-      "signature": "Report(report_version: Literal[8] = 8, basis: ReportBasis, headline: ModelProse, finding_count: int, source: ReportSource, blocks: list[ReportBlock], verdicts: list[Verdict] = list())"
+      "signature": "Report(report_version: Literal[9] = 9, basis: ReportBasis, headline: ModelProse, finding_count: int, source: ReportSource, blocks: list[ReportBlock], verdicts: list[Verdict] = list())"
     },
     "threetears.evals.analysis.report_html": {
       "kind": "function",
@@ -4179,7 +4267,7 @@
     },
     "threetears.evals.analysis.ScopeDivergence": {
       "kind": "model",
-      "signature": "ScopeDivergence(lever: str, level_a: str, level_b: str, unit: str, end_to_end: MeasureMovement, subsystem: MeasureMovement, test: Literal['paired', 'unpaired'], n_cases_a: int, n_cases_b: int, p_raw: float, p_adjusted: float, family_size: int, unattributed_delta: float | None = None, unattributed_withheld: str | None = None, contained_by: str | None = None, confounded_by: list[Confound] = list(), whole_components: list[MeasureMovement] = list(), carried_by: str | None = None, carried_share: float | None = None)"
+      "signature": "ScopeDivergence(lever: str, level_a: str, level_b: str, unit: str, end_to_end: MeasureMovement, subsystem: MeasureMovement, test: Literal['paired', 'unpaired'], n_cases_a: int, n_cases_b: int, p_raw: float, p_adjusted: float, family_size: int, unattributed_delta: float | None = None, unattributed_withheld: str | None = None, contained_by: str | None = None, confounded_by: list[Confound] = list())"
     },
     "threetears.evals.analysis.ScoreExport": {
       "kind": "model",
@@ -4331,7 +4419,7 @@
     },
     "threetears.evals.analysis.TextRole": {
       "kind": "literal",
-      "signature": "'summary'` | `'answer'` | `'decision'` | `'revisit_when'` | `'finding_title'` | `'finding_body'` | `'caveat'` | `'carried_forward'` | `'next_step'` | `'next_step_why'"
+      "signature": "'headline'` | `'summary'` | `'answer'` | `'decision'` | `'revisit_when'` | `'finding_title'` | `'finding_body'` | `'caveat'` | `'carried_forward'` | `'next_step'` | `'next_step_why'"
     },
     "threetears.evals.analysis.tier_for_judges": {
       "kind": "function",
@@ -4348,6 +4436,10 @@
     "threetears.evals.analysis.TokenRollup": {
       "kind": "model",
       "signature": "TokenRollup(prompt_tokens: int | None, completion_tokens: int | None, reasoning_tokens: int | None, n_results_tokens_unreported: int, n_results_with_usage: int)"
+    },
+    "threetears.evals.analysis.UnconfirmedModelIdentity": {
+      "kind": "model",
+      "signature": "UnconfirmedModelIdentity(role: IdentityRole, requested: list[str] = list(), served_models: list[str] = list(), n_unrecorded: int, n_total: int)"
     },
     "threetears.evals.analysis.UnpairedRating": {
       "kind": "model",
@@ -4383,7 +4475,7 @@
     },
     "threetears.evals.analysis.update_campaign": {
       "kind": "function",
-      "signature": "update_campaign(storage: CampaignStore, campaign_id: str, scope_id: str, updates: dict[str, Any], *, updated_by: str, profile: HostProfile) -> EvalCampaign"
+      "signature": "update_campaign(storage: CampaignStore, campaign_id: str, scope_id: str, updates: dict[str, Any], *, updated_by: str, profile: HostProfile, exploratory: bool = False, control_from_run_id: str | None = None, clear_control: bool = False) -> EvalCampaign"
     },
     "threetears.evals.analysis.variant_key_of_run": {
       "kind": "function",
@@ -4412,6 +4504,10 @@
     "threetears.evals.analysis.WEIGHTING_EQUAL_PER_SCENARIO": {
       "kind": "constant (str)",
       "signature": ""
+    },
+    "threetears.evals.analysis.WholeSwing": {
+      "kind": "model",
+      "signature": "WholeSwing(lever: str, level_a: str, level_b: str, whole: str, components: list[MeasureMovement] = list(), carried_by: str | None = None, carried_share: float | None = None)"
     },
     "threetears.evals.analysis.WriterMessageCheck": {
       "kind": "literal",
@@ -4519,7 +4615,7 @@
     },
     "threetears.evals.gen.plan_draft": {
       "kind": "function",
-      "signature": "plan_draft(*, system_prompt: str, subject_feed: str, catalog_feed: str) -> PlannedCall"
+      "signature": "plan_draft(*, axis: RubricAxis, system_prompt: str, subject_feed: str, catalog_feed: str) -> PlannedCall"
     },
     "threetears.evals.gen.price_variations": {
       "kind": "async function",
@@ -4535,6 +4631,10 @@
     },
     "threetears.evals.gen.PROPOSER_MAX_TOKENS": {
       "kind": "constant (int)",
+      "signature": ""
+    },
+    "threetears.evals.gen.RUBRIC_PROPOSAL_CONTRACT": {
+      "kind": "constant (OutputContract)",
       "signature": ""
     },
     "threetears.evals.storage.AsyncStoreBridge": {
@@ -4671,7 +4771,7 @@
     },
     "threetears.evals.quick.Answer": {
       "kind": "dataclass",
-      "signature": "Answer(value: Any, model: str | None = None, input_tokens: int | None = None, output_tokens: int | None = None, cost_usd: float | None = None)"
+      "signature": "Answer(value: Any, model: str | None = None, input_tokens: int | None = None, output_tokens: int | None = None, cost_usd: float | None = None, served_model: str | None = None)"
     },
     "threetears.evals.quick.ARM_LEVER": {
       "kind": "constant (str)",
@@ -4927,7 +5027,7 @@
     },
     "threetears.evals.ops.AnalysisLine": {
       "kind": "model",
-      "signature": "AnalysisLine(id: str, campaign_id: str, headline: str, generator_model: str, generated_at: str, archived: bool)"
+      "signature": "AnalysisLine(id: str, campaign_id: str, headline: str, headline_standing: str, generator_model: str, generated_at: str, archived: bool)"
     },
     "threetears.evals.ops.AnalysisListing": {
       "kind": "model",
@@ -4961,13 +5061,29 @@
       "kind": "function",
       "signature": "campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: str, *, created_by: str) -> CampaignLine"
     },
+    "threetears.evals.ops.campaign_runs_add": {
+      "kind": "function",
+      "signature": "campaign_runs_add(host: EvalHost, campaign_id: str, run_ids: list[str], scope_id: str) -> CampaignLine"
+    },
+    "threetears.evals.ops.campaign_runs_remove": {
+      "kind": "function",
+      "signature": "campaign_runs_remove(host: EvalHost, campaign_id: str, run_ids: list[str], scope_id: str) -> CampaignLine"
+    },
+    "threetears.evals.ops.campaign_update": {
+      "kind": "function",
+      "signature": "campaign_update(host: EvalHost, campaign_id: str, changes: CampaignChanges, scope_id: str, *, updated_by: str) -> CampaignLine"
+    },
+    "threetears.evals.ops.CampaignChanges": {
+      "kind": "model",
+      "signature": "CampaignChanges(name: str | None = None, description: str | None = None, declared_design: dict[str, Any] | None = None, exploratory: bool = False, control_from_run_id: str | None = None)"
+    },
     "threetears.evals.ops.CampaignDefinition": {
       "kind": "model",
-      "signature": "CampaignDefinition(name: str, subject_id: str, behavior: str, description: str = '', run_ids: list[str] = list(), template_id: str | None = None, declared_design: dict[str, Any] | None = None, control_from_run_id: str | None = None)"
+      "signature": "CampaignDefinition(name: str, subject_id: str, behavior: str, description: str = '', run_ids: list[str] = list(), template_id: str | None = None, declared_design: dict[str, Any] | None = None, control_from_run_id: str | None = None, exploratory: bool = False)"
     },
     "threetears.evals.ops.CampaignLine": {
       "kind": "model",
-      "signature": "CampaignLine(id: str, name: str, subject_id: str, behavior: str, run_count: int, archived: bool)"
+      "signature": "CampaignLine(id: str, name: str, subject_id: str, behavior: str, run_count: int, archived: bool, exploratory: bool)"
     },
     "threetears.evals.ops.CampaignListing": {
       "kind": "model",
@@ -5027,7 +5143,7 @@
     },
     "threetears.evals.ops.EvalSummary": {
       "kind": "model",
-      "signature": "EvalSummary(run_id: str, scope_id: str, template_id: str | None, candidate_model: str, arm: str | None = None, status: str, k_runs: int, n_cases: int, n_results: int, n_scored: int, n_candidate_failed: int, n_excluded: int, measures: list[RunMeasureSummary], confusion: list[ConfusionCount], labels: list[LabelStatistics], judged: list[DimensionSummary] = [], strata: list[StratumSummary] = [], spend: list[RoleSpend] = [], total_cost_usd: float | None = None, second_judge_calls: int = 0, second_judge_cost_usd: float | None = None, goal_checks: list[GoalCheckSummary] = [], intent: str | None = None, intent_source: str | None = None, errors: list[str], stopped_because: str | None = None, max_cost_usd: float | None = None, max_cost_usd_origin: CostCapOrigin | None = None, judge_shares_candidate_model: list[str] = [], case_results: list[CaseResult] | None = None)"
+      "signature": "EvalSummary(run_id: str, scope_id: str, template_id: str | None, candidate_model: str, arm: str | None = None, status: str, k_runs: int, n_cases: int, n_results: int, n_scored: int, n_candidate_failed: int, n_excluded: int, measures: list[RunMeasureSummary], confusion: list[ConfusionCount], labels: list[LabelStatistics], judged: list[DimensionSummary] = [], strata: list[StratumSummary] = [], spend: list[RoleSpend] = [], total_cost_usd: float | None = None, second_judge_calls: int = 0, second_judge_cost_usd: float | None = None, goal_checks: list[GoalCheckSummary] = [], intent: str | None = None, intent_source: str | None = None, errors: list[str], stopped_because: str | None = None, max_cost_usd: float | None = None, max_cost_usd_origin: CostCapOrigin | None = None, judge_shares_candidate_model: list[str] = [], unconfirmed_models: list[UnconfirmedModelIdentity] = [], case_results: list[CaseResult] | None = None)"
     },
     "threetears.evals.ops.export_text": {
       "kind": "function",
@@ -5129,6 +5245,10 @@
       "kind": "function",
       "signature": "judge_cases_freeze(host: EvalHost, freeze: JudgeCasesFreeze, scope_id: str) -> JudgeCaseFreezeReport"
     },
+    "threetears.evals.ops.judge_configs_list": {
+      "kind": "function",
+      "signature": "judge_configs_list(host: EvalHost, scope_id: str, *, rubric_dim_id: str | None = None, archived: bool = False) -> JudgeConfigListing"
+    },
     "threetears.evals.ops.judge_drift_check": {
       "kind": "async function",
       "signature": "judge_drift_check(host: OpsHost, run_id: str, scope_id: str, *, judge: SecondJudge, result_ids: list[str] | None = None) -> JobsStarted"
@@ -5180,6 +5300,14 @@
     "threetears.evals.ops.JudgeCasesFreeze": {
       "kind": "model",
       "signature": "JudgeCasesFreeze(template_id: Annotated[str, LaunchArguments.model_fields['template_id']], judged_run_ids: list[str], criteria: list[str] | None = None, judged_result_ids: list[str] | None = None, into_case_set: str | None = None)"
+    },
+    "threetears.evals.ops.JudgeConfigLine": {
+      "kind": "model",
+      "signature": "JudgeConfigLine(id: str, name: str, rubric_dim_id: str, model: str, temperature: float, archived: bool)"
+    },
+    "threetears.evals.ops.JudgeConfigListing": {
+      "kind": "model",
+      "signature": "JudgeConfigListing(judge_configs: list[JudgeConfigLine])"
     },
     "threetears.evals.ops.JudgeProfileEntry": {
       "kind": "model",
@@ -5407,7 +5535,7 @@
     },
     "threetears.evals.ops.RunListing": {
       "kind": "model",
-      "signature": "RunListing(runs: list[RunLine], include_archived: bool, label: str | None = None)"
+      "signature": "RunListing(runs: list[RunLine], include_archived: bool, label: str | None = None, unreadable: int)"
     },
     "threetears.evals.ops.runs_bisect": {
       "kind": "function",
@@ -5428,6 +5556,10 @@
     "threetears.evals.ops.runs_list": {
       "kind": "function",
       "signature": "runs_list(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False, label: str | None = None) -> RunListing"
+    },
+    "threetears.evals.ops.runs_unreadable": {
+      "kind": "function",
+      "signature": "runs_unreadable(host: EvalHost, scope_id: str) -> UnreadableRunsListing"
     },
     "threetears.evals.ops.RunsBisected": {
       "kind": "model",
@@ -5475,7 +5607,7 @@
     },
     "threetears.evals.ops.start_action_job": {
       "kind": "async function",
-      "signature": "start_action_job(host: OpsHost, scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], label: str = '', budget_s: float = 3600.0, discard: Callable[[], Awaitable[None]] | None = None) -> JobsStarted"
+      "signature": "start_action_job(host: OpsHost, scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], budget_s: float, label: str = '', discard: Callable[[], Awaitable[None]] | None = None) -> JobsStarted"
     },
     "threetears.evals.ops.start_job": {
       "kind": "async function",
@@ -5483,7 +5615,7 @@
     },
     "threetears.evals.ops.start_paid_call": {
       "kind": "async function",
-      "signature": "start_paid_call(host: OpsHost, scope_id: str, *, action: str, role: CompletionRole, model: str | None, purpose: OutOfRunPurpose, budget: OutOfRunBudget, call: PlannedCall, make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]], label: str, budget_s: float = 3600.0) -> JobsStarted"
+      "signature": "start_paid_call(host: OpsHost, scope_id: str, *, action: str, role: CompletionRole, model: str | None, purpose: OutOfRunPurpose, budget: OutOfRunBudget, call: PlannedCall, make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]], label: str, budget_s: float) -> JobsStarted"
     },
     "threetears.evals.ops.sweep_job_id": {
       "kind": "function",
@@ -5548,6 +5680,14 @@
     "threetears.evals.ops.UnreadableReporterCase": {
       "kind": "model",
       "signature": "UnreadableReporterCase(test_case_id: str, reason: str)"
+    },
+    "threetears.evals.ops.UnreadableRunLine": {
+      "kind": "model",
+      "signature": "UnreadableRunLine(run_id: str | None, status: str | None, stranded: bool, reasons: list[str])"
+    },
+    "threetears.evals.ops.UnreadableRunsListing": {
+      "kind": "model",
+      "signature": "UnreadableRunsListing(scope_id: str, runs_read: int, stranded: int, runs: list[UnreadableRunLine])"
     },
     "threetears.evals.actions.Action": {
       "kind": "dataclass",

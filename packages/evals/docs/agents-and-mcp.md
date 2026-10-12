@@ -50,7 +50,15 @@ still running is its record's answer: the process running it holds a **lease** o
 lapsed reads `lost`, and the first read to see that writes it on the record: not only `job_poll`, but every read
 of the record — `run_get`, `runs_list`, a campaign's or a report's read of its runs, a sweep's, an analysis
 attempt's — so a job whose process died reads `lost` everywhere once its lease lapses, and nothing counts it as
-still running. A launch or a sweep written lost settles the runs it names with it. A cancel is written on the record
+still running. A run whose stored document this build's model refuses cannot be written lost: the boot reclaim counts
+it `unreadable` and leaves it, and `runs_unreadable` names each such run of the scope with why. `runs_list` leaves
+such a run out and says how many it left out (`unreadable`). Every other read that reaches one (`run_get`,
+`job_poll`, a comparison, a campaign's report, a launch's pricing) refuses with `UnreadableRunError` (status 500),
+whose remedy names `runs_unreadable`: an answer over the runs that happened to read would be a wrong one.
+`run_delete` removes such a run from its stored row, with what a readable run's delete removes. A `job_poll` of
+another job whose record this build cannot read (a sweep's, a launch's, an analysis attempt's) refuses with
+`UnreadableRecordError` (status 500), naming the record and why. A launch or a sweep
+written lost settles the runs it names with it. A cancel is written on the record
 too, so `job_cancel` works from any process: the job ends `cancelled` within one renewal interval. A graceful
 shutdown writes every job its process holds `lost` at once. A job is answered only in the caller's scope:
 another scope's job reads not found, on poll and on cancel.
@@ -66,7 +74,8 @@ overlays and apparatus settings, and every arm shares the template, subject, `k`
 Every arm is refused up front if its launch would be. The arms run one at a time, so no arm shares another's
 provider load; `max_concurrent_arms` raises that. To compare latency, also declare `measure_latency`, which
 every arm's launch takes. Each run joins the named campaign
-as it is created. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
+as it is created. That campaign is created exploratory, since a sweep takes no design: declare what the arms were
+swept to learn with `campaign_update` once they are known. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
 the arm in flight and launches none after it. An arm refused at its launch, or whose run ends `failed`, ends
 the sweep `failed`. The judge and simulator are the sweep's. Where it names none, the first arm's resolved
 ones hold for the rest, so a role default that moves mid-sweep cannot split the arms.
@@ -107,14 +116,35 @@ An agent calls `action='help'` for the actions grouped by workflow and `action='
 one action's parameters and an example. A parameter the action does not declare is refused, naming the
 ones it accepts. `read_only_tools(prefix)` mounts a tool an agent can only read through.
 
+**A campaign is declared or exploratory, and the caller says which.** `campaign_create` takes a
+`declared_design` or `exploratory: true` — exactly one; neither is refused naming both, and both are refused as a
+contradiction. `exploratory` is checked, never stored: a campaign is exploratory exactly while it declares no
+design. `campaign_update` changes a campaign's `name`, `description` or `declared_design` after it exists, so an
+operator who started exploring declares the design when the question settles, and the campaign is declared from
+that write on. Going back is said too: `declared_design: null` withdraws the declaration only beside
+`exploratory: true`.
+
+**Everything a campaign needs is an action.** An agent can start ad hoc and end with a declared, controlled
+campaign without a line of Python:
+
+1. `run_launch` the arms, then `campaign_create` with their `run_ids` and `exploratory: true`;
+2. `campaign_runs_add` the runs launched later (`campaign_runs_remove` takes one out; its results stay);
+3. `campaign_update` with the `declared_design` once the question settles, and `control_from_run_id` naming the
+   member run whose variant is the control — one write, so a refused control leaves the design unwritten too.
+   `control_from_run_id` alone re-names the control on a declared campaign, and `control_from_run_id: null`
+   clears it.
+
+`judge_configs_list` names the judge configs a second judge's `second_judge_config_ids` can map a dimension to.
+
 ## Reading one result
 
 `run_get` says how a run came out; it does not say what one cell did. Its structured result (an `EvalSummary`)
 carries the words its text prints beside the numbers, so a client shows them rather than re-spelling them:
 `headline`, `results_text`, `stopped_text` (beside `stopped_because`), `spend_cap_text`, `measure_lines` (each
 measure's `state` — `measured`, `not_a_number`, `in_confusion_matrix`, `no_successful_results`, `all_excluded`
-or `not_carried` — and its line), `confusion_lines`, `label_lines`, `intent_text`, `dimension_lines`,
-`self_judging_warning`, `judge_spend_text`, `candidate_spend_text`, `goal_check_lines`, and `text`, the whole of it
+or `not_carried` — and its line), `confusion_lines`, `label_lines`, `stratum_lines`, `intent_text`,
+`dimension_lines`, `self_judging_warning`, `model_identity_warning` (beside `unconfirmed_models`), `spend_lines`,
+`total_spend_text`, `goal_check_lines`, and `text`, the whole of it
 as `render()` prints it. A field with nothing to say is null or empty, and the summary prints no line for it.
 
 Two read actions do say what one cell did:

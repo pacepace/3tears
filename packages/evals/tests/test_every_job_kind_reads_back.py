@@ -73,7 +73,7 @@ async def test_a_completed_job_of_every_kind_renders_through_job_poll() -> None:
     async def draft() -> _Drafted:
         return _Drafted(text="a rubric")
 
-    acted = await start_action_job(host, CONFORMANCE_SCOPE, action="rubric_propose", run=draft)
+    acted = await start_action_job(host, CONFORMANCE_SCOPE, action="rubric_propose", run=draft, budget_s=60.0)
     pending += [(host, caller, job.job_id) for job in acted.jobs]
 
     statuses: dict[str, tuple[OpsHost, Caller, JobStatus]] = {}

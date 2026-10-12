@@ -14,13 +14,20 @@ from pydantic import Field, model_validator
 
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.schema.models import DEFAULT_LAUNCH_K_RUNS, CaseSet, CaseSetRef, EvalRun, SecondJudge
+from threetears.evals.schema.models import (
+    DEFAULT_LAUNCH_K_RUNS,
+    NON_TERMINAL_RUN_STATUSES,
+    CaseSet,
+    CaseSetRef,
+    EvalRun,
+    SecondJudge,
+)
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.jobs import AdmittedJob, JobsStarted, start_job
 from threetears.evals.analysis.summary import EvalSummary, summarize_run
-from threetears.evals.run.authoring import list_templates
+from threetears.evals.run.authoring import list_judge_configs, list_templates
 from threetears.evals.run.case_sets import mint_case_set
-from threetears.evals.run.curation import delete_run, set_run_archived
+from threetears.evals.run.curation import delete_run, delete_unreadable_run, set_run_archived
 from threetears.evals.run.run_document import set_run_labels
 from threetears.evals.run.launch import admit_launch
 from threetears.evals.run.launch_job import launch_job_work
@@ -45,7 +52,7 @@ from threetears.evals.run.judge_temperature import (
 )
 from threetears.evals.run.lifecycle import get_run
 from threetears.evals.run.ratings import rate_result
-from threetears.evals.run.reads import list_runs
+from threetears.evals.run.reads import list_runs_disclosing
 
 
 class TemplateLine(EvalBaseModel):
@@ -62,6 +69,23 @@ class TemplateListing(EvalBaseModel):
     """A scope's templates."""
 
     templates: list[TemplateLine]
+
+
+class JudgeConfigLine(EvalBaseModel):
+    """One judge config, as a listing shows it: the versioned prompt a judge is asked one dimension with."""
+
+    id: str
+    name: str
+    rubric_dim_id: str = Field(description="The dimension this config asks a judge for.")
+    model: str = Field(description="The judge model it pins for its dimension; blank when it pins none.")
+    temperature: float
+    archived: bool
+
+
+class JudgeConfigListing(EvalBaseModel):
+    """A scope's judge configs."""
+
+    judge_configs: list[JudgeConfigLine]
 
 
 class RunLine(EvalBaseModel):
@@ -82,6 +106,48 @@ class RunListing(EvalBaseModel):
     runs: list[RunLine]
     include_archived: bool = Field(description="Whether archived runs were listed; they are left out by default.")
     label: str | None = Field(default=None, description="The label the runs were listed by; None lists every run.")
+    unreadable: int = Field(
+        ge=0,
+        description=(
+            "Stored runs the listing matched by status that this build's model cannot read, so they are not "
+            "listed; runs_unreadable names each with why. Their archive flag and labels cannot be read, so the "
+            "archive and label filters do not narrow this count."
+        ),
+    )
+
+
+class UnreadableRunLine(EvalBaseModel):
+    """One stored run this build's model cannot read, and why."""
+
+    run_id: str | None = Field(description="The id the stored row states; None when it states none as text.")
+    status: str | None = Field(
+        description="The status the row was stored with, as stored; None when it states none as text."
+    )
+    stranded: bool = Field(
+        description=(
+            "Stored pending or running: the boot sweep counts it unreadable and can never settle it, so it reads "
+            "as not ended until run_delete removes it or a build that reads it is deployed."
+        )
+    )
+    reasons: list[str] = Field(
+        description="Each distinct refusal the model gave, as `field: what it said`, sorted.", min_length=1
+    )
+
+
+class UnreadableRunsListing(EvalBaseModel):
+    """The scope's stored runs that this build's model cannot read, each with why."""
+
+    scope_id: str
+    runs_read: int = Field(
+        description="Every stored run row in the scope that was read, of any status, archived and unreadable included."
+    )
+    stranded: int = Field(
+        description=(
+            "Of the unreadable, those stored pending or running: the count the boot sweep reports as unreadable "
+            "for this scope, unless a readable run's lost write was also refused while it ran."
+        )
+    )
+    runs: list[UnreadableRunLine] = Field(description="Every row that does not read, stranded ones first, then by id.")
 
 
 class LaunchArguments(EvalBaseModel):
@@ -300,6 +366,35 @@ def templates_list(host: EvalHost, scope_id: str, *, archived: bool = False) -> 
     )
 
 
+def judge_configs_list(
+    host: EvalHost, scope_id: str, *, rubric_dim_id: str | None = None, archived: bool = False
+) -> JudgeConfigListing:
+    """The scope's judge configs — what a second judge's ``config_ids`` and a launch's ``judge_config_ids`` name.
+
+    Args:
+        host: The host whose store is read.
+        scope_id: The scope.
+        rubric_dim_id: Only the configs asking for this dimension; None for every dimension's.
+        archived: List the archived (superseded) versions instead of the active ones.
+
+    Returns:
+        The listing.
+    """
+    return JudgeConfigListing(
+        judge_configs=[
+            JudgeConfigLine(
+                id=config.id,
+                name=config.name,
+                rubric_dim_id=config.rubric_dim_id,
+                model=config.model,
+                temperature=config.temperature,
+                archived=config.archived,
+            )
+            for config in list_judge_configs(host.storage, scope_id, rubric_dim_id=rubric_dim_id, archived=archived)
+        ]
+    )
+
+
 def runs_list(
     host: EvalHost,
     scope_id: str,
@@ -308,7 +403,11 @@ def runs_list(
     include_archived: bool = False,
     label: str | None = None,
 ) -> RunListing:
-    """The scope's runs.
+    """The scope's runs, and how many it matched that this build cannot read.
+
+    An inventory, so a run this build's model cannot read is left out and counted rather than refusing the listing
+    (:func:`~threetears.evals.run.list_runs_disclosing`): the operator opening it is looking for a run, and one row
+    nothing can read must not hide every other. ``unreadable`` says how many, and ``runs_unreadable`` names them.
 
     Args:
         host: The host whose store is read.
@@ -322,10 +421,61 @@ def runs_list(
 
     Raises:
         ValidationFailedError: ``status`` is not a run status.
+        UnreadableRunError: A run read, but writing it lost was refused by a model.
     """
     label = None if label is None else label.strip()
-    runs = list_runs(host, scope_id, status=status, include_archived=include_archived, label=label)
-    return RunListing(runs=[_line(run) for run in runs], include_archived=include_archived, label=label)
+    read = list_runs_disclosing(host, scope_id, status=status, include_archived=include_archived, label=label)
+    return RunListing(
+        runs=[_line(run) for run in read.runs],
+        include_archived=include_archived,
+        label=label,
+        unreadable=len(read.unreadable),
+    )
+
+
+def runs_unreadable(host: EvalHost, scope_id: str) -> UnreadableRunsListing:
+    """The scope's stored runs this build's model cannot read, each with why, and how many of them are stranded.
+
+    A run's document is what is read: a run whose own document reads but one of whose results does not is not
+    here, as the boot sweep does not count it either — settling such a run reads past the result, writing its
+    completeness unknown and naming the result in its ``error_details``, so it ends and says why. Every run in the scope is read, of any status, archived
+    ones included, through the store's isolating scan (:meth:`~threetears.evals.kernel.EvalStorage.scan_eval_runs`):
+    the same refusal the boot sweep's scan counts, so ``stranded`` here and the sweep's ``unreadable`` for the scope
+    are the same rows. A sweep that also had a readable run's lost write refused counts that one too, and it is not
+    here, since it reads.
+
+    Derived on every call and never stored, as :func:`~threetears.evals.ops.analyses_undescribable` is. One row that
+    does not read never stops the rest from being read, and every such row is named; a store that fails to answer
+    raises rather than reading as a scope with none.
+
+    Args:
+        host: The host whose store is read; its listing elisions are left out of every row, which never changes
+            whether a row reads.
+        scope_id: The scope.
+
+    Returns:
+        The listing.
+
+    Raises:
+        StorageError: The store failed to answer.
+    """
+    scan = host.storage.scan_eval_runs(scope_id, elide_payload=host.profile.listing_elisions)
+    lines = [
+        UnreadableRunLine(
+            run_id=row.row_id,
+            status=row.status,
+            stranded=row.status in NON_TERMINAL_RUN_STATUSES,
+            reasons=row.reasons,
+        )
+        for row in scan.unreadable
+    ]
+    lines.sort(key=lambda line: (not line.stranded, line.run_id is None, line.run_id or ""))
+    return UnreadableRunsListing(
+        scope_id=scope_id,
+        runs_read=scan.readable + len(scan.unreadable),
+        stranded=sum(line.stranded for line in lines),
+        runs=lines,
+    )
 
 
 def run_get(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
@@ -794,6 +944,11 @@ async def judge_drift_check(
 def run_delete(host: EvalHost, run_id: str, scope_id: str, *, confirm: str | None) -> RunDeleted:
     """Destroy a run, its results and its campaign memberships — unrecoverable; archive is the safe answer.
 
+    A run this build's model cannot read is destroyed from its stored row
+    (:func:`~threetears.evals.run.curation.delete_unreadable_run`), removing exactly what a readable run's delete
+    removes: the way out of a corpus the model has outlived, which ``runs_unreadable`` lists. Its results are found
+    by the run id they carry, never read, and it is refused only while a process may still hold it.
+
     Args:
         host: The host whose store holds the run.
         run_id: The run.
@@ -805,10 +960,17 @@ def run_delete(host: EvalHost, run_id: str, scope_id: str, *, confirm: str | Non
 
     Raises:
         NotFoundError: No run with that id in the scope — refused before ``confirm`` is read.
-        ValidationFailedError: ``confirm`` does not echo the id, or the run is still running.
+        ValidationFailedError: ``confirm`` does not echo the id, or the run is still running (one this build
+            cannot read: stored running under a lease that has not lapsed).
         StorageError: The cascade stopped partway; the message says how far it got.
     """
-    removed = delete_run(host.storage, get_run(host.storage, run_id, scope_id), scope_id, confirm=confirm)
+    found = host.storage.scan_eval_run(run_id, scope_id)
+    if found.unreadable:
+        # The way out of a run this build cannot read: every read of it refuses, so it is deleted from its row.
+        (row,) = found.unreadable
+        removed = delete_unreadable_run(host.storage, run_id, row, scope_id, confirm=confirm)
+    else:
+        removed = delete_run(host.storage, get_run(host.storage, run_id, scope_id), scope_id, confirm=confirm)
     return RunDeleted(
         run_id=removed["run_id"],
         results_deleted=removed["results_deleted"],
@@ -820,6 +982,8 @@ __all__ = [
     "CaseSetLine",
     "CaseSetListing",
     "CaseSetMint",
+    "JudgeConfigLine",
+    "JudgeConfigListing",
     "LaunchArguments",
     "ResultRated",
     "RunDeleted",
@@ -827,6 +991,8 @@ __all__ = [
     "RunListing",
     "TemplateLine",
     "TemplateListing",
+    "UnreadableRunLine",
+    "UnreadableRunsListing",
     "run_archive",
     "run_label",
     "run_delete",
@@ -834,7 +1000,9 @@ __all__ = [
     "result_rate",
     "run_launch",
     "runs_list",
+    "runs_unreadable",
     "templates_list",
     "case_set_mint",
     "case_sets_list",
+    "judge_configs_list",
 ]

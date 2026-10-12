@@ -83,10 +83,13 @@ print(design.shape, [arm.moved for arm in design.contrasts])  # one_factor_at_a_
 
 **On your own host, declare it when you create the campaign.** Call `create_campaign` (the `campaign_create`
 action takes the same fields). Pass `declared_design`, and name the control by one of its runs with
-`control_from_run_id`. The engine resolves that run's variant key, so you never type a digest. To change the
-control later, call `set_campaign_control`. A design that names an axis your host cannot vary, or a bar looser
-than the registered one, is refused when the campaign is created. So create it before you launch, with no runs,
-then add each run with `add_runs_to_campaign` and set the control with `set_campaign_control`; a run can be
+`control_from_run_id`. The engine resolves that run's variant key, so you never type a digest. A campaign you
+create without a design is one you say is exploratory (`exploratory=True`); creating one that says neither is
+refused, so no campaign is exploratory by accident. To change the control later, call `update_campaign` with
+`control_from_run_id` (the `campaign_update` action), or `set_campaign_control`. A design that names an axis your
+host cannot vary, or a bar looser than the registered one, is refused when the campaign is created. So create it
+before you launch, with no runs, then add each run with `add_runs_to_campaign` (the `campaign_runs_add` action)
+and name the control from one of them; a run can be
 named as the control before it has any results. This declares the runs above by hand:
 
 ```python
@@ -113,13 +116,14 @@ campaign = create_campaign(
 |---|---|---|
 | `axes` (required) | The levers and levels you meant to compare. Each declared axis gets a row in `bundle.coverage`, `unswept` if it held one level; compare the row's `levels` with yours. | every question |
 | `held_fixed` (required) | Whether the cases held the stimulus fixed, and whether the rig was commissioned or found. | every question |
-| `control` | The reference variant, set from `control_from_run_id` or `set_campaign_control`. With none, the shape is `undesignated` and nothing is tested against a control. | A/B, single changes, grid |
+| `control` | The reference variant, set from `control_from_run_id` (on create or update) or `set_campaign_control`. With none, the shape is `undesignated` and nothing is tested against a control. | A/B, single changes, grid |
 | `intended_repetitions` | The repeats per case you meant each cell to get. A cell that falls short is named in `bundle.short_cells`. | the frontier, and any cell you want checked |
 | `questions` | What you set out to learn. Their `merit_axes` set the Holm families, and a reading no question covers is [exploratory](reading-reports.md#readings-no-question-asked-about-exploratory). | a confirmatory answer |
 | `bars`, `merit_priority` | Thresholds tighter than the host's, and the tie-break order between merit axes. | a bar verdict, a tie-break |
 | `crossing`, `skipped_cells` | Which combinations of levels (cells) you meant to run: `full`, or `star` (each axis's first level is the centre; cells moving more than one axis from it are skipped), less any `skipped_cells`. `bundle.declared_crossing` then reads a skipped cell as `skipped_by_design`, never a gap, and an unrun cell you meant to run as `not_run`. With neither, no cell is read either way. | a partial grid |
 
-**Declare a design when you know the question; explore when you do not.** The design is optional. Declare
+**Declare a design when you know the question; explore when you do not.** Either is a choice you state when the
+campaign is created: `declared_design`, or `exploratory=True`. Declare
 one when the question is settled before the runs: you know which lever you are comparing, against which
 control, and what answer would change what you do. Only a declared question can confirm anything, so a
 decision you will act on needs one. Leave it out when you are learning how to run evals, or testing an
@@ -127,7 +131,11 @@ intuition you cannot yet put as a question. A campaign with no design is **explo
 bundle say so once, at the top, and its readings confirm nothing. Its analysis reads the design inferred from
 the runs, and never calls that design declared. Do not declare a design you do not have just to get past this:
 a made-up question makes leads read as answers, which is worse than declaring none. When an exploratory
-campaign finds something worth knowing, declare a design for the campaign that tests it. A design that names
+campaign finds something worth knowing, declare a design for the campaign that tests it. A question that settles
+while a campaign is still running is declared on that campaign with `update_campaign` (the `campaign_update`
+action), and the campaign is declared from then on: whether a campaign is exploratory is read off whether it
+declares a design, never stored beside it. Withdrawing a declaration is said the same way, with
+`declared_design` set to None and `exploratory=True`. A design that names
 an axis your host cannot vary is refused naming `declarable_axes()`, which lists the levers and open families
 your host accepts.
 

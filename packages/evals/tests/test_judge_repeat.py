@@ -16,7 +16,8 @@ What is pinned:
 * a repeat agreeing with twenty first scores puts the dimension's judge on ``separation``; two results
   repeated ten times, or a judge declining a third of its repeats, does not;
 * a write race keeps the other writer's change; a result that cannot be read back is reported unwritten
-  and the report still returns; an account refusal stops the repeat before any later call.
+  and the report still returns; a call whose ledger row could not be written is still counted and costed on
+  the report; an account refusal stops the repeat before any later call.
 
 Mutations that turn this file red (each made in a scratch copy, the file restored from it, 2026-10-06):
 
@@ -34,7 +35,7 @@ Mutations that turn this file red (each made in a scratch copy, the file restore
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from threetears.evals.schema import JobLease
+from threetears.evals.schema import JobLease, OutOfRunSpend
 
 import dataclasses
 import json
@@ -71,7 +72,7 @@ from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.ops import OpsHost, await_job, judge_repeat
 from threetears.evals.run import JudgeRepeatReport, estimate_judge_repeat, judge_repeat_work, run_job_work
 from threetears.evals.run.judge import CANNOT_TELL, JUDGE_CALL_ATTEMPTS, JUDGE_REQUEST_SETTINGS
-from threetears.evals.run.judge_service import JudgeService
+from threetears.evals.run.judge_service import JudgeService, builtin_judge_config_ids
 from threetears.evals.run.launch import build_judge_service
 from threetears.evals.run.runner import RunnerOptions, run_one_result
 from threetears.evals.storage import InMemoryDocumentStore
@@ -85,8 +86,18 @@ _KIND = "repeat-probe"
 _JUDGE = "judge/scripted"
 _DIM = "doc.faithful"
 _CEILING = 0.01
-#: The judge every scored dim here is read under: the run's one dim, served by the scripted judge, no config.
-_KEY = JudgeKey(_DIM, "ordinal", _JUDGE, None, MODEL_DEFAULT_TEMPERATURE)
+#: The judge every scored dim here is read under: the run's one dim, served by the scripted judge, asked by the
+#: built-in prompt — which is recorded by its own identity where a config's id stands.
+_KEY = JudgeKey(
+    _DIM,
+    "ordinal",
+    _JUDGE,
+    builtin_judge_config_ids(
+        [RubricDim(name=_DIM, description="the GM rules what the dice say", scale="ordinal")],
+        judged_artifact=JudgedArtifact.DOCUMENT,
+    )[_DIM],
+    MODEL_DEFAULT_TEMPERATURE,
+)
 
 _EVIDENCE = JudgeEvidence(
     subject="The game master. Rules as written.",
@@ -238,6 +249,21 @@ class _UnreadableOnce(EvalStorage):
         if result_id == self.unreadable:
             raise StorageError("the backend timed out")
         return super().load_eval_result_with_etag(result_id, scope_id)
+
+
+class _LedgerFailsOnce(EvalStorage):
+    """The real store, except that the first out-of-run ledger row it is handed fails to write."""
+
+    def __init__(self) -> None:
+        super().__init__(InMemoryDocumentStore())
+        self.refused = 0
+
+    def save_out_of_run_spend(self, spend: OutOfRunSpend, /) -> None:
+        """Fail the first row; write every later one as the store does."""
+        if self.refused == 0:
+            self.refused += 1
+            raise StorageError("the ledger write timed out")
+        super().save_out_of_run_spend(spend)
 
 
 async def _judged_run(
@@ -437,6 +463,20 @@ class TestWhatWasPaidForIsReported:
         assert report.repeated == [readable.id]
         assert report.calls_made == len(judge.calls) == 2, "both paid calls are on the report"
 
+    async def test_a_paid_call_whose_ledger_row_could_not_be_written_is_still_counted_and_costed(self):
+        """The ledger lost one row; the report still counts that call and its cost, rather than a total missing it."""
+        judge = _PricedJudge()
+        storage = _LedgerFailsOnce()
+        host, run_id = await _judged_run(judge, cases=2, storage=storage)
+        judge.calls.clear()
+
+        report = await _repeated(host, run_id, _SCOPE, out_of_run_cap_usd=1.0)
+
+        rows = off_loop(host.storage.query_out_of_run_spend, _SCOPE, purpose="judge")
+        assert storage.refused == 1 and len(rows) == 1, "the store's ledger holds one of the two calls"
+        assert report.calls_made == len(judge.calls) == 2, "the call the ledger lost is on the report"
+        assert report.cost_usd == pytest.approx(0.002), "both calls at the 0.001 each reported"
+
     async def test_an_account_refusal_stops_the_repeat_before_any_later_call(self):
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge, cases=3, failure_describer=_describe_account_refusal)
@@ -567,6 +607,23 @@ class TestWhatCannotBeReproducedIsRefusedBeforeAnySpend:
         assert report.repeated == [kept.id]
         (skip,) = report.skipped
         assert skip.result_id == bare.id and "stores no judge evidence" in skip.reason
+
+    async def test_a_result_judged_by_a_built_in_prompt_it_did_not_record_is_named_and_left_out(self):
+        """A repeat pairs with the first score, so it must be asked by the built-in prompt that asked that one."""
+        judge = _PricedJudge()
+        host, run_id = await _judged_run(judge)
+        older, kept = off_loop(_results, host, run_id)
+        trace = off_loop(host.storage.load_eval_trace, older.id, _SCOPE)
+        assert trace is not None
+        # As a result judged before built-in prompts were identified was stored: nothing for its built-in dim.
+        off_loop(host.storage.save_eval_result, older.model_copy(update={"judge_config_ids": {}}), trace)
+        judge.calls.clear()
+
+        report = await _repeated(host, run_id, _SCOPE, out_of_run_cap_usd=1.0)
+
+        assert report.repeated == [kept.id]
+        (skip,) = report.skipped
+        assert skip.result_id == older.id and "records no identity for the built-in prompt" in skip.reason
 
     async def test_a_result_outside_the_run_is_refused(self):
         judge = _PricedJudge()

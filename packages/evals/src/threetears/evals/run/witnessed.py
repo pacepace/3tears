@@ -61,7 +61,8 @@ from threetears.evals.kernel.spend import ExternalRateTable
 from threetears.evals.schema.world_events import WorldEvent
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
-from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
+from threetears.evals.run.judge_service import JudgeOutcome, JudgeService, fold_judge_outcomes, judge_clients_for_run
+from threetears.evals.schema.completion import CompletionProtocolDefect
 from threetears.evals.run.launch import build_judge_service
 from threetears.evals.run.rejudge import (
     judged_template,
@@ -318,6 +319,9 @@ async def record_witnessed_cell(
             kind's cell is not scored on.
         NotFoundError: A judged run's template, or a judge config it recorded, does not load.
         CandidateKindDefect: ``output`` contradicts ``judged_artifact``.
+        CompletionProtocolDefect: A judged run's judge client returned a completion that does not meet the protocol
+            — the host's defect, raised rather than recorded as the cell's judge error. The judge calls already
+            paid for are counted against the run's judge ceiling through ``judging``.
         LeverCoordinateError: The host's profile cannot derive the run's variant identity.
         BudgetStoppedError: A judged run's saved cells already carry judge spend past its ceiling, or
             unpriced judge spend under an enforced one — raised before the judge is called.
@@ -410,17 +414,26 @@ async def record_witnessed_cell(
         # before its judge phase; the judge reads the outcomes the cell will store, and the assembly
         # holds the output to the same checks again, idempotently.
         goal_outcomes = hold_to_goal_checks(candidate_kind, template.goal_state_checks, output)
-        async with judge_service:
-            judged, judge_ms = await judge_witnessed_output(
-                template=template,
-                test_case=test_case,
-                output=output,
-                goal_outcomes=goal_outcomes,
-                judged_artifact=judged_artifact,
-                judge_service=judge_service,
-                concurrency=DEFAULT_JUDGE_CONCURRENCY,
-                eval_run_id=run.id,
-            )
+        settled: list[tuple[str, JudgeOutcome]] = []
+        try:
+            async with judge_service:
+                judged, judge_ms = await judge_witnessed_output(
+                    template=template,
+                    test_case=test_case,
+                    output=output,
+                    goal_outcomes=goal_outcomes,
+                    judged_artifact=judged_artifact,
+                    judge_service=judge_service,
+                    concurrency=DEFAULT_JUDGE_CONCURRENCY,
+                    eval_run_id=run.id,
+                    settled=settled,
+                )
+        except CompletionProtocolDefect:
+            # The host's defect is raised to it, and no cell is recorded; but the judge calls made before it was
+            # found were paid for, so they count against the run's judge ceiling as a judged cell's would.
+            if settled:
+                judging.count_unrecorded(fold_judge_outcomes(settled).cost_usd)
+            raise
         result, trace = assemble(judged, judge_ms, template.goal_state_checks)
         judging.count(result)
     return result, trace
@@ -591,6 +604,14 @@ class WitnessedJudging:
         elif result.id in self._stored:
             self._superseded.append(self._stored[result.id])
         self._latest[result.id] = spend
+
+    def count_unrecorded(self, spend: float | None) -> None:
+        """Count judging that was paid for and that no cell will carry — a judgement a protocol defect stopped.
+
+        Args:
+            spend: What it cost; ``None`` when any of its calls went unpriced.
+        """
+        self._superseded.append(spend)
 
     def spent(self, saved: Sequence[EvalResult]) -> list[float | None]:
         """Every judgement of the run's cells to count against its ceiling, given what the store holds now.

@@ -66,7 +66,13 @@ class TemperatureAnswer(EvalBaseModel):
     """One judge call's answer: a score, a "can't tell", or a failure."""
 
     score: RubricScore | None = Field(default=None, description="The score, as the judge gave it and recorded it.")
-    config_id: str | None = Field(default=None, description="The versioned JudgeConfig that asked; None = built-in.")
+    config_id: str | None = Field(
+        default=None,
+        description=(
+            "The versioned JudgeConfig that asked, or a ``builtin:`` id = the built-in prompt, by its wording; None = "
+            "a built-in prompt whose wording was not recorded (asked before evaladopt.19)."
+        ),
+    )
     cannot_tell: str | None = Field(default=None, description="The judge's reason, when it could not tell.")
     error: str | None = Field(default=None, description="Why the call failed, when it did.")
 
@@ -95,7 +101,7 @@ class JudgeTemperatureAnswers(EvalBaseModel):
         answers: Per case and setting, every answer in call order.
         skipped: The run's results not re-judged, each with why — decided before anything was spent.
         stopped: Why it stopped before its last result, when it did.
-        calls_made: Judge calls made, as the ledger recorded them under purpose ``judge``.
+        calls_made: Judge calls made, ledgered under purpose ``judge``, and one whose ledger row could not be written counted all the same.
         cost_usd: What they cost together; ``None`` when any went unpriced.
         cap_usd: The out-of-run cap they were admitted under; ``None`` when the host enforces none.
     """

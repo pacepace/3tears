@@ -64,7 +64,8 @@ from threetears.evals.kernel.judge_cases import (
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
 from threetears.evals.run.case_sets import mint_case_set
 from threetears.evals.kernel.offload import run_blocking
-from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_MAX_TOKENS, sent_temperature
+from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_MAX_TOKENS, defect_usage, sent_temperature
+from threetears.evals.schema.completion import CompletionProtocolDefect
 from threetears.evals.run.judge_service import JudgeContext, JudgeRequest, JudgeService
 from threetears.evals.run.launch import (
     TEMPLATE_FIELDS,
@@ -552,6 +553,7 @@ class JudgeKind:
             except (
                 Exception
             ) as exc:  # prawduct:allow prawduct/broad-except -- one client's teardown must not strand the others
+                # NOSILENT: the first failure is raised once every client has been offered its release.
                 log.warning("releasing a judge kind's client failed; its pool may leak", exc_info=True)
                 first = first or exc
         if first is not None:
@@ -692,6 +694,22 @@ class JudgeKind:
             try:
                 with scopes.collecting():
                     outcome = await service.score_request(request, case_id=test_case.id)
+            except CompletionProtocolDefect as defect:
+                # The host's completion type fails the run (raised through ``invoke``), but its billed calls are
+                # settled against the cap and reported as this cell's spend, so the runner records them.
+                billed = defect_usage(defect)
+                if billed is None:
+                    held.release()
+                else:
+                    held.settle(billed.cost_usd)
+                    ledger = RoleUsageLedger(role=JUDGE_KIND_ROLE)
+                    ledger.add_llm_result(replace(billed, model=billed.model or self._model))
+                    rows = ledger.rows()
+                    turns = len(cell.completions)
+                    sink.report_progress(
+                        lambda: CandidateOutput(telemetry=CandidateTelemetry(usage=rows, turns_delivered=turns))
+                    )
+                raise
             except BaseException:
                 held.release()
                 raise
@@ -718,13 +736,9 @@ class JudgeKind:
         else:
             outcome_kind = "invalid"
         score = outcome.score
-        try:
-            sent = (
-                score.judge_temperature if score is not None else (sent_temperature(last) if last is not None else None)
-            )
-        except TypeError as refused:
-            # Refused after the call was billed: the cell's telemetry carries its spend all the same.
-            return CandidateOutput(infra_errors=[f"apparatus: judge: {refused}"], telemetry=telemetry)
+        # A completion carrying no temperature is the host's defect (CompletionProtocolDefect), raised through invoke
+        # to fail the run as it does on every other judge path, never folded into this one trial.
+        sent = score.judge_temperature if score is not None else (sent_temperature(last) if last is not None else None)
         trial = JudgeTrial(
             test_case_id=test_case.id,
             dim=case.dim,
@@ -739,7 +753,7 @@ class JudgeKind:
             cannot_tell=outcome.cannot_tell,
             error=outcome.error,
             served_model=(score.served_model if score is not None else (getattr(last, "served_model", None) or None)),
-            judge_config_id=request.config.id if request.config is not None else None,
+            judge_config_id=request.judge_config_id,
             judge_temperature=sent,
         )
         payload = trial.model_dump(mode="json")

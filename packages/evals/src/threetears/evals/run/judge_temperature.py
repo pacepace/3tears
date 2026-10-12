@@ -667,7 +667,7 @@ def _answers(
                         ],
                     )
                 )
-    spends = prepared.budget.recorded
+    spends = [*prepared.budget.recorded, *prepared.budget.unrecorded]
     costs = [spend.cost_usd for spend in spends]
     return JudgeTemperatureAnswers(
         run_id=prepared.run_id,

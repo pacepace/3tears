@@ -21,10 +21,12 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
+from pydantic import ValidationError
+
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
 from threetears.evals.kernel.remedies import FIND_RUN
 from threetears.evals.schema.models import RUN_LABELS_MAX, EvalRun, run_label_problem
-from threetears.evals.kernel.storage import JobStore
+from threetears.evals.kernel.storage import JobStore, UnreadableRunError
 from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
@@ -215,6 +217,27 @@ def normalized_run_labels(labels: Sequence[str]) -> list[str]:
     return stored
 
 
+def _refuse_unreadable(store: JobStore, run_id: str, scope_id: str) -> None:
+    """Refuse a curation write :func:`update_eval_run` could not complete because the stored run does not read.
+
+    :func:`update_eval_run` reports a read that faulted every time as ``"refused"`` beside a write refused every
+    time, which is right for the job boundaries it serves. A curation call is answered to its caller, and a run this
+    build's model refuses is no store fault to retry: it is told apart by reading the run once more.
+
+    Raises:
+        UnreadableRunError: The stored run does not validate under this build's model.
+        StorageError: The read faulted another way; the label write's own refusal stands.
+    """
+    try:
+        store.load_eval_run_with_etag(run_id, scope_id)
+    except ValidationError as refused:
+        raise UnreadableRunError.of_run(scope_id, run_id, refused) from refused
+    except Exception as fault:  # prawduct:ok-broad-except — DB read boundary; re-raised as a typed eval error
+        raise StorageError(
+            f"run '{run_id}' was not labelled: no write attempt completed, and reading it failed: {fault}"
+        ) from fault
+
+
 def set_run_labels(store: JobStore, run_id: str, scope_id: str, *, labels: Sequence[str]) -> EvalRun:
     """Replace a run's labels — curation, like archiving: no identity key, fingerprint or lens reads them (#648).
 
@@ -237,6 +260,7 @@ def set_run_labels(store: JobStore, run_id: str, scope_id: str, *, labels: Seque
         ValidationFailedError: A label cannot name a run (:func:`normalized_run_labels`).
         NotFoundError: No run with that id in the scope, including one deleted during the write.
         StorageError: No write attempt completed (every one was refused by another writer, or failed).
+        UnreadableRunError: The stored run does not validate under this build's model.
     """
     stored = normalized_run_labels(labels)
 
@@ -251,6 +275,7 @@ def set_run_labels(store: JobStore, run_id: str, scope_id: str, *, labels: Seque
     if outcome == "missing":
         raise NotFoundError("run", run_id, remedy=FIND_RUN)
     if outcome == "refused":
+        _refuse_unreadable(store, run_id, scope_id)
         raise StorageError(f"run '{run_id}' was not labelled: no write attempt completed (see the log)")
     log.info("eval.set_run_labels run=%s scope=%s labels=%s outcome=%s", run_id, scope_id, stored, outcome)
     current, _ = store.load_eval_run_with_etag(run_id, scope_id)

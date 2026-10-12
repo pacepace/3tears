@@ -17,7 +17,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, ValidationError
 
-from threetears.evals.kernel.remedies import SCHEMA_REMEDY
+from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, SCHEMA_REMEDY
 from threetears.evals.actions import render
 from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller, ConformanceStage
 from threetears.evals.schema import EvalRunStatus
@@ -38,6 +38,7 @@ from threetears.evals.ops import (
     AnalysisLine,
     AnalysisListing,
     BarProposals,
+    CampaignChanges,
     CampaignDefinition,
     CampaignLine,
     CampaignListing,
@@ -48,6 +49,7 @@ from threetears.evals.ops import (
     HistoryResult,
     InsightDeleted,
     InsightDetail,
+    JudgeConfigListing,
     InsightListing,
     JobsStarted,
     JobStatus,
@@ -70,6 +72,7 @@ from threetears.evals.ops import (
     RunDeleted,
     RunLine,
     RunListing,
+    UnreadableRunsListing,
     RunsBisected,
     RunsCompared,
     ScoreExport,
@@ -85,6 +88,9 @@ from threetears.evals.ops import (
     bars_propose,
     campaign_archive,
     campaign_create,
+    campaign_runs_add,
+    campaign_runs_remove,
+    campaign_update,
     campaigns_list,
     insight_delete,
     insight_get,
@@ -100,6 +106,7 @@ from threetears.evals.ops import (
     report_read,
     reporter_case_archive,
     judge_cases_freeze,
+    judge_configs_list,
     judge_template_create,
     judge_profiles_list,
     judge_profiles_record,
@@ -116,6 +123,7 @@ from threetears.evals.ops import (
     runs_bisect,
     runs_compare,
     runs_list,
+    runs_unreadable,
     scope_export,
     scope_frontier,
     scope_history,
@@ -160,7 +168,13 @@ ReporterCaseId = Annotated[
 Name = Annotated[str, Field(min_length=1, description="The campaign's name, as an operator reads it.")]
 Behavior = Annotated[str, Field(min_length=1, description="Which aspect of the subject is under test.")]
 Description = Annotated[str, Field(description="A longer description of the campaign.")]
-RunIds = Annotated[list[str], Field(description="The runs to put in the campaign, all in the caller's scope.")]
+RunIds = Annotated[
+    list[str],
+    Field(
+        description="The runs, by id, all in the caller's scope: those a campaign is created with, or those added to "
+        "or taken out of it."
+    ),
+]
 GeneratorModel = Annotated[
     str | None,
     Field(
@@ -264,6 +278,10 @@ class RunsListParams(EvalBaseModel):
     label: Annotated[
         str | None, Field(description="List only runs carrying this label (run_label sets them); every run if unset.")
     ] = None
+
+
+class RunsUnreadableParams(EvalBaseModel):
+    """``runs_unreadable`` — the caller's scope is the whole question, so it takes nothing."""
 
 
 class RunParams(EvalBaseModel):
@@ -380,6 +398,37 @@ class CampaignCreateParams(EvalBaseModel):
     ] = None
     declared_design: Annotated[dict[str, Any] | None, CampaignDefinition.model_fields["declared_design"]] = None
     control_from_run_id: Annotated[str | None, CampaignDefinition.model_fields["control_from_run_id"]] = None
+    exploratory: Annotated[bool, CampaignDefinition.model_fields["exploratory"]] = False
+
+
+class CampaignUpdateParams(EvalBaseModel):
+    """``campaign_update`` — the operation's own changes (:class:`~threetears.evals.ops.CampaignChanges`), each only when given."""
+
+    campaign_id: CampaignId
+    name: Annotated[
+        str | None, Field(min_length=1, description=CampaignCreateParams.model_fields["name"].description)
+    ] = None
+    description: Annotated[
+        str | None, Field(description=CampaignCreateParams.model_fields["description"].description)
+    ] = None
+    declared_design: Annotated[dict[str, Any] | None, CampaignChanges.model_fields["declared_design"]] = None
+    exploratory: Annotated[bool, CampaignChanges.model_fields["exploratory"]] = False
+    control_from_run_id: Annotated[str | None, CampaignChanges.model_fields["control_from_run_id"]] = None
+
+
+class CampaignRunsParams(EvalBaseModel):
+    """``campaign_runs_add`` and ``campaign_runs_remove``."""
+
+    campaign_id: CampaignId
+    run_ids: RunIds
+
+
+class JudgeConfigsListParams(EvalBaseModel):
+    """``judge_configs_list``."""
+
+    dim_filter: Annotated[
+        str | None, Field(min_length=1, description="List only the configs asking for this dimension.")
+    ] = None
 
 
 class CampaignArchiveParams(EvalBaseModel):
@@ -596,12 +645,24 @@ class JudgeDriftParams(EvalBaseModel):
     result_ids: ResultIds = None
 
     def judge(self) -> SecondJudge:
-        """The second judge these parameters name."""
-        return SecondJudge(
-            model=self.second_judge_model,
-            config_ids=self.second_judge_config_ids,
-            temperature=self.second_judge_temperature,
-        )
+        """The second judge these parameters name.
+
+        Raises:
+            ValidationFailedError: The judge does not validate — a dimension in ``second_judge_config_ids`` not named
+                as ``<context>.<dim>``, say. Raised as a refusal: a model's own error would leave the handler as a
+                defect, which the call is not.
+        """
+        try:
+            return SecondJudge(
+                model=self.second_judge_model,
+                config_ids=self.second_judge_config_ids,
+                temperature=self.second_judge_temperature,
+            )
+        except ValidationError as e:
+            raise ValidationFailedError(
+                "invalid second judge: " + "; ".join(f"{error['msg']} ({error['loc']})" for error in e.errors()),
+                remedy=f"name each dimension as the run's scores spell it ({FIND_JUDGE_CONFIG})",
+            ) from e
 
 
 class JudgeSecondParams(JudgeDriftParams):
@@ -672,6 +733,11 @@ class InsightDeleteParams(EvalBaseModel):
 
 async def _templates_list(host: OpsHost, caller: Caller, _: NoParams) -> TemplateListing:
     return await run_blocking(host.eval_host.blocking_executor, templates_list, host.eval_host, caller.scope_id)
+
+
+async def _runs_unreadable(host: OpsHost, caller: Caller, params: RunsUnreadableParams) -> UnreadableRunsListing:
+    eval_host = host.eval_host
+    return await run_blocking(eval_host.blocking_executor, runs_unreadable, eval_host, caller.scope_id)
 
 
 async def _runs_list(host: OpsHost, caller: Caller, params: RunsListParams) -> RunListing:
@@ -788,6 +854,50 @@ async def _campaign_create(host: OpsHost, caller: Caller, params: CampaignCreate
         definition,
         caller.scope_id,
         created_by=caller.identity,
+    )
+
+
+async def _campaign_update(host: OpsHost, caller: Caller, params: CampaignUpdateParams) -> CampaignLine:
+    eval_host = host.eval_host
+    # Only what the caller sent: an omitted declared_design leaves the declaration alone, a null one withdraws it.
+    changes = CampaignChanges.model_validate(params.model_dump(include=params.model_fields_set - {"campaign_id"}))
+    return await run_blocking(
+        eval_host.blocking_executor,
+        campaign_update,
+        eval_host,
+        params.campaign_id,
+        changes,
+        caller.scope_id,
+        updated_by=caller.identity,
+    )
+
+
+async def _campaign_runs_add(host: OpsHost, caller: Caller, params: CampaignRunsParams) -> CampaignLine:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor, campaign_runs_add, eval_host, params.campaign_id, params.run_ids, caller.scope_id
+    )
+
+
+async def _campaign_runs_remove(host: OpsHost, caller: Caller, params: CampaignRunsParams) -> CampaignLine:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        campaign_runs_remove,
+        eval_host,
+        params.campaign_id,
+        params.run_ids,
+        caller.scope_id,
+    )
+
+
+async def _judge_configs_list(host: OpsHost, caller: Caller, params: JudgeConfigsListParams) -> JudgeConfigListing:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(judge_configs_list, rubric_dim_id=params.dim_filter),
+        eval_host,
+        caller.scope_id,
     )
 
 
@@ -1175,6 +1285,7 @@ async def _analysis_generate_path(stage: ConformanceStage) -> Mapping[str, Any]:
                 subject_id=stage.sample.subject_id,
                 behavior="conformance",
                 run_ids=[run_id],
+                exploratory=True,
             ),
             stage.caller.scope_id,
             created_by=stage.caller.identity,
@@ -1222,6 +1333,22 @@ def engine_actions() -> tuple[Action, ...]:
             example={},
         ),
         Action(
+            name="judge_configs_list",
+            summary="List the scope's judge configs — the versioned prompts a second judge or a launch can name.",
+            workflow=DISCOVER,
+            permission="read",
+            params=JudgeConfigsListParams,
+            result=JudgeConfigListing,
+            handler=_judge_configs_list,
+            render=render.render_judge_configs,
+            example={"dim_filter": "helpfulness"},
+            detail=(
+                "Each config asks a judge for one dimension, with its prompt, and may pin the judge model and "
+                "temperature for it. A second judge's second_judge_config_ids maps a dimension to one of these ids. "
+                "Configs are authored by the host, not through an action; only the active version of each is listed."
+            ),
+        ),
+        Action(
             name="runs_list",
             summary="List the scope's runs, newest first.",
             workflow=DISCOVER,
@@ -1231,6 +1358,31 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_runs_list,
             render=render.render_runs,
             example={"status": "completed"},
+            detail=(
+                "A stored run this build cannot read is left out and counted in unreadable rather than failing the "
+                "listing; runs_unreadable names each with why. Its archive flag and labels cannot be read, so the "
+                "count is narrowed by status alone."
+            ),
+        ),
+        Action(
+            name="runs_unreadable",
+            summary="List the scope's stored runs this build cannot read, each with why.",
+            workflow=DISCOVER,
+            permission="read",
+            params=RunsUnreadableParams,
+            result=UnreadableRunsListing,
+            handler=_runs_unreadable,
+            render=render.render_unreadable_runs,
+            example={},
+            detail=(
+                "Read from every stored run of the scope on each call, any status, archived included, never stored: "
+                "each run document this build's model refuses, with the fields it refused and why. A row that "
+                "does not read never stops the rest from being read. Stranded ones were stored pending or running: "
+                "the boot sweep counts them unreadable and can never settle them. runs_list leaves every row named "
+                "here out and counts it; every other read that reaches one refuses, naming this action. run_delete "
+                "removes one from its stored row. Most useful after an upgrade, when the corpus has outlived the "
+                "model that wrote it."
+            ),
         ),
         Action(
             name="sweep_launch",
@@ -1449,10 +1601,79 @@ def engine_actions() -> tuple[Action, ...]:
                 "declared_design states what the campaign sets out to learn — its axes and what it held fixed, and "
                 "optionally its questions, bars and merit priority — and is refused, naming why, when this host "
                 "cannot honour it: an axis it does not declare, a bar looser than the registered one. control_from_run_id "
-                "names the run whose variant every other cell is read against. Omit both and the campaign is "
-                "exploratory: its report and analysis say once that its readings confirm nothing, and its design is "
-                "inferred from the runs. template_id names the template whose rubric dimensions and goal-state "
-                "checks a bar may name; omitted, it is the one template every run named ran."
+                "names the run whose variant every other cell is read against. A campaign with no settled question "
+                "says exploratory: true instead of declaring a design — exactly one of the two, never neither, never "
+                "both — and its report and analysis say once that its readings confirm nothing, its design inferred "
+                "from the runs. campaign_update declares one later. template_id names the template whose rubric "
+                "dimensions and goal-state checks a bar may name; omitted, it is the one template every run named ran."
+            ),
+        ),
+        Action(
+            name="campaign_update",
+            summary="Rename or redescribe a campaign, or declare, amend or withdraw its design.",
+            workflow=ANALYSE,
+            permission="write",
+            params=CampaignUpdateParams,
+            result=CampaignLine,
+            handler=_campaign_update,
+            render=render.render_campaign,
+            example={
+                "campaign_id": campaign_id,
+                "declared_design": {
+                    "axes": [
+                        {
+                            "axis_id": "model",
+                            "values": [
+                                {"content": "model-a", "display": "model-a"},
+                                {"content": "model-b", "display": "model-b"},
+                            ],
+                        }
+                    ],
+                    "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
+                },
+            },
+            detail=(
+                "Changes only what it is sent: name, description, declared_design. A declared_design is validated and "
+                "gated as campaign_create's is and replaces the stored one, its questions reconciled with the stored "
+                "ones by id, so a question is retired rather than dropped; declaring one on an exploratory campaign "
+                "makes it declared, since exploratory is read off whether a design is declared. declared_design: null "
+                "withdraws the declaration and is refused unless exploratory: true is sent with it; exploratory: true "
+                "beside a design is refused. control_from_run_id names one of the campaign's runs whose variant "
+                "becomes the control, resolved for you, in the same write as any design sent beside it; null clears "
+                "the control. It needs a declaration — sent here, or already stored — and a design sent here keeps no "
+                "control it does not type or name. Runs join and leave through campaign_runs_add and "
+                "campaign_runs_remove."
+            ),
+        ),
+        Action(
+            name="campaign_runs_add",
+            summary="Put runs in a campaign — runs launched after it was created, or measured on their own first.",
+            workflow=ANALYSE,
+            permission="write",
+            params=CampaignRunsParams,
+            result=CampaignLine,
+            handler=_campaign_runs_add,
+            render=render.render_campaign,
+            example={"campaign_id": campaign_id, "run_ids": [run_id]},
+            detail=(
+                "A run the campaign already holds is not added twice. A run outside the caller's scope is refused, "
+                "and then none is added. Once a run is in, campaign_update can name it the control."
+            ),
+        ),
+        Action(
+            name="campaign_runs_remove",
+            summary="Take runs out of a campaign; the runs and their results stay, in any other campaign too.",
+            workflow=ANALYSE,
+            permission="write",
+            params=CampaignRunsParams,
+            result=CampaignLine,
+            handler=_campaign_runs_remove,
+            render=render.render_campaign,
+            example={"campaign_id": campaign_id, "run_ids": [run_id]},
+            detail=(
+                "Membership only: nothing is deleted. A run the campaign does not hold is refused, and then none is "
+                "removed. The control is a variant, not a run, so it stays declared; where no remaining run carries "
+                "it, the report says the control is unobserved."
             ),
         ),
         Action(
@@ -1996,6 +2217,14 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_run_delete,
             render=render.render_run_deleted,
             example={"run_id": run_id, "confirm": run_id},
+            detail=(
+                "Removes the run's results (each with its trace) and its campaign memberships, then the run; "
+                "insights citing it and ratings of its results stay. A run this build cannot read (runs_unreadable "
+                "lists them) is deleted from its stored row, removing the same: its results are found by the run id "
+                "they carry, never read. A pending or running run is refused; one this build cannot read only while "
+                "its stored lease has not lapsed, or when its lease cannot be read either, since a stranded one can "
+                "never be settled but one another build may still hold must not be destroyed."
+            ),
         ),
         Action(
             name="analysis_delete",

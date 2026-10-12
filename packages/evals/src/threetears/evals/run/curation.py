@@ -28,15 +28,17 @@ results are already gone.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
 from threetears.evals.kernel.campaign_writes import serialized_campaign_write
 from threetears.evals.kernel.errors import NotFoundError, StorageError, ValidationFailedError
+from threetears.evals.kernel.storage import LeaseClock
 from threetears.evals.schema.logs import get_logger
-from threetears.evals.kernel.remedies import FIND_ANALYSIS, FIND_CAMPAIGN, FIND_INSIGHT, FIND_RUN
+from threetears.evals.kernel.remedies import FIND_ANALYSIS, FIND_CAMPAIGN, FIND_INSIGHT, FIND_RUN, UNREADABLE_LEASE
 
 if TYPE_CHECKING:
-    from threetears.evals.kernel.storage import EvalStorage
+    from threetears.evals.kernel.storage import EvalStorage, RefusedRow
     from threetears.evals.kernel.host.profile import HostProfile
     from threetears.evals.kernel.campaign import EvalAnalysis, EvalCampaign, EvalInsight
     from threetears.evals.schema.models import EvalResult, EvalRun
@@ -191,6 +193,35 @@ _NO_INSIGHT_ARCHIVE = (
     "prior context and a retained-but-marked one would go on steering later analyses. Deleting a wrong "
     "insight is the intended answer"
 )
+
+
+class _RunCascadeStore(Protocol):
+    """What a run delete's cascade destroys and rewrites, whichever way the run was found."""
+
+    def delete_eval_result(self, result_id: str, scope_id: str, /) -> bool:
+        """See :meth:`CurationStore.delete_eval_result`."""
+        ...
+
+    def delete_eval_run(self, run_id: str, scope_id: str, /) -> bool:
+        """See :meth:`CurationStore.delete_eval_run`."""
+        ...
+
+    def save_campaign(self, campaign: EvalCampaign, /) -> None:
+        """See :meth:`CurationStore.save_campaign`."""
+        ...
+
+    def list_campaigns(self, scope_id: str, /) -> list[EvalCampaign]:
+        """See :meth:`CurationStore.list_campaigns`."""
+        ...
+
+
+class UnreadableRunDeleteStore(_RunCascadeStore, LeaseClock, Protocol):
+    """What :func:`delete_unreadable_run` reads and destroys: the cascade's port, a run's result ids, and the clock
+    a stored lease is read against (:class:`~threetears.evals.kernel.storage.LeaseClock`, store-wide)."""
+
+    def query_eval_result_ids_by_run(self, run_id: str, scope_id: str, /) -> list[str]:
+        """See :meth:`~threetears.evals.kernel.EvalStorage.query_eval_result_ids_by_run`."""
+        ...
 
 
 def require_delete_confirmation(
@@ -509,19 +540,30 @@ def delete_run(storage: CurationStore, run: EvalRun, scope_id: str, *, confirm: 
             remedy=f"cancel it first (job_cancel run:{run_id}), confirm it reached a terminal status, then delete",
         )
 
-    results = storage.query_eval_results_by_run(run_id, scope_id)
+    results = [result.id for result in storage.query_eval_results_by_run(run_id, scope_id)]
+    return _delete_run_cascade(storage, run_id, scope_id, results)
+
+
+def _delete_run_cascade(
+    storage: _RunCascadeStore, run_id: str, scope_id: str, results: Sequence[str]
+) -> dict[str, Any]:
+    """Destroy ``results``, detach the run from every campaign, then destroy the run — one cascade for every delete.
+
+    Shared by :func:`delete_run` and :func:`delete_unreadable_run`, so a run this build can read and one it cannot
+    lose exactly the same rows, in the same order, with the same partial-failure record.
+    """
     failed: list[str] = []
     reasons: list[str] = []
-    for r in results:
+    for result_id in results:
         try:
-            deleted = storage.delete_eval_result(r.id, scope_id)
+            deleted = storage.delete_eval_result(result_id, scope_id)
         except StorageError as e:
             # A refused delete (a trace that would be orphaned) or a store fault: the result
             # is still there, so it counts as failed and the cascade stops short of the run.
             deleted = False
             reasons.append(str(e))
         if not deleted:
-            failed.append(r.id)
+            failed.append(result_id)
     if failed:
         # Destruction already happened for the results that did delete. The success
         # path below logs what it removed; so must every path that removes something
@@ -562,6 +604,91 @@ def delete_run(storage: CurationStore, run: EvalRun, scope_id: str, *, confirm: 
         campaigns or "(none)",
     )
     return {"run_id": run_id, "results_deleted": len(results), "campaigns_detached": campaigns}
+
+
+def delete_unreadable_run(
+    storage: UnreadableRunDeleteStore, run_id: str, row: RefusedRow, scope_id: str, *, confirm: str | None = None
+) -> dict[str, Any]:
+    """Delete a run this build's model cannot read — the operator's way out of a corpus the model has outlived.
+
+    :func:`delete_run` takes the run read whole, and a run this build cannot read cannot be: every read of it refuses
+    (:class:`~threetears.evals.kernel.UnreadableRunError`), the boot reclaim can never settle it, and while it stands
+    it refuses every reader that cannot leave it out — launch pricing over the whole scope among them. This destroys
+    it from the stored row, through the cascade :func:`delete_run` runs: its results (each with its trace) found by
+    the run id they carry, never by reading them, since the model that wrote the run wrote them too; then its
+    campaign memberships; then the run. So exactly what a readable run's delete removes is removed, and what that
+    delete keeps — insights citing the run, calibration ratings of its results — is kept the same way.
+
+    **A run some process may still be running is refused, as :func:`delete_run` refuses one.** The row's ``status``
+    and lease are read off the stored row, since the model never accepted it. Stored ``pending`` or ``running`` with a
+    lease that has not lapsed in the store's time means a process — of the build that wrote it, sharing this store —
+    may be persisting results still, and deleting would orphan them. Stored not ended with no lease, or one that has
+    lapsed, is stranded: no process holds it, as the reclaim reads such a run, and it is deleted.
+
+    **A lease this build cannot read refuses the delete.** Stored not ended under a lease whose expiry is not a time
+    this build reads (no ``expires_at`` as text, not ISO-8601, or with no zone), whether some process holds the run
+    cannot be told, and a destructive call errs on the side of not destroying: it may be a newer build's run, still
+    going. The refusal says so, and names the way on — deploy the build that wrote the run, which reads its lease and
+    can settle or delete it.
+
+    Args:
+        storage: Eval storage backend.
+        run_id: The run to destroy.
+        row: Its stored row as the model refused it — the caller's read (``EvalStorage.scan_eval_run``) performs
+            the not-found check, so a missing run is refused before ``confirm`` is examined.
+        scope_id: Partition key — the scope the run belongs to.
+        confirm: Must echo the run's id; see :func:`require_delete_confirmation`.
+
+    Returns:
+        What was removed: ``{"run_id", "results_deleted", "campaigns_detached"}``, as :func:`delete_run` returns.
+
+    Raises:
+        ValidationFailedError: ``confirm`` does not echo the run id, or the row is stored ``pending`` / ``running``
+            under a lease that has not lapsed, or under one this build cannot read.
+        StorageError: A result, a campaign detach, or the run itself failed to persist; the message names how far the
+            delete got.
+    """
+    from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES
+
+    require_delete_confirmation("run", run_id, confirm)
+    if row.status in NON_TERMINAL_RUN_STATUSES and row.lease_stated:
+        held_until = _lease_expiry(row.lease_expires_at)
+        if held_until is None:
+            raise ValidationFailedError(
+                f"run '{run_id}' cannot be read by this build, and is stored {row.status} under a lease this build "
+                f"cannot read either (expires_at {row.lease_expires_at!r}) — whether a process still holds it cannot "
+                "be told, and it may be a run a newer build is still persisting results for, so it is not deleted",
+                remedy=UNREADABLE_LEASE,
+            )
+        if held_until > storage.store_time():
+            raise ValidationFailedError(
+                f"run '{run_id}' cannot be read by this build, and is stored {row.status} under a lease held until "
+                f"{row.lease_expires_at} — a process of the build that wrote it may still be persisting its results, "
+                "so deleting now orphans every result written after this call",
+                remedy=(
+                    "stop the process holding it, or wait for its lease to lapse (its holder renews it while the run "
+                    "goes on), then delete"
+                ),
+            )
+    log.warning(
+        "eval.delete_run run=%s scope=%s is deleted from its stored row: this build cannot read it (%s)",
+        run_id,
+        scope_id,
+        "; ".join(row.reasons),
+    )
+    return _delete_run_cascade(storage, run_id, scope_id, storage.query_eval_result_ids_by_run(run_id, scope_id))
+
+
+def _lease_expiry(expires_at: str | None) -> datetime | None:
+    """A stored lease's expiry as an aware time, or ``None`` when the row states none this build reads as one."""
+    if expires_at is None:
+        return None
+    try:
+        expiry = datetime.fromisoformat(expires_at)
+    except ValueError:
+        # NOSILENT: None is the answer "no expiry this build reads", which delete_unreadable_run refuses on
+        return None
+    return expiry if expiry.tzinfo is not None else None
 
 
 def delete_result(
@@ -692,7 +819,7 @@ def delete_insight(
 
 @serialized_campaign_write
 def _detach_run_from_all_campaigns(
-    storage: CurationStore, run_id: str, scope_id: str, *, results_already_deleted: int
+    storage: _RunCascadeStore, run_id: str, scope_id: str, *, results_already_deleted: int
 ) -> list[str]:
     """Remove ``run_id`` from every campaign holding it; return those campaign ids.
 
@@ -758,15 +885,18 @@ if TYPE_CHECKING:
     def _eval_storage_satisfies_the_port(storage: EvalStorage) -> None:
         """Hold the engine's own store to this consumer's port, so a drifted signature fails typecheck."""
         store: CurationStore = storage
-        del store
+        unreadable: UnreadableRunDeleteStore = storage
+        del store, unreadable
 
 
 __all__ = [
     "CurationStore",
+    "UnreadableRunDeleteStore",
     "delete_analysis",
     "delete_insight",
     "delete_result",
     "delete_run",
+    "delete_unreadable_run",
     "load_run_as_listed",
     "require_delete_confirmation",
     "set_analysis_archived",

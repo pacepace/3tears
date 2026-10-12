@@ -218,6 +218,16 @@ off the readings a finding names, never chosen by the writer.
 a case is a frozen campaign bundle, and the judge reads what the writer read and the memo as written. Code
 checks the structure of model output and never its prose; a judge never grades a fact code can check.
 
+**The headline rests on findings, like everything else** (2026-10). A headline said halving a token budget "does
+not change" latency, cost or delivery, over a contrast that did not separate at five cases. The prompt forbade that
+in a finding, most readers read only the headline, and the headline carried no confidence. So the headline and each
+summary bullet name the findings they rest on, by position (`headline_rests_on`, `summary_rests_on`), and code
+shows each at the weakest confidence and evidence tier of those findings (`analysis/standing.py`): the caveat slot
+the headline lacked, derived rather than written. The same link makes the null check structural: a headline or
+bullet in one of a short list of null phrasings (`analysis/null_claims.py`) is refused when none of its own findings
+cites a reading the bundle established alike. Only "does this sentence say the arms are alike" is read off the
+words; nothing is parsed, so a reworded null passes, and the judge measures the rest.
+
 The judge's noise exceeds the effects being ranked, so rubric criteria are removed before any are added.
 
 *Evidence:* analysis writer, 2026-09, a prompt-latitude A/B (5 cases, k=3) and a 4-condition form × input study (4 cases, k=2): effects of −0.27 and −0.8 against within-cell SD 0.33–0.68 in the first (variant not adopted), and every gap in the second (≤ 0.33) inside the judge's re-score noise (62% exact, 0.46 mean absolute difference); single campaign each.

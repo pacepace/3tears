@@ -111,6 +111,40 @@ void for the question ([the void run](#the-2026-10-10-run-is-void)). On a judge 
 0 is requested but never applied: the run stamps `judge_temperature=0` (the request) while each score records
 `model_default` (what was sent).
 
+**The built-in prompt is a judge too.** A dimension with no `JudgeConfig` is judged with the engine's own
+instructions: one for the transcript axis, one for the outcome axis, and one template a rubric dimension's name,
+description and scoring guide are filled into. That wording is part of the judge, as an operator's prompt is, so it
+has an identity. Each call records `builtin:<sha12>` in the result's `judge_config_ids`, where a configured call
+records its config's id. The id is a fingerprint of the engine's wording only: a dimension's own description and
+guide are its criterion, which a stored profile keys on separately, so editing them does not change it. Change a word
+of the built-in wording, as a release may, and every dimension judged with it is judged by a new judge. Its scores
+form their own agreement groups, tiers and drift readings, and no stored profile measured on the old wording is read
+for it (`is_builtin_judge_config_id` tells a built-in id from a config's).
+
+**So is the reply format a configured judge is sent.** The engine appends one reply-format contract to every
+prompt, an operator's `prompt_template` included, so a configured judge reads its config and that suffix. A
+configured call records `<config id>@<sha12>`: the config's id and a fingerprint of the suffix's wording for the
+dimension's scale and artifact. A release that rewords the suffix makes every configured judge a new judge, as a
+new config version would, though no config changed. `judge_config_of` reads the config's id back from either form.
+
+A result stored before `v0.66.0-evaladopt.19` recorded nothing for a built-in dimension, and only the config's id
+for a configured one. Its judge reads as config `None` (a built-in prompt whose wording nobody recorded) or as the
+bare config id (a config sent a suffix nobody recorded). Each is kept apart from every judge recorded since, and
+pools only with other results of that era. Such a result is not re-judged or repeated, because whether today's
+prompt is the judge that scored it cannot be told. The same refusal applies to a result whose recorded identity is
+not today's. A second judge, a freeze into judge cases and a temperature comparison choose their own judge, so they are
+unaffected.
+
+The built-in instructions also say where the judge's own memory stands. Facts the evidence shows the candidate got
+from its tools or sources, and the case material, outrank what the judge recalls. A claim is not to be called
+fabricated or unsupported only because the judge cannot confirm it from memory, since a recent fact can be true and
+newer than the judge's training. When the evidence neither shows where a claim came from nor lets the judge check
+it, the judge says so, and answers "can't tell" if no honest score is left. This went in after an outcome judge
+called a correct, sourced, post-cutoff answer "fabricated" while the grounding dimension on the same result scored
+it 5, in a private host application (#1895). The rule is in the built-in instructions only, not in the reply-format
+suffix, which would make every configured judge a new judge with it. A `JudgeConfig` that wants the rule states it
+in its own `prompt_template`.
+
 ## Step 5: collect person ratings
 
 A person reads results and scores the same dimension on the same scale. Rate without looking at the judge's
@@ -618,8 +652,10 @@ the judge's stored profile ..., measured at ... on N frozen cases". The profile 
 re-recorded or newly read changes the bundle's fingerprint.
 
 **A changed judge reads no profile.** A profile is found by an id derived from the whole judge and the criterion's
-wording. Change the model, the prompt (a new `JudgeConfig` version), the temperature, or the rubric dimension's
-wording, and the campaign looks for a profile that does not exist. The old one is stale and is never read for the
+wording. Change the model, the prompt (a new `JudgeConfig` version, or a release that rewords the built-in prompt
+or the reply-format suffix, whose recorded identity then changes), the temperature, or the rubric dimension's
+wording, and the campaign looks for a profile that does not exist. A profile measured on results stored before
+prompts were identified (config `None`, or a bare config id) is never read for a judge recorded since. The old one is stale and is never read for the
 new judge. The wording comes from the template each run was judged against. A run with no template, or whose
 template was edited after the run was created, has an unknown criterion and reads no profile.
 

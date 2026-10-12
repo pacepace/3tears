@@ -51,10 +51,11 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.storage import UnreadableRecordError, UnreadableRunError
 from threetears.evals.schema.refusal import JobRefusal
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalSweep
 from threetears.evals.schema.models import EvalRun
@@ -82,7 +83,6 @@ from pydantic import BaseModel
 
 from threetears.evals.run.job_work import (
     ACTION_JOB,
-    DEFAULT_ACTION_JOB_BUDGET_S,
     EvalActionJob,
     JobOutcome,
     JobWork,
@@ -512,9 +512,17 @@ async def _settled[R: EvalDocumentModel](
 ) -> R | None:
     """A job's record as every process reads it — written lost first when its lease has lapsed — on the blocking executor."""
     eval_host = host.eval_host
-    record, _ = await run_blocking(
-        eval_host.blocking_executor, settle_job_record, eval_host.storage, kind, record_id, scope_id
-    )
+    try:
+        record, _ = await run_blocking(
+            eval_host.blocking_executor, settle_job_record, eval_host.storage, kind, record_id, scope_id
+        )
+    except ValidationError as refused:
+        # The lease reads keep the model's error, which the boot reclaim tells a refused row by; the poll's caller is
+        # refused as by any engine refusal. A run is refused as every run read refuses one; another kind's record
+        # (or a run it names and settles with it) names the record and its kind.
+        if kind is RUN_JOB:
+            raise UnreadableRunError.of_run(scope_id, record_id, refused) from refused
+        raise UnreadableRecordError.of_job_record(kind.name, record_id, scope_id, refused) from refused
     return record
 
 
@@ -551,6 +559,10 @@ async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
         NotFoundError: No record of the job in the scope (another scope's job reads so), or a generation's
             attempt filed under another campaign than the id names.
         ConflictError: The record kept changing while its lapsed lease was being written lost; poll again.
+        UnreadableRunError: The job's run, or a run its sweep or launch started, does not validate under this
+            build's model.
+        UnreadableRecordError: Another kind's job record, or a run it names and settles with it, does not validate
+            under this build's model.
     """
     kind, target_id, attempt_id = parse_job_id(job_id)
     eval_host = host.eval_host
@@ -628,6 +640,9 @@ async def job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str |
         NotFoundError: No record of the job in the scope, or a generation's attempt filed under another campaign.
         ConflictError: The record kept changing while its lapsed lease was being written lost; nothing was asked.
         StorageError: The request could not be written.
+        UnreadableRunError: The job's run does not validate under this build's model, so whether it can be
+            cancelled cannot be read.
+        UnreadableRecordError: Another kind's job record does not validate under this build's model.
     """
     kind, target_id, attempt_id = parse_job_id(job_id)
     manager, eval_host = host.launch.job_manager, host.eval_host
@@ -720,8 +735,8 @@ async def start_action_job(
     *,
     action: str,
     run: Callable[[], Awaitable[BaseModel]],
+    budget_s: float,
     label: str = "",
-    budget_s: float = DEFAULT_ACTION_JOB_BUDGET_S,
     discard: Callable[[], Awaitable[None]] | None = None,
 ) -> JobsStarted:
     """Start a host action's work as a job whose record (:class:`~threetears.evals.run.EvalActionJob`) holds its result.
@@ -737,7 +752,8 @@ async def start_action_job(
         action: The action's name.
         run: The work: makes the calls and returns the action's typed result.
         label: A short line naming the work.
-        budget_s: The work's wall-clock ceiling.
+        budget_s: The work's wall-clock ceiling. Required: a forgotten budget is a ``TypeError`` here, never an hour
+            nobody chose (:data:`~threetears.evals.run.DEFAULT_ACTION_JOB_BUDGET_S` is the value to pass for that).
         discard: Releases what the handler built for ``run`` when the work never runs.
 
     Returns:
@@ -763,7 +779,7 @@ async def start_paid_call[R: BaseModel](
     call: PlannedCall,
     make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]],
     label: str,
-    budget_s: float = DEFAULT_ACTION_JOB_BUDGET_S,
+    budget_s: float,
 ) -> JobsStarted:
     """Start a host action's one paid model call: admitted against its cap in the call, made in a job.
 
@@ -786,7 +802,8 @@ async def start_paid_call[R: BaseModel](
         make: Makes the admitted call on the client (through ``budget``) and reads its result; owns the client's
             release from the moment it is called.
         label: What the job is, for a reader of ``job_poll``.
-        budget_s: The job's wall-clock ceiling.
+        budget_s: The job's wall-clock ceiling. Required, as :func:`start_action_job`'s is: a call takes as long as
+            its model, and only the action knows what is too long.
 
     Returns:
         The started job; ``job_poll`` returns ``make``'s result once it completes.

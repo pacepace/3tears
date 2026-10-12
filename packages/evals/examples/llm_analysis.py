@@ -86,6 +86,7 @@ def offline_writer() -> Any:
             "chart": {"type": "none", "cells": [], "measures": [], "axis": "", "note": "", "caption": ""},
         } | {"confidence": "low", "axes": [], "caveats": [], "invalidates": [], "durable": ""}
         memo = {"headline": "Offline stand-in: a script wrote this, not a model", "summary": "- Shape only."}
+        memo |= {"headline_rests_on": [0], "summary_rests_on": [[0]]}
         memo |= {"findings": [finding], "decisions": [], "questions": [], "next": []}
         return Completion(json.dumps(memo), None, None, None, 0.0, "offline", "offline-writer", None, "end_turn", None)
 

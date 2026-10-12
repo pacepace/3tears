@@ -58,8 +58,11 @@ from threetears.evals.analysis.report.words import (
     arm_namer,
     evidence_rows,
     positions,
+    standing_facts,
     stands_on_words,
 )
+from threetears.evals.analysis.report.model import Fact
+from threetears.evals.analysis.standing import headline_standing, summary_standings
 from threetears.evals.kernel.authored import NO_CHART
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.kernel.campaign import ConfidenceTier, EvalAnalysis, FindingResolution, Viz
@@ -478,7 +481,9 @@ def rebuild_bundle(case: ReporterCase) -> AnalysisContextBundle:
     - it must validate strictly — a field the bundle model no longer declares is refused, as on
       every stored read;
     - every frozen value must survive the rebuild unchanged — none altered by validation. A value under
-      a key renamed within the schema version (``__retired_fields__``) survives under its new name.
+      a key renamed within the schema version (``__retired_fields__``) survives under its new name, and
+      a bundle frozen before shape 49 has each divergence's whole-run swing moved into ``whole_swings``
+      first (:func:`_with_whole_swings_hoisted`), where it survives once rather than once per divergence.
 
     **A field the bundle model gained after the freeze is NOT a loss, and that tolerance is
     deliberate** — the one place a read here accepts an older shape. The frozen bundle is the
@@ -507,9 +512,10 @@ def rebuild_bundle(case: ReporterCase) -> AnalysisContextBundle:
             f"{case.bundle_fingerprint} — the case does not hold the bundle it names, so neither the "
             "generator nor the judge would see the bundle this case pins"
         )
-    bundle = AnalysisContextBundle.from_dict(case.bundle)
+    frozen = _with_whole_swings_hoisted(case.bundle)
+    bundle = AnalysisContextBundle.from_dict(frozen)
     added: list[str] = []
-    losses = _losses(case.bundle, bundle.to_dict(), "bundle", added)
+    losses = _losses(frozen, bundle.to_dict(), "bundle", added)
     if losses:
         shown = "; ".join(losses[:5]) + (f"; and {len(losses) - 5} more" if len(losses) > 5 else "")
         raise ValueError(
@@ -524,6 +530,58 @@ def rebuild_bundle(case: ReporterCase) -> AnalysisContextBundle:
             ", ".join(sorted({_indexless(path) for path in added})),
         )
     return bundle
+
+
+#: The bundle shape that moved where a diverging whole-run movement went off each divergence and into
+#: ``whole_swings``, and the three per-divergence keys it moved.
+_WHOLE_SWINGS_SHAPE = 49
+_PER_DIVERGENCE_SWING_KEYS = {
+    "whole_components": "components",
+    "carried_by": "carried_by",
+    "carried_share": "carried_share",
+}
+
+
+def _with_whole_swings_hoisted(frozen: dict[str, Any]) -> dict[str, Any]:
+    """A bundle frozen before shape 49, with where each whole moved read off its divergences into ``whole_swings``.
+
+    Before 49 every divergence carried its whole's components and carrier, and divergences sharing a lever,
+    level pair and whole carried identical copies — which is why the copies moved. Moving
+    them loses no value, so a case frozen over the older shape rebuilds with every one; :func:`_losses`
+    then compares the moved document, so a copy that did not survive is still named. A later shape, or one
+    whose divergences carry none of the keys, is returned as it is.
+
+    Args:
+        frozen: The case's frozen bundle document.
+
+    Returns:
+        The document to rebuild from: ``frozen`` itself, or a copy with the keys moved.
+
+    Raises:
+        ValueError: Two divergences sharing a lever, level pair and whole carry different copies, so no one
+            swing is what the case pins.
+    """
+    divergences = frozen.get("scope_divergences")
+    version = frozen.get("schema_version")
+    if not isinstance(version, int) or version >= _WHOLE_SWINGS_SHAPE or not isinstance(divergences, list):
+        return frozen
+    if not any(isinstance(d, dict) and _PER_DIVERGENCE_SWING_KEYS.keys() & d.keys() for d in divergences):
+        return frozen
+    swings: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    moved: list[dict[str, Any]] = []
+    for divergence in divergences:
+        kept = {key: value for key, value in divergence.items() if key not in _PER_DIVERGENCE_SWING_KEYS}
+        moved.append(kept)
+        whole = divergence["end_to_end"]["name"]
+        key = (divergence["lever"], divergence["level_a"], divergence["level_b"], whole)
+        swing = {"lever": key[0], "level_a": key[1], "level_b": key[2], "whole": whole}
+        swing |= {new: divergence[old] for old, new in _PER_DIVERGENCE_SWING_KEYS.items() if old in divergence}
+        if swings.setdefault(key, swing) != swing:
+            raise ValueError(
+                f"the case's frozen bundle states two different swings of {whole} for {key[0]} "
+                f"{key[1]} → {key[2]}, so no one swing is what the case pins"
+            )
+    return {**frozen, "scope_divergences": moved, "whole_swings": [swings[key] for key in sorted(swings)]}
 
 
 def _indexless(path: str) -> str:
@@ -1012,13 +1070,20 @@ def _chart_notes(viz: Viz) -> list[str]:
     return ["", _CHART_NOTES_LABEL, *(f"- {_one_line(line)}" for line in printed)]
 
 
+def _facts_line(facts: list[Fact]) -> str:
+    """Facts code states beside an author's words, on one line, as the report's Markdown prints them."""
+    return " · ".join(f"{fact.name}: {fact.value}" for fact in facts)
+
+
 def render_memo_as_written(analysis: EvalAnalysis) -> str:
     """The memo as authored: the model's words, code's figures, in one canonical layout a reader follows.
 
     Markdown, in the order a reader acts on it: the headline, the summary, where each declared
     question stands, the decisions, the findings in the order the model wrote them, and what to run
     next — each section omitted when the model wrote nothing for it. Findings are numbered from one,
-    and every link the model made by position is printed that way. Arms are named by
+    and every link the model made by position is printed that way. The headline and each summary bullet carry the
+    confidence and evidence code derives from the findings they rest on, as the report prints them
+    (:mod:`threetears.evals.analysis.standing`). Arms are named by
     :func:`~threetears.evals.analysis.arms.arm_label`, numbers by :func:`~threetears.evals.analysis.numbers.format_number`.
 
     The numbers code resolved from the model's own readings are printed beside them, because they are
@@ -1040,7 +1105,20 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
         list(analysis.resolutions) if analysis.resolutions else [None] * len(document.findings)
     )
     sections: list[list[str]] = [[f"# {_one_line(document.headline) or '(blank headline)'}"]]
-    if document.summary.strip():
+    if document.headline.strip():
+        headline = headline_standing(analysis)
+        rests = f" Rests on finding {positions(headline.rests_on)}." if headline and headline.rests_on else ""
+        sections[0] += ["", f"The headline: {_facts_line(standing_facts(analysis, headline))}.{rests}"]
+    bullets = summary_standings(analysis)
+    if bullets:
+        sections.append(
+            [
+                f"- {_one_line(bullet)} — {_facts_line(standing_facts(analysis, standing))}."
+                + (f" Rests on finding {positions(standing.rests_on)}." if standing.rests_on else "")
+                for bullet, standing in bullets
+            ]
+        )
+    elif document.summary.strip():
         sections.append([document.summary.strip()])
 
     if document.questions:

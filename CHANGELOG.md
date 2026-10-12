@@ -6,6 +6,206 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: every action job names its budget; the on-loop refusal names its call site; the examples run outside a checkout
+
+- **`budget_s` is required.** `start_paid_call`, `start_action_job` and `action_job_work` take `budget_s` with no
+  default, so a forgotten wall-clock ceiling is a `TypeError` where the job is started rather than an hour nobody
+  chose. `DEFAULT_ACTION_JOB_BUDGET_S` stays exported as the value to pass when the job manager's own hour is meant.
+- **`StoreCalledOnEventLoop` names the call site to fix.** The refusal names the innermost frame outside
+  `threetears.evals` and the standard library: the host's (or a test's) own code, including a synchronous helper that
+  hid the store call from the async code above it.
+- **The examples run after a pip install.** `examples/README.md` and the package README say how to run them outside
+  a checkout, and `examples/_live.py` says a live run needs the `anthropic` SDK (which 3tears-evals does not depend
+  on) instead of failing with a bare `ModuleNotFoundError`.
+- **A generation `job_poll` reads as done may be started again at once.** A start made while the finished
+  generation's task was still unwinding was refused as "already running"; it now waits for the unwind
+  (`ENDED_TASK_UNWIND_S`), and a task that never finishes unwinding is still refused.
+
+### 3tears-evals: a campaign says it is declared or exploratory, and `campaign_update` declares one later (discodon#2673)
+
+- **A campaign is created declared or exploratory, never by default.** `campaign_create` and
+  `analysis.create_campaign` take a `declared_design` or `exploratory: true`, exactly one. Neither is refused, naming
+  both choices. Both is refused as a contradiction. Before this, a forgotten design quietly produced a report saying
+  its readings confirm nothing.
+- **`exploratory` is checked and never stored.** A campaign is exploratory exactly while `declared_design` is None.
+  There is no new field and no schema bump. `CampaignLine.exploratory` derives it on every read, and campaign lines
+  render "declared" or "exploratory".
+- **New `campaign_update` action** (`ops.campaign_update`, `ops.CampaignChanges`). It changes `name`, `description` or
+  `declared_design` after creation, so an operator who started exploring can declare the design later. Declaring one
+  makes the campaign declared. `declared_design: null` withdraws a declaration, but only beside `exploratory: true`.
+- **The refusal that sends an operator to declare a design names `campaign_update`**, an action they can call, instead
+  of a Python function.
+- **A sweep's campaign is created exploratory**, since a sweep takes no design.
+- **A campaign's runs and control are actions too.** `campaign_runs_add` and `campaign_runs_remove` put runs in a
+  campaign and take them out (`ops.campaign_runs_add`, `ops.campaign_runs_remove`). A run outside the scope is refused
+  and none is added. A run the campaign doesn't hold is refused and none is removed. Removing touches membership only.
+  `campaign_update` takes `control_from_run_id`, resolved as `set_campaign_control` resolves it and written with any
+  design sent beside it, so a refused control writes nothing; `null` clears the control. `analysis.update_campaign`
+  gains `control_from_run_id` and `clear_control`. An operator can now go from an ad hoc start to a declared,
+  controlled campaign with actions alone.
+- **`judge_configs_list`** lists a scope's judge configs: the ids a second judge's `second_judge_config_ids` maps a
+  dimension to (`ops.judge_configs_list`, `JudgeConfigLine`, `JudgeConfigListing`).
+- **Every remedy an action can reach names an action.** Missing judge configs point to `judge_configs_list`. Campaign
+  refusals point to `campaign_runs_add`, `campaign_runs_remove` and `control_from_run_id`, not `analysis.*`. A
+  malformed control key points to `control_from_run_id` on `campaign_create` or `campaign_update`. A host that cannot
+  run judge campaigns sends the caller to its operator.
+- **A second judge naming a dimension without its context is refused**, not raised out of `judge_second`,
+  `judge_second_estimate` or `judge_drift_check` as an unhandled error.
+
+### 3tears-evals: the headline and summary rest on findings, and are shown at the weakest of them (discodon#2083)
+
+- **The writer names what the headline and each summary bullet rest on.** The authored document gains
+  `headline_rests_on` and `summary_rests_on` (finding positions; one entry per bullet). A link left empty over
+  findings, a count that is not one per bullet, or a position past the findings is refused through the one repair
+  round.
+- **Code shows each at the weakest of its findings.** `analysis/standing.py` derives on read the weakest confidence
+  among those findings and the weakest evidence tier of the readings they cite. The report serves it on a new
+  `headline` block and on one `summary` block per bullet (`Confidence`, `Stands on`, `rests_on`).
+  `AnalysisLine.headline_standing` states it in `analyses_list`, and the reporter judge's memo carries it. An analysis
+  stored before the links says its standing was not recorded; it never shows a guessed one.
+- **A null claim is checked against its own findings.** A headline or bullet in a common null phrasing is refused when
+  none of the findings it rests on cites a reading the bundle established alike (an `equivalent` comparison or a
+  `held` guardrail). A null under one sentence licenses no other. This is the one place code reads the writer's words
+  (`analysis/null_claims.py`), a narrow tripwire; principles.md and design-rationale.md name it.
+- **Report version 9.** The `headline` text role was added, and the summary is served per bullet.
+
+### 3tears-evals: a run that cannot confirm which model answered says so (discodon#2025)
+
+- **One disclosure, every surface.** When some candidate call or judge score came back from a response that named no
+  model, the run's summary (`run_get`: `unconfirmed_models`, `model_identity_warning`), `run_summary`
+  (`model_identity_disclosure`), the analysis bundle (`model_identity_disclosure`) and the campaign report each say so
+  once. They count the affected results and scores per role, with the ids asked for and any models the other responses
+  named.
+- **Disclosed, never refused, never guessed.** The package doesn't decide which ids float; that is the provider's
+  vocabulary.
+- **The writer is told.** The analysis prompt names the field: a requested id is never written as the model that ran.
+- **`Answer(served_model=...)`.** A quick candidate can record the model the provider's response named.
+- **Host contract stated plainly.** `adopting-a-host.md` says the completion port reports `served_model` from the
+  provider's response, and what a run shows when it doesn't.
+- **Bundle shape 49** (shared with #2716).
+
+### 3tears-evals: a whole-run swing is stated once per lever pair (discodon#2716)
+
+- **Where a diverging whole-run movement went is published once.** A whole diverges from several parts at once: with a
+  model sweep's latency all in `llm_ms`, `total_ms` diverges from `tool_ms`, `orchestration_ms`, `async_wait_ms` and
+  `judge_ms`. Each of those divergences carried the same components and carrier, so the writer read "carried by
+  `llm_ms`" four times a model pair. The new `AnalysisContextBundle.whole_swings` (`WholeSwing`) holds one entry per
+  lever, level pair and whole among the published divergences, and the writer prompt reads it there.
+- **`ScopeDivergence` drops `whole_components`, `carried_by` and `carried_share`.** Join a divergence to its swing on
+  lever, `level_a`, `level_b` and `end_to_end.name`. The bundle shape is version 49 (was 48).
+- **Reporter cases frozen before 49 still rebuild.** Each divergence's copies are moved into `whole_swings`, losing no
+  value; a frozen bundle whose copies of one swing disagree is refused.
+- **A resolved surface folded into a swept lever is regression-tested.** The divergence lens's skip of a surface that
+  moved only with its knob is pinned at several runs a level and at three levels.
+
+### 3tears-evals: a stored proposer prompt written for another draft shape is refused before it is paid for (discodon#2856)
+
+- **Each shipped proposer default states the draft shape it was written for.** `eval_proposer` and `eval_boundary_gen`
+  end with `eval-output-contract: rubric_proposal <fingerprint>` (`gen.RUBRIC_PROPOSAL_CONTRACT.line`). The
+  fingerprint digests the draft's strict schema, with its field documentation ignored, plus a revision for rules the
+  schema cannot state.
+- **`plan_draft` refuses a prompt written for another shape, or for none, before anything is priced.** It raises
+  `PromptContractError` (a `ConflictError`, 409, in `threetears.evals.kernel`), naming the prompt (`prompt_type`) and
+  the remedy: reset it to the shipped default, or bring an edit up to the current shape and update its line. A stored
+  copy seeded before an upgrade changed the draft no longer pays for a call that then fails draft validation. An
+  edited copy carrying the current line passes.
+- **`prompt_drift` shows it first.** Each `PromptDrift` carries `contract` (`current`, `outdated`, `undeclared`,
+  `unbound`), `expected_contract` and `refused`, with a remedy, for customized copies too. The analysis generator's
+  prompt binds no contract.
+- **New in `threetears.evals.kernel`:** `OutputContract`, `PromptContractError`, `ContractState`, `CONTRACT_MARKER`,
+  `REFUSED_CONTRACT_STATES`, `contract_state`, `declared_contracts`, `require_output_contract` and `template_text`.
+
+### 3tears-evals: the built-in judge prompt has an identity; sourced facts outrank the judge's recall (discodon#1895)
+
+- **A dimension judged without a `JudgeConfig` records which built-in wording judged it.** Each call writes
+  `builtin:<sha12>` (a fingerprint of the engine's wording, not the rubric's) where a config's id stands in
+  `EvalResult.judge_config_ids`. Two built-in wordings are two judges to agreement, judge profiles, drift and evidence
+  tiers, and a stored profile measured on one is never read for the other. A result stored before this records nothing
+  for a built-in dim and reads as config `None`, which pools with no `builtin:` judge. New:
+  `BUILTIN_JUDGE_CONFIG_PREFIX`, `is_builtin_judge_config_id`, `builtin_judge_config_ids`,
+  `JudgeService.judge_config_ids`.
+- **Every dim a judge phase asks is recorded,** including one whose call raised or was cut off by its cell's deadline.
+- **A re-judge or judge repeat re-asks a built-in dim only under the built-in prompt that first asked it.** A result
+  judged by another wording, or before identities were recorded, is refused (`reproducible_judge_inputs(...,
+  same_judge_dims=...)`).
+- **Every built-in prompt tells the judge that sourced facts outrank its recall** (#1895). A claim is never to be
+  called fabricated only because the judge can't verify it from memory; when the evidence doesn't settle it, the judge
+  says so or answers can't-tell. Configured prompts are unchanged.
+- **A judge completion breaking the protocol fails the run.** `CompletionProtocolDefect` (a `TypeError`, in
+  `threetears.evals.schema`) is raised when a completion has no `temperature`. It names `check_completion_conformance`
+  and carries the billed calls and their cost, and it passes every per-dimension and per-phase catch on the judge
+  path, as `CandidateKindDefect` does. A provider error or parse failure stays that dimension's error.
+- **A run failed by a defect counts what its cell was billed.** A run stopping on `CompletionProtocolDefect` or
+  `CandidateKindDefect` records the failing cell excluded (`apparatus_failed`) with its spend before failing, so the
+  run's totals, completeness and cost cap count it. A judge defect carries its billed calls' usage (`defect_usage`),
+  which is settled against the cap and kept on the cell's judge row. A judged witnessed cell's billed judge calls
+  count against the run's judge ceiling.
+- **A configured judge's identity includes the reply format it was sent.** A configured call records `<config
+  id>@<sha12>`, a fingerprint of the reply-format suffix the engine appends to every prompt, so a release rewording
+  the suffix makes every configured judge a new judge, as a new config version would. New:
+  `configured_judge_config_id`, `judge_config_of` (also exported from `threetears.evals.schema`),
+  `judge_config_ids_for`.
+
+### 3tears-evals: an unsettleable run corpus is named, not only logged (discodon#2498)
+
+- **`runs_unreadable` names each stored run this build cannot read, with why.** An operation (`ops.runs_unreadable`)
+  and a read action that read every stored run of the caller's scope, of any status and archived included, and list
+  each row the current model refuses: its id, its stored status, and each distinct `field: what the model said`,
+  sorted. Derived on every call and never stored. One row that does not read never stops the rest; a store that fails
+  to answer is a `StorageError`, never a scope with none.
+- **Stranded rows are the boot sweep's `unreadable`.** A refused run stored pending or running is marked `stranded`,
+  and the listing's `stranded` total is exactly what `sweep_abandoned_runs` reports as `unreadable` for that scope
+  (apart from a readable run whose lost write a model refused, which reads and so is not listed). Before this, that
+  count reached only the boot log.
+- **One definition of an unreadable row.** `EvalStorage.query_non_terminal_eval_runs` and the new
+  `EvalStorage.scan_eval_runs` (returning `kernel.EvalRunScan` of `kernel.RefusedRow`) refuse rows through the same
+  isolating read, so the sweep and the action cannot drift apart on what "unreadable" means.
+
+### 3tears-evals: a run this build cannot read is refused or disclosed, never raised raw
+
+- **`runs_list` lists what reads and counts the rest.** `RunListing.unreadable` counts the matched stored runs this
+  build's model refuses (narrowed by status alone: their archive flag and labels cannot be read), and the listing says
+  to read them with `runs_unreadable`. One unreadable run used to fail the whole listing with the model's
+  `ValidationError`. Python callers: `run.list_runs_disclosing`, over `EvalStorage.query_eval_runs_isolating`
+  (`kernel.RunsRead`).
+- **Every other read of such a run refuses with `UnreadableRunError`.** `kernel.UnreadableRunError` (status 500,
+  remedy `remedies.FIND_UNREADABLE_RUNS`, naming `runs_unreadable`; `run_ids` lists the rows) replaces the raw
+  `ValidationError` from `EvalStorage.load_eval_run`, `load_eval_runs` and `query_eval_runs`, naming every refused row
+  matched. So `run_get`, `results_list`, `job_poll` / `job_cancel` of a run, `run_archive` / `run_label` /
+  `run_delete`, the comparison and scope lenses, a campaign's report, analysis and bar proposal, the judge estimates
+  and launch pricing all refuse as an engine refusal: an answer over the runs that happened to read would be wrong.
+  The lease machinery's reads keep raising `ValidationError`, which the boot reclaim relies on.
+- **`run_delete` removes a run this build cannot read.** From its stored row (`run.delete_unreadable_run`), through
+  the cascade a readable run's delete runs, so exactly the same rows go: its results with their traces, found by the
+  run id they carry (`EvalStorage.query_eval_result_ids_by_run`) and never read, its campaign memberships, then the
+  run. Insights citing it and ratings of its results stay, as they do for a readable run. A run stored pending or
+  running is refused while its stored lease has not lapsed, and when its lease cannot be read either (no `expires_at`
+  as text, not ISO-8601, no zone): then whether a process still holds it cannot be told, and the refusal's remedy
+  (`remedies.UNREADABLE_LEASE`) names deploying the build that wrote it, which can settle or delete it. With no lease,
+  or a lapsed one, it is stranded — nothing can settle it — and is deleted. `FIND_UNREADABLE_RUNS`, and so every
+  `UnreadableRunError` (launch pricing's included), now names `run_delete` as the way out.
+- **`job_poll` refuses a job record this build cannot read.** A sweep's, launch's, analysis attempt's, second judge's,
+  judge temperature check's or host action's record — or a run it names and settles with it — that does not validate
+  refuses with `kernel.UnreadableRecordError` (status 500, remedy `UNREADABLE_JOB_RECORD`), naming the record and why,
+  where it raised the model's `ValidationError`. `UnreadableRunError` is now its subclass. The lease reads keep
+  raising `ValidationError`, which the boot reclaim relies on.
+
+### 3tears-evals: a call whose ledger row was lost is still counted
+
+- **A failed ledger write no longer drops the call from what its budget made.** When the store refused an out-of-run
+  call's ledger row (the call raised, or it completed and the write's `StorageError` was caught a layer up), the call
+  was missing from `OutOfRunBudget.recorded`. The budget now keeps that row on `OutOfRunBudget.unrecorded`, beside the
+  ERROR log line.
+- **Judge reports count it.** `JudgeRepeatReport`, `SecondJudgeReport` and `JudgeTemperatureAnswers` count `recorded`
+  and `unrecorded` together, so `calls_made` includes the call and `cost_usd` includes its cost, or reads `None` when
+  the call raised. Before, a total missing a paid call read as complete. `scope_out_of_run_spend` reads the store
+  alone and still can't see it.
+- **Every logged fall-through says why its answer is still true.** Each `except` handler in the package that logs and
+  then continues past its `try` now carries a `# NOSILENT:` marker naming where the error is recorded, or why the
+  caller's answer is unchanged.
+- **The evals findings of the cross-package no-swallow audit (#715):** a `date` axis position that does not parse is
+  refused with its cause; the jobs conformance kit names how a call that made a request then ended.
+
 ### 3tears-evals: a lease's faults are recorded on its job record (core schema v13)
 
 - **Every job record keeps its lease's faults beside its ending.** A sweep's `detail`, a launch's `detail` and an

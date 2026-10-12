@@ -957,6 +957,9 @@ class EvalAnalysis(EvalDocumentModel):
                     f"{where} names finding position(s) {bad}, and there are {count} findings (0-{count - 1})"
                 )
 
+        in_range("headline_rests_on", self.document.headline_rests_on)
+        for index, bullet in enumerate(self.document.summary_rests_on):
+            in_range(f"summary_rests_on[{index}]", bullet)
         for index, decision in enumerate(self.document.decisions):
             in_range(f"decisions[{index}].rests_on", decision.rests_on)
         for index, answer in enumerate(self.document.questions):

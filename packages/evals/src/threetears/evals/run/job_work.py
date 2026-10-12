@@ -68,7 +68,8 @@ log = get_logger(__name__)
 #: names it). A budget is not a person deciding to stop, so the two are never one outcome.
 JobOutcome = Literal["running", "completed", "failed", "cancelled", "timed_out"]
 
-#: An action job's wall-clock ceiling unless its host names another: an hour, the job manager's own default.
+#: An hour: the job manager's own default ceiling, for an action job whose host means exactly that. Nothing defaults
+#: to it — every action job names its ``budget_s`` — so a host passes it on purpose or not at all.
 DEFAULT_ACTION_JOB_BUDGET_S = 3600.0
 
 #: The detail a job cancelled before it ended records, beside the cancel's reason on the record.
@@ -273,6 +274,7 @@ async def _run_to_end[R: EvalDocumentModel](
             async with deadline(work.budget_s):
                 ended = await work.run(recorder)
     except EvalJobTimeout as timed_out:
+        # NOSILENT: the record's ending is ``timed_out`` naming the budget, written below.
         log.warning("eval.job %s=%s scope=%s timed out: %s", name, record_id, scope_id, timed_out)
         ended = end_record(recorder.record, "timed_out", timed_out_detail(timed_out))
     except asyncio.CancelledError:
@@ -289,6 +291,7 @@ async def _run_to_end[R: EvalDocumentModel](
         return recorder.record
     # prawduct:ok-broad-except — the job's record is where its ending is stated; the boundary writes it failed
     except Exception as broke:
+        # NOSILENT: the record's ending is ``failed`` with this error as its detail (and its refusal), written below.
         log.exception("eval.job %s=%s scope=%s failed", name, record_id, scope_id)
         # An engine refusal is kept as data beside its words, so a poll serves its kind as a refused call's.
         refusal = job_refusal(broke) if isinstance(broke, EvalServiceError) else None
@@ -328,6 +331,7 @@ async def _write_ending[R: EvalDocumentModel](
         except JobFenced:
             raise
         except (ConflictError, StorageError) as failed:
+            # NOSILENT: falls through only to wait and write the same ending again; the last failure returns below.
             delay = next(delays, None)
             if delay is None:
                 log.error(
@@ -548,8 +552,8 @@ def action_job_work(
     *,
     action: str,
     run: Callable[[], Awaitable[BaseModel]],
+    budget_s: float,
     label: str = "",
-    budget_s: float = DEFAULT_ACTION_JOB_BUDGET_S,
     discard: Callable[[], Awaitable[None]] | None = None,
 ) -> JobWork[EvalActionJob]:
     """A host action's work as a job: ``run`` awaited to its end, its result written on an :class:`EvalActionJob`.
@@ -562,7 +566,7 @@ def action_job_work(
         action: The action's name.
         run: The work: makes the calls and returns the action's typed result.
         label: A short line naming the work.
-        budget_s: The work's wall-clock ceiling as a job.
+        budget_s: The work's wall-clock ceiling as a job. Required: no action job runs under a ceiling nobody chose.
         discard: Releases what the handler built for ``run`` when the work never runs.
 
     Returns:

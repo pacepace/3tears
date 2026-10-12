@@ -299,6 +299,8 @@ class CassetteCell:
         try:
             self._store.save_cassette(cassette)
         except StorageError as exc:
+            # NOSILENT: named among the lane's holes, which the runner writes to the capture run's error_details (the
+            # lane hands every capture cell its list), and a replay asking this key reports the hole as a miss.
             # Loud but not fatal: the live answer still reaches the candidate, so a transient write
             # failure costs one recording rather than the turn. The key is explicit, so a replay
             # reports the hole as a miss naming it rather than pairing a neighbour into its place.

@@ -232,6 +232,7 @@ class OutOfRunBudget:
     #: Every admission not yet made, by token: the object minted and the client it was priced on.
     _admitted: dict[str, tuple[AdmittedCall, PricedCompletion]] = field(default_factory=dict, init=False)
     _recorded: list[OutOfRunSpend] = field(default_factory=list, init=False)
+    _unrecorded: list[OutOfRunSpend] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
         """Refuse a cap that is not a positive, finite amount.
@@ -251,6 +252,17 @@ class OutOfRunBudget:
     def recorded(self) -> tuple[OutOfRunSpend, ...]:
         """Every ledger row this budget has written, in the order the calls ended."""
         return tuple(self._recorded)
+
+    @property
+    def unrecorded(self) -> tuple[OutOfRunSpend, ...]:
+        """The row of every call this budget made whose ledger write failed, in the order the calls ended.
+
+        Each call was made, and may have been billed, but the store's ledger does not hold its row: the failed write
+        was logged at ERROR and raised (a completed call's) or logged beside the call's own failure (a raised call's).
+        Whoever sums what the budget's calls spent counts these beside :attr:`recorded`, so a call the ledger lost is
+        neither left out of a call count nor dropped from a total that then reads as complete.
+        """
+        return tuple(self._unrecorded)
 
     def quote(
         self, client: PricedCompletion, purpose: OutOfRunPurpose, calls: Sequence[PlannedCall]
@@ -348,8 +360,10 @@ class OutOfRunBudget:
             ValueError: ``admitted`` is not an object this budget admitted and has not made — another budget's,
                 one already made, or a copy (its call altered after pricing or not) — or ``client`` is not the
                 client it was priced on.
-            StorageError: The ledger row could not be written for a completed call.
-            Exception: Whatever the call raised — after its row is written.
+            StorageError: The ledger row could not be written for a completed call; the row is kept on
+                :attr:`unrecorded`.
+            Exception: Whatever the call raised — after its row is written, or, when that write fails too, kept on
+                :attr:`unrecorded`.
         """
         minted = self._admitted.get(admitted.token)
         if minted is None or minted[0] is not admitted:
@@ -373,6 +387,8 @@ class OutOfRunBudget:
                 await self._record(admitted, outcome="raised", failure=type(raised).__name__)
             # prawduct:ok-broad-except — a failed ledger write must not replace the call's own failure, which propagates
             except Exception as unrecorded:
+                # NOSILENT: the call's own failure is raised below, and its row is kept on ``unrecorded``, which every
+                # report summing this budget's calls counts; only the store's ledger lacks it, and that is logged here.
                 log.error(
                     "eval.out_of_run %s call on %s raised %s and its ledger row could NOT be written: %s",
                     admitted.purpose,
@@ -408,7 +424,12 @@ class OutOfRunBudget:
         spend = OutOfRunSpend(**self._row(admitted), **reported)
         # The append rides the write onto the worker, so ``recorded`` lists every row the store holds even
         # when the coroutine awaiting the write is cancelled before it reads the outcome.
-        await run_blocking(self.blocking_executor, self._write, spend)
+        try:
+            await run_blocking(self.blocking_executor, self._write, spend)
+        except Exception:
+            # Kept, not dropped: the call was made, so a caller summing the budget's calls still counts it.
+            self._unrecorded.append(spend)
+            raise
         log.info(
             "eval.out_of_run purpose=%s model=%s outcome=%s cost=%s ceiling=%s cap=%s scope=%s",
             spend.purpose,
@@ -470,6 +491,8 @@ def _storable(admitted: AdmittedCall, reported: dict[str, Any]) -> dict[str, Any
         try:
             storable[name] = _COMPLETED_FIELD_ADAPTERS[name].validate_python(value)
         except ValidationError as refused:
+            # NOSILENT: recorded None AND named in the row's ``unreadable``, which every reader reads as unreadable,
+            # never as unreported.
             storable[name] = None
             unreadable.append(name)
             log.warning(
