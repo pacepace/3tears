@@ -885,13 +885,15 @@ async def test_a_run_that_ran_nothing_leaves_the_record_as_it_was() -> None:
     await asyncio.sleep(0.002)
     await _run(waited)
 
-    assert waited.state == "succeeded" and waited.last is not None
-    assert waited.last.finished_at > loaded.last.finished_at
+    # the run that ran nothing is not a run: it is not this replica's last, and not the record's
+    assert waited.state == "idle" and waited.last is None
     recorded = await shared.read()
     assert recorded is not None
     assert recorded.replica == "replica-a" and recorded.outcome.result == {"rows": 3}
-    assert not shared.records(waited.last)
-    assert not await shared.publish(waited.last)
+    nothing = _ended(datetime.now(UTC), result={"rows": 0})
+    assert nothing.finished_at > loaded.last.finished_at
+    assert not shared.records(nothing)
+    assert not await shared.publish(nothing)
     assert (await shared.read()) == recorded
 
 
@@ -906,7 +908,7 @@ async def test_a_replica_whose_later_run_ran_nothing_reports_the_other_replicas_
 
     await asyncio.sleep(0.002)
     await _run(waited)
-    assert waited.last is not None and waited.last.finished_at > loaded.last.finished_at
+    assert waited.last is None
 
     answer = await waited_status.run()
 
@@ -918,26 +920,38 @@ async def test_a_replica_whose_later_run_ran_nothing_reports_the_other_replicas_
     assert "the last run, on another replica (replica-a), failed at" in answer.content
 
 
-async def test_with_no_record_a_replica_whose_run_ran_nothing_reports_its_own() -> None:
+async def test_a_replica_whose_only_run_ran_nothing_and_that_sees_no_record_reports_idle() -> None:
     client = FakeNatsClient()
     waited, status, shared = _replica(client, "replica-b", _nothing_ran, ran=_did_load)
     await _run(waited)
-    assert waited.last is not None
 
     answer = await status.run()
 
+    # a run that did nothing is not a run: with none of its own and none recorded, there is none
+    assert waited.last is None and waited.state == "idle"
     assert answer.metadata is not None
-    assert answer.metadata["state"] == "succeeded"
-    assert answer.metadata["last"] == {
-        "started_at": waited.last.started_at.isoformat(),
-        "finished_at": waited.last.finished_at.isoformat(),
-        "result": {"rows": 0},
-        "error": None,
-        "replica": "replica-b",
-        "other_replica": False,
-    }
+    assert answer.metadata["state"] == "idle" and answer.metadata["last"] is None
+    assert answer.content == "idle"
     # asking for the status does not record it either
     assert await shared.read() is None
+
+
+async def test_a_run_that_ran_nothing_after_a_wait_that_failed_leaves_the_failure_reported() -> None:
+    client = FakeNatsClient()
+    operation, status, _ = _replica(client, "replica-a", _nothing_ran, ran=_did_load)
+
+    async def needed() -> bool:
+        raise ValueError("the check itself is broken")
+
+    operation.start_when_needed(needed, retry_on=(ConnectionError,), retry_seconds=0)
+    with pytest.raises(ValueError, match="the check itself is broken"):
+        await operation.wait_until_settled()
+    await _run(operation)
+
+    answer = await status.run()
+    assert answer.metadata is not None
+    assert answer.metadata["state"] == "failed"
+    assert answer.metadata["last"]["error"] == "ValueError: the check itself is broken"
 
 
 async def test_a_failed_run_is_recorded_without_asking_whether_it_ran() -> None:
@@ -1190,7 +1204,8 @@ async def test_clearing_progress_removes_this_replicas_entry_and_leaves_another_
     bucket = await _bucket(client)
 
     assert not await mine.clear()
-    await theirs.publish({"summary": "Loading", "holder": "somebody else"})
+    # the record's own fields are not the run's to write: a run does not end itself by its progress
+    await theirs.publish({"summary": "Loading", "holder": "somebody else", "work_over": True})
     assert json.loads(await bucket.get(key="enr.enr-load.progress") or b"") == {
         "summary": "Loading",
         "holder": "replica-b",
@@ -1270,3 +1285,28 @@ async def test_a_replica_that_holds_the_lease_itself_or_runs_here_reports_no_run
     body.release.set()
     await operation.wait()
     assert (await status.run()).content.startswith("running on another replica (replica-b)")
+
+
+async def test_progress_reported_with_no_run_in_progress_here_is_not_shown_as_a_run() -> None:
+    client = FakeNatsClient()
+    progress = SharedProgress(KVLease(client, pod_id="replica-a", key_scope="enr"), "enr-load")  # type: ignore[arg-type]
+    body = _gate()
+    operation: BackgroundOperation[Any] = BackgroundOperation("enr-load", body, shared_progress=progress)
+    status = OperationStatusTool(name="enr.load_status", description="Report.", operation=lambda: operation)
+    progress.report({"summary": "Loading", "holder": "x", "work_over": True})
+    assert progress.reported() == {"summary": "Loading"}
+
+    idle = await status.run()
+    assert idle.metadata is not None
+    assert idle.metadata["run_progress"] is None and idle.content == "idle"
+
+    operation.start()
+    await asyncio.sleep(0)
+    running = await status.run()
+    assert running.metadata is not None
+    assert running.metadata["run_progress"] == {"summary": "Loading"}
+    assert running.content == f"running since {running.metadata['started_at']}: Loading"
+    progress.report(None)
+    assert progress.reported() is None
+    body.release.set()
+    await operation.wait()
