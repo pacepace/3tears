@@ -38,10 +38,6 @@ PROPOSER_PROMPT = "eval_proposer"
 #: The adversarial boundary proposer's prompt — a sectioned template, seeded into a template registry.
 BOUNDARY_GEN_PROMPT = "eval_boundary_gen"
 
-#: Where the package's source files sit in the repository, for each entry's ``definition_path`` — the
-#: file a promotion writes a tuned preset back into.
-_SOURCE_ROOT = "packages/evals/src/threetears/evals"
-
 #: Every prompt the engine ships a default for, in the order a registry seeds them. A host seeds an empty
 #: slot from each entry's :attr:`~SeedPrompt.seed_ref` and never overwrites a stored one.
 SEED_PROMPTS: tuple[SeedPrompt, ...] = (
@@ -49,21 +45,18 @@ SEED_PROMPTS: tuple[SeedPrompt, ...] = (
         kind=KIND_TEXT,
         prompt_type=ANALYSIS_GEN_PROMPT,
         seed_module="threetears.evals.analysis.gen_prompt",
-        definition_path=f"{_SOURCE_ROOT}/analysis/gen_prompt.py",
         constant="EVAL_ANALYSIS_GEN_DEFAULT",
     ),
     SeedPrompt(
         kind=KIND_TEMPLATE,
         prompt_type=PROPOSER_PROMPT,
         seed_module="threetears.evals.gen.prompts.proposer",
-        definition_path=f"{_SOURCE_ROOT}/gen/prompts/proposer.py",
         constant="EVAL_PROPOSER_TEMPLATE_DEFAULT",
     ),
     SeedPrompt(
         kind=KIND_TEMPLATE,
         prompt_type=BOUNDARY_GEN_PROMPT,
         seed_module="threetears.evals.gen.prompts.boundary_gen",
-        definition_path=f"{_SOURCE_ROOT}/gen/prompts/boundary_gen.py",
         constant="EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT",
     ),
 )

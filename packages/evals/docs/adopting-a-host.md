@@ -530,7 +530,7 @@ releases the client on every path that does not reach `make`. Work of any other 
 ```python
 async def _propose(host: OpsHost, caller: Caller, params: ProposeParams) -> JobsStarted:
     budget = my_budget(host, caller.scope_id)
-    call = plan_draft(axis=params.axis, system_prompt=..., subject_feed=..., catalog_feed=...)
+    call = plan_draft(axis=params.axis, system_prompt=..., subject_feed=..., catalog_feed=..., reset=...)
 
     async def draft(client: BoundCompletionClient, admitted: AdmittedCall) -> RubricProposal:
         async with client:                                    # the job's work owns the client from here
@@ -636,8 +636,8 @@ tunes it with no deploy, and the engine ships only the default a fresh deploymen
 
 `SEED_PROMPTS` (from `threetears.evals.kernel`) is that list, one `SeedPrompt` per prompt. Each names its id
 (`prompt_type`), which registry seeds it (`kind`: `template` or `text`), and where the default lives:
-`seed_ref` is the `(module, constant)` to import it from, and `promotion_ref` the source file a promotion
-writes a tuned preset back into. Seed an empty slot from each entry and never overwrite a stored one:
+`seed_ref` is the `(module, constant)` to import it from. Seed an empty slot from each entry and never overwrite a
+stored one:
 
 ```python
 for entry in SEED_PROMPTS:
@@ -657,6 +657,7 @@ read each slot with `prompt_drift`:
 
 ```python
 drift = prompt_drift(entry, shipped=default, stored=stored_copy, seeded_digest=recorded_digest,
+                     reset=f"call prompt_reset with prompt_type={entry.prompt_type!r}",  # your own reset
                      customized=operator_owns_it)
 if drift.stale:
     log.warning("%s: %s", drift.prompt_type, drift.remedy)
@@ -679,8 +680,9 @@ reads the rendered prompt you hand it, before anything is priced, and raises `Pr
 `ConflictError`, status 409) when the prompt carries another fingerprint (`outdated`) or none
 (`undeclared`, which is every copy seeded before the line existed). The error names the prompt
 (`prompt_type`) and the remedy: reset the slot to the shipped default, or keep an edit by rewriting its
-output instructions for the current shape and making its line read the current one. Name your own reset
-action in what your surface shows; the engine cannot. An edited copy that carries the current line passes:
+output instructions for the current shape and making its line read the current one. The registry is yours,
+so the engine cannot name your reset: pass it as `reset=` (an action or a command your operator can run), and
+the remedy names it. `prompt_drift` takes the same `reset=`. An edited copy that carries the current line passes:
 the line is the editor's statement that the edit was written for this shape, and the strict response
 format and the draft's validation still stand behind it. The analysis generator's prompt states no shape
 (its schema is sent and its grammar appended by code), so it binds no contract.

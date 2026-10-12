@@ -114,7 +114,9 @@ class ProposedDraft(NamedTuple):
     spend: OutOfRunSpend
 
 
-def plan_draft(*, axis: RubricAxis, system_prompt: str, subject_feed: str, catalog_feed: str) -> PlannedCall:
+def plan_draft(
+    *, axis: RubricAxis, system_prompt: str, subject_feed: str, catalog_feed: str, reset: str
+) -> PlannedCall:
     """The one call a rubric proposal sends, on either axis, built before anything is priced or made.
 
     What a host quotes and admits under its out-of-run budget in its call
@@ -133,6 +135,9 @@ def plan_draft(*, axis: RubricAxis, system_prompt: str, subject_feed: str, catal
         subject_feed: The rendered description of the subject under test.
         catalog_feed: The rendered reusable catalog for the axis, each dim with its ``key`` so the model can
             name reuses in ``reused_dim_keys``.
+        reset: How an operator of this host resets the axis's prompt slot to the shipped default — an action or a
+            command, such as ``"call prompt_reset with prompt_type='eval_proposer'"``. The registry is the host's,
+            so the engine cannot name it; a refusal's remedy does.
 
     Returns:
         The planned call.
@@ -140,9 +145,10 @@ def plan_draft(*, axis: RubricAxis, system_prompt: str, subject_feed: str, catal
     Raises:
         PromptContractError: ``system_prompt`` declares another output contract than
             :data:`RUBRIC_PROPOSAL_CONTRACT`, or none — a stored copy that predates the draft's shape. Its remedy
-            names the prompt to reset.
+            names the prompt to reset, and ``reset`` as the way to reset it.
+        ValueError: ``reset`` is blank.
     """
-    require_output_contract(_AXIS_PROMPT[axis], system_prompt, RUBRIC_PROPOSAL_CONTRACT)
+    require_output_contract(_AXIS_PROMPT[axis], system_prompt, RUBRIC_PROPOSAL_CONTRACT, reset=reset)
     return PlannedCall(
         system=system_prompt,
         user=f"{subject_feed}\n{catalog_feed}".rstrip() + "\n",

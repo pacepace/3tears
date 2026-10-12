@@ -21,6 +21,8 @@ import pytest
 
 from threetears.evals.kernel import SEED_PROMPTS, PromptDrift, SeedTemplate, prompt_drift, seed_digest
 
+_RESET = "call prompt_reset for the slot"
+
 _ENTRY = next(entry for entry in SEED_PROMPTS if entry.kind == "template")
 
 
@@ -54,46 +56,64 @@ def test_a_digest_names_content_and_not_the_revision_number() -> None:
 
 
 def test_a_stored_copy_of_the_shipped_default_is_current() -> None:
-    drift = prompt_drift(_ENTRY, shipped=_shipped(), stored=_shipped(), seeded_digest=seed_digest(_shipped()))
+    drift = prompt_drift(
+        _ENTRY, shipped=_shipped(), stored=_shipped(), reset=_RESET, seeded_digest=seed_digest(_shipped())
+    )
     assert isinstance(drift, PromptDrift) and drift.state == "current" and not drift.stale
 
 
 def test_a_copy_seeded_from_an_older_default_and_untouched_is_stale_and_names_the_remedy() -> None:
     older = _edited(_shipped(), "the rule before scale was required")
-    drift = prompt_drift(_ENTRY, shipped=_shipped(), stored=older, seeded_digest=seed_digest(older))
+    drift = prompt_drift(_ENTRY, shipped=_shipped(), stored=older, reset=_RESET, seeded_digest=seed_digest(older))
 
     assert drift.state == "stale" and drift.stale
     assert drift.prompt_type == _ENTRY.prompt_type
     assert (drift.shipped_digest, drift.stored_digest) == (seed_digest(_shipped()), seed_digest(older))
-    assert "reseed" in drift.remedy and "customized" in drift.remedy
+    assert _RESET in drift.remedy and "customized" in drift.remedy
+    assert "threetears." not in drift.remedy, "the remedy names the host's reset, not a module to reseed from"
 
 
 def test_a_copy_with_no_record_of_its_seeding_that_is_not_the_shipped_default_reads_stale() -> None:
     """Without a record, an old default and a tuned copy look alike; the host says which with ``customized``."""
-    drift = prompt_drift(_ENTRY, shipped=_shipped(), stored=_edited(_shipped(), "x"), seeded_digest=None)
+    drift = prompt_drift(_ENTRY, shipped=_shipped(), stored=_edited(_shipped(), "x"), reset=_RESET, seeded_digest=None)
     assert drift.state == "stale"
 
 
 def test_a_copy_an_operator_changed_since_it_was_seeded_is_customized_not_stale() -> None:
     older = _edited(_shipped(), "the old default")
     tuned = _edited(_shipped(), "the operator's own wording")
-    drift = prompt_drift(_ENTRY, shipped=_shipped(), stored=tuned, seeded_digest=seed_digest(older))
+    drift = prompt_drift(_ENTRY, shipped=_shipped(), stored=tuned, reset=_RESET, seeded_digest=seed_digest(older))
     assert drift.state == "customized" and not drift.stale
 
 
 def test_a_copy_the_host_declares_its_own_is_never_stale() -> None:
     drift = prompt_drift(
-        _ENTRY, shipped=_shipped(), stored=_edited(_shipped(), "ours"), seeded_digest=None, customized=True
+        _ENTRY,
+        shipped=_shipped(),
+        stored=_edited(_shipped(), "ours"),
+        reset=_RESET,
+        seeded_digest=None,
+        customized=True,
     )
     assert drift.state == "customized" and not drift.stale
 
 
 def test_a_text_prompt_is_read_the_same_way() -> None:
     entry = next(entry for entry in SEED_PROMPTS if entry.kind == "text")
-    assert prompt_drift(entry, shipped="new text", stored="new text", seeded_digest=None).state == "current"
-    assert prompt_drift(entry, shipped="new text", stored="old text", seeded_digest=seed_digest("old text")).stale
+    assert (
+        prompt_drift(entry, shipped="new text", stored="new text", reset=_RESET, seeded_digest=None).state == "current"
+    )
+    assert prompt_drift(
+        entry, shipped="new text", stored="old text", reset=_RESET, seeded_digest=seed_digest("old text")
+    ).stale
 
 
 def test_a_stored_copy_of_another_kind_than_its_entry_is_refused() -> None:
     with pytest.raises(TypeError, match="template"):
-        prompt_drift(_ENTRY, shipped=_shipped(), stored="text", seeded_digest=None)
+        prompt_drift(_ENTRY, shipped=_shipped(), stored="text", reset=_RESET, seeded_digest=None)
+
+
+@pytest.mark.parametrize("reset", ["", "   "])
+def test_a_blank_reset_is_refused_since_the_remedy_would_name_nothing_to_do(reset: str) -> None:
+    with pytest.raises(ValueError, match="reset is blank"):
+        prompt_drift(_ENTRY, shipped=_shipped(), stored=_shipped(), reset=reset, seeded_digest=None)

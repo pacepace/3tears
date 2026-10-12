@@ -149,12 +149,12 @@ def template_text(sections: tuple[SeedSection, ...]) -> str:
     return "\n".join(section.content_template for section in sections)
 
 
-def _contract_remedy(prompt_type: str, contract: OutputContract) -> str:
-    """What an operator does about a stored copy written for another contract, or for none."""
+def _contract_remedy(prompt_type: str, contract: OutputContract, reset: str) -> str:
+    """What an operator does about a stored copy written for another contract, or for none: the host's own reset."""
     return (
-        f"reset the stored '{prompt_type}' prompt to the default this package ships (the host's prompt reset writes "
-        "it back); or, to keep an edited copy, rewrite its output instructions for the current reply shape and make "
-        f"its contract line read '{contract.line}'"
+        f"reset the stored '{prompt_type}' prompt to the default this package ships ({reset}); or, to keep an edited "
+        "copy, rewrite its output instructions for the current reply shape and make its contract line read "
+        f"'{contract.line}'"
     )
 
 
@@ -178,6 +178,7 @@ class PromptContractError(ConflictError):
         state: ContractState,
         expected: OutputContract,
         declared: tuple[OutputContract, ...],
+        reset: str,
     ) -> None:
         """Build the refusal of ``prompt_type``'s stored copy.
 
@@ -186,6 +187,7 @@ class PromptContractError(ConflictError):
             state: How the copy read: ``outdated`` or ``undeclared``.
             expected: The contract the engine reads the reply by.
             declared: The contracts the copy's lines declare.
+            reset: How an operator of this host resets the slot to the shipped default.
         """
         self.prompt_type = prompt_type
         self.state = state
@@ -204,24 +206,50 @@ class PromptContractError(ConflictError):
             )
         super().__init__(
             f"the stored {prompt_type!r} prompt {said}. Refused before the call, so nothing was paid for",
-            remedy=_contract_remedy(prompt_type, expected),
+            remedy=_contract_remedy(prompt_type, expected, require_reset(reset)),
         )
 
 
-def require_output_contract(prompt_type: str, text: str, contract: OutputContract) -> None:
+def require_reset(reset: str) -> str:
+    """``reset``, refused when blank: a remedy that names no way to reset the slot leaves the operator nothing to do.
+
+    Args:
+        reset: The host's words for resetting a prompt slot.
+
+    Returns:
+        ``reset``, stripped.
+
+    Raises:
+        ValueError: ``reset`` is blank.
+    """
+    if not reset.strip():
+        raise ValueError(
+            "reset is blank: name how an operator of this host resets a prompt slot to the shipped default (an "
+            "action or a command), since the prompt registry is the host's and the engine cannot name it"
+        )
+    return reset.strip()
+
+
+def require_output_contract(prompt_type: str, text: str, contract: OutputContract, *, reset: str) -> None:
     """Refuse a prompt that was not written for ``contract``.
 
     Args:
         prompt_type: The catalogue id of the prompt, named in the refusal.
         text: The prompt as the call would send it.
         contract: The contract the call reads its reply by.
+        reset: How an operator of this host resets the slot to the shipped default, named in the remedy
+            (an action or a command).
 
     Raises:
         PromptContractError: ``text`` declares another contract, or none.
+        ValueError: ``reset`` is blank.
     """
+    require_reset(reset)
     state = contract_state(text, contract)
     if state in REFUSED_CONTRACT_STATES:
-        raise PromptContractError(prompt_type, state=state, expected=contract, declared=declared_contracts(text))
+        raise PromptContractError(
+            prompt_type, state=state, expected=contract, declared=declared_contracts(text), reset=reset
+        )
 
 
 __all__ = [

@@ -31,6 +31,23 @@
 # callers.
 
 [[release]]
+version = "0.66.0-evaladopt.20"
+since = "v0.66.0-evaladopt.19"
+summary = """
+What a clean install from the tag found (gate G3): docs and examples that run outside a checkout; a host with no
+completion clients is a refusal; an uncounted usage row is never read as zero calls; a cancel during a job's write
+keeps what the write stored; a prompt refusal or drift reading names the host's own reset; a quick arm that names no
+model moves nothing off production; SeedPrompt drops its unused promotion target.
+"""
+notes = [
+    "`kernel.prompt_drift`, `gen.plan_draft` and `kernel.require_output_contract` take a required `reset: str`: how an operator of your host resets a prompt slot to the shipped default (an action or a command, such as \"call eval_prompt_reset with prompt_type='eval_proposer'\"). The registry is the host's, so the engine cannot name it; `PromptDrift.remedy` and `PromptContractError.remedy` now name it in place of a `module.constant` to reseed from. A blank `reset` is a `ValueError`.",
+    "`EvalHost.completion_clients` raises `kernel.RefusedInput` (a `ValueError`, as before) when the host supplies no clients, and the command line reports it as a refusal (exit 2) where it exited 3 with a traceback.",
+    "`SeedPrompt` drops `definition_path` and `promotion_ref`: nothing in the engine promotes a tuned prompt, and a package prompt's source file is not part of an installed package. Construct your own `SeedPrompt`s without `definition_path`, and keep any promotion target in your own registry.",
+    "A `run_eval` or `compare` arm that names no model now launches on the kind's default and records its candidate model `inherited` (it was `chosen`), so its production footing reads \"moved nothing\" rather than \"set model=callable\". A code-only report's production-footing sentence is left out when no arm moved anything, and its arm disclosures name each arm as the arms table does, not by digest.",
+    "`RoleSpend` gains `uncounted_rows`: how many of a role's usage rows reported no `call_count`. A spend line says \"N usage row(s) that reported no call count\" where it printed \"over 0 call(s)\". Report `call_count` on every `RoleUsage` row your kinds write.",
+]
+
+[[release]]
 version = "0.66.0-evaladopt.19"
 since = "v0.66.0-evaladopt.18"
 summary = """

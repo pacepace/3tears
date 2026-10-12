@@ -66,9 +66,10 @@ async def main(out_dir: Path = Path("eval-report")) -> dict[tuple[str, str], str
     print("No model is called: running OFFLINE, with keyword stand-ins for both arms.\n")
     comparison = await compare(
         CASES,
-        {"baseline": offline_triage(BASELINE_WORDS), "candidate": offline_triage(CANDIDATE_WORDS)},
+        # Name each arm for what it is: the report calls it ``candidate=<name>``.
+        {"current": offline_triage(BASELINE_WORDS), "more-keywords": offline_triage(CANDIDATE_WORDS)},
         expected=lambda case: case["label"],
-        control="baseline",
+        control="current",
         k=2,
     )
     report = comparison.report

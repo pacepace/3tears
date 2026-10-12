@@ -193,18 +193,12 @@ class SeedPrompt:
         prompt_type: The registry type's wire value.
         seed_module: Importable module holding the constant. A host's registry
             imports this to SEED a fresh deployment.
-        definition_path: Repo-relative source file of the same constant, which a
-            promotion tool writes a tuned preset back into. Distinct from
-            ``seed_module`` for the same reason a host's own registry keeps the
-            two apart: a re-exported constant's import module is not its
-            definition file.
         constant: The constant's name in that module.
     """
 
     kind: str
     prompt_type: str
     seed_module: str
-    definition_path: str
     constant: str
 
     def __post_init__(self) -> None:
@@ -221,24 +215,15 @@ class SeedPrompt:
                 f"seed prompt {self.prompt_type!r} declares kind {self.kind!r}; a seed is {KIND_TEMPLATE!r} (a sectioned "
                 f"template, for a template registry) or {KIND_TEXT!r} (one string, for a shared-prompt registry)"
             )
-        if blank := [
-            name
-            for name in ("prompt_type", "seed_module", "definition_path", "constant")
-            if not getattr(self, name).strip()
-        ]:
+        if blank := [name for name in ("prompt_type", "seed_module", "constant") if not getattr(self, name).strip()]:
             raise ValueError(
-                f"seed prompt {self.prompt_type!r} leaves {', '.join(blank)} blank; a registry finds the seed by all four"
+                f"seed prompt {self.prompt_type!r} leaves {', '.join(blank)} blank; a registry finds the seed by all three"
             )
 
     @property
     def seed_ref(self) -> tuple[str, str]:
         """``(module, attribute)`` — how a registry resolves this seed by import."""
         return (self.seed_module, self.constant)
-
-    @property
-    def promotion_ref(self) -> tuple[str, str]:
-        """``(file path, attribute)`` — where a promotion writes a tuned preset back."""
-        return (self.definition_path, self.constant)
 
 
 __all__ = [

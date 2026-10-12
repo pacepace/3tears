@@ -1292,16 +1292,21 @@ class CallableArm:
 
     Attributes:
         candidate: The candidate under test.
-        model: The arm's label, stored as its run's candidate model; ``None`` takes the candidate's ``__name__``.
+        model: The model the caller named for the arm, stored as its run's candidate model and recorded as chosen;
+            ``None`` when the caller named none.
         levers: The arm's level of every other lever, by name, or ``None`` for none.
         arm: The arm's name, stated on its run as its level of :data:`ARM_LEVER` (and as its subject), for a
             host that declares that lever (``callable_host(arms=True)``); ``None`` names no arm.
+        default_model: What an arm that names no model is labelled by, stored as its run's candidate model and
+            recorded as inherited: the candidate runs as itself, so nothing moved it off its own model. ``None``
+            takes the candidate's ``__name__``.
     """
 
     candidate: Candidate | ToolUsingCandidate | WorldCandidate
     model: str | None = None
     levers: Mapping[str, str] | None = None
     arm: str | None = None
+    default_model: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1313,6 +1318,14 @@ class _WiredArm:
     kind_factory: KindFactory
     arm: str | None = None
     shared_subject: str | None = None
+    #: Whether the caller named ``model``. One it did not is launched as the kind's default, so the run records
+    #: its model inherited rather than chosen, and no surface reads the label as a model moved off production.
+    named: bool = True
+
+    @property
+    def requested_model(self) -> str | None:
+        """The model the launch names for this arm: the caller's, or ``None`` to run on the kind's default."""
+        return self.model if self.named else None
 
     @property
     def subject(self) -> str:
@@ -1361,7 +1374,11 @@ def _launch_host(
     def arm_of(request: LaunchRequest) -> _WiredArm:
         levels = {} if request.overlays is None else request.overlays.model_dump(mode="json")
         for arm in preparing or arms:
-            if arm.model == request.candidate_model and arm.levers == levels and arm.subject == request.subject_id:
+            if (
+                arm.requested_model == request.candidate_model
+                and arm.levers == levels
+                and arm.subject == request.subject_id
+            ):
                 return arm
         raise ValueError(f"no arm of this launch runs model {request.candidate_model!r} at levers {levels!r}")
 
@@ -1390,6 +1407,7 @@ def _launch_host(
                 test_cases=cases,
                 judge=run_judge,
                 payload=_arm_payload(arm.arm),
+                default_candidate_model=None if arm.named else arm.model,
                 # What every kind the factory builds declares — the callable kind's, which a world cell adopts.
                 max_concurrent_cells=CallableKind.max_concurrent_cells,
             ),
@@ -1814,7 +1832,7 @@ async def run_arms(
         _refuse_undeclared_measures(host, scorers)
     models: list[str] = []
     for arm in arms:
-        model = arm.model
+        model = arm.model or arm.default_model
         if model is None:
             model = getattr(arm.candidate, "__name__", None)
             if not model:
@@ -1877,6 +1895,7 @@ async def run_arms(
             ),
             arm=arm.arm,
             shared_subject=subject,
+            named=arm.model is not None,
         )
         for arm, model in zip(arms, models, strict=True)
     ]
@@ -1905,7 +1924,7 @@ async def run_arms(
                 launch_host,
                 template_id=template_id,
                 subject_id=wired_arm.subject,
-                models=[model],
+                models=[] if wired_arm.requested_model is None else [wired_arm.requested_model],
                 k_runs=k,
                 scope_id=scope_id,
                 judge_model=judge.model if judge is not None else None,

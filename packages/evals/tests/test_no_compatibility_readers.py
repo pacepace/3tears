@@ -61,6 +61,8 @@ from packages.evals.tests.factories import (
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.llm_client_fakes import ReleasableClientMixin
 
+_RESET = "call prompt_reset for the slot"
+
 
 def _without(model: BaseModel, field: str) -> dict[str, Any]:
     """``model`` as its constructor arguments, ``field`` left out."""
@@ -257,7 +259,9 @@ async def _proposed(
     catalog_feed: str,
 ) -> Any:
     """A host's proposal: planned and admitted in its call, then made, as the job makes it."""
-    call = plan_draft(axis=axis, system_prompt=system_prompt, subject_feed=subject_feed, catalog_feed=catalog_feed)
+    call = plan_draft(
+        reset=_RESET, axis=axis, system_prompt=system_prompt, subject_feed=subject_feed, catalog_feed=catalog_feed
+    )
     [admitted] = budget.admit(client, "proposer", [call])
     return await propose_draft(client, admitted, budget=budget, axis=axis, subject_id=subject_id)
 

@@ -20,7 +20,15 @@ from itertools import chain
 
 from threetears.evals.analysis.agreement import tier_sentence
 from threetears.evals.schema.models import CHECK_REFUSED_UNDER_CURRENT_GRAMMAR
-from threetears.evals.analysis.arms import ArmTable, arm_names, arm_table, arm_table_of, short_digest, surface_order
+from threetears.evals.analysis.arms import (
+    ArmTable,
+    arm_label,
+    arm_names,
+    arm_table,
+    arm_table_of,
+    short_digest,
+    surface_order,
+)
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
@@ -1995,11 +2003,12 @@ def _evidence_disclosures(bundle: AnalysisContextBundle) -> list[ReportBlock]:
             )
     # An arm keyed by a floating alias can pool numbers from more than one model; a code-only report has no
     # writer to read `arm_served_models`, so the mixture is said here, once per arm.
+    arm_name = _bundle_arm_namer(bundle)
     for reading in bundle.arm_served_models:
         if reading.state == "pooled":
             say(
                 "measurement",
-                f"Arm {short_digest(reading.variant_key)} asked for one model and its candidate was answered by "
+                f"Arm {arm_name(reading.variant_key)} asked for one model and its candidate was answered by "
                 f"{_listed(reading.served_models)}, so its numbers mix those models.",
             )
     # An arm's production-replicating cost is production's only where its runs moved nothing (#571); a code-only
@@ -2010,7 +2019,7 @@ def _evidence_disclosures(bundle: AnalysisContextBundle) -> list[ReportBlock]:
         dimensions = f" on {_listed(merge.dimensions)}" if merge.dimensions else ""
         say(
             "apparatus",
-            f"Arm {short_digest(merge.variant_key)} was measured in {len(merge.apparatus_class_ids)} cells that did "
+            f"Arm {arm_name(merge.variant_key)} was measured in {len(merge.apparatus_class_ids)} cells that did "
             f"not pool ({merge.reason.replace('_', ' ')}{dimensions}).",
         )
     if bundle.refused_merges_omitted:
@@ -2022,6 +2031,12 @@ def _evidence_disclosures(bundle: AnalysisContextBundle) -> list[ReportBlock]:
     return blocks
 
 
+def _bundle_arm_namer(bundle: AnalysisContextBundle) -> Callable[[str], str]:
+    """Name an arm by its variant key as every table of the report names it, never as a bare digest."""
+    names = arm_names(bundle.variant_index)
+    return lambda variant_key: arm_label(variant_key, names)
+
+
 def _production_footing_sentence(bundle: AnalysisContextBundle) -> str | None:
     """Say, per arm, what its runs set away from the subject's production configuration (#571).
 
@@ -2030,9 +2045,12 @@ def _production_footing_sentence(bundle: AnalysisContextBundle) -> str | None:
 
     Returns:
         One sentence naming each arm's moved and unchecked inputs, or that it moved nothing; ``None`` when the
-        bundle carries no arm footing (one assembled before it was read).
+        bundle carries no arm footing, or when every arm moved nothing and every run was checked — then each
+        arm's production-replicating cost is production's, and there is nothing to qualify.
     """
+    arm_name = _bundle_arm_namer(bundle)
     parts: list[str] = []
+    qualified = False
     for variant_key, pooled in sorted(bundle.arm_production_footings.items()):
         footings = list(pooled.runs.values())
         moved = sorted({f"{name}={level}" for f in footings if f is not None for name, level in f.moved.items()})
@@ -2043,8 +2061,9 @@ def _production_footing_sentence(bundle: AnalysisContextBundle) -> str | None:
             *([f"left unchecked whether {', '.join(unchecked)} is production's"] if unchecked else []),
             *([f"{unread} run(s) nobody checked"] if unread else []),
         ]
-        parts.append(f"arm {short_digest(variant_key)} " + ("; ".join(said) or "moved nothing off production"))
-    if not parts:
+        qualified = qualified or bool(said)
+        parts.append(f"arm {arm_name(variant_key)} " + ("; ".join(said) or "moved nothing off production"))
+    if not qualified:
         return None
     return (
         "A production-replicating cost is what production would spend only where its arm's runs moved nothing off "
