@@ -181,13 +181,22 @@ class JobRecorder[R: EvalDocumentModel]:
                 shutdown — or this process let go of its lease, so the job writes nothing more.
             ConflictError: Every attempt lost its race.
             StorageError: A read or write failed.
+            asyncio.CancelledError: The job was cancelled while the write ran. The write still finished, and
+                :attr:`record` is what it wrote, so the cancelled ending starts from it.
         """
 
         def write() -> R:
             return write_held_record(self._store, self._kind, record, leases=self._leases)
 
-        written = await run_blocking(self._executor, write)
+        # A cancel cannot stop a write already on a worker. Awaited plainly, the cancel left the record as it was
+        # before a write the store went on to keep, and the cancelled ending, built from that, wrote over it and
+        # dropped what the work had recorded (an answer it had paid for).
+        writing = asyncio.ensure_future(run_blocking(self._executor, write))
+        cancelled = await wait_through_cancellation(writing)
+        written = writing.result()
         self._record = written
+        if cancelled:
+            raise asyncio.CancelledError
         return written
 
 
