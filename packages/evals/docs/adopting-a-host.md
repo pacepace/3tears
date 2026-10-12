@@ -246,6 +246,11 @@ recomputes an identity key, so keys from different predicates never silently poo
 **Reads stay strict.** Every stored model refuses an unknown field and a missing required one. A core
 document written by a newer release is refused, never guessed at, so when two builds share one store,
 upgrade the older one. A core document from before the first release (below core v8) is refused too.
+A refused run stays as stored, and the boot reclaim (`sweep_abandoned_runs`) counts it `unreadable` rather than
+settling it. `runs_unreadable` (operation and action) names each stored run of the scope the current model refuses,
+of any status, with the fields it refused and why. The ones stored pending or running are marked stranded: they are
+the reclaim's `unreadable` count for that scope, and nothing settles them until the document is dropped or a build
+that reads it is deployed.
 
 ### Partition by facts: one store per kind of document
 

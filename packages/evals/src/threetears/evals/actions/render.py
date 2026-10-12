@@ -71,6 +71,7 @@ from threetears.evals.ops import (
     TemplateListing,
     bar_proposals_text,
     UndescribableArmsListing,
+    UnreadableRunsListing,
     dollars_text,
     estimate_text,
     format_number,
@@ -290,6 +291,20 @@ def render_runs(listing: RunListing) -> str:
     if listing.label is not None:
         scope += f", labelled {listing.label}"
     return "\n".join([f"runs ({len(listing.runs)}, {scope})", *(render_run_line(run) for run in listing.runs)])
+
+
+def render_unreadable_runs(listing: UnreadableRunsListing) -> str:
+    """The scope's stored runs this build cannot read, stranded ones marked."""
+    lines = [
+        f"runs in scope {listing.scope_id} this build cannot read: {len(listing.runs)} of {listing.runs_read}, "
+        f"{listing.stranded} stranded (stored pending or running; the boot sweep can never settle them)"
+    ]
+    for line in listing.runs:
+        status = line.status if line.status is not None else "no status recorded"
+        stranded = ", stranded" if line.stranded else ""
+        run_id = line.run_id if line.run_id is not None else "(no id on the row)"
+        lines.append(f"- {run_id} ({status}{stranded}): {'; '.join(line.reasons)}")
+    return "\n".join(lines)
 
 
 def render_summary(summary: EvalSummary) -> str:
@@ -941,6 +956,7 @@ __all__ = [
     "render_run_deleted",
     "render_run_line",
     "render_runs",
+    "render_unreadable_runs",
     "render_summary",
     "render_templates",
 ]

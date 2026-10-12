@@ -72,6 +72,7 @@ from threetears.evals.ops import (
     RunDeleted,
     RunLine,
     RunListing,
+    UnreadableRunsListing,
     RunsBisected,
     RunsCompared,
     ScoreExport,
@@ -122,6 +123,7 @@ from threetears.evals.ops import (
     runs_bisect,
     runs_compare,
     runs_list,
+    runs_unreadable,
     scope_export,
     scope_frontier,
     scope_history,
@@ -276,6 +278,10 @@ class RunsListParams(EvalBaseModel):
     label: Annotated[
         str | None, Field(description="List only runs carrying this label (run_label sets them); every run if unset.")
     ] = None
+
+
+class RunsUnreadableParams(EvalBaseModel):
+    """``runs_unreadable`` — the caller's scope is the whole question, so it takes nothing."""
 
 
 class RunParams(EvalBaseModel):
@@ -727,6 +733,11 @@ class InsightDeleteParams(EvalBaseModel):
 
 async def _templates_list(host: OpsHost, caller: Caller, _: NoParams) -> TemplateListing:
     return await run_blocking(host.eval_host.blocking_executor, templates_list, host.eval_host, caller.scope_id)
+
+
+async def _runs_unreadable(host: OpsHost, caller: Caller, params: RunsUnreadableParams) -> UnreadableRunsListing:
+    eval_host = host.eval_host
+    return await run_blocking(eval_host.blocking_executor, runs_unreadable, eval_host, caller.scope_id)
 
 
 async def _runs_list(host: OpsHost, caller: Caller, params: RunsListParams) -> RunListing:
@@ -1347,6 +1358,25 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_runs_list,
             render=render.render_runs,
             example={"status": "completed"},
+        ),
+        Action(
+            name="runs_unreadable",
+            summary="List the scope's stored runs this build cannot read, each with why.",
+            workflow=DISCOVER,
+            permission="read",
+            params=RunsUnreadableParams,
+            result=UnreadableRunsListing,
+            handler=_runs_unreadable,
+            render=render.render_unreadable_runs,
+            example={},
+            detail=(
+                "Read from every stored run of the scope on each call, any status, archived included, never stored: "
+                "each run document this build's model refuses, with the fields it refused and why. A row that "
+                "does not read never stops the rest from being read. Stranded ones were stored pending or running: "
+                "the boot sweep counts them unreadable and can never settle them. runs_list, and every other read "
+                "of the scope's runs as a list, fails on the first row named here. Most useful after an upgrade, when the "
+                "corpus has outlived the model that wrote it."
+            ),
         ),
         Action(
             name="sweep_launch",
