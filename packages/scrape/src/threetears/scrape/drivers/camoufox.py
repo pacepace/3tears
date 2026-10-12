@@ -82,9 +82,8 @@ def _decode_captured_body(raw: bytes) -> str | None:
         try:
             return raw.decode(encoding)
         except UnicodeDecodeError, LookupError:
-            # NOSILENT: this loop IS the probe -- each candidate encoding is tried until one
-            # decodes, so a rejection is the expected answer for every candidate but the last.
-            # Exhausting them all is reported by the None below.
+            # NOSILENT(attempt): one candidate encoding of several; exhausting them returns the
+            # documented None, which the one caller logs as an undecodable body and skips.
             continue
     return None
 

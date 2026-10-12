@@ -134,6 +134,8 @@ def _accepts_session_state(driver: ScrapeDriver) -> bool:
     try:
         params = inspect.signature(driver.render).parameters
     except TypeError, ValueError:
+        # NOSILENT(expected): an unreadable signature is the documented True -- the call is
+        # attempted, and a real mismatch raises there and is reported as a fetch failure.
         return True
     if "session_state" in params:
         return True

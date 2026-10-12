@@ -181,6 +181,8 @@ class NodriverDownloadDriver(ScrapeDriver):
             try:
                 body = response.json()
             except ValueError:
+                # NOSILENT(expected): a non-JSON error body (an ingress's HTML page) is still raised
+                # below, with the response text as its message.
                 body = None
             error = body.get("error") if isinstance(body, dict) else None
             if not isinstance(error, dict):
