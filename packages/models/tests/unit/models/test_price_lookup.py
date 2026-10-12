@@ -123,6 +123,7 @@ def test_unknown_model_returns_empty() -> None:
         cost_per_1m_input=None,
         cost_per_1m_output=None,
         context_window_tokens=None,
+        unpriced_reason="no catalogue entry matches openai/gpt-9-ultra",
     )
 
 
@@ -233,14 +234,17 @@ def test_voyage_parse_splits_multi_model_cell() -> None:
     assert prices["voyage-code-2"] == Decimal("0.12")
 
 
-def test_voyage_parse_malformed_body_returns_empty() -> None:
-    # no "body" hydration field at all → no guessing, empty map.
-    assert parse_voyage_pricing("<html><body>no hydration blob here</body></html>") == {}
-    # a "body" field whose JSON string doesn't decode → empty (fail-safe).
-    assert parse_voyage_pricing('{"body":"\\uXXXX broken escape"}') == {}
-    # a well-formed body with NO per-million-tokens table → empty (never a wrong column).
+def test_voyage_parse_refuses_a_page_it_cannot_read_rather_than_answer_no_prices() -> None:
+    # no "body" hydration field at all → refused, never read as "Voyage lists nothing".
+    with pytest.raises(ValueError, match='no "body" hydration field'):
+        parse_voyage_pricing("<html><body>no hydration blob here</body></html>")
+    # a "body" field whose JSON string doesn't decode → refused.
+    with pytest.raises(ValueError, match="not a JSON string"):
+        parse_voyage_pricing('{"body":"\\uXXXX broken escape"}')
+    # a well-formed body with NO per-million-tokens table → refused (never a wrong column, never "no prices").
     no_table = '{"body":"<table><thead><tr><th>Model</th><th>Price per pixel</th></tr></thead><tbody><tr><td><code>voyage-x</code></td><td>$9</td></tr></tbody></table>"}'
-    assert parse_voyage_pricing(no_table) == {}
+    with pytest.raises(ValueError, match="no pricing table"):
+        parse_voyage_pricing(no_table)
 
 
 async def test_voyage_source_lookup_matches_fixture_model() -> None:
@@ -278,6 +282,14 @@ async def test_voyage_source_malformed_page_fails_safe_not_raises() -> None:
     result = await VoyagePriceSource().lookup(client, provider="voyage", api_name="voyage-4")
     assert result.matched_id is None
     assert result.cost_per_1m_input is None
+    assert result.unpriced_reason is not None
+    assert "could not be read" in result.unpriced_reason
+
+
+async def test_voyage_source_says_a_model_is_not_listed_when_it_is_not() -> None:
+    client = _FakeClient(text=_VOYAGE_FIXTURE)
+    result = await VoyagePriceSource().lookup(client, provider="voyage", api_name="voyage-99-ultra")
+    assert result.unpriced_reason == "voyage-99-ultra is not listed on the Voyage pricing page"
 
 
 async def test_voyage_source_transport_error_propagates() -> None:
@@ -386,3 +398,19 @@ async def test_lookup_price_routes_voyage_to_the_scraper() -> None:
     assert result.matched_id == "voyage-4-large"
     assert result.cost_per_1m_input == Decimal("0.12")
     assert result.source == "voyage"
+
+
+def test_a_catalogue_price_that_does_not_parse_is_named_not_read_as_unpublished() -> None:
+    catalogue = [{"id": "openai/gpt-odd", "pricing": {"prompt": "abc", "completion": "0.000002"}}]
+    result = match_price(catalogue, provider="openai", api_name="gpt-odd")
+    assert result.matched_id == "openai/gpt-odd"
+    assert result.cost_per_1m_input is None
+    assert result.cost_per_1m_output == Decimal("2")
+    assert result.unpriced_reason == "openai/gpt-odd is listed, but its published prompt price 'abc' is not a number"
+    [option] = list_provider_models(catalogue, provider="openai")
+    assert option.unpriced_reason == result.unpriced_reason
+
+
+def test_an_unmatched_catalogue_lookup_says_nothing_matched() -> None:
+    result = match_price([], provider="openai", api_name="gpt-none")
+    assert result.unpriced_reason == "no catalogue entry matches openai/gpt-none"
