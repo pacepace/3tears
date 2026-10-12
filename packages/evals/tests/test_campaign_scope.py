@@ -43,7 +43,7 @@ class TestCreation:
         storage, _ = _storage_with_a_run_in_each_scope()
 
         campaign = campaigns.create_campaign(
-            storage, _definition("run-here"), scope_id=_HOME, created_by="op", profile=_HOST
+            storage, _definition("run-here"), scope_id=_HOME, created_by="op", profile=_HOST, exploratory=True
         )
 
         assert campaign.scope_id == _HOME
@@ -55,7 +55,12 @@ class TestCreation:
 
         with pytest.raises(ValidationFailedError, match="'run-there'.*scope 'scope-a'"):
             campaigns.create_campaign(
-                storage, _definition("run-here", "run-there"), scope_id=_HOME, created_by="op", profile=_HOST
+                storage,
+                _definition("run-here", "run-there"),
+                scope_id=_HOME,
+                created_by="op",
+                profile=_HOST,
+                exploratory=True,
             )
 
         assert storage.list_campaigns(_HOME) == []
@@ -66,7 +71,12 @@ class TestCreation:
         storage, _ = _storage_with_a_run_in_each_scope()
 
         campaign = campaigns.create_campaign(
-            storage, {**_definition("run-here"), "scope_id": _ELSEWHERE}, scope_id=_HOME, created_by="op", profile=_HOST
+            storage,
+            {**_definition("run-here"), "scope_id": _ELSEWHERE},
+            scope_id=_HOME,
+            created_by="op",
+            profile=_HOST,
+            exploratory=True,
         )
 
         assert campaign.scope_id == _HOME
@@ -75,7 +85,9 @@ class TestCreation:
 class TestAttachment:
     def test_a_run_of_the_campaign_s_scope_is_attached(self) -> None:
         storage, _ = _storage_with_a_run_in_each_scope()
-        campaign = campaigns.create_campaign(storage, _definition(), scope_id=_HOME, created_by="op", profile=_HOST)
+        campaign = campaigns.create_campaign(
+            storage, _definition(), scope_id=_HOME, created_by="op", profile=_HOST, exploratory=True
+        )
 
         updated = campaigns.add_runs_to_campaign(storage, campaign.id, _HOME, ["run-here"])
 
@@ -85,7 +97,7 @@ class TestAttachment:
     def test_a_run_of_another_scope_is_refused_and_the_campaign_is_left_as_it_was(self) -> None:
         storage, _ = _storage_with_a_run_in_each_scope()
         campaign = campaigns.create_campaign(
-            storage, _definition("run-here"), scope_id=_HOME, created_by="op", profile=_HOST
+            storage, _definition("run-here"), scope_id=_HOME, created_by="op", profile=_HOST, exploratory=True
         )
 
         with pytest.raises(ValidationFailedError, match="'run-there'.*scope 'scope-a'"):
@@ -97,7 +109,7 @@ class TestAttachment:
         """An id already held needs no re-check: it was admitted under the same rule."""
         storage, store = _storage_with_a_run_in_each_scope()
         campaign = campaigns.create_campaign(
-            storage, _definition("run-here"), scope_id=_HOME, created_by="op", profile=_HOST
+            storage, _definition("run-here"), scope_id=_HOME, created_by="op", profile=_HOST, exploratory=True
         )
         del store.documents[(_HOME, "run-here")]
 
@@ -107,7 +119,7 @@ class TestAttachment:
 def test_the_view_reads_members_in_the_campaign_s_scope() -> None:
     storage, store = _storage_with_a_run_in_each_scope()
     campaign = campaigns.create_campaign(
-        storage, _definition("run-here"), scope_id=_HOME, created_by="op", profile=_HOST
+        storage, _definition("run-here"), scope_id=_HOME, created_by="op", profile=_HOST, exploratory=True
     )
     del store.documents[(_HOME, "run-here")]
 

@@ -527,7 +527,8 @@ Run the file twice. The second run reads the first run's results from the file, 
 Everything above was **exploratory**: you compared arms without saying in advance what you wanted to learn, and
 the report says so. Every finding in it is a lead, not a confirmed answer. A campaign may be exploratory because
 you are still figuring out how to do evals, or because you have an intuition and want to test some things
-without a clear goal. Both are good reasons, and exploring needs no planning.
+without a clear goal. Both are good reasons, and exploring needs no planning: only saying so. A campaign you create
+yourself takes `exploratory=True` when it declares no design, and one that says neither is refused.
 
 Declaring a design pays off once you will act on the answer. `compare` already declares the axes (the levers
 you varied, and their levels) and the control for you; on a host of your own you declare those too, so the

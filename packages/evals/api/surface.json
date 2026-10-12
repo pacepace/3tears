@@ -3383,7 +3383,7 @@
     },
     "threetears.evals.analysis.create_campaign": {
       "kind": "function",
-      "signature": "create_campaign(storage: CampaignStore, definition: dict[str, Any], *, scope_id: str, created_by: str, profile: HostProfile, control_from_run_id: str | None = None) -> EvalCampaign"
+      "signature": "create_campaign(storage: CampaignStore, definition: dict[str, Any], *, scope_id: str, created_by: str, profile: HostProfile, control_from_run_id: str | None = None, exploratory: bool = False) -> EvalCampaign"
     },
     "threetears.evals.analysis.CriterionDrift": {
       "kind": "literal",
@@ -4383,7 +4383,7 @@
     },
     "threetears.evals.analysis.update_campaign": {
       "kind": "function",
-      "signature": "update_campaign(storage: CampaignStore, campaign_id: str, scope_id: str, updates: dict[str, Any], *, updated_by: str, profile: HostProfile) -> EvalCampaign"
+      "signature": "update_campaign(storage: CampaignStore, campaign_id: str, scope_id: str, updates: dict[str, Any], *, updated_by: str, profile: HostProfile, exploratory: bool = False) -> EvalCampaign"
     },
     "threetears.evals.analysis.variant_key_of_run": {
       "kind": "function",
@@ -4961,13 +4961,21 @@
       "kind": "function",
       "signature": "campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: str, *, created_by: str) -> CampaignLine"
     },
+    "threetears.evals.ops.campaign_update": {
+      "kind": "function",
+      "signature": "campaign_update(host: EvalHost, campaign_id: str, changes: CampaignChanges, scope_id: str, *, updated_by: str) -> CampaignLine"
+    },
+    "threetears.evals.ops.CampaignChanges": {
+      "kind": "model",
+      "signature": "CampaignChanges(name: str | None = None, description: str | None = None, declared_design: dict[str, Any] | None = None, exploratory: bool = False)"
+    },
     "threetears.evals.ops.CampaignDefinition": {
       "kind": "model",
-      "signature": "CampaignDefinition(name: str, subject_id: str, behavior: str, description: str = '', run_ids: list[str] = list(), template_id: str | None = None, declared_design: dict[str, Any] | None = None, control_from_run_id: str | None = None)"
+      "signature": "CampaignDefinition(name: str, subject_id: str, behavior: str, description: str = '', run_ids: list[str] = list(), template_id: str | None = None, declared_design: dict[str, Any] | None = None, control_from_run_id: str | None = None, exploratory: bool = False)"
     },
     "threetears.evals.ops.CampaignLine": {
       "kind": "model",
-      "signature": "CampaignLine(id: str, name: str, subject_id: str, behavior: str, run_count: int, archived: bool)"
+      "signature": "CampaignLine(id: str, name: str, subject_id: str, behavior: str, run_count: int, archived: bool, exploratory: bool)"
     },
     "threetears.evals.ops.CampaignListing": {
       "kind": "model",

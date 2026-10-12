@@ -120,7 +120,9 @@ async def test_the_control_is_resolved_from_a_run_as_set_campaign_control_resolv
             "remedy: declare only the axes this refusal lists as declarable",
             id="an-axis-the-host-does-not-declare",
         ),
-        pytest.param({"control_from_run_id": "{run}"}, "declare a design", id="a-control-run-with-no-design"),
+        pytest.param(
+            {"control_from_run_id": "{run}", "exploratory": True}, "declare a design", id="a-control-run-with-no-design"
+        ),
         pytest.param(
             {"declared_design": _design(), "control_from_run_id": "run-not-in-the-campaign"},
             "is not attached",
@@ -171,7 +173,7 @@ async def test_an_undeclared_axis_is_named_beside_the_pointer(evals: MountedTool
 async def _exploratory(tool: MountedTool) -> tuple[OpsFixture, str, AnalysisContextBundle]:
     """A campaign created through the action with no design, and its bundle as an analysis would assemble it."""
     fixture = off_loop(ops_fixture)
-    outcome = await _create(tool, fixture)
+    outcome = await _create(tool, fixture, exploratory=True)
     assert not outcome.is_error, outcome.text
     eval_host = fixture.host.eval_host
     stored = off_loop(eval_host.storage.load_campaign, outcome.structured["id"], TOYHOST_SCOPE)
