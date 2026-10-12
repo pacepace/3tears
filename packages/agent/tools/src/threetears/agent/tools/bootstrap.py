@@ -48,7 +48,6 @@ is refused as a :class:`ToolPodConfigError`.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import os
 import signal
 from collections.abc import Awaitable, Callable, Sequence
@@ -65,6 +64,7 @@ from threetears.observe import (
     HealthCheck,
     HealthServer,
     HealthTier,
+    cancel_and_wait,
     configure_logging,
     get_logger,
     spawn_background,
@@ -234,8 +234,10 @@ def _process_exists(pid: int) -> bool:
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
+        # NOSILENT(expected): kill(pid, 0) answering "no such process" IS the answer this probe asks for
         result = False
     except PermissionError:
+        # NOSILENT(expected): EPERM means the process exists and is someone else's -- the docstring's answer
         result = True
     return result
 
@@ -259,6 +261,7 @@ def _is_tool_pod_id(pod_id: str) -> bool:
     try:
         UUID(pod_id)
     except ValueError:
+        # NOSILENT(expected): "not a uuid" IS the answer -- an in-process pod's id is not a tool-pod id
         result = False
     return result
 
@@ -691,10 +694,7 @@ class ToolServerBootstrap:
             await self._await_serve(serve_task)
         finally:
             if owner_watch is not None:
-                owner_watch.cancel()
-                # NOSILENT: the only thing suppressed is the cancellation sent on the line above.
-                with contextlib.suppress(asyncio.CancelledError):
-                    await owner_watch
+                await cancel_and_wait(owner_watch)
             await self._bounded_teardown(health_server)
             log.info(
                 f"{self._service_name} stopped",
@@ -928,6 +928,8 @@ class ToolServerBootstrap:
         try:
             await health_server.start()
         except Exception as exc:
+            # NOSILENT(logged): None is the documented 'running without /healthz', which is true; logged at WARNING, and
+            # kubelet's probes then fail visibly against a pod with no health endpoint
             log.warning(
                 "health server failed to start; tool pod will run without /healthz",
                 extra={

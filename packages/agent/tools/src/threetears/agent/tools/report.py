@@ -291,6 +291,8 @@ async def _presign_delivery_url(s3_key: str, ttl: int) -> str | None:
     try:
         return await scope.object_store.presigned_get_url(s3_key, expires_in=ttl)
     except Exception:  # prawduct:allow prawduct/broad-except -- delivery is best-effort on an already-produced+cataloged object; the producer stays impl-free (media-contracts only) so it cannot import the store impl's concrete exception types. Logged with context below; the report still returns successfully.
+        # NOSILENT(logged): the report is produced and cataloged either way; with no URL the result message says
+        # "a download link could not be generated", which is the true answer
         _log.warning(
             "could not presign a delivery URL for a produced report; returning the handle without a URL",
             exc_info=True,

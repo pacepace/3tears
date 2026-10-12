@@ -206,6 +206,8 @@ class ToolRelevanceIndex:
         try:
             result = await self._embedder.aembed_query(text)
         except Exception as exc:
+            # NOSILENT(logged): None is the private 'embedding failed' signal: _rank turns it into fallback_reason
+            # "embedder_error", and select/search answer the FULL catalog with fallback_used=True
             _log.warning(
                 "tool-relevance query embedding failed (soft-fail)",
                 extra={"extra_data": {"error": str(exc)}},
@@ -222,6 +224,8 @@ class ToolRelevanceIndex:
         try:
             result = await self._embedder.aembed_documents(texts)
         except Exception as exc:
+            # NOSILENT(logged): None is the private 'embedding failed' signal: _rank turns it into fallback_reason
+            # "embedder_error", and select/search answer the FULL catalog with fallback_used=True
             _log.warning(
                 "tool-relevance batch embedding failed (soft-fail)",
                 extra={"extra_data": {"error": str(exc), "text_count": len(texts)}},

@@ -155,7 +155,7 @@ class TestRenderPdfPagesToImages:
         assert captured["first_page"] == 1
         assert captured["last_page"] == 3
 
-    def test_render_failure_returns_empty_list_not_a_crash(self, monkeypatch):
+    def test_a_render_failure_is_refused_by_name_rather_than_answered_as_no_pages(self, monkeypatch):
         fake_pdf2image = ModuleType("pdf2image")
 
         def fake_convert_from_bytes(*args, **kwargs):
@@ -164,9 +164,8 @@ class TestRenderPdfPagesToImages:
         fake_pdf2image.convert_from_bytes = fake_convert_from_bytes  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
 
-        result = render_pdf_pages_to_images(b"fake-pdf-bytes")
-
-        assert result == []
+        with pytest.raises(DocumentParseError, match="could not be rendered: RuntimeError: boom"):
+            render_pdf_pages_to_images(b"fake-pdf-bytes")
 
     def test_default_max_pages_is_three(self, monkeypatch):
         captured: dict[str, Any] = {}
@@ -516,11 +515,16 @@ class _FakeTables:
 
 # parity-exempt: hand-rolled subset stub of PyMuPDF's third-party Page (get_text() and find_tables(), the only surfaces the PDF parser reads)
 class _FakePdfPage:
-    def __init__(self, tables: list[_FakeExtractedTable], *, tables_raise: bool = False) -> None:
+    def __init__(
+        self, tables: list[_FakeExtractedTable], *, tables_raise: bool = False, layout_raise: bool = False
+    ) -> None:
         self.tables = tables
         self.tables_raise = tables_raise
+        self.layout_raise = layout_raise
 
     def get_text(self, option: str = "text") -> Any:
+        if option == "dict" and self.layout_raise:
+            raise RuntimeError("layout unreadable")
         return {"blocks": []} if option == "dict" else _PAGE_TEXT
 
     def find_tables(self) -> _FakeTables:
@@ -743,5 +747,48 @@ class TestPdfTables:
         assert "| 4/14/2026 | Greenwood Leflore Hospital | 622110 – General |" in result.text
         assert "|  |  | Medical and Surgical Hospital |" in result.text
 
+    async def test_a_heading_detection_failure_keeps_the_page_text_and_says_so(self, monkeypatch, caplog):
+        """The heading heuristic used to answer "no headings" on any failure, saying nothing."""
+        fake_fitz = ModuleType("fitz")
+        page = _FakePdfPage([], layout_raise=True)
+        fake_fitz.open = lambda *a, **kw: _FakePdfDocument(page)  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+        with caplog.at_level("WARNING"):
+            result = await parse_document(b"%PDF-stub", "application/pdf")
+        assert result.text == _PAGE_TEXT
+        assert [s.content for s in result.sections] == [_PAGE_TEXT]
+        assert len(result.page_faults) == 1
+        assert result.page_faults[0].startswith("page 1: headings could not be detected (")
+        assert any("headings could not be detected" in r.getMessage() for r in caplog.records)
+
     async def test_a_table_extraction_exception_degrades_to_the_page_text(self, monkeypatch):
         assert await _parse_pdf_page(monkeypatch, _FakePdfPage([], tables_raise=True), merge=False) == ""
+
+    async def test_a_table_extraction_failure_is_recorded_on_the_result_not_read_as_no_tables(self, monkeypatch):
+        """A page whose tables could not be read used to look exactly like a page with none."""
+        fake_fitz = ModuleType("fitz")
+        page = _FakePdfPage([], tables_raise=True)
+        fake_fitz.open = lambda *a, **kw: _FakePdfDocument(page)  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+        result = await parse_document(b"%PDF-stub", "application/pdf")
+        assert result.page_faults == ["page 1: tables could not be extracted (RuntimeError: boom)"]
+
+    async def test_a_fully_read_pdf_has_no_page_faults(self, monkeypatch):
+        fake_fitz = ModuleType("fitz")
+        page = _FakePdfPage([])
+        fake_fitz.open = lambda *a, **kw: _FakePdfDocument(page)  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+        result = await parse_document(b"%PDF-stub", "application/pdf")
+        assert result.page_faults == []
+
+    async def test_an_ocr_that_cannot_run_is_recorded_on_the_result(self, monkeypatch):
+        """OCR failing used to leave the near-empty page text in place with nothing on the result."""
+        fake_fitz = ModuleType("fitz")
+        page = _FakePdfPage([])
+        fake_fitz.open = lambda *a, **kw: _FakePdfDocument(page)  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+        monkeypatch.setitem(sys.modules, "pdf2image", None)
+        result = await parse_document(b"%PDF-stub", "application/pdf", ocr_config=OcrConfig(enabled=True))
+        assert result.text == _PAGE_TEXT
+        assert len(result.page_faults) == 1
+        assert result.page_faults[0].startswith("page 1: OCR could not run (")

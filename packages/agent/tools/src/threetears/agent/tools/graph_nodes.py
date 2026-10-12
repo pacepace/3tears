@@ -222,6 +222,8 @@ def _search_structure_of(message: ToolMessage) -> SearchResultsMetadata | None:
     try:
         return SearchResultsMetadata.from_metadata(payload)
     except ValueError:
+        # NOSILENT(logged): None is this reader's 'no structure to read'; the context row is still saved with its prose,
+        # which is true, and the unreadable projection is logged at WARNING with its traceback
         logger.warning("Context save could not read search structure; saving prose only", exc_info=True)
         return None
 
