@@ -380,7 +380,11 @@ def test_a_campaign_is_created_archived_and_listed_as_typed_lines() -> None:
     created = campaign_create(
         host,
         CampaignDefinition(
-            name="widths", subject_id=TOYHOST_SUBJECT.subject_id, behavior="speed", run_ids=fixture.campaign.run_ids
+            name="widths",
+            subject_id=TOYHOST_SUBJECT.subject_id,
+            behavior="speed",
+            run_ids=fixture.campaign.run_ids,
+            exploratory=True,
         ),
         TOYHOST_SCOPE,
         created_by=CALLER.identity,

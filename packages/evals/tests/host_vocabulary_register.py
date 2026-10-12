@@ -178,6 +178,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "schema/models.py": {},
     "kernel/prompts/__init__.py": {},
     "kernel/prompts/catalogue.py": {},
+    "kernel/prompts/contract.py": {},
     "kernel/prompts/drift.py": {},
     "kernel/prompts/seed.py": {},
     "schema/prose.py": {},

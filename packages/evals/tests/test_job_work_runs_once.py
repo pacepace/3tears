@@ -46,7 +46,7 @@ async def test_the_same_admitted_work_started_twice_is_refused_and_spends_once()
     fixture = off_loop(ops_fixture)
     storage, executor = fixture.host.eval_host.storage, fixture.host.eval_host.blocking_executor
     spend = _Spend()
-    work = action_job_work(TOYHOST_SCOPE, action="draft", run=spend.draft, discard=spend.discard)
+    work = action_job_work(TOYHOST_SCOPE, action="draft", run=spend.draft, discard=spend.discard, budget_s=60.0)
 
     await start_job_work(fixture.host.launch.job_manager, work, store=storage, executor=executor)
     first = await settled(fixture.host, f"action:{work.record_id}")
@@ -65,7 +65,7 @@ async def test_a_record_already_stored_under_the_works_id_is_never_written_over(
     fixture = off_loop(ops_fixture)
     storage, executor = fixture.host.eval_host.storage, fixture.host.eval_host.blocking_executor
     spend = _Spend()
-    work = action_job_work(TOYHOST_SCOPE, action="draft", run=spend.draft, discard=spend.discard)
+    work = action_job_work(TOYHOST_SCOPE, action="draft", run=spend.draft, discard=spend.discard, budget_s=60.0)
     there = work.record.model_copy(update={"outcome": "completed", "result": {"text": "an earlier run's"}})
     off_loop(storage.save_job_record, there.to_dict(), if_match=None)
     leases = JobLeases(storage, blocking_executor=executor)

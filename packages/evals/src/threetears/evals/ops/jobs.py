@@ -82,7 +82,6 @@ from pydantic import BaseModel
 
 from threetears.evals.run.job_work import (
     ACTION_JOB,
-    DEFAULT_ACTION_JOB_BUDGET_S,
     EvalActionJob,
     JobOutcome,
     JobWork,
@@ -720,8 +719,8 @@ async def start_action_job(
     *,
     action: str,
     run: Callable[[], Awaitable[BaseModel]],
+    budget_s: float,
     label: str = "",
-    budget_s: float = DEFAULT_ACTION_JOB_BUDGET_S,
     discard: Callable[[], Awaitable[None]] | None = None,
 ) -> JobsStarted:
     """Start a host action's work as a job whose record (:class:`~threetears.evals.run.EvalActionJob`) holds its result.
@@ -737,7 +736,8 @@ async def start_action_job(
         action: The action's name.
         run: The work: makes the calls and returns the action's typed result.
         label: A short line naming the work.
-        budget_s: The work's wall-clock ceiling.
+        budget_s: The work's wall-clock ceiling. Required: a forgotten budget is a ``TypeError`` here, never an hour
+            nobody chose (:data:`~threetears.evals.run.DEFAULT_ACTION_JOB_BUDGET_S` is the value to pass for that).
         discard: Releases what the handler built for ``run`` when the work never runs.
 
     Returns:
@@ -763,7 +763,7 @@ async def start_paid_call[R: BaseModel](
     call: PlannedCall,
     make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]],
     label: str,
-    budget_s: float = DEFAULT_ACTION_JOB_BUDGET_S,
+    budget_s: float,
 ) -> JobsStarted:
     """Start a host action's one paid model call: admitted against its cap in the call, made in a job.
 
@@ -786,7 +786,8 @@ async def start_paid_call[R: BaseModel](
         make: Makes the admitted call on the client (through ``budget``) and reads its result; owns the client's
             release from the moment it is called.
         label: What the job is, for a reader of ``job_poll``.
-        budget_s: The job's wall-clock ceiling.
+        budget_s: The job's wall-clock ceiling. Required, as :func:`start_action_job`'s is: a call takes as long as
+            its model, and only the action knows what is too long.
 
     Returns:
         The started job; ``job_poll`` returns ``make``'s result once it completes.

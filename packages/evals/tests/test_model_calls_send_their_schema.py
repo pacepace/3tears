@@ -18,7 +18,7 @@ import jsonschema
 import pytest
 
 from threetears.evals import kernel
-from threetears.evals.gen import plan_draft
+from threetears.evals.gen import RUBRIC_PROPOSAL_CONTRACT, plan_draft
 from threetears.evals.kernel import plan_variation_calls
 from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.kernel.authored import response_format as authored_response_format
@@ -35,6 +35,9 @@ from threetears.evals.schema.models import (
     RubricProposal,
     VariationAxis,
 )
+
+#: A system prompt written for the draft's output contract, as every stored proposer prompt has to be.
+_SYSTEM = f"SYSTEM TEXT\n{RUBRIC_PROPOSAL_CONTRACT.line}"
 
 
 def _strict(response_format: dict[str, Any] | None) -> dict[str, Any]:
@@ -58,7 +61,9 @@ def _draft(*, scale: str | None) -> dict[str, Any]:
 
 
 def test_a_proposal_sends_the_draft_model_as_a_strict_schema_that_requires_every_dimension_s_scale() -> None:
-    schema = _strict(plan_draft(system_prompt="S", subject_feed="F", catalog_feed="C").response_format)
+    schema = _strict(
+        plan_draft(axis="capability", system_prompt=_SYSTEM, subject_feed="F", catalog_feed="C").response_format
+    )
     rubric_dim = schema["$defs"]["RubricDim"]
 
     assert "scale" in rubric_dim["required"], "a draft with no scale on a dimension is not a reply in this shape"
@@ -72,7 +77,9 @@ def test_a_proposal_sends_the_draft_model_as_a_strict_schema_that_requires_every
 
 def test_the_proposal_schema_names_every_field_of_the_draft_model() -> None:
     """Derived from RubricProposal, so a field the model gains is a field the schema asks for."""
-    schema = _strict(plan_draft(system_prompt="S", subject_feed="F", catalog_feed="C").response_format)
+    schema = _strict(
+        plan_draft(axis="capability", system_prompt=_SYSTEM, subject_feed="F", catalog_feed="C").response_format
+    )
     assert set(schema["properties"]) == set(RubricProposal.model_fields)
     assert set(schema["$defs"]["RubricDim"]["properties"]) == set(RubricDim.model_fields)
 
@@ -199,7 +206,9 @@ def _every_directive() -> dict[str, dict[str, Any] | None]:
     )
     (variation,) = plan_variation_calls(template, 2, []).values()
     return {
-        "proposal": plan_draft(system_prompt="S", subject_feed="F", catalog_feed="C").response_format,
+        "proposal": plan_draft(
+            axis="capability", system_prompt=_SYSTEM, subject_feed="F", catalog_feed="C"
+        ).response_format,
         "variation": variation.response_format,
         "judge (ordinal)": _judge_request("ordinal").response_format,
         "judge (pass_fail)": _judge_request("pass_fail").response_format,
@@ -220,7 +229,9 @@ def test_every_directive_sends_only_keywords_both_providers_strict_modes_accept(
 
 def test_a_constraint_left_out_of_the_schema_is_still_enforced_on_return() -> None:
     """The sent schema no longer says a dimension's description is non-empty; the reply's validation still does."""
-    schema = _strict(plan_draft(system_prompt="S", subject_feed="F", catalog_feed="C").response_format)
+    schema = _strict(
+        plan_draft(axis="capability", system_prompt=_SYSTEM, subject_feed="F", catalog_feed="C").response_format
+    )
     empty = _draft(scale="pass_fail") | {"description": ""}
     jsonschema.validate(empty, {"$ref": "#/$defs/RubricDim", "$defs": schema["$defs"]})
     with pytest.raises(ValueError, match="description"):

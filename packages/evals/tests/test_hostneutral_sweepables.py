@@ -185,6 +185,9 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # test read (#595), and an `unverified_fold` confound's sentence names a host residual reader as the second way
     # to test it (#605); the apparatus partition is unchanged.
     ((48, 11), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
+    # 49/11: where a diverging whole-run movement went is stated once per lever, level pair and whole in
+    # `whole_swings`, no longer on each divergence (Discodon #2716); the apparatus partition is unchanged.
+    ((49, 11), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
 )
 
 

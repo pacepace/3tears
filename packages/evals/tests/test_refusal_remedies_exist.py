@@ -1,9 +1,10 @@
 """Every action or operation a refusal names as its remedy exists (#689).
 
-Two refusals told the operator to call ``campaign_set_control`` and ``campaign_update``. Neither is an
-action: the catalogue has ``campaign_create`` (whose control parameter is ``control_from_run_id``) and
-``campaign_archive``, and the Python calls are ``set_campaign_control`` and ``update_campaign``. A
-user following the message hit an unknown action.
+Two refusals told the operator to call ``campaign_set_control`` and ``campaign_update``, when neither was an
+action: the catalogue had ``campaign_create`` (whose control parameter is ``control_from_run_id``) and
+``campaign_archive``, and the Python calls were ``set_campaign_control`` and ``update_campaign``. A
+user following the message hit an unknown action. ``campaign_update`` has since become one (#2673), and the
+refusal that sends an operator to declare a design names it.
 
 This walks every ``raise`` in the package's source, collects each action-shaped name its message
 text mentions — a catalogue noun followed by a verb — and requires it to be an action in the
@@ -121,4 +122,4 @@ def test_refusals_do_name_remedies() -> None:
     """Guards the walk itself: an empty collection would pass the check above vacuously."""
     named = _named_in_refusals(_action_shaped())
 
-    assert {"set_campaign_control", "update_campaign", "add_runs_to_campaign"} <= set(named)
+    assert {"set_campaign_control", "campaign_update", "add_runs_to_campaign"} <= set(named)
