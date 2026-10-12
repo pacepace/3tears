@@ -546,8 +546,15 @@ async def run_judge_llm(
             temperature = sent_temperature(result)
         except CompletionProtocolDefect as defect:
             spent = _cumulative_usage()
-            defect.calls = attempts_made
-            defect.cost_usd = spent.cost_usd if spent is not None else None
+            if spent is not None:
+                defect.calls = spent.calls
+                defect.model = spent.model
+                defect.served_model = spent.served_model
+                defect.input_tokens = spent.input_tokens
+                defect.output_tokens = spent.output_tokens
+                defect.reasoning_tokens = spent.reasoning_tokens
+                defect.cost_usd = spent.cost_usd
+                defect.price_source = spent.price_source
             log.error(
                 "%s reply for case %s cannot be recorded, after %d attempt(s) costing %s: the completion breaks the "
                 "protocol",
@@ -582,6 +589,32 @@ async def run_judge_llm(
         # and must account for, even though it produced no score.
         "judge_usage": _cumulative_usage(),
     }
+
+
+def defect_usage(defect: CompletionProtocolDefect) -> CallUsage | None:
+    """What the calls made before a completion's protocol defect was found spent, as one usage record.
+
+    What a caller counts the billed calls by on its way out (:func:`run_judge_llm` sets them on the defect), so a run
+    failed by the defect still sums what it paid for.
+
+    Args:
+        defect: The defect, as :func:`run_judge_llm` raised it.
+
+    Returns:
+        The usage, or ``None`` when no call was counted on it.
+    """
+    if defect.calls == 0:
+        return None
+    return CallUsage(
+        model=defect.model,
+        served_model=defect.served_model,
+        input_tokens=defect.input_tokens,
+        output_tokens=defect.output_tokens,
+        reasoning_tokens=defect.reasoning_tokens,
+        cost_usd=defect.cost_usd,
+        price_source=defect.price_source,
+        calls=defect.calls,
+    )
 
 
 def sent_temperature(completion: CompletionResult) -> JudgeTemperature:
@@ -620,4 +653,4 @@ def sent_temperature(completion: CompletionResult) -> JudgeTemperature:
     return MODEL_DEFAULT_TEMPERATURE if sent is None else float(sent)
 
 
-__all__ = ["CANNOT_TELL", "run_judge_llm", "sent_temperature"]
+__all__ = ["CANNOT_TELL", "defect_usage", "run_judge_llm", "sent_temperature"]

@@ -88,6 +88,7 @@ from threetears.evals.kernel.errors import StorageError
 from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.schema.completion import CompletionProtocolDefect
+from threetears.evals.run.judge import defect_usage
 from threetears.evals.schema.external_spend import ExternalSpend
 from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.kernel.host.timeouts import EvalCellTimeout
@@ -1776,6 +1777,7 @@ async def judge_witnessed_output(
     judge_service: JudgeService,
     concurrency: int,
     eval_run_id: str,
+    settled: list[tuple[str, JudgeOutcome]] | None = None,
 ) -> tuple[_JudgeRecord, float] | tuple[None, None]:
     """Judge a host-observed cell's output through the runner's own judge phase, as the runner gates it.
 
@@ -1792,6 +1794,8 @@ async def judge_witnessed_output(
         judge_service: The judge, built from the run's recorded apparatus.
         concurrency: Judge calls in flight at once.
         eval_run_id: The run.
+        settled: A caller-owned list each returned call is appended to, the defect's billed call included,
+            so a caller the phase raised to still holds what was paid for; ``None`` when it keeps none.
 
     Returns:
         What the phase left and its wall clock; ``(None, None)`` when the output gave it nothing to judge.
@@ -1816,7 +1820,7 @@ async def judge_witnessed_output(
         judge_service=judge_service,
         goal_outcomes=goal_outcomes,
         concurrency=concurrency,
-        settled=[],
+        settled=settled if settled is not None else [],
         eval_run_id=eval_run_id,
         sink=None,
     )
@@ -3199,11 +3203,25 @@ async def judge_dims(
             else:
                 try:
                     outcome = await judge_service.score_request(request, case_id=context.case_id)
-                except CompletionProtocolDefect:
+                except CompletionProtocolDefect as defect:
                     # The host's completion type, not this dim's luck: every call would meet it, so it fails
-                    # the run rather than this dim. Nothing it holds against the cap outlives it.
+                    # the run rather than this dim. What its calls were billed is settled against the cap and
+                    # handed to the caller's record as this dim's outcome, so the run's spend still sums it.
+                    billed = defect_usage(defect)
                     if held is not None:
-                        held.release()
+                        if billed is None:
+                            held.release()
+                        else:
+                            held.settle(billed.cost_usd)
+                    if settled is not None:
+                        settled.append(
+                            (
+                                dim_id,
+                                JudgeOutcome(
+                                    score=None, config_id=request.judge_config_id, error=str(defect), usage=billed
+                                ),
+                            )
+                        )
                     raise
                 except (
                     Exception
@@ -3601,6 +3619,7 @@ async def execute_run(
     async def run_and_record(k: int, tc: EvalTestCase, sink: _CellSink) -> None:
         nonlocal done
         cancelled_in_cell = False
+        run_defect: CandidateKindDefect | CompletionProtocolDefect | None = None
         try:
             async with host.cell_timeout(options.cell_timeout_s):
                 result, cell_trace = await run_one_result(
@@ -3707,6 +3726,37 @@ async def execute_run(
                 unfinished_judging=f"did not finish: {msg}",
             )
             cancelled_in_cell = True
+        except (CandidateKindDefect, CompletionProtocolDefect) as defect:
+            # The host's code — a kind contradicting its declaration, a judge completion short of the protocol —
+            # which every cell would meet, so it fails the run; it is re-raised below. But what the cell was billed
+            # before it was found is real spend, and lives only on this sink: the cell is recorded excluded first,
+            # so the run's totals and its cost cap count it, as a cancelled cell's are.
+            log.error(
+                "Eval cell hit %s, which fails its run (test_case=%s model=%s k=%s run=%s); recording what it spent",
+                type(defect).__name__,
+                tc.id,
+                model,
+                k,
+                run.id,
+            )
+            errors = sink.errors = ErrorLedger.of(sink.side())
+            errors.add_apparatus(f"{type(defect).__name__}: {defect}")
+            result, cell_trace = _cut_short_cell(
+                sink=sink,
+                scope_id=run.scope_id,
+                eval_run_id=run.id,
+                test_case_id=tc.id,
+                model=model,
+                k_iteration=k,
+                subject_id=run.subject_snapshot.subject_id,
+                variant=variant,
+                concurrent_eval_jobs=sample_concurrent_eval_jobs(options),
+                termination="apparatus_failed",
+                judge_model=run.judge_model,
+                rate_table=options.external_rates,
+                unfinished_judging=f"did not finish: the run failed on {type(defect).__name__}",
+            )
+            run_defect = defect
         # The cell's whole spend is known now and is not recorded until it is saved; until then it is
         # what this cell has in flight, for every other cell's question of the cap.
         sink.conclude(result.cost_usd)
@@ -3747,6 +3797,8 @@ async def execute_run(
             on_cost(result.cost_usd)
         if cancelled_in_cell or cancelled_while_saving:
             raise asyncio.CancelledError
+        if run_defect is not None:
+            raise run_defect
         if sink.errors.apparatus_failed:
             apparatus_failures.append(sink.errors.infra_error or "an apparatus fault")
         async with reporting:

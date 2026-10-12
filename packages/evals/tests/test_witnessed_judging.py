@@ -234,9 +234,14 @@ async def test_a_judged_witnessed_cell_whose_judge_failed_is_rejudged_like_any_r
 async def test_a_judge_completion_breaking_the_protocol_is_raised_to_the_host_not_recorded_as_a_judge_error() -> None:
     judge = _ScriptedJudge(temperatureless=True)
     host, template, run, case = off_loop(_setup, judge)
+    stamped = off_loop(_stamped, host, template, run)
+    judging = WitnessedJudging(stamped.id)
 
     with pytest.raises(CompletionProtocolDefect, match="check_completion_conformance"):
-        await _record(host, off_loop(_stamped, host, template, run), case, _output())
+        await _record(host, stamped, case, _output(), judging=judging)
+
+    # No cell is recorded, but the judge call it paid for counts against the run's judge ceiling.
+    assert judging.spent([]) == [pytest.approx(0.001)]
 
 
 async def test_a_rejudge_whose_judge_completion_breaks_the_protocol_raises_and_stores_nothing() -> None:

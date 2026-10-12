@@ -30,6 +30,7 @@ import pytest
 from threetears.evals.schema import CallLedger, CompletionProtocolDefect, EvalResult
 from threetears.evals.kernel import EvalStorage, WorldSession
 from threetears.evals.kernel.candidate_kind import (
+    CandidateKindDefect,
     CandidateOutput,
     CandidateTelemetry,
     CellSink,
@@ -531,7 +532,8 @@ async def test_a_cell_whose_judging_the_deadline_cut_is_recovered_by_a_rejudge_o
 async def test_a_judge_completion_carrying_no_temperature_fails_the_run_naming_the_conformance_check():
     """Not an error on the dim: every call through the host's client returns the same type, so every cell would."""
     judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM), temperatureless=1, then_hang=True)
-    drive, go = off_loop(_drive, judge=judge, template=_two_dim_template(), cell_timeout_s=30)
+    cap = EvalRunCostCap("toy-run", 100.0, enabled=True)
+    drive, go = off_loop(_drive, judge=judge, template=_two_dim_template(), cell_timeout_s=30, cap=cap)
 
     with pytest.raises(CompletionProtocolDefect, match="check_completion_conformance") as raised:
         await go()
@@ -539,9 +541,17 @@ async def test_a_judge_completion_carrying_no_temperature_fails_the_run_naming_t
     assert isinstance(raised.value, TypeError), "a caller catching TypeError still catches it"
     assert raised.value.member == "temperature"
     # The run stopped on the defect: the sibling dim's call, still waiting, was cancelled rather than awaited
-    # to the cell's deadline, and no cell was recorded as if the judge had merely failed a dim.
+    # to the cell's deadline.
     assert len(judge.calls) == 2
-    assert drive.results == []
+    # And what the cell was billed is counted: it is recorded excluded, the defect's billed judge call on it
+    # beside the candidate's spend, and the run's cost cap summed it.
+    (result,) = drive.results
+    assert result.termination == "apparatus_failed"
+    assert result.infra_error is not None and "CompletionProtocolDefect" in result.infra_error
+    (judge_row,) = [row for row in result.usage if row.role == "judge"]
+    assert (judge_row.call_count, judge_row.cost_usd) == (1, pytest.approx(0.0004))
+    assert any(row.role == "candidate" for row in result.usage)
+    assert result.cost_usd is not None and cap.accumulated_usd == pytest.approx(result.cost_usd)
 
 
 async def test_a_running_cell_beside_the_defect_ends_as_a_run_stopping_cell_s_siblings_do():
@@ -551,9 +561,41 @@ async def test_a_running_cell_beside_the_defect_ends_as_a_run_stopping_cell_s_si
     with pytest.raises(CompletionProtocolDefect):
         await go()
 
-    # The sibling was waiting on its judge when the defect stopped the run: cancelled, its spend recorded.
-    (sibling,) = drive.results
-    assert sibling.termination == "cancelled"
+    # The sibling was waiting on its judge when the defect stopped the run: cancelled, its spend recorded; the
+    # defect's own cell is recorded too, with what it was billed.
+    assert sorted(result.termination for result in drive.results) == ["apparatus_failed", "cancelled"]
+
+
+class _EvidencelessKind(ToyExtractorKind):
+    """A judged toy extractor that bills its candidate call and then hands back its output with no judge evidence."""
+
+    async def invoke(self, instance: ToyExtractorInstance, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
+        answered = await super().invoke(instance, test_case, sink)
+        return answered.model_copy(update={"judge_evidence": None})
+
+
+async def test_a_run_failed_by_a_kind_s_defect_still_counts_what_the_cell_was_billed():
+    judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM))
+    cap = EvalRunCostCap("toy-run", 100.0, enabled=True)
+    drive, go = off_loop(
+        _drive,
+        lambda world: _EvidencelessKind(
+            client=ScriptedExtractionClient(), world=world, judged=True, goal_checks=_TOY_CHECKS
+        ),
+        judge=judge,
+        cap=cap,
+    )
+
+    with pytest.raises(CandidateKindDefect):
+        await go()
+
+    assert judge.calls == [], "nothing is judged on a defect"
+    (result,) = drive.results
+    assert result.termination == "apparatus_failed"
+    assert result.infra_error is not None and "CandidateKindDefect" in result.infra_error
+    (candidate_row,) = [row for row in result.usage if row.role == "candidate"]
+    assert candidate_row.cost_usd is not None and candidate_row.cost_usd > 0
+    assert result.cost_usd is not None and cap.accumulated_usd == pytest.approx(result.cost_usd)
 
 
 async def test_a_run_failed_by_a_judge_completion_s_defect_says_so_where_an_operator_reads_it():

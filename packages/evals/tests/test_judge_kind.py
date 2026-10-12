@@ -437,14 +437,12 @@ class _Untempered:
         return types.SimpleNamespace(**{name: value for name, value in kept.items() if not callable(value)})
 
 
-async def test_a_trial_whose_completion_carries_no_temperature_fails_the_run_and_holds_nothing_against_the_cap() -> (
-    None
-):
+async def test_a_trial_whose_completion_carries_no_temperature_fails_the_run_and_counts_what_it_was_billed() -> None:
     """The host's completion type breaks the protocol: every trial would, so it is not folded into this one.
 
     It used to be recorded as the trial's apparatus error, its spend counted, and the campaign finished with every
     trial failed the same way. A protocol defect is the host's code, so it is raised through ``invoke`` to fail the
-    run, as a kind's defect is, and the call's hold on the cap is released on the way out.
+    run, as a kind's defect is — with what the call was billed still counted.
     """
     campaign = await _campaign()
     stored = off_loop(campaign.host.storage.load_test_case, campaign.case_ids[0], TOYHOST_SCOPE)
@@ -479,7 +477,12 @@ async def test_a_trial_whose_completion_carries_no_temperature_fails_the_run_and
     with pytest.raises(CompletionProtocolDefect, match="check_completion_conformance"):
         await kind.invoke(prepared, stored, sink=room)
 
+    # Raised, but what the call was billed is counted: settled against the cap and reported as the cell's spend,
+    # which the runner records on the excluded cell before it fails the run.
     assert room.held == [], "nothing is left held against the cap"
+    assert room.progress is not None
+    spent = sum(row.cost_usd or 0.0 for row in room.progress().telemetry.usage)
+    assert spent > 0 and room.spent == {"candidate": pytest.approx(spent)}
 
 
 def test_a_config_pinning_another_model_than_the_arm_is_refused() -> None:
