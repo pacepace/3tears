@@ -25,10 +25,13 @@ generation there would be refused at full cost. The generator appends the gramma
 constants (:func:`threetears.evals.analysis.prose_refs.reference_grammar`); the paragraph below only
 points at it by its heading.
 
-**Nothing here is enforced by reading the model's prose.**
+**Nothing here is enforced by reading the model's prose, with one tripwire.**
 Whether an analysis follows this guidance is measured by evaluating the report writer
-(``analysis_reporter_v1``), never by a check on the words, and no rule here exists to satisfy a
-validator.
+(``analysis_reporter_v1``), and no rule here exists to satisfy a validator. The one check on the words is
+the generator's refusal of a headline or summary bullet in a common null phrasing when no finding cites a null the
+bundle established (:mod:`threetears.evals.analysis.null_claims`, Discodon #2083). Rule 9 states what it
+trips on as a rule for the reader, and name none of the phrases it matches: a prompt coaching toward a check's words
+teaches the writer to reword the claim, not to drop it.
 
 **It is budgeted:** at most 28,000 characters and 15 rules (:data:`PROMPT_CHAR_BUDGET`,
 :data:`PROMPT_RULE_BUDGET`), and the budget only falls; ``tests/test_gen_prompt_budget.py`` fails the
@@ -100,14 +103,14 @@ RULES — what separates a real analysis from a plausible one.
 
 8. STATE EVERY FINDING IN THE DIRECTION THE EVIDENCE SUPPORTS. When a sweep refutes the hypothesis it tested, report what the evidence shows, at the tier it earns — never the original claim at a low tier, which a skimming reader takes as support. Flipping a refuted claim neither earns a high tier by itself nor turns an unresolved comparison into a null (rule 4). This holds for findings, proposals and durable claims alike.
 
-9. CONCLUSIONS ARE THE PRODUCT, WRITTEN FOR A PERSON. A reader acts on what you conclude, and most read only the headline and summary. Every finding's title and opening sentence say what the reader should believe or do: your best judgement, with the tier (rule 6) carrying the uncertainty. "Unresolved" is a fact about the evidence, never the conclusion: say what you judge most likely true and what you would do. Order findings by decision relevance, except that a finding undermining another's validity precedes it and names in `invalidates` the position of any finding it overturns outright.
+9. CONCLUSIONS ARE THE PRODUCT, WRITTEN FOR A PERSON. A reader acts on what you conclude, and most read only the headline and summary. Every finding's title and opening sentence say what the reader should believe or do: your best judgement, with the tier (rule 6) carrying the uncertainty. "Unresolved" is a fact about the evidence, never the conclusion: say what you judge most likely true and what you would do, and on an unresolved contrast how unsure you are, never "no change" (rule 4). Order findings by decision relevance, except that a finding undermining another's validity precedes it and names in `invalidates` the position of any finding it overturns outright.
    STYLE — the headline, summary, titles, answers and proposals:
    - Write for a smart person who does not work on this system, as you would tell a colleague in the hallway; if they would ask what a word means, use another.
    - No jargon: no setting names or `name=value`, no measure names, and none of arm, cell, lever, bar, confound, co-timed, interleaved, apparatus, rig, n, CI, sem, p95. Say what the thing is: "the lookup step", "a fair side-by-side test", "how often it finished the job".
    - Be clear, not hedged. State your judgement once; the confidence tier carries the doubt. Give the one caveat that would change what the reader does, not every caveat you know.
    - Short: sentences under twenty words, paragraphs of at most three sentences, a list when you are listing. A question's answer opens with the answer.
    - Say size in words ("much faster", "too close to call"); exact figures are the findings' job.
-   The headline is at most twelve such words: what to do, and why it is worth doing. The summary is three to five bullets for a reader who reads nothing else — what was learned, what to do, what is still open — and never escalates the findings; a shift between two bad states is not progress. If nothing should change, say what to keep and what would change it; where the declared question was unanswerable and the runs showed something else worth knowing, lead with that as exploratory.
+   The headline is at most twelve such words: what to do, and why it is worth doing. The summary is three to five bullets for a reader who reads nothing else — what was learned, what to do, what is still open. Neither claims more than the findings: no null they did not establish (rule 4), and a shift between two bad states is not progress. If nothing should change, say what to keep and what would change it; where the declared question was unanswerable and the runs showed something else worth knowing, lead with that as exploratory.
    A finding resting only on readings `reading_scope` lists is exploratory: its title says so, and the headline and summary never state it as an answer. Where `reading_scope.disclosure` is set every finding is, and the summary says so once.
    A finding's body may be technical, but still conclusion first, in at most two short paragraphs: the ranked measure for the arms compared, with rule 2's delivery rate, and the rest left to its chart. Say in English what bundle fields mean, never their names.
 

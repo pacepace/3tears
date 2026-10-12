@@ -40,11 +40,15 @@ holds is an :class:`~threetears.evals.analysis.errors.UnresolvableReference` —
 so it buys the one repair round with the resolver's own account of what does exist. Findings link to
 each other by position, which the stored model checks. Confidence is a tier, never a probability.
 
-**What is checked here is STRUCTURE, never prose.**
-Every refusal below reads a structured field of the generator's output — a cell or reading it
-names, a caveat kind, a question it answers, a position it links — against the bundle. No check parses, pattern-matches or refuses a sentence the model wrote: the
-model's prose is the interpretive layer, and whether it is accurate, insightful and relevant is
-measured by evaluating the reporter as a candidate, not by code here.
+**What is checked here is STRUCTURE, with one tripwire on prose.**
+Every refusal below but one reads a structured field of the generator's output — a cell or reading it
+names, a caveat kind, a question it answers, a position it links — against the bundle. The model's prose is the
+interpretive layer, and whether it is accurate, insightful and relevant is measured by evaluating the reporter as a
+candidate, not by code here. The one exception is :func:`_reject_unestablished_nulls`: a headline or summary bullet
+using a common null phrasing ("does not change", "no difference") when no finding cites a null the bundle
+established. It matches a curated phrase list (:mod:`threetears.evals.analysis.null_claims`), never parses a claim,
+and stands down whenever the analysis cites an established null, so it can miss a reworded null but cannot refuse
+one the analysis backs.
 
 **Closed dependency set.** The generator depends only on the bundle, the
 resolved prompt string, the host's profile, and an injected model-provider client (a
@@ -83,6 +87,7 @@ from threetears.evals.analysis.bundle.schema import (
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal, UnresolvableReference
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
+from threetears.evals.analysis.null_claims import null_claims, summary_bullets
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.prose_refs import reference_grammar, render_prose_figures
 from threetears.evals.analysis.references import (
@@ -406,7 +411,8 @@ async def generate_analysis(
             the post-generation validators. The causes are deliberately not re-enumerated here, because an
             enumeration drifts every time one is added and this list already had; read the
             chain in :func:`_assemble_and_validate`, where each ``_reject_*`` function
-            documents its own. Every one reads a structured field; none reads prose.
+            documents its own. Every one reads a structured field, except the null-claim tripwire on
+            the headline and summary (:func:`_reject_unestablished_nulls`).
     """
     tally = tally if tally is not None else GenerationTally()
     if not measuring_writers:
@@ -793,13 +799,14 @@ def _assemble_and_validate(
     are rendered into its prose (:mod:`threetears.evals.analysis.prose_refs`); otherwise it is kept as
     written. What else code fills — every number an evidence reading resolves to, every compiled
     chart — sits beside it on ``resolutions``. Every check here reads a structured field or a
-    reference's grammar; none reads the words around one.
+    reference's grammar, except the null-claim tripwire on the headline and summary (:func:`_reject_unestablished_nulls`).
 
     Raises:
         GenerationError: The provider cut the call short (not repaired).
         SoundnessRefusal: The output does not match the contract, a position or reading points
-            nowhere, the question answers do not match the declaration, or a decision adopts an arm
-            no reading separated from the control (repaired once).
+            nowhere, the question answers do not match the declaration, a decision adopts an arm
+            no reading separated from the control, or the headline or summary states a null no finding
+            cites (repaired once).
     """
     _reject_incomplete_generation(result)
     payload = _parse_payload(result)
@@ -833,11 +840,13 @@ def _resolved_analysis(
 
     Raises:
         SoundnessRefusal: A cell, reading or position points nowhere, one arm is both adopted and
-            rejected, or a decision adopts an arm no reading separated from the control (repaired once).
+            rejected, a decision adopts an arm no reading separated from the control, or the headline or a
+            summary bullet states a null no finding cites (repaired once).
     """
     document = _with_cell_refs(document, surface)
     _reject_contradicted_arms(document, bundle)
     _reject_unseparated_adoptions(document, bundle)
+    _reject_unestablished_nulls(document, bundle)
     document = render_prose_figures(document, surface)
     resolutions = [
         _resolution_of(finding, surface, bundle.variant_index, where=f"findings[{index}]", measures=measures)
@@ -1046,6 +1055,89 @@ def _reject_unseparated_adoptions(document: AuthoredAnalysis, bundle: AnalysisCo
                 continue
             why = _no_separation(against, withheld=comparisons.withheld)
             raise SoundnessRefusal(f"decisions[{index}] adopts {arm}, but {why}; {remedy}")
+
+
+#: How many uncited established nulls a refusal names before counting the rest.
+_NAMED_NULLS = 5
+
+
+def _reject_unestablished_nulls(document: AuthoredAnalysis, bundle: AnalysisContextBundle) -> None:
+    """Refuse a headline or summary bullet saying arms are alike when no finding cites a null the bundle established.
+
+    Most readers read only the headline and summary, and a null stated there decides as surely as one in a finding:
+    "halving the budget does not change latency, cost or delivery" stops anyone measuring it again. The bundle
+    establishes a null in two places only: a ``multiple_comparisons`` comparison reading ``equivalent`` (the
+    equivalence test, against a declared margin), and a guardrail check reading ``held`` (shown no worse than its
+    margin). A contrast reading ``not_separated`` says nothing about whether the arms differ (Discodon #2083).
+
+    **What is read, and what it is checked against.** The headline and each summary bullet
+    (:func:`~threetears.evals.analysis.null_claims.summary_bullets`) are matched against a curated list of null
+    phrasings (:func:`~threetears.evals.analysis.null_claims.null_claims`) — the only check in this chain that reads
+    the writer's words, and a tripwire rather than a gate: a reworded null passes it, and the reporter eval measures
+    the rest. Neither field cites anything, so which contrast a sentence means cannot be read off it. What it is
+    checked against is therefore the findings the two summarize: the readings every finding cites (each evidence
+    row, and each cell and reading its chart draws), joined to the bundle's established nulls on cell, reading and
+    name. The cell joined is the contrast's, never the control's: nearly every finding cites the control, so a null
+    keyed on it would stand the check down for a finding about some other arm. **When any finding cites an
+    established null the check stands down entirely**, since the sentence may be about that one. So it fires only
+    where no null in the analysis could back the sentence; what it can still refuse wrongly is a matched phrase that
+    was not a claim at all, which the phrase list is curated against and the one repair round absorbs.
+
+    Runs after cells are translated from aliases, so it joins on full refs; the refusal names them, and the repair
+    round renders them back into the writer's aliases.
+
+    Raises:
+        SoundnessRefusal: The headline or a summary bullet makes a null claim and no finding cites a reading the
+            bundle established alike.
+    """
+    established = _established_nulls(bundle)
+    cited = {(row.cell, row.reading, row.measure_id) for finding in document.findings for row in finding.evidence} | {
+        (cell, measure.reading, measure.measure_id)
+        for finding in document.findings
+        for cell in finding.chart.cells
+        for measure in finding.chart.measures
+    }
+    if cited & established.keys():
+        return
+    claims = [("the headline", claim) for claim in null_claims(document.headline)] + [
+        (f"summary bullet {position}", claim)
+        for position, bullet in enumerate(summary_bullets(document.summary), start=1)
+        for claim in null_claims(bullet)
+    ]
+    if not claims:
+        return
+    said = "; ".join(f'{where} says "{claim}"' for where, claim in claims)
+    named = [f"{name} at cell {cell} ({how})" for (cell, _reading, name), how in sorted(established.items())]
+    more = f" and {len(named) - _NAMED_NULLS} more" if len(named) > _NAMED_NULLS else ""
+    uncited = (
+        f" The bundle does establish {', '.join(named[:_NAMED_NULLS])}{more}: if the sentence is about one of those, "
+        "cite that reading in the finding it summarizes."
+        if named
+        else ""
+    )
+    raise SoundnessRefusal(
+        f"{said}, which states that arms are alike, but no finding cites a reading the bundle established alike "
+        "(a comparison reading `equivalent` in `multiple_comparisons`, or a guardrail reading `held`). A contrast "
+        "that did not separate is unresolved, not unchanged (rule 4). Say what you judge most likely true and how "
+        "unsure you are (for example, too close to call on this evidence) and what would settle it; a reworded "
+        f"null is the same claim.{uncited}"
+    )
+
+
+def _established_nulls(bundle: AnalysisContextBundle) -> dict[tuple[str, str, str], str]:
+    """Each ``(cell_ref, reading, name)`` the bundle established alike, keyed on the contrast's cell, with how."""
+    established: dict[tuple[str, str, str], str] = {}
+    for family in bundle.multiple_comparisons.families:
+        for comparison in family.comparisons:
+            if comparison.verdict == "equivalent":
+                arm = comparison.contrast
+                key = (cell_ref(arm.variant_key, arm.apparatus_class_id), comparison.reading, comparison.name)
+                established.setdefault(key, "equivalent to the control")
+    for check in bundle.guardrails.checks:
+        if check.decision == "held":
+            key = (cell_ref(check.contrast.variant_key, check.contrast.apparatus_class_id), check.reading, check.name)
+            established.setdefault(key, "guardrail held")
+    return established
 
 
 def _no_separation(against: list[FamilyComparison], *, withheld: str | None) -> str:
