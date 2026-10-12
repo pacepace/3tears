@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Datasources: the query client can limit its asks at once
+
+- **Added, `DatasourceQueryClient(..., max_concurrent_asks=None)`:** how many asks the client has
+  out at once; the rest wait their turn. The hub runs at most a datasource's cap at once and refuses
+  the rest `DATASOURCE_BUSY`, so a caller that reads side by side (a bulk read's pages, several
+  tables at once, through `read_all`, `read_parts`, `read_partitions` or its own calls) sets this to
+  that cap and stays under it as a whole. The turn is taken in the one method every operation
+  reaches the bus through, so `query`, `relation_fingerprint`, `relation_fingerprint_groups`,
+  `export` and `delete_export` all take it, and it is held while a busy hub is asked again. A test
+  lists every public coroutine of the client and fails when one is added that is not shown to take
+  its turn. `None` (the default) sends every ask as it is made, as before; a limit below one raises
+  `ValueError`. The ENR reports pod's own wrapper class did this until now.
+
 ### Agent tools: a run that did nothing is not the newest run, and a lost record is written again
 
 - **Added, `SharedOutcome(..., ran=)`:** whether a succeeded run's result is of a run that did the

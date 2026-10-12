@@ -705,6 +705,13 @@ class DatasourceQueryClient:
     :ptype identity_token: Callable[[], str | None]
     :param timeout: how long one query may take before the client gives up
     :ptype timeout: timedelta | float
+    :param max_concurrent_asks: how many asks this client has out at once, each of the rest waiting
+        its turn; ``None`` sends every ask as it is made. The hub runs at most a datasource's cap at
+        once and refuses the rest ``DATASOURCE_BUSY``, so a caller that reads side by side (a bulk
+        read's pages, several tables at once) sets this to that cap and keeps under it as a whole.
+        Every ask of every operation takes the one turn, and holds it while a busy hub is asked again
+    :ptype max_concurrent_asks: int | None
+    :raises ValueError: when ``max_concurrent_asks`` is less than one
     """
 
     def __init__(
@@ -713,8 +720,9 @@ class DatasourceQueryClient:
         *,
         identity_token: Callable[[], str | None],
         timeout: timedelta | float = DEFAULT_QUERY_TIMEOUT_SECONDS,
+        max_concurrent_asks: int | None = None,
     ) -> None:
-        """bind the transport, the identity provider and the deadline.
+        """bind the transport, the identity provider, the deadline and the limit on asks at once.
 
         :param nats_client: the connected canonical NATS wrapper client
         :ptype nats_client: NatsClient
@@ -722,10 +730,17 @@ class DatasourceQueryClient:
         :ptype identity_token: Callable[[], str | None]
         :param timeout: per-query deadline; a number is seconds
         :ptype timeout: timedelta | float
+        :param max_concurrent_asks: how many asks are out at once; ``None`` for no limit
+        :ptype max_concurrent_asks: int | None
+        :raises ValueError: when ``max_concurrent_asks`` is less than one
         """
+        if max_concurrent_asks is not None and max_concurrent_asks < 1:
+            raise ValueError(f"max_concurrent_asks must be at least 1, got {max_concurrent_asks}")
         self._nats_client = nats_client
         self._identity_token = identity_token
         self._timeout = timeout if isinstance(timeout, timedelta) else timedelta(seconds=float(timeout))
+        # the one way to the bus (_ask) takes its turn here, so no operation can go round the limit
+        self._turns = None if max_concurrent_asks is None else asyncio.Semaphore(max_concurrent_asks)
 
     def forwarded_identity_token(self) -> str:
         """the CURRENT hub-minted identity token to forward on a query.
@@ -752,6 +767,28 @@ class DatasourceQueryClient:
         return token
 
     async def _ask(self, subject: Subject, request: DatasourceQueryRequest) -> DatasourceQueryResponse:
+        """send the request at this client's turn, when it limits its asks at once.
+
+        The turn is held until the answer is in hand, the waits on a busy hub included: an ask
+        that let its turn go while it waited would let another out to be refused busy too.
+
+        :param subject: the datasource's query subject
+        :ptype subject: Subject
+        :param request: the request
+        :ptype request: DatasourceQueryRequest
+        :return: the hub's answer
+        :rtype: DatasourceQueryResponse
+        :raises RequestError: when the bus fails to deliver or answer
+        """
+        response: DatasourceQueryResponse
+        if self._turns is None:
+            response = await self._send(subject, request)
+        else:
+            async with self._turns:
+                response = await self._send(subject, request)
+        return response
+
+    async def _send(self, subject: Subject, request: DatasourceQueryRequest) -> DatasourceQueryResponse:
         """send the request, and ask again while the hub answers ``DATASOURCE_BUSY``, a bounded number of times.
 
         A busy refusal means nothing ran, so asking again is safe; the waits grow and are jittered so
