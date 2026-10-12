@@ -81,7 +81,7 @@ names it. A `thin` or `unswept` lever no step names reads "no next step names it
 no coverage row is a proposal, not a gap, and says so beside it. The methods count the levers no finding names;
 a measured lever with no finding may simply have had nothing to say, so nothing acts on the count.
 
-`Report.basis` says which a report is; `REPORT_VERSION` is 8.
+`Report.basis` says which a report is; `REPORT_VERSION` is 9.
 
 ## Reading the arm table
 
@@ -304,18 +304,26 @@ insight retracts it; each insight's `invalidation_trigger` states both rules. Th
 actions show the ledger and each insight's standing (live, retracted or orphaned); `insight_delete` removes one wrong
 insight.
 
-**A headline or summary never states a null the findings did not establish.** Most readers read only those two,
-so "halving the budget does not change latency, cost or delivery" decides as surely as a finding does, and over a
-contrast that did not separate it asserts a result the campaign never measured. The bundle establishes a null in
-two places only: a contrast reading `equivalent` (the equivalence test against a declared margin) and a guardrail
-reading `held`. The writer is told so, and the generator also refuses the headline or a summary bullet that uses
-a common null phrasing ("does not change", "no difference", "no effect", "no worse", "was unchanged", "about the
-same", and a few more, listed in `analysis/null_claims.py`) when no finding cites a reading the bundle
-established alike, through the one repair round like any refusal. It is a tripwire, not a gate: it reads phrases,
-never claims, so a reworded null passes, and once any finding cites an established null it stands down entirely,
-since it cannot tell which contrast a sentence means. An unresolved contrast belongs in the headline as a
-judgement that says how unsure it is ("probably cheaper, too close to call"), never as "no change". The headline
-carries no confidence tier, so its words carry the doubt.
+**The headline and summary rest on findings, and are shown at the weakest of them.** Most readers read only those
+two. The writer names the findings the headline rests on (`headline_rests_on`) and those each summary bullet rests
+on (`summary_rests_on`, one entry per bullet, a bullet being a line opening with `-`, `*`, `+` or a number), and
+the generator refuses a link left empty over findings, one entry too many or too few, or a position past the
+findings, through the one repair round. Code derives each sentence's standing (`analysis/standing.py`): the weakest
+confidence among its findings, and the weakest evidence tier of every reading they cite. The report serves it as
+the `Confidence` and `Stands on` facts on a `headline` block that opens the summary section and on one `summary`
+block per bullet, each with its `rests_on`; `analyses_list` states it beside each headline; the memo the reporter
+judge reads carries it too. An analysis stored before the links existed keeps its summary as one block, and its
+headline says the standing was **not recorded**, never a tier guessed from its findings.
+
+**A headline or summary never states a null its findings did not establish.** "Halving the budget does not change
+latency, cost or delivery" decides as surely as a finding does, and over a contrast that did not separate it
+asserts a result the campaign never measured. The bundle establishes a null in two places only: a contrast reading
+`equivalent` (the equivalence test against a declared margin) and a guardrail reading `held`. The generator refuses
+a headline or bullet in a common null phrasing ("does not change", "no difference", "no effect", "no worse", "was
+unchanged", "about the same", and a few more, listed in `analysis/null_claims.py`) when none of the findings that
+sentence rests on cites a reading the bundle established alike. A null one sentence's finding established
+licenses no other sentence. The join is structural; only the phrase is read off the words, so a reworded null
+passes, and the reporter eval measures the rest.
 
 The bundle stays closed: the generator has no tools to fetch more context, such as a `runs_bisect` or `scope_pivot`
 drill-down. A generator that fetched its own context would read different inputs on every call, so nothing could
@@ -368,7 +376,7 @@ prompt lever alone (`ticket_router.prompt_version=v1` and `ticket_router.prompt_
 
 `schema.json` ships in the package beside the model (`SCHEMA_PATH`; `published_report_schema()` reads it). It is
 generated from the model, a test holds it equal to the model's, and its `$id` names the report version it validates
-(`urn:threetears-evals:report:v8`), as its `report_version` const does. It holds the report's shape, every served
+(`urn:threetears-evals:report:v9`), as its `report_version` const does. It holds the report's shape, every served
 word as required, and every cross-field rule JSON Schema can state:
 
 - a code-only report names no analysis or model and holds no headline, finding or text block;

@@ -128,6 +128,9 @@ def _text(block: TextBlock) -> str:
         if block.rests_on
         else ""
     )
+    if block.role == "headline":
+        # The title prints the headline's words; this block says what they stand on.
+        return f'<div data-role="headline"><p class="facts">The headline: {facts}.</p>{rests}</div>'
     if block.role == "finding_title":
         heading = f"<h3>{block.finding_number}. {_inline(_one_line(block.body))}</h3>"
         return heading + (f'<p class="facts">{facts}</p>' if facts else "")

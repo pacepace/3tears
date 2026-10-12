@@ -288,6 +288,14 @@ one judge to be on one criterion, which other campaigns' evidence tiers read. Re
 the judge campaign's stored runs and results. A store written before it holds none, which reads as "no judge was
 profiled": every campaign's tiers are its own evidence alone, as they were.
 
+**Within v8, not a bump**: ``AuthoredAnalysis.headline_rests_on`` and ``.summary_rests_on`` joined the stored
+analysis's document, defaulting to empty — the findings the headline and each summary bullet rest on, from which code
+derives what each stands on (:mod:`threetears.evals.analysis.standing`). An analysis stored before them carries
+neither and reads as "not recorded": its headline and bullets are shown with no standing and say so, never one
+guessed from its findings. Nothing written now carries an empty link beside findings, since the generator refuses
+one, so the empty default cannot be mistaken for a sentence resting on nothing. Requiring them would drop every
+stored analysis to learn links the old ones never had.
+
 **Within v8, not a bump**: ``EvalSweep`` and ``EvalAnalysisAttempt`` joined the job lease as OPTIONAL fields
 (:mod:`~threetears.evals.schema.job_lease`): ``lease``, ``cancel_requested_at``, ``cancel_request_reason`` and
 ``lost``. A record stored before them carries none of them: a sweep reading ``running`` then has no lease, and reads

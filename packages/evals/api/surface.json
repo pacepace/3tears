@@ -779,7 +779,7 @@
     },
     "threetears.evals.kernel.AuthoredAnalysis": {
       "kind": "model",
-      "signature": "AuthoredAnalysis(headline: ModelProse, summary: ModelProse, findings: list[Finding], decisions: list[Decision], questions: list[QuestionAnswer], next: list[NextStep])"
+      "signature": "AuthoredAnalysis(headline: ModelProse, headline_rests_on: list[int] = list(), summary: ModelProse, summary_rests_on: list[list[int]] = list(), findings: list[Finding], decisions: list[Decision], questions: list[QuestionAnswer], next: list[NextStep])"
     },
     "threetears.evals.kernel.BarAdjudication": {
       "kind": "model",
@@ -4099,7 +4099,7 @@
     },
     "threetears.evals.analysis.Report": {
       "kind": "model",
-      "signature": "Report(report_version: Literal[8] = 8, basis: ReportBasis, headline: ModelProse, finding_count: int, source: ReportSource, blocks: list[ReportBlock], verdicts: list[Verdict] = list())"
+      "signature": "Report(report_version: Literal[9] = 9, basis: ReportBasis, headline: ModelProse, finding_count: int, source: ReportSource, blocks: list[ReportBlock], verdicts: list[Verdict] = list())"
     },
     "threetears.evals.analysis.report_html": {
       "kind": "function",
@@ -4383,7 +4383,7 @@
     },
     "threetears.evals.analysis.TextRole": {
       "kind": "literal",
-      "signature": "'summary'` | `'answer'` | `'decision'` | `'revisit_when'` | `'finding_title'` | `'finding_body'` | `'caveat'` | `'carried_forward'` | `'next_step'` | `'next_step_why'"
+      "signature": "'headline'` | `'summary'` | `'answer'` | `'decision'` | `'revisit_when'` | `'finding_title'` | `'finding_body'` | `'caveat'` | `'carried_forward'` | `'next_step'` | `'next_step_why'"
     },
     "threetears.evals.analysis.tier_for_judges": {
       "kind": "function",
@@ -4991,7 +4991,7 @@
     },
     "threetears.evals.ops.AnalysisLine": {
       "kind": "model",
-      "signature": "AnalysisLine(id: str, campaign_id: str, headline: str, generator_model: str, generated_at: str, archived: bool)"
+      "signature": "AnalysisLine(id: str, campaign_id: str, headline: str, headline_standing: str, generator_model: str, generated_at: str, archived: bool)"
     },
     "threetears.evals.ops.AnalysisListing": {
       "kind": "model",
