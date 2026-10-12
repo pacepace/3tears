@@ -284,6 +284,7 @@ class TestTheCommandLineGate:
             scope_id=comparison.scope_id,
             created_by="test",
             profile=comparison.host.profile,
+            exploratory=True,
         )
         code = off_loop(
             run_cli, ["gate", bare.id, "--scope", comparison.scope_id], host_factory=lambda: comparison.host
