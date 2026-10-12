@@ -47,8 +47,8 @@ FIND_JOB = (
     "runs_list names this scope's runs, each of which job_poll reads as run:<id>"
 )
 
-#: How a host finds a judge config's id. No action authors or lists them: they are the host's catalogue.
-FIND_JUDGE_CONFIG = "the host's catalogue lists this scope's judge configs (run.list_judge_configs)"
+#: How a caller finds a judge config's id. No action authors them — they are the host's catalogue — but one lists them.
+FIND_JUDGE_CONFIG = "judge_configs_list names this scope's judge configs, each with the dimension it asks for"
 
 #: How a host finds a rubric dim's id. No action authors or lists them: they are the host's catalogue.
 FIND_RUBRIC_DIM = "the host's catalogue lists this scope's rubric dims (run.list_rubric_dims)"
