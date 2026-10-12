@@ -661,7 +661,7 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
         try:
             await asyncio.wait_for(manager.wait_for(held), timeout=ENDED_TASK_UNWIND_S)
         except TimeoutError:
-            # NOSILENT(expected): a task still unwinding after the wait keeps the key, and is refused as running below
+            # NOSILENT: a task still unwinding after the wait keeps the key, and is refused as running below
             pass
         held = manager.active_task_ids(key)
     holder = (

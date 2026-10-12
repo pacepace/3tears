@@ -686,7 +686,7 @@ def _lease_expiry(expires_at: str | None) -> datetime | None:
     try:
         expiry = datetime.fromisoformat(expires_at)
     except ValueError:
-        # NOSILENT(expected): None is the answer "no expiry this build reads", which delete_unreadable_run refuses on
+        # NOSILENT: None is the answer "no expiry this build reads", which delete_unreadable_run refuses on
         return None
     return expiry if expiry.tzinfo is not None else None
 
