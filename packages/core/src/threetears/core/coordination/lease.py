@@ -391,7 +391,7 @@ class HeldLease:
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=self._renew_every)
             except TimeoutError:
-                # NOSILENT: the timeout IS the renewal interval elapsing without a stop -- time to renew
+                # NOSILENT(expected): the timeout IS the renewal interval elapsing without a stop -- time to renew
                 pass
             if self._stop.is_set():
                 break

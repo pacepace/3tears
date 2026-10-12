@@ -171,7 +171,7 @@ async def _drain_until_eof(reader: asyncio.StreamReader) -> None:
         while await reader.read(4096):
             pass
     except ConnectionError:
-        # NOSILENT: a peer that resets the socket has closed it -- the end this drain waits for
+        # NOSILENT(expected): a peer that resets the socket has closed it -- the end this drain waits for
         pass
 
 
@@ -190,7 +190,7 @@ async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> N
             writer.write(chunk)
             await writer.drain()
     except ConnectionError:
-        # NOSILENT: either side resetting its socket ends the pipe, as EOF does; the finally closes the other
+        # NOSILENT(expected): either side resetting its socket ends the pipe, as EOF does; the finally closes the other
         pass
     finally:
         writer.close()
