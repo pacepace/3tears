@@ -6,6 +6,32 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Agent tools: every replica's status reports the newest finished run
+
+- **Added, `threetears.agent.tools.background_operation.SharedOutcome(lease, key, *, render_result=None)`
+  and `BackgroundOperation(..., shared=)`.** A background operation kept how its last run ended in
+  the process that ran it, and a tool pod runs as several replicas, so a status call answered by
+  another replica reported that replica's older run (or `idle`). An operation built with `shared=`
+  also writes each finished run, succeeded or failed, to one key beside its lease (`<key>.outcome`
+  in the lease's bucket, under its owner scope via `KVLease.stored_key`), by compare-and-swap on the
+  entry's revision: a run is written unless the entry holds one that finished later. Nothing expires
+  the entry.
+- **Added, `BackgroundOperation.status_across_replicas(render_result=None)`**, which
+  `OperationStatusTool` now answers from: `last` is the newer of the replica's own last run and the
+  record's, and carries `replica` (the `pod_id` of the lease factory that ran it) and
+  `other_replica`. The sentence says so when the run was another replica's: `the last run, on
+  another replica (<pod_id>), succeeded at ...`. `status()`, `last` and `state` still describe the
+  replica's own runs.
+- **A result is stored as rendered JSON.** `SharedOutcome` stores `render_result(result)` through
+  `serialize_to_json`, and a result read from the record is reported as stored, not rendered again:
+  give `SharedOutcome` the `render_result` the status tool has. `RecordedOutcome` is what
+  `SharedOutcome.read()` returns.
+- **The record never decides how a run ended or whether the status answers.** A record that cannot
+  be written (the bucket is out of reach, the result does not encode, `render_result` raises) or
+  read (absent, unreachable, in a form this code does not read) is logged and the replica reports
+  its own outcome, so replicas that write no record and replicas that do run side by side. Without
+  `shared=` nothing changes, and no caller needs to.
+
 ### Repository: agent attribution in a commit fails CI
 
 - **Added, `scripts/check-attribution.sh`**, run by CI's `check` job on every pull request over the
