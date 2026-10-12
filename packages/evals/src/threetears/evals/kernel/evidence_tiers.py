@@ -70,10 +70,11 @@ A criterion that is ``undecided`` therefore leaves the reading on the next tier 
 point estimate, and every surface that renders them says so rather than presenting them as this rule's.
 
 **A judge is a model AND its config.** Every tier is keyed by dimension, scale, the model that served
-the scores and the versioned judge config that asked (a ``builtin:`` id = the built-in prompt, by its
-wording; ``None`` = a built-in prompt judged before its wording was recorded): a changed judge prompt is a
-different judge, so a measurement under one config, or one built-in wording, never sets the tier of
-readings judged under another.
+the scores and the versioned judge config that asked (``<config id>@<sha12>`` = the config with the reply
+format it was sent; a ``builtin:`` id = the built-in prompt, by its wording; a bare config id or ``None`` = a
+prompt judged before its wording was recorded): a changed judge prompt is a different judge, so a measurement
+under one config, one reply format, or one built-in wording, never sets the tier of readings judged under
+another.
 
 **A tier may be read from a stored judge profile** (#628): where a campaign's own evidence leaves a judge
 ``undetermined`` and a judge campaign recorded a profile of that very judge and criterion

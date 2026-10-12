@@ -39,7 +39,7 @@ from threetears.evals.run import (
     judge_kind,
     rate_result,
 )
-from threetears.evals.run.judge_service import builtin_judge_config_ids
+from threetears.evals.run.judge_service import builtin_judge_config_ids, judge_config_ids_for
 from threetears.evals.schema import (
     DEFAULT_JUDGE_TEMPERATURE,
     CompletionProtocolDefect,
@@ -309,7 +309,11 @@ async def test_two_judge_configs_as_arms_produce_label_agreement_self_agreement_
         FAITHFULNESS_DIM
     ]
     builtin = readings.reading(JudgeKey(FAITHFULNESS_DIM, "ordinal", None, builtin_id, DEFAULT_JUDGE_TEMPERATURE))
-    harsh = readings.reading(JudgeKey(FAITHFULNESS_DIM, "ordinal", None, campaign.harsh.id, DEFAULT_JUDGE_TEMPERATURE))
+    # The harsh arm is asked by its config, recorded with the reply format the engine appended to its prompt.
+    configured = judge_config_ids_for(
+        toyhost_judged_template().rubric, {FAITHFULNESS_DIM: campaign.harsh.id}, judged_artifact=JudgedArtifact.DOCUMENT
+    )[FAITHFULNESS_DIM]
+    harsh = readings.reading(JudgeKey(FAITHFULNESS_DIM, "ordinal", None, configured, DEFAULT_JUDGE_TEMPERATURE))
     assert builtin is not None and harsh is not None and len(readings.readings) == 2
     cases = len(campaign.case_ids)
     for reading in (builtin, harsh):
