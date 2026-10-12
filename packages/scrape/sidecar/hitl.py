@@ -48,7 +48,6 @@ import secrets
 import shutil
 import time
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -336,6 +335,8 @@ class VncLifecycle:
         try:
             await writer.wait_closed()
         except OSError:
+            # NOSILENT(expected): the listener answered, which is all the probe asked; a reset while
+            # closing the probe's own socket says nothing about it.
             return
 
     @staticmethod
@@ -364,10 +365,12 @@ class VncLifecycle:
             except OSError:
                 # ProcessLookupError is an OSError subclass, so this covers "already gone".
                 log.warning("hitl: %s could not be killed; it may already be gone", what)
-        except OSError:
-            # Already dead between the liveness check and the signal. Nothing to do, and
-            # nothing worth telling a caller who asked for it to be stopped.
+        except ProcessLookupError:
+            # NOSILENT(expected): already dead between the liveness check and the signal -- the
+            # state this stop exists to reach, so there is nothing to tell its caller.
             return
+        except OSError as exc:
+            log.warning("hitl: %s could not be stopped: %s", what, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -851,6 +854,8 @@ class SessionManager:
             # None -- it promises never to raise into the completion -- so a broad catch here
             # would be guarding against nothing while claiming to guard against everything,
             # and would silently start swallowing real errors the day that promise changed.
+            # NOSILENT(logged): no state was exported, and None says exactly that -- the tab still completes,
+            # the solve is simply not reusable, and this warning names the tab and the deadline
             log.warning(
                 "hitl: exporting state for tab %s timed out after %.0fs; completing it without any",
                 tab_id,
@@ -983,6 +988,8 @@ class SessionManager:
         try:
             return await self._contexts.export_state(browser, tab.tab, tab.context_id)
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an export that fails costs the reuse, where raising would additionally cost the operator their completed tab and its slot; the human's work is already done either way. Logged with its traceback below
+            # NOSILENT(logged): None is the documented "nothing exported", which is true -- the completion
+            # carries no reusable state -- and the ERROR line with its traceback says why
             log.exception(
                 "hitl: could not export session state for tab %s; the solve will not be reusable",
                 tab.tab_id,
@@ -1026,8 +1033,10 @@ class SessionManager:
         """Stop the reaper and close whatever is open. For container teardown."""
         if self._reaper is not None:
             self._reaper.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._reaper
+            # asyncio.wait, not `await self._reaper` under a suppress: a CancelledError there could
+            # also be THIS caller's own cancellation, and suppressing it would carry on as if
+            # nobody had asked shutdown to stop. The reaper logs its own failures.
+            await asyncio.wait([self._reaper])
             self._reaper = None
         await self.close()
 
@@ -1199,7 +1208,9 @@ async def apply_origin_storage(tab: Any, state: dict[str, Any]) -> None:
         try:
             entries = json.loads(raw) if isinstance(raw, str) else raw
         except (TypeError, ValueError):
-            log.info("hitl: exported localStorage for %s did not parse; skipping it", recorded)
+            # NOSILENT(logged): a best-effort procedure with no answer to give; the cookies that carry the
+            # cleared challenge and the other origins still apply, and the warning names the origin lost
+            log.warning("hitl: exported localStorage for %s did not parse; the solve is only partly applied", recorded)
             continue
         if not isinstance(entries, dict):
             continue

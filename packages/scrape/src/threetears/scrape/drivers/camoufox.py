@@ -82,9 +82,8 @@ def _decode_captured_body(raw: bytes) -> str | None:
         try:
             return raw.decode(encoding)
         except UnicodeDecodeError, LookupError:
-            # NOSILENT: this loop IS the probe -- each candidate encoding is tried until one
-            # decodes, so a rejection is the expected answer for every candidate but the last.
-            # Exhausting them all is reported by the None below.
+            # NOSILENT(attempt): one candidate encoding of several; exhausting them returns the
+            # documented None, which the one caller logs as an undecodable body and skips.
             continue
     return None
 
@@ -275,6 +274,8 @@ class CamoufoxDriver(ScrapeDriver):
                     try:
                         body = await resp.text()
                     except UnicodeDecodeError:
+                        # NOSILENT(expected): the tolerant re-decode below runs first; a body no candidate
+                        # encoding decodes is not a readable API response, and capture filters candidates.
                         # Playwright's Response.text() decodes as UTF-8 unconditionally. JSON is
                         # required to be UTF-8 (RFC 8259), but real government APIs serve cp1252
                         # anyway -- and UnicodeDecodeError is a ValueError, NOT a PlaywrightError,
@@ -297,6 +298,8 @@ class CamoufoxDriver(ScrapeDriver):
                         continue  # not JSON-shaped -- not a useful "backend API" signal
                     headers = await resp.all_headers()
                 except PlaywrightError as exc:
+                    # NOSILENT(expected): Playwright refuses a body it does not hold (a redirect, a preflight,
+                    # an evicted response); one it cannot hand over is not a candidate API response
                     log.debug("camoufox network capture: body/header fetch failed for %s: %s", resp.url, exc)
                     continue
                 network_calls.append(

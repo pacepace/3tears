@@ -226,7 +226,9 @@ def _write_by(worker: subprocess.Popen[bytes], payload: bytes, deadline: float) 
                 raise TimeoutError("regex matching ran past its time limit")
             try:
                 view = view[os.write(fd, view[:65536]) :]
-            except BlockingIOError:  # NOSILENT: the pipe filled between select and write; wait for room again
+            except BlockingIOError:
+                # NOSILENT(attempt): the pipe filled between select and write; the loop selects again,
+                # and the deadline above raises TimeoutError if room never comes.
                 continue
 
 
