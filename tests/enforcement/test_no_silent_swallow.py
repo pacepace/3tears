@@ -21,6 +21,12 @@ read as ordinary results at every layer above them.
 A marker is for the case where the failure is the expected outcome and there is nothing to
 tell anyone: a probing loop trying each candidate encoding in turn, an awaited cancellation
 that was requested one line above. Everything else logs.
+
+A marker may name its kind -- ``# NOSILENT(expected|attempt|cleanup|optional-import|logged):
+<reason>`` -- and a named kind is checked against the code, because a bare reason was accepted
+for an ``except ValueError: return False`` that dropped unreadable judge cases from an arm
+(issue #715). Both forms pass while the packages move to the kinded one; the kinded form will
+then be required.
 """
 
 from __future__ import annotations

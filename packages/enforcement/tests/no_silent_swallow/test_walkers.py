@@ -567,3 +567,269 @@ class TestHandlerSymbol:
         violations = _scan(src, repo)
         assert len(violations) == 1
         assert violations[0].symbol == "(KeyError, ValueError)"
+
+
+# ------------------------------------------------------------------
+# walker — both marker forms are accepted; a named kind is checked
+# ------------------------------------------------------------------
+
+
+def _handler(marker: str, caught: str = "ValueError", body: str = "return None", prefix: str = "") -> str:
+    return f"def f():\n{prefix}    try:\n        do()\n    except {caught}:\n        {marker}\n        {body}\n"
+
+
+class TestBothMarkerForms:
+    def test_a_bare_reason_still_excuses_a_silent_handler(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", _handler("# NOSILENT: the caller treats None as absent"))
+        assert _scan(src, repo) == []
+
+    def test_a_bare_reason_still_excuses_a_suppress(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            "from contextlib import suppress\ndef f():\n    # NOSILENT: idempotent delete\n"
+            "    with suppress(KeyError):\n        del cache[key]\n",
+        )
+        assert _scan(src, repo) == []
+
+    def test_a_kinded_marker_excuses_a_silent_handler(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", _handler("# NOSILENT(expected): a miss is the documented None", "KeyError"))
+        assert _scan(src, repo) == []
+
+    def test_a_kinded_marker_on_the_except_line_excuses_it(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            "def f():\n    try:\n        do()\n    except ValueError:  # NOSILENT(expected): the refusal is the answer\n"
+            "        pass\n",
+        )
+        assert _scan(src, repo) == []
+
+    def test_a_kinded_marker_excuses_a_suppress(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            "from contextlib import suppress\ndef f():\n"
+            "    with suppress(KeyError):  # NOSILENT(expected): idempotent delete\n        del cache[key]\n",
+        )
+        assert _scan(src, repo) == []
+
+    def test_a_kind_without_a_reason_does_not_excuse(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", _handler("# NOSILENT(expected):"))
+        assert len(_scan(src, repo)) == 1
+
+    def test_an_unknown_kind_is_flagged(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", _handler("# NOSILENT(harmless): trust me"))
+        violations = _scan(src, repo)
+        # the site is flagged, and so is the marker comment itself
+        assert len(violations) == 2
+        assert any("unknown NOSILENT kind 'harmless'" in v.reason for v in violations)
+
+    def test_an_unknown_kind_in_any_comment_is_flagged(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", "x = 1  # NOSILENT(fine): trust me\n")
+        assert [v.category for v in _scan(src, repo)] == ["no_silent_swallow.marker"]
+
+    def test_a_docstring_quoting_the_marker_is_not_a_marker(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", '"""write ``# NOSILENT(fine): <reason>`` like this."""\n')
+        assert _scan(src, repo) == []
+
+
+class TestTheTransitionAddsNoStrictness:
+    """shapes the kinded walker will flag once every marker names its kind; accepted for now."""
+
+    def test_a_handler_returning_false_is_not_flagged(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py", "def f():\n    try:\n        do()\n    except ValueError:\n        return False\n"
+        )
+        assert _scan(src, repo) == []
+
+    def test_a_handler_that_logs_then_returns_none_is_not_flagged(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", _handler("log.warning('lost it')", body="return None"))
+        assert _scan(src, repo) == []
+
+    def test_a_bare_marker_on_a_handler_that_needs_none_is_not_flagged(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", _handler("# NOSILENT: logged below", body="log.warning('x')"))
+        assert _scan(src, repo) == []
+
+
+class TestStatedKindsAreChecked:
+    def test_expected_is_refused_for_a_broad_type(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", _handler("# NOSILENT(expected): anything at all", "(KeyError, Exception)"))
+        violations = _scan(src, repo)
+        assert len(violations) == 1
+        assert "narrower than Exception" in violations[0].reason
+
+    def test_optional_import_is_accepted_around_an_import(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            "try:\n    import numpy\nexcept ImportError:  # NOSILENT(optional-import): numpy is an extra\n    pass\n",
+        )
+        assert _scan(src, repo) == []
+
+    def test_optional_import_is_refused_around_no_import(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", _handler("# NOSILENT(optional-import): not really", "ImportError"))
+        violations = _scan(src, repo)
+        assert len(violations) == 1
+        assert "guards no import" in violations[0].reason
+
+    def test_optional_import_is_refused_for_another_type(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            "try:\n    import x\nexcept OSError:  # NOSILENT(optional-import): no\n    pass\n",
+        )
+        assert len(_scan(src, repo)) == 1
+
+    def test_attempt_is_accepted_inside_a_loop(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            "def f(formats):\n"
+            "    for fmt in formats:\n"
+            "        try:\n"
+            "            return parse(fmt)\n"
+            "        except ValueError:  # NOSILENT(attempt): one format of several; none raises below\n"
+            "            continue\n"
+            "    raise ValueError('no format')\n",
+        )
+        assert _scan(src, repo) == []
+
+    def test_attempt_is_accepted_when_a_raise_follows_the_try(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            _handler("# NOSILENT(attempt): one parse of two", body="pass")
+            + "    try:\n        return other()\n    except ValueError as exc:\n        raise Bad() from exc\n",
+        )
+        assert _scan(src, repo) == []
+
+    def test_attempt_is_refused_with_no_loop_and_no_raise_after(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", _handler("# NOSILENT(attempt): one parse of several"))
+        violations = _scan(src, repo)
+        assert len(violations) == 1
+        assert "inside a loop" in violations[0].reason
+
+    def test_attempt_does_not_count_a_raise_in_a_nested_function(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            _handler("# NOSILENT(attempt): one parse of several") + "    def g():\n        raise Bad()\n",
+        )
+        assert len(_scan(src, repo)) == 1
+
+    def test_cleanup_is_accepted_inside_an_except_that_reraises(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            "from contextlib import suppress\n"
+            "def f():\n"
+            "    try:\n"
+            "        write()\n"
+            "    except BaseException:\n"
+            "        # NOSILENT(cleanup): the temp file goes; the write's own error is re-raised below\n"
+            "        with suppress(OSError):\n"
+            "            unlink()\n"
+            "        raise\n",
+        )
+        assert _scan(src, repo) == []
+
+    def test_cleanup_is_refused_outside_a_reraising_except(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            "from contextlib import suppress\n"
+            "def f():\n"
+            "    # NOSILENT(cleanup): best effort\n"
+            "    with suppress(Exception):\n"
+            "        close()\n",
+        )
+        violations = _scan(src, repo)
+        assert len(violations) == 1
+        assert "re-raises the primary error" in violations[0].reason
+
+    def test_expected_is_refused_on_a_suppress_of_exception(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            "from contextlib import suppress\ndef f():\n    # NOSILENT(expected): whatever happens\n"
+            "    with suppress(Exception):\n        close()\n",
+        )
+        assert len(_scan(src, repo)) == 1
+
+    def test_logged_is_accepted_over_a_warning(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            _handler(
+                "# NOSILENT(logged): False IS the health answer\n        log.warning('ping failed')",
+                body="return False",
+            ),
+        )
+        assert _scan(src, repo) == []
+
+    def test_logged_is_refused_over_a_debug_line(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            _handler("# NOSILENT(logged): nobody will see this\n        log.debug('x')", body="return None"),
+        )
+        violations = _scan(src, repo)
+        assert len(violations) == 1
+        assert "WARNING or above" in violations[0].reason
+
+    def test_logged_is_refused_on_a_handler_that_logs_nothing(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "mod.py", _handler("# NOSILENT(logged): claims a log it lacks"))
+        violations = _scan(src, repo)
+        assert len(violations) == 1
+        assert "WARNING or above" in violations[0].reason
+
+    def test_a_kind_that_does_not_hold_is_flagged_on_a_handler_that_needs_none(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "repo")
+        src = repo / "src"
+        _write(
+            src / "pkg" / "mod.py",
+            _handler("# NOSILENT(logged): said loudly\n        log.debug('x')", "Exception", body="recover()"),
+        )
+        violations = _scan(src, repo)
+        assert len(violations) == 1
+        assert "kind does not hold" in violations[0].reason

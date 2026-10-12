@@ -3,7 +3,8 @@
 the no-silent-swallow domain enforces a single contract: every
 exception handler (and every ``contextlib.suppress(...)`` invocation)
 in production code must either log, re-raise, or carry an explicit
-``# NOSILENT: <reason>`` marker justifying silence. bare ``except:``
+``# NOSILENT: <reason>`` or ``# NOSILENT(<kind>): <reason>`` marker
+justifying silence; a named kind is checked against the code. bare ``except:``
 clauses (which catch ``SystemExit`` / ``KeyboardInterrupt`` and are
 never correct in production) are flagged unconditionally.
 
@@ -74,7 +75,10 @@ class NoSilentSwallowConfig:
         idiomatic) by default.
     :ivar nosilent_marker: the comment-marker substring that justifies
         a silent handler / suppress. defaults to ``# NOSILENT:``. the
-        text after the colon (the "reason") must be non-empty.
+        kinded form is the marker's stem plus ``(<kind>):`` --
+        ``# NOSILENT(expected): <reason>`` -- and its kind is checked.
+        either way the text after the colon (the "reason") must be
+        non-empty.
     """
 
     repo_root: Path

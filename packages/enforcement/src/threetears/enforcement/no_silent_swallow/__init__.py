@@ -1,12 +1,15 @@
 """no-silent-swallow enforcement domain — silent ``except`` / ``suppress`` walker.
 
 every exception handler in production code must either log, re-raise,
-or carry an explicit ``# NOSILENT: <reason>`` marker justifying
-silence. bare ``except:`` clauses (which catch ``SystemExit`` /
-``KeyboardInterrupt`` and are never correct in production) are
-flagged unconditionally. ``contextlib.suppress(...)`` follows the
-same contract — every suppress site needs the marker within 3 lines
-above.
+or carry an explicit marker justifying silence: ``# NOSILENT: <reason>``
+or ``# NOSILENT(<kind>): <reason>``, whose kind (``expected``,
+``attempt``, ``cleanup``, ``optional-import``, ``logged``) the walker
+checks against the code -- see
+:mod:`threetears.enforcement.no_silent_swallow.walkers`. bare
+``except:`` clauses (which catch ``SystemExit`` / ``KeyboardInterrupt``
+and are never correct in production) are flagged unconditionally.
+``contextlib.suppress(...)`` follows the same contract — every
+suppress site needs the marker within 2 lines above.
 
 per-repo configuration goes through :class:`NoSilentSwallowConfig`;
 :func:`run_no_silent_swallow_enforcement` is the pytest-friendly
