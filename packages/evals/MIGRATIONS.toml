@@ -31,12 +31,13 @@
 # callers.
 
 [[release]]
-version = "unreleased"
+version = "0.66.0-evaladopt.20"
 since = "v0.66.0-evaladopt.19"
 summary = """
 What a clean install from the tag found (gate G3): docs and examples that run outside a checkout; a host with no
 completion clients is a refusal; an uncounted usage row is never read as zero calls; a cancel during a job's write
-keeps what the write stored; a prompt refusal or drift reading names the host's own reset.
+keeps what the write stored; a prompt refusal or drift reading names the host's own reset; a quick arm that names no
+model moves nothing off production; SeedPrompt drops its unused promotion target.
 """
 notes = [
     "`kernel.prompt_drift`, `gen.plan_draft` and `kernel.require_output_contract` take a required `reset: str`: how an operator of your host resets a prompt slot to the shipped default (an action or a command, such as \"call eval_prompt_reset with prompt_type='eval_proposer'\"). The registry is the host's, so the engine cannot name it; `PromptDrift.remedy` and `PromptContractError.remedy` now name it in place of a `module.constant` to reseed from. A blank `reset` is a `ValueError`.",
