@@ -24,16 +24,11 @@ that already run off the loop, and an ``_async`` one that offloads via
 :class:`~argon2.PasswordHasher` is module-level and shared: it is thread-safe
 and holds only cost parameters.
 
-**Failures are uniform at the edge, and named to the caller.** A wrong
-password, a malformed stored hash, and an unsupported hash format all return
-``matched=False``. None of them raise. A corrupt stored hash is an
-authentication failure, not a 500, and -- more to the point -- an exception that
-escapes only on *some* rejection paths is a side channel that tells an attacker
-which accounts have unusual stored material. But a corrupt hash is not a wrong
-password either: it locks its user out for good, and only the operator can fix
-it. So the result says so in
-:attr:`PasswordVerifyResult.stored_hash_fault`, for the caller to report
-server-side while answering the user exactly as for a wrong password.
+**Failures are uniform.** A wrong password, a malformed stored hash, and an
+unsupported hash format all return ``matched=False``. None of them raise. A
+corrupt stored hash is an authentication failure, not a 500, and -- more to the
+point -- an exception that escapes only on *some* rejection paths is a side
+channel that tells an attacker which accounts have unusual stored material.
 """
 
 from __future__ import annotations
@@ -108,16 +103,10 @@ class PasswordVerifyResult:
         hash was already argon2id, or the verify failed). This module never writes to a
         store; the write-back is the caller's, and skipping it is not a correctness bug --
         it just means the credential stays on bcrypt until the next successful login.
-    :ivar stored_hash_fault: why the STORED hash could not be read -- malformed, or a format
-        this module does not verify -- or ``None`` when it was read, matched or not.
-        ``matched`` is always ``False`` when this is set. It is for the operator, never the
-        user: report it server-side (a log line naming the account, an alert) and answer the
-        user exactly as for a wrong password, so no rejection reason leaks at the edge.
     """
 
     matched: bool
     upgraded_hash: str | None = None
-    stored_hash_fault: str | None = None
 
 
 def normalize_password(password: str) -> str:
@@ -227,26 +216,22 @@ def verify_password(password: str, stored_hash: str) -> PasswordVerifyResult:
 
     Never raises for a wrong password, a malformed hash, or an unrecognized format: all
     three return ``matched=False``, so no rejection reason is distinguishable by exception
-    shape (module docstring). The latter two also set ``stored_hash_fault``, so the caller
-    can tell a locked-out account from a mistyped password and report it. Blocking and CPU-bound -- on an event loop use
+    shape (module docstring). Blocking and CPU-bound -- on an event loop use
     :func:`verify_password_async`.
 
     :param password: the candidate plaintext.
     :ptype password: str
     :param stored_hash: the stored hash to verify against.
     :ptype stored_hash: str
-    :return: the outcome, carrying an ``upgraded_hash`` when a legacy bcrypt hash verified,
-        and a ``stored_hash_fault`` when the stored hash could not be read.
+    :return: the outcome, carrying an ``upgraded_hash`` when a legacy bcrypt hash verified.
     :rtype: PasswordVerifyResult
     """
     normalized = normalize_password(password)
     if stored_hash.startswith(_ARGON2_PREFIX):
-        return _verify_argon2(normalized, stored_hash)
+        return PasswordVerifyResult(matched=_verify_argon2(normalized, stored_hash))
     if stored_hash.startswith(_BCRYPT_PREFIXES):
         return _verify_bcrypt_and_upgrade(normalized, stored_hash)
-    return PasswordVerifyResult(
-        matched=False, stored_hash_fault="the stored hash is neither argon2id nor a migrated bcrypt hash"
-    )
+    return PasswordVerifyResult(matched=False)
 
 
 async def verify_password_async(password: str, stored_hash: str) -> PasswordVerifyResult:
@@ -267,9 +252,8 @@ def equalize_verify_cost() -> None:
     """
     try:
         _HASHER.verify(_DUMMY_HASH, "")
+    # NOSILENT: the verify is EXPECTED to fail; this call is timed, not consulted
     except VerifyMismatchError, VerificationError, InvalidHashError:
-        # NOSILENT(expected): nothing hashes to _DUMMY_HASH, so this verify always fails; the call
-        # exists for the time it takes, and its answer is never consulted by anyone
         pass
 
 
@@ -278,20 +262,17 @@ async def equalize_verify_cost_async() -> None:
     await asyncio.to_thread(equalize_verify_cost)
 
 
-def _verify_argon2(normalized_password: str, stored_hash: str) -> PasswordVerifyResult:
-    """Verify against an argon2id hash. Blocking; fails closed on malformed material, naming it."""
+def _verify_argon2(normalized_password: str, stored_hash: str) -> bool:
+    """Verify against an argon2id hash. Blocking; fails closed on malformed material."""
     try:
         _HASHER.verify(stored_hash, normalized_password)
     except VerifyMismatchError:
-        # NOSILENT(expected): a mismatch is the verify's answer -- a wrong password, read fine
-        return PasswordVerifyResult(matched=False)
-    except (VerificationError, InvalidHashError) as exc:
+        return False
+    except VerificationError, InvalidHashError:
         # A malformed or unsupported argon2 hash is an auth failure, never an exception
-        # past this module (module docstring) -- and named on the result for the operator.
-        return PasswordVerifyResult(
-            matched=False, stored_hash_fault=f"the stored argon2id hash could not be read: {type(exc).__name__}"
-        )
-    return PasswordVerifyResult(matched=True)
+        # past this module (module docstring).
+        return False
+    return True
 
 
 def _verify_bcrypt_and_upgrade(normalized_password: str, stored_hash: str) -> PasswordVerifyResult:
@@ -305,9 +286,9 @@ def _verify_bcrypt_and_upgrade(normalized_password: str, stored_hash: str) -> Pa
     """
     try:
         matched = bcrypt.checkpw(normalized_password.encode("utf-8"), stored_hash.encode("utf-8"))
-    except ValueError as exc:
-        # A malformed bcrypt hash fails closed, like the argon2 path, and is named the same way.
-        return PasswordVerifyResult(matched=False, stored_hash_fault=f"the stored bcrypt hash could not be read: {exc}")
+    except ValueError:
+        # A malformed bcrypt hash fails closed, like the argon2 path.
+        return PasswordVerifyResult(matched=False)
     if not matched:
         return PasswordVerifyResult(matched=False)
     return PasswordVerifyResult(matched=True, upgraded_hash=_HASHER.hash(normalized_password))

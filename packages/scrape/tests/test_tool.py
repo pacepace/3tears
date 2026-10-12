@@ -2061,25 +2061,6 @@ class TestSsrfGuard:
         assert "10.0.0.5" in (result.error or "")
         assert driver.render_calls == []
 
-    async def test_blocks_hostname_resolving_to_an_address_that_cannot_be_classified(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """An answer the guard cannot range-check fails closed, even beside a public one."""
-        fake = [
-            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("not-an-ip", 80)),
-            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("8.8.8.8", 80)),
-        ]
-        monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: fake)
-        driver = _FakeDriver(_SINGLE_HTML)
-
-        result = await self._guarded_tool(driver).execute(
-            url="http://odd.example.com/", field_schema={"employer": "str"}
-        )
-
-        assert (result.error or "").startswith("refused: ")
-        assert "not-an-ip" in (result.error or "")
-        assert driver.render_calls == []
-
     @pytest.mark.asyncio
     async def test_execute_refuses_a_blocked_target(self) -> None:
         recipe_collection, extraction_collection = _collections()

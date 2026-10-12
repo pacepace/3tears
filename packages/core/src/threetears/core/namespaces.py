@@ -500,8 +500,6 @@ def build_tool_namespace_name_or_none(mcp_name: str, version: str) -> str | None
     try:
         result = build_tool_namespace_name(mcp_name, version)
     except ValueError:
-        # NOSILENT(expected): "this pair composes no name" is the documented None this function
-        # exists to give for untrusted input; build_tool_namespace_name raises it for callers who want the why
         result = None
     return result
 

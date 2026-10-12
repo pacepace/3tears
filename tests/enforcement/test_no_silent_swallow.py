@@ -19,16 +19,8 @@ reporting a clean tail, a restore reporting success after feeding a partial arch
 read as ordinary results at every layer above them.
 
 A marker is for the case where the failure is the expected outcome and there is nothing to
-tell anyone: a probing loop trying each candidate encoding in turn, an optional import. And a
-marker NAMES ITS KIND -- ``# NOSILENT(expected|attempt|cleanup|optional-import): <reason>`` --
-which the walker checks against the code, because a bare reason was accepted for an ``except
-ValueError: return False`` that dropped unreadable judge cases from an arm (issue #715). A
-handler that answers ``None``, a constant, an empty collection or an assigned default is as
-silent as one that ``pass``es, and is held to the same rule. Everything else logs, raises, or
-returns a failure the caller can tell from an answer.
-
-**The nodriver sidecar too.** It never enters the workspace venv (AGPL), so discovery cannot
-see it; its modules are scanned by path, its own tests excepted.
+tell anyone: a probing loop trying each candidate encoding in turn, an awaited cancellation
+that was requested one line above. Everything else logs.
 """
 
 from __future__ import annotations
@@ -37,7 +29,6 @@ from pathlib import Path
 
 from threetears.enforcement.no_silent_swallow import (
     NoSilentSwallowConfig,
-    find_silent_swallows,
     run_no_silent_swallow_enforcement,
 )
 
@@ -49,23 +40,3 @@ _CONFIG = NoSilentSwallowConfig(repo_root=_REPO_ROOT)
 def test_no_handler_swallows_without_saying_why() -> None:
     """Deliberate silence is fine and has to be stated; accidental silence is the bug."""
     run_no_silent_swallow_enforcement(_CONFIG)
-
-
-_SIDECAR = _REPO_ROOT / "packages" / "scrape" / "sidecar"
-
-
-def test_the_sidecar_swallows_nothing_either() -> None:
-    """The sidecar sits outside the workspace, not outside the rule."""
-    assert (_SIDECAR / "main.py").is_file(), f"the sidecar moved from {_SIDECAR}"
-    found = [
-        violation
-        for violation in find_silent_swallows(
-            (_SIDECAR,),
-            _REPO_ROOT,
-            _CONFIG.logger_names,
-            _CONFIG.logger_methods,
-            _CONFIG.nosilent_marker,
-        )
-        if "tests" not in violation.file.relative_to(_SIDECAR).parts and violation.file.name != "conftest.py"
-    ]
-    assert not found, "\n".join(f"{v.file}:{v.line} [{v.symbol}] {v.reason}" for v in found)

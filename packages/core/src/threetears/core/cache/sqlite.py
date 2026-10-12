@@ -175,7 +175,7 @@ class SQLiteBackend:
                 from uuid_utils import UUID as UuidUtilsUUID
 
                 sqlite3.register_adapter(UuidUtilsUUID, str)
-            # NOSILENT(optional-import): uuid_utils is optional; without it there is no such UUID to adapt
+            # NOSILENT: optional dependency probe; absence is a supported configuration
             except ImportError:
                 pass
             self._initialized = True
@@ -624,12 +624,9 @@ class SQLiteBackend:
             for conn in self._pooled_connections:
                 try:
                     conn.close()
-                except Exception as exc:  # noqa: BLE001 -- the reset still drops the pool; the leak is reported
-                    log.warning(
-                        "L1 cache reset: a pooled connection would not close; it is dropped unclosed: %s: %s",
-                        type(exc).__name__,
-                        exc,
-                    )
+                # NOSILENT: teardown best-effort; a connection that will not close is already gone
+                except Exception:  # noqa: BLE001
+                    pass
             self._pooled_connections = []
         self._local = threading.local()
         if self._anchor_conn is not None:
@@ -849,7 +846,7 @@ class SQLiteBackend:
 
             if isinstance(sa_type, Vector):
                 return "TEXT_VECTOR"
-        # NOSILENT(optional-import): pgvector is an optional extra; without it no column can be a Vector
+        # NOSILENT: optional dependency probe; absence is a supported configuration
         except ImportError:
             pass
 

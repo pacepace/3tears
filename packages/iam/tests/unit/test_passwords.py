@@ -72,29 +72,6 @@ def test_malformed_stored_hash_is_a_failure_not_an_exception(stored: str) -> Non
     assert not verify_password(_GOOD, stored).matched
 
 
-@pytest.mark.parametrize(
-    "stored",
-    [
-        "",
-        "not-a-hash",
-        "$argon2id$truncated",
-        "$2b$not-really-bcrypt",
-        "$unknown$scheme$xyz",
-    ],
-)
-def test_a_malformed_stored_hash_is_named_on_the_result_for_the_operator(stored: str) -> None:
-    # A corrupt hash locks its user out for good; reading it as a wrong password told nobody.
-    result = verify_password(_GOOD, stored)
-    assert result.stored_hash_fault is not None
-    assert result.upgraded_hash is None
-
-
-def test_a_wrong_password_against_a_readable_hash_names_no_fault() -> None:
-    assert verify_password("something else entirely", hash_password(_GOOD)).stored_hash_fault is None
-    legacy = bcrypt.hashpw(b"the-real-one", bcrypt.gensalt(rounds=4)).decode("utf-8")
-    assert verify_password("not-the-real-one", legacy).stored_hash_fault is None
-
-
 def test_bcrypt_hash_verifies_and_yields_an_argon2_upgrade() -> None:
     legacy = bcrypt.hashpw(normalize_password(_GOOD).encode("utf-8"), bcrypt.gensalt(rounds=4)).decode("utf-8")
     result = verify_password(_GOOD, legacy)

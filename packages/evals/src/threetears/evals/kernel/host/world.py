@@ -762,8 +762,6 @@ class WorldRegistry(HostAttributed):
         try:
             signature = inspect.signature(bound)
         except TypeError, ValueError:
-            # NOSILENT(expected): no introspectable signature (a builtin, a C extension) is the documented
-            # "nothing to check" -- the binding is real, and its first call reports a shape it cannot take
             return []
         args, kwargs = _HANDLE_CALL_SHAPES[role]
         try:

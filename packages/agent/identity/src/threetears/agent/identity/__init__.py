@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING
 try:
     __version__ = _version("3tears-agent-identity")
 except _PackageNotFoundError:  # pragma: no cover - dev fallback
-    # NOSILENT(expected): a source tree that was never installed has no version, and "unknown" says so
     __version__ = "unknown"
 
 # lazy public API (PEP 562), mirroring agent/intention: importing this

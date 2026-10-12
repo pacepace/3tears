@@ -56,7 +56,6 @@ def _check_prometheus() -> bool:
 
             _prometheus_available = True
         except ImportError:
-            # NOSILENT(optional-import): prometheus_client is an optional extra; False is this check's answer
             _prometheus_available = False
     return _prometheus_available
 

@@ -320,7 +320,6 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         :ptype data: bytes
         :return: row dict with aware-UTC datetime columns
         :rtype: dict[str, Any]
-        :raises ValueError: the bytes, or a ``tools`` field stored as text, are not JSON
         """
         raw: dict[str, Any] = json.loads(data.decode("utf-8"))
         # Timestamps are `BaseCollection`'s, driven by `datetime_columns`. The loop that used to
@@ -330,11 +329,8 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         if isinstance(tools, str):
             try:
                 raw["tools"] = json.loads(tools)
-            except ValueError as exc:
-                # a pod read as owning no tools would quietly drop out of the catalog: say the row is corrupt
-                raise ValueError(
-                    f"heartbeat row for pod {raw.get('pod_id')!r} carries a tools field that is not JSON: {exc}"
-                ) from exc
+            except json.JSONDecodeError, ValueError:
+                raw["tools"] = []
         return raw
 
     async def get_pods(self, pod_ids: list[str]) -> list[HeartbeatEntity]:

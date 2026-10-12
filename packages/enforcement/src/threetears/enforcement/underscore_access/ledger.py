@@ -27,7 +27,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Final
 
-from threetears.enforcement.common import is_private_name, note_unscanned, parse_python_file
+from threetears.enforcement.common import is_private_name, parse_python_file
 from threetears.enforcement.underscore_access.ruff_config import all_exempted_files
 
 __all__ = [
@@ -90,9 +90,7 @@ def private_accesses(path: Path) -> set[tuple[int, str]]:
     """
     try:
         tree = ast.parse(path.read_text(errors="replace"))
-    except SyntaxError as exc:
-        # An unparsed file is not a file with no private reads: name it, as every walker does.
-        note_unscanned(path, f"private accesses not read: SyntaxError: {exc}")
+    except SyntaxError:  # a file the repo cannot parse is not this module's business
         return set()
 
     found: set[tuple[int, str]] = set()
@@ -130,25 +128,14 @@ def enclosing_scopes(path: Path) -> dict[int, str]:
     outside any function or class are absent from the mapping; module-level accesses key on the
     symbol alone, which is unambiguous there because there is only one such scope.
     """
-    return _scopes_from_source(path.read_text(errors="replace"), origin=path)
+    return _scopes_from_source(path.read_text(errors="replace"))
 
 
-def _scopes_from_source(text: str, *, origin: Path | str) -> dict[int, str]:
-    """:func:`enclosing_scopes` for source that is not on disk -- a git blob, mainly.
-
-    :param text: the source
-    :ptype text: str
-    :param origin: where the source came from, named when it cannot be parsed
-    :ptype origin: Path | str
-    :return: line -> enclosing qualname; empty (every line at module scope) when it does not parse
-    :rtype: dict[int, str]
-    """
+def _scopes_from_source(text: str) -> dict[int, str]:
+    """:func:`enclosing_scopes` for source that is not on disk -- a git blob, mainly."""
     try:
         tree = ast.parse(text)
-    except SyntaxError as exc:
-        # Every line then keys at module scope, so a scope-keyed entry stops matching: named here
-        # so the mismatch it causes can be traced to the unparseable source.
-        note_unscanned(origin, f"scopes not read: SyntaxError: {exc}")
+    except SyntaxError:
         return {}
 
     scopes: dict[int, str] = {}
@@ -203,9 +190,7 @@ def _git_stdout(repo_root: Path, *args: str) -> str | None:
     """
     try:
         proc = subprocess.run(["git", "-C", str(repo_root), *args], capture_output=True, text=True, check=False)
-    except FileNotFoundError:
-        # NOSILENT(expected): no git binary is a supported environment -- None is this function's
-        # documented "cannot answer", and the caller degrades to current-file resolution.
+    except OSError:  # NOSILENT: a machine without git is a supported environment here -- None is this function's documented "cannot answer", and the caller degrades to current-file resolution
         return None
     return proc.stdout if proc.returncode == 0 else None
 
@@ -222,12 +207,10 @@ def _source_when_ledger_was_written(exemptions_path: Path, repo_root: Path, rel_
     *repo_root* (via ``-C``) rather than against the repository toplevel -- the two differ
     whenever the caller's root is a subdirectory of the actual repository.
     """
-    ledger, root = exemptions_path.resolve(), repo_root.resolve()
-    if not ledger.is_relative_to(root):
-        # a ledger outside repo_root has no repo-relative path to ask git about: the documented
-        # "no snapshot", and the caller degrades to current-file resolution.
+    try:
+        ledger_rel = exemptions_path.resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError:  # NOSILENT: a ledger outside repo_root has no repo-relative path to ask git about -- None is this function's documented "no snapshot", and the caller degrades to current-file resolution
         return None
-    ledger_rel = ledger.relative_to(root).as_posix()
     commit = _git_stdout(repo_root, "rev-list", "-1", "HEAD", "--", f"./{ledger_rel}")
     if commit is None or not commit.strip():
         return None
@@ -307,7 +290,7 @@ def carry_forward_rationales(exemptions_path: Path, repo_root: Path) -> dict[tup
         source = repo_root / path
         if path not in scopes_by_path:
             text = source.read_text(errors="replace") if source.exists() else ""
-            scopes_by_path[path] = _scopes_from_source(text, origin=source)
+            scopes_by_path[path] = _scopes_from_source(text)
             lines_by_path[path] = text.split("\n")
         entry_line = int(number)
         lines = lines_by_path[path]
@@ -316,11 +299,7 @@ def carry_forward_rationales(exemptions_path: Path, repo_root: Path) -> dict[tup
         if drifted:
             if path not in recorded_scopes_by_path:
                 recorded = _source_when_ledger_was_written(exemptions_path, repo_root, path)
-                recorded_scopes_by_path[path] = (
-                    _scopes_from_source(recorded, origin=f"{path} at the ledger's last commit")
-                    if recorded is not None
-                    else None
-                )
+                recorded_scopes_by_path[path] = _scopes_from_source(recorded) if recorded is not None else None
             scopes = recorded_scopes_by_path[path] or scopes
         group = (path, scopes.get(entry_line, MODULE_SCOPE), symbol)
         found.setdefault((*group, seen[group]), rationale)

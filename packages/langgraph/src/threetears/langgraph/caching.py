@@ -81,8 +81,6 @@ from typing import Any
 
 from langchain_core.messages import SystemMessage
 
-from threetears.observe import get_logger
-
 __all__ = [
     "ANTHROPIC_MIN_CACHEABLE_TOKENS",
     "ANTHROPIC_EPHEMERAL_TTL_SECONDS",
@@ -96,8 +94,6 @@ __all__ = [
     "register_capability_provider",
     "should_bind_tools_fresh",
 ]
-
-log = get_logger(__name__)
 
 
 ANTHROPIC_MIN_CACHEABLE_TOKENS: int = 1024
@@ -508,11 +504,7 @@ def compute_tool_key(tools: list[Any]) -> str:
     tools that do not expose ``args_schema.model_json_schema()``
     (plain functions without a pydantic schema, fake tools in tests)
     contribute only their ``name`` to the digest; this is still
-    sufficient to detect tool-set membership changes. a tool whose
-    ``model_json_schema()`` raises contributes its name too, and the
-    failure is logged at WARNING naming the tool: the digest then
-    cannot see that tool's schema change, and the model is likely to
-    refuse the same schema when the tool is bound.
+    sufficient to detect tool-set membership changes.
 
     returns the digest of the empty list when ``tools`` is empty so
     callers can compare to a cached key without guarding for the
@@ -531,14 +523,7 @@ def compute_tool_key(tools: list[Any]) -> str:
         if args_schema is not None and hasattr(args_schema, "model_json_schema"):
             try:
                 schema = args_schema.model_json_schema()
-            except Exception as exc:  # noqa: BLE001 - schema generation may fail on exotic tools
-                log.warning(
-                    "tool %r has an args_schema whose JSON schema cannot be generated; its schema is left out "
-                    "of the tool key: %s: %s",
-                    name,
-                    type(exc).__name__,
-                    exc,
-                )
+            except Exception:  # noqa: BLE001 - schema generation may fail on exotic tools
                 schema = None
         else:
             schema = None

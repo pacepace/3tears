@@ -795,8 +795,9 @@ def _fields_matching_any_row(
             try:
                 _coerce_field_value(text, expected_type)
             except ValueError, TypeError:
-                # NOSILENT(expected): this coercion IS the question "does the proposal parse in this
-                # row?"; a refusal is the answer no, and the survivors list is the function's report.
+                # NOSILENT: this call IS the test of whether the proposal yields a coercible value
+                # for this row. A rejection is how a bad proposal gets filtered out, which is the
+                # function's whole purpose; the survivors list below is the report.
                 continue
             survivors.append(proposal)
             break

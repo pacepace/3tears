@@ -249,8 +249,6 @@ def parse_attachment_ids(raw: object) -> list[UUID] | None:
         try:
             result = [UUID(item) for item in raw]
         except ValueError:
-            # NOSILENT(expected): an item that is not a uuid makes the value malformed -- the None this
-            # function documents, which the caller refuses as "invalid message" rather than half-reading
             result = None
     return result
 
@@ -774,17 +772,10 @@ class WebSocketHandler:
             else:
                 connection.heard_from_peer = False
                 await self._refresh_presence(connection_id, connection)
-                ping_failure = await self._send_ping(websocket)
-                if ping_failure is not None:
+                if not await self._send_ping(websocket):
                     log.info(
                         "websocket heartbeat ping could not be delivered; closing",
-                        extra={
-                            "extra_data": {
-                                "connection_id": connection_id,
-                                "user_id": connection.user_id,
-                                "error": ping_failure,
-                            }
-                        },
+                        extra={"extra_data": {"connection_id": connection_id, "user_id": connection.user_id}},
                     )
                     ended = await self._close_unresponsive(websocket, connection)
 
@@ -853,21 +844,20 @@ class WebSocketHandler:
                 extra={"extra_data": {"connection_id": connection_id}},
             )
 
-    async def _send_ping(self, websocket: Any) -> str | None:
+    async def _send_ping(self, websocket: Any) -> bool:
         """send one heartbeat ping, bounded by one interval.
 
         :param websocket: the socket
         :ptype websocket: Any
-        :return: ``None`` when the ping was handed to the transport in time, else why it was not
-            (the error's type and message), which the caller logs as it closes the connection
-        :rtype: str | None
+        :return: ``True`` when the ping was handed to the transport in time
+        :rtype: bool
         """
-        failure: str | None = None
+        delivered = True
         try:
             await asyncio.wait_for(websocket.send_text(_HEARTBEAT_PING), timeout=self.heartbeat_interval)
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- a failed or stalled ping IS the liveness verdict; the caller closes the connection and logs why
-            failure = f"{type(exc).__name__}: {exc}"
-        return failure
+        except Exception:  # prawduct:allow prawduct/broad-except -- a failed or stalled ping IS the liveness verdict; the caller closes the connection and logs it
+            delivered = False
+        return delivered
 
     async def _close_unresponsive(self, websocket: Any, connection: _RoomConnection) -> bool:
         """close a connection whose peer stopped answering, bounded by one interval.
@@ -1333,8 +1323,6 @@ class WebSocketHandler:
             try:
                 principal = UUID(user_id) if user_id else None
             except ValueError:
-                # NOSILENT(expected): a principal whose id is not a uuid can hold no namespace grant; the
-                # deny is the fail-closed answer, and the caller refuses the action on it
                 allowed = False
             if allowed:
                 ns_entity = await self._ns_resolver(room_id)
@@ -1347,7 +1335,6 @@ class WebSocketHandler:
                         cache=self._acl_cache,
                     )
                 except AccessDenied:
-                    # NOSILENT(expected): the refusal IS the gate's answer; False is how this gate reports it
                     allowed = False
         if allowed and self._room_policy is not None:
             answer = await self._room_policy(
@@ -1566,8 +1553,6 @@ class WebSocketHandler:
         try:
             from_seq = int(raw_seq)
         except TypeError, ValueError:
-            # NOSILENT(expected): a resume point that is not a number cannot be honoured; replaying the whole
-            # retained tail loses nothing the client asked for, and every frame carries its own seq
             from_seq = 0
         async with connection.lock:
             if not await self._authorize(websocket, room_id, self._join_action, connection):

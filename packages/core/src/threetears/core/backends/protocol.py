@@ -194,42 +194,26 @@ class OrderedDurableStore(Protocol):
         ...
 
 
-#: command tags that end in a rows-affected count (PostgreSQL ``CommandComplete``).
-_COUNTED_COMMANDS: frozenset[str] = frozenset(
-    {"INSERT", "UPDATE", "DELETE", "MERGE", "SELECT", "COPY", "MOVE", "FETCH"}
-)
-
-
 def parse_rowcount(status: Any) -> int:
     """Parse an asyncpg command-tag (``"INSERT 0 1"`` / ``"UPDATE 1"`` / ``"DELETE 2"``) to a count.
 
     The framework-owned parser for the :meth:`L3Backend.execute` status tag. Empty /
     falsy / non-string values (mock pools sometimes return ``None`` or ``""``) resolve
-    to ``0``, and so does the tag of a command that reports no row count at all
-    (``"CREATE TABLE"``, ``"BEGIN"``): it affected no rows. Consolidates the duplicated
-    ``int(result.split()[-1])`` idiom across product code (the ``DurableStore`` structured
-    ops return an int rowcount natively, so this is only needed at the raw-SQL
-    :class:`L3Backend` border).
-
-    A tag for a command that DOES report a count (``INSERT``, ``UPDATE``, ``DELETE``,
-    ``MERGE``, ``SELECT``, ``COPY``, ``MOVE``, ``FETCH``) whose count does not parse is
-    refused rather than read as ``0``: "no rows affected" is an answer callers act on
-    (a conditional update that "lost", a delete that "found nothing"), and a tag this
-    cannot read is not that answer.
+    to ``0``. Consolidates the duplicated ``int(result.split()[-1])`` idiom across
+    product code (the ``DurableStore`` structured ops return an int rowcount natively, so
+    this is only needed at the raw-SQL :class:`L3Backend` border).
 
     :param status: the asyncpg status tag (or any value).
     :ptype status: Any
-    :return: the rows-affected count.
+    :return: the rows-affected count; ``0`` when unparseable.
     :rtype: int
-    :raises ValueError: a counting command's tag carries no readable count.
     """
     if not status or not isinstance(status, str):
         return 0
     parts = status.split()
     if not parts:
         return 0
-    if parts[-1].isdigit():
+    try:
         return int(parts[-1])
-    if parts[0].upper() in _COUNTED_COMMANDS:
-        raise ValueError(f"command tag {status!r} reports a row count this cannot read")
-    return 0
+    except ValueError:
+        return 0

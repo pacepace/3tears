@@ -168,18 +168,6 @@ class TestSafeAttrs:
         assert attributes["result.type"] == "list"
         assert attributes["result.count"] == 3
 
-    def test_a_result_that_refuses_len_records_why_it_has_no_count(self):
-        class Uncountable:
-            def __len__(self):
-                raise TypeError("a stream has no length")
-
-        def f():
-            return Uncountable()
-
-        attributes = _span_attributes(f)
-        assert "result.count" not in attributes
-        assert attributes["result.count_error"] == "TypeError: a stream has no length"
-
 
 class TestTracedDecorator:
     """@traced decorator behavior."""

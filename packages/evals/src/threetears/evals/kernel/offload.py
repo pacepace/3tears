@@ -88,8 +88,6 @@ async def wait_through_cancellation(work: asyncio.Future[Any]) -> bool:
         try:
             await asyncio.wait({work})
         except asyncio.CancelledError:
-            # NOSILENT(expected): reported, not dropped -- the cancellation is this function's return value, and
-            # the caller owes the re-raise once it has read the work's outcome (see Returns)
             cancelled = True
     if work.cancelled():
         raise asyncio.CancelledError

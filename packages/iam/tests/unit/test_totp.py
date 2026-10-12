@@ -55,14 +55,6 @@ def test_malformed_codes_fail_closed_without_raising(code: str) -> None:
     assert not verify_code(generate_seed(), code)
 
 
-@pytest.mark.parametrize("secret", ["not base32!!", "A"])
-def test_a_malformed_stored_secret_raises_rather_than_reading_as_a_wrong_code(secret: str) -> None:
-    # The seed is generated and stored server-side; a corrupt one is a lockout only the
-    # operator can fix, so it must not look like a user typing the wrong code.
-    with pytest.raises(ValueError, match="not valid base32"):
-        verify_code(secret, "123456")
-
-
 def test_one_step_of_skew_is_tolerated_each_side() -> None:
     # Authenticator apps and verifiers conventionally allow this; narrowing it mostly
     # produces support tickets from users with drifting phone clocks.

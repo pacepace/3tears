@@ -76,28 +76,17 @@ def _parse_dt(raw: Any) -> datetime | None:
     not parse it back on read -- so a value read through L2 arrives as a
     string even though the in-memory L3 fallback keeps it as a native
     ``datetime``.
-
-    ``None`` and the empty string are an absent timestamp. Anything else that is
-    not a timestamp is refused rather than read as absent: an unreadable
-    ``blocked_until`` read as "never blocked" would quietly lift a block.
-
-    :param raw: the stored value
-    :ptype raw: Any
-    :return: the timestamp, or ``None`` when none is stored
-    :rtype: datetime | None
-    :raises ValueError: the stored value is a string that is not an ISO-8601 timestamp
-    :raises TypeError: the stored value is neither a string nor a ``datetime``
     """
-    if raw is None or raw == "":
-        return None
-    if isinstance(raw, str):
+    if isinstance(raw, str) and raw:
         try:
             raw = datetime.fromisoformat(raw)
-        except ValueError as exc:
-            raise ValueError(f"stored timestamp {raw!r} is not ISO-8601") from exc
-    if not isinstance(raw, datetime):
-        raise TypeError(f"stored timestamp is a {type(raw).__name__}, not an ISO-8601 string or datetime: {raw!r}")
-    return raw
+        except ValueError:  # NOSILENT: malformed timestamp, caller treats as absent
+            raw = None
+    if isinstance(raw, datetime):
+        result = raw
+    else:
+        result = None
+    return result
 
 
 def _decode_json_field(raw: Any, default: Any) -> Any:

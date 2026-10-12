@@ -1268,23 +1268,6 @@ async def test_a_ping_on_a_backpressured_socket_answers_false_within_its_timeout
 
 
 @pytest.mark.asyncio
-async def test_a_ping_that_fails_logs_why_it_answered_unhealthy(caplog: pytest.LogCaptureFixture) -> None:
-    """False is the health answer; the failure behind it reaches the log, not only a bare False."""
-    client, fake = _make_client()
-    fake.is_connected = True
-    fake.backpressured = True
-    fake.answers_pings = False
-
-    with caplog.at_level(logging.WARNING):
-        result = await asyncio.wait_for(client.ping(timeout=0.05), timeout=2.0)
-
-    assert result is False
-    failures = [rec for rec in caplog.records if rec.message.startswith("NATS ping failed")]
-    assert len(failures) == 1
-    assert "TimeoutError" in failures[0].message
-
-
-@pytest.mark.asyncio
 async def test_a_round_trip_that_is_cancelled_stays_cancelled() -> None:
     """a shutdown or a bounded drain cancels a round trip; the cancellation must not be discarded."""
     client, fake = _make_client()

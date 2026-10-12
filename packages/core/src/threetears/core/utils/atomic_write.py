@@ -51,7 +51,7 @@ def _write_atomically(path: Path, payload: bytes, mode: int) -> None:
         try:
             os.rename(tmp_path, path)
         except BaseException:
-            # NOSILENT(cleanup): the temp file goes on a failing path; the write's own error is re-raised below
+            # NOSILENT: cleanup of a temp file on a path that re-raises immediately below
             with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
             raise
@@ -61,7 +61,7 @@ def _write_atomically(path: Path, payload: bytes, mode: int) -> None:
         finally:
             os.close(dir_fd)
     except BaseException:
-        # NOSILENT(cleanup): the temp file goes on a failing path; the write's own error is re-raised below
+        # NOSILENT: cleanup of a temp file on a path that re-raises immediately below
         with contextlib.suppress(OSError):
             os.unlink(tmp_path)
         raise

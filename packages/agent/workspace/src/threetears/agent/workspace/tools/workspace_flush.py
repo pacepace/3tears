@@ -298,8 +298,6 @@ def _disk_sha_matches(path: Path, expected_sha: str) -> bool:
     try:
         data = path.read_bytes()
     except OSError:
-        # NOSILENT(expected): bytes that cannot be read cannot be shown to match, so "no match" -- write
-        # it -- is the true answer; a real I/O fault on the path surfaces from the atomic_write that follows
         return False
     return hashlib.sha256(data).hexdigest() == expected_sha
 

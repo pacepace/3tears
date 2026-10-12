@@ -137,7 +137,7 @@ def _expect_conflict(write: Callable[[], None], what: str) -> None:
     try:
         write()
     except StoreConflict:
-        # NOSILENT(expected): the conflict IS the conformance check passing; the failure is the write landing
+        # NOSILENT: the conflict IS the conformance check passing; the failure is the write landing
         return
     raise StoreConformanceFailure(f"{what} landed; expected StoreConflict")
 
@@ -146,7 +146,7 @@ def _expect_value_error(call: Callable[[], object], what: str) -> None:
     try:
         call()
     except ValueError:
-        # NOSILENT(expected): the refusal IS the conformance check passing; the failure is the call being accepted
+        # NOSILENT: the refusal IS the conformance check passing; the failure is the call being accepted
         return
     raise StoreConformanceFailure(f"{what} was accepted; expected ValueError")
 
@@ -508,7 +508,7 @@ def _one_of_many_racing_creates_lands(store: DocumentStore) -> None:
             try:
                 store.upsert(_doc(target, v=writer), create_only=True)
             except StoreConflict:
-                # NOSILENT(expected): every losing creator must be refused; the winners are counted below
+                # NOSILENT: every losing creator must be refused; the winners are counted below
                 return
             except Exception as error:
                 # NOSILENT: carried to the checking thread, which re-raises it as itself

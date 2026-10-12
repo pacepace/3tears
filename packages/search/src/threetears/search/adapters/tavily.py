@@ -338,9 +338,8 @@ def _parse_iso(value: str) -> datetime | None:
     # with the raw string kept on provenance.
     try:
         return datetime.fromisoformat(value)
+    # NOSILENT: not ISO -- the RFC 2822 reader gets the next attempt
     except ValueError:
-        # NOSILENT(expected): "not ISO" is this reader's answer; the RFC 2822 reader is tried next, and
-        # a value neither reads keeps its raw string on provenance as published_date_raw.
         return None
 
 
@@ -357,9 +356,8 @@ def _parse_rfc2822(value: str) -> datetime | None:
     # lost and nothing is invented -- inventing a date would be the defect.
     try:
         return parsedate_to_datetime(value)
+    # NOSILENT: an unparseable provider date leaves published_at unset, raw kept
     except TypeError, ValueError:
-        # NOSILENT(expected): an unparseable provider date is no date; the raw string is kept on the
-        # result's provenance as published_date_raw, so nothing is lost and nothing invented.
         return None
 
 

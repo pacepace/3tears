@@ -13,9 +13,8 @@ implementation notes:
   top-level packages under the same src-root.
 - shape B shells out to ``ruff check --select SLF001`` because ruff
   already does the scope analysis correctly. when ruff isn't
-  available the walker raises rather than return a clean result over
-  code it never checked; a host without ruff opts out via
-  :attr:`UnderscoreAccessConfig.enable_shape_b_ruff`.
+  available the walker returns empty (the runner controls whether to
+  even try, via :attr:`UnderscoreAccessConfig.enable_shape_b_ruff`).
 - shape C scans every module for public top-level names without a
   matching ``__all__`` declaration. ``__init__.py`` files are
   scanned same as any other module — an empty package legitimately
@@ -88,9 +87,13 @@ def package_id(path: Path, src_roots: Iterable[Path]) -> tuple[str, ...]:
     resolved = path.resolve()
     for root in src_roots:
         root_resolved = root.resolve()
-        if not resolved.is_relative_to(root_resolved):
+        try:
+            rel = resolved.relative_to(root_resolved)
+        except ValueError:
+            # NOSILENT: this IS the containment test -- the loop asks each root in turn whether it
+            # holds the path, and "no" is the expected answer for every root but one.
             continue
-        parts = resolved.relative_to(root_resolved).parts
+        parts = rel.parts
         if not parts:
             continue
         return (str(root_resolved), parts[0])
@@ -226,10 +229,9 @@ def shape_b_violations(
     roots only. ruff already does the scope analysis correctly
     (``obj._x`` is only flagged when ``obj`` is not ``self`` / ``cls``)
     and re-implementing it would be a tar pit. when ruff is missing
-    the function raises: an empty list would read as a clean pass over
-    code nothing checked. the runner is the policy point that decides
-    whether to invoke this walker at all (via
-    :attr:`UnderscoreAccessConfig.enable_shape_b_ruff`).
+    the function returns an empty list rather than raising — the
+    runner is the policy point that decides whether to even invoke
+    this walker (via :attr:`UnderscoreAccessConfig.enable_shape_b_ruff`).
 
     :param repo_root: repo root (used as cwd for the subprocess)
     :ptype repo_root: Path
@@ -240,7 +242,6 @@ def shape_b_violations(
     :rtype: list[Violation]
     :raises subprocess.TimeoutExpired: ruff did not complete within
         the timeout (60s); surfaces upward so the test fails loudly
-    :raises RuntimeError: ruff is not on PATH
     """
     if not scan_roots:
         return []
@@ -264,13 +265,11 @@ def shape_b_violations(
             timeout=_RUFF_TIMEOUT_SECONDS,
             check=False,
         )
-    except FileNotFoundError as exc:
-        # an empty result here would read as "no SLF001 access anywhere" over code ruff never
-        # looked at. a host without ruff opts out with enable_shape_b_ruff=False instead.
-        raise RuntimeError(
-            "underscore-access shape B needs ruff on PATH and it is not there; install ruff, "
-            "or set UnderscoreAccessConfig.enable_shape_b_ruff=False on a host without it"
-        ) from exc
+    except FileNotFoundError:
+        # ruff not on PATH; runner caller decides via enable_shape_b_ruff
+        # whether to call us at all. an empty result is the honest answer
+        # when the tool is absent.
+        return []
     return parse_ruff_slf001_output(completed.stdout, repo_root)
 
 

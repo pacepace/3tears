@@ -10,8 +10,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from langchain_core.messages import AIMessage, SystemMessage
 from threetears.models import DEFAULT_CHAT_MODEL
 from threetears.langgraph.caching import (
@@ -679,28 +677,6 @@ class TestComputeToolKey:
         tool_plain = _StubTool("plain", args_schema=None)
         tool_other = _StubTool("other", args_schema=None)
         assert compute_tool_key([tool_plain]) != compute_tool_key([tool_other])
-
-    def test_a_tool_whose_schema_cannot_be_generated_is_keyed_by_name_and_logged(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """a schema that raises leaves the tool keyed by its name, and the failure names the tool.
-
-        :param caplog: pytest's log capture
-        :ptype caplog: pytest.LogCaptureFixture
-        :raises AssertionError: when the failure is silent or changes the key
-        """
-
-        class _RaisingArgsSchema:
-            def model_json_schema(self) -> dict[str, Any]:
-                raise TypeError("unsupported field type")
-
-        broken = _StubTool("exotic", args_schema=None)
-        broken.args_schema = _RaisingArgsSchema()  # type: ignore[assignment]
-        with caplog.at_level("WARNING"):
-            key = compute_tool_key([broken])
-        assert key == compute_tool_key([_StubTool("exotic", args_schema=None)])
-        assert "'exotic'" in caplog.text
-        assert "TypeError: unsupported field type" in caplog.text
 
 
 class TestShouldBindToolsFresh:

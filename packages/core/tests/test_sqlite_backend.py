@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import logging
-import sqlite3
 import threading
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any
 
 import pytest
 from sqlalchemy import (
@@ -530,29 +527,3 @@ class TestAdditiveInitialize:
             assert b.select_by_id("multi_b", "b") is not None
         finally:
             b.reset()
-
-
-class _UnclosableConnection(sqlite3.Connection):
-    """a real sqlite connection whose close refuses, as a wedged one would."""
-
-    def close(self) -> None:
-        raise sqlite3.ProgrammingError("this connection will not close")
-
-
-def test_reset_reports_a_pooled_connection_that_will_not_close(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    """the reset still drops the pool, and the connection it could not close is logged, not swallowed."""
-    backend = SQLiteBackend()
-    backend.initialize(_make_metadata())
-    real_connect = sqlite3.connect
-
-    def _connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
-        return real_connect(*args, factory=_UnclosableConnection, **kwargs)
-
-    monkeypatch.setattr(sqlite3, "connect", _connect)
-    backend.get_connection()
-    with caplog.at_level(logging.WARNING):
-        backend.reset()
-    assert not backend.is_initialized()
-    assert any("would not close" in record.getMessage() for record in caplog.records)

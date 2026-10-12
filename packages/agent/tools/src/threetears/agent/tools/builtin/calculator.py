@@ -21,7 +21,6 @@ try:
 
     _HAS_SIMPLEEVAL = True
 except ImportError:
-    # NOSILENT(optional-import): simpleeval is an extra; without it every call answers the tool error naming it
     _HAS_SIMPLEEVAL = False
 
 _SAFE_FUNCTIONS = {

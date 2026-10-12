@@ -17,10 +17,9 @@ from importlib.metadata import version as _version
 try:
     __version__ = _version("3tears-observe")
 except _PackageNotFoundError:  # pragma: no cover - dev fallback
-    # NOSILENT(expected): a source tree that was never installed has no version, and "unknown" says so
     __version__ = "unknown"
 
-from threetears.observe.background import cancel_and_wait, spawn_background
+from threetears.observe.background import spawn_background
 from threetears.observe.build_once import BuildOnce
 from threetears.observe.erasure import ANONYMIZED_MARKER
 from threetears.observe.periodic import PeriodicTask, TickResult
@@ -57,7 +56,6 @@ __all__ = [
     "NOISY_LIBRARY_LOGGERS",
     "configure_logging",
     "configure_third_party_logging",
-    "cancel_and_wait",
     "counter",
     "gauge",
     "get_context",

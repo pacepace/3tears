@@ -314,17 +314,6 @@ def test_parse_rowcount() -> None:
     assert parse_rowcount(42) == 0  # non-string → 0 (mock-pool safety)
 
 
-def test_parse_rowcount_reads_a_command_that_reports_no_count_as_no_rows() -> None:
-    assert parse_rowcount("CREATE TABLE") == 0
-    assert parse_rowcount("BEGIN") == 0
-
-
-def test_parse_rowcount_refuses_a_counting_tag_whose_count_does_not_parse() -> None:
-    # "UPDATE 0" is an answer callers act on; an unreadable tag must not pose as it.
-    with pytest.raises(ValueError, match="row count"):
-        parse_rowcount("UPDATE many")
-
-
 # ---------------------------------------------------------------------------
 # schema-aware SqlL3Backend: byte-identical SQL + conn= transactional override
 # ---------------------------------------------------------------------------

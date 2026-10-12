@@ -482,8 +482,6 @@ async def _robots_allow(
             timeout_seconds=timeout_seconds,
         )
     except SearchFailure:
-        # NOSILENT(expected): RFC 9309 -- rules that could not be fetched are unknown, and unknown rules
-        # are honoured as deny; False is a refusal, which the caller marks REFUSED, never a permission.
         return False
 
     if 400 <= response.status_code < 500:

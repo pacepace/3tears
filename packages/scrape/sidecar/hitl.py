@@ -48,6 +48,7 @@ import secrets
 import shutil
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -335,8 +336,6 @@ class VncLifecycle:
         try:
             await writer.wait_closed()
         except OSError:
-            # NOSILENT(expected): the listener answered, which is all the probe asked; a reset while
-            # closing the probe's own socket says nothing about it.
             return
 
     @staticmethod
@@ -365,12 +364,10 @@ class VncLifecycle:
             except OSError:
                 # ProcessLookupError is an OSError subclass, so this covers "already gone".
                 log.warning("hitl: %s could not be killed; it may already be gone", what)
-        except ProcessLookupError:
-            # NOSILENT(expected): already dead between the liveness check and the signal -- the
-            # state this stop exists to reach, so there is nothing to tell its caller.
+        except OSError:
+            # Already dead between the liveness check and the signal. Nothing to do, and
+            # nothing worth telling a caller who asked for it to be stopped.
             return
-        except OSError as exc:
-            log.warning("hitl: %s could not be stopped: %s", what, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -1029,10 +1026,8 @@ class SessionManager:
         """Stop the reaper and close whatever is open. For container teardown."""
         if self._reaper is not None:
             self._reaper.cancel()
-            # asyncio.wait, not `await self._reaper` under a suppress: a CancelledError there could
-            # also be THIS caller's own cancellation, and suppressing it would carry on as if
-            # nobody had asked shutdown to stop. The reaper logs its own failures.
-            await asyncio.wait([self._reaper])
+            with suppress(asyncio.CancelledError):
+                await self._reaper
             self._reaper = None
         await self.close()
 

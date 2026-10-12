@@ -28,7 +28,6 @@ try:
 
     _HAS_DUCKDB = True
 except ImportError:
-    # NOSILENT(optional-import): duckdb is an optional extra; _HAS_DUCKDB=False is checked, and refused by name, on use
     _HAS_DUCKDB = False
 
 try:
@@ -378,23 +377,17 @@ class DuckDBBackend:
             for conn in self._pooled_connections:
                 try:
                     conn.close()
-                except Exception as exc:  # noqa: BLE001 -- the reset still drops the pool; the leak is reported
-                    log.warning(
-                        "L1 cache reset: a pooled connection would not close; it is dropped unclosed: %s: %s",
-                        type(exc).__name__,
-                        exc,
-                    )
+                # NOSILENT: teardown best-effort; a connection that will not close is already gone
+                except Exception:  # noqa: BLE001
+                    pass
             self._pooled_connections = []
         self._local = threading.local()
         if self._db is not None:
             try:
                 self._db.close()
-            except Exception as exc:  # noqa: BLE001 -- the reset still drops the database; the leak is reported
-                log.warning(
-                    "L1 cache reset: the DuckDB database would not close; it is dropped unclosed: %s: %s",
-                    type(exc).__name__,
-                    exc,
-                )
+            # NOSILENT: teardown best-effort; a connection that will not close is already gone
+            except Exception:  # noqa: BLE001
+                pass
         self._db = None
         self._initialized = False
         self._schema_info = {}
@@ -455,7 +448,7 @@ class DuckDBBackend:
 
             if isinstance(sa_type, Vector):
                 return "VARCHAR_VECTOR"
-        # NOSILENT(optional-import): pgvector is an optional extra; without it no column can be a Vector
+        # NOSILENT: optional dependency probe; absence is a supported configuration
         except ImportError:
             pass
 

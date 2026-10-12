@@ -120,10 +120,10 @@ def ssrf_block_reason(url: str) -> str | None:
         ip_text = info[4][0]
         try:
             ip = ipaddress.ip_address(ip_text)
-        except ValueError as exc:
-            # Fail closed: an address that cannot be range-classified cannot be shown public,
-            # and skipping it would let the fetch dial whatever it is.
-            return f"host {host!r} resolves to {ip_text!r}, which cannot be classified as public ({exc})"
+        except ValueError:
+            # NOSILENT: a getaddrinfo entry that isn't a parseable IP literal can't be
+            # range-classified; skip it and check the remaining resolved addresses.
+            continue
         if (
             ip.is_private
             or ip.is_loopback

@@ -62,8 +62,6 @@ def _is_numeric(text: str) -> bool:
         float(text)
         return True
     except ValueError:
-        # NOSILENT(expected): the refusal IS the answer this predicate asks for -- the text is not a number, so
-        # the cell is quote-guarded like any other text; nothing is lost
         return False
 
 

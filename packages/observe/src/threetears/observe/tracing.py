@@ -50,7 +50,6 @@ def _check_otel() -> bool:
 
             _otel_available = True
         except ImportError:
-            # NOSILENT(optional-import): OpenTelemetry is an optional extra; False is this check's answer
             _otel_available = False
     return _otel_available
 
@@ -67,8 +66,6 @@ def _get_param_names(fn: Callable[..., Any]) -> tuple[str, ...]:
         sig = inspect.signature(fn)
         return tuple(sig.parameters.keys())
     except ValueError, TypeError:
-        # NOSILENT(expected): a builtin or C callable has no signature to read; with no names the
-        # arguments are recorded as arg0, arg1, ..., which says exactly that
         return ()
 
 
@@ -109,10 +106,11 @@ def _record_safe_result(span: Any, result: Any) -> None:
     if hasattr(result, "__len__"):
         try:
             span.set_attribute("result.count", len(result))
-        except TypeError as exc:
-            # An object that advertises __len__ and then refuses len() has no count; the span says
-            # why rather than going without one. The traced call itself is not disturbed by it.
-            span.set_attribute("result.count_error", f"{type(exc).__name__}: {exc}")
+        except TypeError:
+            # NOSILENT: the count is optional span decoration and this is per-call on a hot path.
+            # An object that advertises __len__ and then refuses len() simply has no count to
+            # record; the traced call itself is unaffected and must not be disturbed by it.
+            pass
 
 
 def _inject_context_attrs(span: Any) -> None:

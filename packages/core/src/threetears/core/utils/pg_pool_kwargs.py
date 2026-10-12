@@ -251,8 +251,6 @@ def redact_dsn(dsn: str) -> str:
             parts = urlsplit(dsn)
             port = parts.port
         except ValueError:
-            # NOSILENT(expected): an undecodable DSN renders as the "<unparseable>" sentinel, which
-            # tells the operator reading the log line exactly that
             parts = None
     if parts is not None and parts.hostname and _every_at_in_netloc(dsn, parts):
         user = parts.username or ""

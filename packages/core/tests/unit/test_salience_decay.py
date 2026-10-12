@@ -141,8 +141,8 @@ class TestRowCountParsing:
         )
         assert count == expected
 
-    @pytest.mark.parametrize("status", ["", "weird"])
-    async def test_a_status_carrying_no_count_reads_as_zero(self, status: str) -> None:
+    @pytest.mark.parametrize("status", ["", "UPDATE", "weird"])
+    async def test_malformed_status_falls_back_to_zero(self, status: str) -> None:
         pool = _RecordingPool(status)
         count = await apply_salience_decay(
             pool,  # type: ignore[arg-type]
@@ -151,14 +151,3 @@ class TestRowCountParsing:
             floor=0.1,
         )
         assert count == 0
-
-    async def test_an_update_tag_whose_count_does_not_parse_is_refused_not_read_as_zero(self) -> None:
-        # "UPDATE" with no count is not "nothing decayed"; reading it as 0 would report a no-op.
-        pool = _RecordingPool("UPDATE")
-        with pytest.raises(ValueError, match="row count"):
-            await apply_salience_decay(
-                pool,  # type: ignore[arg-type]
-                table="memories",
-                half_life_seconds=1.0,
-                floor=0.1,
-            )

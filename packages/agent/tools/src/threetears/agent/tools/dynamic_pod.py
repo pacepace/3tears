@@ -36,7 +36,7 @@ from threetears.agent.tools.server import (
     refusals_in_reply,
 )
 from threetears.nats import TokenCallback
-from threetears.observe import cancel_and_wait, get_logger, spawn_background, traced
+from threetears.observe import get_logger, spawn_background, traced
 
 __all__ = ["BuiltSpec", "DynamicToolPod"]
 
@@ -358,7 +358,12 @@ class DynamicToolPod(ABC, Generic[SpecT]):
             self._tool_server = None
 
         if self._serve_task is not None:
-            await cancel_and_wait(self._serve_task)
+            self._serve_task.cancel()
+            try:
+                await self._serve_task
+            # NOSILENT: consuming CancelledError from our own .cancel() above; task-level outcome is logged by spawn_background done-callback
+            except asyncio.CancelledError:
+                pass
             self._serve_task = None
 
         for resource in self._resources.values():

@@ -602,8 +602,7 @@ async def open_kv_stream(
         try:
             await _live_stream_config(js=js, full_name=full_name, stream=config.name)
         except KvBucketNotFoundError:
-            # NOSILENT(expected): the server answered that the stream is absent, so a create that succeeds
-            # made it; every other lookup failure propagates
+            # NOSILENT: the answer itself -- the stream is absent, so a create that succeeds made it
             absent_before = True
     add_exc: Exception | None = None
     created = False
@@ -1770,7 +1769,7 @@ class NatsKvBucket:
                 failure=f"KV get failed: bucket={self._full_name} key={key}",
             )
         except KeyNotFoundError:
-            # NOSILENT(expected): a miss is this method's documented None; every other failure raises KvError
+            # NOSILENT: a miss is this method's documented result, reported to the caller as None
             return None
         return bytes(entry.value) if entry.value is not None else None
 
@@ -1790,7 +1789,7 @@ class NatsKvBucket:
                 failure=f"KV get_entry failed: bucket={self._full_name} key={key}",
             )
         except KeyNotFoundError:
-            # NOSILENT(expected): a miss is this method's documented None; every other failure raises KvError
+            # NOSILENT: a miss is this method's documented result, reported to the caller as None
             return None
         if entry.value is None or entry.revision is None:
             return None
@@ -2050,10 +2049,8 @@ class NatsKvBucket:
                 failure=f"KV delete failed: bucket={self._full_name} key={key} revision={revision}",
             )
         except KeyNotFoundError:
-            # NOSILENT(expected): deleting an absent key is the documented idempotent True
             return True
         except KeyWrongLastSequenceError:
-            # NOSILENT(expected): a revision mismatch is the documented False, the CAS refusal itself
             return False
         return True
 

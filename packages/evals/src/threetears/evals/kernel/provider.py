@@ -333,7 +333,7 @@ def extract_json(content: str) -> dict[str, Any]:
         if isinstance(data, dict):
             return data
     except json.JSONDecodeError:
-        # NOSILENT(attempt): one candidate parse of several; the function raises below when none succeeds
+        # NOSILENT: one candidate parse of several; the function raises below when none succeeds
         pass
 
     try:
@@ -344,7 +344,7 @@ def extract_json(content: str) -> dict[str, Any]:
             if isinstance(data, dict):
                 return data
     except json.JSONDecodeError, ValueError:
-        # NOSILENT(attempt): one candidate parse of several; the function raises below when none succeeds
+        # NOSILENT: one candidate parse of several; the function raises below when none succeeds
         pass
 
     # "LLM response", not "judge response": the analysis generator propagates this message
@@ -391,7 +391,7 @@ def extract_json_array(text: str) -> list[dict[str, Any]]:
             return [parsed]
         raise ValueError(f"the response is a JSON {type(parsed).__name__}, not an array of cases")
     except json.JSONDecodeError:
-        # NOSILENT(attempt): one candidate parse of several; the function raises below when none succeeds
+        # NOSILENT: one candidate parse of several; the function raises below when none succeeds
         pass
 
     start = text.find("[")
@@ -401,7 +401,7 @@ def extract_json_array(text: str) -> list[dict[str, Any]]:
             if isinstance(parsed, list):
                 return parsed
         except json.JSONDecodeError:
-            # NOSILENT(attempt): one candidate parse of several; the function raises below when none succeeds
+            # NOSILENT: one candidate parse of several; the function raises below when none succeeds
             pass
 
     raise ValueError(f"no JSON array could be extracted from the response ({len(text)} chars): {text[:200]!r}")

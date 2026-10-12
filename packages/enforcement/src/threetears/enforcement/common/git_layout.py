@@ -165,13 +165,7 @@ def _read_commondir(private_git_dir: Path) -> Path:
     result = private_git_dir.resolve()
     try:
         raw_common = commondir_file.read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
-        # NOSILENT(expected): no ``commondir`` file is the older-git / submodule shape this function
-        # documents, and the private gitdir is its stated identity.
-        raw_common = ""
-    except (OSError, UnicodeDecodeError) as exc:
-        # A commondir that exists but cannot be read leaves sibling worktrees unrecognised.
-        note_unscanned(commondir_file, f"commondir unreadable: {type(exc).__name__}")
+    except OSError, UnicodeDecodeError:
         raw_common = ""
     if raw_common:
         result = (private_git_dir / raw_common).resolve()

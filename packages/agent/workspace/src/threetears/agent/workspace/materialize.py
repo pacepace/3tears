@@ -964,10 +964,10 @@ async def _watch_loop(
     a single bad file (transient I/O, symlink cycle, DB blip) does not
     kill the task; the loop yields back to the event loop via
     :func:`asyncio.sleep` on the error path so a tight-spinning failure
-    cannot starve other tasks. :class:`asyncio.CancelledError` ends the
-    loop as an ordinary cancellation; bind's teardown waits for it with
-    :func:`asyncio.wait`, which never raises the task's outcome, so
-    the cancellation it asked for cannot be confused with its own.
+    cannot starve other tasks. :class:`asyncio.CancelledError` cleanly
+    exits the loop without re-raising; bind's teardown code already
+    awaits the task with a bounded timeout and expects the task to
+    return rather than raise :class:`CancelledError`.
 
     :param workspace: target workspace entity
     :ptype workspace: Any
@@ -990,37 +990,44 @@ async def _watch_loop(
     :rtype: None
     """
     resolved_root = disk_root.resolve()
-    async for batch in watch_changes(disk_root):
-        try:
-            changed = await _handle_watch_batch(
-                batch=batch,
-                workspace=workspace,
-                disk_root=disk_root,
-                resolved_root=resolved_root,
-                db_pool=db_pool,
-                actor_id=actor_id,
-                correlation_id=correlation_id,
-                just_wrote=just_wrote,
-                on_conflict=on_conflict,
-            )
-            if changed:
-                log.info(
-                    "workspace.watch.batch",
-                    extra={
-                        "workspace_id": str(workspace.id),
-                        "changed_count": len(changed),
-                    },
+    try:
+        async for batch in watch_changes(disk_root):
+            try:
+                changed = await _handle_watch_batch(
+                    batch=batch,
+                    workspace=workspace,
+                    disk_root=disk_root,
+                    resolved_root=resolved_root,
+                    db_pool=db_pool,
+                    actor_id=actor_id,
+                    correlation_id=correlation_id,
+                    just_wrote=just_wrote,
+                    on_conflict=on_conflict,
                 )
-        # NOSILENT: logged at exception level, not swallowed -- the watcher has no caller to raise
-        # to, and one failed batch must not end mirroring for the rest of the bind window. the
-        # files that batch missed are still captured by the capture-back pass when bind exits cleanly.
-        # yield to the loop so a persistent failure cannot starve other tasks.
-        except Exception as iter_exc:
-            log.exception(
-                "bind watcher iteration failed: %s",
-                iter_exc,
-            )
-            await asyncio.sleep(0)
+                if changed:
+                    log.info(
+                        "workspace.watch.batch",
+                        extra={
+                            "workspace_id": str(workspace.id),
+                            "changed_count": len(changed),
+                        },
+                    )
+            # NOSILENT: per-batch failure must not kill the watcher task.
+            # log at exception-level so SRE sees programmer-error
+            # regressions; yield to the loop so a persistent failure
+            # cannot starve other tasks.
+            except Exception as iter_exc:
+                log.exception(
+                    "bind watcher iteration failed: %s",
+                    iter_exc,
+                )
+                await asyncio.sleep(0)
+    except asyncio.CancelledError:
+        # NOSILENT: bind's teardown cancels us on clean or exception-path exit, so this IS the
+        # requested cancellation. Returning instead of re-raising lets the awaiting wait_for
+        # observe a completed task rather than a CancelledError that would propagate into
+        # bind's outer frame.
+        return
 
 
 async def _capture_back(
@@ -1280,10 +1287,11 @@ async def _capture_back(
                         nats_client=nats_client,
                         namespace=namespace,
                     )
-        # NOSILENT: logged at exception level, not swallowed. the capture-back commit above is
-        # true and already durable, so an audit failure must not turn it into an error;
-        # publish_audit logs its own NATS failures at WARN, and this catches a programmer-error
-        # regression (AttributeError, NameError) in building the events.
+        # NOSILENT: audit failure must never taint the successful
+        # capture-back commit above. log at exception-level so SRE
+        # still sees programmer-error regressions (AttributeError,
+        # NameError) — only NATS-publish failure is already
+        # swallowed inside publish_audit at WARN.
         except Exception as audit_exc:
             log.exception(
                 "workspace.materialize audit publish swallow caught: %s",
@@ -1456,11 +1464,10 @@ async def bind(
             # tear the watcher down deterministically whether or not the
             # body raised; the bounded wait_for guarantees bind exit does
             # not hang on a stuck filesystem watcher.
-            # asyncio.wait never raises the watcher's outcome, so a CancelledError here is bind's
-            # OWN cancellation and propagates; the watcher's cancellation is read off the task.
             watcher_task.cancel()
-            done, _pending = await asyncio.wait([watcher_task], timeout=2.0)
-            if not done:
+            try:
+                await asyncio.wait_for(watcher_task, timeout=2.0)
+            except TimeoutError:
                 log.warning(
                     "workspace.bind.watcher_cancel_timeout",
                     extra={
@@ -1468,11 +1475,14 @@ async def bind(
                         "root_name": root_name,
                     },
                 )
-            elif not watcher_task.cancelled() and (cancel_exc := watcher_task.exception()) is not None:
-                log.error(
+            except asyncio.CancelledError:
+                # NOSILENT: this IS the watcher cancellation requested on the line above; any
+                # other exception is programmer error and falls to the handler below.
+                pass
+            except Exception as cancel_exc:
+                log.exception(
                     "workspace.bind.watcher_cancel_error: %s",
                     cancel_exc,
-                    exc_info=(type(cancel_exc), cancel_exc, cancel_exc.__traceback__),
                 )
         if body_raised is not None:
             log.warning(

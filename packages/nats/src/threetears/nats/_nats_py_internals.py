@@ -136,8 +136,7 @@ def write_pending_then_ping(connection: Client, pong: asyncio.Future[bool]) -> N
     try:
         flush_queue.put_nowait(wake)
     except asyncio.QueueFull:
-        # NOSILENT(expected): a full queue means the flusher already holds wake-ups it has not taken, and
-        # each drains the whole transport, so the bytes written above are flushed without this one
+        # NOSILENT: the flusher already holds wake-ups it has not taken, and each one drains the transport
         pass
 
 

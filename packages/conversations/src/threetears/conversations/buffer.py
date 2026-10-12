@@ -36,7 +36,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from threetears.observe import cancel_and_wait, get_logger
+from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from threetears.conversations.collection import ConversationsCollection
@@ -208,7 +208,12 @@ class ConversationWriteBuffer:
             return
         self._stopped = True
         if self._timer_task is not None:
-            await cancel_and_wait(self._timer_task)
+            self._timer_task.cancel()
+            try:
+                await self._timer_task
+            # NOSILENT: cancellation is the expected end of the timer loop
+            except asyncio.CancelledError:
+                pass
             self._timer_task = None
         await self.flush()
 
@@ -344,16 +349,19 @@ class ConversationWriteBuffer:
         sleeps the configured window between flushes. cancellation
         ends the loop; the final drain happens in :meth:`stop`.
 
-        :return: nothing; the loop only ends by being cancelled
+        :return: nothing
         :rtype: None
-        :raises asyncio.CancelledError: when :meth:`stop` ends it
         """
-        while True:
-            await asyncio.sleep(self._flush_interval_seconds)
-            try:
-                await self.flush()
-            except Exception as exc:
-                log.warning(
-                    "conversation write buffer timer flush failed (soft-fail): %s",
-                    exc,
-                )
+        try:
+            while True:
+                await asyncio.sleep(self._flush_interval_seconds)
+                try:
+                    await self.flush()
+                except Exception as exc:
+                    log.warning(
+                        "conversation write buffer timer flush failed (soft-fail): %s",
+                        exc,
+                    )
+        # NOSILENT: cancellation ends the timer loop on pod shutdown
+        except asyncio.CancelledError:
+            return

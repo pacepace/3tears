@@ -167,8 +167,8 @@ def cli_process_pid(client: Any) -> Any:
     try:
         result = client._transport._process.pid
     except AttributeError:
-        # NOSILENT(expected): None is this probe's documented "the SDK does not expose it here"; the
-        # pool's /proc marker scan then finds the same pid, and warns if that finds nothing either
+        # NOSILENT: the SDK's internals moved; the pool falls back to scanning /proc for its
+        # session's marker, and warns only if that finds nothing either.
         result = None
     return result
 

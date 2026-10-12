@@ -127,8 +127,6 @@ def _parse_body_shape(body: str) -> Any:
         try:
             result = json.loads(body[brace_index:])
         except json.JSONDecodeError:
-            # NOSILENT(expected): text that does not parse as JSON is "nothing JSON-shaped", the
-            # documented None the caller reports as a body without a shape.
             result = None
     return result
 

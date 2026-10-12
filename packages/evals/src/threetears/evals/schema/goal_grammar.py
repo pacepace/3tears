@@ -385,8 +385,6 @@ def speaks_the_goal_language(expression: str) -> bool:
     try:
         tree = ast.parse(expression, mode="eval")
     except SyntaxError:
-        # NOSILENT(expected): the refusal IS the answer -- text that is not Python expression syntax is not
-        # written in this language's words, which is all False claims
         return False
     return all(
         node.id in _ALLOWED_ROOTS or node.id in _BUILTINS for node in ast.walk(tree) if isinstance(node, ast.Name)

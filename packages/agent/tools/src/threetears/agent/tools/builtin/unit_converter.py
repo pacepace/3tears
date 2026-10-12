@@ -21,7 +21,6 @@ try:
     _ureg = pint.UnitRegistry()
     _HAS_PINT = True
 except ImportError:
-    # NOSILENT(optional-import): pint is an extra; without it every call answers the tool error naming it
     _HAS_PINT = False
 
 

@@ -72,9 +72,8 @@ def _as_float(value: object) -> float | None:
     # zero. Absence is the honest answer and there is nothing to log per result.
     try:
         return float(value)
+    # NOSILENT: a non-numeric provider value means nothing was reported
     except ValueError:
-        # NOSILENT(expected): a value that is not a number is a provider reporting no number; None is
-        # "unknown", which every caller publishes as an absence and never as zero.
         return None
 
 

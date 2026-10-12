@@ -803,8 +803,6 @@ class UsageTracker:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            # NOSILENT(expected): get_running_loop's RuntimeError IS its "no loop is running" answer;
-            # the synchronous fallback below handles that case
             loop = None
 
         if loop is not None:

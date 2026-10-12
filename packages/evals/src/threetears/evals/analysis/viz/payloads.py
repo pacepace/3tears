@@ -1117,8 +1117,6 @@ def infer_ordered(levels: Iterable[str]) -> bool:
         try:
             float(level)
         except ValueError:
-            # NOSILENT(expected): the refusal IS the answer -- a level that is not a number leaves the knob
-            # unordered, which is what False says; no ramp is drawn asserting an order the data lacks
             return False
     return True
 
@@ -1667,13 +1665,12 @@ class TimeseriesPayload(_VizPayload):
         if self.basis != "date":
             return self
         for position in self.positions:
-            refusal = f"a `date` axis's positions are days as YYYY-MM-DD; {position!r} is not one"
             try:
                 parsed = date.fromisoformat(position)
-            except ValueError as unreadable:
-                raise ValueError(refusal) from unreadable
-            if parsed.isoformat() != position:
-                raise ValueError(refusal)
+            except ValueError:
+                parsed = None
+            if parsed is None or parsed.isoformat() != position:
+                raise ValueError(f"a `date` axis's positions are days as YYYY-MM-DD; {position!r} is not one")
         if self.positions != sorted(self.positions):
             raise ValueError("a `date` axis lists its days in calendar order, earliest first")
         return self

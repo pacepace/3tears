@@ -205,7 +205,7 @@ class WorkspaceDeleteTool(TearsTool):
                             nats_client=self._nats_client,
                             namespace=self._namespace,
                         )
-                # NOSILENT: logged, not swallowed: a failed audit never turns a true delete into an error
+                # NOSILENT: audit failure never taints delete
                 except Exception as audit_exc:
                     log.exception(
                         "workspace_delete audit publish swallow caught: %s",

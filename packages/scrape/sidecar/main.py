@@ -24,7 +24,7 @@ import re
 import shutil
 import tempfile
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
@@ -864,10 +864,10 @@ async def _wm_output(argv: list[str], *, display: str) -> str | None:
         # does not sit as a zombie either.
         log.warning("hitl: %s did not answer within %ss; killing it", argv[0], timings.wm_call_timeout_seconds)
         proc.kill()
-        try:
+        with suppress(
+            Exception
+        ):  # prawduct:allow prawduct/broad-except -- the child is already being killed; a failure to reap it must not fail startup, and the kill above is what actually matters
             await proc.wait()
-        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the child is already being killed; a failure to reap it must not fail startup, and the kill above is what actually matters
-            log.warning("hitl: %s was killed but could not be reaped: %s", argv[0], exc)
         return None
     except OSError as exc:
         log.warning("hitl: %s failed: %s", argv[0], exc)

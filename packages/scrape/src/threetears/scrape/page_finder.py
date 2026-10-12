@@ -473,8 +473,6 @@ async def _verify_candidate_page(
         try:
             body = json.loads(raw)
         except ValueError:
-            # NOSILENT(expected): a body that is not JSON is not a JSON API; the HTML structure
-            # checks below give this page its verdict.
             body = None
         has_list = isinstance(body, list) or (
             isinstance(body, dict) and any(isinstance(v, list) for v in body.values())
