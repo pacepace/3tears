@@ -112,7 +112,7 @@ from threetears.evals.run.executor import (
 )
 from threetears.evals.run.metering import CellMeter, MeteredCallLedger, MeteredCallTally
 from threetears.evals.kernel.offload import run_blocking
-from threetears.evals.run.reads import get_result, get_result_trace, list_results, list_runs
+from threetears.evals.run.reads import get_result, get_result_trace, list_results, list_runs, list_runs_disclosing
 from threetears.evals.run.recheck import (
     CheckFlip,
     KeptOutcome,
@@ -353,6 +353,7 @@ __all__ = [
     "list_results",
     "list_rubric_dims",
     "list_runs",
+    "list_runs_disclosing",
     "list_templates",
     "load_run_as_listed",
     "load_seed_corpus",

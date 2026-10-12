@@ -53,7 +53,10 @@ NULL_CLAIM_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
             "an unaffected reading",
             rf"\b(?:is|are|was|were)(?:\s+not|n't)\s+{_ADVERB}(?:affected|changed|altered|hurt|harmed|impacted)\b",
         ),
-        ("no effect, difference or impact", r"\bno\s+(?:\w+\s+)?(?:effects|effect|differences|difference|impacts|impact)\b"),
+        (
+            "no effect, difference or impact",
+            r"\bno\s+(?:\w+\s+)?(?:effects|effect|differences|difference|impacts|impact)\b",
+        ),
         ("no worse or better", r"\bno\s+(?:worse|slower|better|faster)\b"),
         (
             "a reading that held still",

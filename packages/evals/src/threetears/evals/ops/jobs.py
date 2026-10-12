@@ -51,10 +51,11 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.storage import UnreadableRunError
 from threetears.evals.schema.refusal import JobRefusal
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalSweep
 from threetears.evals.schema.models import EvalRun
@@ -511,9 +512,16 @@ async def _settled[R: EvalDocumentModel](
 ) -> R | None:
     """A job's record as every process reads it — written lost first when its lease has lapsed — on the blocking executor."""
     eval_host = host.eval_host
-    record, _ = await run_blocking(
-        eval_host.blocking_executor, settle_job_record, eval_host.storage, kind, record_id, scope_id
-    )
+    try:
+        record, _ = await run_blocking(
+            eval_host.blocking_executor, settle_job_record, eval_host.storage, kind, record_id, scope_id
+        )
+    except ValidationError as refused:
+        # A run this build cannot read is refused as every run read refuses one. Another kind's record has no
+        # listing to name in a remedy, so its model's error stands.
+        if kind is RUN_JOB:
+            raise UnreadableRunError.of_run(scope_id, record_id, refused) from refused
+        raise
     return record
 
 
@@ -550,6 +558,8 @@ async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
         NotFoundError: No record of the job in the scope (another scope's job reads so), or a generation's
             attempt filed under another campaign than the id names.
         ConflictError: The record kept changing while its lapsed lease was being written lost; poll again.
+        UnreadableRunError: The job's run, or a run its sweep or launch started, does not validate under this
+            build's model.
     """
     kind, target_id, attempt_id = parse_job_id(job_id)
     eval_host = host.eval_host
@@ -627,6 +637,8 @@ async def job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str |
         NotFoundError: No record of the job in the scope, or a generation's attempt filed under another campaign.
         ConflictError: The record kept changing while its lapsed lease was being written lost; nothing was asked.
         StorageError: The request could not be written.
+        UnreadableRunError: The job's run does not validate under this build's model, so whether it can be
+            cancelled cannot be read.
     """
     kind, target_id, attempt_id = parse_job_id(job_id)
     manager, eval_host = host.launch.job_manager, host.eval_host

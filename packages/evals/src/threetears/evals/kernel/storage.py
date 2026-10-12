@@ -49,8 +49,8 @@ from threetears.evals.kernel.campaign import (
     generation_slot_id,
 )
 from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
-from threetears.evals.kernel.errors import ConflictError, StorageError
-from threetears.evals.kernel.remedies import REREAD_AND_RETRY
+from threetears.evals.kernel.errors import ConflictError, EvalServiceError, StorageError
+from threetears.evals.kernel.remedies import FIND_UNREADABLE_RUNS, REREAD_AND_RETRY
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileStore
 from threetears.evals.schema.models import (
     EVAL_DOC_TYPES,
@@ -105,6 +105,16 @@ class CaseRecordings(NamedTuple):
     unreadable: dict[str, str]
 
 
+def _refusal_reasons(refused: ValidationError) -> list[str]:
+    """Each distinct thing a model refused in a row, as ``field: what it said``, sorted — never the value itself."""
+    return sorted(
+        {
+            f"{'.'.join(str(part) for part in error['loc']) or '(the document)'}: {error['msg']}"
+            for error in refused.errors(include_url=False)
+        }
+    ) or [str(refused)]
+
+
 class RefusedRow(NamedTuple):
     """One stored row the current model refused to reconstruct: what the row itself says it is, and why.
 
@@ -120,6 +130,106 @@ class RefusedRow(NamedTuple):
 
     refused: ValidationError
     """What the model said of it."""
+
+    @property
+    def reasons(self) -> list[str]:
+        """Each distinct refusal, as ``field: what the model said``, sorted; the refused value is never repeated."""
+        return _refusal_reasons(self.refused)
+
+
+class UnreadableRunError(EvalServiceError):
+    """A read that cannot leave a run out met one this build's model refuses (status 500).
+
+    A run's own read, or a listing whose answer would be wrong without every run it matched — a comparison, a
+    campaign's members, a cost — refuses rather than answer over the rows it could read. Raised by
+    :class:`EvalStorage`'s run reads in place of the model's ``ValidationError``, so every surface refuses it as an
+    engine refusal rather than failing with the model's own error. Its remedy is the class's own
+    (:data:`~threetears.evals.kernel.remedies.FIND_UNREADABLE_RUNS`): the stored rows are what is wrong, not the
+    call, so the caller's next step is to see which and why.
+
+    Attributes:
+        run_ids: The ids the refused rows state, as read off the rows; empty when none stated one.
+    """
+
+    def __init__(self, message: str, *, run_ids: Sequence[str]):
+        """Build a 500 naming the rows.
+
+        Args:
+            message: Which rows, in which scope, and why.
+            run_ids: The ids the refused rows state.
+        """
+        self.run_ids = list(run_ids)
+        super().__init__(
+            message=message, status_code=500, details={"run_ids": self.run_ids}, remedy=FIND_UNREADABLE_RUNS
+        )
+
+    @classmethod
+    def of_rows(cls, scope_id: str, rows: Sequence[RefusedRow]) -> UnreadableRunError:
+        """The refusal of a read that met ``rows``, each named with its reasons.
+
+        Args:
+            scope_id: The scope read.
+            rows: The rows the model refused, at least one.
+
+        Returns:
+            The error.
+        """
+        named = "; ".join(f"{row.row_id or '(no id on the row)'}: {', '.join(row.reasons)}" for row in rows)
+        return cls(
+            f"{len(rows)} stored eval run(s) in scope {scope_id!r} cannot be read under this build's model, so this "
+            f"read cannot answer without them — {named}",
+            run_ids=[row.row_id for row in rows if row.row_id is not None],
+        )
+
+    @classmethod
+    def of_run(cls, scope_id: str, run_id: str, refused: ValidationError) -> UnreadableRunError:
+        """The refusal of a read of one named run, through a read that raises the model's own error for it.
+
+        For the lease machinery's reads (:meth:`EvalStorage.load_job_record`,
+        :meth:`EvalStorage.load_eval_run_with_etag`), which keep raising ``ValidationError`` because the boot reclaim
+        and the job loops tell a refused row from a lost race by it: a surface that reads a run through one of them
+        translates it here, so its caller is refused as by every other run read.
+
+        Args:
+            scope_id: The scope read.
+            run_id: The run asked for.
+            refused: What the model said, of the stored run or of writing it lost.
+
+        Returns:
+            The error.
+        """
+        return cls(
+            f"stored eval run {run_id!r} in scope {scope_id!r} does not validate under this build's model, as read "
+            f"or as written lost — {', '.join(_refusal_reasons(refused))}",
+            run_ids=[run_id],
+        )
+
+    @classmethod
+    def of_settling(cls, scope_id: str, refused: ValidationError) -> UnreadableRunError:
+        """The refusal of a read whose runs read, but one of which a model refused while it was written lost.
+
+        Args:
+            scope_id: The scope read.
+            refused: What the model said.
+
+        Returns:
+            The error.
+        """
+        return cls(
+            f"a stored eval run in scope {scope_id!r} read, but writing it lost was refused by this build's model, "
+            f"so it cannot be read as every process reads it — {', '.join(_refusal_reasons(refused))}",
+            run_ids=[],
+        )
+
+
+class RunsRead(NamedTuple):
+    """A run listing that leaves out what it cannot read, and says so (:meth:`EvalStorage.query_eval_runs_isolating`)."""
+
+    runs: list[EvalRun]
+    """The matched runs that read, each settled as every read settles it."""
+
+    unreadable: list[RefusedRow]
+    """The matched rows the model refused, each with why, in the store's order."""
 
 
 class EvalRunScan(NamedTuple):
@@ -1405,8 +1515,17 @@ class EvalStorage:
         self._save(run.to_dict(), if_match=if_match)
 
     def load_eval_run(self, run_id: str, scope_id: str) -> EvalRun | None:
-        """Load an eval run by id + scope; ``None`` when the id names no run there (:meth:`_of_type`)."""
-        return self._load(EvalRun, run_id, scope_id)
+        """Load an eval run by id + scope; ``None`` when the id names no run there (:meth:`_of_type`).
+
+        Raises:
+            UnreadableRunError: The stored run does not validate under this build's model, or writing it lost did
+                not.
+        """
+        data = self._of_type(EvalRun, self._store.get(run_id, scope_id))
+        if data is None:
+            return None
+        (run,) = self._hydrate_runs([data], frozenset(), scope_id)
+        return run
 
     def load_eval_run_with_etag(
         self,
@@ -1445,23 +1564,67 @@ class EvalStorage:
 
         Returns:
             The matching runs.
+
+        Raises:
+            UnreadableRunError: A matched row does not validate under this build's model, or writing a run lost
+                did not: the listing refuses rather than answer without it, naming every such row it matched.
+                :meth:`query_eval_runs_isolating` leaves them out and names them instead.
         """
+        runs = self._hydrate_runs(self._run_rows(scope_id, status, elide_payload), elide_payload, scope_id)
+        return [run for run in runs if not status or run.status == status]
+
+    def query_eval_runs_isolating(
+        self,
+        scope_id: str,
+        status: EvalRunStatus | None = None,
+        *,
+        elide_payload: frozenset[str] = frozenset(),
+    ) -> RunsRead:
+        """:meth:`query_eval_runs`, leaving out each matched row this build's model refuses and naming it instead.
+
+        For an inventory, whose reader is better served by every run that reads and a count of the rest than by no
+        answer: ``runs_list``, the listing an operator opens to find a run. Every reader whose answer would be wrong
+        without a run it matched — a comparison, a campaign's members, a cost — reads through
+        :meth:`query_eval_runs`, which refuses instead. A row is refused by the isolating read the boot reclaim and
+        :meth:`scan_eval_runs` go through (:meth:`_hydrate_isolating`), so the rows left out are ones
+        ``runs_unreadable`` names.
+
+        Args:
+            scope_id: The scope whose runs to read.
+            status: As :meth:`query_eval_runs` takes it. A refused row is named when its stored status is the one
+                asked for, or for any status when none is.
+            elide_payload: As :meth:`query_eval_runs` takes it.
+
+        Returns:
+            The runs that read, settled, and each matched row that did not.
+
+        Raises:
+            UnreadableRunError: A run read, but writing it lost was refused by a model.
+        """
+        read, refused = self._hydrate_isolating(EvalRun, self._run_rows(scope_id, status, elide_payload))
+        runs = self._settled_runs(read, elide_payload, scope_id)
+        return RunsRead(
+            runs=[run for run in runs if not status or run.status == status],
+            unreadable=[row for row in refused if not status or row.status == status],
+        )
+
+    def _run_rows(self, scope_id: str, status: str | None, elide_payload: frozenset[str]) -> list[dict[str, Any]]:
+        """The stored run rows a listing by ``status`` matches, before they are read (:meth:`query_eval_runs`)."""
         field_eq: dict[str, Any] = {}
         if elide_payload:
             # Only when there is something to drop: a store written to the port before ``exclude``
             # would read it as an equality predicate and return no runs at all.
             field_eq["exclude"] = _payload_exclusions(elide_payload)
         if not status:
-            return self._hydrate_runs(self._store.by_doc_type("eval_run", scope_id, **field_eq), elide_payload)
+            return self._store.by_doc_type("eval_run", scope_id, **field_eq)
         # A run is settled as it is read, so the status asked for is the settled one: a lapsed ``running`` run reads
         # ``cancelled`` and leaves a ``running`` listing, and a ``cancelled`` listing reads the lapsed ones too.
         asked = {status} | (NON_TERMINAL_RUN_STATUSES if status == RUN_LOST_STATUS else set())
-        items = [
+        return [
             item
             for asked_for in sorted(asked)
             for item in self._store.by_doc_type("eval_run", scope_id, status=asked_for, **field_eq)
         ]
-        return [run for run in self._hydrate_runs(items, elide_payload) if run.status == status]
 
     def load_eval_runs(
         self,
@@ -1486,10 +1649,14 @@ class EvalStorage:
 
         Returns:
             The runs that resolved.
+
+        Raises:
+            UnreadableRunError: A resolved row does not validate under this build's model, or writing a run lost
+                did not.
         """
         exclude = _payload_exclusions(elide_payload) if elide_payload else ()
         items = self._store.get_many("eval_run", list(run_ids), scope_id, exclude=exclude)
-        return self._hydrate_runs(items, elide_payload)
+        return self._hydrate_runs(items, elide_payload, scope_id)
 
     def load_eval_run_stamps(self, run_ids: Sequence[str], scope_id: str, /) -> list[EvalRunStamp]:
         """Load the id, archived flag and start time of the named runs, in one batch read.
@@ -1535,13 +1702,27 @@ class EvalStorage:
             log.error("Failed to set archived on eval run %s (scope %s) — %s", run_id, scope_id, e)
             raise StorageError(f"failed to write eval_run '{run_id}': {e}") from e
 
-    def _hydrate_runs(self, items: list[dict[str, Any]], elide_payload: frozenset[str]) -> list[EvalRun]:
-        """Hydrate stored runs, marking each with the payload paths the read left out."""
-        runs = self._hydrate_all(EvalRun, items)
+    def _hydrate_runs(self, items: list[dict[str, Any]], elide_payload: frozenset[str], scope_id: str) -> list[EvalRun]:
+        """Hydrate and settle stored runs, marking each with the payload paths the read left out.
+
+        Every run read that cannot leave a run out goes through here, so a row this build's model refuses is
+        refused as an engine refusal naming every such row it met, never as the model's own error for the first.
+        """
+        read, refused = self._hydrate_isolating(EvalRun, items)
+        if refused:
+            raise UnreadableRunError.of_rows(scope_id, refused) from refused[0].refused
+        return self._settled_runs(read, elide_payload, scope_id)
+
+    def _settled_runs(self, runs: list[EvalRun], elide_payload: frozenset[str], scope_id: str) -> list[EvalRun]:
+        """Runs that read, settled (:meth:`_settled`) and marked with the payload paths the read left out."""
+        try:
+            settled = self._settled(EvalRun, runs)
+        except ValidationError as refused:
+            raise UnreadableRunError.of_settling(scope_id, refused) from refused
         if elide_payload:
-            for run in runs:
+            for run in settled:
                 run.note_elided_payload(elide_payload)
-        return runs
+        return settled
 
     @staticmethod
     def _hydrate_isolating[M: EvalBaseModel](
@@ -2135,6 +2316,8 @@ __all__ = [
     "NonTerminalRunScan",
     "RefusedRow",
     "ResultStore",
+    "RunsRead",
+    "UnreadableRunError",
     "RunRecordStore",
     "RunStore",
     "save_document",

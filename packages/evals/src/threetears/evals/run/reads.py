@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.storage import RunsRead
 from threetears.evals.kernel.status_filter import StatusFilterError, validate_status_filter
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_RESULT
@@ -123,10 +124,60 @@ def list_runs(
     Raises:
         ValidationFailedError: ``status`` is not one a run can carry, nor
             ``"all"``.
+        UnreadableRunError: A run the listing matched does not validate under this build's model; the inventory
+            that leaves it out and names it instead is :func:`list_runs_disclosing`.
     """
     runs = host.storage.query_eval_runs(
         scope_id, status=_listing_status_filter(status), elide_payload=host.profile.listing_elisions
     )
+    return _narrowed(runs, include_archived=include_archived, label=label)
+
+
+def list_runs_disclosing(
+    host: EvalHost,
+    scope_id: str,
+    *,
+    status: str | None = None,
+    include_archived: bool = False,
+    label: str | None = None,
+) -> RunsRead:
+    """:func:`list_runs` for an inventory: every run that reads, and each matched row that does not, named.
+
+    :func:`list_runs` refuses a scope holding a run this build's model cannot read
+    (:class:`~threetears.evals.kernel.UnreadableRunError`), which is right for the quality and cost surfaces that
+    stand on it: a comparison or a budget over the runs that happened to read is a wrong answer, not a partial one.
+    An inventory is the one reader better served by the rest: the operator opening it is looking for a run, and one
+    row nothing can read must not hide every other. So the refused rows come back beside the runs, never dropped,
+    for the surface to state (``runs_list`` counts them and names ``runs_unreadable``).
+
+    A refused row is matched by its stored status alone: whether it is archived or carries ``label`` is a field of a
+    document that does not read, so the archive and label filters cannot be applied to it, and it is returned
+    whatever they ask.
+
+    Args:
+        host: As :func:`list_runs` takes it.
+        scope_id: As :func:`list_runs` takes it.
+        status: As :func:`list_runs` takes it.
+        include_archived: As :func:`list_runs` takes it.
+        label: As :func:`list_runs` takes it.
+
+    Returns:
+        The runs listed, and each matched row the model refused.
+
+    Raises:
+        ValidationFailedError: ``status`` is not one a run can carry, nor ``"all"``.
+        UnreadableRunError: A run read, but writing it lost was refused by a model.
+    """
+    read = host.storage.query_eval_runs_isolating(
+        scope_id, status=_listing_status_filter(status), elide_payload=host.profile.listing_elisions
+    )
+    return RunsRead(
+        runs=_narrowed(read.runs, include_archived=include_archived, label=label), unreadable=read.unreadable
+    )
+
+
+def _narrowed(runs: list[EvalRun], *, include_archived: bool, label: str | None) -> list[EvalRun]:
+    """``runs`` narrowed by the listing's label and archive filters, which run in Python over what the store returned."""
     if label is not None:
         runs = [run for run in runs if label.strip() in run.labels]
     if include_archived:
@@ -208,4 +259,5 @@ __all__ = [
     "get_result_trace",
     "list_results",
     "list_runs",
+    "list_runs_disclosing",
 ]
