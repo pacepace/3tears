@@ -936,7 +936,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 **Functions**
 
 - **`action_job_work`** · function · A host action's work as a job: `run` awaited to its end, its result written on an `EvalActionJob`.
-  <br>`action_job_work(scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], label: str = '', budget_s: float = 3600.0, discard: Callable[[], Awaitable[None]] | None = None) -> JobWork[EvalActionJob]`
+  <br>`action_job_work(scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], budget_s: float, label: str = '', discard: Callable[[], Awaitable[None]] | None = None) -> JobWork[EvalActionJob]`
 - **`admit_group`** · async function · Admit one group of runs: refuse what cannot start, reserve its room and form it — preparing and spending nothing.
   <br>`admit_group(host: LaunchHost, n_runs: int, *, settings: LaunchSettings, form: Callable[[], Awaitable[tuple[LaunchGroup, _Formed]]], prepare: Callable[[LaunchGroup, _Formed], Awaitable[list[EvalRun]]], event: str, admission: AdmissionTicket | None = None, attach: Callable[[list[EvalRun]], Awaitable[None]] | None = None, detach: Callable[[list[EvalRun]], Awaitable[None]] | None = None) -> AdmittedLaunch`
 - **`admit_launch`** · async function · The first half of `start_run`: every refusal it makes and every arm priced — no launcher run, nothing spent.
@@ -1236,7 +1236,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 **Constants**
 
 - **`ACTION_JOB`** · constant (LeasedJobKind) · An action job's record.
-- **`DEFAULT_ACTION_JOB_BUDGET_S`** · constant (float) · An action job's wall-clock ceiling unless its host names another: an hour, the job manager's own default.
+- **`DEFAULT_ACTION_JOB_BUDGET_S`** · constant (float) · An hour: the job manager's own default ceiling, for an action job whose host means exactly that.
   <br>`= 3600.0`
 - **`DEFAULT_MAX_CONCURRENT_CELLS`** · constant (int) · The host's ceiling on a run's width when latency is not under test and its settings name none: enough to turn hours of a slow candidate into a fraction of that, few enough that a provider's rate limit is not the first thing a default launch meets.
   <br>`= 4`
@@ -2149,11 +2149,11 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`second_judge_job_id`** · function · The job id of a second judge's pass.
   <br>`second_judge_job_id(pass_id: str) -> str`
 - **`start_action_job`** · async function · Start a host action's work as a job whose record (`EvalActionJob`) holds its result.
-  <br>`start_action_job(host: OpsHost, scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], label: str = '', budget_s: float = 3600.0, discard: Callable[[], Awaitable[None]] | None = None) -> JobsStarted`
+  <br>`start_action_job(host: OpsHost, scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], budget_s: float, label: str = '', discard: Callable[[], Awaitable[None]] | None = None) -> JobsStarted`
 - **`start_job`** · async function · Start admitted work as a job: its record written, leased, and the work run in the background.
   <br>`start_job(host: OpsHost, admitted: AdmittedJob) -> JobsStarted`
 - **`start_paid_call`** · async function · Start a host action's one paid model call: admitted against its cap in the call, made in a job.
-  <br>`start_paid_call(host: OpsHost, scope_id: str, *, action: str, role: CompletionRole, model: str | None, purpose: OutOfRunPurpose, budget: OutOfRunBudget, call: PlannedCall, make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]], label: str, budget_s: float = 3600.0) -> JobsStarted`
+  <br>`start_paid_call(host: OpsHost, scope_id: str, *, action: str, role: CompletionRole, model: str | None, purpose: OutOfRunPurpose, budget: OutOfRunBudget, call: PlannedCall, make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]], label: str, budget_s: float) -> JobsStarted`
 - **`sweep_job_id`** · function · The job id of a sweep.
   <br>`sweep_job_id(sweep_id: str) -> str`
 - **`sweep_launch`** · async function · Create the sweep's campaign and start the job that launches its arms in order.
