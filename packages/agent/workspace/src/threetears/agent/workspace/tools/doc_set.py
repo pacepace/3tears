@@ -269,7 +269,7 @@ class DocSetTool(TearsTool):
                                     nats_client=self._nats_client,
                                     namespace=self._namespace,
                                 )
-                        # NOSILENT: audit failure never taints doc_set
+                        # NOSILENT(logged): a failed audit never turns a true doc_set into an error
                         except Exception as audit_exc:
                             log.exception(
                                 "doc_set audit publish swallow caught: %s",

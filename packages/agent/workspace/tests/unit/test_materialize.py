@@ -229,7 +229,7 @@ async def test_materialize_byte_identical_roundtrip_for_binary_content(
 async def testsnapshot_disk_skips_symlink_that_escapes_root(
     tmp_path: Path,
 ) -> None:
-    """symlinks whose target resolves outside the root are dropped silently.
+    """symlinks whose target resolves outside the root are dropped, with a warning.
 
     defensive guard: a symlink planted inside the bind root pointing at
     ``/etc/hosts`` (or anywhere outside the root) must not smuggle bytes
@@ -251,6 +251,28 @@ async def testsnapshot_disk_skips_symlink_that_escapes_root(
     assert result["ok.txt"][0] == b"inside"
     # the escaping symlink was skipped
     assert "escape.txt" not in result
+
+
+@pytest.mark.asyncio
+async def test_a_file_whose_path_cannot_be_resolved_fails_the_snapshot_rather_than_reading_as_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """an unresolvable path used to be skipped like an escaping symlink -- and capture-back
+    deletes from L3 every file the snapshot does not hold."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "ok.txt").write_bytes(b"inside")
+    (root / "unreadable.txt").write_bytes(b"still here")
+    real_resolve = Path.resolve
+
+    def _resolve(self: Path, strict: bool = False) -> Path:
+        if self.name == "unreadable.txt":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", _resolve)
+    with pytest.raises(PermissionError):
+        await materialize_module.snapshot_disk(root)
 
 
 @pytest.mark.asyncio

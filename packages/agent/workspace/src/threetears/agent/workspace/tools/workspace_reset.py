@@ -251,7 +251,7 @@ class WorkspaceResetTool(TearsTool):
                             nats_client=self._nats_client,
                             namespace=self._namespace,
                         )
-                # NOSILENT: audit failure must never taint a successful reset
+                # NOSILENT(logged): a failed audit never turns a true reset into an error
                 except Exception as audit_exc:
                     log.exception(
                         "workspace_reset audit publish swallow caught: %s",
