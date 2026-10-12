@@ -252,6 +252,8 @@ def rooted_tool_name(tool_name: str) -> str | None:
         try:
             result = build_tool_provider_node_name(tool_name)
         except ValueError:
+            # NOSILENT(expected): the builder's refusal IS the answer "composes no name" -- the documented None,
+            # which the caller treats as not registrable (fail-closed), so the entry is refused, not admitted
             result = None
     return result
 

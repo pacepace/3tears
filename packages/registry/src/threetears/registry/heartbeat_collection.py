@@ -204,7 +204,7 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         # legacy payloads to aware-UTC at the boundary.
         if self._l1 is not None:
             self._l1.upsert(self.table_name, data, self.primary_key_column)
-        await self._save_to_l2(entity.id, data)
+        await self._store_in_l2(entity.id, data)
         await self._publish_invalidation(entity.id)
         entity.mark_clean()
         entity.original_date_updated = data.get("date_updated")
@@ -232,7 +232,7 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
                 str(entity_id),  # convert at border: L1 SQLite cache text-key delete
                 self.primary_key_column,
             )
-        await self._delete_from_l2(entity_id)
+        await self._remove_from_l2(entity_id)
         await self._publish_invalidation(entity_id)
         return True
 
@@ -320,6 +320,7 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         :ptype data: bytes
         :return: row dict with aware-UTC datetime columns
         :rtype: dict[str, Any]
+        :raises ValueError: the bytes, or a ``tools`` field stored as text, are not JSON
         """
         raw: dict[str, Any] = json.loads(data.decode("utf-8"))
         # Timestamps are `BaseCollection`'s, driven by `datetime_columns`. The loop that used to
@@ -329,8 +330,11 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         if isinstance(tools, str):
             try:
                 raw["tools"] = json.loads(tools)
-            except json.JSONDecodeError, ValueError:
-                raw["tools"] = []
+            except ValueError as exc:
+                # a pod read as owning no tools would quietly drop out of the catalog: say the row is corrupt
+                raise ValueError(
+                    f"heartbeat row for pod {raw.get('pod_id')!r} carries a tools field that is not JSON: {exc}"
+                ) from exc
         return raw
 
     async def get_pods(self, pod_ids: list[str]) -> list[HeartbeatEntity]:

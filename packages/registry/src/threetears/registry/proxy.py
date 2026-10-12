@@ -1096,6 +1096,8 @@ class CallProxy:
                     principal_is_tool_pod=principal.is_tool_pod,
                 )
             except Exception as exc:  # noqa: BLE001 -- fail closed WITH a reply; never a dropped call
+                # NOSILENT(logged): the caller is answered with a typed refusal (TOOL_AUTHORIZATION_UNAVAILABLE)
+                # before return, so the call fails closed and loudly
                 log.error(
                     "tool call refused: the authorizer could not reach the store it decides from, so the "
                     "call is denied rather than decided",
@@ -1336,7 +1338,7 @@ class CallProxy:
             remaining = [ep for ep in routable if ep.pod_id not in attempted_pod_ids]
             next_endpoint = self._routing_strategy.select(remaining)
             if next_endpoint is None:
-                # NOSILENT: the failover warning below fires only when a SIBLING pod exists, so
+                # the failover warning below fires only when a SIBLING pod exists, so
                 # the single-endpoint case -- the common one, and the total outage -- was the one
                 # shape that exited here saying nothing. The call never reached a pod, yet the
                 # only account of it was a TOOL_UNAVAILABLE the caller then had to explain. Say
@@ -1424,9 +1426,11 @@ class CallProxy:
                 await self._nc.jetstream_publish(subject=delivery_subject, payload=payload)
                 return
             except Exception as exc:  # noqa: BLE001 — the tool already ran; retry beats discarding it
+                # NOSILENT(logged): the delivery channel itself is what failed, so no caller is reachable to
+                # raise to; each failed attempt is logged and retried, and the lost answer is logged at ERROR
                 if attempt == _RESULT_DELIVERY_ATTEMPTS:
-                    # NOSILENT: the answer is now lost. name it, rather than letting it surface as an
-                    # unexplained timeout at the agent.
+                    # the answer is now lost: name it, rather than letting it surface as an unexplained
+                    # timeout at the agent.
                     log.error(
                         "tool result could not be delivered to the caller after %d attempts; the "
                         "answer is lost (subject=%s bytes=%d): %s",
@@ -2027,7 +2031,7 @@ def _parse_pod_accept(payload: bytes) -> "CallAccepted | None":
     try:
         decoded = json.loads(payload)
     except ValueError, TypeError:
-        # NOSILENT: "this is not an acknowledgement" is the answer this function exists to give.
+        # NOSILENT(expected): "this is not an acknowledgement" is the answer this function exists to give.
         # the caller then parses the same bytes as a full response, and reports the failure there
         # with the detail, so raising or logging here would double-report one bad payload.
         return None
@@ -2035,7 +2039,7 @@ def _parse_pod_accept(payload: bytes) -> "CallAccepted | None":
         try:
             result = CallAccepted.model_validate(decoded)
         except ValidationError:
-            # NOSILENT: same contract as above -- a body carrying ``accepted`` but not matching the
+            # NOSILENT(expected): same contract as above -- a body carrying ``accepted`` but not matching the
             # model is handed on as a response and reported there rather than twice.
             result = None
     return result
