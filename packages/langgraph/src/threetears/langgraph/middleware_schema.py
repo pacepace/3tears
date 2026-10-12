@@ -188,6 +188,8 @@ def _configurable() -> dict[str, Any]:
     except RuntimeError:
         # SDS-04: no runnable config means no injected integration, so this whole
         # middleware becomes a pass-through and the turn silently loses schema priming.
+        # NOSILENT(logged): outside a runnable there is no integration injected, so there is no schema to prime; the
+        # turn proceeds unchanged
         log.warning(
             "no runnable config available: schema priming is skipped for this turn",
         )
@@ -493,9 +495,6 @@ class SchemaPrimingMiddleware(AgentMiddleware[SchemaPrimingState, Any, Any]):
         if integration is None:
             passthrough: ModelResponse[Any] = await handler(request)
             return passthrough
-        # datasource_ids() soft-fails internally to [] (never raises): a
-        # non-datasource agent, or one whose datasource has not resolved yet, yields
-        # [] and no injection.
         # The integration asks the hub BY NAME and hands back documented tables.
         # It used to hand back datasource ids for this middleware to read digests
         # with; that meant the agent holding hub-internal ids and reading a
@@ -518,6 +517,8 @@ class SchemaPrimingMiddleware(AgentMiddleware[SchemaPrimingState, Any, Any]):
             # broke in a way it did not anticipate. The honesty rule still
             # ships below: losing the schema block degrades the answer, losing
             # the rule removes the instruction to ground it at all.
+            # NOSILENT(logged): the honesty rule still ships with no tables, so the model is still told to ground its
+            # answer; only the schema block is lost
             log.warning(
                 "documented-schema read failed (soft-fail; honesty rule still shipped): %s: %s",
                 type(exc).__name__,

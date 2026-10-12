@@ -51,7 +51,9 @@ def _configurable() -> dict[str, Any]:
     does NOT expose ``config`` for the ``wrap_model_call`` seam (only the tool seam's
     ``ToolRuntime`` does), so ``get_config`` is the canonical reach to ``configurable``.
     Outside a runnable context it raises ``RuntimeError``; with no config there is no
-    injected manager, so this soft-fails to an empty dict and the seam becomes a no-op.
+    injected manager, so this soft-fails to an empty dict and the seam becomes a no-op --
+    logged at WARNING, as the schema-priming seam does, because the turn then proceeds
+    without its conversation context.
 
     :return: the run's ``configurable`` mapping, or an empty dict.
     :rtype: dict[str, Any]
@@ -59,6 +61,9 @@ def _configurable() -> dict[str, Any]:
     try:
         config = get_config()
     except RuntimeError:
+        # NOSILENT(logged): outside a runnable there is no conversation to merge, and the middleware has no caller but
+        # the turn, which proceeds unchanged
+        log.warning("no runnable config available: conversation context is skipped for this turn")
         return {}
     return config.get("configurable") or {}
 
