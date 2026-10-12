@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from threetears.enforcement.underscore_access.walkers import (
     package_id,
     parse_ruff_slf001_output,
     same_package,
     shape_a_violations,
+    shape_b_violations,
     shape_c_violations,
     shape_d_violations,
     shape_e_violations,
@@ -574,3 +577,16 @@ class TestShapeF:
         )
 
         assert [v.symbol for v in shape_f_violations((tests,), tmp_path)] == ["_slot"]
+
+
+class TestShapeBWithoutRuff:
+    def test_a_host_without_ruff_is_refused_rather_than_reported_clean(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """an empty list would read as "no SLF001 access anywhere" over code ruff never looked at."""
+        src = tmp_path / "src"
+        _write(src / "pkg" / "mod.py", "x = obj._private\n")
+        monkeypatch.setenv("PATH", str(tmp_path / "no-tools-here"))
+
+        with pytest.raises(RuntimeError, match="enable_shape_b_ruff"):
+            shape_b_violations(tmp_path, (src,))

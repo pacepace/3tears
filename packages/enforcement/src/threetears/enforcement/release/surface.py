@@ -234,8 +234,10 @@ def _added_exports(node: ast.stmt, module_path: str) -> set[str] | None:
         elif method == "extend" and literal is not None and not isinstance(literal, ast.Constant):
             try:
                 added = _literal_exports(literal)
-            except ValueError:
-                added = None
+            except ValueError as exc:
+                raise SurfaceReadError(
+                    module_path, f"line {node.lineno}: `__all__` is changed in a way the gate cannot read (`{shown}`)"
+                ) from exc
         if added is None:
             raise SurfaceReadError(
                 module_path, f"line {node.lineno}: `__all__` is changed in a way the gate cannot read (`{shown}`)"
