@@ -39,6 +39,10 @@ def unfenced_read_caches(roots: list[Path], repo_root: Path) -> list[str]:
             relative = path.relative_to(repo_root).as_posix()
             if "/tests/" in relative or "/testing/" in relative:
                 continue
+            # a hidden directory is nobody's source: the sidecar's own .venv lands under packages/
+            # once its tests have run, holding third-party files that are not even UTF-8
+            if any(part.startswith(".") for part in path.relative_to(repo_root).parts[:-1]):
+                continue
             source = path.read_text(encoding="utf-8")
             if "write_to_cache_sync(" not in source:
                 continue
@@ -73,3 +77,16 @@ def test_an_unfenced_read_is_caught(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert unfenced_read_caches([tmp_path], tmp_path) == ["pkg/collections.py:4 list_all"]
+
+
+def test_a_virtualenv_under_the_tree_is_not_scanned(tmp_path: Path) -> None:
+    """the sidecar's test run leaves ``packages/scrape/sidecar/.venv``; its files are not the repo's."""
+    vendored = tmp_path / "pkg" / ".venv" / "lib" / "site-packages" / "cdp.py"
+    vendored.parent.mkdir(parents=True)
+    vendored.write_bytes(b"# generated\r\nx = '\xb1'\r\n")
+    unfenced = tmp_path / "pkg" / ".venv" / "lib" / "site-packages" / "other.py"
+    unfenced.write_text(
+        "class C:\n    async def f(self):\n        self.write_to_cache_sync({})\n",
+        encoding="utf-8",
+    )
+    assert unfenced_read_caches([tmp_path], tmp_path) == []

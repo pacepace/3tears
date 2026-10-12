@@ -47,13 +47,6 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
         CrossWorkerCanceller,
         TaskCancelEnvelope,
     )
-    from threetears.nats.distributed_lock import (
-        LockHeld,
-        LockHold,
-        LockLossReason,
-        LockLost,
-        nats_distributed_lock,
-    )
     from threetears.nats.forward import (
         DEFAULT_FORWARD_TIMEOUT,
         ForwardError,
@@ -148,6 +141,7 @@ from threetears.nats.errors import (
     KvBucketNotFoundError,
     KvConfigMismatch,
     KvError,
+    LockLossReason,
     NamespaceNotConfiguredError,
     NatsClientError,
     NoRespondersError,
@@ -187,6 +181,7 @@ from threetears.nats.subject_permissions import (
     CROSS_PLATFORM_CACHE_INVALIDATE,
     DATA_VERSIONS_BUCKET_SUFFIX,
     KV_KEY_SCOPE_GRAMMAR,
+    KV_STREAM_PREFIX,
     WORKSPACE_LOCKS_BUCKET_SUFFIX,
     AgentBucketGrant,
     AgentTableGrant,
@@ -208,6 +203,7 @@ from threetears.nats.subject_permissions import (
     kv_bucket_names,
     kv_key_scope_for,
     kv_key_scope_for_service,
+    kv_stream_name,
 )
 from threetears.nats.subjects import (
     DEAD_LETTER_ORIGINAL_SUBJECT_HEADER,
@@ -277,7 +273,6 @@ _LAZY_SUBMOD_ATTRS: Final[dict[str, tuple[str, ...]]] = {
         "TokenCallback",
     ),
     "cross_worker_cancel": ("CrossWorkerCanceller", "TaskCancelEnvelope"),
-    "distributed_lock": ("LockHeld", "LockHold", "LockLossReason", "LockLost", "nats_distributed_lock"),
     "forward": (
         "DEFAULT_FORWARD_TIMEOUT",
         "ForwardError",
@@ -467,6 +462,7 @@ __all__ = [
     "CROSS_PLATFORM_CACHE_INVALIDATE",
     "DATA_VERSIONS_BUCKET_SUFFIX",
     "KV_KEY_SCOPE_GRAMMAR",
+    "KV_STREAM_PREFIX",
     "WORKSPACE_LOCKS_BUCKET_SUFFIX",
     "AgentBucketGrant",
     "AgentTableGrant",
@@ -488,6 +484,7 @@ __all__ = [
     "kv_bucket_names",
     "kv_key_scope_for",
     "kv_key_scope_for_service",
+    "kv_stream_name",
     # NATS v2 user-JWT minting (decentralized auth)
     "account_public_key",
     "generate_account_seed",
@@ -545,11 +542,7 @@ __all__ = [
     "OpLog",
     "OpRecord",
     # distributed lock
-    "LockHeld",
-    "LockHold",
     "LockLossReason",
-    "LockLost",
-    "nats_distributed_lock",
     # cross-worker cancel-by-key (keyed task registry + routed cancel)
     "CrossWorkerCanceller",
     "TaskCancelEnvelope",

@@ -87,7 +87,7 @@ class BuildLock(Protocol):
 
 
 class NatsBuildLock:
-    """the build lock on a bucket of its own (:func:`~threetears.nats.nats_distributed_lock`), declared on first use.
+    """the build lock on a bucket of its own (:func:`~threetears.core.coordination.nats_distributed_lock`), declared on first use.
 
     The default, for an infrastructure identity that may declare a bucket. A tool pod may not -- its
     grant holds no stream-management verb -- so a pod's collection takes a :class:`LeaseBuildLock` over
@@ -113,7 +113,7 @@ class NatsBuildLock:
         :rtype: AsyncIterator[None]
         :raises BuildLockHeld: when another holder has it
         """
-        from threetears.nats import LockHeld, nats_distributed_lock
+        from threetears.core.coordination import LockHeld, nats_distributed_lock
 
         try:
             # cancel_on_loss=False: the build lock only stops a stampede of identical

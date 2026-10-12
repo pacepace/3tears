@@ -48,14 +48,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid7
 
 from threetears.core.serialization import deserialize_from_json, json_datetime, serialize_to_json
+from threetears.nats.errors import LockLossReason
 from threetears.observe import get_logger
 
 from threetears.core.coordination._owner_scope import owner_scoped_key, validated_key_scope
@@ -70,12 +71,24 @@ __all__ = [
     "HeldLease",
     "KVLease",
     "LeaseHandle",
+    "LeaseLossReason",
     "LeaseLost",
     "LeaseTimeout",
     "LeaseUnavailable",
 ]
 
 log = get_logger(__name__)
+
+#: the longest a release waits for a renewal already in flight to be answered: one KV operation's own
+#: ceiling (``threetears.nats.kv.KvTimings.op_timeout_seconds``, which bounds every KV round trip; a
+#: test pins the two equal). A renewal unanswered by then is not coming back in time to matter, and
+#: waiting longer -- the TTL, as a release once did -- stretches every owner's shutdown by that much.
+RENEWAL_ANSWER_WAIT_SECONDS: Final[float] = 10.0
+
+#: why a held lease was lost (:attr:`HeldLease.lost_reason`): the one vocabulary
+#: :func:`~threetears.core.coordination.nats_distributed_lock` reports too, so it is that enum, under the name
+#: this module's callers read.
+LeaseLossReason = LockLossReason
 
 
 class LeaseUnavailable(LookupError):
@@ -101,7 +114,23 @@ class LeaseLost(RuntimeError):
     another holder took over (entry expired, got reclaimed) or a concurrent
     CAS advanced the revision underneath us. caller's handle is no longer
     valid; caller should abort whatever work the lease protected.
+
+    :ivar reason: what the refresh found -- the entry gone (:attr:`LeaseLossReason.EXPIRED`) or
+        another holder's (:attr:`LeaseLossReason.TAKEN`); ``None`` when the raiser did not say
     """
+
+    def __init__(self, *args: object, reason: LeaseLossReason | None = None) -> None:
+        """record the message and, when known, why the lease is gone.
+
+        :param args: the exception's message arguments
+        :ptype args: object
+        :param reason: why the lease is gone, or ``None``
+        :ptype reason: LeaseLossReason | None
+        :return: None
+        :rtype: None
+        """
+        super().__init__(*args)
+        self.reason = reason
 
 
 @dataclass
@@ -157,6 +186,11 @@ def _decode_envelope(value: bytes) -> _Envelope:
     :rtype: _Envelope
     :raises ValueError: if payload is malformed or timestamps unparseable
     """
+    if not value.lstrip().startswith(b"{"):
+        # only a JSON object is an envelope. an older lock's holder token is hex, and an all-digit
+        # one parses as a JSON number, which the decoder below would fail on with an AttributeError
+        # nobody catches -- an unreadable entry must read as another holder's, never as a crash.
+        raise ValueError("not a lease envelope: the value is not a JSON object")
     raw = deserialize_from_json(value, field_types={})
     holder = str(raw["holder"])
     date_expires = datetime.fromisoformat(str(raw["expires_at"]))
@@ -218,6 +252,13 @@ class LeaseHandle:
         does not supply one
     :ivar released: flag set once :meth:`release` runs to completion,
         making subsequent :meth:`release` calls a no-op
+    :ivar in_flight_value: the value of this handle's write that has been sent and not yet
+        answered, or ``None``. A write the server applied whose answer never came (cancelled, timed
+        out, a transport error) leaves the handle a revision behind its own entry; the next refresh
+        and the release recognise that entry by this exact value -- which no other write, by this
+        holder or another, produces -- and renew from it or delete it, rather than call a healthy
+        lease taken or leave its entry to hold everyone off for a TTL. Kept until a later write of
+        this handle's is answered
     """
 
     def __init__(
@@ -254,6 +295,7 @@ class LeaseHandle:
         self.ttl_seconds = ttl_seconds
         self.date_expires = date_expires
         self.released = False
+        self.in_flight_value: bytes | None = None
 
     async def refresh(self, ttl_seconds: int | None = None, *, adopt_own_revision: bool = False) -> None:
         """extend lease expiry; raise :class:`LeaseLost` on ownership change.
@@ -267,7 +309,9 @@ class LeaseHandle:
         :ptype ttl_seconds: int | None
         :param adopt_own_revision: when the entry is still this holder's at a revision the handle has
             not seen (one of its own writes landed and its reply did not), renew from that revision
-            rather than call the lease lost
+            rather than call the lease lost. Without it a handle still renews from an entry that is
+            exactly the write it sent and never heard back about (:attr:`in_flight_value`); this
+            widens that to any entry carrying its holder, for a holder id no other handle shares
         :ptype adopt_own_revision: bool
         :return: None
         :rtype: None
@@ -344,6 +388,11 @@ class HeldLease:
     moment it does. an entry is only ever assumed alive from the START of the renewal that extended
     it, never from when the reply arrived.
 
+    a hold given a maximum (``max_hold`` on :meth:`KVLease.hold`) stops renewing once it has held
+    that long and reports :attr:`LeaseLossReason.MAX_HOLD`, so a holder that WEDGES -- its renewal
+    healthy, its work going nowhere -- cannot keep every other claimer out for as long as its
+    process lives; the TTL then hands the key on.
+
     :ivar key: the KV key held
     :ivar lost: set once this pod is no longer the holder; never cleared -- a lease that was lost
         stays lost, because somebody else may already be acting on it
@@ -361,6 +410,8 @@ class HeldLease:
         name: str = "the lease",
         renew_failure_level: int = logging.INFO,
         holds: _Holds | None = None,
+        max_hold_seconds: float | None = None,
+        on_lost: Callable[[LeaseLossReason], None] | None = None,
     ) -> None:
         """start renewing ``handle`` in the background. internal: use :meth:`KVLease.hold`.
 
@@ -383,6 +434,10 @@ class HeldLease:
         :ptype renew_failure_level: int
         :param holds: the factory's current holds, which this one joins until it stops renewing
         :ptype holds: _Holds | None
+        :param max_hold_seconds: the longest this lease is renewed, or ``None`` for no limit
+        :ptype max_hold_seconds: float | None
+        :param on_lost: called with the reason, once, the moment the lease is lost
+        :ptype on_lost: Callable[[LeaseLossReason], None] | None
         :return: None
         :rtype: None
         """
@@ -394,10 +449,15 @@ class HeldLease:
         self._closing = holds.closing if holds is not None else None
         self.key = handle.key
         self.lost = asyncio.Event()
+        self._lost_reason: LeaseLossReason | None = None
+        self._on_lost = on_lost
+        self._hold_deadline = None if max_hold_seconds is None else loop.time() + max_hold_seconds
         self._ended = asyncio.Event()
         self._stop = asyncio.Event()
         self._ttl = ttl_seconds
         self._renew_every = renew_every_seconds
+        # a renewal is due every interval, so one not answered within an interval is already late
+        self._release_wait = min(renew_every_seconds, RENEWAL_ANSWER_WAIT_SECONDS)
         self._expires_at = expires_at
         self._log_extra = {"key": handle.key, **dict(log_extra or {})}
         self._released = False
@@ -416,6 +476,15 @@ class HeldLease:
         """
         return not self.lost.is_set() and not self._released
 
+    @property
+    def lost_reason(self) -> LeaseLossReason | None:
+        """why this lease was lost, or ``None`` while it is held (or after a release, which is no loss).
+
+        :return: the loss reason
+        :rtype: LeaseLossReason | None
+        """
+        return self._lost_reason
+
     async def until_lost(self) -> None:
         """block until this pod no longer holds the lease -- lost, or released.
 
@@ -433,23 +502,28 @@ class HeldLease:
         """
         await self._ended.wait()
 
-    def _mark_lost(self, message: str, *, exc_info: bool = False) -> None:
-        """record the loss once, stop renewing, and wake every waiter.
+    def _mark_lost(self, message: str, reason: LeaseLossReason, *, level: int = logging.WARNING) -> None:
+        """record the loss once, stop renewing, wake every waiter, and tell the holder.
 
-        :param message: the WARNING to log
+        :param message: what to log
         :ptype message: str
-        :param exc_info: whether to attach the current exception
-        :ptype exc_info: bool
+        :param reason: why the lease is lost
+        :ptype reason: LeaseLossReason
+        :param level: the level to log it at
+        :ptype level: int
         :return: None
         :rtype: None
         """
         if self.lost.is_set() or self._released:
             return
-        log.warning(message, extra={"extra_data": self._log_extra}, exc_info=exc_info)
+        log.log(level, message, extra={"extra_data": {**self._log_extra, "reason": reason.value}})
+        self._lost_reason = reason
         self.lost.set()
         self._ended.set()
         self._stop.set()
         self._expiry.cancel()
+        if self._on_lost is not None:
+            self._on_lost(reason)
 
     def _on_expired(self) -> None:
         """the entry could have expired by now: another pod may hold the key.
@@ -467,7 +541,9 @@ class HeldLease:
                 extra={"extra_data": self._log_extra},
             )
             return
-        self._mark_lost("KVLease: the lease went un-renewed past its TTL and is assumed lost")
+        self._mark_lost(
+            "KVLease: the lease went un-renewed past its TTL and is assumed lost", LeaseLossReason.RENEWAL_FAILED
+        )
 
     async def _renew(self) -> None:
         """renew until lost, released or cancelled.
@@ -490,6 +566,15 @@ class HeldLease:
                 return
             if self._stop.is_set():
                 break
+            if self._hold_deadline is not None and loop.time() >= self._hold_deadline:
+                self._mark_lost(
+                    "KVLease: the holder has kept this lease past its maximum hold and is still running; "
+                    "it is no longer renewed, so the TTL can hand it on. The work is wedged or far slower "
+                    "than the lease was sized for -- another holder may now take it.",
+                    LeaseLossReason.MAX_HOLD,
+                    level=logging.ERROR,
+                )
+                return
             started = loop.time()
             remaining = self._expires_at - started
             if remaining <= 0 and not self._retake:
@@ -497,8 +582,14 @@ class HeldLease:
             try:
                 async with asyncio.timeout(remaining if remaining > 0 else self._ttl):
                     await self._renew_once()
-            except LeaseLost:
-                self._mark_lost("KVLease: another holder now owns the lease")
+            except LeaseLost as exc:
+                reason = exc.reason if exc.reason is not None else LeaseLossReason.TAKEN
+                self._mark_lost(
+                    "KVLease: the lease's entry is gone -- it expired or was removed"
+                    if reason is LeaseLossReason.EXPIRED
+                    else "KVLease: another holder now owns the lease",
+                    reason,
+                )
                 return
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- a renewal can fail for any transport reason; the expiry timer decides whether that has cost us the lease
                 log.log(
@@ -558,8 +649,13 @@ class HeldLease:
     async def release(self) -> None:
         """stop renewing and delete the entry if this pod still holds it; idempotent.
 
-        a renewal in flight is allowed to finish rather than being cancelled mid-write (bounded by the
-        TTL), so the delete that follows is keyed on the revision the server really holds. releasing a
+        a renewal in flight is given a short while to be answered -- one renewal interval, and never
+        longer than one KV operation's own ceiling (:data:`RENEWAL_ANSWER_WAIT_SECONDS`) -- so the delete
+        that follows is keyed on the revision the server really holds; past that the renewal is
+        cancelled and the release goes on, so a broker that stopped answering cannot hold an owner's
+        shutdown for a TTL. A cancelled renewal may still have landed: the entry is then deleted only
+        when it is exactly that renewal's write (:attr:`LeaseHandle.in_flight_value`), and otherwise left
+        to lapse by its TTL, which the release logs. releasing a
         LOST lease is a no-op on the entry (the delete is fenced on the holder), so it never frees the
         new holder's claim. best-effort: the likeliest reason a release fails is the unreachable bucket
         that cost the lease in the first place, and a cleanup error must not replace whatever ended the
@@ -577,10 +673,13 @@ class HeldLease:
         renewal, self._renewal = self._renewal, None
         try:
             if renewal is not None:
-                done, _pending = await asyncio.wait([renewal], timeout=self._ttl)
-                if not done:
+                try:
+                    await asyncio.wait([renewal], timeout=self._release_wait)
+                finally:
+                    # also when this release is itself cancelled while it waits: a renewal left
+                    # running could write the entry (or, retaking, create it) after the delete below
                     renewal.cancel()
-                    await asyncio.wait([renewal])
+                await asyncio.wait([renewal])
         finally:
             # even when the releasing task is cancelled meanwhile (an owner stopping): an entry left
             # behind holds everyone else off for its whole TTL
@@ -1016,6 +1115,8 @@ class KVLease:
         retake: bool = False,
         name: str = "the lease",
         renew_failure_level: int = logging.INFO,
+        max_hold: timedelta | float | None = None,
+        on_lost: Callable[[LeaseLossReason], None] | None = None,
     ) -> HeldLease:
         """acquire ``key`` and keep it renewed in the background until released or lost.
 
@@ -1048,13 +1149,27 @@ class KVLease:
             TTL is logged at; INFO by default (it is not yet evidence of anything), WARNING for an
             owner whose operators watch for it
         :ptype renew_failure_level: int
+        :param max_hold: the longest the lease is renewed; past it renewal stops, the lease reports
+            :attr:`LeaseLossReason.MAX_HOLD` and the TTL hands the key on, so a wedged holder cannot
+            keep every other claimer out for as long as its process lives. ``None`` (the default)
+            renews until released or lost
+        :ptype max_hold: timedelta | float | None
+        :param on_lost: called once, synchronously, with the reason the moment the lease is lost --
+            for a holder that must interrupt its work then (cancel a task), not at its next look at
+            :attr:`HeldLease.lost`. Runs on the renewal task or a loop callback, so it must not block
+            or raise
+        :ptype on_lost: Callable[[LeaseLossReason], None] | None
         :return: the held lease, already renewing
         :rtype: HeldLease
-        :raises ValueError: timing that cannot hold (see :func:`_hold_seconds`)
+        :raises ValueError: timing that cannot hold (see :func:`_hold_seconds`), or a negative
+            ``max_hold``
         :raises LeaseUnavailable: the key is held and ``max_wait_seconds`` is 0
         :raises LeaseTimeout: the key stayed held past ``max_wait_seconds``
         """
         ttl_seconds, renew_seconds = _hold_seconds(ttl, renew_every)
+        max_hold_seconds = max_hold.total_seconds() if isinstance(max_hold, timedelta) else max_hold
+        if max_hold_seconds is not None and max_hold_seconds < 0:
+            raise ValueError(f"max_hold {max_hold} must not be negative")
         loop = asyncio.get_running_loop()
         handle = await self.acquire(key, ttl_seconds=ttl_seconds, max_wait_seconds=max_wait_seconds)
         # the entry expires when its envelope says -- the instant other pods treat it as stale, stamped
@@ -1072,6 +1187,8 @@ class KVLease:
             name=name,
             renew_failure_level=renew_failure_level,
             holds=self._holds,
+            max_hold_seconds=max_hold_seconds,
+            on_lost=on_lost,
         )
 
     async def refresh_handle(
@@ -1097,17 +1214,22 @@ class KVLease:
         bucket = await self._ensure_bucket()
         entry = await bucket.get_entry(key=handle.key)
         if entry is None:
-            raise LeaseLost(f"lease {handle.key!r} entry missing during refresh")
+            raise LeaseLost(f"lease {handle.key!r} entry missing during refresh", reason=LeaseLossReason.EXPIRED)
         value, observed = entry
         envelope = _decoded_envelope(value)
         if envelope is None or envelope.holder != handle.holder:
             raise LeaseLost(
                 f"lease {handle.key!r} holder changed: expected {handle.holder!r}, "
-                f"found {'an entry it cannot read' if envelope is None else repr(envelope.holder)}"
+                f"found {'an entry it cannot read' if envelope is None else repr(envelope.holder)}",
+                reason=LeaseLossReason.TAKEN,
             )
-        if adopt_own_revision and observed != handle.revision:
-            # still this holder's entry: one of its own writes landed while its reply was lost
+        unanswered = handle.in_flight_value
+        if observed != handle.revision and (adopt_own_revision or value == unanswered):
+            # still this holder's entry: one of its own writes landed while its reply was lost. A
+            # handle told to adopt takes any entry of its holder's; every handle takes the entry that
+            # is exactly the write it sent and never heard back about, which nobody else can have made
             handle.revision = observed
+            unanswered = None
         effective_ttl = ttl_seconds if ttl_seconds is not None else handle.ttl_seconds
         now = datetime.now(UTC)
         date_expires = now + timedelta(seconds=effective_ttl)
@@ -1115,11 +1237,31 @@ class KVLease:
         # KvBucketLike.update returns ``None`` on revision mismatch,
         # mapping the previous KeyWrongLastSequenceError raise into a
         # typed conflict signal we surface as LeaseLost.
+        handle.in_flight_value = payload
         new_revision = await bucket.update(
             key=handle.key, value=payload, revision=handle.revision, ttl=self._entry_ttl(effective_ttl)
         )
+        if new_revision is None and unanswered is not None:
+            # the swap was refused, so this payload was never written -- but the earlier write that
+            # went unanswered may have landed between the read above and the swap. If the entry is
+            # exactly that write, it is this handle's own: renew from it, once.
+            handle.in_flight_value = unanswered
+            landed = await bucket.get_entry(key=handle.key)
+            if landed is not None and landed[0] == unanswered:
+                handle.revision = landed[1]
+                handle.in_flight_value = payload
+                new_revision = await bucket.update(
+                    key=handle.key, value=payload, revision=handle.revision, ttl=self._entry_ttl(effective_ttl)
+                )
+                if new_revision is None:
+                    handle.in_flight_value = None
+        elif new_revision is None:
+            handle.in_flight_value = None
         if new_revision is None:
-            raise LeaseLost(f"lease {handle.key!r} revision advanced during refresh")
+            # only another holder's write moves the entry on between the read and the swap. A write
+            # of this handle's still unanswered stays recorded, for the release to recognise.
+            raise LeaseLost(f"lease {handle.key!r} revision advanced during refresh", reason=LeaseLossReason.TAKEN)
+        handle.in_flight_value = None
         handle.revision = new_revision
         handle.ttl_seconds = effective_ttl
 
@@ -1135,7 +1277,9 @@ class KVLease:
         now = datetime.now(UTC)
         date_expires = now + timedelta(seconds=handle.ttl_seconds)
         payload = _encode_envelope(holder=handle.holder, date_expires=date_expires, date_acquired=now)
+        handle.in_flight_value = payload
         revision = await bucket.create(key=handle.key, value=payload, ttl=self._entry_ttl(handle.ttl_seconds))
+        handle.in_flight_value = None
         if revision is None:
             return False
         handle.revision = revision
@@ -1161,21 +1305,28 @@ class KVLease:
         if entry is None:
             handle.released = True
             return
-        value, _revision = entry
+        value, observed = entry
         envelope = _decoded_envelope(value)
         if envelope is None or envelope.holder != handle.holder:
             # someone else owns it now; not our entry to delete
             handle.released = True
             return
+        revision = handle.revision
+        if observed != revision and handle.in_flight_value is not None and value == handle.in_flight_value:
+            # this handle's own renewal, applied by the server after the handle stopped waiting for
+            # its answer: the entry is ours, one revision on from what the handle recorded
+            revision = observed
         # CAS delete keyed on the handle's revision so a stale-after-
         # check delete cannot evict a successor's freshly reclaimed
         # entry. KvBucketLike.delete returns False on revision mismatch
         # which is treated as "raced with another writer; entry
         # effectively gone from our view" -- diagnostic-only here.
-        deleted = await bucket.delete(key=handle.key, revision=handle.revision)
+        deleted = await bucket.delete(key=handle.key, revision=revision)
         if not deleted:
-            log.debug(
-                "KVLease release raced on %s; marking released anyway",
+            # a write landed after the read: another holder's, or a renewal of this one's that is not
+            # recognisably its own -- either way not provably this holder's to delete
+            log.info(
+                "KVLease: the entry %s moved on before its release could delete it; it is left to lapse by its TTL",
                 handle.key,
             )
         handle.released = True

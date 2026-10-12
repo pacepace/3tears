@@ -8,7 +8,6 @@ Typed NATS client wrapper, subject builders, and JetStream KV bucket primitives 
 - `Subject` + `Subjects` -- opaque subject dataclass and factory of every canonical subject family used by 3tears applications. Replaces ad-hoc `f"{namespace}.tools.call"` string-concatenation across the platform.
 - `NatsKvBucket` -- operations against one JetStream KV bucket (`get` / `put` / `delete` / `create` / `update` / `get_entry` / `list_keys`). Bucket name auto-prefixed by the connected client's `nats_subject_namespace`, unless it was declared with `ensure_kv_bucket(prefix_namespace=False)`, which uses the name exactly. Every operation follows the client onto its current connection, so a handle survives a credential renewal or a move off a lame-duck server.
 - `PersistedCopyBucket` -- the one owner of a KV bucket that is the persisted copy of an in-memory structure. It declares the bucket under its exact name in the background, retrying until the declaration lands; runs `load` (bucket into memory) once, at the first declaration; and runs `write_back` (memory into bucket) then and every time the client creates the bucket again empty. Use it rather than hand-rolling a declare/load/refill loop.
-- `nats_distributed_lock` -- TTL-based distributed lock primitive built on `NatsKvBucket.create` (put-if-absent). Atomic acquisition + background heartbeat + automatic cleanup; on holder death the TTL expires the key.
 - `forward` / `serve_owner` -- payload-agnostic owner-routed request/reply: send a request to whichever pod currently serves a key and get its reply back. A separate election mechanism decides who owns the key; this only carries the message.
 - `attach_pipe` / `serve_pipe` / `open_pipe` -- a payload-agnostic byte pipe to whichever pod owns a key, for reaching a process that has no inbound network path. Rendezvous rides `forward`; the stream then moves to its own subjects with a sequenced framing (a lost frame raises rather than being skipped) and a credit window that stops the producer reading its source when the consumer falls behind.
 - `StreamTransport` -- narrow Protocol used by streaming consumers; lets test fakes substitute for the live client.
@@ -70,28 +69,7 @@ await nc.shutdown()
 
 ## Distributed locks
 
-`nats_distributed_lock` is a TTL-backed lock for "only one pod should run this body" patterns (scheduled jobs, periodic ticks, exclusive resource access). It is layered on top of `NatsKvBucket.create` (atomic put-if-absent), with a background heartbeat that refreshes the entry while the body runs and a TTL that bounds the orphan-lock window after a pod death.
-
-```python
-from datetime import timedelta
-
-from threetears.nats import LockHeld, nats_distributed_lock
-
-try:
-    async with nats_distributed_lock(
-        nc,
-        "backup-job",
-        bucket_name="scheduler-locks",     # default; override per consumer
-        ttl=timedelta(seconds=60),         # KV entry TTL
-        heartbeat=timedelta(seconds=20),   # heartbeat MUST be < ttl
-    ):
-        await run_backup()
-except LockHeld:
-    # another pod owns the lock; skip this run cleanly
-    return
-```
-
-`client=None` is a graceful no-op that yields immediately. Single-pod dev environments without NATS work unchanged. `LockHeld` is distinct from `KvError` (transport / bucket failures); callers should treat the former as the expected "another pod is running" branch and surface the latter separately.
+The cross-pod job lock is not in this package: `nats_distributed_lock` (with `LockHeld`, `LockHold`, `LockLost`) lives in core, `threetears.core.coordination`, beside the `KVLease` it runs on. It takes the `NatsClient` from this package as its `client`. Only `LockLossReason`, the reason a lost hold reports, is defined here (`threetears.nats.errors`).
 
 ## KV errors
 

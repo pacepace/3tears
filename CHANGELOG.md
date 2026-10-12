@@ -16,6 +16,96 @@ packages (bumped in lock-step).
   existed (f6d43aa0 and 5440a306 with `Co-Authored-By`; 4d575851, f114794c, d5897cd7 and a491ab0a
   with `Claude-Session`). They are not rewritten, which would take a force-push of a shared branch;
   `scripts/attribution-exemptions.txt` exempts them by full hash.
+- **Added, `scripts/install-hooks.sh`**: installs the check as the clone's commit-msg hook
+  (`check-attribution.sh --message`), in the hooks directory git uses (so every worktree of the
+  clone), idempotently. A commit-msg hook already there (a git template's, a tool's) is kept as
+  `commit-msg.chained` and runs first; CLAUDE.md points at the script instead of a hand-typed hook.
+  In a worktree whose branch has no check script the hook lets the commit through, with a line on
+  stderr saying it was not checked.
+
+### Tests: SearXNG's scoring is pinned on engines of the test container's own
+
+- **Changed, `searxng_container`** (`threetears.core.testing.fixtures`) also runs two `json_engine`
+  engines that read fixed result lists the container serves itself (`SEARXNG_FIXTURE_ENGINES`): one
+  result comes back twice from one engine and once from the other (positions `[1, 2, 2]`, two
+  engines). `test_searxng_live_scoring.py` demands that result instead of skipping when the
+  internet's engines are throttled or CAPTCHA'd (which, on a test client, they are): the multiplier
+  in SearXNG's `calculate_score` is now checked on every run, and the formula invariant never runs
+  over nothing.
+- **Changed, the SearXNG image is pinned** by tag and digest (`SEARXNG_IMAGE`,
+  `searxng/searxng:2026.8.28-a30b2d474@sha256:addd2cf3...`), not `:latest`, and the fixture fails at
+  start, naming the path and the image, when the image does not serve `/static` from
+  `SEARXNG_STATIC_DIR` (checked by a directory the image ships, since a mount would create the static
+  directory itself).
+
+### Coordination: one lease primitive -- `nats_distributed_lock` runs on `KVLease`, and lives in core
+
+- **Changed, `nats_distributed_lock`** holds its key through `KVLease.hold` (one lease per hold) and
+  keeps its call shape: `LockHeld`, `LockLost`, `LockLossReason`, `LockHold` (`key`, `lost`,
+  `lost_reason`, `raise_if_lost`), and every parameter with its default. Its own heartbeat task,
+  renewal loop and hold state are deleted; acquisition, compare-and-swap renewal, retry inside the
+  TTL, the maximum hold and the fenced release are the lease's. It still opens its bucket itself with
+  `kv_bucket(name, ttl=ttl)` and refuses a `ttl` that differs from the bucket's.
+- **Changed, the lock's TTL is whole seconds** (the lease's): a fractional `ttl` raises `ValueError`.
+  Every caller uses the 60-second default.
+- **Breaking, the lock's import path: `threetears.nats` -> `threetears.core.coordination`.**
+  `nats_distributed_lock`, `LockHeld`, `LockHold` and `LockLost` are now
+  `from threetears.core.coordination import ...` (module
+  `threetears.core.coordination.distributed_lock`); `threetears.nats.distributed_lock` and those four
+  names on `threetears.nats` are gone, with no forwarding alias. `LockLossReason` stays in
+  `threetears.nats.errors` and is importable from both packages. Why: the lock runs on `KVLease`,
+  which lives in core, and core depends on `3tears-nats` -- so kept in the NATS package it had to
+  reach up into core through an import deferred to the call. Beside the lease it is a plain import
+  and the NATS package no longer reaches up. Importing core (`threetears.core`,
+  `threetears.core.coordination`, the lock module) still loads neither `nats-py` nor `nkeys`: the
+  lock reaches a broker only through the `KvCapable` its caller hands it, and
+  `test_imports_without_nats_client.py` holds that in a fresh interpreter with both refused.
+- **Upgrade contract (rolling; any order, and rollback):** releases before 0.66.0 store a lock entry's
+  value as the holder's raw `token_hex(16)`; from 0.66.0 it is the `KVLease` envelope. A new
+  replica treats an old entry as another holder's -- `LockHeld` on acquire, `TAKEN` on renewal,
+  never written or deleted -- including an all-digit token, which parses as a JSON number. An old
+  replica treats a new entry as held: its acquire is create-if-absent (fails on any existing key),
+  its renewal and release compare the value with its own token (an envelope never matches), and it
+  never reclaims. The bucket is shared unchanged: both versions open it with the same
+  `kv_bucket(name, ttl)`, so an existing `{ns}-scheduler-locks` keeps its bucket-level `max_age`
+  and is never redeclared or recreated. A fresh bucket gets what it always got: `max_age = ttl`,
+  history 1, `allow_msg_ttl` on. Entries carry no per-key TTL (`expire_entries` is off): the bucket's
+  `max_age` already removes an entry `ttl` after its last write.
+- **Added, `KVLease.hold(max_hold=, on_lost=)` and `HeldLease.lost_reason`**: a maximum hold past
+  which renewal stops (reported at ERROR as `LeaseLossReason.MAX_HOLD`), a callback told the reason
+  the moment the lease is lost, and why it was lost (`EXPIRED`, `TAKEN`, `RENEWAL_FAILED`,
+  `MAX_HOLD`). `LeaseLost.reason` says what a refresh found. `LeaseLossReason` (exported from
+  `threetears.core.coordination`) is `LockLossReason`: one vocabulary for both.
+- **Fixed, a lease entry holding a JSON number** (an older lock's all-digit token) made `KVLease`
+  raise `AttributeError` instead of treating it as another holder's.
+- **Fixed, a lease released while its renewal's answer never came** (the server applied it; the
+  release stopped waiting and cancelled it) left its entry for a whole TTL: the handle was a revision
+  behind its own write and the fenced delete refused. The release now recognises that exact write
+  (`LeaseHandle.in_flight_value`) and deletes it; another holder's entry still always survives.
+- **Fixed, a release waits for a renewal in flight only briefly**: one renewal interval, never more
+  than one KV operation's own ceiling (`RENEWAL_ANSWER_WAIT_SECONDS`, equal to
+  `KvTimings.op_timeout_seconds`), instead of up to the whole TTL -- which stretched an owner's
+  shutdown (the scheduler's, a tool pod's SIGTERM) by a lease TTL whenever the broker stopped
+  answering. Past it the renewal is cancelled; the entry is deleted only when it is this holder's at
+  the revision it recorded or is exactly that renewal's write, and otherwise left to lapse by its TTL
+  (logged). A release cancelled while it waits cancels that renewal too, so it cannot write (or, for
+  a lease that retakes, re-create) the entry after the delete.
+- **Fixed, a renewal the server applied but never answered no longer costs a healthy lease.** The
+  handle was left a revision behind its own entry, the next renewal's swap was refused, and the
+  lease was reported `TAKEN` though nobody took it -- cancelling a lock's body and leaving the entry
+  for a TTL. Every handle now renews from (and its release deletes) the entry that is exactly the
+  write it sent and never heard back about (`LeaseHandle.in_flight_value`, kept until a later write
+  is answered); another holder's entry is still a lost lease. Holds that do not `retake` gain this
+  without gaining retake-by-create: the lock, the snapshot rebuild claim, a coalesced run, the
+  scrape session claim.
+
+### NATS: a public composer for a KV bucket's stream name
+
+- **Added, `threetears.nats.subject_permissions.kv_stream_name(bucket)`** (and `KV_STREAM_PREFIX`;
+  both re-exported from `threetears.nats`), beside the bucket-name composers: the JetStream stream
+  backing a KV bucket, `KV_{bucket}`. Every place 3tears spelled it by hand now composes it -- the
+  KV stream config, live-config reads, stream info, the reconcile hint, `JsResource.stream_name`,
+  `NatsClient`'s bucket withdraw, the collection-key purge and the grant remedy text.
 
 ### Coordination: a lease on a bucket it was handed, whose key lapses with its holder; snapshot write claims held on it
 
