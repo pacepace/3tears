@@ -55,6 +55,8 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`fingerprint_criterion(dim: RubricDim | str) -> str`
 - **`fingerprint_judged_output`** · function · The fingerprint of a judged output: the digest of the evidence a judge reads, exactly as the kind rendered it.
   <br>`fingerprint_judged_output(evidence: JudgeEvidence) -> str`
+- **`is_builtin_judge_config_id`** · function · Whether a recorded judge config id names a built-in prompt rather than a versioned `JudgeConfig`.
+  <br>`is_builtin_judge_config_id(config_id: str | None) -> bool`
 - **`is_pass`** · function · Whether `call` is the engine's deliberate-pass entry rather than a call the candidate made.
   <br>`is_pass(call: RecordedCall) -> bool`
 - **`judges_sharing_a_candidate_model`** · function · The dims whose judge is one of the run's candidate models: a model grading its own output.
@@ -264,6 +266,8 @@ The engine's stored shapes and the ports a host implements: what is written down
 
 **Constants**
 
+- **`BUILTIN_JUDGE_CONFIG_PREFIX`** · constant (str) · What every built-in judge prompt's identity starts with, in the place a versioned `JudgeConfig`'s id stands (`EvalResult.judge_config_ids`, and every `judge_config_id` read from it).
+  <br>`= 'builtin:'`
 - **`CANDIDATE_SPEAKER`** · constant (str) · The speaker label the candidate's own turns carry in a simulated transcript.
   <br>`= '__candidate__'`
 - **`CORE_ADDRESSING_FIELDS`** · constant (mappingproxy) · Per core type, every field the store reads on the stored bytes, before any upgrade: what a query filters or orders on, what a projection keeps, and what a partial write merges.
@@ -1068,7 +1072,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`rejudge_result`** · async function · Re-score a finished result's failed judge dimensions from the evidence its judge read.
   <br>`rejudge_result(host: EvalHost, result_id: str, scope_id: str) -> EvalResult`
 - **`reproducible_judge_inputs`** · function · Load what a result's judge calls read, refusing any input its run did not record.
-  <br>`reproducible_judge_inputs(storage: JudgeInputStore, result: EvalResult, run: EvalRun, scope_id: str, *, request_settings: RequestSettingsPolicy, config_dims: Collection[str] | None = None) -> ReproducibleJudgeInputs`
+  <br>`reproducible_judge_inputs(storage: JudgeInputStore, result: EvalResult, run: EvalRun, scope_id: str, *, request_settings: RequestSettingsPolicy, config_dims: Collection[str] | None = None, same_judge_dims: Collection[str] = ()) -> ReproducibleJudgeInputs`
 - **`require_candidate_model`** · function · The model `request`'s arm runs on — the one it named, or the kind's role default — or the refusal.
   <br>`require_candidate_model(request: LaunchRequest, default: str | None) -> str`
 - **`require_delete_confirmation`** · function · Refuse a destructive eval delete unless the caller echoed the target's id.

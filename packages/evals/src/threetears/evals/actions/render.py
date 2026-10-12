@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
-from threetears.evals.schema import GoalStateOutcome
+from threetears.evals.schema import GoalStateOutcome, is_builtin_judge_config_id
 from threetears.evals.kernel import ResultOutcome, counted_goal_verdicts
 from threetears.evals.kernel.errors import EvalServiceError
 from threetears.evals.ops import (
@@ -612,7 +612,9 @@ def render_judge_case_freeze(report: JudgeCaseFreezeReport) -> str:
 def _judge_profile_line(entry: JudgeProfileEntry) -> str:
     """One stored judge profile as a line: the judge, the criterion, what it was measured on and when, its tier."""
     profile = entry.profile
-    judge = profile.judge_model + (f", config {profile.judge_config_id}" if profile.judge_config_id else "")
+    config = profile.judge_config_id
+    what = "built-in prompt" if is_builtin_judge_config_id(config) else "config"
+    judge = profile.judge_model + (f", {what} {config}" if config else "")
     temperature = profile.judge_temperature
     judge += f", temperature {temperature if isinstance(temperature, str) else format_number(temperature)}"
     measures = []

@@ -41,6 +41,10 @@
       "kind": "protocol",
       "signature": "BoundCompletionClient{__aenter__(self) -> Self; __aexit__(self, exc_type: object, exc: object, tb: object) -> None; aclose(self) -> None; generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> CompletionResult; model_name: str; price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None}"
     },
+    "threetears.evals.schema.BUILTIN_JUDGE_CONFIG_PREFIX": {
+      "kind": "constant (str)",
+      "signature": ""
+    },
     "threetears.evals.schema.CalibrationRating": {
       "kind": "model",
       "signature": "CalibrationRating(doc_type: Literal['calibration_rating'] = 'calibration_rating', schema_version: CoreSchemaVersion = 13, scope_id: str, run_id: str, result_id: str, rubric_dim: DimName, rater: str, rater_kind: RaterKind, id: str = <lambda>(), scale: RubricScale, score: int, reason: str, rated_at: str = utc_now_iso(), output_fingerprint: str | None = None, criterion_fingerprint: str | None = None)"
@@ -312,6 +316,10 @@
     "threetears.evals.schema.IntervalScale": {
       "kind": "model",
       "signature": "IntervalScale(kind: Literal['interval'] = 'interval', value: float, unit: str | None = None)"
+    },
+    "threetears.evals.schema.is_builtin_judge_config_id": {
+      "kind": "function",
+      "signature": "is_builtin_judge_config_id(config_id: str | None) -> bool"
     },
     "threetears.evals.schema.is_pass": {
       "kind": "function",
@@ -2691,7 +2699,7 @@
     },
     "threetears.evals.run.JudgeRequest": {
       "kind": "class",
-      "signature": "JudgeRequest(dim_id: str, config: JudgeConfig | None, system_prompt: str, user_prompt: str, scale: RubricScale, label: str, include_goal_outcomes: bool, response_format: dict[str, Any], axis: RubricAxis = 'capability', label_key: LabelKey | None = None)"
+      "signature": "JudgeRequest(dim_id: str, config: JudgeConfig | None, system_prompt: str, user_prompt: str, scale: RubricScale, label: str, include_goal_outcomes: bool, response_format: dict[str, Any], judge_config_id: str, axis: RubricAxis = 'capability', label_key: LabelKey | None = None)"
     },
     "threetears.evals.run.JudgeService": {
       "kind": "class",
@@ -2903,7 +2911,7 @@
     },
     "threetears.evals.run.reproducible_judge_inputs": {
       "kind": "function",
-      "signature": "reproducible_judge_inputs(storage: JudgeInputStore, result: EvalResult, run: EvalRun, scope_id: str, *, request_settings: RequestSettingsPolicy, config_dims: Collection[str] | None = None) -> ReproducibleJudgeInputs"
+      "signature": "reproducible_judge_inputs(storage: JudgeInputStore, result: EvalResult, run: EvalRun, scope_id: str, *, request_settings: RequestSettingsPolicy, config_dims: Collection[str] | None = None, same_judge_dims: Collection[str] = ()) -> ReproducibleJudgeInputs"
     },
     "threetears.evals.run.ReproducibleJudgeInputs": {
       "kind": "class",

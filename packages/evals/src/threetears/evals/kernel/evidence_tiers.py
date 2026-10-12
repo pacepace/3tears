@@ -70,9 +70,10 @@ A criterion that is ``undecided`` therefore leaves the reading on the next tier 
 point estimate, and every surface that renders them says so rather than presenting them as this rule's.
 
 **A judge is a model AND its config.** Every tier is keyed by dimension, scale, the model that served
-the scores and the versioned judge config that asked (``None`` = the built-in prompt): a changed judge
-prompt is a different judge, so a measurement under one config never sets the tier of readings judged
-under another.
+the scores and the versioned judge config that asked (a ``builtin:`` id = the built-in prompt, by its
+wording; ``None`` = a built-in prompt judged before its wording was recorded): a changed judge prompt is a
+different judge, so a measurement under one config, or one built-in wording, never sets the tier of
+readings judged under another.
 
 **A tier may be read from a stored judge profile** (#628): where a campaign's own evidence leaves a judge
 ``undetermined`` and a judge campaign recorded a profile of that very judge and criterion
@@ -317,8 +318,10 @@ class JudgeEvidenceTier(EvalDocumentModel):
     )
     judge_config_id: str | None = Field(
         description=(
-            "The versioned JudgeConfig that asked for the scores; None = the built-in prompt. Part of the judge's "
-            "identity: a changed judge prompt is a different judge, so its readings get their own tier."
+            "The versioned JudgeConfig that asked for the scores, or a ``builtin:`` id = the built-in prompt, by "
+            "its wording; None = a built-in prompt whose wording was not recorded (judged before evaladopt.19). "
+            "Part of the judge's identity: a changed judge prompt, built-in wording included, is a different "
+            "judge, so its readings get their own tier."
         )
     )
     judge_temperature: JudgeTemperature | None = Field(

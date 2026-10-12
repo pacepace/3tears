@@ -498,11 +498,15 @@ class _JudgePhase:
         judged_artifact: The kind's declaration, which picked the axes.
         evidence: What the kind rendered for its judge.
         dims: Every dim the phase asks, in the order it asks them (:func:`scored_dim_ids`).
+        judge_config_ids: What asks each of them — its config's id, or the built-in prompt's identity
+            (:meth:`JudgeService.judge_config_ids`) — recorded for every dim, so one whose call raised or was
+            cut off with its cell still says which judge it was to be asked by.
     """
 
     judged_artifact: JudgedArtifact
     evidence: JudgeEvidence
     dims: tuple[str, ...]
+    judge_config_ids: Mapping[str, str]
     #: The asked dims on the boundary axis (guardrails), stamped onto a can't-tell as a score's axis is.
     boundary_dims: frozenset[str] = frozenset()
 
@@ -570,7 +574,12 @@ def _judge_record(
         outcome_score=outcome_score,
         rubric_scores=[oc.score for dim, oc in settled if dim not in axes and oc.score is not None],
         judge_reasoning=outcome_score.reasoning if outcome_score is not None else "",
-        judge_config_ids=folded.config_ids,
+        # Every dim the phase asked, whatever became of its call: a dim whose call raised or was cut off names the
+        # judge it was to be asked by, so a re-judge of it can tell whether today's judge is that one.
+        judge_config_ids={
+            **{dim: phase.judge_config_ids[dim] for dim in phase.dims if dim in phase.judge_config_ids},
+            **folded.config_ids,
+        },
         judge_error="; ".join(f"{dim}: {error}" for dim, error in errors) or None,
         judge_cannot_tell=folded.cannot_tell,
         judge_cannot_tell_boundary=sorted(dim for dim in folded.cannot_tell if dim in phase.boundary_dims),
@@ -1632,6 +1641,7 @@ async def _run_one_result(
             judged_artifact=judged_artifact,
             evidence=judge_evidence,
             dims=tuple(scored_dim_ids([dim.name for dim in template.rubric], judged_artifact)),
+            judge_config_ids=judge_service.judge_config_ids(template.rubric, judged_artifact=judged_artifact),
             boundary_dims=boundary_dim_names(template.rubric),
         )
         sink.begin_judging(phase)
@@ -1782,6 +1792,7 @@ async def judge_witnessed_output(
         judged_artifact=judged_artifact,
         evidence=output.judge_evidence,
         dims=tuple(scored_dim_ids([dim.name for dim in template.rubric], judged_artifact)),
+        judge_config_ids=judge_service.judge_config_ids(template.rubric, judged_artifact=judged_artifact),
         boundary_dims=boundary_dim_names(template.rubric),
     )
     return await _run_judge_phase(

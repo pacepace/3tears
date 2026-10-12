@@ -118,7 +118,11 @@ class JudgeCaseSource(EvalBaseModel):
     )
     first_served_model: str | None = Field(default=None, description="The model that served that score.")
     first_judge_config_id: str | None = Field(
-        default=None, description="The versioned JudgeConfig that asked for it; None = the built-in prompt."
+        default=None,
+        description=(
+            "The versioned JudgeConfig that asked for it, or a ``builtin:`` id = the built-in prompt, by its wording; "
+            "None = a built-in prompt whose wording was not recorded (judged before evaladopt.19)."
+        ),
     )
     first_judge_temperature: JudgeTemperature | None = Field(
         default=None, description="The temperature that call was sent at; None = not recorded."
@@ -259,7 +263,11 @@ class JudgeTrial(EvalBaseModel):
         default=None, description="The model the response named as having answered; None when it named none."
     )
     judge_config_id: str | None = Field(
-        default=None, description="The versioned JudgeConfig that asked; None = the built-in prompt."
+        default=None,
+        description=(
+            "The versioned JudgeConfig that asked, or a ``builtin:`` id = the built-in prompt, by its wording; None = "
+            "a built-in prompt whose wording was not recorded (asked before evaladopt.19)."
+        ),
     )
     judge_temperature: JudgeTemperature | None = Field(
         default=None, description="What the call was sent at, as its client reported it; None = not reported."

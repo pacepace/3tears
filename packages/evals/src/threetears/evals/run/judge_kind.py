@@ -739,7 +739,7 @@ class JudgeKind:
             cannot_tell=outcome.cannot_tell,
             error=outcome.error,
             served_model=(score.served_model if score is not None else (getattr(last, "served_model", None) or None)),
-            judge_config_id=request.config.id if request.config is not None else None,
+            judge_config_id=request.judge_config_id,
             judge_temperature=sent,
         )
         payload = trial.model_dump(mode="json")

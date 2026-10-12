@@ -819,4 +819,7 @@ nothing, and ends `failed`.
 A cell cut off by its deadline or by its run's cancel is recorded the same way, from its sink; when the
 cut lands while the cell is being judged, the evidence and the scores that came back are kept and the
 unfinished dims are the cell's judge errors, which a re-judge can repair. A re-judge re-asks only dims
-that errored: a judge's "can't tell" is an answer.
+that errored: a judge's "can't tell" is an answer. Every dim the judge phase asked records the prompt that asked
+it in `EvalResult.judge_config_ids`, an unfinished one included: a config's id, or the built-in prompt's
+`builtin:` identity. A re-judge refuses a built-in dim whose recorded identity is not the built-in prompt it would
+send today.
