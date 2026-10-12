@@ -114,7 +114,7 @@ def refuse_on_event_loop() -> None:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        # NOSILENT: the answer, not a failure: no loop runs on this thread (an executor's worker, or synchronous
+        # NOSILENT(expected): the answer, not a failure: no loop runs on this thread (an executor's worker, or synchronous
         # code), so the store may be called here.
         return
     raise StoreCalledOnEventLoop(

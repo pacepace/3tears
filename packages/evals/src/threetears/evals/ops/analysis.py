@@ -652,7 +652,8 @@ def _claim_generation_slot(host: EvalHost, campaign_id: str, scope_id: str, atte
         try:
             host.storage.claim_generation_slot(claim, if_match=etag)
         except ConflictError:
-            # NOSILENT: another start wrote the slot first; the re-read names its attempt
+            # NOSILENT(attempt): another start wrote the slot first; the re-read names its attempt, and a slot that
+            # keeps changing raises ConflictError below
             continue
         return None
     raise ConflictError(

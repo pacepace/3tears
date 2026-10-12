@@ -1422,6 +1422,8 @@ class EvalJobManager:
         try:
             self._storage.save_eval_run(EvalRun.from_dict(data), if_match=etag)
         except ConflictError, StorageError:
+            # NOSILENT(expected): a typed outcome, not a swallow -- "refused" is logged by the caller at WARNING
+            # with the progress figure that was lost, and the next cell's write supersedes it
             return "refused"
         return "saved"
 
