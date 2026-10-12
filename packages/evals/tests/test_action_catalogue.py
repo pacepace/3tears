@@ -102,6 +102,7 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "results_list": "read",
         "result_get": "read",
         "campaign_create": "write",
+        "campaign_update": "write",
         "analysis_generate": "spend",
         "analysis_estimate": "read",
         "judge_second": "spend",
