@@ -334,6 +334,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`confusion_cell(expected: str, predicted: str) -> str`
 - **`confusion_of`** · function · The `(expected, predicted)` labels of a value `confusion_cell` made, or None for anything else.
   <br>`confusion_of(cell: str) -> tuple[str, str] | None`
+- **`contract_state`** · function · How `text` reads against `contract`.
+  <br>`contract_state(text: str, contract: OutputContract | None) -> ContractState`
 - **`count_substituted`** · function · Count the deliveries a harness supplied, over the delivery record itself.
   <br>`count_substituted(deliveries: Sequence[AsyncDelivery] | None) -> int`
 - **`count_substituted_deliveries`** · function · Count the async deliveries in `result` whose payload a harness supplied.
@@ -344,6 +346,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`counted_score(result: EvalResult, score: RubricScore) -> int | None`
 - **`criterion_state`** · function · How one criterion reads, decided on the agreement's interval and never on its point estimate.
   <br>`criterion_state(results: int, agreement: float | None, interval: tuple[float, float] | None, *, threshold: float, min_results: int) -> CriterionState`
+- **`declared_contracts`** · function · Every contract line `text` carries, in order.
+  <br>`declared_contracts(text: str) -> tuple[OutputContract, ...]`
 - **`default_job_timeout`** · function · Enforce a job budget with `asyncio.timeout` and nothing else.
   <br>`default_job_timeout(budget_s: float) -> AsyncIterator[float]`
 - **`delivered_a_turn`** · function · Whether `result` is a turn the candidate took — the one population a cost or latency reading is over.
@@ -396,6 +400,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`request_job_cancel(store: LeaseStore, record_id: str, scope_id: str, *, reason: str | None) -> bool`
 - **`require_held`** · function · Refuse to go on with a job whose record has ended under it: the check a job makes before it spends again.
   <br>`require_held(store: LeaseStore, kind: LeasedJobKind[R], record_id: str, scope_id: str, *, leases: JobLeases | None = None) -> None`
+- **`require_output_contract`** · function · Refuse a prompt that was not written for `contract`.
+  <br>`require_output_contract(prompt_type: str, text: str, contract: OutputContract) -> None`
 - **`resolve_bar_name`** · function · Say what a bar names and where a result carries it, or why no result can.
   <br>`resolve_bar_name(name: str, *, rubric_dimensions: Mapping[str, RubricScale], goal_state_checks: Collection[str], measures: MeasureRegistry) -> BarName | UnreadableBarName`
 - **`resolve_context_identity`** · function · Return the identity a read surface should show for `run`.
@@ -422,6 +428,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`strict_response_format(name: str, schema: Mapping[str, Any]) -> dict[str, Any]`
 - **`summarize_completeness`** · function · Count what a finished run loop delivered against the matrix the run promised.
   <br>`summarize_completeness(run: EvalRun, cells: Sequence[CellSummary]) -> RunCompleteness`
+- **`template_text`** · function · A sectioned template's text as its contract is read from: every section's literal body, in order.
+  <br>`template_text(sections: tuple[SeedSection, ...]) -> str`
 - **`tier_of`** · function · The tier two criteria decide.
   <br>`tier_of(calibration: TierCriterion, separation: TierCriterion) -> JudgedEvidenceTier`
 - **`timed_out_detail`** · function · Why a job's work was stopped by its time budget, in a poll's words — one wording for every job kind.
@@ -539,9 +547,11 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`NonTerminalRunScan`** · class · What one scope's scan for non-terminal runs found.
 - **`NotFoundError`** · exception · Resource not found (status 404).
 - **`OutOfRunBudget`** · dataclass · The cap one out-of-run unit of work is held to, and the ledger its calls are written to.
+- **`OutputContract`** · dataclass · The contract a prompt's reply is read by: its name and the fingerprint of its shape.
 - **`PassHatPoint`** · typed dict · One point of the pass^k curve: the estimate at one depth, and how many cases it rests on.
 - **`PlannedCall`** · dataclass · One call an out-of-run unit of work means to make: the prompt pair and the directive it sends.
 - **`PredictionPoweredReading`** · model · A judged dimension's mean in one cell re-estimated with people's labels (#598) — beside the judge's, never for it.
+- **`PromptContractError`** · exception · A stored prompt was written for another output contract than the one its reply is read by (status 409).
 - **`PromptDrift`** · dataclass · How one stored prompt reads against the package's shipped default.
 - **`ProviderRefusedError`** · exception · A paid provider call made on the caller's behalf raised (status 502).
 - **`Question`** · model · Something this campaign is trying to find out.
@@ -611,6 +621,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`'very_high'` | `'high'` | `'medium'` | `'low'`
 - **`ConfidenceTier`** · literal · How firmly the evidence settles a claim, as a qualitative tier — the tier a stored finding or decision carries.
   <br>`'very_high'` | `'high'` | `'medium'` | `'low'`
+- **`ContractState`** · literal · How a stored copy reads against the output contract the engine reads its reply by: written for it, written for an earlier one, declaring none, or a prompt with no contract to be written for.
+  <br>`'current'` | `'outdated'` | `'undeclared'` | `'unbound'`
 - **`CriterionState`** · literal · How one criterion read: its interval wholly at or above the threshold over enough results (`met`), wholly below it (`not_met`), across it (`undecided`), or too little evidence to say (fewer distinct results than its floor, or a kappa or interval that is undefined).
   <br>`'met'` | `'not_met'` | `'undecided'` | `'insufficient'`
 - **`DeliveryOutcome`** · literal · How a recorded piece of background work ended when its capture cell did: it delivered a payload, it failed, or the cell ended with it still in flight.
@@ -684,6 +696,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`CONFIDENCE_TIERS`** · constant (tuple) · The tiers, strongest first — the order a surface ranks by.
 - **`CONFUSION_CELL_MEASURE`** · constant (str) · The core measure a classification's confusion-matrix cell is reported under.
   <br>`= 'confusion_cell'`
+- **`CONTRACT_MARKER`** · constant (str) · The words a contract line starts with. Hyphenated so no field or action name can be mistaken for it.
+  <br>`= 'eval-output-contract:'`
 - **`DEFAULT_JOB_LEASE_S`** · constant (float) · How long a lease lasts unless renewed, in seconds: the engine's default.
   <br>`= 60.0`
 - **`DEFAULT_TEMPERATURE_REPEATS`** · constant (int) · How many times each dim is judged at each setting when the caller names no number.
@@ -759,6 +773,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`= 'eval_proposer'`
 - **`REASONING_RATIO_KEY`** · constant (str) · Covariate key: the share of the candidate's generated tokens that were reasoning — candidate `reasoning_tokens` over candidate `completion_tokens`, summed across the candidate's usage rows.
   <br>`= 'reasoning_ratio'`
+- **`REFUSED_CONTRACT_STATES`** · constant (frozenset) · The contract states a call refuses: the copy was written for another contract, or says nothing of one.
 - **`REFUSED_TOOL_ATTACHES_KEY`** · constant (str) · Covariate key: how many times the candidate asked to attach a tool outside its run's `tools_allowed` and the harness refused.
   <br>`= 'refused_tool_attaches'`
 - **`RELAUNCH_TO_REJUDGE`** · constant (str) · What a caller does when a run's judging cannot be reproduced from what it recorded — evidence, attribution, a config set, request settings, a temperature or a template the run no longer matches.
@@ -1811,7 +1826,7 @@ The engine's generation package: the prompts and expanders that author test mate
 - **`generate_variations`** · async function · Generate up to `n_variations` test cases for a template.
   <br>`generate_variations(template: EvalTemplate, n_variations: int, *, storage: EvalTestCaseStore, scope_id: str, blocking_executor: Executor | None, generation: AdmittedGeneration | None = None, rng: random.Random | None = None, preview: bool = False) -> GeneratedVariations`
 - **`plan_draft`** · function · The one call a rubric proposal sends, on either axis, built before anything is priced or made.
-  <br>`plan_draft(*, system_prompt: str, subject_feed: str, catalog_feed: str) -> PlannedCall`
+  <br>`plan_draft(*, axis: RubricAxis, system_prompt: str, subject_feed: str, catalog_feed: str) -> PlannedCall`
 - **`price_variations`** · async function · Price the calls `generate_variations` would make, refusing exactly as it would — and make none.
   <br>`price_variations(template: EvalTemplate, n_variations: int, *, storage: EvalTestCaseStore, scope_id: str, blocking_executor: Executor | None, llm: VariationLLM, budget: OutOfRunBudget) -> list[float | None]`
 - **`propose_draft`** · async function · Make an admitted rubric proposal on `axis` and read its draft.
@@ -1829,6 +1844,7 @@ The engine's generation package: the prompts and expanders that author test mate
 - **`EVAL_PROPOSER_TEMPLATE_DEFAULT`** · constant (SeedTemplate) · The seeded default `eval_proposer` template: drafts a capability rubric and the variation axes that stress it.
 - **`PROPOSER_MAX_TOKENS`** · constant (int) · Output-token ceiling for the capability/boundary proposer.
   <br>`= 16384`
+- **`RUBRIC_PROPOSAL_CONTRACT`** · constant (OutputContract) · The output contract both proposer prompts are written for: the draft's schema as the call sends it, and a revision for the rule it is refused by that the schema cannot state (a dimension name's `<context>.<dim>` namespacing, `DimName`).
 
 <a id="api-storage"></a>
 ### `threetears.evals.storage`

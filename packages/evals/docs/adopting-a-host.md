@@ -644,6 +644,36 @@ number. A copy you tune is never reported stale. A provenance stamp does the sam
 the system's seed until someone edits it, pass `customized=True` for an edited slot and `seeded_digest=None`, and an
 untouched slot the package has moved past reads `stale`.
 
+**A proposer prompt states the draft shape it was written for, and the engine checks it.** A tuned copy is
+never stale, but it can still teach a draft shape the engine no longer reads. So each shipped proposer
+default ends with its output-contract line, `eval-output-contract: rubric_proposal <fingerprint>`
+(`gen.RUBRIC_PROPOSAL_CONTRACT.line`). The fingerprint is the digest of the draft's schema as the call sends
+it, its field documentation aside, and of a revision for the rules the schema cannot state. `plan_draft`
+reads the rendered prompt you hand it, before anything is priced, and raises `PromptContractError` (a
+`ConflictError`, status 409) when the prompt carries another fingerprint (`outdated`) or none
+(`undeclared`, which is every copy seeded before the line existed). The error names the prompt
+(`prompt_type`) and the remedy: reset the slot to the shipped default, or keep an edit by rewriting its
+output instructions for the current shape and making its line read the current one. Name your own reset
+action in what your surface shows; the engine cannot. An edited copy that carries the current line passes:
+the line is the editor's statement that the edit was written for this shape, and the strict response
+format and the draft's validation still stand behind it. The analysis generator's prompt states no shape
+(its schema is sent and its grammar appended by code), so it binds no contract.
+
+`prompt_drift` reads the same thing before any call. Each reading carries `contract` (`current`,
+`outdated`, `undeclared`, or `unbound` for a prompt with no contract), `expected_contract` (the line the
+shipped default carries) and `refused`, which is true when a call the copy steers is refused, whether the
+copy is stale or customized. Show `refused` readings with their `remedy` wherever you list your prompts,
+so an operator sees a copy that will be refused before a call is.
+
+```python
+if drift.stale or drift.refused:
+    log.warning("%s: %s", drift.prompt_type, drift.remedy)
+```
+
+After an upgrade that moves a contract's fingerprint, every stored copy of that prompt is refused until it
+is reset or its line updated. Check `prompt_drift` on start-up, so the reset happens before the first call
+is refused.
+
 ### Launching the analysis reporter
 
 The analysis reporter (`REPORTER_KIND`) evaluates the analysis writer itself. Its cases are frozen campaign
