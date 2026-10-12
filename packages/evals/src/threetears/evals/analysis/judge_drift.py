@@ -64,13 +64,21 @@ class JudgeDriftDimension(EvalDocumentModel):
     rubric_dim: str = Field(min_length=1, description="The judged dimension.")
     scale: RubricScale = Field(description="The scale both judges scored it on.")
     judge_model: str | None = Field(description="The model that served the first scores; None when it named none.")
-    judge_config_id: str | None = Field(description="The JudgeConfig that asked for the first scores; None = built-in.")
+    judge_config_id: str | None = Field(
+        description=(
+            "The JudgeConfig that asked for the first scores, or a ``builtin:`` id = the built-in prompt, by its "
+            "wording; None = a built-in prompt whose wording was not recorded (judged before evaladopt.19)."
+        )
+    )
     judge_temperature: JudgeTemperature | None = Field(
         default=None, description="The temperature the first scores were sent at; None = not recorded."
     )
     second_model: str = Field(min_length=1, description="The model the second judge was asked as.")
     second_judge_config_id: str | None = Field(
-        description="The JudgeConfig that asked the second judge; None = the built-in prompt."
+        description=(
+            "The JudgeConfig that asked the second judge, or a ``builtin:`` id = the built-in prompt, by its wording; "
+            "None = a built-in prompt whose wording was not recorded (asked before evaladopt.19)."
+        )
     )
     second_temperature: float | None = Field(
         description="The temperature the second judge was requested at; None = what each prompt asks for."

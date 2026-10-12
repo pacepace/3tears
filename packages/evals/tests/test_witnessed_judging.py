@@ -24,6 +24,7 @@ import pytest
 
 from threetears.evals.kernel import CandidateOutput, CandidateTelemetry, LeverCoordinateError, ValidationFailedError
 from threetears.evals.schema import (
+    CompletionProtocolDefect,
     RoleUsage,
     ConversationStopCause,
     EvalRun,
@@ -74,6 +75,20 @@ class _Completion:
     served_model: str | None = None
 
 
+@dataclass(frozen=True)
+class _TemperaturelessCompletion:
+    """A host's completion type that left ``temperature`` out of the CompletionResult protocol."""
+
+    content: str
+    stop_reason: str = "end_turn"
+    input_tokens: int = 10
+    output_tokens: int = 5
+    reasoning_tokens: int | None = None
+    cost_usd: float | None = 0.001
+    model: str = _JUDGE
+    served_model: str | None = None
+
+
 @dataclass
 class _ScriptedJudge:
     """Scores every dim 4, or answers unparseable text for a failing one, and records what it was sent."""
@@ -81,13 +96,18 @@ class _ScriptedJudge:
     failing: set[str] = field(default_factory=set)
     calls: list[tuple[str, str]] = field(default_factory=list)
     model_name: str = _JUDGE
+    #: Answer with a completion whose type carries no ``temperature``: the host's protocol defect.
+    temperatureless: bool = False
 
     async def generate(self, *, system: str, user: str, response_format: Any = None) -> _Completion:
         match = re.search(r'the single key "(.+?)"', system)
         dim = match.group(1) if match else "?"
         self.calls.append((dim, user))
         reply = {"reasoning": "the ruling followed the dice", "criteria_scores": {dim: 4}}
-        return _Completion(content="not json" if dim in self.failing else json.dumps(reply))
+        content = "not json" if dim in self.failing else json.dumps(reply)
+        if self.temperatureless:
+            return _TemperaturelessCompletion(content=content)  # type: ignore[return-value]
+        return _Completion(content=content)
 
     async def aclose(self) -> None:
         """Nothing to release."""
@@ -209,6 +229,31 @@ async def test_a_judged_witnessed_cell_whose_judge_failed_is_rejudged_like_any_r
     rejudged = await rejudge_result(host, result.id, _SCOPE)
 
     assert [score.dim for score in rejudged.rubric_scores] == [_DIM] and rejudged.judge_error is None
+
+
+async def test_a_judge_completion_breaking_the_protocol_is_raised_to_the_host_not_recorded_as_a_judge_error() -> None:
+    judge = _ScriptedJudge(temperatureless=True)
+    host, template, run, case = off_loop(_setup, judge)
+
+    with pytest.raises(CompletionProtocolDefect, match="check_completion_conformance"):
+        await _record(host, off_loop(_stamped, host, template, run), case, _output())
+
+
+async def test_a_rejudge_whose_judge_completion_breaks_the_protocol_raises_and_stores_nothing() -> None:
+    judge = _ScriptedJudge(failing={_DIM})
+    host, template, run, case = off_loop(_setup, judge)
+    stamped = off_loop(_stamped, host, template, run).model_copy(update={"status": "completed"})
+    result, trace = await _record(host, stamped, case, _output())
+    off_loop(host.storage.save_eval_run, stamped)
+    off_loop(host.storage.save_eval_result, result, trace)
+    judge.failing.clear()
+    judge.temperatureless = True
+
+    with pytest.raises(CompletionProtocolDefect, match="check_completion_conformance"):
+        await rejudge_result(host, result.id, _SCOPE)
+
+    stored = off_loop(host.storage.load_eval_result, result.id, _SCOPE)
+    assert stored is not None and stored.judge_rescores == [] and stored.judge_error == result.judge_error
 
 
 async def test_an_unjudged_witnessed_run_calls_no_judge_and_an_empty_output_is_not_judged() -> None:

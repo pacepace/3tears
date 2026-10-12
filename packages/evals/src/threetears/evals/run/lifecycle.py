@@ -330,6 +330,8 @@ async def rejudge_result(
             between the read and the write, or the write failed (storage reports both
             as one ``False``). Nothing was stored, and the judge spend is on the log line.
         ValueError: The host supplies no completion clients, so nothing could re-judge.
+        CompletionProtocolDefect: The judge client's completion does not meet the protocol — the host's defect.
+            Nothing is stored; the spend is on the log line.
         StorageError: The result was re-scored and stored but its run's excluded-cell count
             could not be updated.
     """
@@ -415,7 +417,9 @@ def _rejudge_inputs(
         )
     run = get_run(storage, result.eval_run_id, scope_id)
     failed = failed_judge_dims(result, list(run.effective_judges or {}))
-    inputs = reproducible_judge_inputs(storage, result, run, scope_id, request_settings="today", config_dims=failed)
+    inputs = reproducible_judge_inputs(
+        storage, result, run, scope_id, request_settings="today", config_dims=failed, same_judge_dims=failed
+    )
     # Narrowed to the dims this result was judged on: a document's run attributes the two
     # conversation axes, which its cell was never asked and so holds no score for.
     failed = [dim for dim in failed if dim in inputs.dims]

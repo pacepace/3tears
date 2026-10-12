@@ -9,6 +9,9 @@ the kind's declaration. A re-judge reads both back rather than re-rendering anyt
   once built its judge context with no evidence at all, which is a conversation by default);
 * every re-asked dim's prompt is byte-identical to the one the first judge was sent;
 * a result whose trace stores no evidence is refused before any judge call is paid for;
+* a built-in dim is re-asked only by the built-in prompt its result records as having asked it — never one
+  its result predates recording, never another wording — and a built-in prompt on a dim its run recorded a
+  config for is as ambiguous as an unrecorded config;
 * the launch attributes a judge to exactly the dims the kind's judge is asked — a document's
   attribution names no conversation axis — and a re-judge refuses a run whose attribution does.
 
@@ -39,12 +42,14 @@ from threetears.evals.schema.models import (
     JudgedArtifact,
     JudgeEvidence,
     RubricDim,
+    builtin_judge_config_id,
     eval_trace_doc_id,
+    is_builtin_judge_config_id,
     scored_dim_ids,
 )
 from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.run.judge import CANNOT_TELL, JUDGE_REQUEST_SETTINGS
-from threetears.evals.run.judge_service import JudgeService
+from threetears.evals.run.judge_service import JudgeService, builtin_judge_config_ids
 from threetears.evals.run.lifecycle import rejudge_result
 from threetears.evals.run.launch import build_judge_service
 from threetears.evals.run.runner import RunnerOptions, run_one_result
@@ -457,3 +462,82 @@ def test_a_trace_carries_evidence_with_its_declaration_or_neither():
     """The accepting side of the refusals above, on the same fixture."""
     assert _trace().judge_evidence is None
     assert _trace(judge_evidence=_EVIDENCE, judged_artifact=JudgedArtifact.TRANSCRIPT).judge_evidence == _EVIDENCE
+
+
+# --- which built-in prompt asked (the built-in judge's identity) ----------------------------------
+
+
+def _stored_as(host: EvalHost, result: EvalResult, **update: Any) -> EvalResult:
+    """Rewrite the stored result with ``update``, its trace kept, as an older build or another writer left it."""
+    trace = off_loop(host.storage.load_eval_trace, result.id, _SCOPE)
+    assert trace is not None
+    rewritten = result.model_copy(update=update)
+    off_loop(host.storage.save_eval_result, rewritten, trace)
+    return rewritten
+
+
+async def test_a_rejudged_built_in_dim_was_asked_by_the_built_in_prompt_it_records() -> None:
+    judge = _ScriptedJudge(failing={_DIM})
+    host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge)
+    today = builtin_judge_config_ids(
+        [RubricDim(name=_DIM, description="the GM rules what the dice say", scale="ordinal")],
+        judged_artifact=JudgedArtifact.DOCUMENT,
+    )
+    assert result.judge_config_ids == today, "a failed call still names the prompt that asked it"
+    judge.failing.clear()
+
+    rejudged = await rejudge_result(host, result.id, _SCOPE)
+
+    assert rejudged.judge_config_ids == today
+    assert rejudged.judge_rescores[-1].judge_config_ids == today
+
+
+async def test_a_result_judged_before_built_in_prompts_were_identified_is_not_rejudged_by_today_s() -> None:
+    """Its built-in wording is unknown, so a new score could be a different judge's beside its run's others (#633)."""
+    judge = _ScriptedJudge(failing={_DIM})
+    host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge)
+    _stored_as(host, result, judge_config_ids={})
+    judge.failing.clear()
+    judge.calls.clear()
+
+    with pytest.raises(ValidationFailedError, match="records no identity for the built-in prompt"):
+        await rejudge_result(host, result.id, _SCOPE)
+
+    assert judge.calls == []
+
+
+async def test_a_result_judged_by_another_built_in_wording_is_not_rejudged_by_today_s() -> None:
+    judge = _ScriptedJudge(failing={_DIM})
+    host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge)
+    _stored_as(host, result, judge_config_ids={_DIM: builtin_judge_config_id("an older wording")})
+    judge.failing.clear()
+    judge.calls.clear()
+
+    with pytest.raises(ValidationFailedError, match="a new score would be a different judge's"):
+        await rejudge_result(host, result.id, _SCOPE)
+
+    assert judge.calls == []
+
+
+async def test_a_built_in_prompt_on_a_dim_its_run_recorded_a_config_for_is_ambiguous() -> None:
+    judge = _ScriptedJudge(failing={_DIM})
+    host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge, judge_config_ids={_DIM: "config-1"})
+    assert is_builtin_judge_config_id(result.judge_config_ids[_DIM])
+    judge.calls.clear()
+
+    with pytest.raises(ValidationFailedError, match="which prompt the judge read is ambiguous"):
+        await rejudge_result(host, result.id, _SCOPE)
+
+    assert judge.calls == []
+
+
+async def test_a_config_its_run_did_not_record_is_still_ambiguous() -> None:
+    judge = _ScriptedJudge(failing={_DIM})
+    host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge, judge_config_ids={_DIM: "config-1"})
+    _stored_as(host, result, judge_config_ids={_DIM: "config-2"})
+    judge.calls.clear()
+
+    with pytest.raises(ValidationFailedError, match="by config 'config-2' while its run recorded 'config-1'"):
+        await rejudge_result(host, result.id, _SCOPE)
+
+    assert judge.calls == []

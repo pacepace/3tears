@@ -66,7 +66,13 @@ class TemperatureAnswer(EvalBaseModel):
     """One judge call's answer: a score, a "can't tell", or a failure."""
 
     score: RubricScore | None = Field(default=None, description="The score, as the judge gave it and recorded it.")
-    config_id: str | None = Field(default=None, description="The versioned JudgeConfig that asked; None = built-in.")
+    config_id: str | None = Field(
+        default=None,
+        description=(
+            "The versioned JudgeConfig that asked, or a ``builtin:`` id = the built-in prompt, by its wording; None = "
+            "a built-in prompt whose wording was not recorded (asked before evaladopt.19)."
+        ),
+    )
     cannot_tell: str | None = Field(default=None, description="The judge's reason, when it could not tell.")
     error: str | None = Field(default=None, description="Why the call failed, when it did.")
 
