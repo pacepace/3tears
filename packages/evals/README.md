@@ -49,11 +49,15 @@ It also holds a set of measurement rules, each explained on its page:
    pip install "3tears-evals[fastmcp]"   # adds the FastMCP transport, for driving evals from an agent
    ```
 
-2. **Run the first example.** It grades a small sentiment classifier on six cases, offline and free:
+2. **Run the first example.** It grades a small sentiment classifier on six cases, offline and free. In a
+   checkout:
 
    ```bash
    uv run python packages/evals/examples/rung_zero.py
    ```
+
+   After a pip install, copy the [`examples/`](examples/) directory from the repository and run
+   `python rung_zero.py` inside it; [examples/README.md](examples/README.md) says how, and what a live run needs.
 
 3. **Point it at your own function.** Any async function from a case to an answer works. Put your prompt and
    model call where the comment says:
@@ -139,7 +143,7 @@ in Concepts, the glossary of record.
 | Typed verdicts and a CI gate | `Comparison.verdicts()`, `Comparison.gate()`, `python -m threetears.evals gate --fail-on regressed,breached` | [The command line](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/command-line.md#gate) | [`reports.py`](https://github.com/pacepace/3tears/blob/develop/packages/evals/examples/reports.py) |
 | Cassettes | `tools=`, `cassette_mode="capture"` / `"replay"`, `cassette_corpus_id=` | [Adopting the engine](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/adopting-a-host.md#cassettes-recording-and-replaying-tools) | [`cassettes.py`](https://github.com/pacepace/3tears/blob/develop/packages/evals/examples/cassettes.py) |
 | Grids of factors | `compare(..., factors=...)`, `Comparison.against` | [Choosing a campaign design](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/choosing-a-design.md#start-from-the-question) | [`prompt_x_model.py`](https://github.com/pacepace/3tears/blob/develop/packages/evals/examples/prompt_x_model.py) |
-| Campaigns and declared designs | `create_campaign`, `set_campaign_control`, `declared_design` | [Choosing a campaign design](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/choosing-a-design.md#declare-the-design-and-its-control) | [`compare_two_prompts.py`](https://github.com/pacepace/3tears/blob/develop/packages/evals/examples/compare_two_prompts.py) |
+| Campaigns and declared designs | `create_campaign`, `update_campaign`, `set_campaign_control`, `declared_design`, `exploratory` | [Choosing a campaign design](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/choosing-a-design.md#declare-the-design-and-its-control) | [`compare_two_prompts.py`](https://github.com/pacepace/3tears/blob/develop/packages/evals/examples/compare_two_prompts.py) |
 | Cost against quality | `Answer`, `max_cost_usd=`, the frontier | [Cost and budgets](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/cost-and-budgets.md), [The frontier](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/choosing-a-design.md#the-frontier-passk-against-cost) | [`compare_two_models.py`](https://github.com/pacepace/3tears/blob/develop/packages/evals/examples/compare_two_models.py) |
 | The analysis bundle and reports | `inspect_campaign_bundle`, `AnalysisContextBundle`, `report_markdown`, `report_html` | [Reading reports](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/reading-reports.md) | [`reports.py`](https://github.com/pacepace/3tears/blob/develop/packages/evals/examples/reports.py) |
 | Analysis written by a model over frozen evidence | `generate_analysis` | [Having a model write the analysis](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/reading-reports.md#having-a-model-write-the-analysis-over-frozen-evidence) | [`llm_analysis.py`](https://github.com/pacepace/3tears/blob/develop/packages/evals/examples/llm_analysis.py) |

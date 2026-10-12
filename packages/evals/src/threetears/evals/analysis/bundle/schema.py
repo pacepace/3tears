@@ -645,12 +645,12 @@ class ScopeDivergence(EvalDocumentModel):
     sentence naming the components. Both movements are published in every withheld case; only
     the arithmetic between them is refused.
 
-    **Where the catalog partitions the whole, the parts are graded too, and the one carrying the
-    movement is named.** A whole that moved by more than a subsystem measure says only that the
-    difference was not THERE; left at that, a reader sets the whole beside whatever else is in view
-    — a disjoint phase timing, say — and attributes the swing to the lever. The whole's own
-    components answer where it went: a ``total_ms`` swing that is almost all ``llm_ms`` is time
-    inside model calls, which a provider's load moves as readily as any lever.
+    **Where the whole's movement went is not here.** It is a fact about the whole and the two levels,
+    not about this part, and one whole diverges from several parts at once — ``total_ms`` from
+    ``tool_ms``, ``orchestration_ms``, ``async_wait_ms`` and ``judge_ms`` when the movement is all in
+    model calls. Carried on each divergence, it reached the reader once per part, so it is stated
+    once, in the bundle's ``whole_swings``: the entry with this divergence's lever, two levels and
+    ``end_to_end.name``.
     """
 
     lever: str = Field(min_length=1, description="The lever whose levels are being compared.")
@@ -730,30 +730,6 @@ class ScopeDivergence(EvalDocumentModel):
             "one: some of the movement may belong to these. Empty means the comparison is clean."
         ),
     )
-    whole_components: list[MeasureMovement] = Field(
-        default_factory=list,
-        description=(
-            "How each measure the catalog declares a component of `end_to_end.name` moved between the same two "
-            "levels, graded against its own noise. Empty when the catalog declares no partition of the whole, "
-            "or no component was measured at both levels. Sorted by name."
-        ),
-    )
-    carried_by: str | None = Field(
-        default=None,
-        description=(
-            "The component shown to carry the whole-run movement: the one with the largest delta in the whole's "
-            "direction, named only when its own movement separates that way and it is shown to move further than "
-            "every other component (each case's difference between the two, tested between the levels, "
-            "Holm-adjusted). None when the whole's movement does not separate from its noise, no component moved "
-            "its way, or no single component is shown to carry it — read `whole_components` then. When it "
-            "is time inside model calls (llm_ms), a provider's load moves it as readily as the lever does, so "
-            "read candidate_output_tokens_per_s across the two cohorts before attributing the movement to the lever."
-        ),
-    )
-    carried_share: float | None = Field(
-        default=None,
-        description="`carried_by`'s delta as a fraction of the whole's delta — how much of the movement it carries. None with it.",
-    )
 
     @model_validator(mode="after")
     def _swing_and_its_absence_are_exclusive(self) -> ScopeDivergence:
@@ -778,6 +754,61 @@ class ScopeDivergence(EvalDocumentModel):
     def remainder(self) -> RemainderState:
         """Which of its two states the remainder is in: ``"stated"`` (a number) or ``"withheld"`` (a sentence)."""
         return remainder_state(self.unattributed_delta, self.unattributed_withheld)
+
+
+class WholeSwing(EvalDocumentModel):
+    """Where one whole-run measure's movement between two levels of a lever went, by its declared components.
+
+    A whole that moved by more than a subsystem measure says only that the difference was not THERE; left
+    at that, a reader sets the whole beside whatever else is in view — a disjoint phase timing, say — and
+    attributes the swing to the lever. The whole's own components answer where it went: a ``total_ms``
+    swing that is almost all ``llm_ms`` is time inside model calls, which a provider's load moves as
+    readily as any lever.
+
+    **One per lever, level pair and whole, never one per divergence.** The components are read from the
+    same declarations the divergence lens withholds a remainder by
+    (:func:`~threetears.evals.kernel.metrics.partition_components`), so the partition named here and the
+    partition that withholds are one partition. Each :class:`ScopeDivergence` is one whole against one
+    part, and a whole diverges from several parts at once; this was carried on each of them, and a
+    model sweep's reader met "``total_ms`` moved −133184, carried by ``llm_ms``" four times a model
+    pair. An entry exists for each lever, level pair and whole among the published divergences, and
+    for no other.
+    """
+
+    lever: str = Field(min_length=1, description="The lever whose levels are being compared.")
+    level_a: str = Field(description="The first level ('—' = ran without the override), as the divergences name it.")
+    level_b: str = Field(description="The second level.")
+    whole: str = Field(
+        min_length=1,
+        description=(
+            "The whole-run measure — `end_to_end.name` of every `scope_divergences` entry at this lever and these "
+            "two levels that this swing explains. Its movement is that entry's `end_to_end`."
+        ),
+    )
+    components: list[MeasureMovement] = Field(
+        default_factory=list,
+        description=(
+            "How each measure the catalog declares a component of `whole` moved between the same two levels, "
+            "graded against its own noise. Empty when the catalog declares no partition of the whole, or no "
+            "component was measured at both levels. Sorted by name."
+        ),
+    )
+    carried_by: str | None = Field(
+        default=None,
+        description=(
+            "The component shown to carry the whole-run movement: the one with the largest delta in the whole's "
+            "direction, named only when its own movement separates that way and it is shown to move further than "
+            "every other component (each case's difference between the two, tested between the levels, "
+            "Holm-adjusted). None when the whole's movement does not separate from its noise, no component moved "
+            "its way, or no single component is shown to carry it — read `components` then. When it "
+            "is time inside model calls (llm_ms), a provider's load moves it as readily as the lever does, so "
+            "read candidate_output_tokens_per_s across the two cohorts before attributing the movement to the lever."
+        ),
+    )
+    carried_share: float | None = Field(
+        default=None,
+        description="`carried_by`'s delta as a fraction of the whole's delta — how much of the movement it carries. None with it.",
+    )
 
 
 #: Why a judged dimension sits beside the ranking surface rather than on it. One sentence for every
@@ -1954,6 +1985,15 @@ class AnalysisContextBundle(EvalDocumentModel):
             "tested is counted in divergences_untested."
         ),
     )
+    whole_swings: list[WholeSwing] = Field(
+        default_factory=list,
+        description=(
+            "Where each diverging whole-run movement went: one entry per lever, level pair and whole-run measure "
+            "among `scope_divergences`, naming the component that carried it. Stated once here rather than on each "
+            "divergence, because one whole diverges from several parts. A bundle shape before 49 carried it on "
+            "every divergence instead."
+        ),
+    )
     divergences_omitted: int = Field(
         default=0,
         ge=0,
@@ -2870,4 +2910,5 @@ __all__ = [
     "UNDECIDED_CONFOUND_PREFIX",
     "UNVERIFIED_FOLD_PREFIX",
     "VerdictOrder",
+    "WholeSwing",
 ]

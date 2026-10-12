@@ -4,17 +4,21 @@
   what the work returned; the ledger holds the one call.
 - **A call the cap cannot pay for is refused in the call**: nothing is started, nothing is spent, and the client
   built for it is released.
+- **Every action job names its wall-clock ceiling**: ``budget_s`` has no default on ``start_paid_call``,
+  ``start_action_job`` or ``action_job_work``, so a forgotten budget is a ``TypeError`` rather than an hour nobody chose.
 """
 
 from __future__ import annotations
 
+import inspect
+from collections.abc import Callable
 from typing import Any
 
 import pytest
 
 from threetears.evals.kernel import AdmittedCall, OutOfRunBudget, PlannedCall, ValidationFailedError
-from threetears.evals.ops import await_job, start_paid_call
-from threetears.evals.run import EvalActionJob, run_blocking
+from threetears.evals.ops import await_job, start_action_job, start_paid_call
+from threetears.evals.run import EvalActionJob, action_job_work, run_blocking
 from threetears.evals.schema import BoundCompletionClient
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.storage import InMemoryDocumentStore
@@ -89,6 +93,7 @@ async def test_the_call_is_admitted_in_the_call_and_made_in_the_job() -> None:
         call=_CALL,
         make=make,
         label="a capability rubric",
+        budget_s=60.0,
     )
     assert budget.committed_usd == pytest.approx(0.01), "admitted in the call, before the job ran"
     (done,) = await await_job(built.host, started, CONFORMANCE_SCOPE)
@@ -127,6 +132,7 @@ async def test_a_call_the_cap_cannot_pay_for_starts_nothing_and_releases_its_cli
             call=_CALL,
             make=make,
             label="a capability rubric",
+            budget_s=60.0,
         )
 
     assert budget.committed_usd == 0
@@ -135,3 +141,35 @@ async def test_a_call_the_cap_cannot_pay_for_starts_nothing_and_releases_its_cli
     assert not [
         doc for doc in store.documents.values() if doc.get("doc_type") == EvalActionJob.model_fields["doc_type"].default
     ]
+
+
+@pytest.mark.parametrize("entry", [start_paid_call, start_action_job, action_job_work])
+def test_every_action_job_names_its_budget(entry: Callable[..., Any]) -> None:
+    budget_s = inspect.signature(entry).parameters["budget_s"]
+
+    assert budget_s.default is inspect.Parameter.empty, f"{entry.__name__} must not default its wall-clock ceiling"
+
+
+async def test_a_paid_call_without_a_budget_is_refused_before_anything_is_built() -> None:
+    clients = _ReleaseTrackingClients()
+    built = off_loop(conformance_host, CompletionGuard(), clients)
+
+    async def make(client: BoundCompletionClient, admitted: AdmittedCall) -> _Draft:
+        raise AssertionError("a call with no budget is never made")
+
+    unbudgeted: Callable[..., Any] = start_paid_call
+    with pytest.raises(TypeError, match="budget_s"):
+        await unbudgeted(
+            built.host,
+            CONFORMANCE_SCOPE,
+            action="rubric_propose",
+            role="proposer",
+            model="proposer/m",
+            purpose="proposer",
+            budget=_budget(built.host, cap_usd=1.0),
+            call=_CALL,
+            make=make,
+            label="a capability rubric",
+        )
+
+    assert clients.released == []

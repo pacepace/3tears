@@ -203,6 +203,25 @@ async def test_eval_storage_refuses_a_call_on_the_event_loop_over_any_store() ->
         storage.query_eval_runs("scope-a")
 
 
+def _a_sync_helper(storage: EvalStorage) -> None:
+    """A synchronous helper that hides the store call from the async code above it."""
+    storage.store_time()
+
+
+async def test_the_refusal_names_the_call_site_outside_the_engine() -> None:
+    storage = EvalStorage(InMemoryDocumentStore())
+    with pytest.raises(StoreCalledOnEventLoop) as refused:
+        storage.query_eval_runs("scope-a")
+    assert "test_the_refusal_names_the_call_site_outside_the_engine" in str(refused.value)
+    assert __file__ in str(refused.value)
+
+
+async def test_the_refusal_names_a_sync_helper_rather_than_the_code_awaiting_it() -> None:
+    storage = EvalStorage(InMemoryDocumentStore())
+    with pytest.raises(StoreCalledOnEventLoop, match=r"\._a_sync_helper \("):
+        _a_sync_helper(storage)
+
+
 async def test_eval_storage_over_a_bridged_store_runs_off_the_loop() -> None:
     store = _FakeAsyncStore()
     storage = EvalStorage(bridge_async_store(store, asyncio.get_running_loop()))

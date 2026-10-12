@@ -166,6 +166,7 @@ def create_campaign(
     created_by: str,
     profile: HostProfile,
     control_from_run_id: str | None = None,
+    exploratory: bool = False,
 ) -> EvalCampaign:
     """Create and persist a campaign from an authoring definition.
 
@@ -181,10 +182,16 @@ def create_campaign(
     campaign's runs and the key is resolved from it exactly as :func:`set_campaign_control` resolves
     one. A design that types ``control`` itself is held to the key's shape by the contract.
 
-    **The design is optional.** A campaign created without one is exploratory — someone learning to run
-    evals, or testing an intuition with no settled question — and that is derived from
-    ``declared_design is None`` wherever it is read, never stored as a second flag: its report and analysis
-    bundle say so once, and its analysis reads a design inferred from the runs.
+    **A campaign is declared or exploratory, and the caller says which.** Exactly one of a ``declared_design``
+    in ``definition`` and ``exploratory=True`` is given: neither is refused, naming both, and both are refused as
+    a contradiction. An exploratory campaign — someone learning to run evals, or testing an intuition with no
+    settled question — is not a lesser declared one, and its report says its readings confirm nothing; letting it
+    be the default meant a caller who forgot the design got that report without ever having chosen it.
+
+    ``exploratory`` is the caller's assertion, checked and never stored: whether a campaign is exploratory is
+    derived from ``declared_design is None`` wherever it is read, so a design declared later
+    (:func:`update_campaign`) ends it without a second flag to clear. Its report and analysis bundle say so once,
+    and its analysis reads a design inferred from the runs.
 
     Args:
         storage: The campaign store.
@@ -197,12 +204,15 @@ def create_campaign(
         profile: The host whose vocabulary this reads.
         control_from_run_id: One of ``definition``'s runs whose variant becomes the declared control, or
             None. Requires a ``declared_design``, and one that does not type ``control`` itself.
+        exploratory: True to create the campaign with no design, saying so; required when ``definition``
+            declares none, and refused beside one.
 
     Returns:
         The persisted :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
 
     Raises:
-        ValidationFailedError: ``definition`` fails campaign validation, names a run that does
+        ValidationFailedError: ``definition`` declares no design and ``exploratory`` is False, or declares one
+            and ``exploratory`` is True; fails campaign validation, names a run that does
             not exist in ``scope_id``, or declares a design this host cannot honour; or
             ``control_from_run_id`` is given with no design, beside a typed ``control``, or names a run
             the campaign does not hold.
@@ -223,6 +233,7 @@ def create_campaign(
     # caller round-tripping a campaign it just read would be refused for one of the three
     # fields it echoed back — the case those fields are ignored FOR.
     reject_unknown_authoring_fields("create_campaign", definition, EvalCampaign, CAMPAIGN_SERVER_FIELDS)
+    _refuse_an_unsaid_kind(declared=definition.get("declared_design") is not None, exploratory=exploratory)
     clean = {k: v for k, v in definition.items() if k not in CAMPAIGN_SERVER_FIELDS}
     clean["created_by"] = created_by
     clean["scope_id"] = scope_id
@@ -263,6 +274,35 @@ def create_campaign(
 
     storage.save_campaign(campaign)
     return campaign
+
+
+#: What a campaign is when it is not declared, said once for every refusal that asks the caller to choose.
+_THE_TWO_KINDS = (
+    "declared_design states what the campaign sets out to learn; exploratory: true says it has no settled question "
+    "yet, and its report will say its readings confirm nothing"
+)
+
+
+def _refuse_an_unsaid_kind(*, declared: bool, exploratory: bool) -> None:
+    """Refuse a create that does not say, or contradicts itself about, whether the campaign is declared.
+
+    Args:
+        declared: Whether the definition carries a design.
+        exploratory: The caller's assertion that it carries none.
+
+    Raises:
+        ValidationFailedError: Neither was said, or both were.
+    """
+    if declared and exploratory:
+        raise ValidationFailedError(
+            "the campaign both declares a design and says it is exploratory — exploratory means no design is declared",
+            remedy="send one: declared_design, or exploratory: true without it",
+        )
+    if not declared and not exploratory:
+        raise ValidationFailedError(
+            "a campaign is either declared or exploratory, and this create says neither",
+            remedy=f"send declared_design or exploratory: true — {_THE_TWO_KINDS}",
+        )
 
 
 def _campaign_template(storage: CampaignStore, campaign: EvalCampaign) -> str | None:
@@ -443,6 +483,7 @@ def update_campaign(
     *,
     updated_by: str,
     profile: HostProfile,
+    exploratory: bool = False,
 ) -> EvalCampaign:
     """Amend a campaign's authored fields — the write half the declaration needs.
 
@@ -457,6 +498,13 @@ def update_campaign(
     (:func:`~threetears.evals.kernel.declaration.reconcile_question_edits`), and the declaration gate
     runs here exactly as it does at creation.
 
+    **Declaring a design on an exploratory campaign needs nothing else**: exploratory is derived from
+    ``declared_design is None``, so the campaign is declared from this write on. **The way back is said, not
+    implied**, as it is at creation: ``declared_design`` set to None withdraws the declaration only beside
+    ``exploratory=True``, and is refused without it. ``exploratory=True`` is an assertion about the campaign this
+    update leaves, checked and never stored, so it is refused beside a design, and on a declared campaign whose
+    declaration this update keeps.
+
     Args:
         storage: The campaign store.
         campaign_id: The campaign to amend.
@@ -466,6 +514,8 @@ def update_campaign(
             declaration when this update writes one; it never becomes ``created_by``, since
             a later editor is not the author.
         profile: The host whose vocabulary this reads.
+        exploratory: True to say the campaign this update leaves declares no design; required to set
+            ``declared_design`` to None.
 
     Returns:
         The persisted, updated :class:`~threetears.evals.kernel.campaign.EvalCampaign`.
@@ -474,7 +524,8 @@ def update_campaign(
         NotFoundError: No campaign with that id in the scope.
         ValidationFailedError: ``updates`` is empty, names a field that is not updatable,
             drops a stored question, fails campaign validation, or declares a design this
-            host cannot honour.
+            host cannot honour; sets ``declared_design`` to None without ``exploratory``; or
+            ``exploratory`` is True beside a design, or on a declared campaign this update leaves declared.
         StorageError: The updated campaign failed to persist.
     """
     from pydantic import ValidationError
@@ -484,7 +535,7 @@ def update_campaign(
 
     if not updates:
         raise ValidationFailedError(
-            "update_campaign was given no field to change",
+            "the campaign update names no field to change",
             remedy=f"name at least one of {', '.join(_CAMPAIGN_UPDATABLE_FIELDS)}",
         )
     if unknown := sorted(set(updates) - set(_CAMPAIGN_UPDATABLE_FIELDS)):
@@ -497,22 +548,40 @@ def update_campaign(
             ),
         )
 
+    if exploratory and updates.get("declared_design") is not None:
+        raise ValidationFailedError(
+            "the update both declares a design and says the campaign is exploratory — exploratory means no design "
+            "is declared",
+            remedy="send one: declared_design, or declared_design: null with exploratory: true",
+        )
+
     campaign = storage.load_campaign(campaign_id, scope_id)
     if campaign is None:
         raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
+    if exploratory and "declared_design" not in updates and campaign.declared_design is not None:
+        raise ValidationFailedError(
+            f"campaign '{campaign_id}' declares a design and this update keeps it, so exploratory: true says "
+            "something the campaign would not be",
+            remedy="withdraw the declaration with it (declared_design: null), or leave exploratory out",
+        )
 
     merged = campaign.model_dump(mode="json")
     merged.update({k: v for k, v in updates.items() if k != "declared_design"})
 
-    if "declared_design" in updates:
-        supplied = updates["declared_design"]
-        if supplied is None:
-            # Not offered as "clear it": a declaration is what an analysis of this campaign
-            # is judged against, and un-declaring one retroactively turns every coverage
-            # shortfall it named back into data nobody meant to collect.
+    if "declared_design" in updates and updates["declared_design"] is None:
+        if not exploratory:
+            # Not a bare "clear it": a declaration is what an analysis of this campaign is
+            # judged against, and un-declaring one turns every coverage shortfall it named back
+            # into data nobody meant to collect, and every reading after it into one that
+            # confirms nothing. So the caller says so, as a create with no design does.
             raise ValidationFailedError(
-                "a declaration cannot be withdrawn", remedy="amend it instead, or retire the questions it asks"
+                "setting declared_design to null withdraws the declaration and leaves the campaign exploratory, "
+                "which an update says rather than implies",
+                remedy="send exploratory: true with it to withdraw the declaration, or amend the declaration instead",
             )
+        merged["declared_design"] = None
+    elif "declared_design" in updates:
+        supplied = updates["declared_design"]
         if not isinstance(supplied, CampaignDesign | dict):
             # `**supplied` on a string, list or number raises TypeError, which the guard
             # below does not catch and `translate_service_errors` does not translate — so a
@@ -836,7 +905,7 @@ def set_campaign_control(
         raise ValidationFailedError(
             f"campaign '{campaign_id}' declares no design, and the control lives on the declaration. A control is "
             "the reference point of a comparison, so there is nothing for it to reference yet",
-            remedy="declare one first (analysis.update_campaign with `declared_design`)",
+            remedy="declare one first (campaign_update with `declared_design`)",
         )
     control = None if run_id is None else _resolve_control_variant(storage, campaign, run_id, profile=profile)
 

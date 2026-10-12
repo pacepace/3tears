@@ -697,7 +697,7 @@ def assemble_context_bundle(
     # Divergences pair measures by unit, which only the catalog knows, so they are derived
     # after it — and from the same descriptors the generator will read, never a second lookup
     # that could disagree with what the bundle says a measure is.
-    bundle.scope_divergences, bundle.divergences_omitted, divergence_count = _scope_divergences(
+    bundle.scope_divergences, bundle.whole_swings, bundle.divergences_omitted, divergence_count = _scope_divergences(
         runs,
         results_by_run,
         bundle.measure_catalog,

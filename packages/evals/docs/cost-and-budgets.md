@@ -242,7 +242,9 @@ returns. Each arm's request carries the admission (`LaunchRequest.generation`); 
 and no others, and each is ledgered as an `OutOfRunSpend` under the launch's group. The launcher's side is in
 [Generating cases at launch](adopting-a-host.md#generating-cases-at-launch).
 
-**A rubric proposal.** A host plans it with `plan_draft`, admits the call with
+**A rubric proposal.** A host plans it with `plan_draft(axis=..., system_prompt=..., ...)`, which refuses a
+stored proposer prompt written for another draft shape before anything is priced (see
+[the engine's prompts](adopting-a-host.md#the-engines-prompts-seeded-into-your-registry)), admits the call with
 `budget.admit(client, "proposer", [call])` in its action's call (refusing there, with nothing called), and makes
 it in the action's job with `propose_draft(client, admitted, budget=..., axis=..., subject_id=...)`, which
 releases the client. A client admitted and never made is the host's to release.

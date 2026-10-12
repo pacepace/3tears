@@ -68,7 +68,8 @@ log = get_logger(__name__)
 #: names it). A budget is not a person deciding to stop, so the two are never one outcome.
 JobOutcome = Literal["running", "completed", "failed", "cancelled", "timed_out"]
 
-#: An action job's wall-clock ceiling unless its host names another: an hour, the job manager's own default.
+#: An hour: the job manager's own default ceiling, for an action job whose host means exactly that. Nothing defaults
+#: to it — every action job names its ``budget_s`` — so a host passes it on purpose or not at all.
 DEFAULT_ACTION_JOB_BUDGET_S = 3600.0
 
 #: The detail a job cancelled before it ended records, beside the cancel's reason on the record.
@@ -548,8 +549,8 @@ def action_job_work(
     *,
     action: str,
     run: Callable[[], Awaitable[BaseModel]],
+    budget_s: float,
     label: str = "",
-    budget_s: float = DEFAULT_ACTION_JOB_BUDGET_S,
     discard: Callable[[], Awaitable[None]] | None = None,
 ) -> JobWork[EvalActionJob]:
     """A host action's work as a job: ``run`` awaited to its end, its result written on an :class:`EvalActionJob`.
@@ -562,7 +563,7 @@ def action_job_work(
         action: The action's name.
         run: The work: makes the calls and returns the action's typed result.
         label: A short line naming the work.
-        budget_s: The work's wall-clock ceiling as a job.
+        budget_s: The work's wall-clock ceiling as a job. Required: no action job runs under a ceiling nobody chose.
         discard: Releases what the handler built for ``run`` when the work never runs.
 
     Returns:

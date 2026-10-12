@@ -66,7 +66,8 @@ overlays and apparatus settings, and every arm shares the template, subject, `k`
 Every arm is refused up front if its launch would be. The arms run one at a time, so no arm shares another's
 provider load; `max_concurrent_arms` raises that. To compare latency, also declare `measure_latency`, which
 every arm's launch takes. Each run joins the named campaign
-as it is created. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
+as it is created. That campaign is created exploratory, since a sweep takes no design: declare what the arms were
+swept to learn with `campaign_update` once they are known. Its one job's progress counts the arms launched and finished, and one `job_cancel` stops
 the arm in flight and launches none after it. An arm refused at its launch, or whose run ends `failed`, ends
 the sweep `failed`. The judge and simulator are the sweep's. Where it names none, the first arm's resolved
 ones hold for the rest, so a role default that moves mid-sweep cannot split the arms.
@@ -106,6 +107,14 @@ factory: each call must make no completion request, and each spend action's happ
 An agent calls `action='help'` for the actions grouped by workflow and `action='help', topic=<action>` for
 one action's parameters and an example. A parameter the action does not declare is refused, naming the
 ones it accepts. `read_only_tools(prefix)` mounts a tool an agent can only read through.
+
+**A campaign is declared or exploratory, and the caller says which.** `campaign_create` takes a
+`declared_design` or `exploratory: true` — exactly one; neither is refused naming both, and both are refused as a
+contradiction. `exploratory` is checked, never stored: a campaign is exploratory exactly while it declares no
+design. `campaign_update` changes a campaign's `name`, `description` or `declared_design` after it exists, so an
+operator who started exploring declares the design when the question settles, and the campaign is declared from
+that write on. Going back is said too: `declared_design: null` withdraws the declaration only beside
+`exploratory: true`. Runs and the control have their own paths.
 
 ## Reading one result
 

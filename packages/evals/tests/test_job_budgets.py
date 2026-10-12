@@ -154,7 +154,7 @@ async def test_a_job_whose_ending_write_fails_for_a_moment_still_ends_with_its_r
     monkeypatch.setattr(job_work, "ENDING_WRITE_RETRY_DELAYS_S", (0.01, 0.01))
     fixture = off_loop(ops_fixture, store=EndingRefusingStore(refusals=2))
 
-    (job,) = (await start_action_job(fixture.host, TOYHOST_SCOPE, action="draft", run=_drafted)).jobs
+    (job,) = (await start_action_job(fixture.host, TOYHOST_SCOPE, action="draft", run=_drafted, budget_s=60.0)).jobs
     status = await settled(fixture.host, job.job_id)
 
     assert (status.state, status.result) == ("completed", {"text": "the paid-for draft"})
@@ -166,7 +166,7 @@ async def test_a_job_whose_ending_is_never_written_logs_it_whole(
     monkeypatch.setattr(job_work, "ENDING_WRITE_RETRY_DELAYS_S", (0.01, 0.01))
     fixture = off_loop(ops_fixture, store=EndingRefusingStore(refusals=100))
 
-    (job,) = (await start_action_job(fixture.host, TOYHOST_SCOPE, action="draft", run=_drafted)).jobs
+    (job,) = (await start_action_job(fixture.host, TOYHOST_SCOPE, action="draft", run=_drafted, budget_s=60.0)).jobs
     record_id = job.job_id.split(":", 1)[1]
     async with asyncio.timeout(5):
         while fixture.host.launch.job_manager.is_task_active(record_id):

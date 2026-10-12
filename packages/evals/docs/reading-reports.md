@@ -304,6 +304,19 @@ insight retracts it; each insight's `invalidation_trigger` states both rules. Th
 actions show the ledger and each insight's standing (live, retracted or orphaned); `insight_delete` removes one wrong
 insight.
 
+**A headline or summary never states a null the findings did not establish.** Most readers read only those two,
+so "halving the budget does not change latency, cost or delivery" decides as surely as a finding does, and over a
+contrast that did not separate it asserts a result the campaign never measured. The bundle establishes a null in
+two places only: a contrast reading `equivalent` (the equivalence test against a declared margin) and a guardrail
+reading `held`. The writer is told so, and the generator also refuses the headline or a summary bullet that uses
+a common null phrasing ("does not change", "no difference", "no effect", "no worse", "was unchanged", "about the
+same", and a few more, listed in `analysis/null_claims.py`) when no finding cites a reading the bundle
+established alike, through the one repair round like any refusal. It is a tripwire, not a gate: it reads phrases,
+never claims, so a reworded null passes, and once any finding cites an established null it stands down entirely,
+since it cannot tell which contrast a sentence means. An unresolved contrast belongs in the headline as a
+judgement that says how unsure it is ("probably cheaper, too close to call"), never as "no change". The headline
+carries no confidence tier, so its words carry the doubt.
+
 The bundle stays closed: the generator has no tools to fetch more context, such as a `runs_bisect` or `scope_pivot`
 drill-down. A generator that fetched its own context would read different inputs on every call, so nothing could
 be fingerprinted before generation and two prompts could no longer be compared on one bundle. A question the
