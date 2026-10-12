@@ -268,9 +268,11 @@ class _FakeRegistry(WakeRegistryClient):
         *,
         permitted_skills: set[UUID] | None = None,
         names: dict[UUID, str] | None = None,
+        names_raise: bool = False,
     ) -> None:
         self.permitted = permitted_skills or set()
         self.names = names or {}
+        self.names_raise = names_raise
 
     async def acl_permits_skill(
         self,
@@ -290,6 +292,8 @@ class _FakeRegistry(WakeRegistryClient):
         skill_id: UUID,
     ) -> str | None:
         del user_id, agent_id
+        if self.names_raise:
+            raise RuntimeError("registry unavailable")
         return self.names.get(skill_id)
 
 
@@ -457,6 +461,28 @@ async def test_schedule_create_accepts_permitted_skill(
         },
     )
     assert "skill: diagnostic" in result
+    assert len(coll.rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_skill_whose_name_cannot_be_read_is_still_shown_attached_by_id(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    """A raising name lookup used to render the line with no skill at all."""
+    conv_id, user_id, agent_id = actor
+    coll = _FakeScheduleCollection()
+    skill_id = _new_uuid()
+    tools = load_wake_schedule_create_tool(
+        conversation_id=conv_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        schedules_collection=coll,  # type: ignore[arg-type]
+        registry=_FakeRegistry(permitted_skills={skill_id}, names_raise=True),
+    )
+    result = await tools[0].ainvoke(
+        {"schedule_type": "interval", "schedule_config": {"seconds": 600}, "skill_id": f"[skill:{skill_id}]"},
+    )
+    assert f"skill: [skill:{skill_id}] (its name could not be read: RuntimeError)" in result
     assert len(coll.rows) == 1
 
 
@@ -1266,6 +1292,42 @@ async def test_webhook_list_leaves_out_other_agents(
     )
     result = await tools[0].ainvoke({})
     assert "no webhook subscriptions" in result
+
+
+@pytest.mark.asyncio
+async def test_a_subscriptions_default_skill_whose_name_cannot_be_read_is_listed_by_id(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    conv_id, user_id, agent_id = actor
+    coll = _FakeSubscriptionsCollection()
+    sid = _new_uuid()
+    skill_id = _new_uuid()
+    coll.rows[(conv_id, sid)] = {
+        "conversation_id": conv_id,
+        "subscription_id": sid,
+        "user_id": user_id,
+        "agent_id": agent_id,
+        "default_skill_id": skill_id,
+        "name": "mine",
+        "secret_ciphertext": b"sec",
+        "allowed_source_pattern": None,
+        "execution_mode": "inline",
+        "task_prompt_template": "x",
+        "verification_scheme": "generic_hmac_sha256",
+        "status": "active",
+        "rate_limit_per_minute": None,
+        "last_fired_at": None,
+        "date_created": datetime.now(UTC),
+        "date_updated": datetime.now(UTC),
+    }
+    tools = load_webhook_subscription_list_tool(
+        user_id=user_id,
+        agent_id=agent_id,
+        subscriptions_collection=coll,  # type: ignore[arg-type]
+        registry=_FakeRegistry(names_raise=True),
+    )
+    result = await tools[0].ainvoke({})
+    assert f"[skill:{skill_id}] (its name could not be read: RuntimeError)" in result
 
 
 def _seeded_subscription_row(

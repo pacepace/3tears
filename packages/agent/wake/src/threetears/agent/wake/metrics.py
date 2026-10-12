@@ -173,6 +173,8 @@ class WakeMetricsEmitter:
         try:
             from prometheus_client import REGISTRY, Counter, Histogram
         except ImportError:
+            # NOSILENT(optional-import): without the metrics extra there is nothing to emit; _available stays False
+            # and each emit is a no-op
             log.debug(
                 "prometheus_client not installed -- agent-wake metrics disabled",
             )
@@ -263,19 +265,18 @@ class WakeMetricsEmitter:
             try:
                 self._resolved_registry.unregister(collector)
             except KeyError:
-                # collector wasn't actually on the registry -- benign
-                # race with another test's teardown path; continue.
+                # NOSILENT(expected): the collector is already off the registry, which is what this teardown asks
+                # for -- a benign race with another test's teardown path.
                 log.debug(
                     "wake metrics collector was already off the registry",
                     extra={"extra_data": {"collector": type(collector).__name__}},
                 )
                 continue
             except ValueError:
-                # prometheus_client raises ValueError when a collector
-                # is registered against a different registry than ours;
-                # also benign for the unregister-best-effort flow, though
-                # a steady stream of it means the collectors and the
-                # resolved registry were wired up from different places.
+                # NOSILENT(expected): prometheus_client's 'registered elsewhere' answer: that collector is not ours to
+                # unregister. prometheus_client raises ValueError when a collector is registered against a different
+                # registry than ours; also benign for the unregister-best-effort flow, though a steady stream of it
+                # means the collectors and the resolved registry were wired up from different places.
                 log.debug(
                     "wake metrics collector belongs to a different registry; left in place",
                     extra={"extra_data": {"collector": type(collector).__name__}},
