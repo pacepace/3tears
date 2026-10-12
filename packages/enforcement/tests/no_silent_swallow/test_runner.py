@@ -267,7 +267,7 @@ class TestCustomConfig:
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "def f():\n    try:\n        do()\n    except ValueError:  # SILENT-OK: shutdown path\n        pass\n",
+            "def f():\n    try:\n        do()\n    except ValueError:  # SILENT-OK(expected): shutdown path\n        pass\n",
         )
         monkeypatch.setenv("NSS_TEST_MODE", "strict")
         config = NoSilentSwallowConfig(
