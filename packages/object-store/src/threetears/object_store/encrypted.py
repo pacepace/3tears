@@ -67,6 +67,7 @@ class _StreamReader:
             try:
                 chunk = await anext(self._source)
             except StopAsyncIteration:
+                # NOSILENT(expected): the source ending IS end-of-stream; a short read is raised below
                 self._eof = True
             else:
                 # a real store never yields b"" mid-object; treat it as end-of-stream so a

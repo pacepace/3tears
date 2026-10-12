@@ -277,6 +277,7 @@ def _check_otel_metrics() -> bool:
 
             _otel_metrics_available = True
         except ImportError:
+            # NOSILENT(optional-import): opentelemetry is optional; without it there are no metrics to record
             _otel_metrics_available = False
     return _otel_metrics_available
 
