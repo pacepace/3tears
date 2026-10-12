@@ -1141,8 +1141,8 @@ def _placeholder_answer(attempt: dict[str, Any], schema: dict[str, Any]) -> Any 
     try:
         answer = json.loads(wrapped)
     except json.JSONDecodeError:
-        # NOSILENT: a placeholder holding text that is not JSON is not an answer; the caller keeps
-        # the rejection it already has, and the CLI's own rejection message is logged with it.
+        # NOSILENT(expected): this function classifies a rejected attempt, and None is its "not a
+        # wrapped answer"; the caller keeps the rejection it already has, logged with the CLI's message
         return None
     return answer if Draft202012Validator(schema).is_valid(answer) else None
 
@@ -1243,7 +1243,8 @@ def _own_key_wrapped(text: str, key: str | None) -> str | None:
     try:
         inner = json.loads(body)
     except json.JSONDecodeError:
-        # NOSILENT: text that only looks like an object is the model's own words, kept as they are.
+        # NOSILENT(expected): None is this classifier's "not the wrapper"; text that only looks like an
+        # object is the model's own words, and the caller keeps them unchanged
         return None
     if not isinstance(inner, dict) or list(inner) != [key]:
         return None
