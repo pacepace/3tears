@@ -6,6 +6,39 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Agent tools: a coalesced operation says how far it is on every replica, once, and when its work is over
+
+- **Changed, the replica that runs says how far it is.** `status_across_replicas` (with
+  `shared_progress=`) carries `run_progress`: the progress of the run in progress wherever it runs
+  (what this replica's run last reported while one runs here, what the other replica wrote while one
+  runs there, `None` when none runs). `OperationStatusTool` says it after the running clause on
+  both: `running since <time>: <summary>` and `running on another replica (<pod_id>): <summary>`. A
+  pod sharing progress needs no `progress=` to show a run's.
+- **Changed, the sentence says a line once.** `; now: <summary>` of the tool's `progress=` is left
+  out when it is the line just said for the run in progress, and said when it is another
+  (`running on another replica (replica-a): Loading · 1 of 2 states; now: Ready`). Until now both
+  were printed, the same line twice.
+- **One status call reads the lease and the progress once.** The run's progress is in the status the
+  tool already read, so a pod's `progress=` no longer asks `running_elsewhere()` for it;
+  `running_elsewhere()` stays for callers outside the status tool.
+- **Added, `CoalescedOperation.work_over()`** (and `SharedProgress.over()`): a unit that holds its
+  lease past its work says the work is over. Its progress entry is replaced by one saying only that
+  (`{"holder": <pod_id>, "work_over": true}`), which a reader takes over the held lease: the other
+  replicas see no run in progress from then on, though the lease is held until the unit returns.
+  The entry is left until the lease is let go, then removed. Only the holder's own entry ends its run
+  early. The replica whose unit it is still reports `running`, with no progress.
+- **Changed, `CoalescedOperation.report_progress`** also takes a callable, asked only when the
+  progress is about to be written or shown and never when the call is dropped (no unit runs here,
+  the work is over, the pod is stopping); a mapping is still taken. A callable that raises is logged
+  and nothing is written or shown for it. `SharedProgress.report()` / `.reported()` keep and answer
+  what the run in progress here reports. `holder` and `work_over` in a pod's own progress are the
+  record's and are dropped.
+- **Changed, a run that did nothing is never a replica's last run.** With `SharedOutcome(ran=)`, a
+  succeeded run `ran` refuses was kept as `last` when the replica had no run before it, and so
+  reported (`succeeded`, with its empty result) while no record existed. It is not a run: the
+  replica now reports what it reported before, and with no run of its own and none recorded, `idle`.
+  A failed `start_when_needed` wait is no longer replaced by such a run either.
+
 ### Agent tools: one primitive for a pod's operation coordinated across replicas
 
 - **Added, `threetears.agent.tools.coalesced_operation.CoalescedOperation(name, lease, key, unit, *,

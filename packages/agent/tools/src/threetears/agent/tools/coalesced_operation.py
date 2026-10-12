@@ -25,9 +25,16 @@ of the following, and :class:`CoalescedOperation` is the one object that holds t
 
 **A drain that ran nothing is not a run.** A drain started on a replica that cannot hold the lease,
 or for a request the drain before it already took, runs no unit. It ends at once, and it is not the
-operation's last run: it is not written to the shared record, it does not replace this replica's
-last drain that did run a unit, and the status goes on reporting the last real run (and the run in
-progress on the holder). A pod writes no branch for it.
+operation's last run: it is not written to the shared record and it is never this replica's last
+run, so the status goes on reporting the last real run (and the run in progress on the holder). A
+replica that has run no unit and sees none recorded reports ``idle``, whatever runs of that kind it
+has made. A pod writes no branch for it.
+
+**The same line whichever replica answers.** What the unit reports (:meth:`CoalescedOperation.report_progress`)
+is what the replica running it shows of its own run and what every other replica reads of it, so a
+pod gives the status tool no ``progress=`` of its own for the run's progress. A unit that holds its
+lease past its work says so (:meth:`CoalescedOperation.work_over`), and from then on is no run in
+progress to the others.
 
 Usage::
 
@@ -40,7 +47,7 @@ Usage::
                                         operation=lambda: load.operation, render_result=rendered))
     load.start_when_needed(refresher.needs_load, retry_on=(DataLayerUnavailableError,), retry_seconds=30)
     ...
-    load.report_progress({"summary": "Loading · 37 of 51 states"})   # from the unit, as it moves
+    load.report_progress(progress.render)   # from the unit, as it moves: rendered only when written or shown
     ...
     finished = await load.stop(within=20)   # on shutdown, before the NATS connection drains
 """
@@ -186,7 +193,13 @@ class CoalescedOperation(Generic[UnitT]):
         self._retry: asyncio.Task[None] | None = None
         # whether a unit runs here now: only then is progress this replica's to write
         self._in_unit = False
-        self._latest: Mapping[str, Any] | None = None
+        # how many times the unit running here has reported, so the writer knows a newer report from
+        # the one it wrote without comparing what they say
+        self._reports = 0
+        # whether a unit of the drain running here said its work is over: an entry saying so is left
+        # until the lease is let go, since removing it under the lease would read as a run in
+        # progress again
+        self._over = False
         self._writing: asyncio.Task[None] | None = None
         self._run = CoalescedRun(lease, key, self._run_unit, ttl=ttl, renew_every=renew_every)
         self._progress = SharedProgress(lease, key)
@@ -300,24 +313,63 @@ class CoalescedOperation(Generic[UnitT]):
 
         return self._operation.start_when_needed(wanted, retry_on=retry_on, retry_seconds=retry_seconds)
 
-    def report_progress(self, progress: Mapping[str, Any]) -> None:
+    def report_progress(self, progress: Mapping[str, Any] | Callable[[], Mapping[str, Any]]) -> None:
         """the unit running here moved: have every replica show this as its progress.
 
         Called by the unit (or what it reports to) as often as it likes: the latest is written, one
-        write at a time, and a write that fails is logged and the unit goes on. Outside a unit
-        running here, and once stopping, it does nothing: the progress is the lease holder's to write.
+        write at a time, and a write that fails is logged and the unit goes on. This replica's own
+        status shows it too (:meth:`BackgroundOperation.status_across_replicas`), so a reader gets
+        the same line whichever replica answers. Outside a unit running here, after
+        :meth:`work_over`, and once stopping, it does nothing: the progress is the lease holder's
+        to write, while its work goes on.
 
-        :param progress: what the unit is doing, as JSON values; a short ``summary`` line is what
-            the status tool's sentence shows. A ``holder`` field is the record's own and is replaced
-        :ptype progress: Mapping[str, Any]
+        Given a callable, the progress is asked of it only when it is about to be written or
+        shown, never when the call is dropped, and each time anew: a pod passes what renders its
+        progress rather than rendering on every step. One that raises is logged, and nothing is
+        written or shown for it.
+
+        :param progress: what the unit is doing, as JSON values, or what answers that when asked; a
+            short ``summary`` line is what the status tool's sentence shows. The ``holder`` and
+            ``work_over`` fields are the record's own and are replaced
+        :ptype progress: Mapping[str, Any] | Callable[[], Mapping[str, Any]]
         :return: nothing
         :rtype: None
         """
         if self._in_unit and not self._stopping:
-            self._latest = dict(progress)
+            self._progress.report(progress)
+            self._reports += 1
             if self._writing is None or self._writing.done():
                 self._writing = asyncio.get_running_loop().create_task(
                     self._write_latest(), name=f"{self._name}-progress"
+                )
+
+    async def work_over(self) -> None:
+        """the unit running here says its work is over, though it has not returned and still holds the lease.
+
+        For a unit that does something after its work whose length is not the work's (it waits for
+        what it wrote to be answered from, say). From here until the unit returns, the other
+        replicas no longer see a run in progress: the progress entry says the work is over, which a
+        reader takes over the held lease. This replica still reports its run as running (it has not
+        ended, and a request now still follows it), with no progress. Reports made after this are
+        dropped. Outside a unit running here it does nothing; a write that fails is logged, and the
+        other replicas go on seeing the run until the lease is let go.
+
+        :return: nothing
+        :rtype: None
+        """
+        if self._in_unit:
+            self._in_unit = False
+            self._over = True
+            self._progress.report(None)
+            writing = self._writing
+            if writing is not None and not writing.done():
+                await asyncio.wait({writing})
+            try:
+                await self._progress.over()
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- a courtesy to the other replicas, which see the run until the lease is let go without it; whatever the bucket's client raises, the unit goes on; logged
+                log.warning(
+                    "could not tell the other replicas the unit's work is over; they see it until the lease is let go",
+                    extra={"extra_data": {"operation": self._name, "error": f"{type(exc).__name__}: {exc}"}},
                 )
 
     async def stop(self, *, within: float | None = None) -> bool:
@@ -387,22 +439,32 @@ class CoalescedOperation(Generic[UnitT]):
                 "the pod is stopping; the request is left for the next replica to start",
                 extra={"extra_data": {"operation": self._name, "lease": self._key}},
             )
-        elif not (results := await self._run.drain_results()) and not self._stopping:
-            if await self._left_to_a_holder():
-                # another replica holds the lease and runs the request; if it never does, this
-                # replica does, later
-                if self._retry is None or self._retry.done():
-                    self._retry = asyncio.get_running_loop().create_task(self._look_again(), name=f"{self._name}-retry")
-                log.info(
-                    "no unit ran on this replica; the request is left for the replica that holds the lease",
-                    extra={"extra_data": {"operation": self._name, "lease": self._key}},
-                )
-            else:
-                log.info(
-                    "no unit ran on this replica; the request it was started for was already taken",
-                    extra={"extra_data": {"operation": self._name, "lease": self._key}},
-                )
-            self._tell_ran_nothing()
+        else:
+            try:
+                results = await self._run.drain_results()
+            finally:
+                if self._over:
+                    # the lease is let go: the entry saying the work was over has nothing left to say
+                    self._over = False
+                    await self._clear_progress()
+            if not results and not self._stopping:
+                if await self._left_to_a_holder():
+                    # another replica holds the lease and runs the request; if it never does, this
+                    # replica does, later
+                    if self._retry is None or self._retry.done():
+                        self._retry = asyncio.get_running_loop().create_task(
+                            self._look_again(), name=f"{self._name}-retry"
+                        )
+                    log.info(
+                        "no unit ran on this replica; the request is left for the replica that holds the lease",
+                        extra={"extra_data": {"operation": self._name, "lease": self._key}},
+                    )
+                else:
+                    log.info(
+                        "no unit ran on this replica; the request it was started for was already taken",
+                        extra={"extra_data": {"operation": self._name, "lease": self._key}},
+                    )
+                self._tell_ran_nothing()
         return Drained(results=tuple(results))
 
     async def _left_to_a_holder(self) -> bool:
@@ -429,29 +491,31 @@ class CoalescedOperation(Generic[UnitT]):
         :rtype: UnitT
         """
         self._in_unit = True
-        self._latest = None
-        # the entry is this holder's from the start, so a run before it is never shown as this one's
-        await self._write({})
+        # the entry is this holder's from the start, so a run before it is never shown as this one's,
+        # and a held lease reads as a run in progress before the unit has reported anything
+        self._progress.report({})
+        await self._write_reported()
         try:
             result = await self._unit()
         finally:
             self._in_unit = False
+            self._progress.report(None)
             await self._end_progress()
         return result
 
-    async def _write(self, progress: Mapping[str, Any]) -> bool:
-        """write this replica's progress; a failure is logged, and the unit goes on.
+    async def _write_reported(self) -> bool:
+        """write what the unit running here last reported; a failure is logged, and the unit goes on.
 
-        :param progress: the progress
-        :ptype progress: Mapping[str, Any]
-        :return: True when it was written
+        :return: True when it was written; False when it could not be, or no report stands
         :rtype: bool
         """
         written = False
         try:
-            await self._progress.publish(progress)
-            written = True
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- sharing progress is a courtesy to the other replicas; whatever the bucket's client or the encoding raises, this replica's unit goes on; logged
+            reported = self._progress.reported()
+            if reported is not None:
+                await self._progress.publish(reported)
+                written = True
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- sharing progress is a courtesy to the other replicas; whatever the bucket's client, the encoding or the pod's own rendering raises, this replica's unit goes on; logged
             log.warning(
                 "the unit's progress could not be shared",
                 extra={"extra_data": {"operation": self._name, "error": f"{type(exc).__name__}: {exc}"}},
@@ -464,15 +528,19 @@ class CoalescedOperation(Generic[UnitT]):
         :return: nothing
         :rtype: None
         """
-        written: Mapping[str, Any] | None = None
+        written = 0
         failed = False
-        while not failed and self._latest is not None and self._latest is not written:
-            current = self._latest
-            failed = not await self._write(current)
-            written = current
+        while not failed and written != self._reports:
+            # taken before the write: a report made during it is a newer one, written next
+            written = self._reports
+            failed = not await self._write_reported()
 
     async def _end_progress(self) -> None:
         """the unit has ended: let the write in flight land, then remove this replica's progress.
+
+        An entry saying the work is over is left: the lease is still held, and without the entry a
+        reader would take the held lease for a run in progress. The drain removes it once the lease
+        is let go.
 
         :return: nothing
         :rtype: None
@@ -480,6 +548,15 @@ class CoalescedOperation(Generic[UnitT]):
         writing = self._writing
         if writing is not None and not writing.done():
             await asyncio.wait({writing})
+        if not self._over:
+            await self._clear_progress()
+
+    async def _clear_progress(self) -> None:
+        """remove this replica's progress entry; a failure is logged.
+
+        :return: nothing
+        :rtype: None
+        """
         try:
             await self._progress.clear()
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- a progress entry that cannot be removed is ignored by readers once the lease is let go; the unit's own ending must not be changed by it; logged
