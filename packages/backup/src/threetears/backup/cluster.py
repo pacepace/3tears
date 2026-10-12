@@ -324,6 +324,8 @@ class ClusterBackup:
                         driver, admin_dsn, database, set_root=set_root, backup_id=backup_id
                     )
                 except Exception as exc:  # prawduct:allow prawduct/broad-except -- see below
+                    # NOSILENT(attempt): a concurrent-DDL race is retried, bounded; any other failure is recorded on the
+                    # result's failures list, which the backup reports as incomplete
                     # Deliberately broad, and deliberately NOT BaseException: the dump
                     # tool fails in as many ways as the databases it reads (a catalog
                     # inconsistency, a permission, a timeout, the store refusing a

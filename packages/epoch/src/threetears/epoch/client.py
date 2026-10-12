@@ -314,6 +314,8 @@ class EpochClient:
         # that the durable path does not even need KV for, and reporting a
         # changed identity would flush every cache in the fleet on a blip.
         except Exception:  # noqa: BLE001
+            # NOSILENT(logged): None is the documented 'identity could not be established', never read as a replacement
+            # or as the same counter; the listener asks again on its next pass
             log.warning("epoch bucket identity unavailable; not treating as a replacement", exc_info=True)
             return None
 

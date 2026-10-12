@@ -299,6 +299,8 @@ async def _pump_stdin(proc: asyncio.subprocess.Process, source: AsyncIterator[by
         proc.stdin.close()
         await proc.stdin.wait_closed()
     except (BrokenPipeError, ConnectionResetError) as exc:
+        # NOSILENT(expected): fully_fed=False is the typed answer to a child that closed its stdin early; the caller
+        # raises it as BackupToolError(_SHORT_FEED)
         # The child died early. Its exit code + stderr are the better diagnosis, so the pipe error
         # itself is not raised -- but the caller is told the feed was short, because a child that
         # dies early and still exits 0 would otherwise pass off a partial archive as a full restore.

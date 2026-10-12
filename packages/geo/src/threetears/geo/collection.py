@@ -351,6 +351,13 @@ class TileCollection(DerivedCollection[TileEntity]):
         band = self._build_band(rows, tile=tile, definition=definition)
         payload = encode_tile({layer_name: band.features}, tile)
 
+        if band.undecodable:
+            log.warning(
+                "tile %s/%s left out %d source rows whose geometry could not be read",
+                layer_name,
+                tile,
+                band.undecodable,
+            )
         if band.truncated:
             log.info(
                 "tile %s/%s dropped %d features to the per-tile cap",

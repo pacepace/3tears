@@ -347,6 +347,8 @@ class AuthCalloutResponder:
         try:
             request = decode_auth_request(bytes(msg.data).decode("utf-8"))
         except (ValueError, UnicodeDecodeError, TypeError) as exc:
+            # NOSILENT(logged): handle_request has no caller to answer: an undecodable request is left unanswered, and
+            # the server denies a callout that gets no reply
             # malformed / non-UTF-8 / absent (``data is None``) payload — not ours to answer.
             log.warning("auth-callout: undecodable request (%s)", type(exc).__name__)
             return
@@ -369,7 +371,8 @@ class AuthCalloutResponder:
         """
         try:
             await self._nc.publish(subject=Subjects.credential_refusal(refused.inbox_prefix), message=refused.refusal)
-        # NOSILENT: logged; see the docstring for what the principal does without it
+        # NOSILENT(logged): the denial already stands and nothing reads this call's result; see the docstring
+        # for what the principal does without the notice
         except Exception as exc:  # noqa: BLE001 -- the denial stands whether or not the notice is sent
             log.warning(
                 "auth-callout: could not tell a refused principal why (reason=%s pod_id=%s): %s",
@@ -471,6 +474,8 @@ class AuthCalloutResponder:
                 issuer_account=self._issuer_account,
             )
         except Exception as exc:  # noqa: BLE001 - auth boundary: any resolver/policy/mint fault denies (fail closed)
+            # NOSILENT(logged): None is _authorize's documented denial, and any fault here must deny (fail closed); the
+            # server gets a refusal, the warning gets the cause
             log.warning("auth-callout: denied -- resolve/grant/mint raised (%s)", type(exc).__name__)
             return None
         if not await self._record(request, resolved):
@@ -499,6 +504,8 @@ class AuthCalloutResponder:
             try:
                 await self._admission_recorder.record_admission(request, principal)
             except Exception as exc:  # noqa: BLE001 - auth boundary: an admission that cannot be recorded is denied (fail closed)
+                # NOSILENT(logged): False denies the admission (fail closed), the true answer for an admission that
+                # cannot be recorded; the cause is logged at ERROR
                 log.error(
                     "auth-callout: DENIED name=%s conn_id=%s -- the admission could not be recorded, so the "
                     "connection could not be closed later: %s: %s",
