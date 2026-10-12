@@ -1703,7 +1703,7 @@
     },
     "threetears.evals.kernel.RefusedRow": {
       "kind": "class",
-      "signature": "RefusedRow(row_id: str | None, status: str | None, refused: ValidationError)"
+      "signature": "RefusedRow(row_id: str | None, status: str | None, refused: ValidationError, lease_expires_at: str | None = None)"
     },
     "threetears.evals.kernel.RELAUNCH_TO_REJUDGE": {
       "kind": "constant (str)",
@@ -2000,6 +2000,10 @@
     "threetears.evals.kernel.UnreadableBarName": {
       "kind": "dataclass",
       "signature": "UnreadableBarName(name: str, refusal: BarNameRefusal, reason: str)"
+    },
+    "threetears.evals.kernel.UnreadableRecordError": {
+      "kind": "exception",
+      "signature": "UnreadableRecordError(message: str, *, remedy: str, details: dict[str, Any] | None = None)"
     },
     "threetears.evals.kernel.UnreadableRunError": {
       "kind": "exception",
@@ -2548,6 +2552,10 @@
     "threetears.evals.run.delete_run": {
       "kind": "function",
       "signature": "delete_run(storage: CurationStore, run: EvalRun, scope_id: str, *, confirm: str | None = None) -> dict[str, Any]"
+    },
+    "threetears.evals.run.delete_unreadable_run": {
+      "kind": "function",
+      "signature": "delete_unreadable_run(storage: UnreadableRunDeleteStore, run_id: str, row: RefusedRow, scope_id: str, *, confirm: str | None = None) -> dict[str, Any]"
     },
     "threetears.evals.run.drive_conversation": {
       "kind": "async function",
@@ -3188,6 +3196,10 @@
     "threetears.evals.run.UnknownSubject": {
       "kind": "dataclass",
       "signature": "UnknownSubject(remedy: str)"
+    },
+    "threetears.evals.run.UnreadableRunDeleteStore": {
+      "kind": "protocol",
+      "signature": "UnreadableRunDeleteStore{delete_eval_result(self, result_id: str, scope_id: str, /) -> bool; delete_eval_run(self, run_id: str, scope_id: str, /) -> bool; list_campaigns(self, scope_id: str, /) -> list[EvalCampaign]; query_eval_result_ids_by_run(self, run_id: str, scope_id: str, /) -> list[str]; save_campaign(self, campaign: EvalCampaign, /) -> None; store_time(self) -> datetime}"
     },
     "threetears.evals.run.update_judge_config": {
       "kind": "function",

@@ -598,6 +598,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`UnknownCandidateKind`** · exception · A template names a kind this host did not wire.
 - **`UnportableSchema`** · exception · A schema keyword no strict structured-output mode is known to accept, and none that a reply's validation stands in for: a structural keyword (`allOf`, `not`, `if`), which dropping would change the shape sent.
 - **`UnreadableBarName`** · dataclass · A bar name no verdict can be given on, and why — the text an author or a reader is shown.
+- **`UnreadableRecordError`** · exception · A stored record this build's model refuses, met by a read that cannot answer without it (status 500).
 - **`UnreadableRunError`** · exception · A read that cannot leave a run out met one this build's model refuses (status 500).
 - **`ValidationFailedError`** · exception · Validation failed (status 422).
 - **`VariantConfig`** · model · The A/B'd stack one cell runs, as every kind alike receives it.
@@ -994,6 +995,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`delete_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str, *, confirm: str | None = None) -> None`
 - **`delete_run`** · function · Delete a run, the results it owns, and its campaign memberships.
   <br>`delete_run(storage: CurationStore, run: EvalRun, scope_id: str, *, confirm: str | None = None) -> dict[str, Any]`
+- **`delete_unreadable_run`** · function · Delete a run this build's model cannot read — the operator's way out of a corpus the model has outlived.
+  <br>`delete_unreadable_run(storage: UnreadableRunDeleteStore, run_id: str, row: RefusedRow, scope_id: str, *, confirm: str | None = None) -> dict[str, Any]`
 - **`drive_conversation`** · async function · Run `driver`'s conversation from its first turn until it stops on a structural signal.
   <br>`drive_conversation(driver: TurnDriver, candidate_turn: Callable[[Sequence[SimulatorTurn]], Awaitable[CandidateTurn]], post_user_turn: Callable[[SimulatorTurn], Awaitable[None]], *, llm: SimulatorLLM, sink: CellSink, world: WorldSession | None = None) -> ConversationStopCause`
 - **`end_record`** · function · `record` as it ends: its outcome, why (unless it completed), when — and any other field the ending sets.
@@ -1227,6 +1230,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`SimulatorTurn`** · dataclass · One user-side utterance produced by the simulator.
 - **`TurnDriver`** · dataclass · Multi-actor round scheduler and utterance generator.
 - **`UnknownSubject`** · dataclass · A host's answer that it holds no subject of the id a launch named — and how its caller finds one it does.
+- **`UnreadableRunDeleteStore`** · protocol · What `delete_unreadable_run` reads and destroys: the cascade's port, a run's result ids, and the clock a stored lease is read against (`LeaseClock`, store-wide).
 - **`WitnessedJudging`** · class · One judged witnessed run's judging in this process: its ceiling checks, one cell at a time, and what it judged unsaved.
 
 **Types**

@@ -50,7 +50,7 @@ from threetears.evals.kernel.campaign import (
 )
 from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
 from threetears.evals.kernel.errors import ConflictError, EvalServiceError, StorageError
-from threetears.evals.kernel.remedies import FIND_UNREADABLE_RUNS, REREAD_AND_RETRY
+from threetears.evals.kernel.remedies import FIND_UNREADABLE_RUNS, REREAD_AND_RETRY, UNREADABLE_JOB_RECORD
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileStore
 from threetears.evals.schema.models import (
     EVAL_DOC_TYPES,
@@ -131,13 +131,61 @@ class RefusedRow(NamedTuple):
     refused: ValidationError
     """What the model said of it."""
 
+    lease_expires_at: str | None = None
+    """The ``lease.expires_at`` the row states, as stored, or ``None`` when it states none as text: for a caller that
+    must tell whether some process may still hold the row (a delete of a run this build cannot read)."""
+
     @property
     def reasons(self) -> list[str]:
         """Each distinct refusal, as ``field: what the model said``, sorted; the refused value is never repeated."""
         return _refusal_reasons(self.refused)
 
 
-class UnreadableRunError(EvalServiceError):
+class UnreadableRecordError(EvalServiceError):
+    """A stored record this build's model refuses, met by a read that cannot answer without it (status 500).
+
+    Raised in place of the model's ``ValidationError`` wherever a surface reads a record it cannot leave out, so the
+    caller is refused as by any engine refusal, naming the record and why, rather than failing with the model's own
+    error. The stored row is what is wrong, not the call: retrying it answers the same. A run's refusal is
+    :class:`UnreadableRunError`, whose remedy names the listing and the delete for runs.
+    """
+
+    def __init__(self, message: str, *, remedy: str, details: dict[str, Any] | None = None):
+        """Build a 500.
+
+        Args:
+            message: Which record, in which scope, and why.
+            remedy: What the caller does about it.
+            details: Structured facts about the record, for a host's code.
+        """
+        super().__init__(message=message, status_code=500, details=details or {}, remedy=remedy)
+
+    @classmethod
+    def of_job_record(cls, kind: str, record_id: str, scope_id: str, refused: ValidationError) -> UnreadableRecordError:
+        """The refusal of a job record's read, where the record or a run it names and settles with it did not read.
+
+        For the lease machinery's reads, which keep raising ``ValidationError`` because the boot reclaim and the job
+        loops tell a refused row from a lost race by it: a surface that reads a job record through one of them
+        translates it here.
+
+        Args:
+            kind: The job kind's name (``sweep``, ``launch``, ...).
+            record_id: The record asked for.
+            scope_id: The scope read.
+            refused: What the model said.
+
+        Returns:
+            The error, its remedy :data:`~threetears.evals.kernel.remedies.UNREADABLE_JOB_RECORD`.
+        """
+        return cls(
+            f"the {kind} job record {record_id!r} in scope {scope_id!r}, or a run it names, does not validate under "
+            f"this build's model, as read or as written lost — {', '.join(_refusal_reasons(refused))}",
+            remedy=UNREADABLE_JOB_RECORD,
+            details={"kind": kind, "record_id": record_id},
+        )
+
+
+class UnreadableRunError(UnreadableRecordError):
     """A read that cannot leave a run out met one this build's model refuses (status 500).
 
     A run's own read, or a listing whose answer would be wrong without every run it matched — a comparison, a
@@ -159,9 +207,7 @@ class UnreadableRunError(EvalServiceError):
             run_ids: The ids the refused rows state.
         """
         self.run_ids = list(run_ids)
-        super().__init__(
-            message=message, status_code=500, details={"run_ids": self.run_ids}, remedy=FIND_UNREADABLE_RUNS
-        )
+        super().__init__(message, remedy=FIND_UNREADABLE_RUNS, details={"run_ids": self.run_ids})
 
     @classmethod
     def of_rows(cls, scope_id: str, rows: Sequence[RefusedRow]) -> UnreadableRunError:
@@ -1741,12 +1787,14 @@ class EvalStorage:
             try:
                 read.append(EvalStorage._hydrate(model_cls, row))
             except ValidationError as why:
-                row_id, status = row.get("id"), row.get("status")
+                row_id, status, lease = row.get("id"), row.get("status"), row.get("lease")
+                expires_at = lease.get("expires_at") if isinstance(lease, dict) else None
                 refused.append(
                     RefusedRow(
                         row_id=row_id if isinstance(row_id, str) else None,
                         status=status if isinstance(status, str) else None,
                         refused=why,
+                        lease_expires_at=expires_at if isinstance(expires_at, str) else None,
                     )
                 )
         return read, refused
@@ -1780,6 +1828,27 @@ class EvalStorage:
         except Exception as e:
             raise StorageError(f"failed to read the eval runs of scope {scope_id!r}: {e}") from e
         read, refused = self._hydrate_isolating(EvalRun, items)
+        return EvalRunScan(readable=len(read), unreadable=refused)
+
+    def scan_eval_run(self, run_id: str, scope_id: str) -> EvalRunScan:
+        """Read one run by id without letting the model's refusal raise: whether it reads, or why not, or that it is absent.
+
+        :meth:`scan_eval_runs` for one id, through the same isolating read, so a run named here as refused is one
+        ``runs_unreadable`` names. For a surface that must act on a run this build cannot read — its delete — where
+        :meth:`load_eval_run` refuses. Nothing is settled or written.
+
+        Args:
+            run_id: The run.
+            scope_id: The scope it lives in.
+
+        Returns:
+            ``readable`` 1 when it reads; one ``unreadable`` row, with why, when the model refuses it; neither when
+            no run of that id is stored there.
+        """
+        data = self._of_type(EvalRun, self._store.get(run_id, scope_id))
+        if data is None:
+            return EvalRunScan(readable=0, unreadable=[])
+        read, refused = self._hydrate_isolating(EvalRun, [data])
         return EvalRunScan(readable=len(read), unreadable=refused)
 
     def query_non_terminal_eval_runs(self, scope_id: str) -> NonTerminalRunScan:
@@ -1820,7 +1889,7 @@ class EvalStorage:
                 log.error(
                     "Non-terminal eval run %s (scope=%s status=%s) cannot be read under the current "
                     "model and will NOT be reclaimed. It stays stamped %s until its document "
-                    "is dropped or the model can read it again. runs_unreadable names it with why.",
+                    "is dropped or the model can read it again. runs_unreadable names it with why; run_delete removes it.",
                     row.row_id or "<no id on the row>",
                     scope_id,
                     status,
@@ -1961,6 +2030,34 @@ class EvalStorage:
     def query_eval_results_by_run(self, run_id: str, scope_id: str) -> list[EvalResult]:
         """Return all results for a specific eval run."""
         return self.query_eval_results(scope_id, run_id=run_id)
+
+    def query_eval_result_ids_by_run(self, run_id: str, scope_id: str) -> list[str]:
+        """The ids of every result stored for one run, read off the rows without reconstructing them.
+
+        For a delete of a run this build cannot read, whose results were written by the same model and may not read
+        either: :meth:`delete_eval_result` works from the stored row, so finding them by the run id they carry is
+        all the cascade needs, and a refused result never stops it.
+
+        Args:
+            run_id: The run.
+            scope_id: The scope it lives in.
+
+        Returns:
+            Each result row's id, in the store's order.
+
+        Raises:
+            StorageError: The store failed to answer, or a row matched carries no id as text.
+        """
+        store = self._store
+        try:
+            items = store.by_doc_type("eval_result", scope_id, eval_run_id=run_id)
+        # prawduct:ok-broad-except — DB read boundary; re-raised as a typed eval error
+        except Exception as e:
+            raise StorageError(f"failed to read the results of eval run {run_id!r}: {e}") from e
+        ids = [item.get("id") for item in items]
+        if not all(isinstance(result_id, str) for result_id in ids):
+            raise StorageError(f"a stored result of eval run {run_id!r} carries no id as text, so it cannot be deleted")
+        return cast(list[str], ids)
 
     @staticmethod
     def _result_filters(
@@ -2317,6 +2414,7 @@ __all__ = [
     "RefusedRow",
     "ResultStore",
     "RunsRead",
+    "UnreadableRecordError",
     "UnreadableRunError",
     "RunRecordStore",
     "RunStore",
