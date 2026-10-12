@@ -1607,7 +1607,7 @@
     },
     "threetears.evals.kernel.OutOfRunBudget": {
       "kind": "dataclass",
-      "signature": "OutOfRunBudget(store: OutOfRunSpendStore, scope_id: str, cap_usd: float | None, template_id: str | None = None, subject_id: str | None = None, launch_group_id: str | None = None, campaign_id: str | None = None, run_id: str | None = None, blocking_executor: Executor | None, _committed_usd: float (derived), _admitted: dict[str, tuple[AdmittedCall, PricedCompletion]] (derived), _recorded: list[OutOfRunSpend] (derived))"
+      "signature": "OutOfRunBudget(store: OutOfRunSpendStore, scope_id: str, cap_usd: float | None, template_id: str | None = None, subject_id: str | None = None, launch_group_id: str | None = None, campaign_id: str | None = None, run_id: str | None = None, blocking_executor: Executor | None, _committed_usd: float (derived), _admitted: dict[str, tuple[AdmittedCall, PricedCompletion]] (derived), _recorded: list[OutOfRunSpend] (derived), _unrecorded: list[OutOfRunSpend] (derived))"
     },
     "threetears.evals.kernel.OutputContract": {
       "kind": "dataclass",

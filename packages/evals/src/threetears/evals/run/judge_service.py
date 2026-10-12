@@ -621,6 +621,7 @@ class JudgeService:
             except (
                 Exception
             ) as exc:  # prawduct:allow prawduct/broad-except -- one client's teardown must not strand the others
+                # NOSILENT: the first failure is raised once every client has been offered its release.
                 log.warning("releasing a judge client failed; its pool may leak", exc_info=True)
                 if first_error is None:
                     first_error = exc
@@ -641,7 +642,7 @@ class JudgeService:
         try:
             await self.aclose()
         except Exception:  # prawduct:allow prawduct/broad-except -- teardown must never displace the body's exception
-            # Log only: the service holds no run id, and a client pool that will not close is this process's leak,
+            # NOSILENT: the service holds no run id, and a client pool that will not close is this process's leak,
             # not something the run measured — an error_details entry would count it as one of the run's faults.
             log.exception("releasing the judge clients failed; a pool may leak")
 

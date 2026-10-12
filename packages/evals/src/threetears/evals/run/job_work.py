@@ -274,6 +274,7 @@ async def _run_to_end[R: EvalDocumentModel](
             async with deadline(work.budget_s):
                 ended = await work.run(recorder)
     except EvalJobTimeout as timed_out:
+        # NOSILENT: the record's ending is ``timed_out`` naming the budget, written below.
         log.warning("eval.job %s=%s scope=%s timed out: %s", name, record_id, scope_id, timed_out)
         ended = end_record(recorder.record, "timed_out", timed_out_detail(timed_out))
     except asyncio.CancelledError:
@@ -290,6 +291,7 @@ async def _run_to_end[R: EvalDocumentModel](
         return recorder.record
     # prawduct:ok-broad-except — the job's record is where its ending is stated; the boundary writes it failed
     except Exception as broke:
+        # NOSILENT: the record's ending is ``failed`` with this error as its detail (and its refusal), written below.
         log.exception("eval.job %s=%s scope=%s failed", name, record_id, scope_id)
         # An engine refusal is kept as data beside its words, so a poll serves its kind as a refused call's.
         refusal = job_refusal(broke) if isinstance(broke, EvalServiceError) else None
@@ -329,6 +331,7 @@ async def _write_ending[R: EvalDocumentModel](
         except JobFenced:
             raise
         except (ConflictError, StorageError) as failed:
+            # NOSILENT: falls through only to wait and write the same ending again; the last failure returns below.
             delay = next(delays, None)
             if delay is None:
                 log.error(

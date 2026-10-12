@@ -456,6 +456,8 @@ async def generate_analysis(
     try:
         return _assemble_and_validate(result, bundle, _provenance(result, tally.token_cost, refusal=None), profile)
     except SoundnessRefusal as refused:
+        # NOSILENT: the one repair round-trip below is made from here, and the refusal rides on the tally, on the
+        # stored analysis's provenance, and on the summary a second refusal raises with.
         # Captured because Python unbinds the `except` name at block exit. Two renderings of one
         # refusal: the tally, the log and a failure's summary keep it as code raised it, naming a cell
         # by its full `cell_ref`, because a per-bundle alias means nothing once the record has

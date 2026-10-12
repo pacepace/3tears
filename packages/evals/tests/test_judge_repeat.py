@@ -16,7 +16,8 @@ What is pinned:
 * a repeat agreeing with twenty first scores puts the dimension's judge on ``separation``; two results
   repeated ten times, or a judge declining a third of its repeats, does not;
 * a write race keeps the other writer's change; a result that cannot be read back is reported unwritten
-  and the report still returns; an account refusal stops the repeat before any later call.
+  and the report still returns; a call whose ledger row could not be written is still counted and costed on
+  the report; an account refusal stops the repeat before any later call.
 
 Mutations that turn this file red (each made in a scratch copy, the file restored from it, 2026-10-06):
 
@@ -34,7 +35,7 @@ Mutations that turn this file red (each made in a scratch copy, the file restore
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from threetears.evals.schema import JobLease
+from threetears.evals.schema import JobLease, OutOfRunSpend
 
 import dataclasses
 import json
@@ -250,6 +251,21 @@ class _UnreadableOnce(EvalStorage):
         return super().load_eval_result_with_etag(result_id, scope_id)
 
 
+class _LedgerFailsOnce(EvalStorage):
+    """The real store, except that the first out-of-run ledger row it is handed fails to write."""
+
+    def __init__(self) -> None:
+        super().__init__(InMemoryDocumentStore())
+        self.refused = 0
+
+    def save_out_of_run_spend(self, spend: OutOfRunSpend, /) -> None:
+        """Fail the first row; write every later one as the store does."""
+        if self.refused == 0:
+            self.refused += 1
+            raise StorageError("the ledger write timed out")
+        super().save_out_of_run_spend(spend)
+
+
 async def _judged_run(
     judge: _PricedJudge,
     *,
@@ -446,6 +462,20 @@ class TestWhatWasPaidForIsReported:
         assert report.unwritten == [unreadable.id]
         assert report.repeated == [readable.id]
         assert report.calls_made == len(judge.calls) == 2, "both paid calls are on the report"
+
+    async def test_a_paid_call_whose_ledger_row_could_not_be_written_is_still_counted_and_costed(self):
+        """The ledger lost one row; the report still counts that call and its cost, rather than a total missing it."""
+        judge = _PricedJudge()
+        storage = _LedgerFailsOnce()
+        host, run_id = await _judged_run(judge, cases=2, storage=storage)
+        judge.calls.clear()
+
+        report = await _repeated(host, run_id, _SCOPE, out_of_run_cap_usd=1.0)
+
+        rows = off_loop(host.storage.query_out_of_run_spend, _SCOPE, purpose="judge")
+        assert storage.refused == 1 and len(rows) == 1, "the store's ledger holds one of the two calls"
+        assert report.calls_made == len(judge.calls) == 2, "the call the ledger lost is on the report"
+        assert report.cost_usd == pytest.approx(0.002), "both calls at the 0.001 each reported"
 
     async def test_an_account_refusal_stops_the_repeat_before_any_later_call(self):
         judge = _PricedJudge()

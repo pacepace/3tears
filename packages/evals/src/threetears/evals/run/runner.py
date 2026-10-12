@@ -1752,6 +1752,7 @@ async def _run_judge_phase(
         log.error("Eval run %s: a judge completion breaks the protocol; the run fails", eval_run_id)
         raise
     except Exception as e:  # prawduct:ok-broad-except — judge boundary; a judge failure must not wedge the slot
+        # NOSILENT: the judge record names every dim the phase did not finish as failed with this cause.
         log.exception("Judge service failed during eval run %s", eval_run_id)
         # The calls that returned before it raised were paid for and keep their scores; the
         # rest are named as failed with the cause.
@@ -3198,6 +3199,7 @@ async def judge_dims(
             except CostCapReached as refused:
                 outcome = JudgeOutcome(score=None, error=f"not judged: {refused.detail}")
             except Exception as e:  # prawduct:ok-broad-except — judge boundary; pricing builds the dim's client, whose refusal is this dim's alone
+                # NOSILENT: this dim's outcome is unscored with this error, which the result's judge errors carry.
                 log.exception("Judge dim=%s could not be priced for case=%s", dim_id, context.case_id)
                 outcome = JudgeOutcome(score=None, error=f"{type(e).__name__}: {e}")
             else:
@@ -3226,6 +3228,7 @@ async def judge_dims(
                 except (
                     Exception
                 ) as e:  # prawduct:ok-broad-except — judge boundary; one dim's crash must not discard its siblings
+                    # NOSILENT: this dim's outcome is unscored with this error, which the result's judge errors carry.
                     log.exception("Judge dim=%s raised for case=%s", dim_id, context.case_id)
                     outcome = JudgeOutcome(score=None, error=f"{type(e).__name__}: {e}")
                 except BaseException:
@@ -3640,6 +3643,7 @@ async def execute_run(
                     sink=sink,
                 )
         except EvalCellTimeout as timed_out:
+            # NOSILENT: the cell is recorded cut short (``cell_timeout``), the deadline charged in its errors.
             charged_to, waiting_on = _DEADLINE_CHARGE[sink.pending]
             log.error(
                 "Eval cell timed out after %.0fs waiting on %s (test_case=%s model=%s k=%s run=%s attribution=%s)",
@@ -3692,6 +3696,7 @@ async def execute_run(
                 ),
             )
         except asyncio.CancelledError:
+            # NOSILENT: the cell is recorded excluded with what it spent, and the cancel is re-raised once it is saved.
             # The run was cancelled while this cell ran. The cancel still ends the run — it is
             # re-raised below, once the cell is accounted for — but the cell's spend was real, and
             # it lives only on this sink, so it is recorded as an excluded cell first rather than
@@ -3727,6 +3732,7 @@ async def execute_run(
             )
             cancelled_in_cell = True
         except (CandidateKindDefect, CompletionProtocolDefect) as defect:
+            # NOSILENT: the cell is recorded excluded with what it spent, and the defect is re-raised to fail the run.
             # The host's code — a kind contradicting its declaration, a judge completion short of the protocol —
             # which every cell would meet, so it fails the run; it is re-raised below. But what the cell was billed
             # before it was found is real spend, and lives only on this sink: the cell is recorded excluded first,
@@ -3776,6 +3782,8 @@ async def execute_run(
             saving.result()
             persisted = True
         except StorageError:
+            # NOSILENT: carried on the cell's summary as not persisted, which the run's completeness counts as a
+            # lost cell and every surface discloses as DEGRADED.
             persisted = False
             log.error(
                 "Eval result NOT persisted — cell is lost (result=%s run=%s test_case=%s model=%s k=%s)",
