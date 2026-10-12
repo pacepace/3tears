@@ -457,8 +457,8 @@ class CampaignDesign(EvalDocumentModel):
         description=(
             "The variant key every other cell is read against — the reference point, not a run id. "
             "A 64-hex digest over the resolved contestant stack, which is why it is ADDRESSED from an "
-            "observation rather than typed: `set_campaign_control` (or `control_from_run_id` on "
-            "campaign_create) takes a run and resolves the key here, the same shape a swept level is "
+            "observation rather than typed: `control_from_run_id` on campaign_create or campaign_update "
+            "(`set_campaign_control` from Python) takes a run and resolves the key here, the same shape a swept level is "
             "authored in. None = no control declared, and the analysis says so rather than "
             "electing one. NOT 'baseline', which is temporal: a control is contemporaneous, same "
             "apparatus and same campaign. Not `held_fixed` below: this is WHICH CELL is the "
@@ -577,9 +577,8 @@ class CampaignDesign(EvalDocumentModel):
         if len(value) != _VARIANT_KEY_LENGTH or any(c not in "0123456789abcdef" for c in value):
             raise ValueError(
                 f"`control` is a variant key — a {_VARIANT_KEY_LENGTH}-character lowercase hex digest over the "
-                f"resolved contestant stack — and '{value}' is not one. A run id is not a control any more: use "
-                "`set_campaign_control` with the run, or `control_from_run_id` on campaign_create, and the key "
-                "is resolved for you"
+                f"resolved contestant stack — and '{value}' is not one. A run id is not a control any more: name the run "
+                "with `control_from_run_id` on campaign_create or campaign_update, and the key is resolved for you"
             )
         return value
 

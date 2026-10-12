@@ -2315,6 +2315,17 @@ class AnalysisContextBundle(EvalDocumentModel):
             "than two runs."
         ),
     )
+    model_identity_disclosure: str | None = Field(
+        default=None,
+        description=(
+            "Set when some of the member runs' candidate calls or judge scores came back from a response that "
+            "named no model, so the record holds only the model id each asked for — and a provider may answer an "
+            "id with a model of its choosing (a floating alias). Says once, for the campaign, how many results "
+            "and scores that covers, per role. Never name a requested id as the model that ran where this is "
+            "set: `model_versions` and every arm's model are what was asked for, and `arm_served_models` says "
+            "per arm what the responses named. None when every response named its model."
+        ),
+    )
     measurement_window_disclosure: str | None = Field(
         default=None,
         description=(

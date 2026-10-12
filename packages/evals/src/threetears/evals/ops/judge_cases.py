@@ -115,12 +115,15 @@ def judge_template_create(host: OpsHost, create: JudgeTemplateCreate, scope_id: 
         StorageError: The template could not be written.
     """
     if JUDGE_KIND not in host.launch.kinds:
+        # The remedy is the host operator's, not the caller's: no action registers a kind. What the operator does is
+        # said in the reason, where it names the host's own setup rather than a call the caller could make.
         raise ValidationFailedError(
             f"host {host.eval_host.profile.host_id!r} launches no {JUDGE_KIND!r} kind, so a judge template could never "
-            "run here",
+            f"run here: its LaunchHost registers no {JUDGE_KIND!r} kind (run.launchable_judge_kind) and its profile "
+            "declares no JUDGE_KIND_CONTRACT",
             remedy=(
-                f"register run.launchable_judge_kind under {JUDGE_KIND!r} in the LaunchHost's kinds and declare "
-                "JUDGE_KIND_CONTRACT on its profile"
+                "ask this host's operator to enable judge campaigns — a setting of the host, which no action changes; "
+                "until then, judge_second and judge_drift_check measure a run's judge against a second one"
             ),
         )
     storage = host.eval_host.storage
