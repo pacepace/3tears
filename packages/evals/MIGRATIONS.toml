@@ -31,7 +31,7 @@
 # callers.
 
 [[release]]
-version = "unreleased"
+version = "0.66.0-evaladopt.18"
 since = "v0.66.0-evaladopt.17"
 summary = """
 3tears-evals depends on no other 3tears package (its loggers are stdlib loggers); no store call is made on the event
