@@ -54,6 +54,7 @@ from threetears.evals.kernel.errors import NotFoundError
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.run import set_analysis_archived
 from packages.evals.tests.report_support import minimal_report, toy_campaign_host, toy_report
+from packages.evals.tests.off_loop import off_loop
 
 
 @pytest.fixture
@@ -263,7 +264,7 @@ class TestTheToyReportsContent:
     async def test_the_service_refuses_an_analysis_it_does_not_hold(self, toy: tuple[EvalHost, Any, Any]) -> None:
         host, analysis, _ = toy
         with pytest.raises(NotFoundError):
-            analysis_report(host.storage, "no-such-analysis", analysis.scope_id)
+            off_loop(analysis_report, host.storage, "no-such-analysis", analysis.scope_id)
 
 
 class TestOneFindingsChart:
@@ -271,7 +272,7 @@ class TestOneFindingsChart:
 
     async def test_the_service_decides_the_findings_chart(self, toy: tuple[EvalHost, EvalAnalysis, Any]) -> None:
         host, analysis, report = toy
-        intent = finding_chart_intent(host.storage, analysis.id, analysis.scope_id, "0")
+        intent = off_loop(finding_chart_intent, host.storage, analysis.id, analysis.scope_id, "0")
 
         (block,) = [block for block in report.blocks if isinstance(block, ChartBlock) and block.section == "findings"]
         assert intent == block.intent
@@ -282,14 +283,14 @@ class TestOneFindingsChart:
     ) -> None:
         host, analysis, _ = toy
         with pytest.raises(NotFoundError, match="finding"):
-            finding_chart_intent(host.storage, analysis.id, analysis.scope_id, finding_id)
+            off_loop(finding_chart_intent, host.storage, analysis.id, analysis.scope_id, finding_id)
 
     async def test_a_finding_with_no_chart_is_refused(self, toy: tuple[EvalHost, EvalAnalysis, Any]) -> None:
         host, analysis, _ = toy
         bare = analysis.resolutions[0].model_copy(update={"chart": None})
-        host.storage.save_analysis(analysis.model_copy(update={"resolutions": [bare]}))
+        off_loop(host.storage.save_analysis, analysis.model_copy(update={"resolutions": [bare]}))
         with pytest.raises(NotFoundError, match="chart for finding"):
-            finding_chart_intent(host.storage, analysis.id, analysis.scope_id, "0")
+            off_loop(finding_chart_intent, host.storage, analysis.id, analysis.scope_id, "0")
 
     async def test_a_stored_chart_this_build_cannot_decide_is_refused_with_why(
         self, toy: tuple[EvalHost, EvalAnalysis, Any]
@@ -300,9 +301,9 @@ class TestOneFindingsChart:
         broken = resolution.model_copy(
             update={"chart": Viz(type="delta_table", payload={"rows": []}, ref=resolution.chart.ref)}  # type: ignore[union-attr]
         )
-        host.storage.save_analysis(analysis.model_copy(update={"resolutions": [broken]}))
+        off_loop(host.storage.save_analysis, analysis.model_copy(update={"resolutions": [broken]}))
         with pytest.raises(NotFoundError, match="drawable chart for finding"):
-            finding_chart_intent(host.storage, analysis.id, analysis.scope_id, "0")
+            off_loop(finding_chart_intent, host.storage, analysis.id, analysis.scope_id, "0")
 
 
 # =============================================================================
@@ -725,19 +726,19 @@ class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
 
 async def test_a_campaign_with_an_analysis_is_reported_through_it(toy: tuple[EvalHost, EvalAnalysis, Report]) -> None:
     host, analysis, report = toy
-    assert campaign_report(host, analysis.campaign_id, analysis.scope_id) == report
+    assert off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id) == report
     assert report.basis == "analysis" and report.source.analysis_id == analysis.id
 
 
 async def test_an_archived_analysis_is_not_the_campaigns_report(toy: tuple[EvalHost, EvalAnalysis, Report]) -> None:
     """An archive says the analysis was wrong, so the campaign falls back to its evidence — stated, not silent."""
     host, analysis, _ = toy
-    set_analysis_archived(host.storage, analysis.id, analysis.scope_id, archived=True, reason="shown false")
+    off_loop(set_analysis_archived, host.storage, analysis.id, analysis.scope_id, archived=True, reason="shown false")
 
-    report = campaign_report(host, analysis.campaign_id, analysis.scope_id)
+    report = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
     assert report.basis == "code_only" and report.source.analysis_id is None
     # The archived analysis is still readable by its id.
-    assert analysis_report(host.storage, analysis.id, analysis.scope_id).source.analysis_id == analysis.id
+    assert off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id).source.analysis_id == analysis.id
 
 
 def test_the_resolver_refuses_a_campaign_the_scope_does_not_hold() -> None:

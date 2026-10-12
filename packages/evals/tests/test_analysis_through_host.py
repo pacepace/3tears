@@ -18,6 +18,7 @@ from threetears.evals.kernel.host import EvalHost
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
+from packages.evals.tests.off_loop import off_loop
 
 
 def _corpus_host(clients=None) -> tuple[EvalHost, str, str]:
@@ -48,7 +49,7 @@ async def test_a_generation_builds_its_client_from_the_hosts_factory_and_stores_
         built.append(client)
         return client
 
-    host, campaign_id, scope_id = _corpus_host(clients)
+    host, campaign_id, scope_id = off_loop(_corpus_host, clients)
 
     prepared = await prepare_analysis_generation(
         host, campaign_id, scope_id, model=None, resolve_prompt=_prompt, out_of_run_cap_usd=None
@@ -58,12 +59,12 @@ async def test_a_generation_builds_its_client_from_the_hosts_factory_and_stores_
 
     assert asked == [("analysis", None)], "the generator is the host's analysis role, at its default model"
     assert prepared.resolved_model == MODEL, "the model recorded is the one the built client names"
-    assert host.storage.load_analysis(analysis.id, scope_id) is not None
+    assert off_loop(host.storage.load_analysis, analysis.id, scope_id) is not None
     assert built[0].closed == 1, "the service releases the client it built"
 
 
 async def test_a_host_with_no_client_factory_is_refused_before_anything_is_built():
-    host, campaign_id, scope_id = _corpus_host()
+    host, campaign_id, scope_id = off_loop(_corpus_host)
 
     with pytest.raises(ValueError, match="an analysis generation calls a model"):
         await prepare_analysis_generation(

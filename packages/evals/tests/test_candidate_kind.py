@@ -58,6 +58,7 @@ from threetears.evals.schema.values import SweepableValue
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.factories import memory_storage
+from packages.evals.tests.off_loop import off_loop
 
 #: The level map a cell stamped without a run in hand is keyed by: its model, and nothing else.
 _MODEL_ONLY = {"model": SweepableValue.of("test/model", display="test/model")}
@@ -341,7 +342,7 @@ async def test_every_result_of_a_run_names_the_model_the_run_was_launched_for():
         options=RunnerOptions(candidate_kinds={_FAKE_KIND: lambda _cell: kind}),
     )
 
-    results = host.storage.query_eval_results_by_run(run.id, run.scope_id)
+    results = off_loop(host.storage.query_eval_results_by_run, run.id, run.scope_id)
     assert len(results) == len(cases) * run.k_runs
     assert [result.model for result in results] == [run.candidate_model] * len(results)
     assert kind.prepared is not None
@@ -414,7 +415,7 @@ async def test_a_cell_that_did_not_complete_still_names_the_model_the_run_was_la
             options=RunnerOptions(candidate_kinds={_FAKE_KIND: lambda _cell: kind}),
         )
 
-    (result,) = host.storage.query_eval_results_by_run(run.id, run.scope_id)
+    (result,) = off_loop(host.storage.query_eval_results_by_run, run.id, run.scope_id)
     assert result.infra_error is not None, "the control: this cell took an excluded arm, not the completed one"
     assert result.model == run.candidate_model
 
@@ -872,8 +873,8 @@ async def test_a_kind_payload_round_trips_through_storage():
     result, trace = await _run(kind, _template())
     storage, _ = memory_storage()
 
-    storage.save_eval_result(result, trace)
-    loaded = storage.load_eval_result(result.id, result.scope_id)
+    off_loop(storage.save_eval_result, result, trace)
+    loaded = off_loop(storage.load_eval_result, result.id, result.scope_id)
 
     assert loaded is not None
     assert loaded.kind_payload == payload
@@ -898,8 +899,8 @@ async def test_a_kind_payload_keeps_its_whitespace_from_the_kind_to_the_store():
     result, trace = await _run(kind, _template())
     storage, _ = memory_storage()
 
-    storage.save_eval_result(result, trace)
-    loaded = storage.load_eval_result(result.id, result.scope_id)
+    off_loop(storage.save_eval_result, result, trace)
+    loaded = off_loop(storage.load_eval_result, result.id, result.scope_id)
 
     assert result.kind_payload == _WHITESPACE_PAYLOAD
     assert loaded is not None and loaded.kind_payload == _WHITESPACE_PAYLOAD

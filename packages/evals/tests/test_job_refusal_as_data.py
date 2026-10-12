@@ -20,6 +20,7 @@ from threetears.evals.run import EvalActionJob, action_job_work, start_job_work
 from threetears.evals.schema import JobRefusal
 from threetears.evals.schema.base import EvalBaseModel
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture, settled
+from packages.evals.tests.off_loop import off_loop
 
 
 class _Draft(EvalBaseModel):
@@ -29,7 +30,7 @@ class _Draft(EvalBaseModel):
 
 
 async def _failing_job(raised: Exception) -> tuple[OpsFixture, str]:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     storage, executor = fixture.host.eval_host.storage, fixture.host.eval_host.blocking_executor
 
     async def draft() -> _Draft:
@@ -45,8 +46,8 @@ async def test_a_job_its_provider_refused_serves_the_refusals_kind_and_status() 
 
     status = await settled(fixture.host, job_id)
     assert (status.state, status.refusal) == ("failed", JobRefusal(kind="provider_refused", status=502))
-    stored, _ = fixture.host.eval_host.storage.load_job_record(
-        EvalActionJob, job_id.removeprefix("action:"), TOYHOST_SCOPE
+    stored, _ = off_loop(
+        fixture.host.eval_host.storage.load_job_record, EvalActionJob, job_id.removeprefix("action:"), TOYHOST_SCOPE
     )
     assert stored is not None and stored.refusal == JobRefusal(kind="provider_refused", status=502)
 
@@ -71,7 +72,7 @@ async def test_a_job_broken_by_a_defect_carries_no_refusal() -> None:
 
 async def test_a_generation_its_provider_refused_keeps_the_refusal_on_its_attempt() -> None:
     gate = asyncio.Event()
-    fixture = ops_fixture(gate=gate)
+    fixture = off_loop(ops_fixture, gate=gate)
     (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     (writer,) = fixture.writers
     writer.raises = ConnectionResetError("status 529: overloaded, account acct-123")
@@ -80,6 +81,6 @@ async def test_a_generation_its_provider_refused_keeps_the_refusal_on_its_attemp
     status = await settled(fixture.host, job.job_id)
     assert (status.state, status.refusal) == ("failed", JobRefusal(kind="provider_refused", status=502))
     attempt_id = job.job_id.rpartition(":")[2]
-    stored, _ = fixture.host.eval_host.storage.load_job_record(EvalAnalysisAttempt, attempt_id, TOYHOST_SCOPE)
+    stored, _ = off_loop(fixture.host.eval_host.storage.load_job_record, EvalAnalysisAttempt, attempt_id, TOYHOST_SCOPE)
     assert stored is not None and stored.refusal == status.refusal
     assert "acct-123" not in (stored.error or ""), "the provider's payload stays withheld from the record"

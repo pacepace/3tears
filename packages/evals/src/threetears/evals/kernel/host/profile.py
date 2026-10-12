@@ -93,7 +93,7 @@ from threetears.evals.kernel.host.style import StyleProfile
 from threetears.evals.kernel.host.sweepables import CANDIDATE_KIND_LEVER, CANDIDATE_MODEL_LEVER, SweepableRegistry
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.host.world import WorldRegistry
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 

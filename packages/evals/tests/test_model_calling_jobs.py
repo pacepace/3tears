@@ -41,6 +41,7 @@ from threetears.evals.analysis import JudgeTemperatureComparison
 from threetears.evals.actions import ConformanceStage
 from threetears.evals.testing import CompletionGuard, JobsConformanceHost
 from packages.evals.tests.jobs_conformance_support import CONFORMANCE_SCOPE, ScriptedClients, conformance_host
+from packages.evals.tests.off_loop import off_loop
 
 _SECOND = "judge/second"
 
@@ -77,7 +78,7 @@ class _HeldClients(ScriptedClients):
 
 
 async def _judged(clients: ScriptedClients | None = None) -> tuple[JobsConformanceHost, str]:
-    built = conformance_host(CompletionGuard(), clients)
+    built = off_loop(conformance_host, CompletionGuard(), clients)
     stage = ConformanceStage(host=built.host, caller=built.caller, sample=built.sample)
     return built, await stage.finished_run()
 
@@ -94,8 +95,8 @@ async def test_a_second_judge_is_a_job_whose_poll_returns_its_read() -> None:
     read = SecondJudgeRead.model_validate(status.result)
     assert read.report.pass_id == job.job_id.split(":", 1)[1] and read.report.judged
     assert {row.rubric_dim for row in read.agreement.dimensions} == {"answer.faithful", "answer.clear"}
-    stored, _ = built.host.eval_host.storage.load_job_record(
-        EvalSecondJudgePass, read.report.pass_id, CONFORMANCE_SCOPE
+    stored, _ = off_loop(
+        built.host.eval_host.storage.load_job_record, EvalSecondJudgePass, read.report.pass_id, CONFORMANCE_SCOPE
     )
     assert stored is not None and stored.asked_by == "judge_second" and stored.report == read.report
 
@@ -111,8 +112,8 @@ async def test_a_drift_check_is_the_same_job_over_every_result() -> None:
     assert status.state == "completed" and status.result is not None
     read = SecondJudgeRead.model_validate(status.result)
     assert read.report.sample_fraction == 1.0 and len(read.report.judged) == read.report.eligible
-    stored, _ = built.host.eval_host.storage.load_job_record(
-        EvalSecondJudgePass, read.report.pass_id, CONFORMANCE_SCOPE
+    stored, _ = off_loop(
+        built.host.eval_host.storage.load_job_record, EvalSecondJudgePass, read.report.pass_id, CONFORMANCE_SCOPE
     )
     assert stored is not None and stored.asked_by == "judge_drift_check"
 
@@ -128,8 +129,11 @@ async def test_a_temperature_comparison_is_a_job_whose_poll_returns_the_comparis
     assert status.state == "completed" and status.result is not None
     comparison = JudgeTemperatureComparison.model_validate(status.result)
     assert comparison.run_id == run_id and comparison.repeats == 2
-    check, _ = built.host.eval_host.storage.load_job_record(
-        EvalJudgeTemperatureCheck, job.job_id.split(":", 1)[1], CONFORMANCE_SCOPE
+    check, _ = off_loop(
+        built.host.eval_host.storage.load_job_record,
+        EvalJudgeTemperatureCheck,
+        job.job_id.split(":", 1)[1],
+        CONFORMANCE_SCOPE,
     )
     assert check is not None and check.answers is not None and check.answers.calls_made > 0
 
@@ -142,7 +146,9 @@ async def test_a_judge_action_refused_in_its_call_spends_nothing_and_starts_noth
     with pytest.raises(ValidationFailedError, match="judge repeat"):
         await judge_second(built.host, run_id, CONFORMANCE_SCOPE, judge=SecondJudge(model="judge/first"))
 
-    assert built.host.eval_host.storage.query_out_of_run_spend(CONFORMANCE_SCOPE, purpose="second_judge") == []
+    assert (
+        off_loop(built.host.eval_host.storage.query_out_of_run_spend, CONFORMANCE_SCOPE, purpose="second_judge") == []
+    )
     assert len(clients.built) == before, "refused before any client was built"
 
 
@@ -160,7 +166,7 @@ async def test_a_held_second_judge_is_cancelled_through_the_job_contract() -> No
     assert (cancelled.state, cancelled.status, cancelled.result) == ("cancelled", "cancelled", None)
     assert cancelled.detail is not None and "wrong judge" in cancelled.detail
     assert not clients.gate.is_set(), "the pass stopped while its calls were held, not after they returned"
-    results = built.host.eval_host.storage.query_eval_results_by_run(run_id, CONFORMANCE_SCOPE)
+    results = off_loop(built.host.eval_host.storage.query_eval_results_by_run, run_id, CONFORMANCE_SCOPE)
     assert all(result.judge_seconds == [] for result in results), "no second score was recorded"
     with pytest.raises(ValidationFailedError, match="not running"):
         await job_cancel(built.host, job.job_id, CONFORMANCE_SCOPE)
@@ -183,9 +189,9 @@ async def test_a_held_second_judge_is_cancelled_through_the_job_contract() -> No
     ids=lambda record: record.doc_type,
 )
 async def test_a_job_record_not_ended_whose_lease_is_gone_reads_lost_written_once(record: Any) -> None:
-    built = conformance_host(CompletionGuard())
+    built = off_loop(conformance_host, CompletionGuard())
     storage = built.host.eval_host.storage
-    storage.save_job_record(record.to_dict(), if_match=None)
+    off_loop(storage.save_job_record, record.to_dict(), if_match=None)
     prefix = {
         "eval_second_judge_pass": "second-judge:",
         "eval_judge_temperature_check": "judge-temperature:",
@@ -196,7 +202,7 @@ async def test_a_job_record_not_ended_whose_lease_is_gone_reads_lost_written_onc
 
     assert (lost.state, lost.status, lost.done) == ("lost", "cancelled", True)
     assert lost.detail is not None and "no process can be running it" in lost.detail
-    written, _ = storage.load_job_record(type(record), record.id, CONFORMANCE_SCOPE)
+    written, _ = off_loop(storage.load_job_record, type(record), record.id, CONFORMANCE_SCOPE)
     assert written is not None and written.lost is not None and written.outcome == "cancelled"
     again = await job_poll(built.host, f"{prefix}{record.id}", CONFORMANCE_SCOPE)
     assert again == lost, "the loss is the record's, read the same every time"
@@ -209,7 +215,7 @@ class _Draft(EvalBaseModel):
 
 
 async def test_an_action_job_returns_its_typed_result_and_its_failure() -> None:
-    built = conformance_host(CompletionGuard())
+    built = off_loop(conformance_host, CompletionGuard())
 
     async def draft() -> _Draft:
         return _Draft(text="a rubric")
@@ -234,14 +240,14 @@ async def test_an_action_job_returns_its_typed_result_and_its_failure() -> None:
         None,
         "the proposer refused the subject; propose for another subject",
     )
-    record, _ = built.host.eval_host.storage.load_job_record(
-        EvalActionJob, done.job_id.split(":", 1)[1], CONFORMANCE_SCOPE
+    record, _ = off_loop(
+        built.host.eval_host.storage.load_job_record, EvalActionJob, done.job_id.split(":", 1)[1], CONFORMANCE_SCOPE
     )
     assert record is not None and record.result_model == "_Draft" and record.label == "tone"
 
 
 async def test_an_action_job_is_answered_only_in_its_scope() -> None:
-    built = conformance_host(CompletionGuard())
+    built = off_loop(conformance_host, CompletionGuard())
 
     async def draft() -> _Draft:
         return _Draft(text="x")

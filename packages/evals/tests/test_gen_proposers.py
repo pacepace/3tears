@@ -25,6 +25,7 @@ from threetears.evals.schema.models import RubricProposal
 from threetears.evals.gen import plan_draft, propose_draft
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.llm_client_fakes import ReleasableClientMixin
+from packages.evals.tests.off_loop import off_loop
 
 _SCOPE = "proposals"
 
@@ -218,7 +219,7 @@ async def test_a_refused_draft_raises_and_still_releases_the_client(axis, refuse
         )
 
     assert client.aclose_calls == 1
-    [spend] = storage.query_out_of_run_spend(_SCOPE)
+    [spend] = off_loop(storage.query_out_of_run_spend, _SCOPE)
     assert (spend.purpose, spend.outcome, spend.cost_usd) == ("proposer", "completed", _COST)
 
 
@@ -246,9 +247,9 @@ async def test_a_proposal_returns_and_ledgers_what_its_call_cost():
     _proposal, spend = await _propose(client, budget)
 
     assert client.priced == client.calls, "the call priced is the call made"
-    assert storage.query_out_of_run_spend(_SCOPE) == [spend]
-    assert storage.query_out_of_run_spend(_SCOPE, purpose="proposer") == [spend]
-    assert storage.query_out_of_run_spend(_SCOPE, purpose="variation") == []
+    assert off_loop(storage.query_out_of_run_spend, _SCOPE) == [spend]
+    assert off_loop(storage.query_out_of_run_spend, _SCOPE, purpose="proposer") == [spend]
+    assert off_loop(storage.query_out_of_run_spend, _SCOPE, purpose="variation") == []
     assert spend.model_dump(include={"purpose", "model", "served_model", "outcome", "stop_reason"}) == {
         "purpose": "proposer",
         "model": "proposer-model",
@@ -268,7 +269,7 @@ async def test_a_call_priced_above_the_cap_is_refused_before_it_is_made():
     with pytest.raises(ValidationFailedError, match=r"priced at up to \$2\.5000, above the out-of-run cap \$1\.00"):
         await _propose(client, budget)
 
-    assert client.calls == [] and storage.query_out_of_run_spend(_SCOPE) == []
+    assert client.calls == [] and off_loop(storage.query_out_of_run_spend, _SCOPE) == []
 
 
 async def test_a_call_the_client_cannot_price_is_refused_under_an_enforced_cap():
@@ -278,7 +279,7 @@ async def test_a_call_the_client_cannot_price_is_refused_under_an_enforced_cap()
     with pytest.raises(ValidationFailedError, match="cannot be priced before they are made.*unknown is not \\$0"):
         await _propose(client, budget)
 
-    assert client.calls == [] and storage.query_out_of_run_spend(_SCOPE) == []
+    assert client.calls == [] and off_loop(storage.query_out_of_run_spend, _SCOPE) == []
 
 
 async def test_with_no_enforced_cap_an_unpriced_call_is_made_and_ledgered_unpriced():
@@ -289,7 +290,7 @@ async def test_with_no_enforced_cap_an_unpriced_call_is_made_and_ledgered_unpric
 
     assert len(client.calls) == 1
     assert (spend.priced_ceiling_usd, spend.cap_usd) == (None, None)
-    assert storage.query_out_of_run_spend(_SCOPE) == [spend]
+    assert off_loop(storage.query_out_of_run_spend, _SCOPE) == [spend]
 
 
 async def test_a_call_that_raises_is_ledgered_with_its_failure_class_and_no_usage():
@@ -299,7 +300,7 @@ async def test_a_call_that_raises_is_ledgered_with_its_failure_class_and_no_usag
     with pytest.raises(TimeoutError):
         await _propose(client, budget)
 
-    [spend] = storage.query_out_of_run_spend(_SCOPE)
+    [spend] = off_loop(storage.query_out_of_run_spend, _SCOPE)
     assert (spend.outcome, spend.failure, spend.cost_usd, spend.stop_reason) == ("raised", "TimeoutError", None, None)
     assert "acct_123" not in spend.model_dump_json(), "the exception's text, which can carry the account, is never kept"
     assert client.aclose_calls == 1
@@ -312,7 +313,7 @@ async def test_a_budget_for_another_subject_is_refused_before_the_call_is_made()
     with pytest.raises(ValueError, match="ledgers its calls under subject 'someone-else'"):
         await _propose(client, budget, subject_id="s")
 
-    assert client.calls == [] and storage.query_out_of_run_spend(_SCOPE) == []
+    assert client.calls == [] and off_loop(storage.query_out_of_run_spend, _SCOPE) == []
     assert client.aclose_calls == 1
 
 
@@ -347,7 +348,7 @@ async def test_an_admission_for_another_purpose_is_refused_and_nothing_is_called
     with pytest.raises(ValueError, match="admitted for purpose 'proposer'"):
         await propose_draft(client, admitted, budget=budget, axis="capability", subject_id="s")
 
-    assert client.calls == [] and storage.query_out_of_run_spend(_SCOPE) == [] and client.aclose_calls == 1
+    assert client.calls == [] and off_loop(storage.query_out_of_run_spend, _SCOPE) == [] and client.aclose_calls == 1
 
 
 async def test_an_admission_another_budget_made_is_refused_and_nothing_is_called():
@@ -361,7 +362,7 @@ async def test_an_admission_another_budget_made_is_refused_and_nothing_is_called
     with pytest.raises(ValueError, match="not one this budget admitted"):
         await propose_draft(client, admitted, budget=making, axis="capability", subject_id="s")
 
-    assert client.calls == [] and storage.query_out_of_run_spend(_SCOPE) == [] and client.aclose_calls == 1
+    assert client.calls == [] and off_loop(storage.query_out_of_run_spend, _SCOPE) == [] and client.aclose_calls == 1
 
 
 async def test_a_draft_in_the_strict_shape_keeps_only_the_guide_levels_it_wrote():

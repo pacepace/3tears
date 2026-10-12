@@ -36,6 +36,7 @@ from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.off_loop import off_loop
 
 #: The id of the commissioned twin of the toy host's narrow batch.
 _COMMISSIONED = "commissioned-narrow"
@@ -120,7 +121,7 @@ async def test_the_launch_path_stamps_every_run_it_starts_commissioned() -> None
 
     await run_eval([{"n": 1}], _echo, [answered], scope_id="provenance", host=host)
 
-    (run,) = list_runs(host, "provenance")
+    (run,) = off_loop(list_runs, host, "provenance")
     assert run.apparatus_provenance == "commissioned"
 
 

@@ -17,6 +17,7 @@ import pytest
 from threetears.evals.quick import Comparison
 from threetears.evals.run import get_run
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
+from packages.evals.tests.off_loop import off_loop
 
 #: The example under test.
 CASSETTES = Path(__file__).resolve().parents[1] / "examples" / "cassettes.py"
@@ -48,11 +49,12 @@ async def test_the_example_captures_once_and_replays_one_recording_to_both_arms(
 
     # Every arm's run replayed the capture's corpus, and every cell was scored.
     runs = [
-        get_run(comparison.host.storage, summary.run_id, comparison.scope_id) for summary in comparison.arms.values()
+        off_loop(get_run, comparison.host.storage, summary.run_id, comparison.scope_id)
+        for summary in comparison.arms.values()
     ]
     (capture_id,) = {run.cassette_corpus_id for run in runs}
     assert all(run.cassette_mode == "replay" for run in runs)
-    assert get_run(comparison.host.storage, capture_id, comparison.scope_id).cassette_mode == "capture"
+    assert off_loop(get_run, comparison.host.storage, capture_id, comparison.scope_id).cassette_mode == "capture"
     for summary in comparison.arms.values():
         assert summary.status == "completed"
         assert (summary.n_scored, summary.n_excluded) == (n_cases * 2, 0)

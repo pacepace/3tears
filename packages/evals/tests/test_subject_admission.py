@@ -32,6 +32,7 @@ from packages.evals.tests.fixtures.toyhost.launch import toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.ops_support import RUN_MODELS, TOYHOST_SCOPE, TOYHOST_SUBJECT, ops_fixture
+from packages.evals.tests.off_loop import off_loop
 
 #: A judge arm's subject: a label, which no host holds and the judge kind admits.
 _JUDGE_LABEL = "the matrix judge"
@@ -42,14 +43,14 @@ def _arguments(subject_id: str) -> LaunchArguments:
 
 
 async def test_the_estimate_refuses_a_subject_the_host_does_not_hold() -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     with pytest.raises(NotFoundError, match="subject 'Vera' not found") as refused:
         await launch_estimate(fixture.host, _arguments("Vera"), TOYHOST_SCOPE)
     assert refused.value.remedy, "the host says how to find a subject it holds"
 
 
 async def test_the_launch_refuses_it_at_admission_before_any_arm_is_priced() -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     priced: list[object] = []
     pricer = fixture.host.launch.launch_pricer
     assert pricer is not None
@@ -65,7 +66,7 @@ async def test_the_launch_refuses_it_at_admission_before_any_arm_is_priced() -> 
 
 
 async def test_a_subject_the_host_holds_is_admitted() -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     estimate = await launch_estimate(fixture.host, _arguments(TOYHOST_SUBJECT.subject_id), TOYHOST_SCOPE)
     assert estimate.subject_id == TOYHOST_SUBJECT.subject_id
 
@@ -107,7 +108,7 @@ async def _quoted(host: LaunchHost, template_id: str, subject_id: str) -> None:
 
 async def test_one_host_asks_each_kind_what_its_subject_is() -> None:
     """One id, two kinds on one host: the toy kind holds no subject by that name, and the judge kind takes any label."""
-    host = _two_kind_host()
+    host = off_loop(_two_kind_host)
     with pytest.raises(NotFoundError, match=f"subject '{_JUDGE_LABEL}' not found; the toy host holds subjects"):
         await _quoted(host, toyhost_template().id, _JUDGE_LABEL)
     # Admitted: the launch goes on to its next refusal, a judge template with no case frozen into it.
@@ -118,7 +119,7 @@ async def test_one_host_asks_each_kind_what_its_subject_is() -> None:
 
 
 async def test_the_kinds_resolver_decides_not_one_the_host_holds() -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     [(name, kind)] = fixture.host.launch.kinds.items()
     admitting = dataclasses.replace(kind, resolve_subject=lambda _subject, _scope: None)
     host = OpsHost(launch=dataclasses.replace(fixture.host.launch, kinds={name: admitting}))
@@ -127,7 +128,7 @@ async def test_the_kinds_resolver_decides_not_one_the_host_holds() -> None:
 
 
 async def test_a_battery_asks_each_kind_it_launches_before_any_arm_is_priced() -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     priced: list[object] = []
     pricer = fixture.host.launch.launch_pricer
     assert pricer is not None
@@ -137,7 +138,10 @@ async def test_a_battery_asks_each_kind_it_launches_before_any_arm_is_priced() -
         return pricer(*args, **kwargs)  # type: ignore[arg-type]
 
     host = dataclasses.replace(fixture.host.launch, launch_pricer=counting)  # type: ignore[arg-type]
-    host.eval_host.storage.save_template(toyhost_template().model_copy(update={"id": "universal", "universal": True}))
+    off_loop(
+        host.eval_host.storage.save_template,
+        toyhost_template().model_copy(update={"id": "universal", "universal": True}),
+    )
 
     async def no_preflight(_subject_id: str, _models: list[str]) -> object:  # pragma: no cover - never reached
         raise AssertionError("the subject is refused before the pre-flight")

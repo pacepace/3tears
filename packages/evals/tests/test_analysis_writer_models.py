@@ -24,6 +24,7 @@ from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture, settled
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
+from packages.evals.tests.off_loop import off_loop
 
 #: A writer the host has not measured, so does not allow.
 UNLISTED = "vendor/unlisted-writer"
@@ -35,7 +36,7 @@ def _allowing(*models: str) -> HostProfile:
 
 class TestAnalysisGenerate:
     async def test_a_requested_writer_the_host_does_not_allow_is_refused_with_no_request(self) -> None:
-        fixture = ops_fixture(profile=_allowing(MODEL))
+        fixture = off_loop(ops_fixture, profile=_allowing(MODEL))
 
         with pytest.raises(ValidationFailedError, match=f"allows '{MODEL}'"):
             await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE, model=UNLISTED)
@@ -43,7 +44,7 @@ class TestAnalysisGenerate:
         assert fixture.writers == [], "no client was built, so no provider request could be made"
 
     async def test_an_allowed_writer_proceeds(self) -> None:
-        fixture = ops_fixture(profile=_allowing(MODEL))
+        fixture = off_loop(ops_fixture, profile=_allowing(MODEL))
 
         (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE, model=MODEL)).jobs
 
@@ -51,7 +52,7 @@ class TestAnalysisGenerate:
         assert len(fixture.writers[0].calls) == 1
 
     async def test_the_hosts_default_writer_is_held_to_the_list_too(self) -> None:
-        fixture = ops_fixture(profile=_allowing("vendor/some-other-writer"))
+        fixture = off_loop(ops_fixture, profile=_allowing("vendor/some-other-writer"))
 
         with pytest.raises(ValidationFailedError, match="default writer"):
             await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
@@ -61,13 +62,13 @@ class TestAnalysisGenerate:
         assert writer.closed == 1, "the client it built was released"
 
     async def test_an_estimate_gives_the_same_answer(self) -> None:
-        fixture = ops_fixture(profile=_allowing(MODEL))
+        fixture = off_loop(ops_fixture, profile=_allowing(MODEL))
 
         with pytest.raises(ValidationFailedError, match="analysis_writer_models"):
             await analysis_estimate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE, model=UNLISTED)
 
     async def test_a_host_with_no_list_allows_any_writer(self) -> None:
-        fixture = ops_fixture()
+        fixture = off_loop(ops_fixture)
 
         (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE, model=UNLISTED)).jobs
 

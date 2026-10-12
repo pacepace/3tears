@@ -29,6 +29,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.toyhost_memo import PROMPT_ID, FixturedClient, memo_payload
+from packages.evals.tests.off_loop import off_loop
 
 _CLAIM = "A wider chunk is slower per document on this corpus."
 
@@ -173,13 +174,13 @@ async def _generate_once(host: EvalHost, campaign_id: str, scope_id: str) -> Any
 
 class TestRegeneratingLeavesTheLedgerItsSize:
     async def test_generating_twice_on_an_unchanged_campaign_writes_one_insight(self) -> None:
-        host, campaign_id, scope_id = _corpus_host()
+        host, campaign_id, scope_id = off_loop(_corpus_host)
         subject = TOYHOST_SUBJECT.subject_id
 
         first, _ = await _generate_once(host, campaign_id, scope_id)
-        after_first = host.storage.query_insights(scope_id, subject_id=subject)
+        after_first = off_loop(host.storage.query_insights, scope_id, subject_id=subject)
         second, _ = await _generate_once(host, campaign_id, scope_id)
-        after_second = host.storage.query_insights(scope_id, subject_id=subject)
+        after_second = off_loop(host.storage.query_insights, scope_id, subject_id=subject)
 
         assert len(after_first) == len(after_second) == 1
         (insight,) = after_second
@@ -187,7 +188,7 @@ class TestRegeneratingLeavesTheLedgerItsSize:
         assert insight.source_analysis_id == second.id != first.id
 
     async def test_the_trigger_names_what_retires_the_insight(self) -> None:
-        host, campaign_id, scope_id = _corpus_host()
+        host, campaign_id, scope_id = off_loop(_corpus_host)
 
         analysis, (insight,) = await _generate_once(host, campaign_id, scope_id)
 
@@ -196,14 +197,14 @@ class TestRegeneratingLeavesTheLedgerItsSize:
         assert "same claim" in insight.invalidation_trigger
 
     async def test_archiving_the_minting_analysis_lets_a_restatement_mint_afresh(self) -> None:
-        host, campaign_id, scope_id = _corpus_host()
+        host, campaign_id, scope_id = off_loop(_corpus_host)
         first, (minted,) = await _generate_once(host, campaign_id, scope_id)
-        host.storage.save_analysis(first.model_copy(update={"archived": True}))
+        off_loop(host.storage.save_analysis, first.model_copy(update={"archived": True}))
 
         _second, (again,) = await _generate_once(host, campaign_id, scope_id)
 
         assert again.id != minted.id
-        assert len(host.storage.query_insights(scope_id, subject_id=TOYHOST_SUBJECT.subject_id)) == 2
+        assert len(off_loop(host.storage.query_insights, scope_id, subject_id=TOYHOST_SUBJECT.subject_id)) == 2
 
 
 class TestTheWriterIsNotBilledForTheEnginesBookkeeping:

@@ -61,6 +61,7 @@ from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any, cast
 
+from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.kernel import (
     CandidateKind,
@@ -1368,11 +1369,16 @@ def _launch_host(
         arm = arm_of(request)
         run_judge: RunJudge | None = None
         if judge is not None:
-            run_judge = build_judge_service(
-                replace(host, clients=judge.clients()),
-                request.template,
-                judge.model,
-                judged_artifact=JudgedArtifact.DOCUMENT,
+            # It reads the judge configs the template names from the store, so it runs off the loop.
+            run_judge = await run_blocking(
+                host.blocking_executor,
+                partial(
+                    build_judge_service,
+                    replace(host, clients=judge.clients()),
+                    request.template,
+                    judge.model,
+                    judged_artifact=JudgedArtifact.DOCUMENT,
+                ),
             )
         subject = SubjectSnapshot(subject_id=arm.subject, subject_label=arm.subject, state={})
         return await launch_run(
@@ -1849,7 +1855,7 @@ async def run_arms(
             refuse_unsupplied_world(template, profile=host.profile)
         except ValidationFailedError as refused:
             raise ValueError(str(refused)) from refused
-    _save_unless_unchanged(host, template, test_cases)
+    await run_blocking(host.blocking_executor, _save_unless_unchanged, host, template, test_cases)
     # Each scorer's declared range, which every score it returns is held to: the bounded tests read it as a fact.
     ranges = {
         name: descriptor.value_range
@@ -1930,10 +1936,15 @@ async def run_arms(
         await launch_host.job_manager.shutdown()
         raise
     by_id = {test_case.id: name for test_case, name in zip(test_cases, names, strict=True)}
-    summaries = [
-        _with_case_results(host, summarize_run(host, run.id, scope_id, case_names=by_id), test_cases, names)
-        for run in runs
-    ]
+
+    def summarized() -> list[EvalSummary]:
+        return [
+            _with_case_results(host, summarize_run(host, run.id, scope_id, case_names=by_id), test_cases, names)
+            for run in runs
+        ]
+
+    # Summarizing reads each run and its results back from the store, so it runs off the loop.
+    summaries = await run_blocking(host.blocking_executor, summarized)
     # What a candidate that did nothing would pass, from each case's own starting state: a quick world's template
     # names no controls, so every check is unproven, and this is the baseline its pass rate is read against.
     idle = (

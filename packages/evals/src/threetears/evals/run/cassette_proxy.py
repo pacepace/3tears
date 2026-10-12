@@ -47,12 +47,22 @@ Every one is an :class:`~threetears.evals.kernel.host.apparatus.ApparatusError`.
 during capture is logged and leaves a hole at exactly that key, which a replay reports as a miss or
 an exhaustion naming it — never as a neighbouring answer served in its place.
 
+The store is touched at the cell's edges only
+---------------------------------------------
+
+A seam is called from the kind's own code, mid-cell and often on the event loop, where no store call may
+be made (:class:`~threetears.evals.schema.StoreCalledOnEventLoop`). So the cassettes never call the store
+while the cell runs: the runner opens the cell before its ``prepare`` (:meth:`CassetteCell.open` — a replay
+reads the case's recordings once, a capture clears them) and writes what a capture recorded once the cell
+has ended (:meth:`CassetteCell.flush`), both off the loop. Every call in between is served from, or
+recorded into, the cell's own memory.
+
 One corpus per capture run, one session per case
 ------------------------------------------------
 
 A corpus is the capture run's own, named by its id, so two runs capturing at once — a launch over
 several models starts one concurrent run per model — never write into each other's. Within a run,
-wiring a capture cell first clears whatever the corpus already holds for the case, so the corpus holds
+opening a capture cell first clears whatever the corpus already holds for the case, so the corpus holds
 exactly one session per case: the last cell of that case to run. Cells of one case never capture at
 once, even in a run executing its cells concurrently (:func:`~threetears.evals.run.runner.execute_run`
 gives them turns in the run's order), so which cell is last is fixed by the run's id. Capture
@@ -87,7 +97,7 @@ from threetears.evals.kernel.errors import StorageError
 from threetears.evals.schema.models import AsyncDelivery, CassetteKey, CassetteSeam, EvalCassette
 from threetears.evals.kernel.storage import CassetteStore
 from threetears.evals.run.run_document import fault_entry
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 if TYPE_CHECKING:
     from threetears.evals.schema.models import EvalRun
@@ -221,6 +231,14 @@ class CassetteCell:
         self._replayed_tools: frozenset[str] = frozenset()
         self._wired = False
         self._closed = False
+        self._opened = False
+        #: Replay: the case's recordings as :meth:`open` read them, and why each that did not load did not.
+        self._recordings: dict[str, EvalCassette] = {}
+        self._unreadable: dict[str, str] = {}
+        #: Replay: why the case's recordings could not be read at all, raised by every read of them.
+        self._read_failure: str | None = None
+        #: Capture: the recordings made so far, by key, written by :meth:`flush` when the cell has ended.
+        self._pending: dict[str, EvalCassette] = {}
 
     @property
     def mode(self) -> Literal["capture", "replay"]:
@@ -250,17 +268,19 @@ class CassetteCell:
         )
 
     def _read(self, key: CassetteKey, *, seam: CassetteSeam) -> EvalCassette:
-        """The recording of ``key``, or the rig's failure to have one.
+        """The recording of ``key``, from the case's recordings as :meth:`open` read them, or the rig's failure to have one.
 
         Raises:
             CassetteMiss: The corpus never recorded this ask.
             CassetteExhausted: It recorded this ask ``key.occurrence`` times.
-            CassetteCorrupt: The row could not be read, or was recorded at the other seam.
+            CassetteCorrupt: The case's recordings could not be read, this row does not load, or it was recorded at
+                the other seam.
         """
-        try:
-            recorded = self._store.get_cassette(key, self._scope_id)
-        except (StorageError, ValueError) as exc:
-            raise CassetteCorrupt(f"Cassette recording {key.doc_id!r} could not be read back: {exc}") from exc
+        if self._read_failure is not None:
+            raise CassetteCorrupt(f"Cassette recording {key.doc_id!r} could not be read back: {self._read_failure}")
+        if (why := self._unreadable.get(key.doc_id)) is not None:
+            raise CassetteCorrupt(f"Cassette recording {key.doc_id!r} could not be read back: {why}")
+        recorded = self._recordings.get(key.doc_id)
         if recorded is None:
             raise CassetteMiss(key) if key.occurrence == 0 else CassetteExhausted(key)
         if recorded.seam != seam:
@@ -271,6 +291,10 @@ class CassetteCell:
         return recorded
 
     def _write(self, cassette: EvalCassette) -> None:
+        """Keep one recording for :meth:`flush`, which writes it once the cell has ended; a later one of its key replaces it."""
+        self._pending[cassette.id] = cassette
+
+    def _save(self, cassette: EvalCassette) -> None:
         """Save one recording; a failure is logged, named among the lane's holes, and leaves a hole a replay reports."""
         try:
             self._store.save_cassette(cassette)
@@ -295,25 +319,91 @@ class CassetteCell:
                     )
                 )
 
+    # -- the cell's edges: read and cleared before it, written after it ---------------------------
+
+    def open(self) -> None:
+        """Read or clear the case's recordings, before the cell's ``prepare``: the cell's one store read.
+
+        Every store call the cassettes make happens at the cell's edges — here, and in :meth:`flush` — never while
+        it runs, so nothing a kind calls inside the cell reaches the store: a seam is called from the kind's own
+        code, often on the event loop, where a store may not be called. The runner calls this off the loop.
+
+        A **replay** reads the case's recordings once (:meth:`~threetears.evals.kernel.EvalStorage.read_case_cassettes`)
+        and serves every call from them; a store that fails that read fails each call that asks for a recording, and a
+        row that does not load fails the call that asks for it, as reading that row would. A **capture** clears what
+        the corpus already holds for the case, so the case's recording is this cell's session alone.
+
+        Raises:
+            ValueError: The cell was already opened.
+            CassetteCorrupt: A capture could not clear the case's previous recording.
+        """
+        if self._opened:
+            raise ValueError("this cell's cassettes are already open; the runner opens a cell once")
+        self._opened = True
+        if self._mode == "replay":
+            try:
+                recordings = self._store.read_case_cassettes(
+                    corpus_id=self._corpus_id,
+                    template_id=self._template_id,
+                    test_case_id=self._test_case_id,
+                    scope_id=self._scope_id,
+                )
+            except StorageError as exc:
+                # NOSILENT: kept, not dropped: every call that asks for a recording raises it as CassetteCorrupt
+                # (_read), as reading that recording would have; a replay that asks for none was served nothing.
+                self._read_failure = str(exc)
+                return
+            self._recordings, self._unreadable = recordings.readable, recordings.unreadable
+            return
+        try:
+            self._store.delete_case_cassettes(
+                corpus_id=self._corpus_id,
+                template_id=self._template_id,
+                test_case_id=self._test_case_id,
+                scope_id=self._scope_id,
+            )
+        except StorageError as exc:
+            raise CassetteCorrupt(
+                f"Cassette capture could not clear corpus {self._corpus_id!r}'s previous recording of case "
+                f"{self._test_case_id!r}, so this cell's session would be mixed into it: {exc}"
+            ) from exc
+
+    def flush(self) -> None:
+        """Write what the capture recorded, once the cell has ended: the cell's store writes, after :meth:`close`.
+
+        Each recording is written on its own, so a write that fails costs that recording alone: it is logged and
+        named among the lane's holes, and a replay asking for it reports the hole. The runner calls this off the
+        loop. Idempotent: what was written is not written again.
+
+        Raises:
+            ValueError: The cell has not ended (:meth:`close`), so its background work may still settle.
+        """
+        if not self._closed:
+            raise ValueError("a cell's cassettes are flushed after it ends; close it first")
+        pending, self._pending = self._pending, {}
+        for cassette in pending.values():
+            self._save(cassette)
+
     # -- wiring -----------------------------------------------------------------------------------
 
     def wire(self, seams: CassetteSeams) -> None:
         """Arm every seam a cell's kind supplies.
 
         Every refusal of the declaration is made before anything is armed, so a refused declaration
-        leaves the candidate as the kind built it. A capture clears whatever the corpus already holds
-        for this case before arming, so the case's recording is this cell's session alone.
+        leaves the candidate as the kind built it. It touches no store: the runner opened the cell
+        (:meth:`open`) before handing it to ``prepare``.
 
         Args:
             seams: The cell candidate's seams.
 
         Raises:
             TypeError: ``seams`` is not a :class:`~threetears.evals.kernel.cassettes.CassetteSeams`.
-            ValueError: The cell was already wired; ``seams`` declares no seam at all; its action seam
-                names no tool; a tool is declared on both seams; or the action seam did not apply the
-                wrap exactly once over every tool it declared.
-            CassetteCorrupt: A capture could not clear the case's previous recording.
+            ValueError: The cell was already wired, or was never opened; ``seams`` declares no seam at all;
+                its action seam names no tool; a tool is declared on both seams; or the action seam did not
+                apply the wrap exactly once over every tool it declared.
         """
+        if not self._opened:
+            raise ValueError("this cell's cassettes were never opened; the runner opens a cell before its prepare")
         if self._wired:
             raise ValueError(
                 "this cell's cassettes are already wired; a kind wires its candidate's seams once per cell"
@@ -346,19 +436,6 @@ class CassetteCell:
                     "seam. An asynchronous tool's act() returns an acknowledgement, so recording it as an action "
                     "would replay the acknowledgement and never the delivery; declare it on the delivery seam only."
                 )
-        if self._mode == "capture":
-            try:
-                self._store.delete_case_cassettes(
-                    corpus_id=self._corpus_id,
-                    template_id=self._template_id,
-                    test_case_id=self._test_case_id,
-                    scope_id=self._scope_id,
-                )
-            except StorageError as exc:
-                raise CassetteCorrupt(
-                    f"Cassette capture could not clear corpus {self._corpus_id!r}'s previous recording of case "
-                    f"{self._test_case_id!r}, so this cell's session would be mixed into it: {exc}"
-                ) from exc
         self._wired = True
         if action is not None:
             self._wire_action_seam(action, recorded, blocking=blocking)
@@ -535,7 +612,8 @@ class CassetteCell:
     def close(self) -> None:
         """End the cell: record the capture's background work still in flight as undelivered.
 
-        Called by the runner once the kind's ``invoke`` has returned or been cancelled. Idempotent.
+        Called by the runner once the kind's ``invoke`` has returned or been cancelled. It touches no store: what
+        the capture recorded is written by :meth:`flush`, after it. Idempotent.
         """
         if self._closed:
             return

@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from threetears.evals.kernel.campaign_writes import serialized_campaign_write
 from threetears.evals.kernel.errors import NotFoundError, StorageError, ValidationFailedError
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_ANALYSIS, FIND_CAMPAIGN, FIND_INSIGHT, FIND_RUN
 
 if TYPE_CHECKING:

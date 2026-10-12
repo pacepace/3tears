@@ -47,6 +47,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.judge import ToyJudgeCompletion
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.off_loop import off_loop
 
 #: The judge under test, as the report named it.
 _FLASH = "google/gemini-3.8-flash"
@@ -197,7 +198,7 @@ class _JudgeCampaign:
 
 
 async def test_a_cap_below_one_calls_ceiling_is_refused_by_the_estimate_and_the_launch_with_nothing_spent() -> None:
-    campaign = _JudgeCampaign()
+    campaign = off_loop(_JudgeCampaign)
 
     arm = await campaign.estimate(0.5)
     assert arm.outcome == "refused"
@@ -223,12 +224,12 @@ async def test_a_cap_below_one_calls_ceiling_is_refused_by_the_estimate_and_the_
     assert refused.value.remedy == arm.remedy
 
     assert campaign.client.calls == [], "no call was made"
-    assert campaign.host.eval_host.storage.query_eval_runs(TOYHOST_SCOPE) == []
+    assert off_loop(campaign.host.eval_host.storage.query_eval_runs, TOYHOST_SCOPE) == []
     assert campaign.host.job_manager.admitted_count == 0
 
 
 async def test_a_cap_at_or_above_one_calls_ceiling_is_admitted() -> None:
-    campaign = _JudgeCampaign()
+    campaign = off_loop(_JudgeCampaign)
 
     arm = await campaign.estimate(0.59)
     assert (arm.outcome, arm.refusal) == ("admitted", None)
@@ -240,7 +241,7 @@ async def test_a_cap_at_or_above_one_calls_ceiling_is_admitted() -> None:
 
 
 async def test_a_call_above_the_hosts_own_ceiling_is_named_as_the_hosts_to_raise() -> None:
-    campaign = _JudgeCampaign(host_ceiling_usd=0.5)
+    campaign = off_loop(_JudgeCampaign, host_ceiling_usd=0.5)
 
     arm = await campaign.estimate(0.5)
     assert arm.outcome == "refused"
@@ -252,15 +253,16 @@ async def test_a_call_above_the_hosts_own_ceiling_is_named_as_the_hosts_to_raise
 
 async def test_a_case_the_judge_kind_cannot_read_is_refused_by_name_rather_than_dropped() -> None:
     """A stored case this build cannot read used to be left out of the arm without a word: a set nobody chose."""
-    campaign = _JudgeCampaign()
-    campaign.host.eval_host.storage.save_test_case(
+    campaign = off_loop(_JudgeCampaign)
+    off_loop(
+        campaign.host.eval_host.storage.save_test_case,
         EvalTestCase(
             id="judge-case-unreadable",
             scope_id=TOYHOST_SCOPE,
             template_id=_TEMPLATE_ID,
             variation_params={},
             host_payload={**_judge_case(9, "a short reply").host_payload, JUDGE_CASE_KEY: {"dim": 7}},
-        )
+        ),
     )
 
     with pytest.raises(ValidationFailedError) as estimated:
@@ -273,4 +275,4 @@ async def test_a_case_the_judge_kind_cannot_read_is_refused_by_name_rather_than_
         await campaign.launch(1.0)
     assert launched.value.message == estimated.value.message, "the estimate refuses what the launch refuses"
     assert campaign.client.calls == [], "no call was made"
-    assert campaign.host.eval_host.storage.query_eval_runs(TOYHOST_SCOPE) == []
+    assert off_loop(campaign.host.eval_host.storage.query_eval_runs, TOYHOST_SCOPE) == []

@@ -138,7 +138,7 @@ from threetears.evals.run.judge_service import (
 from threetears.evals.run.metering import MeteredCallLedger, MeteredCallTally
 from threetears.evals.run.run_document import fault_entry, record_run_faults
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.world import WorldRegistry
@@ -1066,7 +1066,70 @@ async def run_one_result(
     The cell runs inside its own slice of the run's metered-call ledger
     (:meth:`~threetears.evals.run.metering.MeteredCallLedger.cell`), opened here so the slice is the
     cell's own calls whether or not the run's other cells are calling beside it.
+
+    **What a capture recorded is written here, once the cell has ended**, however it ended — returned, raised,
+    or cut off by its deadline — and off the loop (:meth:`~threetears.evals.run.cassette_proxy.CassetteCell.flush`).
+    Written before this returns, so the next cell of the case, which clears the case's recording when it opens,
+    finds this one's session already written.
     """
+    if sink is None:
+        sink = _CellSink()
+    try:
+        return await _run_one_result_in_its_slice(
+            host,
+            template=template,
+            test_case=test_case,
+            subject_id=subject_id,
+            model=model,
+            k_iteration=k_iteration,
+            eval_run_id=eval_run_id,
+            scope_id=scope_id,
+            judge_service=judge_service,
+            options=options,
+            variant=variant,
+            cassettes=cassettes,
+            subject_snapshot=subject_snapshot,
+            judge_model=judge_model,
+            sink=sink,
+        )
+    finally:
+        if sink.cassettes is not None:
+            await _flush_cell_cassettes(host, sink.cassettes)
+
+
+async def _flush_cell_cassettes(host: EvalHost, cell: CassetteCell) -> None:
+    """End a cell's cassettes and write what its capture recorded, off the loop, even while the cell is cancelled.
+
+    Raises:
+        asyncio.CancelledError: A cancellation arrived while the recordings were written; delivered once they are.
+    """
+    cell.close()
+    flushing = asyncio.ensure_future(run_blocking(host.blocking_executor, cell.flush))
+    cancelled = await wait_through_cancellation(flushing)
+    flushing.result()
+    if cancelled:
+        raise asyncio.CancelledError
+
+
+async def _run_one_result_in_its_slice(
+    host: EvalHost,
+    *,
+    template: EvalTemplate,
+    test_case: EvalTestCase,
+    subject_id: str,
+    model: str,
+    k_iteration: int,
+    eval_run_id: str,
+    scope_id: str,
+    judge_service: JudgeService | None,
+    options: RunnerOptions,
+    variant: DerivedVariantIdentity,
+    cassettes: CassetteLane | None,
+    subject_snapshot: SubjectSnapshot | None,
+    judge_model: str | None,
+    sink: _CellSink,
+) -> CellOutcome:
+    """:func:`_run_one_result` inside the cell's slice of the run's metered-call ledger."""
     with options.metered_calls.cell() if options.metered_calls is not None else nullcontext():
         return await _run_one_result(
             host,
@@ -1387,6 +1450,10 @@ async def _run_one_result(
     )
     sink.world = world_session
     try:
+        if cell_cassettes is not None:
+            # The cassettes' one store read (a replay's recordings) or write (a capture's clear) before the cell,
+            # off the loop: nothing the kind calls inside the cell reaches the store.
+            await run_blocking(host.blocking_executor, cell_cassettes.open)
         # The subject arrives as a PAIR and the split is the point: the engine's snapshot is a
         # key, a label and content hashes, handed over here, while the host's rich object was
         # bound into the kind's factory by its host and is read by the kind alone.

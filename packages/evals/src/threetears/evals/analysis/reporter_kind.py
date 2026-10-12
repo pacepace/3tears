@@ -80,7 +80,7 @@ from threetears.evals.schema.models import DimName, EvalTestCase, JudgedArtifact
 from threetears.evals.schema.completion import CompletionGenerator, CompletionResult, RequestCeiling
 from threetears.evals.kernel.provider import describe_failure, log_provider_failure
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 

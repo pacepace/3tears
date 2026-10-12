@@ -45,6 +45,7 @@ from threetears.evals.run import (
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.off_loop import off_loop
 
 _SCOPE = "toy"
 _KIND = "table-session"
@@ -180,9 +181,9 @@ def test_stamping_gives_the_run_the_template_and_the_judge_a_launch_would() -> N
 
 async def test_a_judged_witnessed_cell_is_scored_from_the_evidence_through_the_runner_s_judge_phase() -> None:
     judge = _ScriptedJudge()
-    host, template, run, case = _setup(judge)
+    host, template, run, case = off_loop(_setup, judge)
 
-    result, trace = await _record(host, _stamped(host, template, run), case, _output())
+    result, trace = await _record(host, off_loop(_stamped, host, template, run), case, _output())
 
     assert [score.dim for score in result.rubric_scores] == [_DIM]
     assert result.rubric_scores[0].score == 4
@@ -197,12 +198,12 @@ async def test_a_judged_witnessed_cell_is_scored_from_the_evidence_through_the_r
 async def test_a_judged_witnessed_cell_whose_judge_failed_is_rejudged_like_any_run_s() -> None:
     """The witnessed cell is the record a run's judged cell is, so the re-judge path reads it unchanged."""
     judge = _ScriptedJudge(failing={_DIM})
-    host, template, run, case = _setup(judge)
-    stamped = _stamped(host, template, run).model_copy(update={"status": "completed"})
+    host, template, run, case = off_loop(_setup, judge)
+    stamped = off_loop(_stamped, host, template, run).model_copy(update={"status": "completed"})
     result, trace = await _record(host, stamped, case, _output())
     assert result.rubric_scores == [] and result.judge_error is not None
-    host.storage.save_eval_run(stamped)
-    host.storage.save_eval_result(result, trace)
+    off_loop(host.storage.save_eval_run, stamped)
+    off_loop(host.storage.save_eval_result, result, trace)
     judge.failing.clear()
 
     rejudged = await rejudge_result(host, result.id, _SCOPE)
@@ -212,7 +213,7 @@ async def test_a_judged_witnessed_cell_whose_judge_failed_is_rejudged_like_any_r
 
 async def test_an_unjudged_witnessed_run_calls_no_judge_and_an_empty_output_is_not_judged() -> None:
     judge = _ScriptedJudge()
-    host, template, run, case = _setup(judge)
+    host, template, run, case = off_loop(_setup, judge)
 
     unjudged, _ = await record_witnessed_cell(
         host,
@@ -224,7 +225,9 @@ async def test_an_unjudged_witnessed_run_calls_no_judge_and_an_empty_output_is_n
         scored_at=_SESSION_CAPTURED,
         judged_artifact=JudgedArtifact.UNJUDGED,
     )
-    empty, _ = await _record(host, _stamped(host, template, run), case, _output(output=[], judge_evidence=None))
+    empty, _ = await _record(
+        host, off_loop(_stamped, host, template, run), case, _output(output=[], judge_evidence=None)
+    )
 
     assert unjudged.judge_model is None and unjudged.rubric_scores == []
     assert empty.judge_model == _JUDGE and empty.rubric_scores == [] and empty.judge_error is None
@@ -277,9 +280,9 @@ class TestStampingRefuses:
 class TestRecordingAJudgedCellRefuses:
     async def test_a_template_edited_after_the_run_was_created(self) -> None:
         judge = _ScriptedJudge()
-        host, template, run, case = _setup(judge)
-        stamped = _stamped(host, template, run)
-        host.storage.save_template(template.model_copy(update={"updated_at": "2026-10-06T00:00:00+00:00"}))
+        host, template, run, case = off_loop(_setup, judge)
+        stamped = off_loop(_stamped, host, template, run)
+        off_loop(host.storage.save_template, template.model_copy(update={"updated_at": "2026-10-06T00:00:00+00:00"}))
 
         with pytest.raises(
             ValidationFailedError, match="the judge would read an intent the run was not judged against"
@@ -289,8 +292,8 @@ class TestRecordingAJudgedCellRefuses:
 
     async def test_request_settings_other_than_the_ones_a_call_sends_now(self) -> None:
         judge = _ScriptedJudge()
-        host, template, run, case = _setup(judge)
-        stale = _stamped(host, template, run).model_copy(
+        host, template, run, case = off_loop(_setup, judge)
+        stale = off_loop(_stamped, host, template, run).model_copy(
             update={"judge_request_settings": JUDGE_REQUEST_SETTINGS.model_copy(update={"max_tokens": 1})}
         )
 
@@ -299,11 +302,11 @@ class TestRecordingAJudgedCellRefuses:
         assert judge.calls == []
 
     async def test_a_kind_that_declares_nothing_a_judge_reads(self) -> None:
-        host, template, run, case = _setup(_ScriptedJudge())
+        host, template, run, case = off_loop(_setup, _ScriptedJudge())
         with pytest.raises(ValueError, match="declares nothing a judge reads"):
             await record_witnessed_cell(
                 host,
-                _stamped(host, template, run),
+                off_loop(_stamped, host, template, run),
                 case,
                 _output(judge_evidence=None),
                 k_iteration=1,
@@ -315,8 +318,8 @@ class TestRecordingAJudgedCellRefuses:
 
     async def test_no_judging_or_judging_for_another_run(self) -> None:
         judge = _ScriptedJudge()
-        host, template, run, case = _setup(judge)
-        stamped = _stamped(host, template, run)
+        host, template, run, case = off_loop(_setup, judge)
+        stamped = off_loop(_stamped, host, template, run)
 
         with pytest.raises(ValueError, match="none was given: build WitnessedJudging\\('run-witnessed'\\)"):
             await record_witnessed_cell(
@@ -346,26 +349,31 @@ class TestNothingIsJudgedForACellThatCannotBeRecorded:
 
     async def test_a_kind_landing_the_derived_accuracy(self) -> None:
         judge = _ScriptedJudge()
-        host, template, run, case = _setup(judge)
+        host, template, run, case = off_loop(_setup, judge)
 
         with pytest.raises(ValueError, match="which the engine derives from each observation's 'match'"):
             await _record(
-                host, _stamped(host, template, run), case, _output(host_measures={"match": True, "accuracy": 1.0})
+                host,
+                off_loop(_stamped, host, template, run),
+                case,
+                _output(host_measures={"match": True, "accuracy": 1.0}),
             )
         assert judge.calls == [], "the judge was never paid for a record that could not be built"
 
     async def test_background_spend_reported_twice(self) -> None:
         judge = _ScriptedJudge()
-        host, template, run, case = _setup(judge)
+        host, template, run, case = off_loop(_setup, judge)
         usage = [RoleUsage(role="inner_agent", model="scout/model", call_count=1, cost_usd=0.1, price_source="script")]
 
         with pytest.raises(ValueError, match="reported inner_agent usage on its telemetry"):
-            await _record(host, _stamped(host, template, run), case, _output(telemetry=CandidateTelemetry(usage=usage)))
+            await _record(
+                host, off_loop(_stamped, host, template, run), case, _output(telemetry=CandidateTelemetry(usage=usage))
+            )
         assert judge.calls == []
 
     async def test_a_variant_identity_the_host_cannot_derive(self) -> None:
         judge = _ScriptedJudge()
-        host, template, run, case = _setup(judge)
+        host, template, run, case = off_loop(_setup, judge)
         uncarried = run.model_copy(
             update={
                 "subject_snapshot": run.subject_snapshot.model_copy(
@@ -375,7 +383,7 @@ class TestNothingIsJudgedForACellThatCannotBeRecorded:
         )
 
         with pytest.raises(LeverCoordinateError, match="no_lever_carries_this that no variant lever"):
-            await _record(host, _stamped(host, template, uncarried), case, _output())
+            await _record(host, off_loop(_stamped, host, template, uncarried), case, _output())
         assert judge.calls == []
 
 
@@ -406,16 +414,16 @@ class TestAJudgedRunIsHeldToItsCeiling:
 
     async def test_a_cell_past_the_ceiling_is_refused_before_its_judge(self) -> None:
         judge = _ScriptedJudge()
-        host, template, run, case = _setup(judge)
-        stamped = _stamped(host, template, run, max_cost_usd=1.0)
-        host.storage.save_eval_run(stamped)
-        _judged_at(host, stamped, case, result_id="earlier", judge_cost=0.6)
+        host, template, run, case = off_loop(_setup, judge)
+        stamped = off_loop(_stamped, host, template, run, max_cost_usd=1.0)
+        off_loop(host.storage.save_eval_run, stamped)
+        off_loop(_judged_at, host, stamped, case, result_id="earlier", judge_cost=0.6)
 
         # Inside the ceiling: judged.
         result, _ = await _record(host, stamped, case, _output())
         assert [score.dim for score in result.rubric_scores] == [_DIM]
 
-        _judged_at(host, stamped, case, result_id="later", judge_cost=0.6)
+        off_loop(_judged_at, host, stamped, case, result_id="later", judge_cost=0.6)
         with pytest.raises(BudgetStoppedError, match=r"\$1\.2000 spent against a \$1\.0000 cap"):
             await _record(host, stamped, case, _output())
         assert len(judge.calls) == 1, "only the cell inside the ceiling was judged"
@@ -423,9 +431,9 @@ class TestAJudgedRunIsHeldToItsCeiling:
     async def test_a_judged_cell_the_host_has_not_saved_counts_against_the_next(self) -> None:
         """The store holds only what the host saved; the run's judging counts what it judged and the host has not."""
         judge = _ScriptedJudge()
-        host, template, run, case = _setup(judge)
-        stamped = _stamped(host, template, run, max_cost_usd=1.0)
-        _judged_at(host, stamped, case, result_id="earlier", judge_cost=0.9995)
+        host, template, run, case = off_loop(_setup, judge)
+        stamped = off_loop(_stamped, host, template, run, max_cost_usd=1.0)
+        off_loop(_judged_at, host, stamped, case, result_id="earlier", judge_cost=0.9995)
         judging = WitnessedJudging(stamped.id)
 
         await _record(host, stamped, case, _output(), judging=judging, result_id="first")
@@ -436,9 +444,9 @@ class TestAJudgedRunIsHeldToItsCeiling:
     async def test_cells_recorded_concurrently_are_admitted_one_at_a_time(self) -> None:
         """Two cells checked together would both see room for one; through one judging the second sees the first."""
         judge = _ScriptedJudge()
-        host, template, run, case = _setup(judge)
-        stamped = _stamped(host, template, run, max_cost_usd=1.0)
-        _judged_at(host, stamped, case, result_id="earlier", judge_cost=0.9995)
+        host, template, run, case = off_loop(_setup, judge)
+        stamped = off_loop(_stamped, host, template, run, max_cost_usd=1.0)
+        off_loop(_judged_at, host, stamped, case, result_id="earlier", judge_cost=0.9995)
         judging = WitnessedJudging(stamped.id)
 
         outcomes = await asyncio.gather(
@@ -453,13 +461,13 @@ class TestAJudgedRunIsHeldToItsCeiling:
     async def test_a_cell_the_host_saved_is_counted_once(self) -> None:
         """Once the store holds a judged cell, its spend is read from there and not again from the judging."""
         judge = _ScriptedJudge()
-        host, template, run, case = _setup(judge)
-        stamped = _stamped(host, template, run, max_cost_usd=1.0)
-        _judged_at(host, stamped, case, result_id="earlier", judge_cost=0.9985)
+        host, template, run, case = off_loop(_setup, judge)
+        stamped = off_loop(_stamped, host, template, run, max_cost_usd=1.0)
+        off_loop(_judged_at, host, stamped, case, result_id="earlier", judge_cost=0.9985)
         judging = WitnessedJudging(stamped.id)
 
         first, trace = await _record(host, stamped, case, _output(), judging=judging, result_id="first")
-        host.storage.save_eval_result(first, trace)
+        off_loop(host.storage.save_eval_result, first, trace)
         second, _ = await _record(host, stamped, case, _output(), judging=judging, result_id="second")
 
         assert [score.dim for score in second.rubric_scores] == [_DIM], (
@@ -470,37 +478,37 @@ class TestAJudgedRunIsHeldToItsCeiling:
     async def test_a_cell_recorded_twice_counts_both_judgements(self, saved_between: bool) -> None:
         """Re-recording a cell judges it again, and both judgements were paid for, though the store keeps one."""
         judge = _ScriptedJudge()
-        host, template, run, case = _setup(judge)
-        stamped = _stamped(host, template, run, max_cost_usd=1.0)
-        _judged_at(host, stamped, case, result_id="earlier", judge_cost=0.9985)
+        host, template, run, case = off_loop(_setup, judge)
+        stamped = off_loop(_stamped, host, template, run, max_cost_usd=1.0)
+        off_loop(_judged_at, host, stamped, case, result_id="earlier", judge_cost=0.9985)
         judging = WitnessedJudging(stamped.id)
 
         for _ in range(2):
             result, trace = await _record(host, stamped, case, _output(), judging=judging, result_id="first")
             if saved_between:
-                host.storage.save_eval_result(result, trace)
+                off_loop(host.storage.save_eval_result, result, trace)
         with pytest.raises(BudgetStoppedError, match=r"\$1\.0005 spent against a \$1\.0000 cap"):
             await _record(host, stamped, case, _output(), judging=judging, result_id="second")
         assert len(judge.calls) == 2
 
     async def test_re_recording_a_cell_the_store_held_counts_the_judgement_it_replaces(self) -> None:
         judge = _ScriptedJudge()
-        host, template, run, case = _setup(judge)
-        stamped = _stamped(host, template, run, max_cost_usd=1.0)
-        _judged_at(host, stamped, case, result_id="earlier", judge_cost=0.9985)
-        _judged_at(host, stamped, case, result_id="first", judge_cost=0.001)
+        host, template, run, case = off_loop(_setup, judge)
+        stamped = off_loop(_stamped, host, template, run, max_cost_usd=1.0)
+        off_loop(_judged_at, host, stamped, case, result_id="earlier", judge_cost=0.9985)
+        off_loop(_judged_at, host, stamped, case, result_id="first", judge_cost=0.001)
         judging = WitnessedJudging(stamped.id)
 
         result, trace = await _record(host, stamped, case, _output(), judging=judging, result_id="first")
-        host.storage.save_eval_result(result, trace)
+        off_loop(host.storage.save_eval_result, result, trace)
         with pytest.raises(BudgetStoppedError, match=r"\$1\.0005 spent against a \$1\.0000 cap"):
             await _record(host, stamped, case, _output(), judging=judging, result_id="second")
 
     async def test_unpriced_judge_spend_stops_an_enforced_ceiling(self) -> None:
         judge = _ScriptedJudge()
-        host, template, run, case = _setup(judge)
-        stamped = _stamped(host, template, run)
-        _judged_at(host, stamped, case, result_id="earlier", judge_cost=None)
+        host, template, run, case = off_loop(_setup, judge)
+        stamped = off_loop(_stamped, host, template, run)
+        off_loop(_judged_at, host, stamped, case, result_id="earlier", judge_cost=None)
 
         with pytest.raises(BudgetStoppedError, match="could not be priced"):
             await _record(host, stamped, case, _output())
@@ -508,17 +516,19 @@ class TestAJudgedRunIsHeldToItsCeiling:
 
     async def test_an_uncapped_run_judges_whatever_it_has_spent(self) -> None:
         judge = _ScriptedJudge()
-        host, template, run, case = _setup(judge)
-        stamped = _stamped(host, template, run, enforcement_enabled=False)
-        _judged_at(host, stamped, case, result_id="earlier", judge_cost=None)
+        host, template, run, case = off_loop(_setup, judge)
+        stamped = off_loop(_stamped, host, template, run, enforcement_enabled=False)
+        off_loop(_judged_at, host, stamped, case, result_id="earlier", judge_cost=None)
 
         result, _ = await _record(host, stamped, case, _output())
         assert [score.dim for score in result.rubric_scores] == [_DIM]
 
     async def test_a_judged_run_recording_no_ceiling_is_refused(self) -> None:
         judge = _ScriptedJudge()
-        host, template, run, case = _setup(judge)
-        unbounded = _stamped(host, template, run).model_copy(update={"max_cost_usd": None, "max_cost_usd_origin": None})
+        host, template, run, case = off_loop(_setup, judge)
+        unbounded = off_loop(_stamped, host, template, run).model_copy(
+            update={"max_cost_usd": None, "max_cost_usd_origin": None}
+        )
 
         with pytest.raises(ValueError, match="records no cost ceiling"):
             await _record(host, unbounded, case, _output())
@@ -536,12 +546,15 @@ def _with_a_goal_check(template: EvalTemplate) -> EvalTemplate:
 async def test_a_failed_witnessed_cell_stores_every_check_of_the_template_it_is_judged_against_as_failed() -> None:
     """The stored result — not a helper's return — carries the not-evaluated, failed outcome, so per-check rates count it."""
     judge = _ScriptedJudge()
-    host, template, run, case = _setup(judge)
+    host, template, run, case = off_loop(_setup, judge)
     template = _with_a_goal_check(template)
-    host.storage.save_template(template)
+    off_loop(host.storage.save_template, template)
 
     result, _trace = await _record(
-        host, _stamped(host, template, run), case, _output(candidate_errors=["the player walked out mid-ruling"])
+        host,
+        off_loop(_stamped, host, template, run),
+        case,
+        _output(candidate_errors=["the player walked out mid-ruling"]),
     )
 
     assert [(fact.expression, fact.passed) for fact in result.goal_state_outcomes] == [(_GOAL_CHECK, False)]
@@ -552,12 +565,12 @@ async def test_a_clean_witnessed_cell_that_graded_none_of_the_template_s_checks_
     None
 ):
     judge = _ScriptedJudge()
-    host, template, run, case = _setup(judge)
+    host, template, run, case = off_loop(_setup, judge)
     template = _with_a_goal_check(template)
-    host.storage.save_template(template)
+    off_loop(host.storage.save_template, template)
 
     with pytest.raises(ValueError, match="without grading the template's goal check"):
-        await _record(host, _stamped(host, template, run), case, _output())
+        await _record(host, off_loop(_stamped, host, template, run), case, _output())
 
     assert judge.calls == [], "refused before any judge call was bought"
 
@@ -584,8 +597,8 @@ class _ThreadRecordingStore:
 async def test_no_store_call_from_recording_a_judged_witnessed_cell_runs_on_the_loop_thread() -> None:
     """The template and config loads, and the ceiling's read of saved cells, all leave the event loop."""
     judge = _ScriptedJudge()
-    host, template, run, case = _setup(judge)
-    stamped = _stamped(host, template, run)
+    host, template, run, case = off_loop(_setup, judge)
+    stamped = off_loop(_stamped, host, template, run)
     threads: list[tuple[str, int]] = []
     loop_thread = threading.get_ident()
     recording = dataclasses.replace(host, storage=_ThreadRecordingStore(host.storage, threads))

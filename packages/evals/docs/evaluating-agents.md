@@ -245,7 +245,9 @@ passes everything but `ambient_isolation`, which is unavailable. Make the lamp i
 (step 3). Excluded cells (a seed the world refused, a tool that raised, a failed precondition) are counted apart
 from the agent's own failures.
 
-**Each cell.** Read back what the agent did and where the world ended:
+**Each cell.** Read back what the agent did and where the world ended. These are store reads, which block: from
+async code, run them off the event loop with `await run_blocking(host.blocking_executor, fn, ...)`, as
+[`world.py`](https://github.com/pacepace/3tears/blob/develop/packages/evals/examples/world.py) does.
 
 ```python
 from threetears.evals.run import get_result_trace, get_run, list_results

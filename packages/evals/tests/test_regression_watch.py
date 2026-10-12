@@ -21,6 +21,7 @@ from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_calibration_rating, make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
+from packages.evals.tests.off_loop import off_loop
 
 _SCOPE = "uni-1"
 _CASES = [f"c{i}" for i in range(12)]
@@ -86,23 +87,24 @@ async def _drive(
     baseline = make_eval_run(
         id="run-a", scope_id=_SCOPE, test_case_ids=_CASES, status="completed", created_at="2026-10-01T00:00:00Z"
     )
-    storage.save_eval_run(baseline)
+    off_loop(storage.save_eval_run, baseline)
     for result in _results(baseline, cost=0.01, transcript=5):
-        storage.save_eval_result(result)
+        off_loop(storage.save_eval_result, result)
     later = make_eval_run(id="run-b", scope_id=_SCOPE, test_case_ids=_CASES, created_at="2026-10-02T00:00:00Z")
     declined = _results(later, cost=declined_cost, transcript=1)
     if calibrate:
         # A person rates every result of both runs exactly as the judge scored it: 24 results, perfect agreement.
         for result in [*_results(baseline, cost=0.01, transcript=5), *declined]:
             assert result.transcript_score is not None
-            storage.save_calibration_rating(
+            off_loop(
+                storage.save_calibration_rating,
                 make_calibration_rating(
                     scope_id=_SCOPE,
                     run_id=result.eval_run_id,
                     result_id=result.id,
                     rubric_dim=TRANSCRIPT_DIM_ID,
                     score=result.transcript_score.score,
-                )
+                ),
             )
 
     eval_host = toyhost_host(storage=storage)
@@ -111,11 +113,11 @@ async def _drive(
 
     async def work(progress: object) -> None:
         for result in declined:
-            storage.save_eval_result(result)
+            off_loop(storage.save_eval_result, result)
 
     job_ids = await launch_host.job_manager.start_group([(later, work, None)])
     await launch_host.job_manager.wait_for(job_ids)
-    stored = storage.load_eval_run(later.id, _SCOPE)
+    stored = off_loop(storage.load_eval_run, later.id, _SCOPE)
     assert stored is not None
     return storage, stored
 

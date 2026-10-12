@@ -47,6 +47,7 @@ from threetears.evals.run.cassette_proxy import (
     CassetteProxy,
     params_hash,
 )
+from packages.evals.tests.off_loop import off_loop
 
 _SCOPE = "table-1"
 _TEMPLATE = "tpl-goblin-ambush"
@@ -308,8 +309,15 @@ def _cell(lane: CassetteLane, *, test_case_id: str = _CASE) -> CassetteCell:
 
 def _wire(lane: CassetteLane, seams: Any, *, test_case_id: str = _CASE) -> CassetteCell:
     cell = _cell(lane, test_case_id=test_case_id)
+    off_loop(cell.open)  # as the runner opens a cell before its prepare
     cell.wire(seams)
     return cell
+
+
+def _end(cell: CassetteCell) -> None:
+    """End the cell as the runner does: close it, then write what its capture recorded, off the loop."""
+    cell.close()
+    off_loop(cell.flush)
 
 
 async def _play(session: FakeGameSession) -> list[Any]:
@@ -330,7 +338,7 @@ async def _captured(storage: EvalStorage, **scout: Any) -> tuple[FakeGameSession
     session = _capture_session(**scout)
     cell = _wire(_lane(storage, "capture"), session)
     answers = await _play(session)
-    cell.close()
+    _end(cell)
     return session, answers
 
 
@@ -409,7 +417,7 @@ async def test_a_session_that_rolls_the_same_dice_twice_replays_both_rolls_in_or
     cell = _wire(_lane(storage, "capture"), capture)
     first = await capture.call("roll", "roll", dice="1d20")
     second = await capture.call("roll", "roll", dice="1d20")
-    cell.close()
+    _end(cell)
     assert (first.total, second.total) == (14, 3)
 
     replay = _replay_session()
@@ -421,9 +429,10 @@ async def test_a_session_that_rolls_the_same_dice_twice_replays_both_rolls_in_or
 async def test_asking_the_same_thing_once_more_than_the_capture_did_is_exhausted_not_reused() -> None:
     storage, _ = memory_storage()
     capture = FakeGameSession(rolls=[14, 3], rules={}, reports={})
-    _wire(_lane(storage, "capture"), capture)
+    cell = _wire(_lane(storage, "capture"), capture)
     await capture.call("roll", "roll", dice="1d20")
     await capture.call("roll", "roll", dice="1d20")
+    _end(cell)
 
     replay = _replay_session()
     _wire(_lane(storage, "replay"), replay)
@@ -439,11 +448,12 @@ async def test_asking_the_same_thing_once_more_than_the_capture_did_is_exhausted
 async def test_each_occurrence_of_an_ask_is_its_own_recording() -> None:
     storage, _ = memory_storage()
     capture = FakeGameSession(rolls=[14, 3], rules={}, reports={})
-    _wire(_lane(storage, "capture"), capture)
+    cell = _wire(_lane(storage, "capture"), capture)
     await capture.call("roll", "roll", dice="1d20")
     await capture.call("roll", "roll", dice="1d20")
+    _end(cell)
 
-    rolls = sorted((c.occurrence, c.response) for c in _recordings(storage) if c.tool == "roll")
+    rolls = sorted((c.occurrence, c.response) for c in off_loop(_recordings, storage) if c.tool == "roll")
     assert rolls == [(0, {"ok": True, "total": 14, "error": None}), (1, {"ok": True, "total": 3, "error": None})]
 
 
@@ -485,7 +495,7 @@ async def test_work_that_failed_or_never_came_back_in_the_capture_replays_the_sa
     storage, _ = memory_storage()
     await _captured(storage, failing=frozenset({"north corridor"}), lost=frozenset({"chapel"}))
 
-    outcomes = {c.params_hash: (c.outcome, c.error) for c in _recordings(storage) if c.seam == "delivery"}
+    outcomes = {c.params_hash: (c.outcome, c.error) for c in off_loop(_recordings, storage) if c.seam == "delivery"}
     assert outcomes == {
         params_hash({"area": "north corridor"}): ("failed", "the scout to north corridor was ambushed"),
         params_hash({"area": "chapel"}): ("undelivered", None),
@@ -506,7 +516,11 @@ async def test_deliveries_are_stored_under_the_engine_s_delivery_action_and_thei
     await _captured(storage)
 
     recorded = sorted(
-        ((c.action, c.params_hash, c.occurrence, c.outcome) for c in _recordings(storage) if c.seam == "delivery"),
+        (
+            (c.action, c.params_hash, c.occurrence, c.outcome)
+            for c in off_loop(_recordings, storage)
+            if c.seam == "delivery"
+        ),
     )
     assert recorded == sorted(
         [
@@ -514,7 +528,7 @@ async def test_deliveries_are_stored_under_the_engine_s_delivery_action_and_thei
             (DELIVERY_ACTION, params_hash({"area": "chapel"}), 0, "delivered"),
         ]
     )
-    assert {c.captured_model for c in _recordings(storage)} == {_MODEL}
+    assert {c.captured_model for c in off_loop(_recordings, storage)} == {_MODEL}
 
 
 async def test_a_ticket_is_settled_once() -> None:
@@ -534,10 +548,10 @@ async def test_work_settling_after_its_cell_ended_keeps_the_session_s_undelivere
     cell = _wire(_lane(storage, "capture"), session)
     assert session.scout.recorder is not None
     ticket = session.scout.recorder.started({"area": "chapel"})
-    cell.close()
+    _end(cell)
     ticket.delivered(ScoutReport(area="chapel", findings="arrived too late"))
 
-    [recording] = _recordings(storage)
+    [recording] = off_loop(_recordings, storage)
     assert (recording.outcome, recording.response) == ("undelivered", None)
 
 
@@ -665,6 +679,9 @@ class FakeUnreadableStore(InMemoryDocumentStore):
     def get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None:
         raise ConnectionError("the database went away")
 
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        raise ConnectionError("the database went away")
+
 
 @pytest.mark.parametrize("seam", ["action", "delivery"])
 async def test_a_store_that_cannot_answer_is_the_rig_s_failure(seam: str) -> None:
@@ -705,8 +722,9 @@ async def test_a_recording_asked_for_at_the_other_seam_is_corrupt() -> None:
         params_hash=params_hash({"dice": "1d20"}),
         occurrence=0,
     )
-    storage.save_cassette(
-        EvalCassette.build(key, scope_id=_SCOPE, seam="delivery", captured_model=_MODEL, outcome="undelivered")
+    off_loop(
+        storage.save_cassette,
+        EvalCassette.build(key, scope_id=_SCOPE, seam="delivery", captured_model=_MODEL, outcome="undelivered"),
     )
     replay = _replay_session()
     _wire(_lane(storage, "replay"), replay)
@@ -720,13 +738,17 @@ async def test_a_recording_asked_for_at_the_other_seam_is_corrupt() -> None:
 
 
 class _FailingWritesStore(InMemoryDocumentStore):
-    """The reference store; while ``fail_writes`` is set, every ``upsert`` raises."""
+    """The reference store; while ``fail_writes`` is set every ``upsert`` raises, and so do the next ``fail_next``."""
 
     def __init__(self) -> None:
         super().__init__()
         self.fail_writes = False
+        self.fail_next = 0
 
     def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        if self.fail_next:
+            self.fail_next -= 1
+            raise RuntimeError("simulated write failure")
         if self.fail_writes:
             raise RuntimeError("simulated write failure")
         super().upsert(document, if_match=if_match, create_only=create_only)
@@ -740,10 +762,12 @@ def _failing_storage() -> tuple[EvalStorage, _FailingWritesStore]:
 async def test_a_failed_action_write_still_answers_the_session() -> None:
     storage, store = _failing_storage()
     session = _capture_session()
-    _wire(_lane(storage, "capture"), session)
+    cell = _wire(_lane(storage, "capture"), session)
     store.fail_writes = True
 
     assert await session.call("roll", "roll", dice="1d20") == RollResult(ok=True, total=14)
+    _end(cell)  # the recording's write fails when the cell ends, and costs the recording, never the cell
+    assert off_loop(_recordings, storage) == []
 
 
 async def test_a_failed_write_leaves_a_hole_a_replay_reports_rather_than_a_neighbour_in_its_place() -> None:
@@ -752,11 +776,10 @@ async def test_a_failed_write_leaves_a_hole_a_replay_reports_rather_than_a_neigh
     session = _capture_session()
     cell = _wire(_lane(storage, "capture"), session)
 
-    store.fail_writes = True
     await session.call("roll", "roll", dice="1d20")
-    store.fail_writes = False
     await session.call("roll", "roll", dice="1d20")
-    cell.close()
+    store.fail_next = 1  # the cell's recordings are written in the order they were made: the first roll's fails
+    _end(cell)
 
     replay = _replay_session()
     _wire(_lane(storage, "replay"), replay)
@@ -772,9 +795,9 @@ async def test_a_recapture_replaces_the_case_s_whole_recording() -> None:
     cell = _wire(_lane(storage, "capture"), shorter)
     await shorter.call("scout_ahead", "scout", area="chapel")
     await shorter.settle()
-    cell.close()
+    _end(cell)
 
-    recorded = _recordings(storage)
+    recorded = off_loop(_recordings, storage)
     assert [(c.tool, c.params_hash) for c in recorded] == [("scout_ahead", params_hash({"area": "chapel"}))]
 
 
@@ -785,7 +808,7 @@ async def test_a_recapture_clears_rows_this_build_can_no_longer_read() -> None:
         document["schema_version"] = 5
 
     _wire(_lane(storage, "capture"), _capture_session())
-    assert _recordings(storage) == []
+    assert off_loop(_recordings, storage) == []
 
 
 async def test_a_capture_that_cannot_clear_the_case_refuses_to_mix_two_sessions() -> None:
@@ -815,21 +838,23 @@ async def test_two_capture_runs_at_once_never_write_into_each_other_s_corpus() -
     cell_a = lane_a.cell(template_id=_TEMPLATE, test_case_id=_CASE, model="model-a")
     cell_b = lane_b.cell(template_id=_TEMPLATE, test_case_id=_CASE, model="model-b")
 
-    # Interleaved exactly as the review's scenario: A wires and records, B wires (and clears) and
+    # Interleaved exactly as the review's scenario: A opens, wires and records, B opens (and clears), wires and
     # records, A records again.
+    off_loop(cell_a.open)
     cell_a.wire(session_a)
     await session_a.call("roll", "roll", dice="1d20")
+    off_loop(cell_b.open)
     cell_b.wire(session_b)
     await session_b.call("roll", "roll", dice="1d20")
     await session_b.call("scout_ahead", "scout", area="chapel")
     await session_a.call("roll", "roll", dice="1d20")
     await session_a.call("scout_ahead", "scout", area="chapel")
     await asyncio.gather(session_a.settle(), session_b.settle())
-    cell_a.close()
-    cell_b.close()
+    _end(cell_a)
+    _end(cell_b)
 
     for run, rolls, findings in ((run_a, [11, 12], "A's chapel"), (run_b, [21], "B's chapel")):
-        assert {c.captured_model for c in _recordings(storage, corpus_id=run.id)} == {run.candidate_model}
+        assert {c.captured_model for c in off_loop(_recordings, storage, corpus_id=run.id)} == {run.candidate_model}
         replay = _replay_session()
         replay_run = make_eval_run(
             cassette_mode="replay", cassette_corpus_id=run.id, scope_id=_SCOPE, template_id=_TEMPLATE

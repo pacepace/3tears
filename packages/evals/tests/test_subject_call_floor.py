@@ -73,6 +73,7 @@ from packages.evals.tests.fixtures.toyhost.launch import (
     toyhost_launch_host,
 )
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template, toyhost_test_cases
+from packages.evals.tests.off_loop import off_loop
 
 #: The dim the subject's judge scores.
 _DIM = "toy.fidelity"
@@ -162,8 +163,13 @@ class _Subject:
         async def launch(request: LaunchRequest) -> EvalRun:
             self.launched.append(request)
             require_candidate_model(request, None)
-            judge = build_judge_service(
-                eval_host, request.template, _JUDGE, request.judge_config_ids, judged_artifact=judged_artifact
+            judge = off_loop(
+                build_judge_service,
+                eval_host,
+                request.template,
+                _JUDGE,
+                request.judge_config_ids,
+                judged_artifact=judged_artifact,
             )
             return await launch_run(
                 self.host,
@@ -342,7 +348,7 @@ async def test_every_utterance_calls_floor_is_the_real_call_with_text_removed(
 
 
 async def test_a_cap_below_the_judges_floor_is_refused_by_the_estimate_and_the_launch_with_nothing_spent() -> None:
-    subject = _Subject()
+    subject = off_loop(_Subject)
 
     arm = await subject.estimate(0.5)
     assert arm.outcome == "refused"
@@ -370,12 +376,12 @@ async def test_a_cap_below_the_judges_floor_is_refused_by_the_estimate_and_the_l
     assert subject.calls() == [], "no call was made"
     assert subject.priced_by("judge"), "the judge's floor was priced on the judge role's client"
     assert all(client.closed == 1 for client in subject.clients), "every client built to price was released"
-    assert subject.storage.query_eval_runs(TOYHOST_SCOPE) == []
+    assert off_loop(subject.storage.query_eval_runs, TOYHOST_SCOPE) == []
     assert subject.host.job_manager.admitted_count == 0
 
 
 async def test_a_cap_above_the_floor_is_admitted_and_launched() -> None:
-    subject = _Subject()
+    subject = off_loop(_Subject)
 
     arm = await subject.estimate(0.6)
     assert (arm.outcome, arm.refusal) == ("admitted", None)
@@ -386,7 +392,7 @@ async def test_a_cap_above_the_floor_is_admitted_and_launched() -> None:
 
 
 async def test_a_floor_the_host_cannot_raise_a_cap_to_names_the_hosts_operator() -> None:
-    subject = _Subject(judge_usd=TOYHOST_LAUNCH_SETTINGS.max_cost_usd)
+    subject = off_loop(_Subject, judge_usd=TOYHOST_LAUNCH_SETTINGS.max_cost_usd)
 
     arm = await subject.estimate(0.5)
     assert arm.outcome == "refused"
@@ -395,7 +401,7 @@ async def test_a_floor_the_host_cannot_raise_a_cap_to_names_the_hosts_operator()
 
 
 async def test_a_judge_client_that_cannot_price_leaves_the_arm_to_its_other_rules() -> None:
-    subject = _Subject(judge_usd=None)
+    subject = off_loop(_Subject, judge_usd=None)
 
     arm = await subject.estimate(0.5)
     assert arm.plan.call_ceiling is None
@@ -403,8 +409,10 @@ async def test_a_judge_client_that_cannot_price_leaves_the_arm_to_its_other_rule
 
 
 async def test_a_dims_floor_is_priced_on_the_model_its_config_pins() -> None:
-    subject = _Subject()
-    subject.storage.save_judge_config(make_judge_config(scope_id=TOYHOST_SCOPE, rubric_dim_id=_DIM, model="dear"))
+    subject = off_loop(_Subject)
+    off_loop(
+        subject.storage.save_judge_config, make_judge_config(scope_id=TOYHOST_SCOPE, rubric_dim_id=_DIM, model="dear")
+    )
 
     arm = await subject.estimate(0.5)
     assert "'dear'" in arm.plan.call_ceiling.call
@@ -422,7 +430,12 @@ _ACTORS = [
 
 
 async def test_a_cap_below_the_simulated_users_floor_is_refused_naming_the_simulator() -> None:
-    subject = _Subject(judge_usd=0.01, simulator_usd=0.7, conversation=ConversationSpec(actors=_ACTORS, max_turns=3))
+    subject = off_loop(
+        _Subject,
+        judge_usd=0.01,
+        simulator_usd=0.7,
+        conversation=off_loop(ConversationSpec, actors=_ACTORS, max_turns=3),
+    )
 
     arm = await subject.estimate(0.5)
     assert arm.outcome == "refused"
@@ -441,7 +454,9 @@ async def test_a_cap_below_the_simulated_users_floor_is_refused_naming_the_simul
 
 
 async def test_the_larger_floor_of_the_judge_and_the_simulated_user_is_the_arms() -> None:
-    subject = _Subject(simulator_usd=0.1, conversation=ConversationSpec(actors=_ACTORS, max_turns=3))
+    subject = off_loop(
+        _Subject, simulator_usd=0.1, conversation=off_loop(ConversationSpec, actors=_ACTORS, max_turns=3)
+    )
 
     arm = await subject.estimate(0.5)
     assert arm.plan.call_ceiling.usd == pytest.approx(_JUDGE_FLOOR_USD)
@@ -449,7 +464,12 @@ async def test_the_larger_floor_of_the_judge_and_the_simulated_user_is_the_arms(
 
 
 async def test_the_simulated_users_floor_is_unknown_when_one_actors_call_is() -> None:
-    subject = _Subject(judge_usd=None, simulator_usd=None, conversation=ConversationSpec(actors=_ACTORS, max_turns=3))
+    subject = off_loop(
+        _Subject,
+        judge_usd=None,
+        simulator_usd=None,
+        conversation=off_loop(ConversationSpec, actors=_ACTORS, max_turns=3),
+    )
 
     arm = await subject.estimate(0.5)
     assert arm.plan.call_ceiling is None
@@ -477,7 +497,7 @@ async def test_the_simulated_users_floor_is_unknown_when_one_actors_call_is() ->
 async def test_a_conversation_not_bound_to_call_for_an_utterance_prices_no_simulator_floor(
     conversation: ConversationSpec,
 ) -> None:
-    subject = _Subject(judge_usd=0.01, simulator_usd=0.7, conversation=conversation)
+    subject = off_loop(_Subject, judge_usd=0.01, simulator_usd=0.7, conversation=conversation)
 
     arm = await subject.estimate(0.5)
     assert subject.priced_by("simulator") == []
@@ -492,7 +512,7 @@ async def test_a_world_round_makes_no_utterance_but_the_round_after_it_does() ->
 
 
 async def _simulator_priced(conversation: ConversationSpec) -> bool:
-    subject = _Subject(judge_usd=0.01, simulator_usd=0.7, conversation=conversation)
+    subject = off_loop(_Subject, judge_usd=0.01, simulator_usd=0.7, conversation=conversation)
     plan = ArmPlan(
         case_count=1,
         candidate_model=RUN_MODELS[0],

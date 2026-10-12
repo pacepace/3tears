@@ -24,6 +24,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ScriptedExtractionClient, ToyExtractorKind
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template, toyhost_test_cases
+from packages.evals.tests.off_loop import off_loop
 
 
 def _host(
@@ -73,13 +74,13 @@ async def _launch(host: LaunchHost, storage: EvalStorage, **arguments: Any) -> E
     async with asyncio.timeout(10):
         while host.job_manager.is_active(run.id):
             await asyncio.sleep(0.01)
-    stored = storage.load_eval_run(run.id, TOYHOST_SCOPE)
+    stored = off_loop(storage.load_eval_run, run.id, TOYHOST_SCOPE)
     assert stored is not None
     return stored
 
 
 async def test_a_host_declaring_no_metered_tools_records_it_and_refuses_a_metered_call(caplog):
-    host, storage, admitted = _host(max_metered_calls=None)
+    host, storage, admitted = off_loop(_host, max_metered_calls=None)
 
     with caplog.at_level(logging.ERROR):
         run = await _launch(host, storage)
@@ -91,7 +92,7 @@ async def test_a_host_declaring_no_metered_tools_records_it_and_refuses_a_metere
 
 
 async def test_a_host_with_metered_tools_records_its_ceiling_and_admits_within_it():
-    host, storage, admitted = _host(max_metered_calls=100)
+    host, storage, admitted = off_loop(_host, max_metered_calls=100)
 
     run = await _launch(host, storage)
 
@@ -102,7 +103,7 @@ async def test_a_host_with_metered_tools_records_its_ceiling_and_admits_within_i
 
 async def test_the_declaration_holds_with_enforcement_off():
     """It is a fact about the host's tools, not a ceiling enforcement switches off."""
-    host, storage, admitted = _host(max_metered_calls=None, enforcement_enabled=False)
+    host, storage, admitted = off_loop(_host, max_metered_calls=None, enforcement_enabled=False)
 
     run = await _launch(host, storage)
 
@@ -111,7 +112,7 @@ async def test_the_declaration_holds_with_enforcement_off():
 
 
 async def test_with_metered_tools_and_enforcement_off_the_run_is_uncapped():
-    host, storage, admitted = _host(max_metered_calls=100, enforcement_enabled=False)
+    host, storage, admitted = off_loop(_host, max_metered_calls=100, enforcement_enabled=False)
 
     run = await _launch(host, storage)
 
@@ -120,12 +121,12 @@ async def test_with_metered_tools_and_enforcement_off_the_run_is_uncapped():
 
 
 async def test_a_launch_naming_a_ceiling_on_a_host_with_no_metered_tools_is_refused_before_anything():
-    host, storage, admitted = _host(max_metered_calls=None)
+    host, storage, admitted = off_loop(_host, max_metered_calls=None)
 
     with pytest.raises(ValidationFailedError, match="declares no metered tools, so it would bound nothing"):
         await _launch(host, storage, max_metered_calls=5)
 
-    assert admitted == [] and storage.query_eval_runs(TOYHOST_SCOPE) == []
+    assert admitted == [] and off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
     assert host.job_manager.admitted_count == 0
 
 

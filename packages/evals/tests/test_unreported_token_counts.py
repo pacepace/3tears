@@ -36,6 +36,7 @@ from packages.evals.tests.fixtures.toyhost.judge import (
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import ToyhostRunPath, execute_toyhost_run, toyhost_run_bundle
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
+from packages.evals.tests.off_loop import off_loop
 
 
 async def _judged_drive(*, reports_token_counts: bool) -> ToyhostRunPath:
@@ -49,8 +50,8 @@ async def _judged_drive(*, reports_token_counts: bool) -> ToyhostRunPath:
 
 async def test_an_omitted_count_lands_on_the_judge_row_as_unknown_beside_a_known_price() -> None:
     path = await _judged_drive(reports_token_counts=False)
-    assert path.results, "the judged drive produced no cells"
-    for result in path.results:
+    assert await path.results(), "the judged drive produced no cells"
+    for result in await path.results():
         (judge_row,) = [row for row in result.usage if row.role == "judge"]
         assert judge_row.prompt_tokens is None
         assert judge_row.completion_tokens is None
@@ -64,22 +65,22 @@ async def test_the_bundle_rollup_sums_only_what_was_reported_and_counts_what_was
     silent = await _judged_drive(reports_token_counts=False)
     reporting = await _judged_drive(reports_token_counts=True)
 
-    silent_tokens = toyhost_run_bundle(silent).telemetry.tokens
-    reporting_tokens = toyhost_run_bundle(reporting).telemetry.tokens
+    silent_tokens = off_loop(toyhost_run_bundle, silent).telemetry.tokens
+    reporting_tokens = off_loop(toyhost_run_bundle, reporting).telemetry.tokens
     assert silent_tokens is not None and reporting_tokens is not None
 
     candidate_prompt = sum(
-        row.prompt_tokens or 0 for result in silent.results for row in result.usage if row.role == "candidate"
+        row.prompt_tokens or 0 for result in (await silent.results()) for row in result.usage if row.role == "candidate"
     )
     judge_prompt = sum(
-        row.prompt_tokens or 0 for result in reporting.results for row in result.usage if row.role == "judge"
+        row.prompt_tokens or 0 for result in (await reporting.results()) for row in result.usage if row.role == "judge"
     )
     assert judge_prompt > 0, "the reporting judge must contribute counts, or the comparison below is vacuous"
     # The silent run's sum is the candidate's alone — the judge's unknown counts added nothing.
     assert silent_tokens.prompt_tokens == candidate_prompt
     assert reporting_tokens.prompt_tokens == candidate_prompt + judge_prompt
     # And the partial sum discloses itself, on every result whose judge omitted its counts.
-    assert silent_tokens.n_results_tokens_unreported == len(silent.results)
+    assert silent_tokens.n_results_tokens_unreported == len((await silent.results()))
     assert reporting_tokens.n_results_tokens_unreported == 0
 
 

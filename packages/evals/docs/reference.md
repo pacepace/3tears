@@ -69,6 +69,8 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`omit_paths(document: dict[str, Any], paths: Sequence[str]) -> dict[str, Any]`
 - **`referenced_actions`** · function · Every `(tool, action)` a goal check names through a call builtin, in source order, each once.
   <br>`referenced_actions(expression: str) -> tuple[tuple[str, str], ...]`
+- **`refuse_on_event_loop`** · function · Raise `StoreCalledOnEventLoop` when the calling thread is running an event loop.
+  <br>`refuse_on_event_loop() -> None`
 - **`utc_now_iso`** · function · Return the current UTC time in ISO-8601 format.
   <br>`utc_now_iso() -> str`
 - **`with_fault`** · function · `faults` with `entry` appended, kept inside `FaultsField`'s caps.
@@ -78,7 +80,9 @@ The engine's stored shapes and the ports a host implements: what is written down
 
 - **`ActorPolicy`** · model · One simulated actor in a template's conversation.
 - **`AsyncDelivery`** · model · One piece of background work the candidate started: acknowledged at once, delivered later.
+- **`AsyncDocumentStore`** · protocol · `DocumentStore`, every method a coroutine: the port for a host whose database driver is async.
 - **`AsyncExternalSpend`** · model · Paid non-LLM calls one piece of background work made at one provider, as the work reports them.
+- **`AsyncStoreClock`** · protocol · `StoreClock` for an `AsyncDocumentStore`: the store's own time, awaited.
 - **`BoundCompletionClient`** · protocol · A completion client built for one model, which it names.
 - **`CalibrationRating`** · model · A rater's score for one judged dimension of one result — a person's, or an agent's.
 - **`CallLedger`** · model · The calls one cell's candidate made that succeeded, across every tool, in recorded order.
@@ -160,6 +164,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`SecondJudgeScore`** · model · One dimension's stored judge score beside a second judge's answer to the same question.
 - **`SecondJudging`** · model · A second judge's scores of one result's stored evidence, recorded beside the scores the run's judge gave.
 - **`SimulatorLLM`** · protocol · The one-shot text-generation port the simulator role and the variation generator call.
+- **`StoreCalledOnEventLoop`** · exception · A store call was made on a thread that is running an event loop.
 - **`StoreClock`** · protocol · A store's own clock: the optional capability a `DocumentStore` may offer beside its methods.
 - **`StoreConflict`** · exception · A conditional write lost its race: the stored document no longer carries `if_match`.
 - **`SubjectSnapshot`** · model · The subject a set of observations was taken against, frozen at capture.
@@ -450,6 +455,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`CandidatePreparationFailed`** · exception · A candidate could not be built, and the cell is cleanly excluded rather than scored.
 - **`CandidateTelemetry`** · model · What one candidate's execution cost, and the windows nothing else timed.
 - **`CappedCompletion`** · class · One cell's view of a completion client: every call reserved against the run's cap, and settled to its cost.
+- **`CaseRecordings`** · class · One case's recordings in one corpus, read whole before a replay cell starts: each row, by id, read or refused.
 - **`CaseSetStore`** · protocol · Named, versioned case sets, and the test cases they name — what minting and resolving a set reads.
 - **`CassetteCorrupt`** · exception · The corpus cannot be used as recorded.
 - **`CassetteExhausted`** · exception · A replay asked for something one more time than its capture did.
@@ -1829,8 +1835,14 @@ The engine's generation package: the prompts and expanders that author test mate
 
 Storage adapters the engine ships: implementations of the one port a host stores through.
 
+**Functions**
+
+- **`bridge_async_store`** · function · Present `store` as the engine's synchronous `DocumentStore`.
+  <br>`bridge_async_store(store: AsyncDocumentStore, loop: asyncio.AbstractEventLoop) -> AsyncStoreBridge`
+
 **Classes**
 
+- **`AsyncStoreBridge`** · class · A `DocumentStore` whose every call runs on an async store's loop.
 - **`DocTypeRoute`** · dataclass · Which store each document type is kept in, decided by one of its facts.
 - **`InMemoryDocumentStore`** · class · A `DocumentStore` over one dict.
 - **`MisplacedDocument`** · exception · One id is held by two stores, or by a store its type is not placed in; the router never picks one.
@@ -2140,6 +2152,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`start_action_job(host: OpsHost, scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], label: str = '', budget_s: float = 3600.0, discard: Callable[[], Awaitable[None]] | None = None) -> JobsStarted`
 - **`start_job`** · async function · Start admitted work as a job: its record written, leased, and the work run in the background.
   <br>`start_job(host: OpsHost, admitted: AdmittedJob) -> JobsStarted`
+- **`start_paid_call`** · async function · Start a host action's one paid model call: admitted against its cap in the call, made in a job.
+  <br>`start_paid_call(host: OpsHost, scope_id: str, *, action: str, role: CompletionRole, model: str | None, purpose: OutOfRunPurpose, budget: OutOfRunBudget, call: PlannedCall, make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]], label: str, budget_s: float = 3600.0) -> JobsStarted`
 - **`sweep_job_id`** · function · The job id of a sweep.
   <br>`sweep_job_id(sweep_id: str) -> str`
 - **`sweep_launch`** · async function · Create the sweep's campaign and start the job that launches its arms in order.

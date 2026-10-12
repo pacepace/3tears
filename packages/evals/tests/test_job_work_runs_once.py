@@ -15,6 +15,7 @@ from threetears.evals.kernel import ConflictError, JobLeases
 from threetears.evals.run import EvalActionJob, action_job_work, run_job_work, start_job_work
 from threetears.evals.schema.base import EvalBaseModel
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture, settled
+from packages.evals.tests.off_loop import off_loop
 
 
 class _Draft(EvalBaseModel):
@@ -42,7 +43,7 @@ class _Spend:
 
 
 async def test_the_same_admitted_work_started_twice_is_refused_and_spends_once() -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     storage, executor = fixture.host.eval_host.storage, fixture.host.eval_host.blocking_executor
     spend = _Spend()
     work = action_job_work(TOYHOST_SCOPE, action="draft", run=spend.draft, discard=spend.discard)
@@ -56,22 +57,22 @@ async def test_the_same_admitted_work_started_twice_is_refused_and_spends_once()
 
     assert spend.calls == 1, "the second start paid for nothing"
     assert first.result == {"text": "draft 1"}
-    stored, _ = storage.load_job_record(EvalActionJob, work.record_id, TOYHOST_SCOPE)
+    stored, _ = off_loop(storage.load_job_record, EvalActionJob, work.record_id, TOYHOST_SCOPE)
     assert stored is not None and (stored.outcome, stored.result) == ("completed", {"text": "draft 1"})
 
 
 async def test_a_record_already_stored_under_the_works_id_is_never_written_over() -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     storage, executor = fixture.host.eval_host.storage, fixture.host.eval_host.blocking_executor
     spend = _Spend()
     work = action_job_work(TOYHOST_SCOPE, action="draft", run=spend.draft, discard=spend.discard)
     there = work.record.model_copy(update={"outcome": "completed", "result": {"text": "an earlier run's"}})
-    storage.save_job_record(there.to_dict(), if_match=None)
+    off_loop(storage.save_job_record, there.to_dict(), if_match=None)
     leases = JobLeases(storage, blocking_executor=executor)
 
     with pytest.raises(ConflictError):
         await run_job_work(work, store=storage, executor=executor, leases=leases)
 
-    stored, _ = storage.load_job_record(EvalActionJob, work.record_id, TOYHOST_SCOPE)
+    stored, _ = off_loop(storage.load_job_record, EvalActionJob, work.record_id, TOYHOST_SCOPE)
     assert stored == there, "the stored record was left as it was"
     assert (spend.calls, spend.released) == (0, 1), "nothing ran, and what admission built was released"

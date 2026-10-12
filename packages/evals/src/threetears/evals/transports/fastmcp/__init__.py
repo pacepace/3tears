@@ -71,7 +71,7 @@ from pydantic import ConfigDict, Field
 from threetears.evals.actions import ActionCatalogue, ActionOutcome, Caller, MountedTool, ToolSpec, standard_tools
 from threetears.evals.kernel import EvalServiceError
 from threetears.evals.ops import OpsHost
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 

@@ -71,6 +71,7 @@ from packages.evals.tests.ops_support import (
     launched_runs,
     ops_fixture,
 )
+from packages.evals.tests.off_loop import off_loop
 
 #: The model the priced history is for, and the costs its three results record.
 PRICED_MODEL = "extractor-v2"
@@ -141,13 +142,13 @@ async def _call(tool: MountedTool, fixture: OpsFixture, arguments: dict[str, Any
 
 
 async def test_scope_pivot_returns_the_lens_table(evals: MountedTool) -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     arguments = {"row_factor": "test_case_id", "column_factor": "model", "metric": "cost_usd"}
 
     outcome = await _call(evals, fixture, {"action": "scope_pivot", **arguments})
 
     assert not outcome.is_error
-    direct = scope_pivot(fixture.host.eval_host, TOYHOST_SCOPE, **arguments)
+    direct = off_loop(scope_pivot, fixture.host.eval_host, TOYHOST_SCOPE, **arguments)
     assert outcome.structured == direct.model_dump(mode="json")
     table = PivotTable.model_validate(outcome.structured)
     assert table.cells and table.n_observations == sum(cell.n for cell in table.cells)
@@ -157,7 +158,7 @@ async def test_scope_pivot_returns_the_lens_table(evals: MountedTool) -> None:
 
 
 async def test_scope_pivot_reads_the_subject_and_status_it_is_given(evals: MountedTool) -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     base = {"action": "scope_pivot", "row_factor": "test_case_id", "column_factor": "model", "metric": "cost_usd"}
 
     elsewhere = await _call(evals, fixture, {**base, "subject_filter": "no-such-subject"})
@@ -170,7 +171,7 @@ async def test_scope_pivot_reads_the_subject_and_status_it_is_given(evals: Mount
 
 
 async def test_a_pivot_says_what_it_left_out(evals: MountedTool) -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     archived = fixture.campaign.run_ids[0]
     await _call(evals, fixture, {"action": "run_archive", "run_id": archived, "archived": True})
 
@@ -185,13 +186,13 @@ async def test_a_pivot_says_what_it_left_out(evals: MountedTool) -> None:
 
 
 async def test_scope_history_returns_the_lens_series(evals: MountedTool) -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     arguments = {"metric": "cost_usd", "min_relative_change": 0.1}
 
     outcome = await _call(evals, fixture, {"action": "scope_history", **arguments})
 
     assert not outcome.is_error
-    direct = scope_history(fixture.host.eval_host, TOYHOST_SCOPE, **arguments)
+    direct = off_loop(scope_history, fixture.host.eval_host, TOYHOST_SCOPE, **arguments)
     assert outcome.structured == direct.model_dump(mode="json")
     result = HistoryResult.model_validate(outcome.structured)
     assert result.min_relative_change == 0.1 and result.series
@@ -202,13 +203,13 @@ async def test_scope_history_returns_the_lens_series(evals: MountedTool) -> None
 
 
 async def test_scope_export_is_the_serializers_bytes_with_its_counts_beside_it(evals: MountedTool) -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
 
     outcome = await _call(evals, fixture, {"action": "scope_export"})
 
     assert not outcome.is_error
     export = ScoreExport.model_validate(outcome.structured)
-    assert export == scope_export(fixture.host.eval_host, TOYHOST_SCOPE)
+    assert export == off_loop(scope_export, fixture.host.eval_host, TOYHOST_SCOPE)
     assert export.format == "csv"
     assert export.body.endswith("\r\n"), "the CSV's final row terminator is the serializer's, kept"
     assert len(list(csv.DictReader(io.StringIO(export.body)))) == export.n_records > 0
@@ -217,7 +218,7 @@ async def test_scope_export_is_the_serializers_bytes_with_its_counts_beside_it(e
 
 
 async def test_a_json_export_carries_the_projection(evals: MountedTool) -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     named = fixture.campaign.run_ids[0]
 
     outcome = await _call(
@@ -231,7 +232,7 @@ async def test_a_json_export_carries_the_projection(evals: MountedTool) -> None:
 
 
 async def test_launch_estimate_prices_the_launch_by_the_launchs_own_rule(evals: MountedTool) -> None:
-    fixture = _priced(ops_fixture())
+    fixture = off_loop(_priced, off_loop(ops_fixture))
     arguments = _launching(toyhost_template().id, PRICED_MODEL, "unheard-of", k_runs=2)
 
     outcome = await _call(evals, fixture, {"action": "launch_estimate", **arguments})
@@ -262,7 +263,7 @@ async def test_launch_estimate_prices_the_launch_by_the_launchs_own_rule(evals: 
 
 async def test_an_estimate_raises_what_the_launch_refuses_before_pricing_a_kinds_plan_first(evals: MountedTool) -> None:
     """A kind's request-level refusal reaches the operator ahead of "cannot be priced", on a host that prices nothing."""
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     unpriced = OpsFixture(
         replace(fixture.host, launch=replace(fixture.host.launch, launch_pricer=None)), fixture.campaign, []
     )
@@ -277,7 +278,7 @@ async def test_an_estimate_raises_what_the_launch_refuses_before_pricing_a_kinds
 
 
 async def test_an_estimate_handed_back_as_predicted_cost_sits_beside_the_cost_observed(evals: MountedTool) -> None:
-    fixture = _priced(ops_fixture())
+    fixture = off_loop(_priced, off_loop(ops_fixture))
     template_id = toyhost_template().id
     estimated = await _call(evals, fixture, {"action": "launch_estimate", **_launching(template_id, PRICED_MODEL)})
     arguments = {"row_factor": "template_id", "column_factor": "model", "metric": "cost_usd"}
@@ -287,7 +288,8 @@ async def test_an_estimate_handed_back_as_predicted_cost_sits_beside_the_cost_ob
     )
 
     assert not outcome.is_error
-    direct = scope_pivot(
+    direct = off_loop(
+        scope_pivot,
         fixture.host.eval_host,
         TOYHOST_SCOPE,
         **arguments,
@@ -302,7 +304,7 @@ async def test_an_estimate_handed_back_as_predicted_cost_sits_beside_the_cost_ob
 
 
 async def test_after_the_launch_each_predicted_cell_says_how_much_of_it_the_launch_made(evals: MountedTool) -> None:
-    fixture = _priced(ops_fixture())
+    fixture = off_loop(_priced, off_loop(ops_fixture))
     template_id = toyhost_template().id
     launching = _launching(template_id, PRICED_MODEL, k_runs=1)
     estimated = await _call(evals, fixture, {"action": "launch_estimate", **launching})
@@ -341,7 +343,7 @@ async def test_after_the_launch_each_predicted_cell_says_how_much_of_it_the_laun
 async def test_a_case_count_below_one_is_refused_naming_it(evals: MountedTool) -> None:
     outcome = await _call(
         evals,
-        ops_fixture(),
+        off_loop(ops_fixture),
         {"action": "launch_estimate", **_launching("t", PRICED_MODEL), "n_test_cases": 0},
     )
     assert outcome.is_error and "launch_estimate was called with values it cannot take" in outcome.text
@@ -353,7 +355,7 @@ async def test_a_cap_above_the_hosts_is_refused_by_the_operation_and_the_action(
     evals: MountedTool, action: str
 ) -> None:
     """``max_cost_usd`` may only lower the host's ceiling — on the operation and on the action an agent calls."""
-    fixture = _priced(ops_fixture())
+    fixture = off_loop(_priced, off_loop(ops_fixture))
     above = TOYHOST_COST_CEILING_USD + 1.0
     arguments = _launching(toyhost_template().id, PRICED_MODEL, max_cost_usd=above)
     operation = {"run_launch": run_launch, "launch_estimate": launch_estimate}[action]
@@ -367,13 +369,13 @@ async def test_a_cap_above_the_hosts_is_refused_by_the_operation_and_the_action(
 
 
 async def test_a_status_no_run_carries_is_refused_naming_it(evals: MountedTool) -> None:
-    outcome = await _call(evals, ops_fixture(), {"action": "scope_history", "run_status": "done"})
+    outcome = await _call(evals, off_loop(ops_fixture), {"action": "scope_history", "run_status": "done"})
     assert outcome.is_error and "scope_history was called with values it cannot take" in outcome.text
     assert "- run_status" in outcome.text
 
 
 async def test_an_export_format_there_is_not_is_refused_naming_it(evals: MountedTool) -> None:
-    outcome = await _call(evals, ops_fixture(), {"action": "scope_export", "export_format": "parquet"})
+    outcome = await _call(evals, off_loop(ops_fixture), {"action": "scope_export", "export_format": "parquet"})
     assert outcome.is_error and "scope_export was called with values it cannot take" in outcome.text
     assert "- export_format:" in outcome.text
 
@@ -381,7 +383,7 @@ async def test_an_export_format_there_is_not_is_refused_naming_it(evals: Mounted
 async def test_a_plan_that_is_not_an_estimate_is_refused(evals: MountedTool) -> None:
     outcome = await _call(
         evals,
-        ops_fixture(),
+        off_loop(ops_fixture),
         {
             "action": "scope_pivot",
             "row_factor": "template_id",
@@ -396,14 +398,14 @@ async def test_a_plan_that_is_not_an_estimate_is_refused(evals: MountedTool) -> 
 
 
 async def test_a_lens_refusal_is_a_refused_call_with_the_lens_reason(evals: MountedTool) -> None:
-    outcome = await _call(evals, ops_fixture(), {"action": "scope_history", "metric": "banana"})
+    outcome = await _call(evals, off_loop(ops_fixture), {"action": "scope_history", "metric": "banana"})
     assert outcome.is_error and outcome.text.startswith("refused: scope_history: ")
     assert "banana" in outcome.text
 
 
 async def test_the_campaigns_run_ids_are_not_an_exports(evals: MountedTool) -> None:
     """``run_ids`` means a campaign's membership on this tool; an export names its runs ``export_run_ids``."""
-    outcome = await _call(evals, ops_fixture(), {"action": "scope_export", "run_ids": ["r"]})
+    outcome = await _call(evals, off_loop(ops_fixture), {"action": "scope_export", "run_ids": ["r"]})
     assert outcome.is_error and outcome.text.startswith("refused: scope_export does not take run_ids.")
     assert "- export_run_ids (" in outcome.text
 

@@ -464,6 +464,7 @@ right queue, and replace `main()`:
 ```python
 from threetears.evals.ops import scope_history
 from threetears.evals.quick import callable_host
+from threetears.evals.run import run_blocking
 from threetears.evals.storage import SqliteDocumentStore
 ```
 
@@ -477,7 +478,8 @@ async def main() -> None:
     store = SqliteDocumentStore("triage.sqlite")
     await run_eval(CASES, route_v2, [correct], scope_id="tutorial", k=2, store=store)
     host = callable_host([correct], store=store)
-    for series in scope_history(host, "tutorial", metric="correct").series:
+    history = await run_blocking(host.blocking_executor, scope_history, host, "tutorial", metric="correct")
+    for series in history.series:
         for point in series.points:
             step = f", {point.regression.label} from the run before" if point.regression else ""
             print(f"{point.created_at} {series.model}: correct {point.value:.2f} over {point.n} result(s){step}")
@@ -496,7 +498,8 @@ Run the file twice. The second run reads the first run's results from the file, 
 - **`callable_host([correct], store=store)`** is the host `run_eval` built for the run. Any later program reads
   the runs through it: the same scorers, over a store opened on the same file.
 - **`scope_history`** follows one reading over time, one series per candidate, oldest run first. Name a scorer
-  as `metric=`. Each run is tested against the run before it, over the cases both ran. `regressed` is the step
+  as `metric=`. It reads the store, which blocks, so async code calls it through `run_blocking`, on the host's
+  executor: no store call is ever made on the event loop. Each run is tested against the run before it, over the cases both ran. `regressed` is the step
   to act on. `not_separated`, as here, means the two runs could not be told apart, never that nothing changed.
 - **`compare(..., store=store)`** keeps the arms and their campaign the same way, and `margins=`, `ranges=` and
   `guardrails=` work exactly as in steps 5 and 7. A later program reads the comparison on the margins, ranges and

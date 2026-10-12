@@ -18,6 +18,7 @@ from pathlib import Path
 
 from threetears.evals.analysis import ChartBlock, inspect_campaign_bundle, report_html, report_markdown
 from threetears.evals.quick import compare
+from threetears.evals.run import run_blocking
 from threetears.evals.vega import VegaRenderer
 
 # -----------------------------------------------------------------------------
@@ -83,7 +84,13 @@ async def main(out_dir: Path = Path("eval-report")) -> dict[tuple[str, str], str
     (out_dir / "report.md").write_text(report_markdown(report), encoding="utf-8")  # for a pull request or an agent
     (out_dir / "report.html").write_text(report_html(report), encoding="utf-8")  # for a person; no script
     # The evidence every number was computed from; the report cites its fingerprint.
-    bundle = inspect_campaign_bundle(comparison.host, comparison.campaign_id, comparison.scope_id)
+    bundle = await run_blocking(  # a store read, so it runs off the event loop
+        comparison.host.blocking_executor,
+        inspect_campaign_bundle,
+        comparison.host,
+        comparison.campaign_id,
+        comparison.scope_id,
+    )
     (out_dir / "bundle.json").write_text(bundle.model_dump_json(indent=2), encoding="utf-8")
 
     # A chart block carries an intent, not a picture; the Vega-Lite renderer compiles it to a spec.

@@ -33,7 +33,7 @@ from threetears.evals.kernel.host.sweepables import CANDIDATE_KIND_LEVER, CANDID
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.kernel.surface import CellFacts
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 

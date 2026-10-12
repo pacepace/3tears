@@ -84,6 +84,7 @@ from packages.evals.tests.factories import (
     make_eval_run,
     minimal_declaration,
 )
+from packages.evals.tests.off_loop import off_loop
 
 _SCOPE = "uni-1"
 
@@ -343,11 +344,11 @@ class TestTheRunnerCountsTheTurnsDelivered:
             scope_id="all-failed-turns",
             k=1,
         )
-        bundle = inspect_campaign_bundle(comparison.host, comparison.campaign_id, "all-failed-turns").bundle
+        bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, "all-failed-turns").bundle
         stored = [
             result
             for run_id in bundle.run_ids
-            for result in list_results(comparison.host.storage, run_id, "all-failed-turns")
+            for result in off_loop(list_results, comparison.host.storage, run_id, "all-failed-turns")
         ]
         assert sorted({(result.candidate_error is None, result.turns_delivered) for result in stored}) == [
             (False, 0),
@@ -758,7 +759,7 @@ class TestAQuickClassifierLandsItsRefusalAsAMiss:
 
     async def test_the_refusing_arm_has_an_accuracy_and_its_refusals_are_unusable_answers(self) -> None:
         comparison = await self._comparison()
-        bundle = inspect_campaign_bundle(comparison.host, comparison.campaign_id, _QUICK_SCOPE).bundle
+        bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, _QUICK_SCOPE).bundle
         refusing = next(cell for cell in bundle.cell_measures if cell.n_candidate_failed)
         summaries = _summaries(refusing)
         assert (summaries["accuracy"].mean, summaries["accuracy"].n) == (0.0, 8)

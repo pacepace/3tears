@@ -35,6 +35,7 @@ from threetears.evals.quick import (
 from threetears.evals.run import get_result_trace, list_results, list_runs, list_templates
 from packages.evals.tests.bundle_support import one_batch_bundle
 from packages.evals.tests.fixtures.courierhost import ON_TIME_RATE, courier_host
+from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "run-eval-tests"
 CASES = [{"n": 1}, {"n": 2}, {"n": 3}]
@@ -104,8 +105,8 @@ async def test_the_answer_is_stored_verbatim_when_json_holds_it_and_as_its_repr_
     host = callable_host([graded])
     summary = await run_eval(CASES[:2], as_set, [graded], scope_id=SCOPE, host=host, k=1)
     stored = []
-    for result in list_results(host.storage, summary.run_id, SCOPE):
-        trace = get_result_trace(host.storage, result)
+    for result in off_loop(list_results, host.storage, summary.run_id, SCOPE):
+        trace = off_loop(get_result_trace, host.storage, result)
         assert trace is not None
         stored.append(trace.trace)
     assert sorted(stored, key=str) == [[{"repr": "{1}"}], [{"value": 2}]]
@@ -121,7 +122,7 @@ async def test_a_callers_host_is_used_as_given_world_and_all() -> None:
     summary = await run_eval(CASES, double, [on_time_rate], scope_id=SCOPE, host=host, model="doubler", k=1)
     assert summary.status == "completed"
     assert {m.name: m.n for m in summary.measures}[ON_TIME_RATE] == 3
-    (run,) = list_runs(host, SCOPE)
+    (run,) = off_loop(list_runs, host, SCOPE)
     assert run.candidate_model == "doubler"
     # The callable kind attaches no carrier, so the courier's one dimension is out of play.
     assert run.world_placements == {"road_closures": "out_of_play"}
@@ -133,8 +134,11 @@ async def test_two_calls_over_the_same_cases_share_a_template_and_different_case
     second = await run_eval(CASES, double, [even], scope_id=SCOPE, host=host, model="again")
     other = await run_eval(CASES[:2], double, [even], scope_id=SCOPE, host=host)
     assert first.template_id == second.template_id != other.template_id
-    assert {template.id for template in list_templates(host.storage, SCOPE)} == {first.template_id, other.template_id}
-    assert len(list_runs(host, SCOPE)) == 3
+    assert {template.id for template in off_loop(list_templates, host.storage, SCOPE)} == {
+        first.template_id,
+        other.template_id,
+    }
+    assert len(off_loop(list_runs, host, SCOPE)) == 3
 
 
 async def test_a_cancelled_call_settles_its_run_as_cancelled() -> None:
@@ -151,7 +155,7 @@ async def test_a_cancelled_call_settles_its_run_as_cancelled() -> None:
     call.cancel()
     with pytest.raises(asyncio.CancelledError):
         await call
-    (run,) = list_runs(host, SCOPE)
+    (run,) = off_loop(list_runs, host, SCOPE)
     assert run.status == "cancelled"
 
 
@@ -174,7 +178,7 @@ async def test_cases_that_are_not_a_list_of_json_objects_are_refused(cases: Any,
     host = callable_host([even])
     with pytest.raises(ValueError, match=said):
         await run_eval(cases, double, [even], scope_id=SCOPE, host=host)
-    assert list_templates(host.storage, SCOPE) == []
+    assert off_loop(list_templates, host.storage, SCOPE) == []
 
 
 @pytest.mark.parametrize(
@@ -196,7 +200,7 @@ async def test_a_scorer_the_callers_host_declares_no_measure_for_is_refused() ->
     host = courier_host()
     with pytest.raises(ValueError, match="declares no measure named even"):
         await run_eval(CASES, double, [even], scope_id=SCOPE, host=host)
-    assert list_templates(host.storage, SCOPE) == []
+    assert off_loop(list_templates, host.storage, SCOPE) == []
 
 
 class _ATemperature(pydantic.BaseModel):
@@ -246,7 +250,7 @@ async def test_a_callers_host_must_declare_what_a_run_eval_runs_rig_holds(
     host = _host_whose_callable_contract_is(contract)
     with pytest.raises(ValueError, match=said):
         await run_eval(CASES, double, [even], scope_id=SCOPE, host=host)
-    assert list_templates(host.storage, SCOPE) == []
+    assert off_loop(list_templates, host.storage, SCOPE) == []
 
 
 async def test_a_callers_host_declaring_the_callable_contract_runs_and_its_runs_omit_the_simulator() -> None:
@@ -254,7 +258,7 @@ async def test_a_callers_host_declaring_the_callable_contract_runs_and_its_runs_
     host = _host_whose_callable_contract_is(CALLABLE_KIND_CONTRACT)
     summary = await run_eval(CASES, double, [even], scope_id=SCOPE, host=host, k=1)
     assert summary.status == "completed"
-    (run,) = list_runs(host, SCOPE)
+    (run,) = off_loop(list_runs, host, SCOPE)
     assert run.max_cost_usd is None, "the one-call launch runs uncapped, which is why the ceiling is unseated"
     assert host.profile.omits_apparatus("simulator_model", [(run, None)])
     assert host.profile.omits_apparatus("judge_model", [(run, None)])
@@ -323,8 +327,10 @@ async def test_an_imperfect_classifier_reports_its_confusion_matrix_and_each_lab
     assert "wait: precision none (n=0), recall 0 (0/1" in rendered
 
     # Each cell landed the two core measures a classifier kind lands, and its case carries its label.
-    stored_cases = {case.id: case for case in host.storage.query_test_cases(SCOPE, template_id=summary.template_id)}
-    for result in list_results(host.storage, summary.run_id, SCOPE):
+    stored_cases = {
+        case.id: case for case in off_loop(host.storage.query_test_cases, SCOPE, template_id=summary.template_id)
+    }
+    for result in off_loop(list_results, host.storage, summary.run_id, SCOPE):
         case = stored_cases[result.test_case_id]
         expected, given = case.host_payload["expected"], ANSWERS[case.host_payload["case"]["text"]]
         assert result.host_measures == {"match": given == expected, "confusion_cell": confusion_cell(expected, given)}
@@ -334,7 +340,7 @@ async def test_the_analysis_reads_a_rung_zero_classifier_as_it_reads_a_classifie
     """The hop past the summary: the stored results give the bundle accuracy and the per-label statistics."""
     host = callable_host()
     summary = await run_eval(LABELLED, classify, scope_id=SCOPE, expected=expected_label, host=host, k=1)
-    bundle = one_batch_bundle(list_results(host.storage, summary.run_id, SCOPE), profile=host.profile)
+    bundle = one_batch_bundle(off_loop(list_results, host.storage, summary.run_id, SCOPE), profile=host.profile)
     (cell,) = bundle.cell_measures
     measures = {measure.name: measure for measure in cell.measures.measures}
 
@@ -382,7 +388,9 @@ async def test_an_answer_with_whitespace_at_its_ends_is_a_label_of_its_own() -> 
         "match agrees with the matrix: the padded answer is a miss in both"
     )
     assert "'move '" in summary.render(), "a label's edge whitespace is shown, not left invisible"
-    stored = [result.host_measures["confusion_cell"] for result in list_results(host.storage, summary.run_id, SCOPE)]
+    stored = [
+        result.host_measures["confusion_cell"] for result in off_loop(list_results, host.storage, summary.run_id, SCOPE)
+    ]
     assert ("move", "move ") in [confusion_of(cell) for cell in stored if isinstance(cell, str)]
 
 
@@ -425,7 +433,7 @@ async def test_a_run_with_no_scorer_expected_label_or_judge_is_refused() -> None
         ValueError, match=r"at least one scorer, a classifier's expected labels \(expected=\) or a judge"
     ):
         await run_eval(LABELLED, classify, scope_id=SCOPE, host=host)
-    assert list_templates(host.storage, SCOPE) == []
+    assert off_loop(list_templates, host.storage, SCOPE) == []
 
 
 @pytest.mark.parametrize("name", ["match", "confusion_cell", "accuracy"])
@@ -440,7 +448,7 @@ async def test_a_scorer_taking_a_classifier_measures_name_is_refused(name: str, 
         await run_eval(
             LABELLED, classify, [grade], scope_id=SCOPE, expected=expected_label if classifies else None, host=host
         )
-    assert list_templates(host.storage, SCOPE) == []
+    assert off_loop(list_templates, host.storage, SCOPE) == []
     with pytest.raises(ValueError, match="takes a measure the classifier track owns"):
         callable_host([grade])
 
@@ -464,7 +472,7 @@ async def test_a_scorer_taking_a_core_measures_name_is_refused(name: str, given_
     with pytest.raises(ValueError, match=f"a scorer named {name} takes the name of an engine core measure"):
         await run_eval(LABELLED, candidate, [grade], scope_id=SCOPE, host=host if given_host else None)
     assert ran == [], "the candidate ran before the scorer's name was refused"
-    assert list_templates(host.storage, SCOPE) == []
+    assert off_loop(list_templates, host.storage, SCOPE) == []
     with pytest.raises(ValueError, match=f"rename the scorer's def \\(for example, {name}_grade\\)"):
         callable_host([grade])
 
@@ -488,7 +496,7 @@ async def test_an_expected_label_no_confusion_matrix_could_hold_is_refused(expec
     host = callable_host()
     with pytest.raises(ValueError, match=said):
         await run_eval(LABELLED, classify, scope_id=SCOPE, expected=expected, host=host)
-    assert list_templates(host.storage, SCOPE) == []
+    assert off_loop(list_templates, host.storage, SCOPE) == []
 
 
 @pytest.mark.parametrize(
@@ -505,7 +513,7 @@ async def test_a_callers_host_is_held_to_the_callable_contract_for_a_classifier_
     host = _host_whose_callable_contract_is(contract)
     with pytest.raises(ValueError, match=said):
         await run_eval(LABELLED, classify, scope_id=SCOPE, expected=expected_label, host=host)
-    assert list_templates(host.storage, SCOPE) == []
+    assert off_loop(list_templates, host.storage, SCOPE) == []
 
 
 async def test_a_classifiers_scorer_the_callers_host_declares_no_measure_for_is_refused() -> None:
@@ -513,6 +521,6 @@ async def test_a_classifiers_scorer_the_callers_host_declares_no_measure_for_is_
     host = courier_host()
     with pytest.raises(ValueError, match="declares no measure named even"):
         await run_eval(LABELLED, classify, [even], scope_id=SCOPE, expected=expected_label, host=host)
-    assert list_templates(host.storage, SCOPE) == []
+    assert off_loop(list_templates, host.storage, SCOPE) == []
     summary = await run_eval(LABELLED, classify, scope_id=SCOPE, expected=expected_label, host=host, k=1)
     assert summary.status == "completed" and summary.confusion

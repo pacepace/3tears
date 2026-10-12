@@ -88,7 +88,7 @@ from threetears.evals.schema.models import (
     label_key_of,
 )
 from threetears.evals.schema.subject import SubjectSnapshot
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_RESULT, FIND_RUN
 
 if TYPE_CHECKING:
@@ -981,7 +981,12 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
         )
         teardown = contextlib.AsyncExitStack()
         teardown.push_async_callback(kind.aclose)
-        cases = request.cases_or(_template_cases(host.storage, request.template, request.scope_id))
+        # The template's cases are a store read, so they are read off the loop.
+        cases = request.cases_or(
+            await run_blocking(
+                host.blocking_executor, _template_cases, host.storage, request.template, request.scope_id
+            )
+        )
         return await launch_run(
             launching,
             request,

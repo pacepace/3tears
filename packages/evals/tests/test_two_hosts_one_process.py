@@ -36,6 +36,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES
 from packages.evals.tests.fixtures.toyhost.run import execute_toyhost_run, toyhost_run_campaign
+from packages.evals.tests.off_loop import off_loop
 
 #: Words only the toy host uses, and that its run-path bundle carries: two levers, a third lever's
 #: name and the campaign's behavior. Its one reported measure is the shared name, below.
@@ -78,8 +79,8 @@ async def _toy(host: EvalHost, timeline: list[str]) -> BundleInspection:
     timeline.append("toy started")
     path = await execute_toyhost_run(host=host)
     campaign = toyhost_run_campaign(path)
-    host.storage.save_campaign(campaign)
-    inspection = inspect_campaign_bundle(host, campaign.id, TOYHOST_SCOPE)
+    off_loop(host.storage.save_campaign, campaign)
+    inspection = off_loop(inspect_campaign_bundle, host, campaign.id, TOYHOST_SCOPE)
     timeline.append("toy ended")
     return inspection
 
@@ -87,7 +88,7 @@ async def _toy(host: EvalHost, timeline: list[str]) -> BundleInspection:
 async def _courier(host: EvalHost, timeline: list[str]) -> BundleInspection:
     timeline.append("courier started")
     campaign = await run_courier_campaign(host)
-    inspection = inspect_campaign_bundle(host, campaign.id, COURIER_SCOPE)
+    inspection = off_loop(inspect_campaign_bundle, host, campaign.id, COURIER_SCOPE)
     timeline.append("courier ended")
     return inspection
 

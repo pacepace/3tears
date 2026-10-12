@@ -45,7 +45,7 @@ from threetears.evals.schema.models import CoreSchemaVersion, SchemaVersion, utc
 from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION, REGENERABLE_SCHEMA_VERSION
 from threetears.evals.schema.prose import ModelProse
 from threetears.evals.kernel.surface import DecisionSurface
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 

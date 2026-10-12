@@ -22,6 +22,7 @@ from threetears.evals.analysis import DisclosureBlock, TableBlock, report_markdo
 from threetears.evals.quick import ARM_LEVER, SHARED_ARM_MODEL, Comparison, callable_host, compare
 from packages.evals.tests.example_loader import load_example
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
+from packages.evals.tests.off_loop import off_loop
 
 #: The example under test.
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "compare_two_prompts.py"
@@ -97,13 +98,13 @@ async def test_the_control_resolves_to_the_variant_the_control_arm_ran() -> None
     """The declared control is the key the control run's observations carry, as the engine reads it."""
     comparison = await _compare()
     storage = comparison.host.storage
-    campaign = storage.load_campaign(comparison.campaign_id, SCOPE)
+    campaign = off_loop(storage.load_campaign, comparison.campaign_id, SCOPE)
     assert campaign is not None and campaign.declared_design is not None
     design = campaign.declared_design
     run_id = comparison.arms["hasty"].run_id
-    assert design.control == variant_key_of_run(storage.query_eval_results_by_run(run_id, SCOPE))
+    assert design.control == variant_key_of_run(off_loop(storage.query_eval_results_by_run, run_id, SCOPE))
     assert design.control != variant_key_of_run(
-        storage.query_eval_results_by_run(comparison.arms["careful"].run_id, SCOPE)
+        off_loop(storage.query_eval_results_by_run, comparison.arms["careful"].run_id, SCOPE)
     )
     (axis,) = design.axes
     assert axis.axis_id == ARM_LEVER
@@ -152,7 +153,7 @@ async def test_the_arms_share_a_host_the_caller_hands_over() -> None:
     host = callable_host()
     comparison = await _compare(host=host)
     assert comparison.host is host
-    assert host.storage.load_campaign(comparison.campaign_id, SCOPE) is not None
+    assert off_loop(host.storage.load_campaign, comparison.campaign_id, SCOPE) is not None
 
 
 async def test_every_arm_is_started_in_one_launch_so_the_report_discloses_no_separate_starts() -> None:
@@ -162,7 +163,9 @@ async def test_every_arm_is_started_in_one_launch_so_the_report_discloses_no_sep
     so twice: the runs "were not started as one launch", and they "were measured over non-overlapping spans".
     """
     comparison = await _compare()
-    runs = [comparison.host.storage.load_eval_run(summary.run_id, SCOPE) for summary in comparison.arms.values()]
+    runs = [
+        off_loop(comparison.host.storage.load_eval_run, summary.run_id, SCOPE) for summary in comparison.arms.values()
+    ]
     groups = {run.launch_group_id for run in runs if run is not None}
     assert len(groups) == 1 and None not in groups
     disclosures = [block.text for block in comparison.report.blocks if isinstance(block, DisclosureBlock)]
@@ -174,20 +177,23 @@ async def test_every_arm_is_started_in_one_launch_so_the_report_discloses_no_sep
 async def test_an_explicit_intent_is_the_one_template_every_arm_shares() -> None:
     comparison = await _compare(intent="Route each ticket to its queue.")
     (template_id,) = {summary.template_id for summary in comparison.arms.values()}
-    assert comparison.host.storage.load_template(template_id or "", SCOPE).intent == "Route each ticket to its queue."
+    assert (
+        off_loop(comparison.host.storage.load_template, template_id or "", SCOPE).intent
+        == "Route each ticket to its queue."
+    )
 
 
 async def test_with_no_intent_arms_whose_docstrings_differ_share_the_generic_one() -> None:
     comparison = await _compare()
     (template_id,) = {summary.template_id for summary in comparison.arms.values()}
-    intent = comparison.host.storage.load_template(template_id or "", SCOPE).intent
+    intent = off_loop(comparison.host.storage.load_template, template_id or "", SCOPE).intent
     assert intent == "Answer each case so that every scorer grades the answer well."
 
 
 async def test_arms_whose_candidates_share_a_docstring_share_its_first_line_as_the_intent() -> None:
     comparison = await _compare(candidates={"a": careful, "b": careful}, control="a")
     (template_id,) = {summary.template_id for summary in comparison.arms.values()}
-    intent = comparison.host.storage.load_template(template_id or "", SCOPE).intent
+    intent = off_loop(comparison.host.storage.load_template, template_id or "", SCOPE).intent
     assert intent == "Billing whenever money is mentioned, else a bug."
 
 
@@ -205,7 +211,7 @@ async def test_unusable_arms_are_refused_before_anything_runs(
     host = callable_host()
     with pytest.raises(ValueError, match=refusal):
         await _compare(candidates=candidates, control=control, host=host)
-    assert host.storage.list_campaigns(SCOPE) == []
+    assert off_loop(host.storage.list_campaigns, SCOPE) == []
 
 
 async def test_the_example_runs_offline_and_prints_the_verdict(

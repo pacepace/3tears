@@ -35,7 +35,7 @@ from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
 from threetears.evals.kernel.out_of_run import AdmittedCall, PlannedCall
 from threetears.evals.kernel.authored import strict_response_format
 from threetears.evals.kernel.provider import extract_json
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.out_of_run import OutOfRunBudget

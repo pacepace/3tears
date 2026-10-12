@@ -41,6 +41,7 @@ from packages.evals.tests.fixtures.toyhost.run import (
     toyhost_template,
     toyhost_test_cases,
 )
+from packages.evals.tests.off_loop import off_loop
 
 # =============================================================================
 # AsyncDelivery — one entry, one story
@@ -168,11 +169,11 @@ async def test_every_toy_cell_stores_the_fields_its_extraction_missed() -> None:
     """The toy kind names its misses on ``kind_payload``; each stored result carries exactly them."""
     path = await execute_toyhost_run(host=toyhost_host())
 
-    results = path.results
+    results = await path.results()
     assert results, "the drive produced no cells"
     misses = {(script.model, doc): list(fields) for script in TOY_SCRIPTS for doc, fields in script.misses.items()}
     for result in results:
-        trace = path.trace(result)
+        trace = await path.trace(result)
         assert trace is not None
         document_id = trace.trace[0]["document_id"]
         expected = misses.get((result.model, document_id), [])
@@ -241,7 +242,7 @@ async def test_a_cell_cut_off_by_its_deadline_keeps_the_kinds_payload_and_delive
     run = toyhost_run(model=RUN_MODELS[0], template=template, kind=kind, world=world).model_copy(
         update={"k_runs": 1, "test_case_ids": [case.id]}
     )
-    host.storage.save_eval_run(run)
+    off_loop(host.storage.save_eval_run, run)
 
     await execute_run(
         host,
@@ -252,7 +253,7 @@ async def test_a_cell_cut_off_by_its_deadline_keeps_the_kinds_payload_and_delive
         options=RunnerOptions(candidate_kinds={TOY_EXTRACTOR_KIND: lambda _cell: kind}, cell_timeout_s=0.05),
     )
 
-    (result,) = host.storage.query_eval_results_by_run(run.id, run.scope_id)
+    (result,) = off_loop(host.storage.query_eval_results_by_run, run.id, run.scope_id)
     assert result.termination == "cell_timeout"
     assert result.kind_payload == {"phase": "waiting on the scout"}
     assert result.async_deliveries is not None

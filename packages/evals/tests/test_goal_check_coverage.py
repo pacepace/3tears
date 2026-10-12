@@ -17,6 +17,7 @@ from threetears.evals.run.runner import RunnerOptions, execute_run, hold_to_goal
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ScriptedExtractionClient, ToyExtractorKind
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_run, toyhost_template, toyhost_test_cases
+from packages.evals.tests.off_loop import off_loop
 
 _CHECKS = ('state.a == "x"', 'call_count("t.act") == 1')
 _KIND_FACT = GoalStateOutcome(expression="field_accuracy >= 0.92", passed=True)
@@ -81,7 +82,7 @@ async def test_a_run_whose_kind_was_built_without_the_template_s_checks_is_refus
     run = toyhost_run(model=RUN_MODELS[0], template=template, kind=kind, world=world).model_copy(
         update={"k_runs": 1, "test_case_ids": [case.id]}
     )
-    host.storage.save_eval_run(run)
+    off_loop(host.storage.save_eval_run, run)
 
     with pytest.raises(ValueError, match="without grading the template's goal check"):
         await execute_run(
@@ -119,7 +120,7 @@ async def test_a_failed_candidate_s_stored_result_carries_every_template_check_a
     run = toyhost_run(model=RUN_MODELS[0], template=template, kind=kind, world=world).model_copy(
         update={"k_runs": 1, "test_case_ids": [case.id]}
     )
-    host.storage.save_eval_run(run)
+    off_loop(host.storage.save_eval_run, run)
 
     await execute_run(
         host,
@@ -130,7 +131,7 @@ async def test_a_failed_candidate_s_stored_result_carries_every_template_check_a
         options=RunnerOptions(candidate_kinds={TOY_EXTRACTOR_KIND: lambda _cell: kind}),
     )
 
-    (stored,) = host.storage.query_eval_results_by_run(run.id, run.scope_id)
+    (stored,) = off_loop(host.storage.query_eval_results_by_run, run.id, run.scope_id)
     assert stored.candidate_error is not None
     assert [(fact.expression, fact.passed) for fact in stored.goal_state_outcomes] == [
         (expression, False) for expression in template.goal_state_checks

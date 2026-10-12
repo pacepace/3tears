@@ -16,7 +16,8 @@ import os
 
 from threetears.evals.quick import Dimension, World, WorldTool, WorldTools, callable_host, run_eval
 from threetears.evals.analysis import EvalSummary
-from threetears.evals.run import get_result_trace, list_results
+from threetears.evals.run import get_result_trace, list_results, run_blocking
+from threetears.evals.schema import EvalResult, EvalTrace
 
 MODEL = "claude-haiku-5-5"
 
@@ -139,10 +140,15 @@ async def main() -> EvalSummary:
 
     # Each cell: the room it started in, the calls the model made, the room it left, and the checks it failed.
     print()
-    seeds = {case.id: case.host_payload["seed"] for case in host.storage.query_test_cases(summary.scope_id)}
-    results = list_results(host.storage, summary.run_id, summary.scope_id)
-    for result in sorted(results, key=lambda result: (result.test_case_id, result.k_iteration)):
-        trace, seed = get_result_trace(host.storage, result), seeds[result.test_case_id]
+
+    def read_cells() -> list[tuple[EvalResult, EvalTrace, dict]]:
+        """Each cell's result, its trace and its case's seed: store reads, so run off the event loop below."""
+        seeds = {case.id: case.host_payload["seed"] for case in host.storage.query_test_cases(summary.scope_id)}
+        results = list_results(host.storage, summary.run_id, summary.scope_id)
+        return [(result, get_result_trace(host.storage, result), seeds[result.test_case_id]) for result in results]
+
+    cells = await run_blocking(host.blocking_executor, read_cells)
+    for result, trace, seed in sorted(cells, key=lambda cell: (cell[0].test_case_id, cell[0].k_iteration)):
         start, end = f"{seed['daylight']}, light {seed['light']}", f"light {trace.end_state['light']}"
         calls = ", ".join(f"{call.action}(to={call.params['to']})" for call in trace.call_ledger.calls) or "no call"
         failed = ", ".join(FAILED_AS[it.expression] for it in result.goal_state_outcomes if not it.passed) or "ok"

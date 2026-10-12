@@ -74,7 +74,7 @@ from threetears.evals.schema.completion import BoundCompletionClient, ProviderFa
 from threetears.evals.kernel.capped_completion import call_ceiling
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger, blended_cost
 from threetears.evals.run.judge import CANNOT_TELL, JUDGE_CALL_ATTEMPTS, judge_reply_format, run_judge_llm
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 

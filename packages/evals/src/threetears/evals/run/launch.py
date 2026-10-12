@@ -93,7 +93,7 @@ from threetears.evals.run.runner import (
     template_as_graded,
 )
 from threetears.evals.run.simulator import SIMULATOR_REQUEST_SETTINGS
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_RUN, FIND_TEMPLATE
 
 if TYPE_CHECKING:

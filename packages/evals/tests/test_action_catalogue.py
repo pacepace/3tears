@@ -38,6 +38,7 @@ from threetears.evals.actions import (
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.ops import JobHandle, JobsStarted, OpsHost, RunLine
 from packages.evals.tests.ops_support import CALLER, ops_fixture
+from packages.evals.tests.off_loop import off_loop
 
 
 class _Echo(EvalBaseModel):
@@ -183,7 +184,7 @@ def test_the_input_schema_is_the_action_enum_and_the_flat_parameters(tools: dict
 
 
 async def test_help_is_the_index_grouped_by_workflow(tools: dict[str, Any]) -> None:
-    outcome = await tools["evals"].call({"action": "help"}, host=ops_fixture().host, caller=CALLER)
+    outcome = await tools["evals"].call({"action": "help"}, host=off_loop(ops_fixture).host, caller=CALLER)
     assert not outcome.is_error
     text = outcome.text
     for heading in ("## Find what is there", "## Run and watch", "## Analyse and report", "## Curate"):
@@ -196,7 +197,7 @@ async def test_help_is_the_index_grouped_by_workflow(tools: dict[str, Any]) -> N
 
 async def test_a_help_page_carries_the_parameters_and_an_example(tools: dict[str, Any]) -> None:
     outcome = await tools["evals"].call(
-        {"action": "help", "topic": "run_launch"}, host=ops_fixture().host, caller=CALLER
+        {"action": "help", "topic": "run_launch"}, host=off_loop(ops_fixture).host, caller=CALLER
     )
     assert "- template_id (string, required): A template's id" in outcome.text
     assert f"- k_runs (integer, default {DEFAULT_LAUNCH_K_RUNS})" in outcome.text
@@ -216,7 +217,7 @@ def test_every_example_is_a_call_its_action_accepts() -> None:
 
 
 async def _call(tool: Any, arguments: dict[str, Any]) -> Any:
-    return await tool.call(arguments, host=ops_fixture().host, caller=CALLER)
+    return await tool.call(arguments, host=off_loop(ops_fixture).host, caller=CALLER)
 
 
 async def test_no_action_is_refused_with_the_valid_actions(tools: dict[str, Any]) -> None:
@@ -265,13 +266,15 @@ async def test_an_engine_refusal_is_a_refused_call_with_the_engines_reason(tools
 
 
 async def test_a_destructive_action_refuses_a_confirm_that_does_not_echo_the_id(tools: dict[str, Any]) -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     run_id = fixture.campaign.run_ids[0]
     outcome = await tools["evals_admin"].call(
         {"action": "run_delete", "run_id": run_id, "confirm": "yes"}, host=fixture.host, caller=CALLER
     )
     assert outcome.is_error and run_id in outcome.text
-    assert fixture.host.eval_host.storage.load_eval_run(run_id, CALLER.scope_id) is not None, "nothing was destroyed"
+    assert off_loop(fixture.host.eval_host.storage.load_eval_run, run_id, CALLER.scope_id) is not None, (
+        "nothing was destroyed"
+    )
 
 
 async def test_help_refuses_a_parameter_it_does_not_take_and_a_topic_it_does_not_have(tools: dict[str, Any]) -> None:
@@ -282,7 +285,7 @@ async def test_help_refuses_a_parameter_it_does_not_take_and_a_topic_it_does_not
 
 
 async def test_a_result_carries_its_text_and_its_model_as_data(tools: dict[str, Any]) -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     run_id = fixture.campaign.run_ids[0]
     outcome = await tools["evals"].call(
         {"action": "run_archive", "run_id": run_id, "archived": True}, host=fixture.host, caller=CALLER
@@ -299,7 +302,7 @@ async def test_a_result_carries_its_text_and_its_model_as_data(tools: dict[str, 
 
 async def test_a_host_action_mounts_and_runs_like_the_engines() -> None:
     (tool,) = eval_catalogue((_action(),)).mount_all(read_only_tools())
-    outcome = await tool.call({"action": "note_echo", "note": "hi"}, host=ops_fixture().host, caller=CALLER)
+    outcome = await tool.call({"action": "note_echo", "note": "hi"}, host=off_loop(ops_fixture).host, caller=CALLER)
     assert (outcome.text, outcome.structured) == ("echo: hi", {"note": "hi", "scope_id": CALLER.scope_id})
     assert "- note_echo (read): Echo a note back." in tool.help_index()
 

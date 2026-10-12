@@ -28,10 +28,11 @@ from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.kernel.storage import LeaseStore, NonTerminalRunScan
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
 from threetears.evals.kernel.job_leases import RUN_JOB, request_job_cancel, settle_job_record
+from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.run.rejudge import apply_rejudge, failed_judge_dims, reproducible_judge_inputs
 from threetears.evals.run.run_document import fault_entry, record_run_faults, update_eval_run
 from threetears.evals.run.runner import build_judge_context, judge_dims
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_RESULT, FIND_RUN
 
 if TYPE_CHECKING:
@@ -40,7 +41,8 @@ if TYPE_CHECKING:
     from threetears.evals.kernel.scoring import CellSummary
     from threetears.evals.run.jobs import EvalJobManager
     from threetears.evals.run.metering import MeteredCallTally
-    from threetears.evals.kernel.storage import JobStore, RunStore
+    from threetears.evals.kernel.storage import EvalStorage, JobStore, RunStore
+    from threetears.evals.run.rejudge import ReproducibleJudgeInputs
 
 log = get_logger(__name__)
 
@@ -333,28 +335,10 @@ async def rejudge_result(
     """
     storage = host.storage
     clients = host.completion_clients("a re-judge")
-    # Every store hands a found document's etag back (the port's contract), so the rewrite below is
-    # conditional: a re-judge racing another writer of this result is refused rather than clobbering it.
-    result, etag = storage.load_eval_result_with_etag(result_id, scope_id)
-    if result is None:
-        raise NotFoundError("result", result_id, remedy=FIND_RESULT)
-    if result.judge_error is None:
-        raise ValidationFailedError(
-            f"result '{result_id}' has no judge_error — no judge dimension failed to re-judge",
-            remedy="re-judge only a result whose judging failed; to measure its judge again, use a judge repeat",
-        )
-    run = get_run(storage, result.eval_run_id, scope_id)
-    failed = failed_judge_dims(result, list(run.effective_judges or {}))
-    inputs = reproducible_judge_inputs(storage, result, run, scope_id, request_settings="today", config_dims=failed)
-    # Narrowed to the dims this result was judged on: a document's run attributes the two
-    # conversation axes, which its cell was never asked and so holds no score for.
-    failed = [dim for dim in failed if dim in inputs.dims]
-    if not failed:
-        raise ValidationFailedError(
-            f"result '{result_id}' carries a judge_error but holds a score or a can't-tell for every dim its run "
-            "judged, so there is no dimension to re-judge",
-            remedy="read its scores as they are; to measure its judge again, use a judge repeat",
-        )
+    # Every read and write below is a store call, so each runs on the host's blocking executor, off the loop.
+    result, etag, run, inputs, failed = await run_blocking(
+        host.blocking_executor, _rejudge_inputs, storage, result_id, scope_id
+    )
     template = inputs.template
 
     context = build_judge_context(
@@ -377,7 +361,7 @@ async def rejudge_result(
     updated = apply_rejudge(result, template, outcomes, judge_model=inputs.judge_model)
     rescore = updated.judge_rescores[-1]
     try:
-        storage.replace_eval_result(updated, if_match=etag)
+        await run_blocking(host.blocking_executor, storage.replace_eval_result, updated, if_match=etag)
     except (ConflictError, StorageError) as e:
         log.error(
             "eval.rejudge_result lost its write result=%s run=%s — the re-judge cost %s and nothing was stored",
@@ -391,7 +375,9 @@ async def rejudge_result(
                 remedy="re-read it and re-judge again if a dim is still missing",
             ) from e
         raise
-    _recount_rejudged_exclusion(storage, run.id, scope_id, before=result, after=updated)
+    await run_blocking(
+        host.blocking_executor, _recount_rejudged_exclusion, storage, run.id, scope_id, before=result, after=updated
+    )
     log.info(
         "eval.rejudge_result result=%s run=%s dims=%s scored=%s failed_again=%s cost=%s",
         result_id,
@@ -402,6 +388,44 @@ async def rejudge_result(
         _dollars(rescore.cost_usd),
     )
     return updated
+
+
+def _rejudge_inputs(
+    storage: EvalStorage, result_id: str, scope_id: str
+) -> tuple[EvalResult, str | None, EvalRun, ReproducibleJudgeInputs, list[str]]:
+    """Everything a re-judge reads before it pays for a call, or the refusal — the store reads of :func:`rejudge_result`.
+
+    Returns:
+        The result, the etag its rewrite must present, its run, the run's reproduced judge inputs, and the
+        dims to re-ask.
+
+    Raises:
+        NotFoundError: No result, run, template, judge config or test case with the recorded id.
+        ValidationFailedError: Nothing to re-judge, or an apparatus input cannot be reproduced.
+    """
+    # Every store hands a found document's etag back (the port's contract), so the rewrite is
+    # conditional: a re-judge racing another writer of this result is refused rather than clobbering it.
+    result, etag = storage.load_eval_result_with_etag(result_id, scope_id)
+    if result is None:
+        raise NotFoundError("result", result_id, remedy=FIND_RESULT)
+    if result.judge_error is None:
+        raise ValidationFailedError(
+            f"result '{result_id}' has no judge_error — no judge dimension failed to re-judge",
+            remedy="re-judge only a result whose judging failed; to measure its judge again, use a judge repeat",
+        )
+    run = get_run(storage, result.eval_run_id, scope_id)
+    failed = failed_judge_dims(result, list(run.effective_judges or {}))
+    inputs = reproducible_judge_inputs(storage, result, run, scope_id, request_settings="today", config_dims=failed)
+    # Narrowed to the dims this result was judged on: a document's run attributes the two
+    # conversation axes, which its cell was never asked and so holds no score for.
+    failed = [dim for dim in failed if dim in inputs.dims]
+    if not failed:
+        raise ValidationFailedError(
+            f"result '{result_id}' carries a judge_error but holds a score or a can't-tell for every dim its run "
+            "judged, so there is no dimension to re-judge",
+            remedy="read its scores as they are; to measure its judge again, use a judge repeat",
+        )
+    return result, etag, run, inputs, failed
 
 
 def _dollars(cost_usd: float | None) -> str:

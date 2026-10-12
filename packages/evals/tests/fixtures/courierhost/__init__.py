@@ -81,15 +81,16 @@ from threetears.evals.kernel.host import (
 )
 from threetears.evals.schema import IntervalScale, SubjectSnapshot, SweepableValue
 from threetears.evals.run import (
-    UnknownSubject,
     KindWiring,
-    LaunchableKind,
     LaunchHost,
     LaunchRequest,
     LaunchSettings,
+    LaunchableKind,
     RunnerOptions,
+    UnknownSubject,
     execute_run,
     launch_run,
+    run_blocking,
 )
 from threetears.evals.quick import CALLABLE_KIND
 from threetears.evals.storage import InMemoryDocumentStore
@@ -401,12 +402,12 @@ async def run_courier_campaign(host: EvalHost) -> EvalCampaign:
     kind = RoutePlannerKind(world)
     template = courier_template()
     cases = courier_cases()
-    host.storage.save_template(template)
+    await run_blocking(host.blocking_executor, host.storage.save_template, template)
     subject = COURIER_SUBJECT
     runs = []
     for model in COURIER_MODELS:
         run = courier_run(model, cases=cases, world=world)
-        host.storage.save_eval_run(run)
+        await run_blocking(host.blocking_executor, host.storage.save_eval_run, run)
         await execute_run(
             host,
             run=run,
@@ -416,7 +417,7 @@ async def run_courier_campaign(host: EvalHost) -> EvalCampaign:
             options=RunnerOptions(candidate_kinds={COURIER_KIND: lambda _cell: kind}),
         )
         runs.append(run.model_copy(update={"status": "completed"}))
-        host.storage.save_eval_run(runs[-1])
+        await run_blocking(host.blocking_executor, host.storage.save_eval_run, runs[-1])
     campaign = EvalCampaign(
         scope_id=COURIER_SCOPE,
         name="planner model bake-off",
@@ -427,7 +428,7 @@ async def run_courier_campaign(host: EvalHost) -> EvalCampaign:
         run_ids=[run.id for run in runs],
         created_by="test:fixture",
     )
-    host.storage.save_campaign(campaign)
+    await run_blocking(host.blocking_executor, host.storage.save_campaign, campaign)
     return campaign
 
 
@@ -464,7 +465,7 @@ def courier_launch_host() -> LaunchHost:
     async def launch(request: LaunchRequest) -> EvalRun:
         cases = courier_cases()
         for case in cases:
-            eval_host.storage.save_test_case(case)
+            await run_blocking(eval_host.blocking_executor, eval_host.storage.save_test_case, case)
         feed = FEEDS.get(request.candidate_model or "")
         if feed is None:
             raise ValidationFailedError(

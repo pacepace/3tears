@@ -50,6 +50,7 @@ from threetears.evals.schema.subject import SubjectSnapshot
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, MemoWriter, OpsFixture, ops_fixture
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT
+from packages.evals.tests.off_loop import off_loop
 
 TEMPLATE_ID = "toyhost-reporter"
 SUBJECT = "the analysis writer"
@@ -116,10 +117,15 @@ class _ReporterCampaign:
 
         async def launch(request: LaunchRequest) -> Any:
             self.launched.append(request.candidate_model or "")
-            admitted = admit_reporter_launch(
-                request, storage=eval_host.storage, prompts=_Prompts(), resolve_model=_resolve_model
+            admitted = off_loop(
+                admit_reporter_launch,
+                request,
+                storage=eval_host.storage,
+                prompts=_Prompts(),
+                resolve_model=_resolve_model,
             )
-            judge = build_judge_service(
+            judge = off_loop(
+                build_judge_service,
                 eval_host,
                 request.template,
                 admitted.judge_model,
@@ -204,7 +210,7 @@ def _writers(campaign: _ReporterCampaign) -> list[MemoWriter]:
 async def test_a_cap_below_one_generator_calls_ceiling_is_refused_by_the_estimate_and_the_launch_with_nothing_spent() -> (
     None
 ):
-    campaign = _ReporterCampaign()
+    campaign = off_loop(_ReporterCampaign)
 
     arm = await campaign.estimate(0.2)
     assert arm.outcome == "refused"
@@ -228,11 +234,11 @@ async def test_a_cap_below_one_generator_calls_ceiling_is_refused_by_the_estimat
     assert campaign.priced(), "the arm's generator call was priced"
     assert all(writer.calls == [] for writer in _writers(campaign)), "no call was made"
     assert all(writer.closed == 1 for writer in _writers(campaign)), "every client built to price was released"
-    assert campaign.run_ids() == campaign.corpus_run_ids, "no run was stored beyond the campaign's own"
+    assert off_loop(campaign.run_ids) == campaign.corpus_run_ids, "no run was stored beyond the campaign's own"
 
 
 async def test_a_cap_at_the_ceiling_is_admitted_and_the_call_the_run_makes_is_the_one_priced() -> None:
-    campaign = _ReporterCampaign()
+    campaign = off_loop(_ReporterCampaign)
 
     arm = await campaign.estimate(_GENERATOR_CEILING_USD)
     assert (arm.outcome, arm.refusal) == ("admitted", None)

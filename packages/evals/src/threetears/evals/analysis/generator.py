@@ -131,7 +131,7 @@ from threetears.evals.schema.models import ClientRequestSettings, utc_now_iso
 from threetears.evals.schema.completion import RequestCeiling
 from threetears.evals.kernel.provider import describe_incomplete_completion, extract_json
 from threetears.evals.kernel.surface import DecisionSurface
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 if TYPE_CHECKING:  # the model-provider PORT — a protocol, injected; never constructed here.
     from threetears.evals.schema.completion import CompletionGenerator, CompletionResult

@@ -59,6 +59,7 @@ from packages.evals.tests.fixtures.toyhost.kind import TOY_SCRIPTS, ScriptedExtr
 from packages.evals.tests.fixtures.toyhost.launch import toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, TOYHOST_SUBJECT, ops_fixture, settled
+from packages.evals.tests.off_loop import off_loop
 
 #: The sweep's arms, by their prompt style.
 STYLES = ("terse", "standard", "verbose")
@@ -174,7 +175,7 @@ def _heard(host: OpsHost) -> tuple[OpsHost, _Heard]:
 
 async def test_a_generation_another_process_runs_reads_running_and_is_cancelled_from_there() -> None:
     gate = asyncio.Event()
-    holder = ops_fixture(gate=gate, job_lease_s=0.3)
+    holder = off_loop(ops_fixture, gate=gate, job_lease_s=0.3)
     elsewhere = _other_process(holder.host)
     (job,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
     await asyncio.sleep(0)
@@ -187,7 +188,7 @@ async def test_a_generation_another_process_runs_reads_running_and_is_cancelled_
     ended = await settled(elsewhere, job.job_id)
 
     assert (ended.state, ended.status) == ("cancelled", "cancelled")
-    attempt = _attempt(holder.host, job.job_id)
+    attempt = off_loop(_attempt, holder.host, job.job_id)
     assert attempt.cancel_request_reason == "stop it from over here" and attempt.lost is None
     assert not gate.is_set(), "the holder stopped it while it was held, not after it finished"
 
@@ -196,7 +197,7 @@ async def test_a_run_another_process_runs_is_cancelled_from_there_with_its_reaso
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _held_extraction(monkeypatch)
-    holder = ops_fixture(job_lease_s=0.3)
+    holder = off_loop(ops_fixture, job_lease_s=0.3)
     elsewhere = _other_process(holder.host)
     run_id = await _running_run(holder.host)
 
@@ -206,7 +207,7 @@ async def test_a_run_another_process_runs_is_cancelled_from_there_with_its_reaso
 
     assert (ended.state, ended.status) == ("cancelled", "cancelled")
     assert ended.detail is not None and "wrong template" in ended.detail
-    assert _run(holder.host, run_id).lost is None
+    assert off_loop(_run, holder.host, run_id).lost is None
 
 
 # =============================================================================
@@ -217,7 +218,7 @@ async def test_a_run_another_process_runs_is_cancelled_from_there_with_its_reaso
 async def test_a_holder_that_stops_renewing_reads_lost_after_its_lease_and_the_loss_is_written_once() -> None:
     gate = asyncio.Event()
     store = ClockedStore()
-    holder = ops_fixture(gate=gate, store=store)  # a 60s lease: no renewal comes due while the test runs
+    holder = off_loop(ops_fixture, gate=gate, store=store)  # a 60s lease: no renewal comes due while the test runs
     elsewhere = _other_process(holder.host)
     (job,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
     await asyncio.sleep(0)
@@ -230,22 +231,22 @@ async def test_a_holder_that_stops_renewing_reads_lost_after_its_lease_and_the_l
     lost = await job_poll(elsewhere, job.job_id, TOYHOST_SCOPE)
     assert (lost.state, lost.status, lost.done) == ("lost", "cancelled", True)
     assert lost.detail is not None and holder.host.launch.job_leases.holder_id in lost.detail
-    written = _attempt(holder.host, job.job_id).lost
+    written = off_loop(_attempt, holder.host, job.job_id).lost
     assert written is not None and written.at == store.at.isoformat()
 
     store.at = T0 + timedelta(seconds=90)
     again = await job_poll(holder.host, job.job_id, TOYHOST_SCOPE)
     assert again.state == "lost", "the holder's own process reads what the other one wrote"
-    assert _attempt(holder.host, job.job_id).lost == written, "the loss is written once, never recomputed"
+    assert off_loop(_attempt, holder.host, job.job_id).lost == written, "the loss is written once, never recomputed"
     attempt_id = job.job_id.rsplit(":", 1)[1]
-    record, wrote = settle_job_record(holder.host.eval_host.storage, ANALYSIS_JOB, attempt_id, TOYHOST_SCOPE)
+    record, wrote = off_loop(settle_job_record, holder.host.eval_host.storage, ANALYSIS_JOB, attempt_id, TOYHOST_SCOPE)
     assert record is not None and wrote is False
 
     # Fenced: the holder, released, finds its record lost and stores nothing — not its analysis, not its ending.
     gate.set()
     await _until(lambda: not holder.host.launch.job_manager.is_task_active(attempt_id))
-    assert analyses_list(holder.host.eval_host, holder.campaign.id, TOYHOST_SCOPE).analyses == []
-    attempt = _attempt(holder.host, job.job_id)
+    assert off_loop(analyses_list, holder.host.eval_host, holder.campaign.id, TOYHOST_SCOPE).analyses == []
+    attempt = off_loop(_attempt, holder.host, job.job_id)
     assert (attempt.outcome, attempt.lost) == ("cancelled", written)
 
 
@@ -287,12 +288,12 @@ async def test_a_generation_whose_attempt_is_lost_while_it_stores_withdraws_what
 
     monkeypatch.setattr(support, "memo_payload", durable_memo)
     store = LostOnStoreStore()
-    fixture = ops_fixture(store=store)
+    fixture = off_loop(ops_fixture, store=store)
     storage = fixture.host.eval_host.storage
     (first,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     assert (await settled(fixture.host, first.job_id)).state == "completed"
-    (kept,) = analyses_list(fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
-    ledger = storage.query_insights(TOYHOST_SCOPE)
+    (kept,) = off_loop(analyses_list, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
+    ledger = off_loop(storage.query_insights, TOYHOST_SCOPE)
     assert ledger and all(insight.source_analysis_id == kept.id for insight in ledger)
 
     store.lose_next = True
@@ -301,9 +302,11 @@ async def test_a_generation_whose_attempt_is_lost_while_it_stores_withdraws_what
     await _until(lambda: not fixture.host.launch.job_manager.is_task_active(attempt_id))
 
     assert (await job_poll(fixture.host, second.job_id, TOYHOST_SCOPE)).state == "lost"
-    analyses = analyses_list(fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
+    analyses = off_loop(analyses_list, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
     assert [analysis.id for analysis in analyses] == [kept.id], "the lost attempt keeps no analysis"
-    assert storage.query_insights(TOYHOST_SCOPE) == ledger, "the insights it restated are put back as they stood"
+    assert off_loop(storage.query_insights, TOYHOST_SCOPE) == ledger, (
+        "the insights it restated are put back as they stood"
+    )
 
 
 class UnwithdrawableStore(LostOnStoreStore):
@@ -320,7 +323,7 @@ class UnwithdrawableStore(LostOnStoreStore):
 async def test_a_withdrawal_that_fails_is_not_reported_as_done(caplog: pytest.LogCaptureFixture) -> None:
     """The fence said the analysis "and its insights were withdrawn" when the withdrawal had failed part-way."""
     store = UnwithdrawableStore()
-    fixture = ops_fixture(store=store)
+    fixture = off_loop(ops_fixture, store=store)
     store.lose_next = True
     (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     attempt_id = job.job_id.rsplit(":", 1)[1]
@@ -328,7 +331,7 @@ async def test_a_withdrawal_that_fails_is_not_reported_as_done(caplog: pytest.Lo
         await _until(lambda: not fixture.host.launch.job_manager.is_task_active(attempt_id))
 
     assert (await job_poll(fixture.host, job.job_id, TOYHOST_SCOPE)).state == "lost"
-    (left,) = analyses_list(fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
+    (left,) = off_loop(analyses_list, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
     stopped = [record.getMessage() for record in caplog.records if "stopped:" in record.getMessage()]
     assert stopped and "were withdrawn" not in stopped[0], stopped
     assert "withdrawing what it stored failed part-way (RuntimeError: the store refused the delete)" in stopped[0]
@@ -338,7 +341,7 @@ async def test_a_withdrawal_that_fails_is_not_reported_as_done(caplog: pytest.Lo
 async def test_a_holder_whose_own_lease_lapsed_writes_itself_lost_at_renewal_and_stops() -> None:
     gate = asyncio.Event()
     store = ClockedStore()
-    holder = ops_fixture(gate=gate, store=store, job_lease_s=0.3)
+    holder = off_loop(ops_fixture, gate=gate, store=store, job_lease_s=0.3)
     (job,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
     attempt_id = job.job_id.rsplit(":", 1)[1]
     await asyncio.sleep(0)
@@ -346,7 +349,7 @@ async def test_a_holder_whose_own_lease_lapsed_writes_itself_lost_at_renewal_and
     store.at = T0 + timedelta(seconds=30)  # the process stalled past its lease
     await _until(lambda: not holder.host.launch.job_manager.is_task_active(attempt_id))
 
-    attempt = _attempt(holder.host, job.job_id)
+    attempt = off_loop(_attempt, holder.host, job.job_id)
     assert attempt.outcome == "cancelled" and attempt.lost is not None
     assert "lapsed" in attempt.lost.cause and attempt.error == f"lost: {attempt.lost.cause}", (
         "the cancelled generation's own ending did not overwrite the loss"
@@ -359,7 +362,7 @@ async def test_a_run_whose_record_was_written_lost_elsewhere_stops_at_its_next_w
 ) -> None:
     gate = _held_extraction(monkeypatch)
     store = ClockedStore()
-    holder, heard = _heard(ops_fixture(store=store).host)
+    holder, heard = _heard(off_loop(ops_fixture, store=store).host)
     elsewhere = _other_process(holder)
     run_id = await _running_run(holder)
     assert (await job_poll(elsewhere, run_job_id(run_id), TOYHOST_SCOPE)).state == "running"
@@ -367,14 +370,14 @@ async def test_a_run_whose_record_was_written_lost_elsewhere_stops_at_its_next_w
     store.at = T0 + timedelta(seconds=61)
     lost = await job_poll(elsewhere, run_job_id(run_id), TOYHOST_SCOPE)
     assert (lost.state, lost.status) == ("lost", "cancelled")
-    written = _run(holder, run_id)
+    written = off_loop(_run, holder, run_id)
     assert written.completeness is not None, "the loss reconstructed what the run delivered"
     heard.broadcasts.clear()
 
     store.at = T0 + timedelta(seconds=75)  # the holder's own ending would be stamped later than the loss
     gate.set()
     await _until(lambda: not holder.launch.job_manager.is_active(run_id))
-    after = _run(holder, run_id)
+    after = off_loop(_run, holder, run_id)
     assert (after.status, after.lost, after.completeness) == ("cancelled", written.lost, written.completeness), (
         "the fenced run wrote nothing more: not its progress, its completeness or its ending"
     )
@@ -388,18 +391,18 @@ async def test_a_lost_run_cancelled_by_its_old_holder_keeps_the_loss(monkeypatch
     """The holder's operator cancels a run another process already wrote lost: the cancel's ending is refused."""
     _held_extraction(monkeypatch)
     store = ClockedStore()
-    holder, heard = _heard(ops_fixture(store=store).host)
+    holder, heard = _heard(off_loop(ops_fixture, store=store).host)
     elsewhere = _other_process(holder)
     run_id = await _running_run(holder)
     store.at = T0 + timedelta(seconds=61)
     assert (await job_poll(elsewhere, run_job_id(run_id), TOYHOST_SCOPE)).state == "lost"
-    written = _run(holder, run_id)
+    written = off_loop(_run, holder, run_id)
     heard.broadcasts.clear()
 
     assert holder.launch.job_manager.cancel_job(run_id, reason="operator said stop")
     await _until(lambda: not holder.launch.job_manager.is_active(run_id))
 
-    after = _run(holder, run_id)
+    after = off_loop(_run, holder, run_id)
     assert (after.completed_at, after.cancellation_reason, after.lost) == (
         written.completed_at,
         written.cancellation_reason,
@@ -435,7 +438,7 @@ async def test_a_run_whose_renewals_fail_for_a_whole_lease_is_stopped_and_writes
 ) -> None:
     gate = _held_extraction(monkeypatch)
     store = RenewalRefusingStore()
-    holder, heard = _heard(ops_fixture(store=store, job_lease_s=0.3).host)
+    holder, heard = _heard(off_loop(ops_fixture, store=store, job_lease_s=0.3).host)
     elsewhere = _other_process(holder)
     run_id = await _running_run(holder)
     store.at = T0 + timedelta(seconds=0.1)  # inside the lease by the store's clock, for the whole test
@@ -445,7 +448,7 @@ async def test_a_run_whose_renewals_fail_for_a_whole_lease_is_stopped_and_writes
     await _until(lambda: not holder.launch.job_manager.is_active(run_id), timeout=5)
 
     assert not gate.is_set(), "the holder stopped spending, rather than running on past its lease"
-    run = _run(holder, run_id)
+    run = off_loop(_run, holder, run_id)
     assert (run.status, run.lost) == ("running", None), "it wrote no ending of its own: it no longer held the run"
     assert heard.ends == [] and heard.broadcasts == []
     store.refusing = False
@@ -457,7 +460,7 @@ async def test_a_run_whose_renewals_fail_for_a_whole_lease_is_stopped_and_writes
 async def test_a_generation_whose_renewals_fail_for_a_whole_lease_is_stopped_before_its_paid_call() -> None:
     gate = asyncio.Event()
     store = RenewalRefusingStore()
-    fixture = ops_fixture(gate=gate, store=store, job_lease_s=0.3)
+    fixture = off_loop(ops_fixture, gate=gate, store=store, job_lease_s=0.3)
     (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     attempt_id = job.job_id.rsplit(":", 1)[1]
     await asyncio.sleep(0)
@@ -467,11 +470,11 @@ async def test_a_generation_whose_renewals_fail_for_a_whole_lease_is_stopped_bef
     await _until(lambda: not fixture.host.launch.job_manager.is_task_active(attempt_id), timeout=5)
 
     assert not gate.is_set() and all(not writer.calls for writer in fixture.writers), "no call was paid for"
-    attempt = _attempt(fixture.host, job.job_id)
+    attempt = off_loop(_attempt, fixture.host, job.job_id)
     assert (attempt.outcome, attempt.lost) == ("running", None), (
         "it wrote no ending of its own, though the store took every write but a renewal: it no longer held the attempt"
     )
-    assert analyses_list(fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses == []
+    assert off_loop(analyses_list, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses == []
     store.refusing = False
     store.at = T0 + timedelta(seconds=1)
     lost = await job_poll(_other_process(fixture.host), job.job_id, TOYHOST_SCOPE)
@@ -483,7 +486,7 @@ async def test_a_sweep_whose_renewals_fail_for_a_whole_lease_writes_nothing_more
 ) -> None:
     _held_extraction(monkeypatch)  # its first arm runs until the sweep has let go
     store = RenewalRefusingStore()
-    holder = _sweeping_host(store, job_lease_s=0.3)
+    holder = off_loop(_sweeping_host, store, job_lease_s=0.3)
     (job,) = (await sweep_launch(holder, _three_arm_sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
     sweep_id = job.job_id.removeprefix("sweep:")
     await _first_arm_running(holder, job.job_id)
@@ -492,11 +495,11 @@ async def test_a_sweep_whose_renewals_fail_for_a_whole_lease_writes_nothing_more
 
     await _until(lambda: not holder.launch.job_manager.is_task_active(sweep_id), timeout=5)
 
-    sweep, _ = holder.eval_host.storage.load_job_record(EvalSweep, sweep_id, TOYHOST_SCOPE)
+    sweep, _ = off_loop(holder.eval_host.storage.load_job_record, EvalSweep, sweep_id, TOYHOST_SCOPE)
     assert sweep is not None and (sweep.outcome, sweep.lost) == ("running", None), (
         "it wrote no cancelled ending of its own, though the store took every write but a renewal"
     )
-    assert len(holder.eval_host.storage.query_eval_runs(TOYHOST_SCOPE)) == 1, "it launched no further arm"
+    assert len(off_loop(holder.eval_host.storage.query_eval_runs, TOYHOST_SCOPE)) == 1, "it launched no further arm"
 
 
 class SlotClaimFailingStore(InMemoryDocumentStore):
@@ -517,12 +520,14 @@ class SlotClaimFailingStore(InMemoryDocumentStore):
 
 
 async def test_a_start_whose_slot_claim_fails_ends_its_attempt_and_releases_its_client() -> None:
-    fixture = ops_fixture(store=SlotClaimFailingStore())
+    fixture = off_loop(ops_fixture, store=SlotClaimFailingStore())
 
     with pytest.raises(RuntimeError, match="dropped the connection"):
         await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
 
-    (attempt,) = fixture.host.eval_host.storage.list_analysis_attempts_by_campaign(fixture.campaign.id, TOYHOST_SCOPE)
+    (attempt,) = off_loop(
+        fixture.host.eval_host.storage.list_analysis_attempts_by_campaign, fixture.campaign.id, TOYHOST_SCOPE
+    )
     assert attempt.outcome == "failed" and attempt.error is not None
     assert "generation slot could not be claimed" in attempt.error, "nothing is left reading running"
     (writer,) = fixture.writers
@@ -540,7 +545,7 @@ class AttemptRefusingStore(InMemoryDocumentStore):
 
 
 async def test_a_start_whose_attempt_cannot_be_written_releases_its_client() -> None:
-    fixture = ops_fixture(store=AttemptRefusingStore())
+    fixture = off_loop(ops_fixture, store=AttemptRefusingStore())
 
     with pytest.raises(StorageError, match="refused the attempt"):
         await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
@@ -558,7 +563,7 @@ async def test_a_graceful_shutdown_writes_every_held_job_lost_at_once(monkeypatc
     _held_extraction(monkeypatch)
     gate = asyncio.Event()
     store = ClockedStore()
-    fixture = ops_fixture(gate=gate, store=store)
+    fixture = off_loop(ops_fixture, gate=gate, store=store)
     holder, heard = _heard(fixture.host)
     elsewhere = _other_process(holder)
     (generation,) = (await analysis_generate(holder, fixture.campaign.id, TOYHOST_SCOPE)).jobs
@@ -571,8 +576,8 @@ async def test_a_graceful_shutdown_writes_every_held_job_lost_at_once(monkeypatc
     for job_id in (generation.job_id, run_job_id(run_id), launch_id):
         status = await job_poll(elsewhere, job_id, TOYHOST_SCOPE)
         assert (status.state, status.detail) == ("lost", SHUTDOWN_CAUSE), job_id
-    assert _attempt(holder, generation.job_id).lease is None, "the lease was released"
-    run = _run(holder, run_id)
+    assert off_loop(_attempt, holder, generation.job_id).lease is None, "the lease was released"
+    run = off_loop(_run, holder, run_id)
     assert run.lease is None
     # What a shutdown writes is the loss, stamped in the store's time as it shut down; the runs' own
     # cancelled endings, written as they unwind, are refused, and nobody is told they ended.
@@ -591,10 +596,10 @@ async def test_a_graceful_shutdown_writes_every_held_job_lost_at_once(monkeypatc
 
 async def test_a_store_offering_a_clock_stamps_every_lease_in_its_time() -> None:
     gate = asyncio.Event()
-    holder = ops_fixture(gate=gate, store=ClockedStore())
+    holder = off_loop(ops_fixture, gate=gate, store=ClockedStore())
     (job,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
 
-    lease = _attempt(holder.host, job.job_id).lease
+    lease = off_loop(_attempt, holder.host, job.job_id).lease
     assert lease == JobLease(
         holder=holder.host.launch.job_leases.holder_id, expires_at=(T0 + timedelta(seconds=60)).isoformat()
     )
@@ -624,17 +629,19 @@ def test_a_lease_must_last_some_time() -> None:
 
 
 async def test_a_run_not_ended_with_no_lease_reads_lost_and_cannot_be_cancelled() -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     storage = fixture.host.eval_host.storage
-    run = storage.load_eval_run(fixture.campaign.run_ids[0], TOYHOST_SCOPE)
+    run = off_loop(storage.load_eval_run, fixture.campaign.run_ids[0], TOYHOST_SCOPE)
     assert run is not None
-    storage.save_eval_run(run.model_copy(update={"status": "running", "completed_at": None, "completeness": None}))
+    off_loop(
+        storage.save_eval_run, run.model_copy(update={"status": "running", "completed_at": None, "completeness": None})
+    )
 
     lost = await job_poll(fixture.host, run_job_id(run.id), TOYHOST_SCOPE)
     assert (lost.state, lost.status, lost.done) == ("lost", "cancelled", True)
     assert lost.detail is not None and "carries no lease" in lost.detail
     assert "stop every worker, then upgrade" in lost.detail, "the lost cause names the upgrade rule it follows from"
-    stored = _run(fixture.host, run.id)
+    stored = off_loop(_run, fixture.host, run.id)
     assert stored.completeness is not None and stored.completeness.counted_from == "stored_results"
     assert stored.cancellation_reason == f"lost: {lost.detail}"
 
@@ -643,7 +650,7 @@ async def test_a_run_not_ended_with_no_lease_reads_lost_and_cannot_be_cancelled(
 
 
 async def test_a_sweep_reading_running_with_no_lease_reads_lost() -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     sweep = EvalSweep(
         scope_id=TOYHOST_SCOPE,
         campaign_id=fixture.campaign.id,
@@ -652,7 +659,7 @@ async def test_a_sweep_reading_running_with_no_lease_reads_lost() -> None:
         arms=[SweepArmRecord(label="a", model=RUN_MODELS[0])],
         max_concurrent_arms=1,
     )
-    fixture.host.eval_host.storage.save_sweep(sweep)
+    off_loop(fixture.host.eval_host.storage.save_sweep, sweep)
 
     status = await job_poll(fixture.host, f"sweep:{sweep.id}", TOYHOST_SCOPE)
     assert (status.state, status.status) == ("lost", "cancelled")
@@ -666,7 +673,7 @@ async def test_a_sweep_reading_running_with_no_lease_reads_lost() -> None:
 
 async def test_another_scopes_job_reads_absent_and_its_cancel_is_refused() -> None:
     gate = asyncio.Event()
-    fixture = ops_fixture(gate=gate)
+    fixture = off_loop(ops_fixture, gate=gate)
     (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     await asyncio.sleep(0)
 
@@ -676,7 +683,7 @@ async def test_another_scopes_job_reads_absent_and_its_cancel_is_refused() -> No
         await job_cancel(fixture.host, job.job_id, "some-other-scope")
 
     assert (await job_poll(fixture.host, job.job_id, TOYHOST_SCOPE)).state == "running"
-    assert _attempt(fixture.host, job.job_id).cancel_requested_at is None, "the refused cancel asked nothing"
+    assert off_loop(_attempt, fixture.host, job.job_id).cancel_requested_at is None, "the refused cancel asked nothing"
     gate.set()
     assert (await settled(fixture.host, job.job_id)).state == "completed"
 
@@ -779,7 +786,7 @@ def test_a_job_asks_whether_it_still_holds_its_record_before_it_spends_again() -
 
 
 async def test_a_sweep_another_process_runs_is_cancelled_from_there() -> None:
-    holder = _sweeping_host(InMemoryDocumentStore(), job_lease_s=0.3)
+    holder = off_loop(_sweeping_host, InMemoryDocumentStore(), job_lease_s=0.3)
     elsewhere = _other_process(holder)
     (job,) = (await sweep_launch(holder, _three_arm_sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
     await _first_arm_running(elsewhere, job.job_id)
@@ -795,7 +802,7 @@ async def test_a_sweep_another_process_runs_is_cancelled_from_there() -> None:
 
 async def test_a_sweep_whose_lease_lapsed_reads_lost_and_launches_nothing_more() -> None:
     store = ClockedStore()
-    holder = _sweeping_host(store)
+    holder = off_loop(_sweeping_host, store)
     elsewhere = _other_process(holder)
     (job,) = (await sweep_launch(holder, _three_arm_sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
     sweep_id = job.job_id.removeprefix("sweep:")
@@ -810,10 +817,10 @@ async def test_a_sweep_whose_lease_lapsed_reads_lost_and_launches_nothing_more()
     assert after.state == "lost"
     # Counted in the store, not off the sweep's record: the fence makes that record unwritable, so an arm launched
     # after the loss is exactly the one it could never name.
-    runs = holder.eval_host.storage.query_eval_runs(TOYHOST_SCOPE)
+    runs = off_loop(holder.eval_host.storage.query_eval_runs, TOYHOST_SCOPE)
     assert len(runs) == 1, f"the fenced sweep launched no further arm; the store holds {len(runs)} run(s)"
     assert runs[0].overlays.get("prompt_style") == STYLES[0]
-    sweep, _ = holder.eval_host.storage.load_job_record(EvalSweep, sweep_id, TOYHOST_SCOPE)
+    sweep, _ = off_loop(holder.eval_host.storage.load_job_record, EvalSweep, sweep_id, TOYHOST_SCOPE)
     assert sweep is not None and sweep.outcome == "cancelled" and sweep.lost is not None
 
 
@@ -849,7 +856,7 @@ class RacingStore(InMemoryDocumentStore):
 async def test_two_processes_racing_a_generation_start_one_wins_and_the_other_is_refused_naming_it() -> None:
     gate = asyncio.Event()
     store = RacingStore()
-    first = ops_fixture(gate=gate, store=store)
+    first = off_loop(ops_fixture, gate=gate, store=store)
     second = _other_process(first.host)
 
     outcomes = await asyncio.gather(
@@ -868,7 +875,9 @@ async def test_two_processes_racing_a_generation_start_one_wins_and_the_other_is
 
     attempts = {
         attempt.id: attempt
-        for attempt in first.host.eval_host.storage.list_analysis_attempts_by_campaign(first.campaign.id, TOYHOST_SCOPE)
+        for attempt in off_loop(
+            first.host.eval_host.storage.list_analysis_attempts_by_campaign, first.campaign.id, TOYHOST_SCOPE
+        )
     }
     loser = next(attempt for attempt_id, attempt in attempts.items() if attempt_id != job.job_id.rsplit(":", 1)[1])
     assert loser.outcome == "failed" and loser.calls == 0
@@ -881,7 +890,7 @@ async def test_two_processes_racing_a_generation_start_one_wins_and_the_other_is
 async def test_a_generation_slot_is_taken_over_once_its_attempt_has_ended_or_lapsed() -> None:
     gate = asyncio.Event()
     store = ClockedStore()
-    holder = ops_fixture(gate=gate, store=store)
+    holder = off_loop(ops_fixture, gate=gate, store=store)
     elsewhere = _other_process(holder.host)
     (job,) = (await analysis_generate(holder.host, holder.campaign.id, TOYHOST_SCOPE)).jobs
 
@@ -892,6 +901,6 @@ async def test_a_generation_slot_is_taken_over_once_its_attempt_has_ended_or_lap
     (taken,) = (await analysis_generate(elsewhere, holder.campaign.id, TOYHOST_SCOPE)).jobs
     assert taken.job_id != job.job_id
     assert (await job_poll(elsewhere, job.job_id, TOYHOST_SCOPE)).state == "lost"
-    slot, _ = elsewhere.eval_host.storage.load_generation_slot_with_etag(holder.campaign.id, TOYHOST_SCOPE)
+    slot, _ = off_loop(elsewhere.eval_host.storage.load_generation_slot_with_etag, holder.campaign.id, TOYHOST_SCOPE)
     assert slot is not None and slot.attempt_id == taken.job_id.rsplit(":", 1)[1]
     gate.set()

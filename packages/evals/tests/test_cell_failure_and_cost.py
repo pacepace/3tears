@@ -85,6 +85,7 @@ from packages.evals.tests.fixtures.toyhost.kind import (
     ToyExtractorKind,
 )
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_run, toyhost_template, toyhost_test_cases
+from packages.evals.tests.off_loop import off_loop
 
 # =============================================================================
 # The drive: one toy run through the real runner, as small as the case needs
@@ -108,7 +109,7 @@ class _Drive:
     @property
     def results(self) -> list[EvalResult]:
         """Every result the run stored."""
-        return self.storage.query_eval_results_by_run(self.run_id, self.scope_id)
+        return off_loop(self.storage.query_eval_results_by_run, self.run_id, self.scope_id)
 
     def result_for(self, case: EvalTestCase) -> EvalResult:
         """The one result stored for ``case``."""
@@ -208,14 +209,14 @@ def _drive(
                 on_cost=cap.record if cap is not None else None,
             )
         finally:
-            host.storage.save_eval_run(run.model_copy(update={"status": "completed"}))
+            off_loop(host.storage.save_eval_run, run.model_copy(update={"status": "completed"}))
 
     return _Drive(host=host, run_id=run.id, scope_id=run.scope_id, cases=cases), go
 
 
 async def _driven(kind_for: KindFor | None = None, **kwargs: Any) -> _Drive:
     """:func:`_drive`, run to its end."""
-    drive, go = _drive(kind_for, **kwargs)
+    drive, go = off_loop(_drive, kind_for, **kwargs)
     await go()
     return drive
 
@@ -372,7 +373,7 @@ async def test_an_apparatus_fault_mid_cell_excludes_that_cell_with_its_spend_and
     (row,) = faulted.usage
     assert row.cost_usd == _SPENT_BEFORE_THE_FAULT
     assert faulted.cost_usd == _SPENT_BEFORE_THE_FAULT
-    trace = drive.trace(faulted)
+    trace = off_loop(drive.trace, faulted)
     assert trace is not None and trace.trace == [{"turn": "asked the ledger for the vendor"}]
     others = [result for result in drive.results if result.id != faulted.id]
     assert [result.termination for result in others] == ["completed", "completed"]
@@ -424,7 +425,7 @@ async def test_an_apparatus_fault_in_prepare_excludes_that_cell_and_the_run_goes
 async def test_a_run_whose_every_cell_the_rig_excluded_fails_after_recording_them_all():
     """Every cell is still recorded; then the run fails, because it measured nothing."""
     documents = [case.variation_params[DOCUMENT_PARAM] for case in toyhost_test_cases(toyhost_template())]
-    drive, go = _drive(_breaking_on(*documents), n_cases=2)
+    drive, go = off_loop(_drive, _breaking_on(*documents), n_cases=2)
 
     with pytest.raises(EveryCellApparatusFailedError, match="every one of the run's 2 cell") as raised:
         await go()
@@ -470,7 +471,7 @@ async def test_a_deadline_in_the_judge_phase_keeps_the_evidence_and_the_scores_t
     assert result.infra_error is None and result.candidate_error is None
     assert classify_result(result) is ResultOutcome.INFRA_EXCLUDE
     # What the judge read is kept, so it can be sent again.
-    trace = drive.trace(result)
+    trace = off_loop(drive.trace, result)
     assert trace is not None and trace.judge_evidence is not None
     assert trace.judged_artifact is JudgedArtifact.DOCUMENT
 
@@ -531,7 +532,7 @@ async def test_a_cancel_mid_cell_records_the_cells_spend_before_ending_the_run()
         kinds.append(_StillWorkingKind(client=ScriptedExtractionClient(), world=world, goal_checks=_TOY_CHECKS))
         return kinds[-1]
 
-    drive, go = _drive(kind_for, n_cases=2)
+    drive, go = off_loop(_drive, kind_for, n_cases=2)
     running = asyncio.ensure_future(go())
     await kinds[0].working.wait()
     running.cancel()
@@ -616,7 +617,7 @@ async def test_a_priced_cell_still_sums_its_rows():
 
 async def test_a_capped_run_stops_on_its_first_unpriced_cell_however_far_below_its_ceiling():
     cap = EvalRunCostCap("toy-run", 100.0, enabled=True)
-    drive, go = _drive(_partly_unpriced, n_cases=3, cap=cap)
+    drive, go = off_loop(_drive, _partly_unpriced, n_cases=3, cap=cap)
 
     with pytest.raises(BudgetStoppedError, match="could not be priced") as stopped:
         await go()
@@ -697,7 +698,7 @@ def _no_goal_checks() -> EvalTemplate:
 async def test_a_conversation_stops_at_the_runs_cap_mid_cell_and_the_run_stops_after_it():
     """Two and a half calls' worth of cap: the third call crosses it, so no fourth call — nor any answer — is bought."""
     cap = EvalRunCostCap("toy-run", 2.5 * _SIMULATOR_CALL_USD, enabled=True)
-    drive, go = _drive(_conversing, n_cases=3, cap=cap, template=_no_goal_checks())
+    drive, go = off_loop(_drive, _conversing, n_cases=3, cap=cap, template=_no_goal_checks())
 
     with pytest.raises(BudgetStoppedError, match="cost cap exceeded") as stopped:
         await go()
@@ -716,7 +717,7 @@ async def test_a_conversation_stops_at_the_runs_cap_mid_cell_and_the_run_stops_a
 async def test_the_cap_reached_in_the_last_cell_still_ends_the_run_budget_stopped():
     """With no next cell, no gate between cells would ever look: the stop is raised after the cut-short cell itself."""
     cap = EvalRunCostCap("toy-run", 2.5 * _SIMULATOR_CALL_USD, enabled=True)
-    drive, go = _drive(_conversing, n_cases=1, cap=cap, template=_no_goal_checks())
+    drive, go = off_loop(_drive, _conversing, n_cases=1, cap=cap, template=_no_goal_checks())
 
     with pytest.raises(BudgetStoppedError):
         await go()
@@ -738,7 +739,7 @@ async def test_the_cap_reached_before_the_first_answer_under_a_perturbation_sche
     def announcing(world: WorldRegistry) -> ToyExtractorKind:
         return _ConversingKind(client=ScriptedExtractionClient(), world=world, goal_checks=(), announces=True)
 
-    drive, go = _drive(announcing, n_cases=2, cap=cap, template=template)
+    drive, go = off_loop(_drive, announcing, n_cases=2, cap=cap, template=template)
 
     with pytest.raises(BudgetStoppedError, match="cost cap exceeded") as stopped:
         await go()
@@ -776,7 +777,7 @@ async def test_a_kind_the_cap_stopped_before_its_turn_reports_no_stop_cause_and_
     def asks_first(world: WorldRegistry) -> ToyExtractorKind:
         return _AsksTheCapFirstKind(client=ScriptedExtractionClient(), world=world, goal_checks=())
 
-    drive, go = _drive(asks_first, n_cases=1, cap=cap, template=template)
+    drive, go = off_loop(_drive, asks_first, n_cases=1, cap=cap, template=template)
 
     with pytest.raises(BudgetStoppedError):
         await go()
@@ -811,7 +812,7 @@ async def test_an_unpriced_simulator_call_stops_a_capped_conversation_at_once():
         return kind
 
     cap = EvalRunCostCap("toy-run", 100.0, enabled=True)
-    drive, go = _drive(unpriced, n_cases=1, cap=cap, template=_no_goal_checks())
+    drive, go = off_loop(_drive, unpriced, n_cases=1, cap=cap, template=_no_goal_checks())
 
     with pytest.raises(BudgetStoppedError, match="could not be priced"):
         await go()

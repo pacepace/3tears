@@ -40,6 +40,7 @@ from threetears.evals.ops import (
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, MemoWriter, ops_fixture, settled
 from packages.evals.tests.toyhost_memo import FIXTURED_CALL_CEILING_USD
+from packages.evals.tests.off_loop import off_loop
 
 #: The out-of-run cap the toy host holds a generation to.
 CAP = TOYHOST_LAUNCH_SETTINGS.max_out_of_run_cost_usd
@@ -60,7 +61,7 @@ def _ledger(fixture: Any) -> list[Any]:
     ids=["over-the-cap", "unpriceable"],
 )
 async def test_a_generation_over_the_cap_is_refused_before_it_starts(ceiling: float | None, said: str) -> None:
-    fixture = ops_fixture(ceiling_usd=ceiling)
+    fixture = off_loop(ops_fixture, ceiling_usd=ceiling)
 
     with pytest.raises(ValidationFailedError, match=said):
         await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
@@ -69,15 +70,15 @@ async def test_a_generation_over_the_cap_is_refused_before_it_starts(ceiling: fl
     assert writer.calls == [], "nothing was sent"
     assert writer.closed == 1, "the client it built was released"
     assert fixture.host.launch.job_manager.active_task_ids(generation_key(fixture.campaign.id, TOYHOST_SCOPE)) == []
-    assert _ledger(fixture) == []
+    assert off_loop(_ledger, fixture) == []
 
 
 async def test_a_generation_within_the_cap_is_ledgered_and_read_by_the_spend_lens_and_action() -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     assert (await settled(fixture.host, job.job_id)).state == "completed"
 
-    (row,) = _ledger(fixture)
+    (row,) = off_loop(_ledger, fixture)
     assert (row.purpose, row.campaign_id, row.subject_id, row.outcome) == (
         "analysis",
         fixture.campaign.id,
@@ -86,7 +87,7 @@ async def test_a_generation_within_the_cap_is_ledgered_and_read_by_the_spend_len
     )
     assert (row.priced_ceiling_usd, row.cap_usd) == (FIXTURED_CALL_CEILING_USD, CAP)
     assert row.cost_usd is not None and row.cost_usd > 0
-    report = scope_out_of_run_spend(fixture.host.eval_host, TOYHOST_SCOPE)
+    report = off_loop(scope_out_of_run_spend, fixture.host.eval_host, TOYHOST_SCOPE)
     assert report.by_purpose["analysis"].priced_usd == pytest.approx(row.cost_usd)
 
     evals = eval_catalogue().mount_all(standard_tools())[0]
@@ -99,11 +100,11 @@ async def test_a_generation_within_the_cap_is_ledgered_and_read_by_the_spend_len
 
 async def test_with_enforcement_off_a_generation_is_still_ledgered_under_no_cap() -> None:
     off = TOYHOST_LAUNCH_SETTINGS.model_copy(update={"enforcement_enabled": False})
-    fixture = ops_fixture(ceiling_usd=None, settings=off)
+    fixture = off_loop(ops_fixture, ceiling_usd=None, settings=off)
     (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     assert (await settled(fixture.host, job.job_id)).state == "completed"
 
-    (row,) = _ledger(fixture)
+    (row,) = off_loop(_ledger, fixture)
     assert (row.cap_usd, row.priced_ceiling_usd) == (None, None)
 
 
@@ -115,7 +116,7 @@ async def test_with_enforcement_off_a_generation_is_still_ledgered_under_no_cap(
 async def test_a_repair_that_would_pass_the_cap_is_refused_before_it_is_sent() -> None:
     """The first call fits; its output is refused; the repair would pass what is left, so it is never sent."""
     ceiling = CAP * 0.6
-    fixture = ops_fixture(ceiling_usd=ceiling, first_output="not json at all")
+    fixture = off_loop(ops_fixture, ceiling_usd=ceiling, first_output="not json at all")
     (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     status = await settled(fixture.host, job.job_id)
 
@@ -124,18 +125,20 @@ async def test_a_repair_that_would_pass_the_cap_is_refused_before_it_is_sent() -
     assert status.state == "failed" and status.detail is not None
     assert "the repair round-trip was refused before it was sent" in status.detail
     assert "above the out-of-run cap" in status.detail
-    (attempt,) = fixture.host.eval_host.storage.list_analysis_attempts_by_campaign(fixture.campaign.id, TOYHOST_SCOPE)
+    (attempt,) = off_loop(
+        fixture.host.eval_host.storage.list_analysis_attempts_by_campaign, fixture.campaign.id, TOYHOST_SCOPE
+    )
     assert attempt.calls == 1 and attempt.unpriced_calls == 0, "only the call that was made is counted"
-    assert [row.outcome for row in _ledger(fixture)] == ["completed"]
+    assert [row.outcome for row in off_loop(_ledger, fixture)] == ["completed"]
 
 
 async def test_a_repair_within_what_is_left_is_sent_and_both_calls_are_ledgered() -> None:
-    fixture = ops_fixture(ceiling_usd=CAP * 0.4, first_output="not json at all")
+    fixture = off_loop(ops_fixture, ceiling_usd=CAP * 0.4, first_output="not json at all")
     (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     assert (await settled(fixture.host, job.job_id)).state == "completed"
 
     assert len(fixture.writers[0].calls) == 2
-    assert [row.outcome for row in _ledger(fixture)] == ["completed", "completed"]
+    assert [row.outcome for row in off_loop(_ledger, fixture)] == ["completed", "completed"]
 
 
 # =============================================================================
@@ -147,7 +150,7 @@ async def test_a_repair_within_what_is_left_is_sent_and_both_calls_are_ledgered(
 async def test_an_estimate_prices_the_first_call_against_the_cap_and_makes_no_call(
     ceiling: float, would_start: bool
 ) -> None:
-    fixture = ops_fixture(ceiling_usd=ceiling)
+    fixture = off_loop(ops_fixture, ceiling_usd=ceiling)
 
     estimate = await analysis_estimate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
 
@@ -156,7 +159,7 @@ async def test_an_estimate_prices_the_first_call_against_the_cap_and_makes_no_ca
     assert estimate.max_calls == 2
     (writer,) = fixture.writers
     assert writer.calls == [] and writer.closed == 1, "priced, released, never called"
-    assert _ledger(fixture) == []
+    assert off_loop(_ledger, fixture) == []
     if not would_start:
         with pytest.raises(ValidationFailedError) as refused:
             await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)
@@ -164,7 +167,7 @@ async def test_an_estimate_prices_the_first_call_against_the_cap_and_makes_no_ca
 
 
 async def test_the_estimate_action_renders_the_price_and_the_cap() -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     evals = eval_catalogue().mount_all(standard_tools())[0]
 
     outcome = await evals.call(
@@ -201,7 +204,7 @@ def _record_threads(storage: Any, monkeypatch: pytest.MonkeyPatch, names: tuple[
 
 
 async def test_a_generation_makes_no_store_call_on_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     names = (
         "load_campaign",
         "load_eval_runs",
@@ -238,12 +241,12 @@ async def test_a_generation_makes_no_store_call_on_the_event_loop(monkeypatch: p
 async def test_cancelling_a_run_another_process_holds_makes_no_store_call_on_the_event_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     storage = fixture.host.eval_host.storage
-    run = storage.load_eval_run(fixture.campaign.run_ids[0], TOYHOST_SCOPE)
+    run = off_loop(storage.load_eval_run, fixture.campaign.run_ids[0], TOYHOST_SCOPE)
     assert run is not None
     held = JobLease(holder="another-process", expires_at="2999-01-01T00:00:00+00:00")
-    storage.save_eval_run(run.model_copy(update={"status": "running", "completed_at": None, "lease": held}))
+    off_loop(storage.save_eval_run, run.model_copy(update={"status": "running", "completed_at": None, "lease": held}))
     names = ("load_job_record", "merge_job_record_fields", "store_time")
     seen = _record_threads(storage, monkeypatch, names)
     loop_thread = threading.get_ident()

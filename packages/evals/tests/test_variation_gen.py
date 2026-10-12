@@ -15,6 +15,7 @@ from threetears.evals.schema.models import ActorPolicy, ConversationSpec, EvalTe
 from threetears.evals.gen import price_variations
 from threetears.evals.gen.variation_gen import generate_variations
 from threetears.evals.storage import InMemoryDocumentStore
+from packages.evals.tests.off_loop import off_loop
 
 # =============================================================================
 # Fake storage — captures saves, supplies queries
@@ -663,7 +664,7 @@ async def test_an_admitted_generation_ledgers_one_row_per_llm_call_and_returns_t
 
     assert llm.priced == llm.calls, "what was priced is what was called"
     assert len(generated.spend) == 2 and generated.spend == budget.recorded
-    assert ledger.query_out_of_run_spend("u", launch_group_id="group-1") == list(generated.spend)
+    assert off_loop(ledger.query_out_of_run_spend, "u", launch_group_id="group-1") == list(generated.spend)
     assert [(row.purpose, row.model, row.priced_ceiling_usd, row.cap_usd) for row in generated.spend] == [
         ("variation", "writer-model", 0.4, 1.0),
         ("variation", "writer-model", 0.5, 1.0),

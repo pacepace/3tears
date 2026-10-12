@@ -127,7 +127,7 @@ async def main() -> Comparison:
 
     # Against (older, v1), v2 on the older model is the prompt's effect there. Its effect on the newer model needs
     # v1 on the newer model as the control: against() reads the same runs that way, running nothing again.
-    for model, read in ((older, comparison), (newer, comparison.against((newer, "v1")))):
+    for model, read in ((older, comparison), (newer, await comparison.against((newer, "v1")))):
         (row,) = [row for row in read.contrasts("accuracy") if row["arm"] == (model, "v2")]  # each arm by its key
         p = "" if row["p_adjusted"] is None else f", Holm-adjusted p {row['p_adjusted']:.2g}"  # none if nothing varied
         print(f"On {model}, v2 vs v1 on {row['reading']}: {row['control_mean']:.2f} -> {row['arm_mean']:.2f}, ", end="")

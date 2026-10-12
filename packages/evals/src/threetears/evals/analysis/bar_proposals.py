@@ -26,7 +26,7 @@ from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, bar_seed
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.bars import BarProposal, no_better_end
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN
 
 if TYPE_CHECKING:

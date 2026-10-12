@@ -59,7 +59,6 @@ FIRST_HOST = "discodon"
 #: :func:`test_the_dependency_map_is_the_manifests`, so a dependency added to one and not the other
 #: fails rather than widening or narrowing the walk below in silence.
 IMPORT_ROOTS_BY_DEPENDENCY: dict[str, tuple[str, ...]] = {
-    "3tears-observe": ("threetears.observe",),
     "pydantic": ("pydantic",),
 }
 
@@ -254,7 +253,8 @@ def test_every_module_the_engine_names_is_declared():
         ("import json\n", True),
         ("from threetears.evals.schema import models\n", True),
         ("from pydantic import BaseModel\n", True),
-        ("from threetears.observe import get_logger\n", True),
+        # No 3tears package is a dependency, observe included.
+        ("from threetears.observe import get_logger\n", False),
         ("import discodon.config\n", False),
         ("from threetears.core import thing\n", False),
         ("import fastapi\n", False),

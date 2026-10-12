@@ -28,6 +28,7 @@ from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.toyhost_memo import PROMPT_ID, FixturedClient, memo_payload
+from packages.evals.tests.off_loop import off_loop
 
 
 def _with_a_lamp(profile: HostProfile, *, name: str = "bench_lamp") -> HostProfile:
@@ -92,12 +93,12 @@ class TestTheDigestIsDerivedFromTheDeclarations:
         )
 
     async def test_the_generation_records_it_and_the_bundle_version(self) -> None:
-        host, campaign_id, scope_id = _corpus_host()
+        host, campaign_id, scope_id = off_loop(_corpus_host)
 
         analysis = await _generated(host, campaign_id, scope_id)
 
         assert analysis.generation.host_declarations_digest == host_declarations_digest(host.profile)
-        inspection = inspect_analysis_bundle(host, analysis.id, scope_id)
+        inspection = off_loop(inspect_analysis_bundle, host, analysis.id, scope_id)
         assert analysis.generation.bundle_schema_version == inspection.bundle.schema_version
         assert inspection.reproduces_generation is True
         assert inspection.mismatch_cause is None
@@ -105,69 +106,75 @@ class TestTheDigestIsDerivedFromTheDeclarations:
 
 class TestAMismatchNamesWhatMoved:
     async def test_a_host_adding_an_apparatus_sweepable_reads_as_host_declarations(self) -> None:
-        host, campaign_id, scope_id = _corpus_host()
+        host, campaign_id, scope_id = off_loop(_corpus_host)
         analysis = await _generated(host, campaign_id, scope_id)
 
         relit = toyhost_host(profile=_with_a_lamp(host.profile), storage=host.storage)
-        inspection = inspect_analysis_bundle(relit, analysis.id, scope_id)
+        inspection = off_loop(inspect_analysis_bundle, relit, analysis.id, scope_id)
 
         assert inspection.reproduces_generation is False
         assert inspection.mismatch_cause == "host_declarations"
         assert inspection.recorded_host_declarations_digest != inspection.bundle.host_declarations_digest
 
     async def test_a_schema_version_bump_alone_reads_as_package_shape(self) -> None:
-        host, campaign_id, scope_id = _corpus_host()
+        host, campaign_id, scope_id = off_loop(_corpus_host)
         analysis = await _generated(host, campaign_id, scope_id)
-        current = inspect_analysis_bundle(host, analysis.id, scope_id).bundle
+        current = off_loop(inspect_analysis_bundle, host, analysis.id, scope_id).bundle
         # What the same evidence digested to under the version before: only the shape version differs.
         older = current.model_copy(update={"schema_version": current.schema_version - 1})
-        _restored(host, analysis, bundle_schema_version=older.schema_version, bundle_fingerprint=older.fingerprint())
+        off_loop(
+            _restored,
+            host,
+            analysis,
+            bundle_schema_version=older.schema_version,
+            bundle_fingerprint=older.fingerprint(),
+        )
 
-        inspection = inspect_analysis_bundle(host, analysis.id, scope_id)
+        inspection = off_loop(inspect_analysis_bundle, host, analysis.id, scope_id)
 
         assert inspection.reproduces_generation is False
         assert inspection.mismatch_cause == "package_shape"
 
     async def test_a_shape_bump_wins_over_a_declarations_change(self) -> None:
-        host, campaign_id, scope_id = _corpus_host()
+        host, campaign_id, scope_id = off_loop(_corpus_host)
         analysis = await _generated(host, campaign_id, scope_id)
-        _restored(host, analysis, bundle_schema_version=1)
+        off_loop(_restored, host, analysis, bundle_schema_version=1)
 
         relit = toyhost_host(profile=_with_a_lamp(host.profile), storage=host.storage)
 
-        assert inspect_analysis_bundle(relit, analysis.id, scope_id).mismatch_cause == "package_shape"
+        assert off_loop(inspect_analysis_bundle, relit, analysis.id, scope_id).mismatch_cause == "package_shape"
 
     async def test_unchanged_versions_over_moved_runs_read_as_evidence(self) -> None:
-        host, campaign_id, scope_id = _corpus_host()
+        host, campaign_id, scope_id = off_loop(_corpus_host)
         analysis = await _generated(host, campaign_id, scope_id)
-        run = host.storage.load_eval_run(analysis.observation_refs[0], scope_id)
+        run = off_loop(host.storage.load_eval_run, analysis.observation_refs[0], scope_id)
         assert run is not None
-        host.storage.save_eval_run(run.model_copy(update={"archived": True}))
+        off_loop(host.storage.save_eval_run, run.model_copy(update={"archived": True}))
 
-        inspection = inspect_analysis_bundle(host, analysis.id, scope_id)
+        inspection = off_loop(inspect_analysis_bundle, host, analysis.id, scope_id)
 
         assert inspection.reproduces_generation is False
         assert inspection.mismatch_cause == "evidence"
 
     async def test_a_provenance_stored_without_the_fields_cannot_say(self) -> None:
-        host, campaign_id, scope_id = _corpus_host()
+        host, campaign_id, scope_id = off_loop(_corpus_host)
         analysis = await _generated(host, campaign_id, scope_id)
-        _restored(host, analysis, bundle_schema_version=None, host_declarations_digest=None)
+        off_loop(_restored, host, analysis, bundle_schema_version=None, host_declarations_digest=None)
 
         relit = toyhost_host(profile=_with_a_lamp(host.profile), storage=host.storage)
-        inspection = inspect_analysis_bundle(relit, analysis.id, scope_id)
+        inspection = off_loop(inspect_analysis_bundle, relit, analysis.id, scope_id)
 
         assert inspection.reproduces_generation is False
         assert inspection.mismatch_cause == "cannot_say"
 
     async def test_one_missing_field_is_enough_to_say_nothing(self) -> None:
-        host, campaign_id, scope_id = _corpus_host()
+        host, campaign_id, scope_id = off_loop(_corpus_host)
         analysis = await _generated(host, campaign_id, scope_id)
-        _restored(host, analysis, host_declarations_digest=None)
+        off_loop(_restored, host, analysis, host_declarations_digest=None)
 
         relit = toyhost_host(profile=_with_a_lamp(host.profile), storage=host.storage)
 
-        assert inspect_analysis_bundle(relit, analysis.id, scope_id).mismatch_cause == "cannot_say"
+        assert off_loop(inspect_analysis_bundle, relit, analysis.id, scope_id).mismatch_cause == "cannot_say"
 
     def test_a_stored_provenance_without_the_fields_still_loads(self) -> None:
         from threetears.evals.kernel.campaign import GenerationProvenance

@@ -45,7 +45,7 @@ from threetears.evals.schema.models import CellTermination, RoleUsage, Simulator
 from threetears.evals.schema.completion import USAGE_LEDGER_ATTRIBUTES
 from threetears.evals.kernel.provider import sum_optional_tokens
 from threetears.evals.kernel.spend import ExternalRateTable, reported_price_source
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 if TYPE_CHECKING:
     from threetears.evals.schema.models import AsyncDelivery, EvalResult

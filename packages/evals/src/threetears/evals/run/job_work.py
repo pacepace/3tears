@@ -58,7 +58,7 @@ from threetears.evals.schema.job_lease import (
 from threetears.evals.schema.refusal import RefusalField
 from threetears.evals.schema.models import CoreSchemaVersion, utc_now_iso
 from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 

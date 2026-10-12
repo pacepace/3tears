@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ConfigDict
 
+from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.factories import memory_storage
 from threetears.evals.kernel import SyncActionSeam, SyncToolLike, SyncToolWrap, ToolWrap
 from threetears.evals.kernel.cassettes import (
@@ -156,8 +157,15 @@ def _lane(storage: EvalStorage, mode: str, *, corpus_id: str = "run-capture-1") 
     return CassetteLane(mode=mode, store=storage, scope_id=_SCOPE, corpus_id=corpus_id)  # type: ignore[arg-type]
 
 
+def _end(cell: CassetteCell) -> None:
+    """End the cell as the runner does: close it, then write what its capture recorded, off the loop."""
+    cell.close()
+    off_loop(cell.flush)
+
+
 def _wire(lane: CassetteLane, seams: Any) -> CassetteCell:
     cell = lane.cell(template_id=_TEMPLATE, test_case_id=_CASE, model=_MODEL)
+    off_loop(cell.open)  # as the runner opens a cell before its prepare
     cell.wire(seams)
     return cell
 
@@ -176,7 +184,7 @@ async def _captured(storage: EvalStorage, flavour: str, *, corpus_id: str = "run
     table = _capture_table(flavour)
     cell = _wire(_lane(storage, "capture", corpus_id=corpus_id), table)
     answers = await _play(table)
-    cell.close()
+    _end(cell)
     return answers
 
 
@@ -235,8 +243,12 @@ async def test_an_undispatchable_action_gets_the_tool_s_own_answer_and_is_never_
 
     assert answer == RollResult(ok=False, error="Unknown action: reroll")
     assert (
-        storage.list_case_cassettes(
-            corpus_id="run-capture-1", template_id=_TEMPLATE, test_case_id=_CASE, scope_id=_SCOPE
+        off_loop(
+            storage.list_case_cassettes,
+            corpus_id="run-capture-1",
+            template_id=_TEMPLATE,
+            test_case_id=_CASE,
+            scope_id=_SCOPE,
         )
         == []
     )
@@ -266,8 +278,8 @@ async def test_both_paths_record_the_same_corpus() -> None:
             (row.tool, row.action, row.params_hash, row.occurrence, row.seam, str(row.response)) for row in rows
         )
 
-    assert len(recorded("corpus-awaited")) == 4
-    assert recorded("corpus-awaited") == recorded("corpus-blocking")
+    assert len(off_loop(recorded, "corpus-awaited")) == 4
+    assert off_loop(recorded, "corpus-awaited") == off_loop(recorded, "corpus-blocking")
 
 
 @pytest.mark.parametrize(("captured_on", "replayed_on"), [("awaited", "blocking"), ("blocking", "awaited")])
@@ -289,7 +301,7 @@ def test_the_blocking_path_needs_no_event_loop() -> None:
     table = _capture_table("blocking")
     cell = _wire(_lane(storage, "capture"), table)
     captured = [table.tools["roll"].act_sync("roll", {"dice": "1d20"}) for _ in range(2)]
-    cell.close()
+    _end(cell)
 
     replay = _replay_table("blocking")
     _wire(_lane(storage, "replay"), replay)

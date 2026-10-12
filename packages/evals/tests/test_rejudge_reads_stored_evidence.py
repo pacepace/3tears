@@ -51,6 +51,7 @@ from threetears.evals.run.runner import RunnerOptions, run_one_result
 from threetears.evals.kernel.identity import resolve_variant_identity
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.off_loop import off_loop
 
 _SCOPE = "scope-rejudge"
 _KIND = "rejudge-probe"
@@ -185,10 +186,10 @@ async def _judged_and_stored(
         rubric=rubric or [RubricDim(name=_DIM, description="the GM rules what the dice say", scale="ordinal")],
     )
     case = EvalTestCase(template_id=template.id, scope_id=_SCOPE, variation_params={"party": "two"})
-    host.storage.save_template(template)
-    host.storage.save_test_case(case)
+    off_loop(host.storage.save_template, template)
+    off_loop(host.storage.save_test_case, case)
     # Attributed the way a launch attributes it: through the launch's own judge build, for the kind.
-    built = build_judge_service(host, template, _JUDGE, judged_artifact=judged_artifact)
+    built = off_loop(build_judge_service, host, template, _JUDGE, judged_artifact=judged_artifact)
     run_fields = {"effective_judges": built.effective_judges, **run_fields}
     run = make_eval_run(
         scope_id=_SCOPE,
@@ -201,7 +202,7 @@ async def _judged_and_stored(
         judge_request_settings=JUDGE_REQUEST_SETTINGS,
         **run_fields,
     )
-    host.storage.save_eval_run(run)
+    off_loop(host.storage.save_eval_run, run)
     outcome = await run_one_result(
         host,
         template=template,
@@ -218,7 +219,7 @@ async def _judged_and_stored(
         options=RunnerOptions(candidate_kinds={_KIND: lambda _cell: _JudgedKind(judged_artifact)}),
         variant=resolve_variant_identity(run=run, profile=host.profile),
     )
-    host.storage.save_eval_result(outcome.result, outcome.trace)
+    off_loop(host.storage.save_eval_result, outcome.result, outcome.trace)
     return host, outcome.result
 
 
@@ -359,11 +360,13 @@ async def test_a_launch_attributes_a_judge_only_to_the_dims_the_kinds_judge_is_a
     """
     judge = _ScriptedJudge()
     host, _ = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge)
-    template = host.storage.query_templates(_SCOPE)[0]
+    template = off_loop(host.storage.query_templates, _SCOPE)[0]
 
-    document = build_judge_service(host, template, _JUDGE, judged_artifact=JudgedArtifact.DOCUMENT).effective_judges
-    conversation = build_judge_service(
-        host, template, _JUDGE, judged_artifact=JudgedArtifact.TRANSCRIPT
+    document = off_loop(
+        build_judge_service, host, template, _JUDGE, judged_artifact=JudgedArtifact.DOCUMENT
+    ).effective_judges
+    conversation = off_loop(
+        build_judge_service, host, template, _JUDGE, judged_artifact=JudgedArtifact.TRANSCRIPT
     ).effective_judges
 
     assert document == {_DIM: _JUDGE}, "a document is never asked the conversation axes, so none is attributed"
@@ -401,7 +404,7 @@ async def test_the_runner_stores_the_evidence_with_the_declaration_that_picked_i
     judge = _ScriptedJudge()
     host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge)
 
-    trace = host.storage.load_eval_trace(result.id, _SCOPE)
+    trace = off_loop(host.storage.load_eval_trace, result.id, _SCOPE)
 
     assert trace is not None
     assert trace.judge_evidence == _EVIDENCE, "the evidence round-trips through storage, whitespace intact"
@@ -413,7 +416,8 @@ async def test_a_result_whose_trace_stores_no_evidence_is_refused_before_any_jud
     judge = _ScriptedJudge(failing={_DIM})
     host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge)
     # The trace as a cell whose payload write lost its evidence would leave it.
-    host.storage.save_eval_result(
+    off_loop(
+        host.storage.save_eval_result,
         result,
         EvalTrace(
             id=eval_trace_doc_id(result.id),

@@ -21,9 +21,17 @@
       "kind": "literal",
       "signature": "'delivered'` | `'failed'` | `'undelivered'"
     },
+    "threetears.evals.schema.AsyncDocumentStore": {
+      "kind": "protocol",
+      "signature": "AsyncDocumentStore{by_doc_type(self, doc_type: str, scope_id: str, *, order_by: str | None = None, descending: bool = True, limit: int | None = None, exclude: Sequence[str] = (), **field_eq: Any) -> list[dict[str, Any]]; delete(self, doc_id: str, scope_id: str) -> bool; get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None; get_many(self, doc_type: str, doc_ids: Sequence[str], scope_id: str, *, exclude: Sequence[str] = (), keep: Sequence[str] = ()) -> list[dict[str, Any]]; get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]; iter_by_doc_type(self, doc_type: str, scope_id: str) -> AsyncIterator[str]; merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool; upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None}"
+    },
     "threetears.evals.schema.AsyncExternalSpend": {
       "kind": "model",
       "signature": "AsyncExternalSpend(provider: str | None, calls: int, provider_units: int | None = None, provider_unit: str | None = None, money: float | None = None)"
+    },
+    "threetears.evals.schema.AsyncStoreClock": {
+      "kind": "protocol",
+      "signature": "AsyncStoreClock{now(self) -> datetime}"
     },
     "threetears.evals.schema.attribution_state": {
       "kind": "function",
@@ -537,6 +545,10 @@
       "kind": "literal",
       "signature": "'refused'` | `'not_found'` | `'conflict'` | `'validation_failed'` | `'storage_failed'` | `'provider_refused'` | `'admission_refused'"
     },
+    "threetears.evals.schema.refuse_on_event_loop": {
+      "kind": "function",
+      "signature": "refuse_on_event_loop() -> None"
+    },
     "threetears.evals.schema.REGENERABLE_SCHEMA_VERSION": {
       "kind": "constant (int)",
       "signature": ""
@@ -628,6 +640,10 @@
     "threetears.evals.schema.StopReason": {
       "kind": "literal",
       "signature": "'end_turn'` | `'max_tokens'` | `'content_filter'` | `'error'"
+    },
+    "threetears.evals.schema.StoreCalledOnEventLoop": {
+      "kind": "exception",
+      "signature": ""
     },
     "threetears.evals.schema.StoreClock": {
       "kind": "protocol",
@@ -853,6 +869,10 @@
       "kind": "class",
       "signature": "CappedCompletion(inner: CompletionGenerator, *, sink: CellSink, source: CellPending) -> None"
     },
+    "threetears.evals.kernel.CaseRecordings": {
+      "kind": "class",
+      "signature": "CaseRecordings(readable: dict[str, EvalCassette], unreadable: dict[str, str])"
+    },
     "threetears.evals.kernel.CaseSetStore": {
       "kind": "protocol",
       "signature": "CaseSetStore{load_case_set(self, name: str, version: int, scope_id: str, /) -> CaseSet | None; load_test_cases_by_ids(self, test_case_ids: list[str], scope_id: str, /) -> list[EvalTestCase]; query_case_sets(self, scope_id: str, /, *, name: str | None = None) -> list[CaseSet]; save_case_set(self, case_set: CaseSet, /) -> None}"
@@ -879,7 +899,7 @@
     },
     "threetears.evals.kernel.CassetteStore": {
       "kind": "protocol",
-      "signature": "CassetteStore{delete_case_cassettes(self, *, corpus_id: str, template_id: str, test_case_id: str, scope_id: str) -> int; get_cassette(self, key: CassetteKey, scope_id: str, /) -> EvalCassette | None; list_case_cassettes(self, *, corpus_id: str, template_id: str, test_case_id: str, scope_id: str) -> list[EvalCassette]; list_cassettes_for_template(self, template_id: str, scope_id: str, /, *, limit: int | None = None) -> list[EvalCassette]; save_cassette(self, cassette: EvalCassette, /) -> None}"
+      "signature": "CassetteStore{delete_case_cassettes(self, *, corpus_id: str, template_id: str, test_case_id: str, scope_id: str) -> int; get_cassette(self, key: CassetteKey, scope_id: str, /) -> EvalCassette | None; list_case_cassettes(self, *, corpus_id: str, template_id: str, test_case_id: str, scope_id: str) -> list[EvalCassette]; list_cassettes_for_template(self, template_id: str, scope_id: str, /, *, limit: int | None = None) -> list[EvalCassette]; read_case_cassettes(self, *, corpus_id: str, template_id: str, test_case_id: str, scope_id: str) -> CaseRecordings; save_cassette(self, cassette: EvalCassette, /) -> None}"
     },
     "threetears.evals.kernel.Caveat": {
       "kind": "model",
@@ -4517,6 +4537,14 @@
       "kind": "constant (int)",
       "signature": ""
     },
+    "threetears.evals.storage.AsyncStoreBridge": {
+      "kind": "class",
+      "signature": "AsyncStoreBridge(store: AsyncDocumentStore, loop: asyncio.AbstractEventLoop) -> None"
+    },
+    "threetears.evals.storage.bridge_async_store": {
+      "kind": "function",
+      "signature": "bridge_async_store(store: AsyncDocumentStore, loop: asyncio.AbstractEventLoop) -> AsyncStoreBridge"
+    },
     "threetears.evals.storage.DocTypeRoute": {
       "kind": "dataclass",
       "signature": "DocTypeRoute(by: Literal['origin', 'lifecycle'], to: Mapping[str, str], unregistered: str)"
@@ -5452,6 +5480,10 @@
     "threetears.evals.ops.start_job": {
       "kind": "async function",
       "signature": "start_job(host: OpsHost, admitted: AdmittedJob) -> JobsStarted"
+    },
+    "threetears.evals.ops.start_paid_call": {
+      "kind": "async function",
+      "signature": "start_paid_call(host: OpsHost, scope_id: str, *, action: str, role: CompletionRole, model: str | None, purpose: OutOfRunPurpose, budget: OutOfRunBudget, call: PlannedCall, make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]], label: str, budget_s: float = 3600.0) -> JobsStarted"
     },
     "threetears.evals.ops.sweep_job_id": {
       "kind": "function",

@@ -63,7 +63,7 @@ from threetears.evals.kernel.out_of_run import (
 )
 from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
 from threetears.evals.kernel.provider import extract_json
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 if TYPE_CHECKING:
     from concurrent.futures import Executor

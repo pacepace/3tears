@@ -5,14 +5,16 @@ The port itself — :class:`~threetears.evals.schema.DocumentStore`, its
 lives in :mod:`threetears.evals.schema`, which depends on nothing but pydantic. This package holds
 adapters BEHIND that port, so an adapter's dependencies never reach the schema.
 
-It holds two adapters and a router. :class:`InMemoryDocumentStore` is the reference adapter for tests,
+It holds two adapters, a router and a bridge. :class:`InMemoryDocumentStore` is the reference adapter for tests,
 examples and a quick start, and the shape to compare a real adapter against; nothing it holds outlives the
 process. :class:`SqliteDocumentStore` keeps every document in one SQLite file through the standard library, for
 keeping runs without running a database (``run_eval(..., store=SqliteDocumentStore("evals.sqlite"))``).
 :class:`RoutedDocumentStore` is one store over several, each document type kept in the store a
 :class:`DocTypeRoute` over its facts names. All three pass every case of the store conformance kit. A host with its own database writes
 its own adapter, passes it to :class:`~threetears.evals.kernel.EvalStorage`, and proves it with
-the store conformance kit in :mod:`threetears.evals.testing`.
+the store conformance kit in :mod:`threetears.evals.testing`. A host whose database driver is async writes
+an :class:`~threetears.evals.schema.AsyncDocumentStore` instead and hands the engine
+:func:`bridge_async_store` over it, which runs each call on the host's loop (:class:`AsyncStoreBridge`).
 
 **This module is the package's public root.** A host imports from here and from no module below it,
 and only the names in ``__all__``.
@@ -20,6 +22,7 @@ and only the names in ``__all__``.
 
 from __future__ import annotations
 
+from threetears.evals.storage.async_bridge import AsyncStoreBridge, bridge_async_store
 from threetears.evals.storage.memory import InMemoryDocumentStore
 from threetears.evals.storage.routed import (
     ROUTING_RECORD_DOC_TYPE,
@@ -33,10 +36,12 @@ from threetears.evals.storage.sqlite import SQLITE_STORE_LAYOUT, SqliteDocumentS
 __all__ = [
     "ROUTING_RECORD_DOC_TYPE",
     "SQLITE_STORE_LAYOUT",
+    "AsyncStoreBridge",
     "DocTypeRoute",
     "InMemoryDocumentStore",
     "MisplacedDocument",
     "RouteChanged",
     "RoutedDocumentStore",
     "SqliteDocumentStore",
+    "bridge_async_store",
 ]

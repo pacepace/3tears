@@ -45,6 +45,7 @@ from threetears.evals.kernel.spend import ExternalRateTable
 from threetears.evals.kernel.usage_capture import count_substituted_deliveries, production_replicating_cost
 from threetears.evals.run.cassette_proxy import DELIVERY_ACTION, ReplayReportDefect, params_hash
 from threetears.evals.run.runner import EveryCellApparatusFailedError, RunnerOptions, execute_run
+from packages.evals.tests.off_loop import off_loop
 
 _SCOUT_MODEL = "scout/model"
 
@@ -234,7 +235,7 @@ async def _execute(host: EvalHost, run: EvalRun, kind: _FakeGmKind) -> list[Eval
         judge_service=None,
         options=RunnerOptions(candidate_kinds={DEFAULT_KIND: lambda _cell: kind}),
     )
-    return sorted(host.storage.query_eval_results_by_run(run.id, run.scope_id), key=lambda r: r.test_case_id)
+    return sorted(off_loop(host.storage.query_eval_results_by_run, run.id, run.scope_id), key=lambda r: r.test_case_id)
 
 
 def _outputs(host: EvalHost, results: list[EvalResult]) -> list[Any]:
@@ -255,11 +256,11 @@ async def test_one_kind_instance_captures_every_cell_and_a_replay_reproduces_it_
     replay_kind = _FakeGmKind()
     replayed = await _execute(host, _run(cassette_mode="replay", cassette_corpus_id=capture.id), replay_kind)
 
-    assert _outputs(host, replayed) == _outputs(host, captured)
+    assert off_loop(_outputs, host, replayed) == off_loop(_outputs, host, captured)
     assert [s.dice.live_rolls for s in replay_kind.sessions] == [0, 0]
     assert [s.scouts.live_scouts for s in replay_kind.sessions] == [0, 0]
     # The slow north scout and the fast chapel scout each got their own report back.
-    (first, *_) = _outputs(host, replayed)
+    (first, *_) = off_loop(_outputs, host, replayed)
     assert first[0]["reports"] == {"chapel": "chapel as gm/a saw it", "north": "north as gm/a saw it"}
 
 
@@ -275,7 +276,7 @@ async def test_two_capture_runs_executed_at_once_each_replay_as_their_own_model_
         replayed = await _execute(
             host, _run(model="gm/c", cassette_mode="replay", cassette_corpus_id=capture.id), _FakeGmKind()
         )
-        assert _outputs(host, replayed) == _outputs(host, captured)
+        assert off_loop(_outputs, host, replayed) == off_loop(_outputs, host, captured)
 
 
 async def test_a_kind_that_does_not_wire_its_cassettes_is_refused_before_its_candidate_runs() -> None:
@@ -392,7 +393,7 @@ async def test_an_undelivered_scout_s_spend_survives_the_cell_deadline() -> None
             candidate_kinds={DEFAULT_KIND: lambda _cell: _FakeScoutStillOutKind()}, cell_timeout_s=0.05
         ),
     )
-    (result,) = host.storage.query_eval_results_by_run(run.id, run.scope_id)
+    (result,) = off_loop(host.storage.query_eval_results_by_run, run.id, run.scope_id)
 
     assert result.termination == "cell_timeout"
     assert [(row.role, row.cost_usd, row.prompt_tokens) for row in result.usage] == [("inner_agent", 0.03, 900)]
@@ -441,12 +442,13 @@ async def test_an_apparatus_fault_mid_capture_closes_the_cells_cassettes_and_kee
             judge_service=None,
             options=RunnerOptions(candidate_kinds={DEFAULT_KIND: lambda _cell: _FakeRigBreaksMidSceneKind()}),
         )
-    (result,) = host.storage.query_eval_results_by_run(run.id, run.scope_id)
+    (result,) = off_loop(host.storage.query_eval_results_by_run, run.id, run.scope_id)
 
     assert result.termination == "apparatus_failed"
     assert [(row.role, row.cost_usd) for row in result.usage] == [("candidate", 0.002), ("inner_agent", 0.01)]
     assert result.cost_usd == pytest.approx(0.012)
-    recorded = host.storage.get_cassette(
+    recorded = off_loop(
+        host.storage.get_cassette,
         CassetteKey(
             corpus_id=run.id,
             template_id=_TEMPLATE.id,
@@ -489,7 +491,8 @@ async def test_an_apparatus_fault_in_prepare_still_closes_the_cells_cassettes() 
             options=RunnerOptions(candidate_kinds={DEFAULT_KIND: lambda _cell: _FakeBreaksWhilePreparingKind()}),
         )
 
-    recorded = host.storage.get_cassette(
+    recorded = off_loop(
+        host.storage.get_cassette,
         CassetteKey(
             corpus_id=run.id,
             template_id=_TEMPLATE.id,
@@ -540,7 +543,7 @@ async def _one_cell(kind: _FakeGmKind, *, rates: ExternalRateTable | None = None
         judge_service=None,
         options=RunnerOptions(candidate_kinds={DEFAULT_KIND: lambda _cell: kind}, external_rates=rates),
     )
-    (result,) = host.storage.query_eval_results_by_run(run.id, run.scope_id)
+    (result,) = off_loop(host.storage.query_eval_results_by_run, run.id, run.scope_id)
     return result
 
 

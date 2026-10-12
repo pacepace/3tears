@@ -67,7 +67,7 @@ from threetears.evals.kernel.host import SeedRefused, WorldDimension, WorldRegis
 from threetears.evals.schema import SubjectSnapshot
 from threetears.evals.run import CellContext, GoalCheckUnevaluable, evaluate_goal_state, grade_goal_checks
 from threetears.evals.run.check_controls import idle_end_state
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 
 log = get_logger(__name__)

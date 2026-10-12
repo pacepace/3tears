@@ -18,6 +18,7 @@ from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER
 from threetears.evals.quick import Comparison
 from packages.evals.tests.example_loader import load_example
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
+from packages.evals.tests.off_loop import off_loop
 
 #: The example under test.
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "prompt_x_model.py"
@@ -41,7 +42,7 @@ async def test_offline_the_example_runs_four_arms_keyed_by_both_factors(
     assert all(summary.status == "completed" for summary in comparison.arms.values())
     assert {summary.candidate_model for summary in comparison.arms.values()} == {old, new}
 
-    campaign = comparison.host.storage.load_campaign(comparison.campaign_id, comparison.scope_id)
+    campaign = off_loop(comparison.host.storage.load_campaign, comparison.campaign_id, comparison.scope_id)
     assert campaign is not None and campaign.declared_design is not None
     axes = {axis.axis_id: [value.display for value in axis.values] for axis in campaign.declared_design.axes}
     assert axes == {CANDIDATE_MODEL_LEVER: [old, new], "callable.prompt": ["v1", "v2"]}
@@ -55,7 +56,7 @@ async def test_offline_the_example_runs_four_arms_keyed_by_both_factors(
     assert rows[f"callable.prompt=v1, model={new}"]["verdict"] == "improved on the control"
 
     # Against v1 on the newer model: the same runs, and the prompt does not separate there.
-    on_new = {row["contrast"]: row for row in comparison.against((new, "v1")).contrasts("accuracy")}
+    on_new = {row["contrast"]: row for row in (await comparison.against((new, "v1"))).contrasts("accuracy")}
     assert on_new[f"callable.prompt=v2, model={new}"]["verdict"] == "not separated from the control"
 
     out = capsys.readouterr().out

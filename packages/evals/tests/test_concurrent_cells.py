@@ -53,6 +53,7 @@ from packages.evals.tests.fixtures.toyhost.kind import (
 from packages.evals.tests.fixtures.toyhost.product import ExtractionRequest
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_run, toyhost_template, toyhost_test_cases
+from packages.evals.tests.off_loop import off_loop
 
 #: How long every extraction sleeps where a test reads only how many ran at once.
 _SLEEP_S = 0.02
@@ -132,8 +133,8 @@ def _modes(storage: EvalStorage, run: EvalRun) -> set[Any]:
 
 async def test_a_run_not_measuring_latency_runs_its_cells_concurrently_and_measurably_faster() -> None:
     concurrent_client, serial_client = _SleepingClient(_TIMED_SLEEP_S), _SleepingClient(_TIMED_SLEEP_S)
-    concurrent_host, concurrent_store = _launching(concurrent_client)
-    serial_host, serial_store = _launching(serial_client)
+    concurrent_host, concurrent_store = off_loop(_launching, concurrent_client)
+    serial_host, serial_store = off_loop(_launching, serial_client)
 
     began = time.perf_counter()
     (concurrent,) = await _launch(concurrent_host)
@@ -149,8 +150,8 @@ async def test_a_run_not_measuring_latency_runs_its_cells_concurrently_and_measu
     # Twelve cells of 150 ms: about 1.8 s one at a time and 0.45 s four at a time. Half is a wide margin.
     assert concurrent_s < serial_s / 2, f"concurrent {concurrent_s:.3f}s is not measurably faster than {serial_s:.3f}s"
 
-    stored_concurrent = concurrent_store.load_eval_run(concurrent.id, TOYHOST_SCOPE)
-    stored_serial = serial_store.load_eval_run(serial.id, TOYHOST_SCOPE)
+    stored_concurrent = off_loop(concurrent_store.load_eval_run, concurrent.id, TOYHOST_SCOPE)
+    stored_serial = off_loop(serial_store.load_eval_run, serial.id, TOYHOST_SCOPE)
     assert stored_concurrent is not None and stored_serial is not None
     assert (stored_concurrent.status, stored_serial.status) == ("completed", "completed")
     assert (stored_concurrent.measure_latency, stored_concurrent.cell_concurrency) == (
@@ -160,17 +161,17 @@ async def test_a_run_not_measuring_latency_runs_its_cells_concurrently_and_measu
     assert (stored_serial.measure_latency, stored_serial.cell_concurrency) == (True, 1)
     # The mark: every cell of the concurrent run says its latency was read under concurrency, and the
     # serial run, executing alone in the manager, says it was not.
-    assert _modes(concurrent_store, concurrent) == {"concurrent"}
-    assert _modes(serial_store, serial) == {"serial"}
+    assert off_loop(_modes, concurrent_store, concurrent) == {"concurrent"}
+    assert off_loop(_modes, serial_store, serial) == {"serial"}
 
 
 async def test_the_width_is_the_hosts_setting() -> None:
     client = _SleepingClient()
-    host, storage = _launching(client, max_concurrent_cells=2)
+    host, storage = off_loop(_launching, client, max_concurrent_cells=2)
 
     (run,) = await _launch(host)
 
-    stored = storage.load_eval_run(run.id, TOYHOST_SCOPE)
+    stored = off_loop(storage.load_eval_run, run.id, TOYHOST_SCOPE)
     assert stored is not None and stored.cell_concurrency == 2
     assert client.peak == 2
 
@@ -182,27 +183,29 @@ async def test_the_width_is_the_hosts_setting() -> None:
 
 async def test_a_launch_measuring_latency_runs_its_arms_one_after_another_with_nothing_beside_them() -> None:
     client = _SleepingClient()
-    host, storage = _launching(client)
+    host, storage = off_loop(_launching, client)
 
     runs = await _launch(host, models=RUN_MODELS[:2], measure_latency=True)
 
     assert client.peak == 1, "two arms of a latency launch ran side by side"
     for run in runs:
-        stored = storage.load_eval_run(run.id, TOYHOST_SCOPE)
+        stored = off_loop(storage.load_eval_run, run.id, TOYHOST_SCOPE)
         assert stored is not None and stored.status == "completed"
         assert (stored.measure_latency, stored.cell_concurrency) == (True, 1)
-        assert _modes(storage, run) == {"serial"}, "an arm of a latency launch read its latency beside another"
+        assert off_loop(_modes, storage, run) == {"serial"}, (
+            "an arm of a latency launch read its latency beside another"
+        )
 
 
 async def test_the_arms_of_a_launch_not_measuring_latency_still_run_side_by_side() -> None:
     client = _SleepingClient()
-    host, storage = _launching(client)
+    host, storage = off_loop(_launching, client)
 
     runs = await _launch(host, models=RUN_MODELS[:2])
 
     assert client.peak > DEFAULT_MAX_CONCURRENT_CELLS, "the two arms' cells should overlap, each run at its width"
     for run in runs:
-        assert _modes(storage, run) == {"concurrent"}
+        assert off_loop(_modes, storage, run) == {"concurrent"}
 
 
 # =============================================================================
@@ -213,7 +216,7 @@ async def test_the_arms_of_a_launch_not_measuring_latency_still_run_side_by_side
 async def test_a_host_supplied_executor_runs_every_cell_at_the_width_the_launch_decided() -> None:
     executor = _RecordingExecutor()
     client = _SleepingClient()
-    host, storage = _launching(client, executor)
+    host, storage = off_loop(_launching, client, executor)
 
     (concurrent,) = await _launch(host)
     (serial,) = await _launch(host, measure_latency=True)
@@ -221,7 +224,7 @@ async def test_a_host_supplied_executor_runs_every_cell_at_the_width_the_launch_
     cells = len(toyhost_test_cases(toyhost_template())) * _K
     assert executor.asked == [(cells, DEFAULT_MAX_CONCURRENT_CELLS), (cells, 1)]
     for run in (concurrent, serial):
-        assert len(storage.query_eval_results_by_run(run.id, TOYHOST_SCOPE)) == cells
+        assert len(off_loop(storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)) == cells
 
 
 async def test_the_default_executor_starts_cells_in_order_and_raises_the_first_failure() -> None:
@@ -279,10 +282,10 @@ async def test_the_cost_cap_is_exceeded_by_no_more_than_the_cells_in_flight_when
     kind = ToyExtractorKind(client=client, world=world, goal_checks=tuple(template.goal_state_checks))
     cases = toyhost_test_cases(template)
     run = toyhost_run(model=RUN_MODELS[0], template=template, kind=kind, world=world).model_copy(update={"k_runs": _K})
-    host.storage.save_template(template)
+    off_loop(host.storage.save_template, template)
     for case in cases:
-        host.storage.save_test_case(case)
-    host.storage.save_eval_run(run)
+        off_loop(host.storage.save_test_case, case)
+    off_loop(host.storage.save_eval_run, run)
     script = next(script for script in TOY_SCRIPTS if script.model == RUN_MODELS[0])
     dearest = max(script.cost_of(document) for document in TOY_DOCUMENTS)
     cap = EvalRunCostCap(run.id, max_cost_usd=dearest * 1.5, enabled=True)
@@ -300,7 +303,7 @@ async def test_the_cost_cap_is_exceeded_by_no_more_than_the_cells_in_flight_when
             on_cost=cap.record,
         )
 
-    results = host.storage.query_eval_results_by_run(run.id, run.scope_id)
+    results = off_loop(host.storage.query_eval_results_by_run, run.id, run.scope_id)
     spent = sum(result.cost_usd or 0.0 for result in results)
     assert spent > cap.max_cost_usd, "the cap was reached"
     assert spent <= cap.max_cost_usd + width * dearest, "the cap was overshot by more than the cells in flight"

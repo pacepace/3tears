@@ -16,6 +16,7 @@ import pytest
 from threetears.evals.analysis import TableBlock
 from threetears.evals.quick import Answer, callable_host, compare, run_eval
 from threetears.evals.run import get_result_trace, list_results
+from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "candidate-answer-tests"
 CASES = [
@@ -50,13 +51,13 @@ async def test_an_answer_s_spend_lands_on_each_result_and_on_the_summary() -> No
     assert summary.role_spend("candidate").cost_usd == pytest.approx(sum(tokens) * RATE)
     # $0.00016, shown to three significant figures rather than rounded away.
     assert "candidate spend: $0.000160 over 3 call(s)" in summary.render()
-    for result in list_results(host.storage, summary.run_id, SCOPE):
+    for result in off_loop(list_results, host.storage, summary.run_id, SCOPE):
         (row,) = result.usage
         assert (row.role, row.model, row.call_count) == ("candidate", "m-1", 1)
         assert row.prompt_tokens in tokens and row.completion_tokens == 2
         assert result.cost_usd == pytest.approx(row.cost_usd)
         # The stored output is the answer's value, never the wrapper.
-        trace = get_result_trace(host.storage, result)
+        trace = off_loop(get_result_trace, host.storage, result)
         assert trace is not None and trace.trace[0]["value"] in {"animal", "plant"}
 
 
@@ -68,7 +69,7 @@ async def test_a_plain_answer_reports_no_spend_as_before() -> None:
     summary = await run_eval(CASES, plain, expected=_expected, scope_id=SCOPE, host=host, k=1)
     assert summary.role_spend("candidate") is None
     assert "candidate spend" not in summary.render()
-    assert all(result.usage == [] for result in list_results(host.storage, summary.run_id, SCOPE))
+    assert all(result.usage == [] for result in off_loop(list_results, host.storage, summary.run_id, SCOPE))
 
 
 async def test_an_unpriced_answer_leaves_the_cost_unknown_never_zero() -> None:
@@ -79,7 +80,7 @@ async def test_an_unpriced_answer_leaves_the_cost_unknown_never_zero() -> None:
     summary = await run_eval(CASES, unpriced, expected=_expected, scope_id=SCOPE, host=host, k=1)
     assert summary.role_spend("candidate").calls == 3 and summary.role_spend("candidate").cost_usd is None
     assert "candidate spend: unpriced over 3 call(s): its client reported no price for them" in summary.render()
-    assert all(result.cost_usd is None for result in list_results(host.storage, summary.run_id, SCOPE))
+    assert all(result.cost_usd is None for result in off_loop(list_results, host.storage, summary.run_id, SCOPE))
 
 
 @pytest.mark.parametrize(

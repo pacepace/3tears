@@ -14,30 +14,31 @@ from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.ops import UndescribableArmsListing, analyses_undescribable, analysis_generate
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture, settled
+from packages.evals.tests.off_loop import off_loop
 
 REASON = "its key was minted by variant predicate v1, which this build does not reproduce"
 
 
 async def _two_analyses() -> tuple[OpsFixture, EvalAnalysis, EvalAnalysis]:
     """The toy campaign's generated analysis, and a copy of it whose first arm cannot be described."""
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
     assert (await settled(fixture.host, job.job_id)).state == "completed"
     storage = fixture.host.eval_host.storage
-    (described,) = storage.list_analyses_by_campaign(fixture.campaign.id, TOYHOST_SCOPE)
+    (described,) = off_loop(storage.list_analyses_by_campaign, fixture.campaign.id, TOYHOST_SCOPE)
     stored: dict[str, Any] = described.model_dump(mode="json")
     stored["id"] = "analysis-undescribable"
     first = stored["variant_index"][0]
     first.update(levers={}, swept={}, folded=[], levels_unavailable=REASON)
     undescribable = EvalAnalysis.model_validate(stored)
-    storage.save_analysis(undescribable)
+    off_loop(storage.save_analysis, undescribable)
     return fixture, described, undescribable
 
 
 async def test_the_operation_names_the_analysis_with_an_undescribable_arm_and_not_the_other() -> None:
     fixture, described, undescribable = await _two_analyses()
 
-    listing = analyses_undescribable(fixture.host.eval_host, TOYHOST_SCOPE)
+    listing = off_loop(analyses_undescribable, fixture.host.eval_host, TOYHOST_SCOPE)
 
     assert listing.analyses_read == 2
     (line,) = listing.analyses
@@ -64,8 +65,8 @@ async def test_the_action_reads_the_same_and_says_it() -> None:
 
 
 async def test_a_scope_with_none_says_none() -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
 
-    listing = analyses_undescribable(fixture.host.eval_host, TOYHOST_SCOPE)
+    listing = off_loop(analyses_undescribable, fixture.host.eval_host, TOYHOST_SCOPE)
 
     assert (listing.analyses_read, listing.analyses) == (0, [])

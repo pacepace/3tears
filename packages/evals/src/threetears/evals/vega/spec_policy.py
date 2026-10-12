@@ -100,7 +100,7 @@ from typing import Any
 
 from threetears.evals.analysis.viz.renderer import ChartRefused
 from threetears.evals.vega.palette import VALUE_ON_FILL_STYLE, series_slots, validated_slots
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 

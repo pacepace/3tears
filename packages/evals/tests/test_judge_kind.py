@@ -53,6 +53,7 @@ from packages.evals.tests.fixtures.toyhost.judge import (
     toyhost_judged_template,
 )
 from packages.evals.tests.fixtures.toyhost.run import RUN_K, execute_toyhost_run
+from packages.evals.tests.off_loop import off_loop
 
 #: The word the harsh config's prompt carries, which the arm-aware judge below reads.
 _HARSH = "HARSH"
@@ -114,7 +115,7 @@ async def _judged_source(host: EvalHost) -> list[EvalResult]:
     others.
     """
     template = toyhost_judged_template()
-    host.storage.save_template(template)
+    off_loop(host.storage.save_template, template)
     path = await execute_toyhost_run(
         host=host,
         template=template,
@@ -122,10 +123,11 @@ async def _judged_source(host: EvalHost) -> list[EvalResult]:
         judge_model=TOY_JUDGE_MODEL,
     )
     for case in path.test_cases:
-        host.storage.save_test_case(case)
+        off_loop(host.storage.save_test_case, case)
     for run in path.runs:
         # What launch_run stamps beside the judge pin; a drive of execute_run directly stamps it here.
-        host.storage.save_eval_run(
+        off_loop(
+            host.storage.save_eval_run,
             run.model_copy(
                 update={
                     "effective_judges": {FAITHFULNESS_DIM: TOY_JUDGE_MODEL},
@@ -133,14 +135,15 @@ async def _judged_source(host: EvalHost) -> list[EvalResult]:
                     "judge_request_settings": JUDGE_REQUEST_SETTINGS,
                     "judge_temperature": DEFAULT_JUDGE_TEMPERATURE,
                 }
-            )
+            ),
         )
-    results = path.results
+    results = await path.results()
     for index, run in enumerate(path.runs):
-        for result in host.storage.query_eval_results_by_run(run.id, TOYHOST_SCOPE):
+        for result in off_loop(host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE):
             score = result.judge_score(FAITHFULNESS_DIM)
             assert score is not None
-            rate_result(
+            off_loop(
+                rate_result,
                 host.storage,
                 result_id=result.id,
                 scope_id=TOYHOST_SCOPE,
@@ -157,7 +160,8 @@ async def _judge_arm(
     host: EvalHost, template: EvalTemplate, case_ids: Sequence[str], *, run_id: str, overlays: JudgeKindOverlays
 ) -> EvalRun:
     """Run one judge arm over the frozen cases, through the engine's runner."""
-    kind = judge_kind(
+    kind = off_loop(
+        judge_kind,
         host.storage,
         host.completion_clients("a judge campaign"),
         model=TOY_JUDGE_MODEL,
@@ -175,8 +179,8 @@ async def _judge_arm(
         test_case_ids=list(case_ids),
         overlays=overlays.model_dump(mode="json"),
     )
-    host.storage.save_eval_run(run)
-    cases = host.storage.load_test_cases_by_ids(list(case_ids), TOYHOST_SCOPE)
+    off_loop(host.storage.save_eval_run, run)
+    cases = off_loop(host.storage.load_test_cases_by_ids, list(case_ids), TOYHOST_SCOPE)
     async with kind:
         await execute_run(
             host,
@@ -210,8 +214,9 @@ async def _campaign() -> _Campaign:
     host = toyhost_host(clients=clients)
     source = await _judged_source(host)
     template = _judge_template()
-    host.storage.save_template(template)
-    report = freeze_judge_cases(
+    off_loop(host.storage.save_template, template)
+    report = off_loop(
+        freeze_judge_cases,
         host.storage,
         template=template,
         run_ids=sorted({result.eval_run_id for result in source}),
@@ -225,7 +230,7 @@ async def _campaign() -> _Campaign:
         rubric_dim_id=FAITHFULNESS_DIM,
         prompt_template=f"{_HARSH}: score how faithfully the extraction reproduces the invoice. Be strict.",
     )
-    host.storage.save_judge_config(harsh)
+    off_loop(host.storage.save_judge_config, harsh)
     case_ids = [case.test_case_id for case in report.cases]
     campaign = _Campaign(host, judge, harsh, case_ids)
     judge.calls.clear()
@@ -240,7 +245,7 @@ async def _campaign() -> _Campaign:
         ),
     ]
     campaign.results = [
-        result for run in runs for result in host.storage.query_eval_results_by_run(run.id, TOYHOST_SCOPE)
+        result for run in runs for result in off_loop(host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
     ]
     return campaign
 
@@ -250,20 +255,20 @@ async def test_freezing_a_judged_run_makes_one_case_per_judged_output_carrying_w
     host = toyhost_host(clients=lambda role, model, *, temperature=None: judge)
     source = await _judged_source(host)
     template = _judge_template()
-    host.storage.save_template(template)
+    off_loop(host.storage.save_template, template)
     run_ids = sorted({result.eval_run_id for result in source})
 
-    report = freeze_judge_cases(host.storage, template=template, run_ids=run_ids, scope_id=TOYHOST_SCOPE)
+    report = off_loop(freeze_judge_cases, host.storage, template=template, run_ids=run_ids, scope_id=TOYHOST_SCOPE)
 
     assert len(report.cases) == len(source) and all(case.created for case in report.cases)
     by_result = {result.id: result for result in source}
     for frozen in report.cases:
-        stored = host.storage.load_test_case(frozen.test_case_id, TOYHOST_SCOPE)
+        stored = off_loop(host.storage.load_test_case, frozen.test_case_id, TOYHOST_SCOPE)
         assert stored is not None and stored.template_id == template.id and stored.stratum == FAITHFULNESS_DIM
         case = judge_case_of(stored)
         assert case is not None
         result = by_result[case.source.result_id]
-        trace = host.storage.load_eval_trace(result.id, TOYHOST_SCOPE)
+        trace = off_loop(host.storage.load_eval_trace, result.id, TOYHOST_SCOPE)
         assert trace is not None
         # Exactly what the first judge read, and what it answered, and what the person said.
         assert case.evidence == trace.judge_evidence
@@ -272,7 +277,7 @@ async def test_freezing_a_judged_run_makes_one_case_per_judged_output_carrying_w
         assert first is not None and case.source.first_score == first.score
         assert [label.rater for label in case.labels] == [_RATER]
     # Freezing the same outputs again names the stored cases rather than minting more.
-    again = freeze_judge_cases(host.storage, template=template, run_ids=run_ids, scope_id=TOYHOST_SCOPE)
+    again = off_loop(freeze_judge_cases, host.storage, template=template, run_ids=run_ids, scope_id=TOYHOST_SCOPE)
     assert [case.test_case_id for case in again.cases] == [case.test_case_id for case in report.cases]
     assert not any(case.created for case in again.cases)
 
@@ -331,7 +336,7 @@ async def test_a_judge_campaign_meters_only_judge_spend_and_never_rebuys_the_can
 
 async def test_a_trial_on_a_case_with_no_judge_case_is_a_harness_fault() -> None:
     campaign = await _campaign()
-    stored = campaign.host.storage.load_test_case(campaign.case_ids[0], TOYHOST_SCOPE)
+    stored = off_loop(campaign.host.storage.load_test_case, campaign.case_ids[0], TOYHOST_SCOPE)
     assert stored is not None
     bare = stored.model_copy(update={"id": "not-a-judge-case", "host_payload": {}})
     kind = JudgeKind(
@@ -365,7 +370,7 @@ async def test_a_trial_on_a_case_with_no_judge_case_is_a_harness_fault() -> None
 
 async def test_a_judge_trial_holds_its_call_against_the_runs_cap_and_counts_what_it_cost() -> None:
     campaign = await _campaign()
-    stored = campaign.host.storage.load_test_case(campaign.case_ids[0], TOYHOST_SCOPE)
+    stored = off_loop(campaign.host.storage.load_test_case, campaign.case_ids[0], TOYHOST_SCOPE)
     assert stored is not None
     kind = JudgeKind(
         clients=lambda role, model, *, temperature=None: campaign.judge,
@@ -422,7 +427,7 @@ class _Untempered:
 async def test_a_trial_whose_completion_carries_no_temperature_still_counts_what_its_call_cost() -> None:
     """The temperature was read after the billed call and raised: the cap never saw the spend, nor the result."""
     campaign = await _campaign()
-    stored = campaign.host.storage.load_test_case(campaign.case_ids[0], TOYHOST_SCOPE)
+    stored = off_loop(campaign.host.storage.load_test_case, campaign.case_ids[0], TOYHOST_SCOPE)
     assert stored is not None
     untempered = _Untempered(campaign.judge)
     kind = JudgeKind(
@@ -478,7 +483,7 @@ async def test_the_freeze_operation_loads_the_template_in_scope_and_renders_its_
     host = toyhost_host()
     source = await _judged_source(host)
     template = _judge_template()
-    host.storage.save_template(template)
+    off_loop(host.storage.save_template, template)
     freeze = JudgeCasesFreeze(
         template_id=template.id,
         judged_run_ids=sorted({result.eval_run_id for result in source}),
@@ -486,7 +491,7 @@ async def test_the_freeze_operation_loads_the_template_in_scope_and_renders_its_
         into_case_set="faithfulness",
     )
 
-    report = judge_cases_freeze(host, freeze, TOYHOST_SCOPE)
+    report = off_loop(judge_cases_freeze, host, freeze, TOYHOST_SCOPE)
 
     assert report.case_set is not None and report.case_set.version == 1 and len(report.cases) == len(source)
     action = next(action for action in engine_actions() if action.name == "judge_cases_freeze")
@@ -494,13 +499,13 @@ async def test_the_freeze_operation_loads_the_template_in_scope_and_renders_its_
     text = action.render(report)
     assert f"{len(source)} judge case(s) of template {template.id}" in text and "case set faithfulness v1" in text
     # The same freeze again answers with the version already listing exactly these cases.
-    assert judge_cases_freeze(host, freeze, TOYHOST_SCOPE).case_set == report.case_set
+    assert off_loop(judge_cases_freeze, host, freeze, TOYHOST_SCOPE).case_set == report.case_set
 
 
 async def test_a_label_follows_a_byte_identical_output_into_its_case_and_never_counts_twice() -> None:
     host = toyhost_host()
     template = toyhost_judged_template()
-    host.storage.save_template(template)
+    off_loop(host.storage.save_template, template)
     path = await execute_toyhost_run(
         host=host,
         template=template,
@@ -508,9 +513,10 @@ async def test_a_label_follows_a_byte_identical_output_into_its_case_and_never_c
         judge_model=TOY_JUDGE_MODEL,
     )
     for case in path.test_cases:
-        host.storage.save_test_case(case)
+        off_loop(host.storage.save_test_case, case)
     for run in path.runs:
-        host.storage.save_eval_run(
+        off_loop(
+            host.storage.save_eval_run,
             run.model_copy(
                 update={
                     "effective_judges": {FAITHFULNESS_DIM: TOY_JUDGE_MODEL},
@@ -518,9 +524,13 @@ async def test_a_label_follows_a_byte_identical_output_into_its_case_and_never_c
                     "judge_request_settings": JUDGE_REQUEST_SETTINGS,
                     "judge_temperature": DEFAULT_JUDGE_TEMPERATURE,
                 }
-            )
+            ),
         )
-    results = [result for run in path.runs for result in host.storage.query_eval_results_by_run(run.id, TOYHOST_SCOPE)]
+    results = [
+        result
+        for run in path.runs
+        for result in off_loop(host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
+    ]
     keys = {}
     for result in results:
         score = result.judge_score(FAITHFULNESS_DIM)
@@ -530,7 +540,8 @@ async def test_a_label_follows_a_byte_identical_output_into_its_case_and_never_c
     rated = next(result for result in results if sum(key == keys[result.id] for key in keys.values()) > 1)
     score = rated.judge_score(FAITHFULNESS_DIM)
     assert score is not None
-    rate_result(
+    off_loop(
+        rate_result,
         host.storage,
         result_id=rated.id,
         scope_id=TOYHOST_SCOPE,
@@ -541,9 +552,10 @@ async def test_a_label_follows_a_byte_identical_output_into_its_case_and_never_c
         reason="read against the invoice",
     )
     judge_template = _judge_template()
-    host.storage.save_template(judge_template)
+    off_loop(host.storage.save_template, judge_template)
 
-    report = freeze_judge_cases(
+    report = off_loop(
+        freeze_judge_cases,
         host.storage,
         template=judge_template,
         run_ids=[run.id for run in path.runs],
@@ -558,7 +570,8 @@ async def test_a_label_follows_a_byte_identical_output_into_its_case_and_never_c
     assert len(twins) > 1
     # The same person rating a twin too gives one opinion of one output: the later rating is the case's label.
     twin = next(result_id for result_id in sorted(twins) if result_id != rated.id)
-    later = rate_result(
+    later = off_loop(
+        rate_result,
         host.storage,
         result_id=twin,
         scope_id=TOYHOST_SCOPE,
@@ -568,7 +581,8 @@ async def test_a_label_follows_a_byte_identical_output_into_its_case_and_never_c
         score=max(1, score.score - 1),
         reason="read it again, more strictly",
     )
-    again = freeze_judge_cases(
+    again = off_loop(
+        freeze_judge_cases,
         host.storage,
         template=judge_template,
         run_ids=[run.id for run in path.runs],
@@ -576,7 +590,7 @@ async def test_a_label_follows_a_byte_identical_output_into_its_case_and_never_c
         result_ids=sorted(twins),
     )
     for frozen in again.cases:
-        stored = host.storage.load_test_case(frozen.test_case_id, TOYHOST_SCOPE)
+        stored = off_loop(host.storage.load_test_case, frozen.test_case_id, TOYHOST_SCOPE)
         assert stored is not None
         case = judge_case_of(stored)
         assert case is not None

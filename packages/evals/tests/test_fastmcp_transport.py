@@ -20,6 +20,7 @@ from threetears.evals.actions import Caller, eval_catalogue, read_only_tools
 from threetears.evals.transports.fastmcp import CallTimedOut, mount_fastmcp
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.ops_support import CALLER, RUN_MODELS, TOYHOST_SUBJECT, OpsFixture, ops_fixture
+from packages.evals.tests.off_loop import off_loop
 
 
 def _served(fixture: OpsFixture, **mount: Any) -> FastMCP:
@@ -46,7 +47,7 @@ async def _done(client: Client, job_id: str) -> dict[str, Any]:
 
 async def test_an_agent_lists_launches_polls_and_reads_a_report() -> None:
     """The Done-when, through an in-process MCP client."""
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     async with Client(_served(fixture)) as client:
         assert sorted(tool.name for tool in await client.list_tools()) == ["evals", "evals_admin"]
 
@@ -86,7 +87,7 @@ async def test_an_agent_lists_launches_polls_and_reads_a_report() -> None:
 
 
 async def test_an_undeclared_parameter_is_refused_with_the_valid_set() -> None:
-    async with Client(_served(ops_fixture())) as client:
+    async with Client(_served(off_loop(ops_fixture))) as client:
         text, structured, is_error = await _text(
             client, "evals", {"action": "job_poll", "job_id": "run:r", "analysis_id": "a"}
         )
@@ -98,14 +99,14 @@ async def test_an_undeclared_parameter_is_refused_with_the_valid_set() -> None:
 
 
 async def test_an_engine_refusal_reaches_the_client_with_its_kind_and_status() -> None:
-    async with Client(_served(ops_fixture())) as client:
+    async with Client(_served(off_loop(ops_fixture))) as client:
         text, structured, is_error = await _text(client, "evals", {"action": "run_get", "run_id": "no-such-run"})
     assert is_error and structured == {"refusal": {"kind": "not_found", "status": 404}}
     assert text.startswith("refused: run_get:") and "no-such-run" in text, "the teaching text is unchanged"
 
 
 async def test_each_tool_shows_a_client_its_hints_schema_and_help() -> None:
-    async with Client(_served(ops_fixture())) as client:
+    async with Client(_served(off_loop(ops_fixture))) as client:
         tools = {tool.name: tool for tool in await client.list_tools()}
         help_text, _, _ = await _text(client, "evals", {"action": "help"})
     evals, admin = tools["evals"], tools["evals_admin"]
@@ -123,7 +124,7 @@ async def test_each_tool_shows_a_client_its_hints_schema_and_help() -> None:
 
 
 async def test_a_host_mounts_a_read_only_tool_under_its_own_prefix() -> None:
-    async with Client(_served(ops_fixture(), tools=read_only_tools("lab"))) as client:
+    async with Client(_served(off_loop(ops_fixture), tools=read_only_tools("lab"))) as client:
         (tool,) = await client.list_tools()
         text, _, is_error = await _text(client, "lab", {"action": "run_launch", "template_id": "t", "subject_id": "s"})
     assert tool.name == "lab" and tool.annotations is not None and tool.annotations.readOnlyHint is True
@@ -131,7 +132,7 @@ async def test_a_host_mounts_a_read_only_tool_under_its_own_prefix() -> None:
 
 
 async def test_the_caller_is_resolved_for_every_call_and_may_be_async() -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     asked: list[str] = []
 
     async def caller() -> Caller:
@@ -147,7 +148,7 @@ async def test_the_caller_is_resolved_for_every_call_and_may_be_async() -> None:
 
 async def test_a_cap_above_the_hosts_is_refused_through_the_transport() -> None:
     """An agent over MCP cannot raise the host's per-run ceiling by naming a larger ``max_cost_usd``."""
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     above = fixture.host.launch.settings().max_cost_usd * 10
     async with Client(_served(fixture)) as client:
         text, _, is_error = await _text(
@@ -167,7 +168,7 @@ async def test_a_cap_above_the_hosts_is_refused_through_the_transport() -> None:
 
 async def test_every_call_is_held_to_the_one_fixed_call_timeout() -> None:
     """A call outliving the server's one timeout is answered as an error saying so, never left holding the client."""
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
 
     async def slow_caller() -> Caller:
         await asyncio.sleep(1)
@@ -190,7 +191,7 @@ async def test_a_call_timed_out_says_to_read_before_calling_again() -> None:
 
 async def test_a_timeout_the_call_raises_of_its_own_is_not_reported_as_the_call_timeout() -> None:
     """``except TimeoutError`` caught the call's own timeout too, and answered it as the server's."""
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
 
     async def timing_out_caller() -> Caller:
         raise TimeoutError("the identity service did not answer")
@@ -208,7 +209,7 @@ def test_a_call_timeout_that_is_not_positive_is_refused_at_mount() -> None:
 
 async def test_a_model_calling_actions_refusal_in_the_call_reaches_the_client_as_data() -> None:
     """A spend action that runs as a job is still admitted in the call; refused there, its kind and status are data."""
-    async with Client(_served(ops_fixture())) as client:
+    async with Client(_served(off_loop(ops_fixture))) as client:
         text, structured, is_error = await _text(
             client, "evals", {"action": "judge_second", "run_id": "no-such-run", "second_judge_model": "judge/other"}
         )

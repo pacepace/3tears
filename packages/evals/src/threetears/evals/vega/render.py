@@ -85,7 +85,7 @@ from threetears.evals.analysis.viz.renderer import ChartRefused
 from threetears.evals.kernel.host import ChartFont, ChartPalette
 from threetears.evals.vega.palette import vega_config
 from threetears.evals.vega.text_metrics import check_font_files, packaged_font
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 

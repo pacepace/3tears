@@ -31,6 +31,7 @@ from threetears.evals.analysis import summarize_run
 from threetears.evals.quick import Judge, callable_host, compare, run_eval
 from threetears.evals.run import list_runs
 from threetears.evals.storage import SqliteDocumentStore
+from packages.evals.tests.off_loop import off_loop
 
 #: The tutorial, whose last step keeps its runs in a file.
 TUTORIAL = Path(__file__).resolve().parents[1] / "docs" / "tutorial.md"
@@ -94,9 +95,9 @@ async def test_a_kept_scorer_has_a_history_read_back_from_the_file(tmp_path: Pat
         second = await run_eval(CASES[:12], misses_half, [correct], scope_id="kept", k=2, store=store, model="router")
     with SqliteDocumentStore(path) as reopened:
         host = callable_host([correct], store=reopened)
-        history = scope_history(host, "kept", metric="correct")
+        history = off_loop(scope_history, host, "kept", metric="correct")
         with pytest.raises(ValidationFailedError, match="a numeric measure the host declares"):
-            scope_history(host, "kept", metric="corect")
+            off_loop(scope_history, host, "kept", metric="corect")
     (series,) = history.series
     assert series.model == "router" and history.higher_is_better is True
     assert [(point.run_id, point.value, point.n, point.n_cases) for point in series.points] == [
@@ -127,8 +128,8 @@ async def test_compare_keeps_its_margins_with_a_store(tmp_path: Path) -> None:
     assert row["verdict"].startswith("equivalent to the control") and "(margin ±0.1)" in row["verdict"]
     with SqliteDocumentStore(path) as reopened:
         host = callable_host([correct], arms=True, margins={"correct": 0.1}, store=reopened)
-        assert [campaign.id for campaign in list_campaigns(host.storage, "kept")] == [comparison.campaign_id]
-        assert {run.id for run in list_runs(host, "kept")} == {
+        assert [campaign.id for campaign in off_loop(list_campaigns, host.storage, "kept")] == [comparison.campaign_id]
+        assert {run.id for run in off_loop(list_runs, host, "kept")} == {
             comparison.arms["current"].run_id,
             comparison.arms["cheaper"].run_id,
         }
@@ -168,7 +169,7 @@ async def test_rerunning_unchanged_cases_never_makes_an_earlier_run_read_as_edit
             CASES[:3], always_right, judge=judge, scope_id="kept", k=1, store=store, intent="Say it."
         )
         await run_eval(CASES[:3], always_right, judge=judge, scope_id="kept", k=1, store=store, intent="Say it.")
-        again = summarize_run(callable_host([], store=store), first.run_id, "kept")
+        again = off_loop(summarize_run, callable_host([], store=store), first.run_id, "kept")
     assert first.intent == again.intent == "Say it."
 
 

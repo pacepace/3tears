@@ -23,7 +23,7 @@ import re
 from typing import Any
 
 from threetears.evals.schema.completion import CompletionResult, ProviderFailure, ProviderFailureDescriber, StopReason
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 

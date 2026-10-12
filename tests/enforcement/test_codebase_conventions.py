@@ -68,6 +68,10 @@ _CONFIG = CodebaseConventionsConfig(
         # The module that IMPLEMENTS get_logger. It has to reach stdlib logging; that is
         # the entire point of every other module being forbidden from doing so.
         "packages/observe/src/threetears/observe/logging.py": "implements get_logger over stdlib logging",
+        # 3tears-evals depends on no other 3tears package (owner ruling, 2026-10-11), so its modules take
+        # their loggers from this one module rather than from threetears.observe; every other evals module
+        # is held to the rule like the rest of the tree.
+        "packages/evals/src/threetears/evals/schema/logs.py": "implements 3tears-evals' get_logger over stdlib logging",
     },
 )
 

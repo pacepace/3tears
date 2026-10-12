@@ -76,8 +76,8 @@ from threetears.evals.schema.models import (
     eval_trace_doc_id,
 )
 from threetears.evals.schema.out_of_run_spend import OutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
-from threetears.evals.schema.store_port import DocumentStore, StoreClock, StoreConflict
-from threetears.observe import get_logger
+from threetears.evals.schema.store_port import DocumentStore, StoreClock, StoreConflict, refuse_on_event_loop
+from threetears.evals.schema.logs import get_logger
 
 
 #: The status a run written lost takes (:data:`~threetears.evals.kernel.job_leases.RUN_JOB`): what a run that stopped
@@ -90,6 +90,19 @@ log = get_logger(__name__)
 def _payload_exclusions(elide_payload: frozenset[str]) -> list[str]:
     """The store ``exclude`` paths for payload paths a run read leaves out, in a stable order."""
     return sorted(f"host_payload.{path}" for path in elide_payload)
+
+
+class CaseRecordings(NamedTuple):
+    """One case's recordings in one corpus, read whole before a replay cell starts: each row, by id, read or refused.
+
+    A row that does not load is kept as why, not dropped: the cell raises it the moment its call asks for that
+    recording, exactly as a read of that one row would, and a row the cell never asks for costs it nothing.
+    """
+
+    #: Each row that loads as this build's :class:`EvalCassette`, by its id.
+    readable: dict[str, EvalCassette]
+    #: Each row that does not, by its id: why.
+    unreadable: dict[str, str]
 
 
 class NonTerminalRunScan(NamedTuple):
@@ -505,6 +518,12 @@ class CassetteStore(Protocol):
         """See :meth:`EvalStorage.list_case_cassettes`."""
         ...
 
+    def read_case_cassettes(
+        self, *, corpus_id: str, template_id: str, test_case_id: str, scope_id: str
+    ) -> CaseRecordings:
+        """See :meth:`EvalStorage.read_case_cassettes`."""
+        ...
+
     def delete_case_cassettes(self, *, corpus_id: str, template_id: str, test_case_id: str, scope_id: str) -> int:
         """See :meth:`EvalStorage.delete_case_cassettes`."""
         ...
@@ -536,8 +555,21 @@ class EvalStorage:
         claimed = set(host_doc_types) & set(EVAL_DOC_TYPES)
         if claimed:
             raise ValueError(f"host_doc_types names the engine's own doc types: {sorted(claimed)}")
-        self._store = store
+        self._document_store = store
         self._host_doc_types = tuple(host_doc_types)
+
+    @property
+    def _store(self) -> DocumentStore:
+        """The store, for a call about to be made on it: refused on a thread running an event loop.
+
+        Every read and write here reaches the store through this property, so no method can call it
+        on the loop, whichever store the host handed in.
+
+        Raises:
+            StoreCalledOnEventLoop: The calling thread is running an event loop.
+        """
+        refuse_on_event_loop()
+        return self._document_store
 
     @staticmethod
     def _hydrate[M: EvalBaseModel](model_cls: type[M], data: dict[str, Any]) -> M:
@@ -1822,6 +1854,51 @@ class EvalStorage:
             test_case_id=test_case_id,
         )
         return self._hydrate_all(EvalCassette, items)
+
+    def read_case_cassettes(
+        self, *, corpus_id: str, template_id: str, test_case_id: str, scope_id: str
+    ) -> CaseRecordings:
+        """Every recording one corpus holds for one case, each row read on its own — what a replay cell is served from.
+
+        One read of the case's rows, made before the cell starts so that nothing the cell serves touches the store.
+        A row that does not load as this build's :class:`EvalCassette` is returned as why (:class:`CaseRecordings`),
+        so it fails the call that asks for it and no other, as a point read of it would.
+
+        Args:
+            corpus_id: The capture run whose corpus to read.
+            template_id: The template it ran.
+            test_case_id: The case.
+            scope_id: The scope the corpus lives in.
+
+        Returns:
+            The case's rows, read and refused.
+
+        Raises:
+            StorageError: The store failed to answer.
+        """
+        try:
+            items = self._store.by_doc_type(
+                "eval_cassette",
+                scope_id,
+                corpus_id=corpus_id,
+                template_id=template_id,
+                test_case_id=test_case_id,
+            )
+        # prawduct:ok-broad-except — DB read boundary; re-raised as a typed eval error
+        except Exception as e:
+            raise StorageError(
+                f"failed to read the {test_case_id!r} recordings of cassette corpus {corpus_id!r}: {e}"
+            ) from e
+        readable: dict[str, EvalCassette] = {}
+        unreadable: dict[str, str] = {}
+        for item in items:
+            try:
+                readable[item["id"]] = self._hydrate(EvalCassette, item)
+            except ValueError as refused:
+                # NOSILENT: kept, not dropped: returned as this row's why, and the cell raises it as CassetteCorrupt
+                # for the call that asks for this recording, as a point read of the row would.
+                unreadable[item["id"]] = str(refused)
+        return CaseRecordings(readable=readable, unreadable=unreadable)
 
     def delete_case_cassettes(self, *, corpus_id: str, template_id: str, test_case_id: str, scope_id: str) -> int:
         """Delete everything one corpus recorded for one case, so a capture of it starts clean.

@@ -38,6 +38,7 @@ from threetears.evals.ops import CampaignLine
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_AXIS, toyhost_design
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, TOYHOST_SUBJECT, OpsFixture, ops_fixture
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
+from packages.evals.tests.off_loop import off_loop
 
 
 @pytest.fixture
@@ -65,13 +66,13 @@ async def _create(tool: MountedTool, fixture: OpsFixture, caller: Caller = CALLE
 
 
 async def test_a_campaign_created_with_a_design_carries_it_stamped_by_the_caller(evals: MountedTool) -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
 
     outcome = await _create(evals, fixture, declared_design=_design())
 
     assert not outcome.is_error, outcome.text
-    stored = fixture.host.eval_host.storage.load_campaign(
-        CampaignLine.model_validate(outcome.structured).id, TOYHOST_SCOPE
+    stored = off_loop(
+        fixture.host.eval_host.storage.load_campaign, CampaignLine.model_validate(outcome.structured).id, TOYHOST_SCOPE
     )
     assert stored is not None and stored.declared_design is not None
     declared = stored.declared_design
@@ -83,7 +84,7 @@ async def test_a_campaign_created_with_a_design_carries_it_stamped_by_the_caller
 
 
 async def test_the_control_is_resolved_from_a_run_as_set_campaign_control_resolves_it(evals: MountedTool) -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     storage = fixture.host.eval_host.storage
     control_run = fixture.campaign.run_ids[0]
 
@@ -91,8 +92,9 @@ async def test_the_control_is_resolved_from_a_run_as_set_campaign_control_resolv
     designated_later = await _create(evals, fixture, declared_design=_design())
 
     assert not created.is_error, created.text
-    with_control = storage.load_campaign(created.structured["id"], TOYHOST_SCOPE)
-    later = set_campaign_control(
+    with_control = off_loop(storage.load_campaign, created.structured["id"], TOYHOST_SCOPE)
+    later = off_loop(
+        set_campaign_control,
         storage,
         designated_later.structured["id"],
         TOYHOST_SCOPE,
@@ -140,19 +142,21 @@ async def test_the_control_is_resolved_from_a_run_as_set_campaign_control_resolv
 async def test_a_design_the_host_cannot_honour_is_refused_naming_why(
     evals: MountedTool, arguments: dict[str, Any], says: str
 ) -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     run = fixture.campaign.run_ids[0]
     resolved = {key: (value.format(run=run) if isinstance(value, str) else value) for key, value in arguments.items()}
-    before = fixture.host.eval_host.storage.list_campaigns(TOYHOST_SCOPE)
+    before = off_loop(fixture.host.eval_host.storage.list_campaigns, TOYHOST_SCOPE)
 
     outcome = await _create(evals, fixture, **resolved)
 
     assert outcome.is_error and says in outcome.text, outcome.text
-    assert fixture.host.eval_host.storage.list_campaigns(TOYHOST_SCOPE) == before, "a refused create writes nothing"
+    assert off_loop(fixture.host.eval_host.storage.list_campaigns, TOYHOST_SCOPE) == before, (
+        "a refused create writes nothing"
+    )
 
 
 async def test_an_undeclared_axis_is_named_beside_the_pointer(evals: MountedTool) -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     lever = {"axis_id": "no_such_lever", "values": [{"content": "x", "display": "x"}]}
 
     outcome = await _create(evals, fixture, declared_design=_design(axes=[lever]))
@@ -166,13 +170,13 @@ async def test_an_undeclared_axis_is_named_beside_the_pointer(evals: MountedTool
 
 async def _exploratory(tool: MountedTool) -> tuple[OpsFixture, str, AnalysisContextBundle]:
     """A campaign created through the action with no design, and its bundle as an analysis would assemble it."""
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     outcome = await _create(tool, fixture)
     assert not outcome.is_error, outcome.text
     eval_host = fixture.host.eval_host
-    stored = eval_host.storage.load_campaign(outcome.structured["id"], TOYHOST_SCOPE)
+    stored = off_loop(eval_host.storage.load_campaign, outcome.structured["id"], TOYHOST_SCOPE)
     assert stored is not None and stored.declared_design is None, "a create with no design declares none"
-    bundle = assemble_context_bundle(stored, storage=eval_host.storage, profile=eval_host.profile)
+    bundle = off_loop(assemble_context_bundle, stored, storage=eval_host.storage, profile=eval_host.profile)
     return fixture, stored.id, bundle
 
 
@@ -235,13 +239,13 @@ async def test_the_writer_is_told_and_its_report_says_so_once_at_the_top(evals: 
 
 
 async def test_a_declared_campaign_with_no_question_keeps_the_no_question_line(evals: MountedTool) -> None:
-    fixture = ops_fixture()
+    fixture = off_loop(ops_fixture)
     outcome = await _create(evals, fixture, declared_design=_design(questions=[]))
     assert not outcome.is_error, outcome.text
     eval_host = fixture.host.eval_host
-    stored = eval_host.storage.load_campaign(outcome.structured["id"], TOYHOST_SCOPE)
+    stored = off_loop(eval_host.storage.load_campaign, outcome.structured["id"], TOYHOST_SCOPE)
     assert stored is not None
 
-    bundle = assemble_context_bundle(stored, storage=eval_host.storage, profile=eval_host.profile)
+    bundle = off_loop(assemble_context_bundle, stored, storage=eval_host.storage, profile=eval_host.profile)
 
     assert bundle.reading_scope.disclosure == NO_QUESTION_EXPLORATORY, "a declared design is not called undeclared"

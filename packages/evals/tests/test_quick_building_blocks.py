@@ -43,6 +43,7 @@ from threetears.evals.run import (
     start_run,
 )
 from threetears.evals.storage import SqliteDocumentStore
+from packages.evals.tests.off_loop import off_loop
 
 
 @measure(higher_is_better=True, merit_axis="quality", value_range=(0.0, 1.0), population="scored")
@@ -131,9 +132,9 @@ async def test_a_host_of_your_own_launches_the_quick_kind_through_start_run(tmp_
             )
             for n in range(4)
         ]
-        host.storage.save_template(template)
+        off_loop(host.storage.save_template, template)
         for case in cases:
-            host.storage.save_test_case(case)
+            off_loop(host.storage.save_test_case, case)
         kind = callable_kind(candidate, [exact, answer_length])
 
         async def launch(request: LaunchRequest) -> Any:
@@ -174,7 +175,7 @@ async def test_a_host_of_your_own_launches_the_quick_kind_through_start_run(tmp_
             overlays={"prompt": "v2"},
         )
         await launching.job_manager.wait_for([run.id])
-        results = sorted(list_results(host.storage, run.id, "mine"), key=lambda result: result.test_case_id)
+        results = sorted(off_loop(list_results, host.storage, run.id, "mine"), key=lambda result: result.test_case_id)
     assert [result.host_measures for result in results] == [
         {"exact": 1.0, "answer_length": 3.0},
         {"exact": 0.0, "answer_length": 4.0},

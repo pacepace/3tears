@@ -68,7 +68,7 @@ from threetears.evals.kernel.scoring import (
     pool_composite_bases,
     result_composite,
 )
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.analysis.completeness import degraded_run_disclosures
 
 if TYPE_CHECKING:

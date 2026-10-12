@@ -22,12 +22,14 @@ import math
 from collections.abc import Mapping, Sequence
 
 from datetime import UTC, datetime
+from functools import partial
 
 from typing import Any, Literal
 
 from pydantic import Field, TypeAdapter, ValidationError
 
 
+from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.analysis.reads import (
     RunLister,
     bisect_runs,
@@ -719,6 +721,19 @@ async def launch_estimate(
     arms = [_arm_estimate(arm, quote.k_runs, quote.n_variations) for arm in quote.arms]
     predicted = [arm.predicted_usd for arm in arms]
     planned_cases = [arm.case_count for arm in arms if arm.case_count is not None]
+    # It reads the template's past runs from the store, so it runs off the loop.
+    detectable = await run_blocking(
+        host.eval_host.blocking_executor,
+        partial(
+            detectable_effects,
+            host.eval_host,
+            scope_id,
+            quote.template_id,
+            n_cases=min(planned_cases) if planned_cases else None,
+            k_runs=quote.k_runs,
+            n_arms=len(arms),
+        ),
+    )
     return LaunchEstimate(
         template_id=quote.template_id,
         subject_id=quote.subject_id,
@@ -732,14 +747,7 @@ async def launch_estimate(
         total_predicted_usd=None if None in predicted else math.fsum(p for p in predicted if p is not None),
         would_launch=all(arm.outcome != "refused" for arm in arms),
         computed_at=datetime.now(UTC).isoformat(),
-        detectable_effect=detectable_effects(
-            host.eval_host,
-            scope_id,
-            quote.template_id,
-            n_cases=min(planned_cases) if planned_cases else None,
-            k_runs=quote.k_runs,
-            n_arms=len(arms),
-        ),
+        detectable_effect=detectable,
     )
 
 

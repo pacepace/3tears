@@ -66,7 +66,7 @@ from threetears.evals.kernel.errors import ConflictError, NotFoundError, Validat
 from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES, ApparatusProvenance, GoalStateOutcome
 from threetears.evals.schema.world_events import Firings
 from threetears.evals.run.runner import GoalCheckUnevaluable, grade_goal_checks
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_RUN
 
 if TYPE_CHECKING:

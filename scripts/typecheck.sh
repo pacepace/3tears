@@ -68,7 +68,7 @@ MYPYPATH=packages/core/src:packages/nats/src:packages/observe/src:packages/agent
 # document store) from the exported names alone. A separate run, because no ``tests/`` tree is a
 # package target above; the two directories are named by file, and the repository root is on the
 # path because the hosts import their own fixture package by its repository path.
-MYPYPATH=.:packages/evals/src:packages/observe/src \
+MYPYPATH=.:packages/evals/src \
     uv run mypy \
         --explicit-package-bases \
         --namespace-packages \

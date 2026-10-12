@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.status_filter import StatusFilterError, validate_status_filter
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_RESULT
 
 if TYPE_CHECKING:

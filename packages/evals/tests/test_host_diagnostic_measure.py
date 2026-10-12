@@ -33,6 +33,7 @@ from packages.evals.tests.fixtures.toyhost.profile import (
     toyhost_profile,
 )
 from packages.evals.tests.fixtures.toyhost.run import execute_toyhost_run, toyhost_run_bundle
+from packages.evals.tests.off_loop import off_loop
 
 #: A count the toy kind already emits on every cell, declared here as what it is: a raw count.
 FIELDS_CORRECT = "fields_correct"
@@ -65,10 +66,10 @@ def _diagnostic(**overrides: object) -> MetricDescriptor:
 
 async def test_a_host_declared_diagnostic_reaches_the_bundles_measure_surfaces():
     path = await execute_toyhost_run(host=toyhost_host())
-    bundle = toyhost_run_bundle(path)
+    bundle = off_loop(toyhost_run_bundle, path)
 
     # The value the toy kind emits, so the absence below cannot be a measure that was never produced.
-    assert all(FIELD_COUNT_ERROR in result.host_measures for result in path.results)
+    assert all(FIELD_COUNT_ERROR in result.host_measures for result in (await path.results()))
     assert bundle.measure_catalog[FIELD_COUNT_ERROR].diagnostic is True
     assert bundle.measure_catalog[FIELD_COUNT_ERROR].higher_is_better is None
     assert bundle.run_summaries, "the campaign resolved its runs"
@@ -85,10 +86,10 @@ async def test_a_declared_raw_count_stays_out_while_the_diagnostic_beside_it_is_
         ),
     )
     path = await execute_toyhost_run(host=toyhost_host(profile=profile))
-    bundle = toyhost_run_bundle(path)
+    bundle = off_loop(toyhost_run_bundle, path)
 
     # Emitted and described — so its absence is the filter's decision, not a gap.
-    assert all(FIELDS_CORRECT in result.host_measures for result in path.results)
+    assert all(FIELDS_CORRECT in result.host_measures for result in (await path.results()))
     assert profile.measures.get(FIELDS_CORRECT) == FIELDS_CORRECT_AS_A_RAW_COUNT
     assert FIELDS_CORRECT not in bundle.measure_catalog
     assert all(FIELDS_CORRECT not in {m.name for m in summary.measures.measures} for summary in bundle.run_summaries)

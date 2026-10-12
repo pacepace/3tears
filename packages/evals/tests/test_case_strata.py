@@ -66,6 +66,7 @@ from packages.evals.tests.factories import (
     make_eval_run,
     make_template,
 )
+from packages.evals.tests.off_loop import off_loop
 
 _SCOPE = "uni-1"
 _PROFILE = HostProfile(host_id="strata", host_sweepables=SHARED_CORE, measures=MeasureRegistry(()))
@@ -490,7 +491,7 @@ class TestGenerationAndTheStore:
 
         assert len(generated.cases) == 4
         assert all(case.stratum == case.variation_params["kind"] for case in generated.cases)
-        stored = storage.query_test_cases(_SCOPE, template_id=template.id)
+        stored = off_loop(storage.query_test_cases, _SCOPE, template_id=template.id)
         assert sorted(case.stratum or "" for case in stored) == ["lookalike", "lookalike", "plain", "plain"]
 
     async def test_a_template_nominating_no_axis_generates_cases_declaring_none(self) -> None:

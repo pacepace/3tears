@@ -39,6 +39,7 @@ from threetears.evals.schema import (
     SubjectSnapshot,
 )
 from threetears.evals.testing import CompletionGuard, JobsConformanceHost
+from packages.evals.tests.off_loop import off_loop
 
 __all__ = ["CONFORMANCE_SCOPE", "ScriptedClients", "conformance_host"]
 
@@ -149,8 +150,12 @@ def conformance_host(
     kind = callable_kind(_candidate, judge=judge)
 
     async def launch(request: LaunchRequest) -> EvalRun:
-        run_judge = build_judge_service(
-            eval_host, request.template, request.judge_model or _JUDGE, judged_artifact=JudgedArtifact.DOCUMENT
+        run_judge = off_loop(
+            build_judge_service,
+            eval_host,
+            request.template,
+            request.judge_model or _JUDGE,
+            judged_artifact=JudgedArtifact.DOCUMENT,
         )
         subject = SubjectSnapshot(subject_id=request.subject_id, subject_label=request.subject_id, state={})
         return await launch_run(

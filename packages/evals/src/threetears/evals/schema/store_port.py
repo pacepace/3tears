@@ -58,6 +58,14 @@ offer it is read on each process's own clock, and the processes sharing it must 
 is a separate protocol rather than a method of :class:`DocumentStore`, because a store that cannot tell its own
 time honestly must not be made to pretend: the engine asks ``isinstance(store, StoreClock)``.
 
+**Never on the event loop.** The port is synchronous and the engine is async: every call the engine
+makes on a store runs on its blocking-I/O executor, off the loop. The engine's repository over the
+store (:class:`~threetears.evals.kernel.EvalStorage`) refuses a call made on a thread running an event
+loop (:class:`StoreCalledOnEventLoop`), so a path that forgot to offload fails at once, by name, rather
+than stalling the loop under a synchronous store or deadlocking an async one behind
+:func:`~threetears.evals.storage.bridge_async_store`. An adapter can call :func:`refuse_on_event_loop`
+itself to hold its own callers to the same rule.
+
 **Proving an adapter.** Every rule above is a case in the store conformance kit,
 ``threetears.evals.testing.STORE_CONFORMANCE_CASES``: an adapter's own test suite hands each case
 a fresh, empty store, and a case that fails names the rule it broke. The engine's in-memory
@@ -67,7 +75,8 @@ compare a real adapter against.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+import asyncio
+from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
@@ -79,6 +88,39 @@ class StoreConflict(Exception):
     it — read the winner's document and apply its change again — and because the stored
     document is intact, which an outage does not promise.
     """
+
+
+class StoreCalledOnEventLoop(RuntimeError):
+    """A store call was made on a thread that is running an event loop.
+
+    The document store is synchronous, and the engine calls it from a blocking-I/O executor
+    (:func:`~threetears.evals.kernel.offload.run_blocking`), never on the loop: a synchronous store
+    called there stalls every coroutine the loop runs until the call returns, and a store bridged from
+    an async one (:func:`~threetears.evals.storage.bridge_async_store`) waits on the very loop it is
+    blocking, which never returns. So the call is refused before it reaches the store.
+
+    A caller in async code offloads the call, ``await run_blocking(host.blocking_executor, fn, ...)``, as the
+    action catalogue does for every synchronous operation in :mod:`threetears.evals.ops`; an async operation there
+    (a launch, a job's poll) offloads its own.
+    """
+
+
+def refuse_on_event_loop() -> None:
+    """Raise :class:`StoreCalledOnEventLoop` when the calling thread is running an event loop.
+
+    Raises:
+        StoreCalledOnEventLoop: It is.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # NOSILENT: the answer, not a failure: no loop runs on this thread (an executor's worker, or synchronous
+        # code), so the store may be called here.
+        return
+    raise StoreCalledOnEventLoop(
+        f"a document store was called on the thread running event loop {loop!r}; a store call blocks, so it runs "
+        "off the loop: await run_blocking(host.blocking_executor, fn, ...) runs it on the host's executor"
+    )
 
 
 def omit_paths(document: dict[str, Any], paths: Sequence[str]) -> dict[str, Any]:
@@ -362,4 +404,95 @@ class StoreClock(Protocol):
         ...
 
 
-__all__ = ["DocumentStore", "StoreClock", "StoreConflict", "keep_fields", "omit_paths"]
+class AsyncDocumentStore(Protocol):
+    """:class:`DocumentStore`, every method a coroutine: the port for a host whose database driver is async.
+
+    The same port, rule for rule — the scope model, the strip on read, the error contract, both write
+    preconditions — with each method awaited, and :meth:`iter_by_doc_type` an async iterator. The engine
+    never calls it directly: :func:`~threetears.evals.storage.bridge_async_store` presents it as a
+    :class:`DocumentStore`, whose calls run on the host's event loop, so an adapter is written against
+    the driver the host already has rather than a synchronous one kept for the engine alone. The store
+    conformance kit proves it through that bridge (:mod:`threetears.evals.testing.store_conformance`).
+
+    See :class:`DocumentStore` for what each method promises; only the calling convention differs.
+    """
+
+    async def get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None:
+        """See :meth:`DocumentStore.get`."""
+        ...
+
+    async def get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]:
+        """See :meth:`DocumentStore.get_with_etag`."""
+        ...
+
+    async def get_many(
+        self,
+        doc_type: str,
+        doc_ids: Sequence[str],
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        keep: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
+        """See :meth:`DocumentStore.get_many`."""
+        ...
+
+    async def by_doc_type(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        order_by: str | None = None,
+        descending: bool = True,
+        limit: int | None = None,
+        exclude: Sequence[str] = (),
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`DocumentStore.by_doc_type`."""
+        ...
+
+    def iter_by_doc_type(self, doc_type: str, scope_id: str) -> AsyncIterator[str]:
+        """See :meth:`DocumentStore.iter_by_doc_type`; an async iterator here."""
+        ...
+
+    async def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        """See :meth:`DocumentStore.upsert`."""
+        ...
+
+    async def merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool:
+        """See :meth:`DocumentStore.merge_fields`."""
+        ...
+
+    async def delete(self, doc_id: str, scope_id: str) -> bool:
+        """See :meth:`DocumentStore.delete`."""
+        ...
+
+
+@runtime_checkable
+class AsyncStoreClock(Protocol):
+    """:class:`StoreClock` for an :class:`AsyncDocumentStore`: the store's own time, awaited.
+
+    Offered on the same terms as :class:`StoreClock`, and only then: a store that offers it is bridged as a
+    :class:`DocumentStore` that offers :class:`StoreClock`, so job leases are stamped in its time.
+    """
+
+    async def now(self) -> datetime:
+        """The store's current time.
+
+        Returns:
+            A timezone-aware datetime.
+        """
+        ...
+
+
+__all__ = [
+    "AsyncDocumentStore",
+    "AsyncStoreClock",
+    "DocumentStore",
+    "StoreCalledOnEventLoop",
+    "StoreClock",
+    "StoreConflict",
+    "keep_fields",
+    "omit_paths",
+    "refuse_on_event_loop",
+]

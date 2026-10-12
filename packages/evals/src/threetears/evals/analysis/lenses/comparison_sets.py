@@ -15,7 +15,7 @@ from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.identity import resolve_context_identity
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.analysis.reporting import _subject_id_of
 from threetears.evals.analysis.measurement_windows import measurement_window, measurement_window_disclosure
 from threetears.evals.analysis.cassette_mode import cassette_mode_disclosure

@@ -60,6 +60,7 @@ from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
 from threetears.evals.storage import InMemoryDocumentStore
+from packages.evals.tests.off_loop import off_loop
 
 
 def _run_of_the_kind(**overlays: Any):
@@ -492,11 +493,11 @@ async def _launch(host: LaunchHost, **overlays: Any):
 
 
 async def test_a_launch_records_the_validated_overlays_and_stamps_them_into_the_variant():
-    host, storage = _launching()
+    host, storage = off_loop(_launching)
 
     (run,) = await _launch(host, prompt_style="verbose", field_aliases={"vendor_name": "supplier"})
 
-    stored = storage.load_eval_run(run.id, run.scope_id)
+    stored = off_loop(storage.load_eval_run, run.id, run.scope_id)
     assert stored is not None and stored.overlays == {
         "prompt_style": "verbose",
         "page_limit": 10,
@@ -514,19 +515,19 @@ async def test_a_refused_overlay_creates_no_run_and_gives_its_admission_back():
     The ceiling admits one run: if the refused launch had kept its reservation, or left a run behind
     holding a slot, the second launch would be refused for room instead of running.
     """
-    host, storage = _launching(max_admitted_runs=1)
+    host, storage = off_loop(_launching, max_admitted_runs=1)
 
     with pytest.raises(ValidationFailedError, match="page_limit"):
         await _launch(host, page_limit=0)
 
-    assert storage.query_eval_runs(TOYHOST_SCOPE) == []
+    assert off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
     assert host.job_manager.admitted_count == 0
     (run,) = await _launch(host, page_limit=2)
     assert run.overlays["page_limit"] == 2
 
 
 async def test_a_kind_whose_contract_declares_no_overlays_refuses_any_overlay_at_launch():
-    host, storage = _launching()
+    host, storage = off_loop(_launching)
     spec_only = KindContract(TOY_EXTRACTOR_KIND, spec=ExtractorSpec)
     uncontracted = replace(
         host, eval_host=replace(host.eval_host, profile=replace(host.eval_host.profile, kinds=(spec_only,)))
@@ -535,7 +536,7 @@ async def test_a_kind_whose_contract_declares_no_overlays_refuses_any_overlay_at
     with pytest.raises(ValidationFailedError, match="declares no overlays, so a launch cannot turn prompt_style"):
         await _launch(uncontracted, prompt_style="terse")
 
-    assert storage.query_eval_runs(TOYHOST_SCOPE) == []
+    assert off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
     (run,) = await _launch(uncontracted)
     assert run.overlays == {}, "a kind with no overlay model records none"
 
@@ -691,28 +692,33 @@ def test_an_update_writing_the_spec_is_refused_and_one_writing_another_field_is_
 
 
 async def test_a_launch_freezes_the_spec_onto_its_runs_and_the_kind_grades_what_it_states():
-    host, storage = _launching()
-    storage.save_template(toyhost_template().model_copy(update={"kind_spec": {"graded_fields": ["invoice_number"]}}))
+    host, storage = off_loop(_launching)
+    off_loop(
+        storage.save_template,
+        toyhost_template().model_copy(update={"kind_spec": {"graded_fields": ["invoice_number"]}}),
+    )
 
     (run,) = await _launch(host)
 
-    stored = storage.load_eval_run(run.id, run.scope_id)
+    stored = off_loop(storage.load_eval_run, run.id, run.scope_id)
     assert stored is not None and stored.kind_spec == {"graded_fields": ["invoice_number"]}
-    results = storage.query_eval_results_by_run(run.id, run.scope_id)
+    results = off_loop(storage.query_eval_results_by_run, run.id, run.scope_id)
     assert results and all("of 1 graded fields exact" in result.goal_state_outcomes[0].detail for result in results), (
         "the launcher hands the kind the spec it validated, so one field is graded"
     )
 
 
 async def test_a_launch_refuses_a_stored_spec_the_kinds_model_now_refuses_and_creates_no_run():
-    host, storage = _launching()
-    storage.save_template(toyhost_template().model_copy(update={"kind_spec": {"graded_fields": ["tip_amount"]}}))
+    host, storage = off_loop(_launching)
+    off_loop(
+        storage.save_template, toyhost_template().model_copy(update={"kind_spec": {"graded_fields": ["tip_amount"]}})
+    )
 
     with pytest.raises(ValidationFailedError) as refused:
         await _launch(host)
 
     assert "graded_fields" in refused.value.message and toyhost_template().name in refused.value.message
-    assert storage.query_eval_runs(TOYHOST_SCOPE) == []
+    assert off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
 
 
 def test_the_frozen_spec_is_part_of_the_runs_measurement_context():

@@ -58,7 +58,7 @@ from threetears.evals.run.rejudge import (
     reproducible_judge_inputs,
 )
 from threetears.evals.run.runner import build_judge_context, judge_dims, judge_requests
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_RESULT, FIND_RUN
 
 if TYPE_CHECKING:

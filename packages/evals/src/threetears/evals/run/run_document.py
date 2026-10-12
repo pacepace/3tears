@@ -25,7 +25,7 @@ from threetears.evals.kernel.errors import ConflictError, NotFoundError, Storage
 from threetears.evals.kernel.remedies import FIND_RUN
 from threetears.evals.schema.models import RUN_LABELS_MAX, EvalRun, run_label_problem
 from threetears.evals.kernel.storage import JobStore
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
 

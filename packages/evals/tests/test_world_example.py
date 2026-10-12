@@ -21,6 +21,7 @@ from threetears.evals.quick import callable_host
 from threetears.evals.analysis import EvalSummary
 from threetears.evals.run import get_result_trace, list_results
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
+from packages.evals.tests.off_loop import off_loop
 
 #: The example under test.
 WORLD_EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "world.py"
@@ -80,10 +81,10 @@ async def test_each_room_is_seeded_from_its_case_and_read_back_as_the_stand_in_l
     host = _host_of(module, monkeypatch)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     summary = await module.main()
-    cases = {case.id: case for case in host.storage.query_test_cases(summary.scope_id)}
+    cases = {case.id: case for case in off_loop(host.storage.query_test_cases, summary.scope_id)}
     seen = []
-    for result in list_results(host.storage, summary.run_id, summary.scope_id):
-        trace = get_result_trace(host.storage, result)
+    for result in off_loop(list_results, host.storage, summary.run_id, summary.scope_id):
+        trace = off_loop(get_result_trace, host.storage, result)
         assert trace is not None and trace.call_ledger is not None and trace.end_state is not None
         case = cases[result.test_case_id].host_payload
         seen.append(
@@ -176,8 +177,8 @@ async def test_the_claude_candidate_runs_the_tool_loop_against_sdk_replies(monke
     accepted = sent[2]["messages"][-1]["content"][0]
     assert (accepted["tool_use_id"], accepted["is_error"], accepted["content"]) == ("t2", False, "The light is now on.")
     # Only the call the world made is recorded, and the room ends lit: both checks pass.
-    for result in list_results(host.storage, summary.run_id, summary.scope_id):
-        trace = get_result_trace(host.storage, result)
+    for result in off_loop(list_results, host.storage, summary.run_id, summary.scope_id):
+        trace = off_loop(get_result_trace, host.storage, result)
         assert trace is not None and trace.call_ledger is not None
         assert trace.call_ledger.calls == [RecordedCall(tool="room", action="switch_light", params={"to": "on"})]
         assert trace.end_state == {"light": "on", "daylight": "dark"}

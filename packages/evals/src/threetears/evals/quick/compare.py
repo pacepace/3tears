@@ -40,8 +40,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from functools import partial
 from typing import Any
 
+from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.analysis import (
     DEFAULT_FAIL_ON,
     AnalysisContextBundle,
@@ -384,7 +386,9 @@ class Comparison:
             return ArmGuardrails(breached=[], undecided=[], held=[])
         return self.guardrail_readings.of_arm(variant)
 
-    def against(self, control: ArmKey, *, name: str | None = None, created_by: str = COMPARE_CREATED_BY) -> Comparison:
+    async def against(
+        self, control: ArmKey, *, name: str | None = None, created_by: str = COMPARE_CREATED_BY
+    ) -> Comparison:
         """The same runs read against another control: a second campaign over them, with no run repeated.
 
         The engine tests every arm against one control, so in a factorial the effect of one factor at the
@@ -405,23 +409,27 @@ class Comparison:
             ValidationFailedError: The host refuses the campaign's declaration.
         """
         _refuse_an_unknown_control(self.arms, control)
-        campaign = get_campaign(self.host.storage, self.campaign_id, self.scope_id)
-        design = campaign.declared_design
-        repetitions = design.intended_repetitions if design is not None else None
-        return _declare(
-            self.host,
-            self.arms,
-            self.factors,
-            kind=self.kind,
-            control=control,
-            scope_id=self.scope_id,
-            name=name or f"{self.name}, against {_label(control, self.factors)}",
-            behavior=campaign.behavior,
-            repetitions=repetitions,
-            created_by=created_by,
-            guardrail_margins=design.guardrail_margins if design is not None else (),
-            measure_latency=design.measure_latency if design is not None else False,
-        )
+
+        def declared() -> Comparison:
+            campaign = get_campaign(self.host.storage, self.campaign_id, self.scope_id)
+            design = campaign.declared_design
+            return _declare(
+                self.host,
+                self.arms,
+                self.factors,
+                kind=self.kind,
+                control=control,
+                scope_id=self.scope_id,
+                name=name or f"{self.name}, against {_label(control, self.factors)}",
+                behavior=campaign.behavior,
+                repetitions=design.intended_repetitions if design is not None else None,
+                created_by=created_by,
+                guardrail_margins=design.guardrail_margins if design is not None else (),
+                measure_latency=design.measure_latency if design is not None else False,
+            )
+
+        # It reads this comparison's campaign and files a new one, so it runs off the loop.
+        return await run_blocking(self.host.blocking_executor, declared)
 
 
 def _label(arm: ArmKey, factors: tuple[str, ...]) -> str:
@@ -1007,22 +1015,27 @@ async def compare(
         margins=run_margins or None,
     )
     arms: dict[ArmKey, EvalSummary] = dict(zip(arms_given, summaries, strict=True))
-    return _declare(
-        host,
-        arms,
-        named,
-        kind=CALLABLE_KIND if judge is None else JUDGED_CALLABLE_KIND,
-        control=control,
-        scope_id=scope_id,
-        name=name,
-        behavior="classify" if expected is not None else "score",
-        repetitions=k,
-        created_by=created_by,
-        guardrail_margins=[
-            GuardrailMargin(dimension=dimension, margin=guardrail.margin)
-            for dimension, guardrail in judged_guardrails.items()
-        ],
-        measure_latency=measure_latency,
+    # Filing the campaign and reading its report are store reads and writes, so they run off the loop.
+    return await run_blocking(
+        host.blocking_executor,
+        partial(
+            _declare,
+            host,
+            arms,
+            named,
+            kind=CALLABLE_KIND if judge is None else JUDGED_CALLABLE_KIND,
+            control=control,
+            scope_id=scope_id,
+            name=name,
+            behavior="classify" if expected is not None else "score",
+            repetitions=k,
+            created_by=created_by,
+            guardrail_margins=[
+                GuardrailMargin(dimension=dimension, margin=guardrail.margin)
+                for dimension, guardrail in judged_guardrails.items()
+            ],
+            measure_latency=measure_latency,
+        ),
     )
 
 

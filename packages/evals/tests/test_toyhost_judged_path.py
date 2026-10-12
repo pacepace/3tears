@@ -33,14 +33,14 @@ async def test_every_judged_toy_cell_is_scored_on_what_its_kind_rendered_and_kee
         judge_model=TOY_JUDGE_MODEL,
     )
 
-    results = path.results
+    results = await path.results()
     assert results, "the judged drive produced no cells"
     misses = {(script.model, doc): len(fields) for script in TOY_SCRIPTS for doc, fields in script.misses.items()}
     for result in results:
         assert result.judge_error is None and not result.judge_cannot_tell
         assert result.transcript_score is None and result.outcome_score is None, "a document has no conversation axes"
         (score,) = result.rubric_scores
-        trace = path.trace(result)
+        trace = await path.trace(result)
         assert trace is not None and trace.judged_artifact is JudgedArtifact.DOCUMENT
         assert trace.judge_evidence is not None
         document_id = trace.trace[0]["document_id"]

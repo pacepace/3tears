@@ -27,6 +27,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_
 from packages.evals.tests.fixtures.toyhost.kind import TOY_SCRIPTS, ScriptedExtractionClient
 from packages.evals.tests.fixtures.toyhost.launch import toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
+from packages.evals.tests.off_loop import off_loop
 
 STYLES = ("terse", "standard", "verbose")
 
@@ -66,7 +67,7 @@ async def _watch(host: OpsHost, job_id: str, until: Any, executing: list[int]) -
 
 
 async def test_a_three_arm_sweep_runs_its_arms_one_at_a_time_into_its_campaign() -> None:
-    host, storage = _host(latency_s=0.02)
+    host, storage = off_loop(_host, latency_s=0.02)
 
     started = await sweep_launch(host, _sweep(), TOYHOST_SCOPE, created_by="agent:test")
     (job,) = started.jobs
@@ -76,15 +77,15 @@ async def test_a_three_arm_sweep_runs_its_arms_one_at_a_time_into_its_campaign()
 
     assert (done.state, done.progress["arms_finished"]) == ("completed", 3)
     assert max(executing) == 1, "the arms ran one after another"
-    campaign = storage.load_campaign(job.target_id, TOYHOST_SCOPE)
+    campaign = off_loop(storage.load_campaign, job.target_id, TOYHOST_SCOPE)
     assert campaign is not None and done.campaign_id == campaign.id
-    runs = storage.load_eval_runs(campaign.run_ids, TOYHOST_SCOPE)
+    runs = off_loop(storage.load_eval_runs, campaign.run_ids, TOYHOST_SCOPE)
     assert [run.overlays["prompt_style"] for run in runs] == list(STYLES), "each arm ran its own overlays"
     assert {run.status for run in runs} == {"completed"}
 
 
 async def test_cancelling_part_way_stops_the_arm_in_flight_and_keeps_the_finished_ones_as_members() -> None:
-    host, storage = _host(latency_s=0.05)
+    host, storage = off_loop(_host, latency_s=0.05)
     (job,) = (await sweep_launch(host, _sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
     executing: list[int] = []
 
@@ -100,9 +101,9 @@ async def test_cancelling_part_way_stops_the_arm_in_flight_and_keeps_the_finishe
 
     assert ended.state == "cancelled"
     assert ended.progress["arms"] == {"terse": "completed", "standard": "cancelled", "verbose": "not_launched"}
-    campaign = storage.load_campaign(job.target_id, TOYHOST_SCOPE)
+    campaign = off_loop(storage.load_campaign, job.target_id, TOYHOST_SCOPE)
     assert campaign is not None
-    members = storage.load_eval_runs(campaign.run_ids, TOYHOST_SCOPE)
+    members = off_loop(storage.load_eval_runs, campaign.run_ids, TOYHOST_SCOPE)
     assert [(run.overlays["prompt_style"], run.status) for run in members] == [
         ("terse", "completed"),
         ("standard", "cancelled"),
@@ -112,7 +113,7 @@ async def test_cancelling_part_way_stops_the_arm_in_flight_and_keeps_the_finishe
 
 
 async def test_raising_the_concurrency_runs_arms_side_by_side() -> None:
-    host, _storage = _host(latency_s=0.05)
+    host, _storage = off_loop(_host, latency_s=0.05)
     (job,) = (await sweep_launch(host, _sweep(max_concurrent_arms=3), TOYHOST_SCOPE, created_by="agent:test")).jobs
     executing: list[int] = []
     done = await _watch(host, job.job_id, lambda status: status.done, executing)
@@ -121,14 +122,16 @@ async def test_raising_the_concurrency_runs_arms_side_by_side() -> None:
 
 
 async def test_an_arm_its_launch_would_refuse_refuses_the_sweep_before_anything_is_created() -> None:
-    host, storage = _host(latency_s=0.0)
+    host, storage = off_loop(_host, latency_s=0.0)
     arms = [
         SweepArm(model=RUN_MODELS[0], label="ok", overlays={"prompt_style": "terse"}),
         SweepArm(model=RUN_MODELS[0], label="bad", overlays={"prompt_style": "shouting"}),
     ]
     with pytest.raises(ValidationFailedError, match="arm 'bad' would be refused"):
         await sweep_launch(host, _sweep(arms=arms), TOYHOST_SCOPE, created_by="agent:test")
-    assert storage.list_campaigns(TOYHOST_SCOPE) == [] and storage.query_eval_runs(TOYHOST_SCOPE) == []
+    assert (
+        off_loop(storage.list_campaigns, TOYHOST_SCOPE) == [] and off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
+    )
 
 
 def test_two_arms_that_are_one_condition_are_refused() -> None:
@@ -140,7 +143,7 @@ def test_two_arms_that_are_one_condition_are_refused() -> None:
 async def test_the_action_launches_a_sweep_from_flat_parameters() -> None:
     from threetears.evals.actions import eval_catalogue
 
-    host, _storage = _host(latency_s=0.0)
+    host, _storage = off_loop(_host, latency_s=0.0)
     action = eval_catalogue().get("sweep_launch")
     assert action is not None
     params = action.params.model_validate(
@@ -160,7 +163,7 @@ async def test_the_action_launches_a_sweep_from_flat_parameters() -> None:
 
 
 async def test_an_arm_whose_run_fails_ends_the_sweep_launching_nothing_after_it() -> None:
-    host, storage = _host(latency_s=0.0)
+    host, storage = off_loop(_host, latency_s=0.0)
     arms = [
         # No script covers this model, so every cell of its run raises and the run ends failed: a harness fault.
         SweepArm(model="extractor-unscripted", label="broken"),
@@ -173,5 +176,5 @@ async def test_an_arm_whose_run_fails_ends_the_sweep_launching_nothing_after_it(
     assert done.state == "failed"
     assert done.detail is not None and "arm 'broken'" in done.detail and "ended failed" in done.detail
     assert done.progress["arms"] == {"broken": "failed", "fine": "not_launched"}
-    campaign = storage.load_campaign(job.target_id, TOYHOST_SCOPE)
+    campaign = off_loop(storage.load_campaign, job.target_id, TOYHOST_SCOPE)
     assert campaign is not None and len(campaign.run_ids) == 1

@@ -37,6 +37,7 @@ from packages.evals.tests.factories import as_listed, make_eval_run
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
+from packages.evals.tests.off_loop import off_loop
 
 _INHERITED = {"candidate": "inherited"}
 
@@ -267,16 +268,17 @@ class TestTheScoreRollupRowCarriesIt:
         host = comparison.host
         run_id = comparison.arms["a"].run_id
 
-        summary = run_summary(
+        summary = off_loop(
+            run_summary,
             host.storage,
             run_id,
             "footing",
-            load_run_listed=lambda rid, scope: host.storage.load_eval_run(rid, scope),
+            load_run_listed=lambda rid, scope: off_loop(host.storage.load_eval_run, rid, scope),
             row_columns=lambda _results: {},
             profile=host.profile,
         )
 
-        run = host.storage.load_eval_run(run_id, "footing")
+        run = off_loop(host.storage.load_eval_run, run_id, "footing")
         assert run is not None
         (row,) = summary["rows"]
         assert row["mean_prod_cost_usd"] is not None

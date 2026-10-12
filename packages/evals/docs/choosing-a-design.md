@@ -34,9 +34,9 @@ matters more than either lever. Each `against` is its own Holm family. The bundl
 is non-empty, the row is a comparison averaged over the other levers, not a controlled one.
 [`examples/prompt_x_model.py`](../examples/prompt_x_model.py) runs a 2×2 and reads both effects.
 
-**The winner of a grid needs a test against the runner-up.** The contrasts test every combination against
-the control, never against each other. To test the leader against the rest, call `against(leader)`. You chose
-that control after seeing the results, so treat what it shows as a lead to confirm in a fresh campaign. An
+**The winner of a grid needs a test against the runner-up.** The contrasts test every combination against the
+control, never against each other. To test the leader against the rest, `await comparison.against(leader)`. You
+chose that control after seeing the results, so treat what it shows as a lead to confirm in a fresh campaign. An
 analysis can draw a `sweep_ranking` chart, which orders the combinations by their mean and tests nothing. The
 decision surface's row order is not a ranking either.
 
@@ -49,6 +49,7 @@ fixed and the rig commissioned. It launches every arm together, so time and load
 ```python
 from threetears.evals.analysis import inspect_campaign_bundle
 from threetears.evals.quick import compare
+from threetears.evals.run import run_blocking
 
 CASES = [
     {"ticket": "I was charged twice for March.", "queue": "billing"},
@@ -71,7 +72,12 @@ comparison = await compare(
     CASES, {"v1": classifier("v1"), "v2": classifier("v2")}, control="v1",
     expected=lambda case: case["queue"], scope_id="triage", k=3,
 )
-design = inspect_campaign_bundle(comparison.host, comparison.campaign_id, comparison.scope_id).bundle.design
+host = comparison.host
+# A store read, so it runs off the event loop, on the host's executor.
+inspected = await run_blocking(
+    host.blocking_executor, inspect_campaign_bundle, host, comparison.campaign_id, comparison.scope_id
+)
+design = inspected.bundle.design
 print(design.shape, [arm.moved for arm in design.contrasts])  # one_factor_at_a_time [{'candidate': 'v2'}]
 ```
 

@@ -69,6 +69,7 @@ from threetears.evals.schema.models import (
 )
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.off_loop import off_loop
 
 _SCOPE = "scope-temperature"
 _KIND = "temperature-probe"
@@ -221,14 +222,14 @@ async def _judged_run(judge: _Judge, *, cases: int = 4, **run_fields: Any) -> tu
         candidate_kind=_KIND,
         rubric=[RubricDim(name=_DIM, description="the GM rules what the dice say", scale="ordinal")],
     )
-    host.storage.save_template(template)
+    off_loop(host.storage.save_template, template)
     test_cases = [
         EvalTestCase(template_id=template.id, scope_id=_SCOPE, variation_params={"party": f"p{index}"})
         for index in range(cases)
     ]
     for case in test_cases:
-        host.storage.save_test_case(case)
-    built = build_judge_service(host, template, _JUDGE, judged_artifact=JudgedArtifact.DOCUMENT)
+        off_loop(host.storage.save_test_case, case)
+    built = off_loop(build_judge_service, host, template, _JUDGE, judged_artifact=JudgedArtifact.DOCUMENT)
     run = make_eval_run(
         scope_id=_SCOPE,
         template_id=template.id,
@@ -240,7 +241,7 @@ async def _judged_run(judge: _Judge, *, cases: int = 4, **run_fields: Any) -> tu
         effective_judges=built.effective_judges,
         **{"judge_request_settings": JUDGE_REQUEST_SETTINGS, **run_fields},
     )
-    host.storage.save_eval_run(run)
+    off_loop(host.storage.save_eval_run, run)
     for case in test_cases:
         outcome = await run_one_result(
             host,
@@ -259,7 +260,7 @@ async def _judged_run(judge: _Judge, *, cases: int = 4, **run_fields: Any) -> tu
             options=RunnerOptions(candidate_kinds={_KIND: lambda _cell: _Kind()}),
             variant=resolve_variant_identity(run=run, profile=host.profile),
         )
-        host.storage.save_eval_result(outcome.result, outcome.trace)
+        off_loop(host.storage.save_eval_result, outcome.result, outcome.trace)
     judge.calls.clear()
     judge.requested.clear()
     return host, run.id
@@ -279,7 +280,7 @@ async def compare_judge_temperatures(
         ended = await run_job_work(work, store=host.storage, executor=host.blocking_executor, leases=leases)
     finally:
         await leases.shut_down()
-    stored, _ = host.storage.load_job_record(EvalJudgeTemperatureCheck, ended.id, scope_id)
+    stored, _ = off_loop(host.storage.load_job_record, EvalJudgeTemperatureCheck, ended.id, scope_id)
     assert stored is not None and stored.outcome == "completed" and stored.answers is not None, ended.detail
     assert stored.answers == ended.answers
     return read_judge_temperatures(stored.answers)
@@ -337,11 +338,11 @@ class TestTheComparisonShowsWhatTemperatureDoes:
     async def test_nothing_is_written_to_the_results(self):
         judge = _Judge()
         host, run_id = await _judged_run(judge)
-        before = _results(host, run_id)
+        before = off_loop(_results, host, run_id)
 
         await compare_judge_temperatures(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)
 
-        assert _results(host, run_id) == before
+        assert off_loop(_results, host, run_id) == before
 
 
 class TestEveryAnswerPaidForIsKept:
@@ -362,23 +363,23 @@ class TestEveryAnswerPaidForIsKept:
             return 0 if answers is None else sum(len(case.answers) for case in answers.answers)
 
         async with asyncio.timeout(5):
-            while kept() < 3:
+            while off_loop(kept) < 3:
                 await asyncio.sleep(0.01)
         running.cancel()
         with pytest.raises(asyncio.CancelledError):
             await running
         await leases.shut_down()
 
-        stored, _ = host.storage.load_job_record(EvalJudgeTemperatureCheck, work.record_id, _SCOPE)
+        stored, _ = off_loop(host.storage.load_job_record, EvalJudgeTemperatureCheck, work.record_id, _SCOPE)
         assert stored is not None and stored.outcome == "cancelled" and stored.answers is not None
-        assert kept() == 3 and stored.answers.calls_made == 3, "every answer paid for before the cancel is kept"
+        assert off_loop(kept) == 3 and stored.answers.calls_made == 3, "every answer paid for before the cancel is kept"
 
 
 class TestWhichCasesAreReJudged:
     async def test_a_stored_score_at_an_end_of_the_scale_is_skipped_and_named(self):
         judge = _Judge()
         host, run_id = await _judged_run(judge)
-        (top,) = [result for result in _results(host, run_id) if _party(result) == 3]
+        (top,) = [result for result in off_loop(_results, host, run_id) if _party(result) == 3]
 
         comparison = await compare_judge_temperatures(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)
 
@@ -388,7 +389,7 @@ class TestWhichCasesAreReJudged:
     async def test_a_recorded_repeat_that_disagreed_makes_an_end_of_scale_score_borderline(self):
         judge = _Judge()
         host, run_id = await _judged_run(judge)
-        (top,) = [result for result in _results(host, run_id) if _party(result) == 3]
+        (top,) = [result for result in off_loop(_results, host, run_id) if _party(result) == 3]
         assert borderline_dims(top) == set()
         disagreed = top.model_copy(
             update={
@@ -410,8 +411,8 @@ class TestWhichCasesAreReJudged:
             }
         )
         assert borderline_dims(disagreed) == {_DIM}
-        _, etag = host.storage.load_eval_result_with_etag(top.id, _SCOPE)
-        host.storage.replace_eval_result(disagreed, if_match=etag)
+        _, etag = off_loop(host.storage.load_eval_result_with_etag, top.id, _SCOPE)
+        off_loop(host.storage.replace_eval_result, disagreed, if_match=etag)
 
         comparison = await compare_judge_temperatures(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)
 
@@ -430,7 +431,7 @@ class TestWhichCasesAreReJudged:
     async def test_a_run_with_no_borderline_case_is_refused_naming_the_way_out(self):
         judge = _Judge()
         host, run_id = await _judged_run(judge)
-        (top,) = [result for result in _results(host, run_id) if _party(result) == 3]
+        (top,) = [result for result in off_loop(_results, host, run_id) if _party(result) == 3]
 
         with pytest.raises(ValidationFailedError, match="selection='all'"):
             await compare_judge_temperatures(host, run_id, _SCOPE, out_of_run_cap_usd=None, result_ids=[top.id])
@@ -449,14 +450,14 @@ class TestAClientThatIgnoresTemperature:
     async def test_a_judge_whose_stored_scores_record_no_temperature_sent_is_refused_before_any_spend(self):
         judge = _Judge(sends=None)
         host, run_id = await _judged_run(judge)
-        assert {result.judge_score(_DIM).judge_temperature for result in _results(host, run_id)} == {  # type: ignore[union-attr]
+        assert {result.judge_score(_DIM).judge_temperature for result in off_loop(_results, host, run_id)} == {  # type: ignore[union-attr]
             MODEL_DEFAULT_TEMPERATURE
         }
 
         with pytest.raises(ValidationFailedError, match="refuses one"):
             await compare_judge_temperatures(host, run_id, _SCOPE, out_of_run_cap_usd=1.0)
         assert judge.calls == []
-        assert host.storage.query_out_of_run_spend(_SCOPE, purpose="judge") == []
+        assert off_loop(host.storage.query_out_of_run_spend, _SCOPE, purpose="judge") == []
 
     async def test_a_client_that_drops_the_temperature_at_call_time_makes_the_comparison_not_comparable(self):
         judge = _Judge()
@@ -527,12 +528,13 @@ class TestAPreTemperatureRunIsReplayedAsRecorded:
     async def test_a_run_whose_template_was_edited_since_is_still_refused(self):
         judge = _Judge()
         host, run_id = await _judged_run(judge, judge_temperature=None, judge_request_settings=_PRE_STRICT_SETTINGS)
-        run = host.storage.load_eval_run(run_id, _SCOPE)
+        run = off_loop(host.storage.load_eval_run, run_id, _SCOPE)
         assert run is not None
-        template = host.storage.load_template(run.template_id, _SCOPE)
+        template = off_loop(host.storage.load_template, run.template_id, _SCOPE)
         assert template is not None
-        host.storage.save_template(
-            template.model_copy(update={"intent": "a different encounter", "updated_at": "9999"})
+        off_loop(
+            host.storage.save_template,
+            template.model_copy(update={"intent": "a different encounter", "updated_at": "9999"}),
         )
 
         with pytest.raises(ValidationFailedError, match="edited"):
@@ -555,7 +557,7 @@ class TestEveryCallIsMetered:
 
         comparison = await compare_judge_temperatures(host, run_id, _SCOPE, out_of_run_cap_usd=1.0, repeats=3)
 
-        rows = host.storage.query_out_of_run_spend(_SCOPE, purpose="judge")
+        rows = off_loop(host.storage.query_out_of_run_spend, _SCOPE, purpose="judge")
         assert len(rows) == len(judge.calls) == comparison.calls_made == 2 * 3 * 3
         assert {(row.run_id, row.purpose, row.outcome, row.priced_ceiling_usd) for row in rows} == {
             (run_id, "judge", "completed", _CEILING)
@@ -589,7 +591,7 @@ class TestEveryCallIsMetered:
             await compare_judge_temperatures(host, run_id, _SCOPE, out_of_run_cap_usd=total - 0.01, repeats=2)
 
         assert judge.calls == []
-        assert host.storage.query_out_of_run_spend(_SCOPE, purpose="judge") == []
+        assert off_loop(host.storage.query_out_of_run_spend, _SCOPE, purpose="judge") == []
         comparison = await compare_judge_temperatures(host, run_id, _SCOPE, out_of_run_cap_usd=total, repeats=2)
         assert comparison.calls_made == 2 * 3 * 2
 
@@ -607,7 +609,7 @@ class TestTheCommandLine:
         assert await _cli([*argv, "--json"], host) == 0
         printed = json.loads(capsys.readouterr().out)
         assert printed["comparable"] is True and printed["calls_made"] == 2 * 3 * 2
-        assert len(host.storage.query_out_of_run_spend(_SCOPE, purpose="judge")) == 2 * 3 * 2
+        assert len(off_loop(host.storage.query_out_of_run_spend, _SCOPE, purpose="judge")) == 2 * 3 * 2
 
     async def test_a_cap_is_named_or_waived_out_loud(self, capsys: pytest.CaptureFixture[str]):
         judge = _Judge()

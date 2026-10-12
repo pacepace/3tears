@@ -8,7 +8,7 @@ is where the policy lives rather than in each registry that applies it.
 
 from __future__ import annotations
 
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 
 
 log = get_logger(__name__)

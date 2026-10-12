@@ -64,7 +64,7 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.run.check_controls import refuse_non_discriminating_checks
 from threetears.evals.run.curation import require_delete_confirmation
-from threetears.observe import get_logger
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_RUBRIC_DIM, FIND_TEMPLATE, SCHEMA_REMEDY
 
 if TYPE_CHECKING:
