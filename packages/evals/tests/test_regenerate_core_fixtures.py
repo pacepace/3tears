@@ -33,3 +33,42 @@ def test_a_checkout_without_release_tags_refuses_rather_than_guessing() -> None:
     refusal = regenerate.released_corpus_refusal(14, None)
 
     assert refusal is not None and "git fetch --tags" in refusal
+
+
+# --- which fixtures are kept: a fresh draw only, spelled as before -----------------------------------------------
+
+_KEPT = {
+    "id": "0199d3a2-6c1e-7a4b-9f00-1c2d3e4f5a6b",
+    "created_at": "2026-10-13T05:04:01.438077+00:00",
+    "label": "a fixed value",
+    "tags": ["a", "b"],
+}
+
+
+def _sampled(**changes: object) -> dict[str, object]:
+    return {**_KEPT, **changes}
+
+
+def test_a_fresh_clock_reading_and_a_fresh_id_are_the_same_document() -> None:
+    sampled = _sampled(id="0199d3a2-9999-7fff-8abc-000000000001", created_at="2026-10-14T23:59:59.000001+00:00")
+
+    assert regenerate.same_document(_KEPT, sampled)
+
+
+def test_a_timestamp_respelled_is_written() -> None:
+    """The offset spelled ``Z``, or the fraction dropped: what the build writes changed, not what it drew."""
+    assert not regenerate.same_document(_KEPT, _sampled(created_at="2026-10-13T05:04:01.438077Z"))
+    assert not regenerate.same_document(_KEPT, _sampled(created_at="2026-10-13T05:04:01+00:00"))
+    assert not regenerate.same_document(_KEPT, _sampled(created_at="2026-10-13T05:04:01.438+00:00"))
+
+
+def test_a_uuid_from_another_generator_is_written() -> None:
+    """uuid4 and uuid7 mask to the same hex; the version digit tells them apart."""
+    assert not regenerate.same_document(_KEPT, _sampled(id="5f0e3b1c-2d4a-4b6c-8d9e-0f1a2b3c4d5e"))
+
+
+def test_any_other_difference_is_written() -> None:
+    assert not regenerate.same_document(_KEPT, _sampled(label="another fixed value"))
+    assert not regenerate.same_document(_KEPT, _sampled(tags=["a"]))
+    assert not regenerate.same_document(_KEPT, {key: value for key, value in _KEPT.items() if key != "label"})
+    assert not regenerate.same_document(_KEPT, _sampled(id="2026-10-13T05:04:01.438077+00:00"))

@@ -30,10 +30,13 @@ tell, and refuses rather than guessing.
 **Why a run on an unchanged tree changes nothing.** ``stored_sample`` reads the clock and draws UUIDs, so two
 samples of one model never agree byte for byte, and writing each one would move every fixture and every digest on
 every run. A fixture is therefore left as it is when the new sample matches it in structure and in every value but
-the ones that are a clock reading (an ISO-8601 timestamp) or a generated id (a UUID) at the same place in both: those
-are what a sample draws fresh, and a corpus document that differs only in them is the same document. Any other
-difference (a field added, removed or retyped, a fixed value changed) is written. A sample whose fixed timestamp or
-id was changed on purpose reads as unchanged by that rule; ``--all`` writes every file regardless.
+the ones that are a clock reading (an ISO-8601 timestamp) or a generated id (a UUID) at the same place in both,
+SPELLED alike: those are what a sample draws fresh, and a corpus document that differs only in them is the same
+document. Spelled alike means the two agree once every digit and hex letter is masked, and a UUID also keeps its
+version digit, so a switch from ``+00:00`` to ``Z``, a change in fractional seconds, or uuid4 to uuid7 is a change
+of what the build writes, not a fresh draw, and is written. Any other difference (a field added, removed or
+retyped, a fixed value changed) is written too. A sample whose fixed timestamp or id was changed on purpose to
+another value of the same spelling reads as unchanged by that rule; ``--all`` writes every file regardless.
 """
 
 from __future__ import annotations
@@ -76,6 +79,12 @@ _TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\+00:0
 
 #: A whole string value that is a generated id (a UUID, any version).
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+#: What a fresh draw changes in a clock reading or a generated id: its digits and hex letters.
+_DRAWN = re.compile(r"[0-9a-f]")
+
+#: Where a UUID spells its version: the generator, which a fresh draw never changes.
+_UUID_VERSION_AT = 14
 
 
 class SupersededCorpusError(RuntimeError):
@@ -131,6 +140,25 @@ def newer_corpus_dirs(root: Path, version: int) -> list[Path]:
     return sorted(newer, key=lambda path: int(path.name[1:]))
 
 
+def spelling(value: str) -> str:
+    """How a drawn value is written, with what a fresh draw changes masked out.
+
+    Every digit and hex letter becomes ``#``, so two clock readings of one format agree and ``+00:00`` against ``Z``,
+    or six fractional digits against none, do not. A UUID keeps its version digit, because the masked form of a uuid4
+    and a uuid7 is otherwise the same.
+
+    Args:
+        value: A timestamp or a UUID.
+
+    Returns:
+        Its spelling.
+    """
+    masked = _DRAWN.sub("#", value)
+    if _UUID.fullmatch(value):
+        masked = masked[:_UUID_VERSION_AT] + value[_UUID_VERSION_AT] + masked[_UUID_VERSION_AT + 1 :]
+    return masked
+
+
 def same_document(kept: Any, sampled: Any) -> bool:
     """Whether two documents agree in structure and in every value but a drawn clock reading or generated id.
 
@@ -140,16 +168,17 @@ def same_document(kept: Any, sampled: Any) -> bool:
 
     Returns:
         ``True`` when they have the same keys and types throughout and differ only where both hold a timestamp or
-        both hold a UUID.
+        both hold a UUID, spelled alike (:func:`spelling`).
     """
     if isinstance(kept, dict) and isinstance(sampled, dict):
         return kept.keys() == sampled.keys() and all(same_document(kept[key], sampled[key]) for key in kept)
     if isinstance(kept, list) and isinstance(sampled, list):
         return len(kept) == len(sampled) and all(same_document(a, b) for a, b in zip(kept, sampled, strict=True))
     if isinstance(kept, str) and isinstance(sampled, str):
-        return kept == sampled or any(
-            pattern.fullmatch(kept) and pattern.fullmatch(sampled) for pattern in (_TIMESTAMP, _UUID)
-        )
+        if kept == sampled:
+            return True
+        drawn = any(pattern.fullmatch(kept) and pattern.fullmatch(sampled) for pattern in (_TIMESTAMP, _UUID))
+        return drawn and spelling(kept) == spelling(sampled)
     return type(kept) is type(sampled) and kept == sampled
 
 
