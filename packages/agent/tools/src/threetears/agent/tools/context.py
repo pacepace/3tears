@@ -16,8 +16,18 @@ log = get_logger(__name__)
 
 __all__ = [
     "ToolContextManager",
+    "VariableLimitError",
     "make_tool_result_dedup_key",
 ]
+
+
+class VariableLimitError(ValueError):
+    """A new variable was refused because the conversation already holds as many as it may.
+
+    A ``ValueError`` still, for a caller that caught that; its own type so a
+    tool can tell "at the cap, nothing changed" from a value it should not have
+    been handed.
+    """
 
 _MEMORY_REF_FIFO_CAPACITY = 50
 
@@ -182,7 +192,7 @@ class ToolContextManager:
             None,
         )
         if existing is None and var_count >= self._var_limit:
-            raise ValueError(
+            raise VariableLimitError(
                 f"Variable limit reached ({self._var_limit}). Save over one you no longer need by reusing its name."
             )
         if len(value) > self._var_max_chars:

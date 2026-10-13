@@ -7,7 +7,12 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from threetears.agent.tools.context import ToolContextManager
+from threetears.observe import get_logger
+
+from threetears.agent.tools.context import ToolContextManager, VariableLimitError
+from threetears.agent.tools.utils import TOOL_ERROR_PREFIX, tool_no_change
+
+log = get_logger(__name__)
 
 __all__ = [
     "DeclareWorkflowInput",
@@ -55,18 +60,35 @@ class DeclareWorkflowInput(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+async def _saved_names(tool_context: ToolContextManager) -> str:
+    """The names a variable is saved under in this conversation, as a sentence."""
+    names = sorted(str(item["key"]) for item in await tool_context.get_all_variables())
+    if not names:
+        return "No variables are saved in this conversation."
+    return f"Saved names: {', '.join(names)}."
+
+
 async def _set_variable(tool_context: ToolContextManager, key: str, value: str, value_type: str = "string") -> str:
     try:
         context_id = await tool_context.set_variable(key, value, value_type)
-        return f"Variable '{key}' saved (context_id: {context_id})"
-    except ValueError as exc:
-        return str(exc)
+    except VariableLimitError as exc:
+        # At the cap: nothing was saved and nothing broke. Its own status, so a caller that
+        # refuses a failed tool for the rest of a turn does not refuse this one.
+        return tool_no_change("variable_set", f"{exc} {await _saved_names(tool_context)}")
+    except Exception as exc:
+        log.error("variable_set failed", extra={"extra_data": {"key": key, "error": str(exc)}})
+        return f"{TOOL_ERROR_PREFIX} variable_set: {exc}"
+    return f"Variable '{key}' saved (context_id: {context_id})"
 
 
 async def _get_variable(tool_context: ToolContextManager, key: str) -> str:
-    var = await tool_context.get_variable(key)
-    if var is None:
-        return f"Variable '{key}' not found"
+    try:
+        var = await tool_context.get_variable(key)
+        if var is None:
+            return tool_no_change("variable_get", f"no variable named '{key}'. {await _saved_names(tool_context)}")
+    except Exception as exc:
+        log.error("variable_get failed", extra={"extra_data": {"key": key, "error": str(exc)}})
+        return f"{TOOL_ERROR_PREFIX} variable_get: {exc}"
     return f"{key} ({var['value_type']}): {var['value']}"
 
 

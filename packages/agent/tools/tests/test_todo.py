@@ -15,6 +15,7 @@ from threetears.agent.tools.todo import (
     UpdateTodoInput,
     load_todo_tools,
 )
+from threetears.agent.tools.utils import tool_result_status
 
 
 # -- In-memory storage for testing --------------------------------------------
@@ -191,12 +192,27 @@ class TestLoadTodoTools:
         add = _find_tool(tools, "add_todo")
         await add.ainvoke({"title": "Buy milk"})
         result = await add.ainvoke({"title": "Buy milk"})
-        assert "already exists" in result
+        assert result == '[NO CHANGE] add_todo: Todo "Buy milk" already exists in "Todo List".'
+        assert tool_result_status(result) == "no_change", "a duplicate changed nothing and is not a failure"
+
+    async def test_an_add_after_a_duplicate_still_adds(self, tools: list):
+        add = _find_tool(tools, "add_todo")
+        await add.ainvoke({"title": "Buy milk"})
+        await add.ainvoke({"title": "Buy milk"})
+        assert tool_result_status(await add.ainvoke({"title": "Buy eggs"})) == "ok"
+
+    async def test_a_storage_failure_is_an_error_not_a_no_change(self, tools: list, storage: InMemoryTodoStorage):
+        async def _down(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            raise RuntimeError("database is down")
+
+        storage.add = _down  # type: ignore[method-assign]
+        result = await _find_tool(tools, "add_todo").ainvoke({"title": "Buy milk"})
+        assert result == "[TOOL ERROR] add_todo: database is down" and tool_result_status(result) == "error"
 
     async def test_add_todo_empty_title(self, tools: list):
         add = _find_tool(tools, "add_todo")
         result = await add.ainvoke({"title": "   "})
-        assert "TOOL ERROR" in result
+        assert result.startswith("[TOOL ERROR] add_todo:") and tool_result_status(result) == "error"
 
     async def test_complete_todo(self, tools: list):
         add = _find_tool(tools, "add_todo")
@@ -208,7 +224,41 @@ class TestLoadTodoTools:
     async def test_complete_nonexistent(self, tools: list):
         complete = _find_tool(tools, "complete_todo")
         result = await complete.ainvoke({"title": "Does not exist"})
-        assert "TOOL ERROR" in result
+        assert result == (
+            '[NO CHANGE] complete_todo: no todo matching "Does not exist" in "Todo List". '
+            "This conversation has no todos."
+        )
+        assert tool_result_status(result) == "no_change"
+
+    @pytest.mark.parametrize("tool_name", ["complete_todo", "update_todo", "remove_todo"])
+    async def test_a_miss_lists_what_the_list_does_hold(self, tools: list, tool_name: str):
+        add = _find_tool(tools, "add_todo")
+        await add.ainvoke({"title": "Buy milk"})
+        await add.ainvoke({"title": "Call the bank"})
+        await _find_tool(tools, "complete_todo").ainvoke({"title": "Buy milk"})
+        result = await _find_tool(tools, tool_name).ainvoke({"title": "Ghost", "is_completed": True})
+        assert result == (
+            f'[NO CHANGE] {tool_name}: no todo matching "Ghost" in "Todo List". '
+            'That list has: "Buy milk" (done), "Call the bank".'
+        )
+
+    async def test_a_miss_in_a_list_that_is_not_there_names_the_lists_that_are(self, tools: list):
+        add = _find_tool(tools, "add_todo")
+        await add.ainvoke({"title": "Deploy", "list_name": "Release"})
+        await add.ainvoke({"title": "Buy milk"})
+        result = await _find_tool(tools, "remove_todo").ainvoke({"title": "Deploy", "list_name": "Shipping"})
+        assert result == (
+            '[NO CHANGE] remove_todo: no todo matching "Deploy" in "Shipping". '
+            'There is no such list. The lists here: "Release", "Todo List".'
+        )
+
+    async def test_a_long_list_is_counted_and_its_first_titles_named(self, tools: list):
+        add = _find_tool(tools, "add_todo")
+        for n in range(23):
+            await add.ainvoke({"title": f"Task {n:02d}"})
+        result = await _find_tool(tools, "complete_todo").ainvoke({"title": "Ghost"})
+        assert 'That list has: 23 todos, the first 20: "Task 00", ' in result
+        assert '"Task 19".' in result and "Task 20" not in result
 
     async def test_update_todo_rename(self, tools: list):
         add = _find_tool(tools, "add_todo")
@@ -220,8 +270,14 @@ class TestLoadTodoTools:
 
     async def test_update_nonexistent(self, tools: list):
         update = _find_tool(tools, "update_todo")
-        result = await update.ainvoke({"title": "Nope"})
-        assert "TOOL ERROR" in result
+        result = await update.ainvoke({"title": "Nope", "new_title": "Yes"})
+        assert result.startswith('[NO CHANGE] update_todo: no todo matching "Nope"')
+
+    async def test_an_update_that_names_no_change_is_an_error(self, tools: list):
+        add = _find_tool(tools, "add_todo")
+        await add.ainvoke({"title": "Old name"})
+        result = await _find_tool(tools, "update_todo").ainvoke({"title": "Old name"})
+        assert result.startswith("[TOOL ERROR] update_todo: nothing to change was given")
 
     async def test_remove_todo(self, tools: list):
         add = _find_tool(tools, "add_todo")
@@ -233,7 +289,7 @@ class TestLoadTodoTools:
     async def test_remove_nonexistent(self, tools: list):
         remove = _find_tool(tools, "remove_todo")
         result = await remove.ainvoke({"title": "Ghost"})
-        assert "TOOL ERROR" in result
+        assert tool_result_status(result) == "no_change" and "This conversation has no todos." in result
 
     async def test_list_todos_empty(self, tools: list):
         lst = _find_tool(tools, "list_todos")

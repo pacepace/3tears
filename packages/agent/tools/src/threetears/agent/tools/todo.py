@@ -16,6 +16,8 @@ from pydantic import BaseModel, Field
 
 from threetears.observe import get_logger
 
+from threetears.agent.tools.utils import tool_no_change
+
 __all__ = [
     "AddTodoInput",
     "CompleteTodoInput",
@@ -27,6 +29,9 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: How many titles a "not found" answer lists before it counts the rest.
+_LISTED_ON_A_MISS = 20
 
 
 # -- Storage protocol ---------------------------------------------------------
@@ -167,6 +172,23 @@ def load_todo_tools(
             await snapshot_callback(todos, msg_str)
         return todos
 
+    async def _not_found(tool_name: str, title: str, list_name: str) -> str:
+        """Nothing matched: its own status, and what the conversation does hold, so the next call can name it."""
+        todos = await storage.list_all(conversation_id)
+        in_list = [t for t in todos if t["list_name"] == list_name]
+        if in_list:
+            shown = ", ".join(
+                f'"{t["title"]}"' + (" (done)" if t["is_completed"] else "") for t in in_list[:_LISTED_ON_A_MISS]
+            )
+            more = f"{len(in_list)} todos, the first {_LISTED_ON_A_MISS}: " if len(in_list) > _LISTED_ON_A_MISS else ""
+            there = f"That list has: {more}{shown}."
+        elif todos:
+            lists = ", ".join(f'"{name}"' for name in sorted({t["list_name"] for t in todos}))
+            there = f"There is no such list. The lists here: {lists}."
+        else:
+            there = "This conversation has no todos."
+        return tool_no_change(tool_name, f'no todo matching "{title}" in "{list_name}". {there}')
+
     @tool("add_todo", args_schema=AddTodoInput)
     async def add_todo(title: str, list_name: str = "Todo List") -> str:
         """Add a new todo item to a named todo list."""
@@ -179,7 +201,10 @@ def load_todo_tools(
             todos = await _snapshot(conversation_id)
             return f'Todo added: "{title}" to "{list_name}" ({len(todos)} total)'
         except ValueError as ve:
-            return str(ve)
+            # The storage's word for "already on the list" (see ``TodoStorage.add``). Nothing
+            # changed and nothing broke: its own status, so a caller that refuses a failed
+            # tool for the rest of a turn does not refuse every later add_todo.
+            return tool_no_change("add_todo", str(ve))
         except Exception as exc:
             log.error(
                 "add_todo failed",
@@ -200,7 +225,7 @@ def load_todo_tools(
             list_name = await storage.resolve_list_name(conversation_id, list_name)
             row = await storage.find_by_title(conversation_id, title, list_name)
             if not row:
-                return f'[TOOL ERROR] complete_todo: No todo matching "{title}" in "{list_name}" found.'
+                return await _not_found("complete_todo", title, list_name)
             await storage.complete(row["todo_id"], message_id)
             await _snapshot(conversation_id)
             return f'Completed: "{row["title"]}"'
@@ -222,11 +247,13 @@ def load_todo_tools(
         list_name: str = "Todo List",
     ) -> str:
         """Update a todo item's title or completion status."""
+        if new_title is None and is_completed is None:
+            return "[TOOL ERROR] update_todo: nothing to change was given. Pass new_title, is_completed, or both."
         try:
             list_name = await storage.resolve_list_name(conversation_id, list_name)
             row = await storage.find_by_title(conversation_id, title, list_name)
             if not row:
-                return f'[TOOL ERROR] update_todo: No todo matching "{title}" in "{list_name}" found.'
+                return await _not_found("update_todo", title, list_name)
             await storage.update(row["todo_id"], message_id, new_title=new_title, is_completed=is_completed)
             await _snapshot(conversation_id)
             display_title = new_title.strip() if new_title else row["title"]
@@ -250,7 +277,7 @@ def load_todo_tools(
             list_name = await storage.resolve_list_name(conversation_id, list_name)
             row = await storage.find_by_title(conversation_id, title, list_name)
             if not row:
-                return f'[TOOL ERROR] remove_todo: No todo matching "{title}" in "{list_name}" found.'
+                return await _not_found("remove_todo", title, list_name)
             await storage.remove(row["todo_id"])
             todos = await _snapshot(conversation_id)
             return f'Removed: "{row["title"]}" ({len(todos)} remaining)'

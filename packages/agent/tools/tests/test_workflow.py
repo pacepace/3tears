@@ -12,6 +12,7 @@ from threetears.core.config import DefaultCoreConfig
 
 from threetears.agent.tools.collections import ContextItemCollection
 from threetears.agent.tools.context import ToolContextManager
+from threetears.agent.tools.utils import tool_result_status
 from threetears.agent.tools.workflow import load_workflow_tools
 
 from packages.agent.tools.tests.testing_utils import FakePool, make_context_metadata, make_nats_mock
@@ -78,7 +79,47 @@ async def test_variable_get_tool(ctx: ToolContextManager) -> None:
 async def test_variable_get_not_found(ctx: ToolContextManager) -> None:
     tools = _make_tools(ctx)
     result = await tools["variable_get"].ainvoke({"key": "nope"})
-    assert "not found" in result
+    assert result == "[NO CHANGE] variable_get: no variable named 'nope'. No variables are saved in this conversation."
+    assert tool_result_status(result) == "no_change"
+
+
+@pytest.mark.asyncio
+async def test_variable_get_not_found_lists_the_names_that_are_saved(ctx: ToolContextManager) -> None:
+    tools = _make_tools(ctx)
+    await ctx.set_variable("city", "Paris")
+    await ctx.set_variable("budget", "400", "number")
+    result = await tools["variable_get"].ainvoke({"key": "town"})
+    assert result == "[NO CHANGE] variable_get: no variable named 'town'. Saved names: budget, city."
+
+
+@pytest.mark.asyncio
+async def test_variable_set_at_the_cap_changes_nothing_and_is_not_a_failure(collection: ContextItemCollection) -> None:
+    ctx = ToolContextManager(collection, "00000000-0000-0000-0000-000000000001", "user1", var_limit=2)
+    tools = _make_tools(ctx)
+    await tools["variable_set"].ainvoke({"key": "a", "value": "1"})
+    await tools["variable_set"].ainvoke({"key": "b", "value": "2"})
+    result = await tools["variable_set"].ainvoke({"key": "c", "value": "3"})
+    assert result == (
+        "[NO CHANGE] variable_set: Variable limit reached (2). Save over one you no longer need by reusing "
+        "its name. Saved names: a, b."
+    )
+    assert tool_result_status(result) == "no_change"
+    assert await ctx.get_variable("c") is None
+    assert tool_result_status(await tools["variable_set"].ainvoke({"key": "a", "value": "9"})) == "ok"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["variable_set", "variable_get"])
+async def test_a_variable_tool_that_broke_says_tool_error(
+    ctx: ToolContextManager, monkeypatch: pytest.MonkeyPatch, tool_name: str
+) -> None:
+    async def _down(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("store is down")
+
+    monkeypatch.setattr(ctx, "set_variable", _down)
+    monkeypatch.setattr(ctx, "get_variable", _down)
+    result = await _make_tools(ctx)[tool_name].ainvoke({"key": "a", "value": "1"})
+    assert result == f"[TOOL ERROR] {tool_name}: store is down" and tool_result_status(result) == "error"
 
 
 @pytest.mark.asyncio
