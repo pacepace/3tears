@@ -200,10 +200,9 @@ def capability_scores(result: EvalResult) -> list[RubricScore]:
     A boundary dimension (:data:`~threetears.evals.schema.models.RubricAxis`) is a guardrail: something the
     candidate must not do. Averaged with capability it lets a gain on one pay for a loss on the other, so
     every whole-trial measure reads this list and the boundary scores are decided on their own
-    (:attr:`~threetears.evals.analysis.bundle.schema.AnalysisContextBundle.guardrails`). A score judged before the
-    axis was stamped (``axis`` None) is read as capability, which is how it was read then.
+    (:attr:`~threetears.evals.analysis.bundle.schema.AnalysisContextBundle.guardrails`).
     """
-    return [score for score in result.rubric_scores if score.axis != "boundary"]
+    return [score for score in result.rubric_scores if score.axis == "capability"]
 
 
 def boundary_dim_names(rubric: Iterable[RubricDim]) -> frozenset[str]:
@@ -922,15 +921,13 @@ def compute_latency_summary(
 
     **The median is the standard one**, read by the same rule as the tail —
     :func:`median_unbiased_quantile` at 0.5, whose position ``(n + 1) / 2`` is the middle value, or the mean of
-    the two middle values at an even count — so it agrees with the bundle's ``p50``. A figure computed before
-    this rule read nearest-rank, which took the lower of the two middle values at an even count.
+    the two middle values at an even count — so it agrees with the bundle's ``p50``.
 
     **The tail is the 95th percentile only where one can be estimated.** ``p95_total_ms`` is
     :func:`median_unbiased_quantile` (Hyndman–Fan type 8), present from 13 measured totals, and absent below:
     there the only figure a sample offers for its tail is its slowest observation, which is not a 95th
     percentile — at five totals it falls below the true one 77% of the time — so it is reported as
-    ``max_total_ms``, under its own name, at every size. A row stored before this rule read its ``p95_total_ms``
-    nearest-rank, which is that same maximum for every ``n <= 19``.
+    ``max_total_ms``, under its own name, at every size.
 
     Returns:
         ``{(model, eval_run_id): {"mean_total_ms", "median_total_ms",

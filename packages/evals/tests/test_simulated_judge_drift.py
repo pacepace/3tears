@@ -54,7 +54,15 @@ def _results(
                         first_score=first,
                         first_served_model="judge/first",
                         first_judge_config_id=None,
-                        second=RubricScore(dim=dim, scale="ordinal", score=second, served_model="judge/second"),
+                        second=RubricScore(
+                            dim=dim,
+                            scale="ordinal",
+                            score=second,
+                            served_model="judge/second",
+                            axis="capability",
+                            judge_temperature=0.0,
+                        ),
+                        first_judge_temperature=0.0,
                     )
                 )
             judging = SecondJudging(pass_id="pass", judge=_SECOND, sample_fraction=1.0, sample_seed=0, scores=scores)

@@ -190,11 +190,9 @@ class RunnerOptions:
     # right now, INCLUDING this one. The contention that corrupts a latency pool comes from a
     # concurrent JOB — which today means a second RUN, and the job manager is the only thing that
     # can see one — or from this run's own cells running side by side, which the run knows itself
-    # (``max_concurrent_cells``). The launch that handed the run to a job manager supplies the probe, per run. The example that
-    # used to stand here, a template-generation job spending on the same provider account, is
-    # an instance the tree no longer has: that path went with the v6 eval surface. The probe
-    # is unchanged, because what it measures is jobs, not runs, and the next non-run job
-    # would contend exactly as that one would have. ``None`` (a direct or test invocation with nothing wired)
+    # (``max_concurrent_cells``). The launch that handed the run to a job manager supplies the probe, per run.
+    # What it measures is jobs, not runs, because a non-run job spending on the same provider account
+    # would contend exactly as a run does. ``None`` (a direct or test invocation with nothing wired)
     # records no execution_mode at all rather than asserting "serial": nobody looked.
     concurrent_eval_jobs_probe: Callable[[], int] | None = None
     # Rate table for the run's counted external calls — one entry per (provider, unit),
@@ -1972,8 +1970,9 @@ def refuse_engine_derived_host_measures(host_measures: Mapping[str, bool | float
     observations of that name with ``n`` inflated. Refused rather than dropped: a kind's measures are its own
     code, so every cell would carry the same key, and a run whose numbers silently lost a measure the kind
     meant to report is worse than one that stops before paying for a judge. The classifier track's own keys
-    (``match``, ``confusion_cell``) are the one legitimate core-named write. A result stored before this
-    refusal is held to the same rule where it is read: the walk drops the key and names it as unreported.
+    (``match``, ``confusion_cell``) are the one legitimate core-named write. A result stored before its name
+    became engine-owned is held to the same rule where it is read: the walk drops the key and names it as
+    unreported.
 
     Args:
         host_measures: What the kind measured, by name.

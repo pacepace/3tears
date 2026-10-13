@@ -74,7 +74,7 @@ def judge_profile_id(
         scale: Its scale.
         judge_model: The model that served the judge's replies.
         judge_config_id: The versioned config that asked, or a ``builtin:`` id for the built-in prompt, by its
-            wording; None for a built-in prompt whose wording was not recorded (judged before evaladopt.19).
+            wording.
         judge_temperature: What the judge's calls were sent at.
         criterion_digest: The criterion's wording (:func:`~threetears.evals.kernel.judge_criterion_digest`).
 
@@ -123,10 +123,10 @@ class EvalJudgeProfile(EvalDocumentModel):
     judge_config_id: str | None = Field(
         description=(
             "The versioned JudgeConfig that asked, with the reply format it was sent (``<config id>@<sha12>``), or a "
-            "``builtin:`` id = the built-in prompt, by its wording. None, or a bare config id = a prompt whose "
-            "wording was not recorded (judged before evaladopt.19), which a profile measured on it never lends to "
-            "a judge recorded since."
-        )
+            "``builtin:`` id = the built-in prompt, by its wording."
+            " None = no judge identity was recorded (a score made outside a judge phase): an unknown judge, never "
+            "the same as a recorded one."
+        ),
     )
     judge_temperature: JudgeTemperature = Field(
         description="What the judge's calls were sent at ('model_default' = sent none, the model refusing one)."

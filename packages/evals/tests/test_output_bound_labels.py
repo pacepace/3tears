@@ -46,7 +46,6 @@ from threetears.evals.schema import (
     fingerprint_judged_output,
     label_key_of,
 )
-from threetears.evals.schema.base import CoreDocumentModel
 from packages.evals.tests.factories import make_calibration_rating, make_eval_result, memory_storage
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION, TOYHOST_SCOPE
@@ -65,7 +64,17 @@ def _scored(
     stamp = {} if key is None else {"output_fingerprint": key[0], "criterion_fingerprint": key[1]}
     return make_eval_result(
         id=result_id,
-        rubric_scores=[RubricScore(dim=TONE, score=score, scale="ordinal", served_model=judge, **stamp)],
+        rubric_scores=[
+            RubricScore(
+                dim=TONE,
+                score=score,
+                scale="ordinal",
+                served_model=judge,
+                **stamp,
+                axis="capability",
+                judge_temperature=0.0,
+            )
+        ],
         **extra,
     )
 
@@ -126,7 +135,14 @@ class TestTheCriterionFingerprint:
 class TestTheKeyOnTheDocuments:
     def test_half_a_key_is_refused_on_a_score_and_on_a_rating(self) -> None:
         with pytest.raises(ValidationError, match="set together"):
-            RubricScore(dim=TONE, score=3, scale="ordinal", output_fingerprint=KEY.output_fingerprint)
+            RubricScore(
+                dim=TONE,
+                score=3,
+                scale="ordinal",
+                output_fingerprint=KEY.output_fingerprint,
+                axis="capability",
+                judge_temperature=0.0,
+            )
         with pytest.raises(ValidationError, match="set together"):
             make_calibration_rating(criterion_fingerprint=KEY.criterion_fingerprint)
 
@@ -138,17 +154,6 @@ class TestTheKeyOnTheDocuments:
         keyed, bare = _rating("r-1", 4), _rating("r-1", 4, key=None)
         assert keyed.label_key == KEY and bare.label_key is None
         assert keyed.id == bare.id, "the id stays the result's: one rater's rating of one result is one row"
-
-    def test_a_v8_rating_and_result_read_with_no_key(self) -> None:
-        rating = {**make_calibration_rating().to_dict(), "schema_version": 8}
-        result = {**make_eval_result().to_dict(), "schema_version": 8}
-        for document in (rating, result):
-            document.pop("output_fingerprint", None)
-        read_rating = CalibrationRating.from_dict(rating)
-        read_result = EvalResult.from_dict(result)
-        assert read_rating.label_key is None
-        assert all(score.label_key is None for score in read_result.rubric_scores)
-        assert isinstance(read_rating, CoreDocumentModel)
 
 
 # --- stamping: the judge, and the rating write --------------------------------------------------------

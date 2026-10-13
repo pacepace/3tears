@@ -218,7 +218,16 @@ def test_bisecting_two_unjudged_unscored_runs_against_a_judged_one_reads_the_con
         make_eval_result(
             eval_run_id=judged.id,
             scope_id=judged.scope_id,
-            rubric_scores=[RubricScore(dim="judged.fair", score=4, scale="ordinal", served_model="vendor/judge-1")],
+            rubric_scores=[
+                RubricScore(
+                    dim="judged.fair",
+                    score=4,
+                    scale="ordinal",
+                    served_model="vendor/judge-1",
+                    axis="capability",
+                    judge_temperature=0.0,
+                )
+            ],
         )
     )
 
@@ -464,7 +473,16 @@ def test_bisecting_a_judged_and_a_code_only_run_of_one_kind_reads_the_judge_as_a
     scored = make_eval_result(
         eval_run_id=judged.id,
         scope_id=judged.scope_id,
-        rubric_scores=[RubricScore(dim="judged.fair", score=4, scale="ordinal", served_model="vendor/judge-1")],
+        rubric_scores=[
+            RubricScore(
+                dim="judged.fair",
+                score=4,
+                scale="ordinal",
+                served_model="vendor/judge-1",
+                axis="capability",
+                judge_temperature=0.0,
+            )
+        ],
     )
     storage.save_eval_result(scored)
 
@@ -489,7 +507,16 @@ def test_a_bundle_over_a_judged_and_a_code_only_run_of_one_kind_records_no_unkno
             make_eval_result(
                 eval_run_id=judged.id,
                 scope_id=judged.scope_id,
-                rubric_scores=[RubricScore(dim="judged.fair", score=4, scale="ordinal", served_model="vendor/judge-1")],
+                rubric_scores=[
+                    RubricScore(
+                        dim="judged.fair",
+                        score=4,
+                        scale="ordinal",
+                        served_model="vendor/judge-1",
+                        axis="capability",
+                        judge_temperature=0.0,
+                    )
+                ],
             )
         ],
         code_only.id: [make_eval_result(eval_run_id=code_only.id, scope_id=code_only.scope_id, rubric_scores=[])],

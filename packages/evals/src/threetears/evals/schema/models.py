@@ -446,10 +446,10 @@ class WorldSeed(EvalDocumentModel):
 class Precondition(EvalDocumentModel):
     """One thing a template presumes about the world before the subject's first turn.
 
-    A scenario that only makes sense against a particular starting state has always presumed
-    one; what changes here is that it *says so*. Nothing parsed a presumption before this
-    field existed, so a probe written for a queue with three jobs in it ran against an empty
-    one and scored the subject on a situation it was never placed in.
+    A scenario that only makes sense against a particular starting state presumes one, and this
+    is where it *says so*. A presumption nothing parses fails silently: a probe written for a queue
+    with three jobs in it runs against an empty one and scores the subject on a situation it was
+    never placed in.
 
     **An expression plus its reason, never a bare expression.** The same rule a world
     declaration lives under: a bare name is a label, and a bare expression is one too. The
@@ -542,13 +542,11 @@ GoalCheckIntent = Literal["act", "hold"]
 GoalCheckProof = Literal["proven", "unproven", "refuted"]
 
 #: The rules a run's goal-check proofs are derived under, stamped on the run beside them
-#: (``EvalRun.goal_check_proof_rules``). ``1``: a control's case parameters were read under the types it stated,
-#: so a check reading a parameter as a list could pass its control and be stamped proven, then fail every case
-#: (#665). ``2``: a control's parameters are read as a case stores them, one string each, and a control stating
-#: another type is refuted. A ``proven`` recorded under an older rule is read as ``unproven``
-#: (:func:`goal_check_proofs_as_read`): the controls are editable and were not frozen with the run, so the proof
-#: cannot be re-derived for the template the run actually graded, and a proof earned under a rule since found
-#: wrong is not one.
+#: (``EvalRun.goal_check_proof_rules``): a control's parameters are read as a case stores them, one string each, and
+#: a control stating another type is refuted (#665). When the rules change, this number moves, and a ``proven``
+#: recorded under older rules is read as ``unproven`` (:func:`goal_check_proofs_as_read`): the controls are editable
+#: and were not frozen with the run, so the proof cannot be re-derived for the template the run actually graded,
+#: and a proof earned under a rule since found wrong is not one.
 GOAL_CHECK_PROOF_RULES = 2
 
 #: The words every surface uses for a goal check the current grammar refuses, frozen on the run that excluded it.
@@ -1056,8 +1054,8 @@ class PreconditionOutcome(EvalDocumentModel):
 
 #: The temperature every judge call is requested at unless a :class:`JudgeConfig` for its dimension says
 #: otherwise, and that config's own default (#633). A judge sampled at a provider's default (around 1.0 on
-#: some) and one at 0 are two judges: before this, a dimension with a config was judged at its 0.0 and one
-#: without at the provider default, in one run, because nobody chose otherwise.
+#: some) and one at 0 are two judges, so the engine chooses one rather than leaving a dimension with no config
+#: at whatever its provider defaults to.
 DEFAULT_JUDGE_TEMPERATURE: float = 0.0
 
 #: A judge call SENT with no temperature, because its model refuses one (some reasoning models do): the
@@ -1080,13 +1078,10 @@ class RubricScore(EvalDocumentModel):
 
     dim: DimName = Field(min_length=1)
     scale: RubricScale = Field(description="The dimension's scale when it was judged.")
-    axis: RubricAxis | None = Field(
-        default=None,
+    axis: RubricAxis = Field(
         description=(
             "The dimension's axis when it was judged, stamped by the judge from the dimension's definition. "
-            "'boundary' scores are guardrail readings and enter neither the composite nor pass^k. None = judged "
-            "before the axis was stamped, so which axis it served is not recorded; it is read as capability, "
-            "which is how every score was read then, and re-judging stamps it."
+            "'boundary' scores are guardrail readings and enter neither the composite nor pass^k."
         ),
     )
     score: int = Field(description="1–5 on the ordinal scale; 1 (pass) or 0 (fail) on pass/fail.")
@@ -1109,9 +1104,8 @@ class RubricScore(EvalDocumentModel):
             "The sampling temperature the call that produced this score was actually SENT at, as the completion "
             "reported it: a number, or 'model_default' when the model refuses a temperature and was sent none. "
             "Part of the judge's identity beside served_model: a different temperature is a different judge, and "
-            "never pools with this one. None = not recorded (a client that reports no temperature, or a score "
-            "judged before temperatures were recorded, when a dimension without a JudgeConfig was requested at the "
-            "provider's default); compared as unknown, never as a match."
+            "never pools with this one. The judge service always records it; None = a score made outside a judge "
+            "phase (a host's own reviewers), which no call sampled: compared as unknown, never as a match."
         ),
     )
     output_fingerprint: str | None = Field(
@@ -1121,7 +1115,8 @@ class RubricScore(EvalDocumentModel):
             "The fingerprint of the evidence the judge read for this score (fingerprint_judged_output), stamped by "
             "the judge (#628). With criterion_fingerprint it is the score's label key: a person's rating of a "
             "byte-identical output on the same criterion pairs with this score whichever result it was given on. "
-            "None = judged before the stamp; such a score pairs only with ratings of its own result."
+            "None = no key was computed for the score (one restated from a judge trial); it pairs only with "
+            "ratings of its own result."
         ),
     )
     criterion_fingerprint: str | None = Field(
@@ -1332,8 +1327,8 @@ class CalibrationRating(CoreDocumentModel):
     is a second address, not a second identity — the id stays the result's — and it is what lets the label hold
     for every judgement of a byte-identical output on the same criterion: a judge reading another result, in
     another run, whose evidence is the same, and a frozen judge case looked up by the key
-    (``EvalStorage.query_calibration_ratings(label_key=...)``). A rating of a score judged before scores were
-    stamped carries no key and is read by its result alone, as every rating was.
+    (``EvalStorage.query_calibration_ratings(label_key=...)``). A rating of a score that carries no label key
+    carries none either, and is read by its result alone.
     """
 
     doc_type: Literal["calibration_rating"] = "calibration_rating"
@@ -1377,7 +1372,8 @@ class CalibrationRating(CoreDocumentModel):
             "The fingerprint of the judged output the rater read (fingerprint_judged_output), copied from the rated "
             "judge score's stamp (#628). With criterion_fingerprint it binds the label to that output on that "
             "criterion, so it pairs with every judge score of a byte-identical output on the same criterion. None "
-            "= the rated score was judged before scores were stamped; the rating is then read by its result alone."
+            "= the rated score carries no label key (RubricScore.output_fingerprint); the rating is then read by "
+            "its result alone."
         ),
     )
     criterion_fingerprint: str | None = Field(
@@ -1633,11 +1629,8 @@ def builtin_judge_config_id(wording: str) -> str:
 def is_builtin_judge_config_id(config_id: str | None) -> bool:
     """Whether a recorded judge config id names a built-in prompt rather than a versioned :class:`JudgeConfig`.
 
-    ``None`` is not one: a result judged before built-in prompts were identified (before
-    ``v0.66.0-evaladopt.19``) recorded nothing for a built-in dim, and which built-in wording judged it is unknown.
-
     Args:
-        config_id: A recorded config id, or ``None``.
+        config_id: A recorded config id, or ``None`` for a dim no judge asked.
 
     Returns:
         True for a :func:`builtin_judge_config_id`.
@@ -1673,20 +1666,45 @@ def configured_judge_config_id(config_id: str, reply_format: str) -> str:
 def judge_config_of(recorded: str | None) -> str | None:
     """The :class:`JudgeConfig` a recorded judge config id names, or ``None`` when it names none.
 
-    A configured judge's identity (:func:`configured_judge_config_id`) names its config before the ``@``; a bare id
-    is one recorded before the reply format was identified (before ``v0.66.0-evaladopt.19``), and names its config
-    whole. A built-in prompt's identity, or ``None``, names no config.
+    A configured judge's identity (:func:`configured_judge_config_id`) names its config before the ``@``. A built-in
+    prompt's identity, or ``None`` (a dim no judge asked), names no config.
 
     Args:
         recorded: A recorded judge config id, or ``None``.
 
     Returns:
         The config's id, or ``None``.
+
+    Raises:
+        ValueError: ``recorded`` is neither a built-in prompt's identity nor a configured judge's: a bare config id
+            is the config, not the prompt that was sent, so it is no judge's recorded identity.
     """
     if recorded is None or is_builtin_judge_config_id(recorded):
         return None
     match = _CONFIGURED_JUDGE_ID.match(recorded)
-    return match["config"] if match is not None else recorded
+    if match is None:
+        raise ValueError(
+            f"{recorded!r} is not a recorded judge identity: a configured judge is recorded as <config id>@<sha12>"
+        )
+    return match["config"]
+
+
+#: A built-in prompt's recorded identity, as :func:`builtin_judge_config_id` writes it.
+_BUILTIN_JUDGE_ID = re.compile(r"^builtin:[0-9a-f]{12}$")
+
+
+def _recorded_judge_identities(recorded: dict[str, str]) -> dict[str, str]:
+    """Refuse a recorded judge identity that is neither a built-in prompt's nor a configured judge's.
+
+    Raises:
+        ValueError: A value :func:`judge_config_of` cannot read, or a ``builtin:`` id that is not one
+            :func:`builtin_judge_config_id` writes.
+    """
+    for identity in recorded.values():
+        if is_builtin_judge_config_id(identity) and not _BUILTIN_JUDGE_ID.match(identity):
+            raise ValueError(f"{identity!r} is not a built-in prompt's identity: one is recorded as builtin:<sha12>")
+        judge_config_of(identity)
+    return recorded
 
 
 class JudgeConfig(CoreDocumentModel):
@@ -2226,9 +2244,8 @@ class ContextComponents(EvalDocumentModel):
         description=(
             "Digest of the mapping of what this run froze before the subject's first turn — the world it "
             "seeded, and the spec its kind validated. Its own component rather than part of another: a run "
-            "that froze nothing passes an "
-            "empty value per carrier, so this is always composable, while the components it used to ride in "
-            "were not."
+            "that froze nothing passes an empty value per carrier, so this is always composable, which a "
+            "component shared with a value a capture can fail to record would not be."
         ),
     )
     case_basis: str | None = Field(
@@ -2258,10 +2275,10 @@ class ContextComponents(EvalDocumentModel):
             "were not measured against the same world. Capture runs hash no corpus, since their tools ran live."
         ),
     )
-    # ``k`` (repetitions per cell) stood here until IDENTITY_VERSION v7 and is deliberately
-    # gone rather than kept-but-unhashed. It is not a condition — it is how many repetitions
-    # were taken under one — so two runs at k=1 and k=3 were measured identically and differ
-    # only in precision, and badging that as a context difference was a caveat about nothing.
+    # ``k`` (repetitions per cell) is deliberately not here, hashed or unhashed. It is not a
+    # condition — it is how many repetitions were taken under one — so two runs at k=1 and k=3
+    # were measured identically and differ only in precision, and badging that as a context
+    # difference would be a caveat about nothing.
     # A component this class does not compose has no business being on it: every field here
     # is read as "a dimension the key holds fixed". Depth is disclosed where it belongs, by
     # the surfaces that own it (``Iters/case``, the per-point case counts on the pass^k curve,
@@ -2676,7 +2693,7 @@ class ClientRequestSettings(EvalDocumentModel):
             "Whether every request of this role must be routed only to a provider that honours every parameter "
             "sent (an OpenRouter-style `provider.require_parameters`), so a strict `response_format` or a reasoning "
             "bound is enforced rather than silently dropped. The host's client builder applies it. False = no such "
-            "requirement was stated, which is also how a stamp stored before this field reads: none was."
+            "requirement was stated."
         ),
     )
 
@@ -2890,8 +2907,8 @@ class EvalRun(CoreDocumentModel):
             "were measured under identical conditions, so splitting them would assert a difference "
             "that does not exist. ``candidate`` is the launch's naming of the candidate model (``chosen``) or its "
             "running at the kind's own default (``inherited``), which is what says whether a production-replicating "
-            "cost was measured off the subject's model; a run stored before it carries no ``candidate`` key, read as "
-            "not recorded. None = the run's writer recorded no origins; a missing role key = that "
+            "cost was measured off the subject's model; a run whose writer recorded origins without it carries no "
+            "``candidate`` key, read as not recorded. None = the run's writer recorded no origins; a missing role key = that "
             "role was not pinned on this run (or, for ``candidate``, not recorded)."
         ),
     )
@@ -3011,7 +3028,7 @@ class EvalRun(CoreDocumentModel):
             "contrast tested against it names it (``FamilyComparison.margin_source`` `run`). Declared at launch, "
             "before any result, so it is chosen before the data is seen. Not part of the measurement context: a "
             "margin changes how a difference is read, not what was measured. Empty when the launch declared none, "
-            "and on every run stored before run-scoped margins existed, which then read as declaring none."
+            "and on a run its host assembled without a launch, which then reads as declaring none."
         ),
     )
     declared_measures: dict[str, MeasureDeclaration] = Field(
@@ -3022,7 +3039,8 @@ class EvalRun(CoreDocumentModel):
             "analysis reads a measure on the declaration its member runs agree on, whatever the reading host now "
             "declares, and names any difference; so a stored comparison's verdicts do not depend on who reads it. "
             "Not part of the measurement context: a declaration changes how a difference is read, not what was "
-            "measured. Empty on a run stored before it, which is then read on the reading host's declarations."
+            "measured. Empty on a run whose writer froze none (a run its host assembled without a launch), which is "
+            "then read on the reading host's declarations."
         ),
     )
     resolved_world_seed: dict[str, Any] = Field(
@@ -3082,16 +3100,17 @@ class EvalRun(CoreDocumentModel):
             "Each goal check the run grades -> whether it was shown to tell its outcomes apart when the run "
             "launched (`GoalCheckProof`), frozen for the reason `resolved_world_seed` is: the template's controls "
             "are editable. Only `proven` reads as measuring the behaviour; every surface showing an `unproven` or "
-            "`refuted` check's pass rate marks it. None = NOT RECORDED: a run launched before proofs were frozen, "
-            "or assembled without a launch — read as unproven, never as proven. Optional within v8 for that reason."
+            "`refuted` check's pass rate marks it. None = NOT RECORDED: a run its host assembled without a launch — "
+            "read as unproven, never as proven."
         ),
     )
     goal_check_proof_rules: int | None = Field(
         default=None,
+        ge=1,
         description=(
-            "The proof rules `goal_check_proofs` were derived under (`GOAL_CHECK_PROOF_RULES`). None on a run "
-            "launched before the rules were stamped, which are rules 1. A `proven` recorded under rules older than "
-            "the current ones reads as unproven (`goal_check_proofs_as_read`), and is counted as needing re-proof."
+            "The proof rules `goal_check_proofs` were derived under (`GOAL_CHECK_PROOF_RULES`): set exactly when "
+            "they are. A `proven` recorded under rules older than the current ones reads as unproven "
+            "(`goal_check_proofs_as_read`), and is counted as needing re-proof."
         ),
     )
     refused_goal_checks: dict[str, str] | None = Field(
@@ -3100,7 +3119,7 @@ class EvalRun(CoreDocumentModel):
             "Each of the template's goal checks the grammar refused when the run launched -> the refusal's reason. "
             "A template stored before a grammar rule can carry a check the rule now refuses; the run grades none "
             "of its cells on it, so the cells are not rig faults, and every surface names the check as refused "
-            "under the current grammar. None = not recorded (a run launched before this was frozen); {} = none."
+            "under the current grammar. None = not recorded (a run its host assembled without a launch); {} = none."
         ),
     )
 
@@ -3140,19 +3159,18 @@ class EvalRun(CoreDocumentModel):
             "Whether the launch declared latency under test (`start_run(measure_latency=True)`). True: the run "
             "executed its cells one at a time, with no other run executing beside it, so the latency it recorded "
             "is read clean. False: it was not under test, and the run executed its cells as many at once as its "
-            "kind declared safe and the host allowed (`cell_concurrency`). None: launched before 3tears-evals recorded the declaration (or recorded by a "
-            "writer that is no launch) — such a run executed its cells one at a time, and whether it ran beside "
-            "another run is what its results' `execution_mode` says."
+            "kind declared safe and the host allowed (`cell_concurrency`). None: a run its host assembled without a "
+            "launch, which declared nothing; whether it ran beside another run is what its results' "
+            "`execution_mode` says."
         ),
     )
-    cell_concurrency: int | None = Field(
-        default=None,
+    cell_concurrency: int = Field(
+        default=1,
         ge=1,
         description=(
             "How many of the run's cells executed at once: 1 is serial. Above 1, every result stamps "
             "`execution_mode` `concurrent` and its latency is kept out of every comparison, bar and ranking. "
-            "None: a run stored before the width was recorded, whose cells executed one at a time — read as 1, "
-            "never as unknown, because the runner of that build could not run them otherwise."
+            "A run its host assembled without a launch states its own width, and is serial unless it says otherwise."
         ),
     )
 
@@ -3186,9 +3204,7 @@ class EvalRun(CoreDocumentModel):
             "(a config states its own, and its id is already part of the judge's identity). Stamped at launch, and "
             "part of the measurement context's roles: a run judged at another temperature is judged by another "
             "judge and never pools with this one. What each call was actually sent at — none, for a model that "
-            "refuses a temperature — is on each score. None = no judge was pinned, or the run was launched before "
-            "this was recorded, when such dimensions were requested at the provider's default; its roles component "
-            "is then not composable, never equal to today's."
+            "refuses a temperature — is on each score. Set exactly when a judge is pinned (`judge_model`)."
         ),
     )
     simulator_request_settings: ClientRequestSettings | None = Field(
@@ -3265,7 +3281,7 @@ class EvalRun(CoreDocumentModel):
         default=None,
         description=(
             "The named, versioned case set this run was launched against, or None for a run launched over its "
-            "template's cases directly (or stored before case sets existed). A label on test_case_ids, which the "
+            "template's cases directly. A label on test_case_ids, which the "
             "run froze from it: the case-set identity is still those ids. History labels an epoch by it."
         ),
     )
@@ -3275,8 +3291,8 @@ class EvalRun(CoreDocumentModel):
         description=(
             "The deadline every cell of this run ran under, in seconds: the launch's ``cell_timeout_s``, or the "
             "kind's own deadline when the launch named none. A cell that outlives it is excluded as "
-            "``cell_timeout``, so a run losing cells to it is read against this value. None = a run stored before "
-            "the deadline was recorded, or one assembled outside a launch: the deadline it ran under is unknown, "
+            "``cell_timeout``, so a run losing cells to it is read against this value. None = a run assembled "
+            "outside a launch: the deadline it ran under is unknown, "
             "never read as today's default. Not hashed into any identity key, like turn_budget_s."
         ),
     )
@@ -3359,7 +3375,7 @@ class EvalRun(CoreDocumentModel):
             "How much of its matrix this run delivered. ``status`` says how the run ENDED; this "
             "says whether what it ended with is the whole of what it promised — a run can end "
             "``completed`` while short, which is the case it exists for, and it can end "
-            "``cancelled`` after one cell of five, which is the case that used to report a "
+            "``cancelled`` after one cell of five, which would otherwise report a "
             "perfect rate unqualified. Written on every terminal run whatever stopped it — including "
             "a harness failure, and a cancel that lands while the job is still queued for a slot, whose "
             "honest record is 0 of N. On a TERMINAL run None therefore means every attempt to write the "
@@ -3377,7 +3393,7 @@ class EvalRun(CoreDocumentModel):
         description=(
             "Why a human stopped this run, when one did. Its own channel rather than an "
             "``error_details`` entry, because a cancel is a distinct terminal outcome — neither "
-            "failure nor success — and filing it beside genuine harness errors made a controlled "
+            "failure nor success — and filing it beside genuine harness errors would make a controlled "
             "stop read as breakage in every later triage. Says nothing about whether the run's "
             "data is usable: that is ``completeness``'s answer. None on a run nobody cancelled, and "
             "on one cancelled without a reason given."
@@ -3391,14 +3407,12 @@ class EvalRun(CoreDocumentModel):
             "reason opens with ``wall-clock budget``). Its own channel rather than an "
             "``error_details`` entry, for the same reason ``cancellation_reason`` is: a bound the "
             "operator configured doing exactly what it was configured to do is a designed terminal "
-            "outcome, not a fault, and filing it beside genuine harness errors made every capped run "
+            "outcome, not a fault, and filing it beside genuine harness errors would make every capped run "
             "that bound contribute a phantom to the error count operators scan for real breakage. "
             "Every run has a cap (an omitted ``max_cost_usd`` inherits "
-            "the host's configured default), so that was not a rare miscount. Says nothing "
+            "the host's configured default), so that would not be a rare miscount. Says nothing "
             "about whether the run's data is usable — that is ``completeness``'s answer. None on a "
-            "run no budget stopped. A run whose wall-clock budget fired under 3tears-evals 0.66.0 or "
-            "earlier is stored ``failed`` with a ``Job timed out after Ns`` entry in ``error_details``; "
-            "it is not rewritten, so that entry is how such a run reads."
+            "run no budget stopped."
         ),
     )
     error_details: list[str] = Field(
@@ -3438,12 +3452,12 @@ class EvalRun(CoreDocumentModel):
             "referred to by something other than its id and listed by name (`runs_list` with `label`). Curation "
             "like `archived`, and like it in no identity key: setting or clearing one moves no variant key, "
             "context key or fingerprint, and no lens reads it. Each label is 1 to 64 characters with no leading or "
-            "trailing whitespace. Empty on a run no one has labelled, and on a run stored before core v12."
+            "trailing whitespace. Empty on a run no one has labelled."
         ),
     )
 
-    # The run's job: which process runs it, a cancel asked of it, and how it was lost (core v10); the faults at its
-    # lease's boundary before it ended (core v13).
+    # The run's job: which process runs it, a cancel asked of it, and how it was lost; the faults at its lease's
+    # boundary before it ended.
     lease: LeaseField = None
     cancel_requested_at: CancelRequestedAtField = None
     cancel_request_reason: CancelRequestReasonField = None
@@ -3530,6 +3544,35 @@ class EvalRun(CoreDocumentModel):
         return self
 
     @model_validator(mode="after")
+    def _proofs_name_their_rules(self) -> Self:
+        """Require goal-check proofs and the rules they were derived under together, or neither.
+
+        Raises:
+            ValueError: One is recorded without the other.
+        """
+        if (self.goal_check_proofs is None) != (self.goal_check_proof_rules is None):
+            raise ValueError(
+                "goal_check_proofs and goal_check_proof_rules are recorded together or not at all: a proof whose "
+                "rules are unknown cannot say whether it still stands"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _a_judged_run_names_its_temperature(self) -> Self:
+        """Require the judge temperature exactly when a judge is pinned.
+
+        Raises:
+            ValueError: A judged run records no temperature, or an unjudged one records one.
+        """
+        if (self.judge_model is None) != (self.judge_temperature is None):
+            raise ValueError(
+                f"judge_temperature is set exactly when judge_model is (got judge {self.judge_model!r}, temperature "
+                f"{self.judge_temperature!r}): a judged run's unconfigured dims were requested at some temperature, "
+                "and an unjudged run requested none"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _cell_timeout_names_its_origin(self) -> Self:
         """Require the per-cell deadline and its origin together, or neither.
 
@@ -3549,8 +3592,8 @@ def goal_check_proofs_as_read(run: EvalRun) -> dict[str, GoalCheckProof] | None:
     """A run's goal-check proofs as every surface reads them: a ``proven`` from an older proof rule is ``unproven``.
 
     ``proven`` is the one proof that reads as measuring the behaviour, so it must have been earned under the rules
-    in force (:data:`GOAL_CHECK_PROOF_RULES`). A run stamped before them may hold a ``proven`` its control earned
-    under a parameter type no case can carry (#665). It cannot be re-derived when read — the controls are editable
+    in force (:data:`GOAL_CHECK_PROOF_RULES`). A run stamped under older rules may hold a ``proven`` its control
+    earned under a rule since found wrong. It cannot be re-derived when read — the controls are editable
     and were not frozen with the run, so a re-derivation would prove the template as it is now, not the one the
     run graded — so it is read as ``unproven`` until the template is launched again.
     ``refuted`` and ``unproven`` stand: an older rule never made a check look worse than it is.
@@ -3563,7 +3606,7 @@ def goal_check_proofs_as_read(run: EvalRun) -> dict[str, GoalCheckProof] | None:
     """
     if run.goal_check_proofs is None:
         return None
-    if (run.goal_check_proof_rules or 1) >= GOAL_CHECK_PROOF_RULES:
+    if run.goal_check_proof_rules is not None and run.goal_check_proof_rules >= GOAL_CHECK_PROOF_RULES:
         return dict(run.goal_check_proofs)
     return {check: "unproven" if proof == "proven" else proof for check, proof in run.goal_check_proofs.items()}
 
@@ -3577,7 +3620,7 @@ def stale_goal_check_proofs(run: EvalRun) -> list[str]:
     Returns:
         The checks, sorted; empty when the run's proofs are current or it recorded none.
     """
-    if run.goal_check_proofs is None or (run.goal_check_proof_rules or 1) >= GOAL_CHECK_PROOF_RULES:
+    if run.goal_check_proofs is None or (run.goal_check_proof_rules or 0) >= GOAL_CHECK_PROOF_RULES:
         return []
     return sorted(check for check, proof in run.goal_check_proofs.items() if proof == "proven")
 
@@ -4018,7 +4061,7 @@ class RoleUsage(EvalDocumentModel):
         default=None,
         description=(
             "The model the provider's RESPONSE named as having answered this row's calls, never the id requested. "
-            "None = not recorded: the responses named no model, or the row was stored before this was recorded. "
+            "None = not recorded: the responses named no model. "
             "Never read the alias in `model` in its place."
         ),
     )
@@ -4410,7 +4453,7 @@ class JudgeRescore(EvalDocumentModel):
         description=(
             "dim -> the versioned JudgeConfig that answered, or a ``builtin:`` id = the built-in prompt, by its "
             "wording. Absent = the call raised before the service could name either (that dim then has an entry "
-            "in ``errors``), or a re-judge before evaladopt.19, which recorded nothing for a built-in prompt."
+            "in ``errors``)."
         ),
     )
     usage: list[RoleUsage] = Field(default_factory=list, description="The re-judge's own judge-role usage rows.")
@@ -4444,17 +4487,17 @@ class RepeatedScore(EvalDocumentModel):
     first_judge_config_id: str | None = Field(
         description=(
             "The versioned JudgeConfig that asked for the first score, as the result recorded it, or a "
-            "``builtin:`` id = the built-in prompt, by its wording; None = a built-in prompt whose wording was not "
-            "recorded (judged before evaladopt.19). The rest of the judge's identity: a repeat answered under "
-            "another config, or another built-in wording, measures a different judge, and is not paired."
+            "``builtin:`` id = the built-in prompt, by its wording; None = the result records no judge for it (a "
+            "score made outside a judge phase). The rest of the judge's identity: a repeat answered under another "
+            "config, or another built-in wording, measures a different judge, and is not paired."
         ),
     )
     first_judge_temperature: JudgeTemperature | None = Field(
         default=None,
         description=(
-            "The temperature the first score was sent at, as it recorded it; None when it recorded none. A repeat "
-            "sent at another temperature — or beside a first score that recorded none — measures a different (or "
-            "an unknown) judge, and is not paired."
+            "The temperature the first score was sent at, as it recorded it; None for a score made outside a judge "
+            "phase. A repeat sent at another temperature — or beside a first score that recorded none — measures a "
+            "different (or an unknown) judge, and is not paired."
         ),
     )
     repeat: RubricScore | None = Field(
@@ -4511,7 +4554,7 @@ class JudgeRepeat(EvalDocumentModel):
         default_factory=dict,
         description=(
             "dim -> the versioned JudgeConfig that answered the repeat, or a ``builtin:`` id = the built-in prompt, by "
-            "its wording. Absent = the built-in prompt, its wording not recorded (a repeat before evaladopt.19)."
+            "its wording, for every dim the repeat asked."
         ),
     )
 
@@ -4570,11 +4613,12 @@ class SecondJudgeScore(EvalDocumentModel):
     first_judge_config_id: str | None = Field(
         description=(
             "The versioned JudgeConfig that asked for the first score, or a ``builtin:`` id = the built-in prompt, by "
-            "its wording; None = a built-in prompt whose wording was not recorded (judged before evaladopt.19)."
-        )
+            "its wording; None = the result records no judge for it (a score made outside a judge phase)."
+        ),
     )
     first_judge_temperature: JudgeTemperature | None = Field(
-        default=None, description="The temperature the first score was sent at; None when it recorded none."
+        default=None,
+        description="The temperature the first score was sent at; None for a score made outside a judge phase.",
     )
     second: RubricScore | None = Field(
         default=None, description="The second judge's score, when it scored the dimension."
@@ -4636,7 +4680,7 @@ class SecondJudging(EvalDocumentModel):
         default_factory=dict,
         description=(
             "dim -> the versioned JudgeConfig that asked the second judge, or a ``builtin:`` id = the built-in prompt, "
-            "by its wording. Absent = the built-in prompt, its wording not recorded (a pass before evaladopt.19)."
+            "by its wording, for every dim the pass asked."
         ),
     )
 
@@ -4659,11 +4703,11 @@ class EvalResult(CoreDocumentModel):
     whether one was written. The split is not an optimization detail a reader can
     ignore — it is why a query over thousands of results is affordable.
 
-    There is deliberately **no sometimes-loaded trace field here.** An earlier
-    design kept one, populated on the detail path and empty elsewhere, which would
-    have made ``result.trace == []`` mean either "no trace" or "not loaded" —
-    the absent-vs-empty ambiguity that ``usage``, ``cost_roles``, ``covariates``
-    and ``termination`` each cost a defect to get right. Absence of the field
+    There is deliberately **no sometimes-loaded trace field here.** One populated
+    on the detail path and empty elsewhere would make ``result.trace == []`` mean
+    either "no trace" or "not loaded" — the absent-vs-empty ambiguity
+    ``usage``, ``cost_roles``, ``covariates`` and ``termination`` each guard
+    against. Absence of the field
     cannot be misread: hold an ``EvalResult`` and there is no trace, full stop.
     A host's detail surface composes the two when it shows one.
     """
@@ -4773,19 +4817,18 @@ class EvalResult(CoreDocumentModel):
     # (not a scalar ``judge_config_id``) because per-dim configs make a single id
     # insufficient for honest score bisection.
     #
-    # Since evaladopt.19 every dim the judge phase asked has a key, whether its call
-    # scored, failed, raised or was cut off with the cell. An absent key on a dim the
-    # result was judged on is a result judged before then: a built-in prompt whose
-    # wording nobody recorded, which no ``builtin:`` judge is the same as. A bare config
-    # id is one too: a config sent a suffix nobody recorded, never the same judge as a
-    # ``<config id>@<sha12>`` one.
+    # Every dim the judge phase asked has a key, whether its call scored, failed, raised or
+    # was cut off with the cell, and every key is one of those two shapes (a bare config id
+    # names a config, not the prompt that was sent, and is refused).
     #
     # Same name as ``EvalRun.judge_config_ids`` and NOT the same fact. This is what
     # OBSERVABLY asked this result; the run's is the config set it committed to at
     # launch, which names configs only — a built-in dim has no key there — and a dim
     # that was never judged (a cell that died before its judge phase) leaves no key here
     # while the run still declares the config it had pinned for it.
-    judge_config_ids: dict[DimName, str] = Field(default_factory=dict)
+    judge_config_ids: Annotated[dict[DimName, str], AfterValidator(_recorded_judge_identities)] = Field(
+        default_factory=dict
+    )
 
     # Re-judges of this result's failed judge dimensions, oldest first — see
     # :class:`JudgeRescore`. Empty for a result scored in one pass.
@@ -4805,7 +4848,7 @@ class EvalResult(CoreDocumentModel):
     # price makes the total unknown, and a sum of the priced rows alone would be read as the
     # whole. The rows say which role went unpriced. Every aggregate leaves an unpriced result out
     # of its dollars and counts it beside them; the cost cap stops a capped run on the first one.
-    # Required, with no default: a default of 0.0 is how an unpriced cell used to read as a free one.
+    # Required, with no default: a default of 0.0 would read an unpriced cell as a free one.
     cost_usd: float | None = Field(ge=0.0)
 
     # Which roles' spend the blended ``cost_usd`` above was summed over — the marker
@@ -4927,18 +4970,13 @@ class EvalResult(CoreDocumentModel):
     # whose type contradicts its descriptor rather than coercing it.
     host_measures: dict[str, bool | float | str]
 
-    # **There is no ``graph_version_hash`` here, and there is no subject-side
-    # ``system_graph_version_hash`` either.** Both were declared apparatus that nothing ever
-    # wrote, and the reason nothing wrote them is not that a producer was never got round to:
-    # the first host's prompt graph was an authoring and visualisation surface, and no turn's
-    # prompt was rendered by it, so there was no graph version for a result to carry. The only
-    # value available to stamp mirrored the DEFAULT prompt rather than the resolved one a
-    # candidate ran under, so writing it would fabricate an apparatus condition instead of
-    # recording one, which is worse than the blank it replaced.
-    #
-    # Retired rather than left declared because the blank was not free: every analysis over this
-    # corpus hedged its findings on an apparatus condition that no campaign could ever confirm by
-    # running. What an eval result IS produced under is its resolved prompt TEXT, which the
+    # **There is no ``graph_version_hash`` here, and no subject-side ``system_graph_version_hash``
+    # either.** A host's prompt graph can be an authoring and visualisation surface that renders no
+    # turn's prompt, so there is no graph version for a result to carry, and the only value
+    # available to stamp would mirror the DEFAULT prompt rather than the resolved one a candidate
+    # ran under — fabricating an apparatus condition instead of recording one. Nor is it declared
+    # and left blank: a blank apparatus condition hedges every analysis on a condition no campaign
+    # could confirm by running. What an eval result IS produced under is its resolved prompt TEXT, which the
     # variant predicate already hashes. Wiring a real graph producer means first making prompt
     # graphs the production assembler, and that is a product decision rather than a field.
 
@@ -4993,13 +5031,12 @@ class EvalResult(CoreDocumentModel):
             "What tells a model failure on the sixth turn of a conversation, after five delivered turns' time and "
             "spend, from a call refused straight away: the first took turns, and its cost and latency are the "
             "arm's (`delivered_a_turn`). None when nothing counted them: a kind that reports no count and stamps "
-            "no turn records, a cell cut off before its kind reported anything, or a result stored before the "
-            "field existed. A reader treats None as unknown — never as 0 — and falls back to the cause alone."
+            "no turn records, or a cell cut off before its kind reported anything. A reader treats None as unknown — never as 0 — and falls back to the cause alone."
         ),
     )
 
     # Errors. ``runner_error`` is the combined human-display string (every
-    # error_detail joined, as before). Scoring does NOT read it — it reads the
+    # error_detail joined). Scoring does NOT read it — it reads the
     # categorized fields below, so an infra hiccup is classified structurally,
     # not by re-parsing this string (fragile-parse rule).
     runner_error: str | None = Field(default=None)
@@ -5020,8 +5057,8 @@ class EvalResult(CoreDocumentModel):
             "The dims in judge_cannot_tell that are boundary (guardrail) dims, stamped from each dim's "
             "definition when it was judged, as a score's axis is. A boundary dim is in neither pass^k nor the "
             "composite, so a can't-tell on one leaves the trial in both; it is out of that guardrail's own "
-            "reading only. Empty on a result stored before the field existed: its can't-tells are read as "
-            "capability, which is how a score with no recorded axis is read."
+            "reading only. Empty when no can't-tell is on a boundary dim; a can't-tell not named here is a "
+            "capability dim's."
         ),
     )
 

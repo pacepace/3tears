@@ -54,7 +54,15 @@ def _identical_contestants(rng: random.Random, n_cases: int, repeats: int) -> tu
                         test_case_id=f"tc-{case}",
                         k_iteration=repeat,
                         goal_state_outcomes=[GoalStateOutcome(expression="ok", passed=passed)],
-                        rubric_scores=[RubricScore(dim="reply.quality", score=4 if passed else 2, scale="ordinal")],
+                        rubric_scores=[
+                            RubricScore(
+                                dim="reply.quality",
+                                score=4 if passed else 2,
+                                scale="ordinal",
+                                axis="capability",
+                                judge_temperature=0.0,
+                            )
+                        ],
                         usage=[RoleUsage(role="candidate", cost_usd=round(rng.lognormvariate(-4.0, 0.5), 6))],
                         latency=LatencyMetrics(total_ms=round(rng.gauss(2000.0, 300.0), 3)),
                     )
@@ -113,7 +121,15 @@ def _two_contestants(
                         test_case_id=f"tc-{case}",
                         k_iteration=repeat,
                         goal_state_outcomes=[GoalStateOutcome(expression="ok", passed=passed)],
-                        rubric_scores=[RubricScore(dim="reply.quality", score=4 if passed else 2, scale="ordinal")],
+                        rubric_scores=[
+                            RubricScore(
+                                dim="reply.quality",
+                                score=4 if passed else 2,
+                                scale="ordinal",
+                                axis="capability",
+                                judge_temperature=0.0,
+                            )
+                        ],
                         usage=[RoleUsage(role="candidate", cost_usd=round(cost, 6))],
                         latency=LatencyMetrics(total_ms=round(latency, 3)),
                     )
@@ -250,7 +266,11 @@ def _priced_contestants(
                         test_case_id=f"tc-{case}",
                         k_iteration=repeat,
                         goal_state_outcomes=[GoalStateOutcome(expression="ok", passed=True)],
-                        rubric_scores=[RubricScore(dim="reply.quality", score=4, scale="ordinal")],
+                        rubric_scores=[
+                            RubricScore(
+                                dim="reply.quality", score=4, scale="ordinal", axis="capability", judge_temperature=0.0
+                            )
+                        ],
                         usage=[RoleUsage(role="candidate", cost_usd=round(cost, 6))],
                         latency=LatencyMetrics(total_ms=round(rng.gauss(2000.0, 300.0), 3)),
                     )

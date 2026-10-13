@@ -18,10 +18,6 @@ moves the clock, not what the candidate answered or what it spent.
 **Disclosed, every time it removed something.** :func:`contended_latency_sentence` is the one line a surface
 prints, counting what it left out. A result whose latency was never measured (a candidate nothing timed)
 loses nothing here and is not counted, so a run with no latency says nothing about withholding it.
-
-**A stored ``concurrent`` from 3tears-evals 0.66.0 and earlier is an upper bound** — that build counted runs
-queued for a slot as running — and it is withheld like any other: a reading that may have been contended is
-never presented as one that was not.
 """
 
 from __future__ import annotations

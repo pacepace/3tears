@@ -75,7 +75,7 @@ from threetears.evals.kernel.evidence_tiers import (
 )
 from threetears.evals.schema.models import EvalResult, JudgeRepeat, RepeatedScore, RubricScore, utc_now_iso
 from threetears.evals.run import rate_result
-from packages.evals.tests.factories import make_analysis, make_calibration_rating, make_eval_result
+from packages.evals.tests.factories import make_calibration_rating, make_eval_result
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION, TOYHOST_SCOPE, ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -304,7 +304,13 @@ class TestTheTierRule:
 
 def _scored(result_id: str, score: int, judge: str | None = "judge-a", **extra: Any) -> EvalResult:
     return make_eval_result(
-        id=result_id, rubric_scores=[RubricScore(dim=TONE, scale="ordinal", score=score, served_model=judge)], **extra
+        id=result_id,
+        rubric_scores=[
+            RubricScore(
+                dim=TONE, scale="ordinal", score=score, served_model=judge, axis="capability", judge_temperature=0.0
+            )
+        ],
+        **extra,
     )
 
 
@@ -329,7 +335,12 @@ def _repeat(
                 first_score=first,
                 first_served_model=judge,
                 first_judge_config_id=first_config,
-                repeat=None if again is None else RubricScore(dim=TONE, scale=scale, score=again, served_model=served),
+                first_judge_temperature=0.0,
+                repeat=None
+                if again is None
+                else RubricScore(
+                    dim=TONE, scale=scale, score=again, served_model=served, axis="capability", judge_temperature=0.0
+                ),
                 error="cut short" if again is None and not cannot_tell else None,
                 cannot_tell="the evidence does not show it" if cannot_tell else None,
             )
@@ -339,7 +350,7 @@ def _repeat(
 
 
 def _key(scale: str = "ordinal", judge: str | None = "judge-a", config: str | None = None) -> JudgeKey:
-    return JudgeKey(TONE, scale, judge, config)  # type: ignore[arg-type]
+    return JudgeKey(TONE, scale, judge, config, 0.0)  # type: ignore[arg-type]
 
 
 def _cycle(n: int) -> list[int]:
@@ -663,7 +674,9 @@ class TestACannotTellRepeatCountsAgainstTheJudge:
         results = []
         for index, first in enumerate(firsts):
             declined = index < 10
-            score = RubricScore(dim=TONE, scale=scale, score=first, served_model="judge-a")
+            score = RubricScore(
+                dim=TONE, scale=scale, score=first, served_model="judge-a", axis="capability", judge_temperature=0.0
+            )
             results.append(
                 make_eval_result(
                     id=f"r-{index}",
@@ -714,7 +727,16 @@ class TestATierBelongsToTheWholeJudge:
         pass_fail = [
             make_eval_result(
                 id=f"pf-{i}",
-                rubric_scores=[RubricScore(dim=TONE, scale="pass_fail", score=i % 2, served_model="judge-a")],
+                rubric_scores=[
+                    RubricScore(
+                        dim=TONE,
+                        scale="pass_fail",
+                        score=i % 2,
+                        served_model="judge-a",
+                        axis="capability",
+                        judge_temperature=0.0,
+                    )
+                ],
                 judge_repeats=[_repeat(i % 2, i % 2, scale="pass_fail")],
             )
             for i in range(SEPARATING_RESULTS)
@@ -733,36 +755,40 @@ class TestATierBelongsToTheWholeJudge:
             _scored(
                 f"v1-{i}",
                 s,
-                judge_config_ids={TONE: "cfg-v1"},
-                judge_repeats=[_repeat(s, s, first_config="cfg-v1", repeat_config="cfg-v1")],
+                judge_config_ids={TONE: "cfg-v1@aaaaaaaaaaaa"},
+                judge_repeats=[_repeat(s, s, first_config="cfg-v1@aaaaaaaaaaaa", repeat_config="cfg-v1@aaaaaaaaaaaa")],
             )
             for i, s in enumerate(_cycle(SEPARATING_RESULTS))
         ]
-        under_v2 = [_scored(f"v2-{i}", s, judge_config_ids={TONE: "cfg-v2"}) for i, s in enumerate(_cycle(5))]
+        under_v2 = [
+            _scored(f"v2-{i}", s, judge_config_ids={TONE: "cfg-v2@aaaaaaaaaaaa"}) for i, s in enumerate(_cycle(5))
+        ]
         results = under_v1 + under_v2
         from threetears.evals.analysis import judge_key
 
         judged = {judge_key(result, TONE) for result in results}
-        assert judged == {_key(config="cfg-v1"), _key(config="cfg-v2")}
+        assert judged == {_key(config="cfg-v1@aaaaaaaaaaaa"), _key(config="cfg-v2@aaaaaaaaaaaa")}
         tiers = judge_evidence_tiers(judge_agreement([], results), judge_self_agreement(results), judged)  # type: ignore[arg-type]
-        assert tier_for_judges(tiers, [_key(config="cfg-v1")]) == "separation"
-        assert tier_for_judges(tiers, [_key(config="cfg-v2")]) == "undetermined"
+        assert tier_for_judges(tiers, [_key(config="cfg-v1@aaaaaaaaaaaa")]) == "separation"
+        assert tier_for_judges(tiers, [_key(config="cfg-v2@aaaaaaaaaaaa")]) == "undetermined"
 
     def test_a_repeat_answered_under_another_config_is_not_paired(self) -> None:
         result = _scored(
             "r",
             4,
-            judge_config_ids={TONE: "cfg-v1"},
-            judge_repeats=[_repeat(4, 4, first_config="cfg-v1", repeat_config="cfg-v2")],
+            judge_config_ids={TONE: "cfg-v1@aaaaaaaaaaaa"},
+            judge_repeats=[_repeat(4, 4, first_config="cfg-v1@aaaaaaaaaaaa", repeat_config="cfg-v2@aaaaaaaaaaaa")],
         )
         read = judge_self_agreement([result])
         assert [(u.result_id, u.reason) for u in read.unpaired] == [("r", "config_changed")]
         assert read.dimensions == []
 
     def test_the_tier_sentence_names_the_config(self) -> None:
-        (tier,) = judge_evidence_tiers(judge_agreement([], []), judge_self_agreement([]), {_key(config="cfg-v1")})
+        (tier,) = judge_evidence_tiers(
+            judge_agreement([], []), judge_self_agreement([]), {_key(config="cfg-v1@aaaaaaaaaaaa")}
+        )
         assert tier_sentence(tier).startswith(
-            f"{TONE} (judge-a, config cfg-v1, temperature not recorded): undetermined"
+            f"{TONE} (judge-a, config cfg-v1@aaaaaaaaaaaa, temperature 0): undetermined"
         )
 
 
@@ -785,8 +811,14 @@ def _repeated(result: EvalResult, *, agree: bool) -> EvalResult:
                 first_score=score.score,
                 first_served_model=score.served_model,
                 first_judge_config_id=config,
+                first_judge_temperature=score.judge_temperature,
                 repeat=RubricScore(
-                    dim=TOYHOST_JUDGED_DIMENSION, scale=score.scale, score=again, served_model=score.served_model
+                    dim=TOYHOST_JUDGED_DIMENSION,
+                    scale=score.scale,
+                    score=again,
+                    served_model=score.served_model,
+                    axis="capability",
+                    judge_temperature=score.judge_temperature,
                 ),
             )
         ],
@@ -920,13 +952,12 @@ class TestTheWordsClaimOnlyWhatWasMeasured:
 
 
 class TestTheStoredShapeMovedTheSchemaVersion:
-    def test_the_tier_fields_are_v8(self) -> None:
-        # Judged rows and readings gained a required tier, `directional` left `EvidenceTier`, and a repeated
-        # score records its first config — each a stored shape change, so a document written before it is v7.
+    def test_the_tier_fields_are_in_the_baseline(self) -> None:
+        # Judged rows and readings carry a required tier, and a repeated score records its first config.
         from threetears.evals.schema import versioning
 
-        assert versioning.REGENERABLE_SCHEMA_VERSION == 8
-        assert "**v8**" in _schema_version_doc(), "a bump says what changed, as v7 did"
+        assert versioning.REGENERABLE_SCHEMA_VERSION == 9
+        assert "**v9**" in _schema_version_doc(), "the ledger names the baseline"
         assert RepeatedScore.model_fields["first_judge_config_id"].is_required()
 
 
@@ -937,7 +968,7 @@ def _schema_version_doc() -> str:
     from threetears.evals.schema import versioning
 
     source = inspect.getsource(versioning)
-    start = source.index("REGENERABLE_SCHEMA_VERSION: int")
+    start = source.index("#: The version every regenerable document is written under")
     return source[start : source.index('"""', source.index('"""', start) + 3)]
 
 
@@ -979,7 +1010,7 @@ class TestAFindingStandsOnTheTierItsCellsCarry:
 
 
 class TestAStoredTierSaysWhichRuleDecidedIt:
-    """A tier stored before the interval rule was the point estimate against the bar, and never reads as the new claim."""
+    """A generated analysis records the rule its judged tiers were decided by."""
 
     async def test_a_generated_analysis_records_the_interval_rule(self) -> None:
         bundle = _bundle()
@@ -993,20 +1024,3 @@ class TestAStoredTierSaysWhichRuleDecidedIt:
             profile=toyhost_profile(),
         )
         assert analysis.judged_tier_rule == JUDGED_TIER_RULE == "interval_lower_bound"
-
-    def test_an_analysis_stored_before_the_rule_reads_as_decided_on_the_point_estimate(self) -> None:
-        from threetears.evals.analysis.report.words import EVIDENCE_TIER_WORDS, stands_on_words
-
-        stored = make_analysis()  # written before the field: it carries no rule
-        assert stored.judged_tier_rule is None
-        assert "point estimate" in stands_on_words(stored, "calibrated")
-        assert stands_on_words(stored, "mechanical") == EVIDENCE_TIER_WORDS["mechanical"], "no judge, no tier rule"
-        current = make_analysis(judged_tier_rule=JUDGED_TIER_RULE)
-        assert stands_on_words(current, "calibrated") == EVIDENCE_TIER_WORDS["calibrated"]
-
-    def test_a_stored_analysis_without_the_field_still_loads(self) -> None:
-        from threetears.evals.kernel.campaign import EvalAnalysis
-
-        payload = make_analysis().model_dump(mode="json")
-        payload.pop("judged_tier_rule")
-        assert EvalAnalysis.model_validate(payload).judged_tier_rule is None

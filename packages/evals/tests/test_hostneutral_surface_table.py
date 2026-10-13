@@ -67,6 +67,8 @@ def _cell(variant_key: str, *, rig: str = RIG, latency: float = 900.0) -> CellFa
         repeats_per_case_min=3,
         repeats_per_case_max=3,
         measures=MeasureCollection(measures=[_summary(COST, 0.004), _summary(LATENCY, latency)]),
+        n_candidate_failed=0,
+        n_no_turn=0,
     )
 
 
@@ -138,6 +140,8 @@ def analysis_over(surface: DecisionSurface, *, index: list[VariantIndexEntry] | 
             repaired_refusal=None,
             cell_model_version=1,
             user_message_digest="sha256:message",
+            bundle_schema_version=50,
+            host_declarations_digest="sha256:declarations",
         ),
         document=AuthoredAnalysis.model_validate(
             {

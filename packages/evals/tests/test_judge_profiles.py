@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+
 from threetears.evals.actions import engine_actions
 from threetears.evals.analysis import (
     JudgeKey,
@@ -78,6 +79,7 @@ def _trial(case: int, *, model: str | None = _JUDGE, agree: bool = True) -> dict
         test_case_id=f"jc-{case}",
         dim=TOYHOST_JUDGED_DIMENSION,
         scale="ordinal",
+        axis="capability",
         criterion_digest=judge_criterion_digest(TOYHOST_JUDGED_DIMENSION, "ordinal", _CRITERION),
         case_digest=f"digest-{case}",
         source_result_id=f"src-{case}",

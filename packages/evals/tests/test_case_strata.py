@@ -95,7 +95,7 @@ def _classified(
         variant_key=fixture_variant_key(model),
         host_measures={"match": expected == predicted, "confusion_cell": confusion_cell(expected, predicted)},
         goal_state_outcomes=[],
-        rubric_scores=[RubricScore(dim=_TONE, score=tone, scale="ordinal")],
+        rubric_scores=[RubricScore(dim=_TONE, score=tone, scale="ordinal", axis="capability", judge_temperature=0.0)],
     )
 
 

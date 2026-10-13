@@ -6,10 +6,9 @@ numbers it rests on are arithmetic over the campaign's cells, and a number a mod
 reaches the reader with the same authority as one code computed while nothing checks it. So the
 per-cell numbers are computed once, at bundle assembly, and frozen onto the analysis here.
 
-**Every number on the page resolves here.** On an analysis generated with references, a finding's
-evidence rows, chart payloads, merit claims and caveat magnitudes name a cell and a measure, and
-code fills the figure from these facts (:mod:`threetears.evals.analysis.references`). An older
-analysis's figures were typed by the model and are marked as such.
+**Every number on the page resolves here.** A finding's evidence rows, chart payloads, merit claims
+and caveat magnitudes name a cell and a measure, and code fills the figure from these facts
+(:mod:`threetears.evals.analysis.references`).
 
 **Persisted: the facts. Derived: the table.** A :class:`CellFacts` holds everything measured in one
 cell — every measure, every judged dimension, its replication, the notes on its runs — and nothing
@@ -124,8 +123,7 @@ class JudgedReading(EvalDocumentModel):
         default=None,
         description=(
             "Each test case's mean over its observations, ascending, recorded only below 5 cases (the chart band "
-            "floor): a chart draws these as points rather than an interval band there. None at 5 cases or more, "
-            "and on a summary stored before it, which reads as not recorded."
+            "floor): a chart draws these as points rather than an interval band there. None at 5 cases or more."
         ),
     )
     n_infra_excluded: int = Field(
@@ -148,8 +146,7 @@ class JudgedReading(EvalDocumentModel):
         description=(
             "The same mean re-estimated with people's calibration ratings of some of these observations "
             "(prediction-powered inference), beside the judge-only `mean` and never replacing it. None when no "
-            "person rated any of them on this dimension, and on a surface frozen before it, which reads as not "
-            "recorded."
+            "person rated any of them on this dimension."
         ),
     )
 
@@ -168,8 +165,7 @@ class MeasureFacts(EvalDocumentModel):
         min_length=1,
         description=(
             "What a reader calls the measure — what a table header, chart title or axis label prints in place of its "
-            "key. None on a surface frozen before measures had one, and for a measure nothing describes; a surface "
-            "then prints the key."
+            "key. None for a measure nothing describes; a surface then prints the key."
         ),
     )
     unit: str | None = Field(default=None, description="The measure's unit, e.g. 'ms' or 'usd'. None when unitless.")
@@ -199,14 +195,14 @@ class MeasureFacts(EvalDocumentModel):
         default=None,
         description=(
             "`interval` when the measure's zero is arbitrary, so a chart states no relative change in it; `ratio` "
-            "when it is none of it; None when undeclared — and on a surface frozen before the field existed."
+            "when it is none of it; None when undeclared."
         ),
     )
     guardrail: bool = Field(
         default=False,
         description=(
             "True when the host declared the measure a guardrail: something the arm must not get worse on, never "
-            "an optimizing reading. False on a surface frozen before the field existed, when no measure was one."
+            "an optimizing reading. False otherwise."
         ),
     )
 
@@ -228,14 +224,14 @@ class JudgedDimensionFacts(EvalDocumentModel):
         default=None,
         description=(
             "`interval` for a 1-5 score, whose zero is below the scale, so no chart states a relative change in "
-            "it; `ratio` for a pass rate. None on a surface frozen before the field existed."
+            "it; `ratio` for a pass rate. None when undeclared."
         ),
     )
     axis: RubricAxis | None = Field(
         default=None,
         description=(
             "`boundary` when any score on the dimension was judged as a boundary dimension — a guardrail, never "
-            "averaged with capability — else `capability`. None on a surface frozen before the field existed."
+            "averaged with capability — else `capability`."
         ),
     )
 
@@ -248,30 +244,24 @@ class JudgedDimensionFacts(EvalDocumentModel):
 STRATUM_MIN_CASES = 10
 
 
-def _no_turn_delivered(n_observations: int, n_infra_excluded: int, n_no_turn: int | None) -> bool:
+def _no_turn_delivered(n_observations: int, n_infra_excluded: int, n_no_turn: int) -> bool:
     """Whether no observation the harness did not fault took a turn — every one a failure that took none.
 
     The one reading of the counts :attr:`CellFacts.all_failed` and :attr:`StratumFacts.all_failed` share.
-    False when nothing was counted at all (every observation faulted), and when the count was not kept.
+    False when nothing was counted at all (every observation faulted).
     """
     if not n_no_turn:
         return False
     return n_observations - n_infra_excluded - n_no_turn == 0
 
 
-def _check_failures_fit(
-    n_observations: int, n_infra_excluded: int, n_candidate_failed: int | None, n_no_turn: int | None
-) -> None:
+def _check_failures_fit(n_observations: int, n_infra_excluded: int, n_candidate_failed: int, n_no_turn: int) -> None:
     """Refuse failure counts that cannot come from the observations they partition.
 
     Raises:
-        ValueError: One count was kept without the other; the faulted and failed counts sum to more than
-            ``n_observations``; or more failures took no turn than failed at all.
+        ValueError: The faulted and failed counts sum to more than ``n_observations``, or more failures took no
+            turn than failed at all.
     """
-    if (n_candidate_failed is None) != (n_no_turn is None):
-        raise ValueError("n_candidate_failed and n_no_turn are kept together, or neither is")
-    if n_candidate_failed is None or n_no_turn is None:
-        return
     if n_infra_excluded + n_candidate_failed > n_observations:
         raise ValueError(
             f"{n_infra_excluded} faulted and {n_candidate_failed} failed observations cannot come from "
@@ -290,15 +280,13 @@ _N_NO_TURN = (
     "delivering one (`delivered_a_turn` is False) — left out of every cost and latency measure, which "
     "describe the turns the candidate took. A failure that took a turn (its budget ended it, its output cap "
     "cut it, its deadline struck mid-call, its model failed after delivered turns) is not here: its time and "
-    "spend stay in. None exactly when `n_candidate_failed` is."
+    "spend stay in."
 )
 
 #: How :attr:`CellFacts.n_candidate_failed` and :attr:`StratumFacts.n_candidate_failed` read.
 _N_CANDIDATE_FAILED = (
     "Observations the candidate failed (`classify_result`'s `candidate_fail`), for any cause: counted against "
-    "the arm in every rate, bar and judged score below. None on an analysis frozen before the count was kept "
-    "— whose cost and latency were read over every non-faulted result, failures included — never 0 standing "
-    "in for a count nobody took."
+    "the arm in every rate, bar and judged score below."
 )
 
 
@@ -332,8 +320,8 @@ class StratumFacts(EvalDocumentModel):
     n_infra_excluded: int = Field(
         default=0, ge=0, description="Observations the harness faulted, excluded from every value below."
     )
-    n_candidate_failed: int | None = Field(default=None, ge=0, description=_N_CANDIDATE_FAILED)
-    n_no_turn: int | None = Field(default=None, ge=0, description=_N_NO_TURN)
+    n_candidate_failed: int = Field(default=0, ge=0, description=_N_CANDIDATE_FAILED)
+    n_no_turn: int = Field(default=0, ge=0, description=_N_NO_TURN)
     measures: MeasureCollection = Field(
         default_factory=MeasureCollection,
         description="Every measure over the stratum's observations, by the cell's own rules.",
@@ -393,8 +381,8 @@ class CellFacts(EvalDocumentModel):
     n_infra_excluded: int = Field(
         default=0, ge=0, description="Observations the harness faulted, excluded from every value below."
     )
-    n_candidate_failed: int | None = Field(default=None, ge=0, description=_N_CANDIDATE_FAILED)
-    n_no_turn: int | None = Field(default=None, ge=0, description=_N_NO_TURN)
+    n_candidate_failed: int = Field(default=0, ge=0, description=_N_CANDIDATE_FAILED)
+    n_no_turn: int = Field(default=0, ge=0, description=_N_NO_TURN)
     measures: MeasureCollection = Field(
         default_factory=MeasureCollection,
         description=(
@@ -747,13 +735,6 @@ class GuardrailReadings(EvalDocumentModel):
             "None when checks could run, or when there is no guardrail."
         ),
     )
-    unstamped_dimensions: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Judged dimensions carrying scores judged before the rubric axis was stamped, sorted. They are read as "
-            "capability, as they were then; a guardrail among them is not recognised until it is re-judged."
-        ),
-    )
 
     def of_arm(self, variant_key: str) -> ArmGuardrails:
         """Where one arm stands: breached anywhere, else undecided anywhere, else held everywhere it was checked."""
@@ -782,8 +763,7 @@ class DecisionSurface(EvalDocumentModel):
         default_factory=list,
         description=(
             "One entry per cell: the control's cells first as the reference, then every other arm alphabetically by "
-            "name, each arm's rigs by id. A surface frozen before bundle schema 47 is ordered by (variant_key, "
-            "apparatus_class_id); the surface and strata tables order the cells themselves, so either lays out alike."
+            "name, each arm's rigs by id. The surface and strata tables order the cells themselves."
         ),
     )
     bars: list[BarAdjudication] = Field(
@@ -807,47 +787,45 @@ class DecisionSurface(EvalDocumentModel):
             "build and one day. What a `timeseries` chart draws, and the only thing it can draw."
         ),
     )
-    frontier_dominance: dict[str, FrontierDominance] | None = Field(
-        default=None,
+    frontier_dominance: dict[str, FrontierDominance] = Field(
+        default_factory=dict,
         description=(
             "Each arm's standing on the campaign's frontier lens, keyed by variant — the lens's own test of "
             "domination on pass^k, production-replicating cost and mean latency, copied rather than recomputed so "
             "a frontier chart and the frontier table cannot disagree. An arm the lens placed as more than one "
-            "contestant (two identity versions, or two subjects) is absent: it has no one standing. None on a "
-            "surface frozen before standings were carried; a chart drawn from one states no domination."
+            "contestant (two identity versions, or two subjects) is absent: it has no one standing. Empty on a "
+            "slice of a surface (one time position), which ranks no frontier of its own."
         ),
     )
-    frontier_disqualified: dict[str, list[DimName]] | None = Field(
-        default=None,
+    frontier_disqualified: dict[str, list[DimName]] = Field(
+        default_factory=dict,
         description=(
             "The arms the frontier lens disqualified on its boundary pillar, keyed by variant, each with the boundary "
             "(guardrail) dimensions it breached against the control — copied from the lens, so a frontier chart draws "
-            "the cross the table names. An arm absent was not disqualified. None on a surface frozen before "
-            "disqualifications were carried (schema v8, #613): a chart drawn from one marks none, as it did then."
+            "the cross the table names. An arm absent was not disqualified."
         ),
     )
     rubric_threshold: int = Field(
         default=3,
         description=(
             "The 1–5 level a capability criterion had to reach for an attempt to pass in the pass^k the frontier "
-            "standings were decided on: the behavior's host-declared pass threshold, 3 where it declares none. A "
-            "surface frozen before this was recorded reads 3, the threshold every pass^k was computed at then."
+            "standings were decided on: the behavior's host-declared pass threshold, 3 where it declares none."
         ),
     )
     guardrails: GuardrailReadings | None = Field(
         default=None,
         description=(
-            "Every guardrail decided for each arm against the control, as the bundle decided it. None on a surface "
-            "frozen before guardrails were decided: nothing was checked then, which is not the same as held."
+            "Every guardrail decided for each arm against the control, as the bundle decided it. None on a slice of "
+            "a surface (one time position), which decides none of its own."
         ),
     )
 
     def measure_heading(self, measure_id: str, reading: str = "measure") -> str:
         """What a reader calls a reading on this surface — the one spelling every header, title and label prints.
 
-        A measure by its frozen reader-facing name (:attr:`MeasureFacts.reader_name`); on a surface frozen before
-        measures had one, an engine core measure by the core's name, whose meaning the key fixes; and only then
-        the key itself, which is all a surface knows of a host measure frozen without one. A measuring-spend
+        A measure by its frozen reader-facing name (:attr:`MeasureFacts.reader_name`); an engine core measure the
+        surface carries no name for, by the core's name, whose meaning the key fixes; and only then the key itself,
+        for a host measure nothing describes. A measuring-spend
         measure says it is one (:func:`~threetears.evals.kernel.metrics.measure_title`). A judged dimension is
         its rubric's own name, marked judged. The key is never lost: every surface carrying a heading carries the
         key beside it for a reader who needs to cite it.

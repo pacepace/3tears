@@ -199,9 +199,7 @@ def _refuse_another_judge_prompt(
     (:func:`~threetears.evals.schema.models.builtin_judge_config_id`), and a config's prompt with the reply-format
     suffix the engine appends to it (:func:`~threetears.evals.schema.models.configured_judge_config_id`). Asked
     again under another wording, a dim's new score is a different judge's, filed beside its run's other scores as
-    if it were the same one. A result judged before that identity was recorded (before ``v0.66.0-evaladopt.19``)
-    names none — nothing for a built-in dim, a bare config id for a configured one — so which wording asked it is
-    unknown: refused for the reason a run that recorded no judge temperature is (#633).
+    if it were the same one.
 
     Args:
         result: The result whose dims are re-asked.
@@ -210,22 +208,14 @@ def _refuse_another_judge_prompt(
         today: What each dim would be asked by now (:func:`~threetears.evals.run.judge_service.judge_config_ids_for`).
 
     Raises:
-        ValidationFailedError: A dim's recorded prompt is not today's, or its wording is not recorded.
+        ValidationFailedError: A dim's recorded prompt is not today's, or the result records none for it.
     """
     for dim in dims:
         recorded = result.judge_config_ids.get(dim)
-        if dim not in run_configs and recorded is None:
+        if recorded is None:
             raise ValidationFailedError(
-                f"result '{result.id}' records no identity for the built-in prompt that judged {dim} (it was judged "
-                "before the built-in prompts were identified), so whether today's built-in prompt is the same judge "
-                "cannot be told",
-                remedy=RELAUNCH_TO_REJUDGE,
-            )
-        if dim in run_configs and recorded in (None, run_configs[dim]):
-            raise ValidationFailedError(
-                f"result '{result.id}' records config '{run_configs[dim]}' for {dim} without the reply format it was "
-                "sent with (it was judged before configured judges' reply formats were identified), so whether "
-                "today's prompt is the same judge cannot be told",
+                f"result '{result.id}' records no judge for {dim}: no judge phase of its run asked it, so there is no "
+                "first judge to ask it again as",
                 remedy=RELAUNCH_TO_REJUDGE,
             )
         if recorded != today[dim]:
@@ -282,17 +272,11 @@ def recorded_judge_pins(run: EvalRun, *, request_settings: RequestSettingsPolicy
             remedy=RELAUNCH_TO_REJUDGE,
         )
     # The judge service asks every dim with no config for DEFAULT_JUDGE_TEMPERATURE. A run that recorded
-    # another — or none, which is a run launched when such dims were sampled at the provider's default —
-    # would have its new scores sampled by a different judge from the rest of it (#633).
+    # another would have its new scores sampled by a different judge from the rest of it (#633).
     if request_settings == "today" and run.judge_temperature != DEFAULT_JUDGE_TEMPERATURE:
-        recorded = (
-            "recorded no judge temperature (its dims without a config were sampled at the provider's default)"
-            if run.judge_temperature is None
-            else f"was judged at temperature {run.judge_temperature}"
-        )
         raise ValidationFailedError(
-            f"run '{run.id}' {recorded} and a judge call now asks for {DEFAULT_JUDGE_TEMPERATURE}; a new score "
-            "would be sampled differently from the rest of the run",
+            f"run '{run.id}' was judged at temperature {run.judge_temperature} and a judge call now asks for "
+            f"{DEFAULT_JUDGE_TEMPERATURE}; a new score would be sampled differently from the rest of the run",
             remedy=RELAUNCH_TO_REJUDGE,
         )
     return run.judge_model

@@ -51,10 +51,10 @@ notes).
   field, a missing required one, or a newer schema is refused by name, never guessed.
 - **History is kept across releases.** The evidence core (cases, runs, results, traces, calibration ratings, the
   out-of-run spend ledger, templates, judge configs, rubric dims, campaigns and job records) is read forever from
-  core schema v8 onward. An older document upgrades in memory, one version at a time; the stored bytes change only
-  on the next write. This release writes **core schema v13**. Analyses, insights, judge profiles and cassettes can
-  be regenerated: one written by another build is refused, and the operator regenerates it. A store is upgraded
-  with no job running.
+  this release's **core schema v14**, the baseline. A later release upgrades an older core document in memory, one
+  version at a time, and the stored bytes change only on the next write. Analyses, insights, judge profiles and
+  cassettes can be regenerated: one written by another build is refused, and the operator regenerates it. A store
+  is upgraded with no job running.
 - **Identity.** A configuration is keyed by the content that ran (`IDENTITY_VERSION` 24), so an edited prompt is
   never averaged in with its old version, and a run's kind is part of its variant. Unpriced spend is unknown, never
   $0. A run that cannot confirm which model answered (no `served_model`) says so on every surface. That is
@@ -88,7 +88,7 @@ notes).
   a second judge, and the judge's temperature.
 - **Campaigns and analysis.** A campaign is created declared or exploratory, and can be declared, populated and
   given a control later (`campaign_update`, `campaign_runs_add`, `campaign_runs_remove`). Its fingerprinted
-  context bundle (shape 49) holds the decision surface, comparisons with Holm correction for multiple comparisons
+  context bundle (shape 50) holds the decision surface, comparisons with Holm correction for multiple comparisons
   per declared question, materiality, bars and proposed bars, mechanism checks on swept levers (a setting that
   never took effect does not read as one that changed nothing), strata, a time axis by build or by day, judge
   agreement, and every confound and disclosure. `generate_analysis` has a model write the analysis over the frozen
@@ -113,9 +113,12 @@ notes).
   judges and calibration, adopting a host, choosing a design, cost and budgets, MCP and the command line; and the
   background pages (principles, measuring soundly, the world model, design rationale, prior art, open problems).
   `docs/reference.md` is generated from the code.
-- **Pre-releases.** `v0.66.0-evaladopt.3` through `v0.66.0-evaladopt.19` were tagged on `feature/eval-adopt` for one
-  adopter. Each tag's `CHANGELOG.md` holds that pre-release's notes, and `MIGRATIONS.toml` maps every name that
-  moved between them. Pre-release stores at core schema v8 or later read as described above.
+- **Pre-releases.** `v0.66.0-evaladopt.N` tags were cut on `feature/eval-adopt` for one adopter and never published.
+  Each tag's own `CHANGELOG.md` and `MIGRATIONS.toml` hold that pre-release's notes and the names that moved. **A
+  store written before `v0.66.0-evaladopt.21` is not read:** its core documents (schema v8 to v13) are refused by
+  name as pre-release and its regenerable ones by version, so such an adopter deletes its eval documents. From
+  `.21` on, the store is the v14 baseline this release reads, and every core shape change bumps the version with
+  an upgrader, as it will after release.
 
 ## v0.65.0 -- 2026-10-05
 

@@ -34,7 +34,8 @@ that), and the variant-key case skips a run on which a family does not read a ma
 
 **What it cannot see.** That a reader reads the RIGHT thing — a judge reader returning the candidate
 model would pass every case here. Behaviour on a run shape the sample does not hold: hand the kit
-runs of every kind the host launches, and at least one recorded before any optional field existed.
+runs of every kind the host launches, and at least one that leaves every optional field unset (a run its host
+assembled without a launch).
 """
 
 from __future__ import annotations

@@ -482,7 +482,13 @@ def _analysis_naming(cells: list[tuple[str, str]], index: list[VariantIndexEntry
     surface = DecisionSurface(
         cells=sorted(
             (
-                cell(variant=variant, rig=rig, strata=[StratumFacts(stratum="easy", n_observations=6, n_cases=2)])
+                cell(
+                    variant=variant,
+                    rig=rig,
+                    strata=[
+                        StratumFacts(stratum="easy", n_observations=6, n_cases=2, n_candidate_failed=0, n_no_turn=0)
+                    ],
+                )
                 for variant, rig in cells
             ),
             key=lambda c: (c.variant_key, c.apparatus_class_id),

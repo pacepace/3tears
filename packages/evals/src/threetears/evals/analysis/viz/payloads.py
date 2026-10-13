@@ -161,10 +161,7 @@ class BreakdownPart(BaseModel):
     n: int | None = Field(
         default=None,
         ge=0,
-        description=(
-            "Test cases behind this part, when the payload counts them; a case judged k times is one."
-            " A payload compiled before 0.66 counted observations here."
-        ),
+        description=("Test cases behind this part, when the payload counts them; a case judged k times is one."),
     )
 
     @field_validator("value")
@@ -367,7 +364,7 @@ class DistributionGroup(BaseModel):
     n: int | None = Field(
         default=None,
         ge=0,
-        description="Test cases behind the group; a case judged k times is one. A payload compiled before 0.66 counted observations here.",
+        description="Test cases behind the group; a case judged k times is one.",
     )
 
     @field_validator("samples")
@@ -472,7 +469,7 @@ class NullResultArm(BaseModel):
     n: int | None = Field(
         default=None,
         ge=0,
-        description="Test cases behind the arm; a case judged k times is one. A payload compiled before 0.66 counted observations here.",
+        description="Test cases behind the arm; a case judged k times is one.",
     )
 
 
@@ -562,8 +559,8 @@ class DeltaRow(BaseModel):
         default=None,
         description=(
             "`interval` when the measure's zero is arbitrary (a 1-5 judged score): the row states its change in "
-            "points and is not drawn on the relative axis. `ratio`, or None — unstated, as on a payload compiled "
-            "before the field existed — draws it as relative change."
+            "points and is not drawn on the relative axis. `ratio`, or None — unstated — draws it as relative "
+            "change."
         ),
     )
     d_z: float | None = Field(
@@ -581,7 +578,6 @@ class DeltaRow(BaseModel):
         ge=0,
         description=(
             "Test cases behind `delta`/`p` (the smaller arm's), never observations: a case judged k times is one."
-            " A payload compiled before 0.66 counted observations here."
         ),
     )
     paired: bool = Field(
@@ -697,7 +693,7 @@ class AttributionMovement(BaseModel):
     n: int | None = Field(
         default=None,
         ge=0,
-        description="Test cases behind this movement (the smaller arm's). A payload compiled before 0.66 counted observations here.",
+        description="Test cases behind this movement (the smaller arm's).",
     )
 
     @model_validator(mode="after")
@@ -1229,7 +1225,7 @@ class SweepRow(BaseModel):
     n: int | None = Field(
         default=None,
         ge=0,
-        description="Test cases behind this configuration. A payload compiled before 0.66 counted observations here.",
+        description="Test cases behind this configuration.",
     )
     label: str | None = Field(
         default=None, description="A name for the configuration, where it has one beyond its levels."
@@ -1534,7 +1530,7 @@ class TimeseriesPoint(BaseModel):
     n: int | None = Field(
         default=None,
         ge=0,
-        description="Test cases behind the point. A payload compiled before 0.66 counted observations here.",
+        description="Test cases behind the point.",
     )
 
 

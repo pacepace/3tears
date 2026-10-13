@@ -21,23 +21,6 @@ stored document read it differently (:mod:`~threetears.evals.schema.versioning`)
 When two builds share one store, the older refuses what the newer wrote, by name. That is the
 deliberate cost of never guessing what a newer field means.
 
-**One narrow exception: a field retired within a schema version.** A confusable name can be renamed,
-and a field that carried nothing (a value no writer could vary, or one no reader consumed) removed,
-without dropping every stored document to do it. The model names it in ``__retired_fields__`` — old
-name to new name, or to ``None`` for a field removed outright — and :meth:`EvalBaseModel.from_dict`,
-the stored read, accepts the old key: a renamed key's value is read under its new name, and a removed
-key is discarded. Only a stored read does this. A construction or a payload naming a retired key is
-refused, by name and with its replacement, because a caller writing today's document has no reason to
-spell yesterday's; and a document carrying both the old and the new name is refused, since it cannot
-say which it meant. A rename loses nothing. A removal is allowed only where discarding the value
-changes what no stored document means; a field that carried evidence still needs a version bump.
-Each retirement is listed in :data:`~threetears.evals.schema.models.REGENERABLE_SCHEMA_VERSION`'s notes. A core
-type never retires a field this way: every change to a core shape is a version bump with an upgrader. That holds
-for the shapes a core document embeds too — a campaign's declared design is also an analysis's design snapshot,
-and retires a name for the analysis's sake — because a core document's stored read is not a stored read in this
-sense: it upgrades, then validates without the context, so a retired key inside a core document is read by the
-core's upgrader at the version that retired it, and refused at any later one.
-
 **The JSON pair is a transport API.** Every eval store path goes through :meth:`to_dict`, so
 :meth:`to_json` / :meth:`from_json` serve a consumer that moves these models over a wire.
 
@@ -66,7 +49,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
-from typing import Annotated, Any, ClassVar, Self
+from typing import Annotated, Any, Self
 
 from pydantic import (
     BaseModel,
@@ -76,7 +59,6 @@ from pydantic import (
     PlainValidator,
     StringConstraints,
     TypeAdapter,
-    ValidationInfo,
     model_validator,
 )
 
@@ -102,11 +84,6 @@ _EVAL_BASE_CONFIG_OPTIONS = ConfigDict(
     # Schema generation
     populate_by_name=True,  # Allow both alias and field name
 )
-
-
-#: The validation-context key :meth:`EvalBaseModel.from_dict` sets: this validation is a stored read,
-#: so a retired field (``EvalDocumentModel.__retired_fields__``) is read rather than refused.
-STORED_READ = "threetears.evals.stored_read"
 
 
 #: Validates without the stance's whitespace stripping: an opaque payload's strings are its owner's.
@@ -253,14 +230,13 @@ class EvalBaseModel(BaseModel):
         Returns:
             Model instance
 
-        This is the stored read: every load path in the engine goes through it. It is the one validation
-        that reads a field retired within the current schema version (``__retired_fields__`` on an
-        :class:`EvalDocumentModel`); every other path refuses one.
+        This is the stored read: every load path in the engine goes through it, and it is as strict as
+        construction.
 
         Raises:
             ValidationError: If data fails validation
         """
-        return cls.model_validate(data, context={STORED_READ: True})
+        return cls.model_validate(data)
 
 
 class EvalDocumentModel(EvalBaseModel):
@@ -280,49 +256,6 @@ class EvalDocumentModel(EvalBaseModel):
     """
 
     model_config = ConfigDict(**_EVAL_BASE_CONFIG_OPTIONS, json_schema_serialization_defaults_required=True)
-
-    #: Fields retired within the current schema version: the old key → the field it was renamed to, or
-    #: ``None`` for a field removed outright. A stored read accepts the old key; nothing else does. See
-    #: the module docstring.
-    __retired_fields__: ClassVar[dict[str, str | None]] = {}
-
-    @model_validator(mode="before")
-    @classmethod
-    def _read_retired_fields(cls, data: Any, info: ValidationInfo) -> Any:
-        """Read a retired key on a stored read, and refuse it, naming what replaced it, everywhere else.
-
-        Args:
-            data: The input under validation; only a mapping is touched.
-            info: The validation's context, which says whether this is a stored read.
-
-        Returns:
-            The input with each retired key renamed or removed.
-
-        Raises:
-            ValueError: A retired key outside a stored read, or a document carrying a renamed key beside
-                the name it was renamed to.
-        """
-        retired = cls.__retired_fields__
-        if not retired or not isinstance(data, Mapping) or not any(key in retired for key in data):
-            return data
-        stored_read = bool(info.context and info.context.get(STORED_READ))
-        read = dict(data)
-        for old, new in retired.items():
-            if old not in read:
-                continue
-            if not stored_read:
-                replacement = f"renamed `{new}`" if new is not None else "removed"
-                raise ValueError(f"`{old}` is not a field of {cls.__name__}: it was {replacement}")
-            value = read.pop(old)
-            if new is None:
-                continue
-            if new in read:
-                raise ValueError(
-                    f"this {cls.__name__} carries both `{old}` and `{new}`, the name it was renamed to, so it "
-                    "cannot say which it meant"
-                )
-            read[new] = value
-        return read
 
     @model_validator(mode="before")
     @classmethod
@@ -370,12 +303,8 @@ class CoreDocumentModel(EvalDocumentModel):
     number at all) is raised as a ``ValidationError`` on ``schema_version``, so every caller that
     isolates an unreadable stored document already isolates it.
 
-    Every other path is strict as before: constructing a core document, or validating a payload,
+    Every other path stays strict: constructing a core document, or validating a payload,
     at any version but the current one is refused by the ``schema_version`` field itself.
-
-    The upgraded document is validated without the stored-read context, so no ``__retired_fields__`` — the
-    regenerable documents' path, which a shape a core document embeds may carry for a regenerable one's sake —
-    is read inside a core document: the core's upgraders read every old key, at the version that retired it.
     """
 
     @classmethod
@@ -411,7 +340,6 @@ class CoreDocumentModel(EvalDocumentModel):
 
 
 __all__ = [
-    "STORED_READ",
     "CoreDocumentModel",
     "EvalBaseModel",
     "EvalDocumentModel",

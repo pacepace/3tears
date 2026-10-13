@@ -218,9 +218,7 @@ class CostEstimateCell(EvalBaseModel):
     predicted: PredictedValue | None = None
     basis: Literal["historical", "no_history"]
     #: What the band assumes, in words: how ``predicted.interval_low`` / ``interval_high`` were drawn and what
-    #: they leave out — among them that every observation is treated as independent. ``None`` with no band, or
-    #: on an estimate stored before bands stated it: those were the normal-theory t band, which assumed
-    #: symmetric costs and covered a skewed sweep's total well short of its 95%.
+    #: they leave out — among them that every observation is treated as independent. ``None`` with no band.
     band_basis: str | None = None
     #: Matching historical results whose spend could not be priced, and so are not in the basis:
     #: a mean drawn only from the priced ones prices a model that partly runs unpriced as if it

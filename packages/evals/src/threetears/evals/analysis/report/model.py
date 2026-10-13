@@ -1,8 +1,8 @@
 """The ``Report`` — one versioned document every surface renders an analysis from.
 
-**The report is a document, not an assembly.** A stored analysis used to reach a reader through four
-reads (the analysis, its arm table, its decision-surface table, its compiled charts) that each surface
-put together for itself, and the memo's Markdown dropped every chart's data on the way. A
+**The report is a document, not an assembly.** A stored analysis reaches a reader as one document, not as
+four reads (the analysis, its arm table, its decision-surface table, its compiled charts) that each surface
+would put together for itself, dropping every chart's data on the way to Markdown. A
 :class:`Report` is all of it, in reading order, as an ordered list of blocks — ``text`` with a role,
 ``table``, ``chart`` and ``disclosure`` — each linked to the findings it belongs to or rests on. It has
 a published JSON Schema (``schema.json`` beside this module), so a host generates its client types from
@@ -68,51 +68,11 @@ from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.prose import ModelProse
 
 #: The report shape's version. Moves when a field or block kind is added, renamed or removed, or when a
-#: field's meaning moves under its name; a host reads it to know what it was handed.
+#: field's meaning moves under its name; a host reads it to know what it was handed. A field added moves it too:
+#: the published schema refuses a key it does not name, and marks every field with a default required, since every
+#: dump carries it, so a client holding an older version's schema would refuse a document carrying the new field.
 #:
-#: 2: ``basis`` added (a report of an analysis, or a code-only report of the evidence alone);
-#: ``source.analysis_id`` and ``source.generator_model`` became nullable (None on a code-only report),
-#: and ``source.generated_at`` / ``source.bundle_fingerprint`` mean the assembly's on a code-only report;
-#: disclosure sources ``runs``, ``measurement``, ``apparatus`` and ``comparisons`` added; the
-#: ``comparisons`` and ``questions`` tables added; a chart block with no finding (a chart code chose).
-#:
-#: 3: the ``strata`` table added (each arm's figures per stratum of its cases, beside the pooled figure) and
-#: the ``strata`` disclosure source (a stratum too small to read on its own).
-#:
-#: 4: the ``labels`` table added (a classifier's per-label precision, recall and F1, every arm's, on a code-only
-#: report), in place of the code-only report's distribution chart per label and statistic, which it no longer
-#: carries; the ``surface`` table's ``notes`` column is present only when some row has a run note, and the ``arms``
-#: table's ``status`` column only when some arm's status is other than unresolved and its ``findings`` column only
-#: when some arm rests on a finding.
-#:
-#: 5: the ``guardrails`` section and its ``guardrails`` table (each guardrail, held, breached or undecided for each
-#: arm against the control) and the ``guardrails`` disclosure source; the ``scope`` disclosure source (readings no
-#: declared question asked about, or the one sentence that a campaign declaring none is exploratory throughout);
-#: a finding's ``Scope`` fact, present only on a finding resting wholly on exploratory readings, and an adopted
-#: decision's ``Guardrails`` fact, present only when a guardrail on its arm is not held.
-#:
-#: 6: ``verdicts`` added — every contrast against the control, bar reading and guardrail reading as a typed
-#: :class:`Verdict` (its outcome, a structured reason, its margin and where that came from, its materiality and
-#: whether it is a guardrail), in the order the report's tables lay them out; the ``verdict`` and ``decision``
-#: cells of the ``comparisons`` and ``guardrails`` tables are each verdict's ``words``, rendered from it. An
-#: ``equivalent`` contrast on a margin its runs declared says so (``declared on the runs``), and the
-#: ``comparisons`` disclosure source carries why a margin the runs disagree on was read on no contrast.
-#:
-#: 7: the words are served (see the module docstring). Every table cell is a :class:`TableCell` — its ``value`` and
-#: its ``text`` — where it was a bare value; a chart block serves its values-as-drawn table as ``columns`` and
-#: ``rows`` of cells, its columns chosen for printing (a distribution's ``shape`` left out when no row knows one);
-#: the report carries its ``title`` and ``byline``, and every block its ``section_title`` and ``finding_number``. An
-#: analysis report's ``source.campaign_name`` is set where the campaign is found, and its title then names the
-#: campaign. Every field with a default is required in the schema, since every dump carries it.
-#:
-#: 8: every block serves ``rests_on_numbers``, the findings it rests on counted from 1 as ``finding_number`` counts,
-#: beside ``rests_on``, which keeps counting from 0. A field added, so the version moves: the schema refuses a key
-#: it does not name, so a client holding the version 7 schema would refuse a document carrying it.
-#:
-#: 9: the headline and each summary bullet say what they stand on. An analysis report opens with a ``headline`` text
-#: block (the headline, the findings it rests on, and its ``Confidence`` and ``Stands on`` facts, the weakest of those
-#: findings'), and its summary is one ``summary`` block per bullet, each with its own ``rests_on`` and facts. A text
-#: role added, so the version moves: a client holding the version 8 schema refuses a role it does not name.
+#: - **9** — the baseline: the first public release's report shape.
 REPORT_VERSION: Literal[9] = 9
 
 #: What a report is of: a generated analysis, or the campaign's evidence alone with no analysis.

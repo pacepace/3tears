@@ -12,8 +12,8 @@ digest recorded here under the version recorded here.
 - **A key moved and the version did not.** If the derivation changed, that is the silent regrouping
   the version exists to prevent: bump ``IDENTITY_VERSION``, record why in the ledger above it in
   ``identity.py``, and re-pin here under the new version. A change to a fixture host's own
-  registrations moves that host's keys too, exactly as a real host growing a coordinate does
-  (the ledger's v13-v19 are such bumps); re-pin, and say which in the commit.
+  registrations moves that host's keys too, exactly as a real host growing a coordinate does;
+  re-pin, and say which in the commit.
 - **The version moved and the pins did not.** Re-derive and re-pin every golden under the new
   version, even where a key held, so this file states what it was checked under.
 - **The version moved and the ledger has no entry for it.** Write the entry.
@@ -189,22 +189,25 @@ def test_arms_differ_in_variant_and_share_their_context():
     assert _TOY_CONTEXT_KEY != _COURIER_CONTEXT_KEY
 
 
-#: A ledger entry, as the comment block above ``IDENTITY_VERSION`` writes one: ``#: - **v22** — …``.
+#: A ledger entry, as the comment block above ``IDENTITY_VERSION`` writes one: ``#: - **v24** — …``.
 _LEDGER_ENTRY = re.compile(r"^#: - \*\*v(\d+)\*\*", re.MULTILINE)
+
+#: The first public release's identity version: the ledger's first entry, and every bump after it has one.
+_BASELINE_IDENTITY_VERSION = 24
 
 
 def test_every_identity_version_has_a_recorded_reason_in_the_ledger():
     """A bump without a reason is the regrouping the ledger exists to explain, left unexplained.
 
     The ledger is the ``#:`` block above ``IDENTITY_VERSION`` in ``identity.py``. Every version from
-    the first bump (v2) to the current one has exactly one entry, in order, and none is written
-    ahead of the version it describes.
+    the baseline (v24, the first public release's) to the current one has exactly one entry, in order,
+    and none is written ahead of the version it describes.
     """
     source = inspect.getsource(identity_module)
     ledger = source[: source.index("IDENTITY_VERSION: int =")]
     versions = [int(match) for match in _LEDGER_ENTRY.findall(ledger)]
 
-    assert versions == list(range(2, IDENTITY_VERSION + 1)), (
+    assert versions == list(range(_BASELINE_IDENTITY_VERSION, IDENTITY_VERSION + 1)), (
         f"the identity ledger records versions {versions}; IDENTITY_VERSION is {IDENTITY_VERSION} — "
         "every bump needs its own entry, in order, saying what moved and why"
     )

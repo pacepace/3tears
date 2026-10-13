@@ -95,8 +95,8 @@ An analysis's arm table gives each arm a status, read off the decisions that nam
 | replaced incumbent | the control, when some other arm won |
 | unresolved | no decision reached a verdict on it; a deferred decision is not a verdict |
 
-Only an analysis stored before the writer was refused for adopting and rejecting one arm can carry
-**contradicted**; neither verdict is then shown as standing, and a disclosure names it.
+Generation refuses a memo that adopts and rejects one arm, so a generated analysis does not carry
+**contradicted**. Where one does, neither verdict is shown as standing, and a disclosure names it.
 
 ## Reading the decision surface
 
@@ -112,8 +112,7 @@ table block):
 
 A bar on a judged dimension is only as trustworthy as its judges, so its verdict carries
 `judge_evidence_tier` and the cell states it beside the value (`3.5 ± 0.25 (n=6), judge tier separation`).
-A bar on a measured quantity or a goal check has none, and neither does a verdict stored before the tier
-was recorded. A bar on `pass_hat_k` gets no row verdict, because no cell carries pass^k. The frontier reads
+A bar on a measured quantity or a goal check has none. A bar on `pass_hat_k` gets no row verdict, because no cell carries pass^k. The frontier reads
 it instead, decides each contestant's pass^k interval against it by the same three-valued rule, and names
 the variants below it (`frontier.bar`, each point's `bar_decision`). A bar on any other measure is never
 passed to the frontier: `frontier_bar_withheld` says which bars exist and that the frontier's `n_cleared_bar`
@@ -267,7 +266,7 @@ unit of analysis: a case's repeats are averaged first, because they are not inde
 | Interval on a rate (accuracy, precision, recall, any 0/1 measure) | Wilson, on the effective sample size the clustering of repeats leaves, with t on `n_cases − 1` df. F1 has none. |
 | Mean composite | The mean of each result's capability dimensions put on 0–1, per case first. Every pooled composite (run summary, compare, pivot cell, frontier point, history point, a lever's dispersion) names the dimension sets it was meaned over, and a pool whose results carried different sets is marked *ragged*: its mean averages different questions. |
 | pass^k | An attempt passes when every goal-state check passed and every capability criterion reached the behavior's pass threshold (3 of 5 unless declared; recorded as `rubric_threshold`, printed as `pass^k (k=3, criterion >= 4 of 5)`). An attempt with no goal-state check and no judge, such as a classifier scored only against its expected label, has nothing to pass: it is left out and counted (`n_no_criterion_excluded`), and an arm with none measurable has no pass^k (`pass_hat_k_unmeasured_reason`), never 0. Unbiased C(c, k) / C(n, k) per case, averaged over the cases with n ≥ k, pooled across the runs of one cell; its interval is Clopper–Pearson on an effective size. |
-| A contrast against the control | Paired t-test on per-case means over the shared cases (two or more), else Welch's t on Hsu's `min(n_a, n_b) − 1` df; a gap with no spread (every shared case moved by one amount, or each side constant) is read by the bounded test by betting on the measure's declared range, with its own interval and no g, and with no range is not separated and says why: the exact sign-flip test asks whether a move is symmetric, not whether the mean moved. An analysis assembled before 0.66 read that gap by the sign-flip test and keeps its verdicts. Effect size Hedges' g (g_z when paired). Holm correction within each family; interval Bonferroni at 1 − α/m, clipped to the differences the measure's declared range allows (± its width). |
+| A contrast against the control | Paired t-test on per-case means over the shared cases (two or more), else Welch's t on Hsu's `min(n_a, n_b) − 1` df; a gap with no spread (every shared case moved by one amount, or each side constant) is read by the bounded test by betting on the measure's declared range, with its own interval and no g, and with no range is not separated and says why: the exact sign-flip test asks whether a move is symmetric, not whether the mean moved. Effect size Hedges' g (g_z when paired). Holm correction within each family; interval Bonferroni at 1 − α/m, clipped to the differences the measure's declared range allows (± its width). |
 | `equivalent` | Paired TOST against the measure's `materiality_threshold`, in the same Holm family, capped at the number of compared rows (Shaffer); each one-sided test is the bounded test by betting (Waudby-Smith & Ramdas) on the measure's declared range, which holds α for any distribution on the range at any n; a measure with no declared range is not tested for equivalence. |
 | A bar | Three-valued: the cell's interval against the threshold less the margin (cleared, missed, undecided). A seeded threshold is the incumbent's mean moved √2 − 1 of its half-width toward the permissive end. |
 | A guardrail | Non-inferiority: the 95% interval on arm − control against zero change less the margin. On a declared range the interval is the bounded test by betting (each end a one-sided 2.5% bound; paired on the differences, unpaired each arm's mean at 1.25% and the gap between them); with no declared range it is the comparison's t interval, which can read `breached` but never `held`. |
@@ -292,8 +291,7 @@ The provenance also records the bundle `schema_version` the generation ran over 
 `host_declarations_digest`, a digest of the host's declared sweepables and world dimensions computed from its
 registries. Re-assembling a stored analysis's bundle (`inspect_analysis_bundle`) compares fingerprints, and when they
 differ `mismatch_cause` names why: `package_shape` (the bundle schema moved), `host_declarations` (the host added,
-removed or renamed a declaration), `evidence` (neither moved, so the runs, results or insights did), or `cannot_say`
-for an analysis stored before both were recorded.
+removed or renamed a declaration), or `evidence` (neither moved, so the runs, results or insights did).
 
 Prior insights reach the bundle bounded: the newest live insight per claim, at most a fixed number of them, with
 `prior_insights_omitted` counting the rest. `refused_merges` and `next_experiments` are capped the same way, with
@@ -312,8 +310,7 @@ findings, through the one repair round. Code derives each sentence's standing (`
 confidence among its findings, and the weakest evidence tier of every reading they cite. The report serves it as
 the `Confidence` and `Stands on` facts on a `headline` block that opens the summary section and on one `summary`
 block per bullet, each with its `rests_on`; `analyses_list` states it beside each headline; the memo the reporter
-judge reads carries it too. An analysis stored before the links existed keeps its summary as one block, and its
-headline says the standing was **not recorded**, never a tier guessed from its findings.
+judge reads carries it too.
 
 **A headline or summary never states a null its findings did not establish.** "Halving the budget does not change
 latency, cost or delivery" decides as surely as a finding does, and over a contrast that did not separate it
@@ -338,8 +335,8 @@ A measure is headed by its reader-facing name (`MetricDescriptor.reader_name`, f
 contrast, guardrail and strata row, and the memo. A judged dimension is printed under its rubric name with
 `(judged)` after it. The key is still there to cite: on `SurfaceColumn.measure_id`, on each `EvidenceRow`, and
 as `measure_id` on each row `Comparison.contrasts()` returns (which filters on either the key or the heading).
-An analysis frozen before measures had reader names prints an engine measure by the engine's name, and a host
-measure by its key, since that is all the analysis recorded.
+A measure the surface froze no reader name for prints an engine measure by the engine's name, and a host
+measure nothing describes by its key.
 
 A declared question is printed as the words it was asked, both in the memo and in the contrasts table. Its id
 is printed only where the declaration no longer holds that question. In the memo, each finding's evidence is
@@ -424,8 +421,7 @@ otherwise `unchecked` with the reason (`not_declared`, `not_swept`, `levels_unob
 `uniform_move_needs_range`). Each level's mean and its number of cases sit beside the state. Every case shifting by
 the same amount has no spread for a t-test, and the exact sign-flip test asks whether a shift is symmetric about
 zero, not whether the mean moved. So such a shift is read by the bounded test on the measure's declared
-`value_range`, and on a measure with no range it reads `uniform_move_needs_range`, never `moved`. An analysis
-assembled before 0.66 read it by the sign-flip test and keeps the state it was assembled with.
+`value_range`, and on a measure with no range it reads `uniform_move_needs_range`, never `moved`.
 
 The profile accepts only a numeric measure that each result carries as a single value: a covariate, a measure
 your kind reports per result, or one of the result's own fields. It refuses anything else where you declare it,
@@ -555,8 +551,8 @@ otherwise. An undecided criterion leaves the reading on the next tier down that 
 sampling spread is about 0.2, and the point estimate awarded `calibrated` to a judge whose true agreement was 0.5
 a third of the time. The tier sentence names the bounds, which way they fell, and how many more results the
 criterion needs (`results_needed`): the rest of the floor when it is short, or, when undecided, about how many
-more would carry the bounds clear of the bar if agreement held at its estimate. An analysis stored before this
-rule has no `judged_tier_rule`, and its tiers are rendered as decided on the point estimate.
+more would carry the bounds clear of the bar if agreement held at its estimate. Each analysis records the rule its
+tiers were decided under (`judged_tier_rule`).
 
 **Why these bounds.** Seeded simulation compared a score interval for kappa with the analytic standard error
 and two bootstraps over six marginals (`tests/test_simulated_agreement.py`). At 20 results the score interval
@@ -591,15 +587,13 @@ unless the dimension's `JudgeConfig` states another, so no dimension is judged a
 others at 0. A model that refuses a temperature is sent none, and its score records `model_default`. A quick `Judge`'s client is handed the temperature when its `generate` takes a `temperature` keyword. Each score
 records what was sent (`RubricScore.judge_temperature`), and that is part of the judge's identity: agreement
 groups, tiers and apparatus comparisons are keyed by it, and a repeat at another temperature is unpaired. A score
-or run stored before this recorded none and reads as not recorded, never as 0; such a run is not re-judged or
-repeated, and its cells keep their old ids.
+made outside a judge phase (a host's own reviewers) records none and reads as not recorded, never as 0.
 
 **Which prompt asked.** A judge is also the prompt that asked: a `JudgeConfig`'s id with a fingerprint of the
 reply-format suffix the engine appended to it (`<config id>@<sha12>`), or, for a dimension with no config,
 `builtin:<sha12>`, the identity of the engine's built-in wording. A release that rewords the built-in prompt or the
-suffix makes a new judge, whose tiers and agreement are read apart from the old one's. A result stored before
-`v0.66.0-evaladopt.19` recorded no identity for a built-in prompt and only the id for a configured one; it reads as
-config `None` or the bare config id, a judge of its own
+suffix makes a new judge, whose tiers and agreement are read apart from the old one's. A score made outside a
+judge phase records no prompt identity, and reads as config `None`, a judge of its own
 ([judges and calibration](judges-and-calibration.md#step-4-run-the-judge)).
 
 **Where tiers appear.** The bundle lists each judge's tier per dimension with both criteria

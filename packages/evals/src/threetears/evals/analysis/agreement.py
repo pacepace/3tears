@@ -33,8 +33,8 @@ floor counts (:mod:`threetears.evals.kernel.evidence_tiers`).
 **One group per dimension, scale and judge** (:class:`JudgeKey`). The judge is the model that served the
 score (:attr:`~threetears.evals.schema.models.RubricScore.served_model`), the versioned judge config
 that asked for it (the result's ``judge_config_ids``: a config's id, or ``builtin:<sha12>`` for the built-in
-prompt, by its wording; ``None`` = a built-in prompt judged before its wording was recorded, never the same
-judge as a ``builtin:`` one) AND the temperature the
+prompt, by its wording; ``None`` = no judge identity was recorded, as on a score made outside a judge phase,
+never the same judge as a ``builtin:`` one) AND the temperature the
 call was sent at (:attr:`~threetears.evals.schema.models.RubricScore.judge_temperature`), so a campaign
 sweeping its judge — model, prompt or sampling — reads each judge's agreement separately: pooling them would
 credit one judge with the other's calibration, which is the comparison a judge swap is decided on. A dimension rated on a
@@ -113,8 +113,9 @@ class JudgeKey(NamedTuple):
     the temperature the call was sent at.
 
     The one key both agreements group by, the tiers are listed by, and a reading looks its tier up by — so a
-    measurement of one judge can never stand in for another's. A temperature nobody recorded is ``None``, its own
-    group: never a match for a recorded one.
+    measurement of one judge can never stand in for another's. A temperature of ``None`` — a score made outside a
+    judge phase, or a judge-kind trial whose call returned no completion to read it from — is its own group: an
+    unknown judge, never a match for a recorded temperature.
     """
 
     rubric_dim: str
@@ -173,15 +174,16 @@ class DimensionAgreement(EvalDocumentModel):
     judge_config_id: str | None = Field(
         description=(
             "The versioned JudgeConfig that asked for the scores, or a ``builtin:`` id = the built-in prompt, by its "
-            "wording. None = a built-in prompt whose wording was not recorded (judged before evaladopt.19): never "
-            "the same judge as a ``builtin:`` one."
-        )
+            "wording."
+            " None = no judge identity was recorded (a score made outside a judge phase): an unknown judge, never "
+            "the same as a recorded one."
+        ),
     )
     judge_temperature: JudgeTemperature | None = Field(
         default=None,
         description=(
             "The temperature the judge's calls were sent at ('model_default' = sent none, the model refusing one); "
-            "None = not recorded, a judge nobody observed the sampling of, never read as a match for a recorded one."
+            "None = scores made outside a judge phase, which no call sampled: an unknown judge, never a match."
         ),
     )
     n: int = Field(
@@ -420,7 +422,7 @@ def _scores_by_label_key(results: Sequence[EvalResult]) -> dict[LabelKey, list[t
 
     Returns:
         ``{label_key: [(result, score), ...]}`` over every judge score — rubric dimensions and the two dual-score
-        axes — that carries a key. A score judged before the stamp is absent.
+        axes — that carries a key. A score with none (one restated from a judge trial) is absent.
     """
     found: dict[LabelKey, list[tuple[EvalResult, RubricScore]]] = {}
     for result in results:
@@ -719,14 +721,16 @@ class SelfAgreementDimension(EvalDocumentModel):
     judge_config_id: str | None = Field(
         description=(
             "The versioned JudgeConfig that asked both times, or a ``builtin:`` id = the built-in prompt, by its "
-            "wording. None = a built-in prompt whose wording was not recorded (judged before evaladopt.19)."
-        )
+            "wording."
+            " None = no judge identity was recorded (a score made outside a judge phase): an unknown judge, never "
+            "the same as a recorded one."
+        ),
     )
     judge_temperature: JudgeTemperature | None = Field(
         default=None,
         description=(
             "The temperature the judge's calls were sent at ('model_default' = sent none, the model refusing one); "
-            "None = not recorded, a judge nobody observed the sampling of, never read as a match for a recorded one."
+            "None = scores made outside a judge phase, which no call sampled: an unknown judge, never a match."
         ),
     )
     n: int = Field(
@@ -919,18 +923,23 @@ class InterJudgeDimension(EvalDocumentModel):
     judge_config_id: str | None = Field(
         description=(
             "The versioned JudgeConfig that asked for the first scores, or a ``builtin:`` id = the built-in prompt, "
-            "by its wording. None = a built-in prompt whose wording was not recorded (judged before evaladopt.19)."
-        )
+            "by its wording."
+            " None = no judge identity was recorded (a score made outside a judge phase): an unknown judge, never "
+            "the same as a recorded one."
+        ),
     )
     judge_temperature: JudgeTemperature | None = Field(
-        default=None, description="The temperature the first scores were sent at; None = not recorded."
+        default=None,
+        description="The temperature the first scores were sent at; None = scores made outside a judge phase.",
     )
     second_model: str = Field(min_length=1, description="The model the second judge was asked as.")
     second_judge_config_id: str | None = Field(
         description=(
             "The versioned JudgeConfig that asked the second judge, or a ``builtin:`` id = the built-in prompt, by "
-            "its wording. None = a built-in prompt whose wording was not recorded (asked before evaladopt.19)."
-        )
+            "its wording."
+            " None = no judge identity was recorded (a score made outside a judge phase): an unknown judge, never "
+            "the same as a recorded one."
+        ),
     )
     second_temperature: float | None = Field(
         description="The temperature the second judge was requested at; None = what each dimension's prompt asks for."

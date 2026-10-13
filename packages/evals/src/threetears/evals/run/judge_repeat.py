@@ -43,7 +43,13 @@ from pydantic import ValidationError as PydanticValidationError
 
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
-from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES, EvalResult, EvalRun, JudgeRepeat, RepeatedScore
+from threetears.evals.schema.models import (
+    NON_TERMINAL_RUN_STATUSES,
+    EvalResult,
+    EvalRun,
+    JudgeRepeat,
+    RepeatedScore,
+)
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
 from threetears.evals.schema.out_of_run_spend import OutOfRunPurpose

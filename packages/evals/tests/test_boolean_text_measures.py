@@ -351,6 +351,8 @@ def _surface(summaries: dict[str, dict[str, MeasureSummary]]) -> DecisionSurface
                 run_ids=["run"],
                 n_observations=2,
                 measures=MeasureCollection(measures=sorted(measures, key=lambda m: m.name)),
+                n_candidate_failed=0,
+                n_no_turn=0,
             )
         ],
         measures={summary.name: MeasureFacts() for summary in measures},

@@ -3948,7 +3948,7 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
             # having counted.
             metered_calls=metered_calls,
             # The width the run records, so what it executed at and what it says it did are one value.
-            max_concurrent_cells=run.cell_concurrency or 1,
+            max_concurrent_cells=run.cell_concurrency,
             cell_executor=host.cell_executor,
         )
 

@@ -21,7 +21,7 @@ rather than overwriting it.
 the fingerprint of the evidence it read and of the dimension's definition — and the write copies that key onto
 the rating, from the stored score rather than from the caller. So the label pairs with every judge score of a
 byte-identical output on the same criterion, on any result, and a frozen judge case finds it by the key. A
-score judged before the stamp has none, and its rating is read by its result alone.
+score made outside a judge phase has none, and its rating is read by its result alone.
 
 **Deleting a result does not delete its ratings.** They stay, and every agreement read lists them as
 ``result_unresolved`` — a person's judgement is not regenerable, and a rating that silently

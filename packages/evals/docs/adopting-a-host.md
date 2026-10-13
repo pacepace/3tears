@@ -218,7 +218,7 @@ types the engine stores, and says three things about each:
 
 `EVAL_DOC_TYPES` (what the operator wipe sweeps) and `CORE_DOC_TYPES` (what is kept) are derived from it.
 
-**The evidence core is kept.** Every later release reads it, from core v8 (the first release) on. The core is
+**The evidence core is kept.** Every release reads it, from core v14 (the first public release's baseline) on. The core is
 what the engine cannot regenerate and an audit needs: test cases, runs, results, traces, calibration ratings,
 the out-of-run spend ledger, case sets, and the templates, judge configs and rubric dims (with their
 tombstones) those documents name by id; and the campaigns people declared and gathered runs into, and the
@@ -228,13 +228,18 @@ a live one), and the records of every other job: a launch (the runs it started),
 a judge temperature comparison (every answer, stored nowhere else) and a host action's job (its result).
 `CORE_DOC_TYPES` lists them.
 
+**The first public release is the baseline.** It writes core v14 (`CORE_BASELINE_VERSION`, equal to
+`CORE_SCHEMA_VERSION`) and regenerable v9 (`REGENERABLE_SCHEMA_VERSION`), and registers no upgrade steps
+(`CORE_UPGRADERS` is empty): there is nothing older for it to read.
+
 **A release that changes a core shape ships an upgrader, and your store needs no migration.** Every change
 to a core shape bumps `CORE_SCHEMA_VERSION`, an added optional field included. Each bump comes with one
-upgrade step, tested against stored documents from every earlier core version. Reading an older core
-document upgrades it in memory before it is validated; the stored bytes stay as they are until the engine
-next writes that document, at the current version. So one scope can hold documents at several core versions.
-A step never changes a field the store filters, sorts or projects on (`CORE_ADDRESSING_FIELDS`), so an index
-your adapter keeps on those fields stays valid.
+upgrade step (a `CoreUpgrader` appended to `CORE_UPGRADERS`), tested against frozen stored documents from every
+core version since the baseline. Reading an older core document upgrades it in memory, one version at a time,
+before it is validated as strictly as a document written today; the stored bytes stay as they are until the
+engine next writes that document, at the current version. So one scope can hold documents at several core
+versions. A step never changes a field the store filters, sorts or projects on (`CORE_ADDRESSING_FIELDS`), so
+an index your adapter keeps on those fields stays valid.
 
 **Everything else is regenerated.** Analyses, insights and judge profiles are built over the core, and a
 cassette is re-captured. When one of their shapes changes, `REGENERABLE_SCHEMA_VERSION` is bumped and a
@@ -242,13 +247,17 @@ document written under another version is refused: make it again over the kept r
 profile the judge), or re-capture the cassette (a new capture run, so a new corpus). After a bump, `analyses_undescribable` (operation and action) lists the scope's analyses holding
 an arm this build can no longer describe.
 
-**Each version space moves on its own.** Core documents, regenerable documents, the bundle, the report
-(`REPORT_VERSION`) and the identity keys (`IDENTITY_VERSION`) carry separate versions. An upgrade never
-recomputes an identity key, so keys from different predicates never silently pool.
+**Each version space moves on its own.** Core documents (v14), regenerable documents (v9), the bundle shape
+(the bundle's `schema_version`, 50), the cell model (`CELL_MODEL_VERSION`, 12), the report (`REPORT_VERSION`, 9)
+and the identity keys (`IDENTITY_VERSION`, 24) carry separate versions, each at its first public release's value.
+An upgrade never recomputes an identity key, so keys from different predicates never silently pool.
 
 **Reads stay strict.** Every stored model refuses an unknown field and a missing required one. A core
 document written by a newer release is refused, never guessed at, so when two builds share one store,
-upgrade the older one. A core document from before the first release (below core v8) is refused too.
+upgrade the older one. A core document written before the first public release (below core v14) is refused
+too: its read fails validation on `schema_version`, with a message that names it a pre-release document and
+the baseline it is below. Pre-release documents are never read, so delete them (the operator wipe) rather than
+keep them beside released ones.
 A refused run stays as stored, and the boot reclaim (`sweep_abandoned_runs`) counts it `unreadable` rather than
 settling it. `runs_unreadable` (operation and action) names each stored run of the scope the current model refuses,
 of any status, with the fields it refused and why. The ones stored pending or running are marked stranded: they are
@@ -331,17 +340,31 @@ job leases on one clock. If any store has none, neither has the router, and each
 
 Prove the router as you prove any store: the conformance kit runs over a `RoutedDocumentStore` of your stores.
 
+
+**A record your host writes itself is held to what the engine writes.** A run or result the engine did not
+launch (a witnessed session, a run your host assembles) is validated as strictly as one it did:
+
+- a run that names a `judge_model` names the `judge_temperature` its unconfigured dims were requested at, and a
+  run that records `goal_check_proofs` records the `goal_check_proof_rules` they were derived under;
+- every `RubricScore` states its `axis` (`capability` or `boundary`). A score your own reviewers gave, not a judge
+  call, leaves `judge_temperature` and `served_model` as `None` and records no judge identity for its dim: it reads
+  as an unknown judge, never as the same as a recorded one;
+- a judge identity in `EvalResult.judge_config_ids` is `builtin:<sha12>` or `<config id>@<sha12>`, as the judge
+  service writes it; a bare config id is refused.
+
 ## Upgrading: names that move
 
 **Every name that leaves a public root is written down, and nothing is kept for compatibility.** When a release
 moves a public name to another root, renames it, or removes it, `packages/evals/MIGRATIONS.toml` records it under
-that release: the old name, its new home or `removed`, and why. There is no shim at the old name. The file is
+that release: the old name, its new home or `removed`, and why. There is no shim at the old name. The record starts
+at 0.66.0, the package's first release, which moved nothing. Pre-release tags are not releases and are not in it.
+The file is
 in the repository, not the installed package: read it at the tag you are moving to, on GitHub
 (`https://github.com/pacepace/3tears/blob/<tag>/packages/evals/MIGRATIONS.toml`) or in a checkout. In a checkout,
 the release notes are printed from it, so they hold the full old-to-new map:
 
 ```bash
-uv run python packages/evals/scripts/release_notes.py v0.66.0-evaladopt.6
+uv run python packages/evals/scripts/release_notes.py v0.66.0
 ```
 
 Each line reads `old → new`, grouped under the reason for the move. Changes that are not a public name, such as
@@ -362,11 +385,14 @@ snapshot:
   change shows up as a diff in review. A signature change needs no record in `MIGRATIONS.toml`. When it breaks
   callers, add it to the newest section's `notes`.
 - **A name moved, renamed or removed.** The test fails until `MIGRATIONS.toml`'s first section (the release being
-  prepared) records it. The generator refuses to write a snapshot that drops an unrecorded name.
+  prepared) records it. The generator refuses to write a snapshot that drops an unrecorded name. A name the last
+  final release did not export never reached a porter, so it needs only a regeneration, and a record of it is
+  refused.
 - **A section that names the tag before it (`since`).** The test reads both surfaces from git and holds the
   section to exactly the names that left a root between that tag and this version's. Before the version is
-  tagged, it compares against the working tree. A checkout without the tags fails this check rather than passing
-  it.
+  tagged, it compares against the working tree. `since` is always a final release tag (`v<x>.<y>.<z>`). A tag
+  from before the package existed (`v0.65.0`, for 0.66.0) has an empty surface. A checkout without the tags fails
+  this check rather than passing it.
 - **A name exported from two roots.** The test fails unless it is one object and `api/reexports.toml` declares
   it. Two different objects under one name always fail: rename one.
 
@@ -376,8 +402,9 @@ uv run python packages/evals/scripts/generate_api_snapshot.py --check  # report 
 ```
 
 **When a version is tagged**, rename the `unreleased` section of `MIGRATIONS.toml` to the version, without the
-leading `v`. Then paste the output of `release_notes.py v<version>` into the release description. The next change
-that moves a name starts a new `unreleased` section at the top, with `since` set to the tag just cut.
+leading `v`. Then paste the output of `release_notes.py v<version>` into the release description. The next release
+starts a new `unreleased` section at the top, with `since` set to the tag just cut. A pre-release tag (any suffix
+after `v<x>.<y>.<z>`) gets no section, and the record never follows one.
 
 ## The kind: what you are evaluating
 

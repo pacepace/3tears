@@ -283,7 +283,10 @@ class TestAProofRecordedUnderAnEarlierRuleNeedsReProof:
     """
 
     def test_an_old_proven_reads_unproven_and_an_old_refuted_stands(self) -> None:
-        run = make_eval_run(goal_check_proofs={"c": "proven", "d": "refuted", "e": "unproven"})
+        run = make_eval_run(
+            goal_check_proofs={"c": "proven", "d": "refuted", "e": "unproven"},
+            goal_check_proof_rules=GOAL_CHECK_PROOF_RULES - 1,
+        )
         assert goal_check_proofs_as_read(run) == {"c": "unproven", "d": "refuted", "e": "unproven"}
         assert stale_goal_check_proofs(run) == ["c"]
 
@@ -295,7 +298,7 @@ class TestAProofRecordedUnderAnEarlierRuleNeedsReProof:
     def test_the_bundle_counts_the_stale_run_and_reads_the_check_unproven(self) -> None:
         runs = [
             make_eval_run(id="a", goal_check_proofs={"c": "proven"}, goal_check_proof_rules=GOAL_CHECK_PROOF_RULES),
-            make_eval_run(id="b", goal_check_proofs={"c": "proven"}),
+            make_eval_run(id="b", goal_check_proofs={"c": "proven"}, goal_check_proof_rules=GOAL_CHECK_PROOF_RULES - 1),
         ]
         (reading,) = goal_check_proofs_of(runs, [_graded("a", "c"), _graded("b", "c")])
         assert (reading.proof, reading.stale, reading.unrecorded) == ("unproven", 1, 0)

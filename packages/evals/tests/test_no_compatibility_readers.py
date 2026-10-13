@@ -167,13 +167,21 @@ def _rescore(**fields: Any) -> JudgeRescore:
         # re-judge's record, the run's per-dim maps, a result's per-dim maps, the decision surface,
         # and a reporter case's label. A bare name stored in any of them would bind, pool or
         # compare as the global name the authored guard exists to refuse.
-        pytest.param(lambda name: RubricScore(dim=name, score=3, scale="ordinal"), id="RubricScore.dim"),
+        pytest.param(
+            lambda name: RubricScore(dim=name, score=3, scale="ordinal", axis="capability", judge_temperature=0.0),
+            id="RubricScore.dim",
+        ),
         pytest.param(lambda name: _rescore(dims=[name]), id="JudgeRescore.dims"),
         pytest.param(lambda name: _rescore(scores={name: 4}), id="JudgeRescore.scores"),
         pytest.param(lambda name: _rescore(errors={name: "429"}), id="JudgeRescore.errors"),
         pytest.param(lambda name: _rescore(cannot_tell={name: "no evidence"}), id="JudgeRescore.cannot_tell"),
-        pytest.param(lambda name: _rescore(judge_config_ids={name: "cfg-1"}), id="JudgeRescore.judge_config_ids"),
-        pytest.param(lambda name: make_eval_result(judge_config_ids={name: "cfg-1"}), id="EvalResult.judge_config_ids"),
+        pytest.param(
+            lambda name: _rescore(judge_config_ids={name: "cfg-1@aaaaaaaaaaaa"}), id="JudgeRescore.judge_config_ids"
+        ),
+        pytest.param(
+            lambda name: make_eval_result(judge_config_ids={name: "cfg-1@aaaaaaaaaaaa"}),
+            id="EvalResult.judge_config_ids",
+        ),
         pytest.param(
             lambda name: make_eval_result(judge_cannot_tell={name: "no evidence"}), id="EvalResult.judge_cannot_tell"
         ),
@@ -183,13 +191,15 @@ def _rescore(**fields: Any) -> JudgeRescore:
         ),
         pytest.param(
             lambda name: make_eval_run(
-                judge_model="j", judge_config_ids={name: "cfg-1"}, judge_config_provenance={name: "chosen"}
+                judge_model="j", judge_config_ids={name: "cfg-1@aaaaaaaaaaaa"}, judge_config_provenance={name: "chosen"}
             ),
             id="EvalRun.judge_config_ids",
         ),
         pytest.param(
             lambda name: make_eval_run(
-                judge_model="j", judge_config_ids={"triage.tone": "cfg-1"}, judge_config_provenance={name: "chosen"}
+                judge_model="j",
+                judge_config_ids={"triage.tone": "cfg-1@aaaaaaaaaaaa"},
+                judge_config_provenance={name: "chosen"},
             ),
             id="EvalRun.judge_config_provenance",
         ),

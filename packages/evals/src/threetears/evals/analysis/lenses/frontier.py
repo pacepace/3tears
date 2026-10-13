@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from collections.abc import Hashable, Iterable, Mapping, Sequence
 from fractions import Fraction
-from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.analysis.agreement import judge_key, tier_for_judges
@@ -308,9 +308,8 @@ class FrontierDominator(EvalBaseModel):
     variant_identity_version: int
     #: The Holm-adjusted p the domination was decided on, below :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`
     #: (see :func:`_dominance_p`). Carried because a verdict a reader cannot check against its statistic is
-    #: an assertion. ``None`` on a dominator stored before domination was tested: that one was read off
-    #: point estimates.
-    p_value: float | None = None
+    #: an assertion.
+    p_value: float
 
 
 #: How a frontier verdict's pick stands on cost against the other contestants that cleared the bar with a
@@ -382,8 +381,7 @@ class FrontierPoint(EvalBaseModel):
     pass_hat_k_curve: list[PassHatPoint] = []
     #: The interval on ``pass_hat_k`` at :data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL`, over its
     #: cases (:func:`~threetears.evals.analysis.stats.case_rate_interval`): the cases are the draws, and each
-    #: case's own estimate is noisy too. ``None`` below two cases, where none is estimable, and on a point
-    #: stored before pass^k carried one.
+    #: case's own estimate is noisy too. ``None`` below two cases, where none is estimable.
     pass_hat_k_ci_low: float | None = None
     #: The high end of that interval; ``None`` exactly when ``pass_hat_k_ci_low`` is.
     pass_hat_k_ci_high: float | None = None
@@ -408,8 +406,7 @@ class FrontierPoint(EvalBaseModel):
     composite_sem: float | None = None
     n_composite_cases: int = 0
     #: What ``mean_composite`` was meaned over (:func:`pooled_composite_basis`), ``ragged`` when this point's
-    #: results were scored on different dimension sets (#638). ``None`` when no composite was pooled, and on a
-    #: point stored before the basis was carried — which says nothing about whether that pool was ragged.
+    #: results were scored on different dimension sets (#638). ``None`` when no composite was pooled.
     composite_basis: CompositeBasis | None = None
 
     # Cost — production-replicating only. ``None`` (never 0) when no
@@ -436,7 +433,7 @@ class FrontierPoint(EvalBaseModel):
     #: What the runs behind ``production_replicating_cost`` set away from the subject's production configuration
     #: (#571), each run's own footing read off the host's sweepable declarations: the cost is what production would
     #: spend only where no run moved anything (``moved_nothing``). ``None`` when the frontier was computed without
-    #: the host's declarations, and on a point stored before it was read — nobody checked, never "nothing moved".
+    #: the host's declarations — nobody checked, never "nothing moved".
     production_footing: PooledProductionFooting | None = None
 
     # Latency — total wall-clock ms, the performance axis. Mean over the turns the candidate took
@@ -505,23 +502,22 @@ class FrontierPoint(EvalBaseModel):
     #: answered, so every axis here is a mixture of them — or ``unrecorded``, where some response named none and
     #: whether one model answered cannot be established. A contestant is keyed at launch, before any response
     #: names a model, so the mixture is disclosed rather than split. ``None`` when no result's candidate made a
-    #: call, and on a point stored before it was read.
+    #: call.
     served_models: ServedModelReading | None = None
 
     # Domination — a dominated point is grayed, never dropped: silently removing a
     # cheap-but-brittle variant looks identical to it never having run.
     #: True only when another point is SHOWN to beat this one (:attr:`dominance` ``dominated``).
-    #: False is not a claim that nothing beats it. On a point stored before domination was tested
-    #: (``dominance`` is ``None``), this was read off point estimates.
+    #: False is not a claim that nothing beats it.
     dominated: bool = False
     #: ``dominated`` — some other point is shown better on every axis this one measured, by the test
     #: :func:`_dominance_p` states; ``not_separated`` — this point was tested against at least one other
     #: and no domination was shown, which says nothing about whether one exists; ``untested`` — no
     #: test against any other point could decide (fewer than two cases on an axis, no shared axis, or an axis
     #: on which every case differed by one amount over too few cases for the exact test to reach α — the
-    #: reading :func:`~threetears.evals.analysis.stats.level_difference` also calls untested).
-    #: ``None`` on a point stored before domination was tested.
-    dominance: FrontierDominance | None = None
+    #: reading :func:`~threetears.evals.analysis.stats.level_difference` also calls untested). Set for every
+    #: point by the frontier's dominance pass, which starts each one untested.
+    dominance: FrontierDominance = "untested"
     #: Every point shown to beat this one on every axis, each carrying the identity a row
     #: carries and the p it was shown at. In the order the points are sorted, which is the order
     #: the table prints them, so a reader scanning for a named dominator meets them in that order.
@@ -560,8 +556,7 @@ class FrontierVerdict(EvalBaseModel):
     pass_hat_k: float
     #: The depth ``pass_hat_k`` was read at — the subject's, the same as every point's.
     k: int = 1
-    #: The interval the bar was decided on (:attr:`FrontierPoint.pass_hat_k_ci_low`). ``None`` only on a
-    #: verdict stored before the bar read intervals: that one compared the point pass^k with the bar.
+    #: The interval the bar was decided on (:attr:`FrontierPoint.pass_hat_k_ci_low`).
     pass_hat_k_ci_low: float | None = None
     pass_hat_k_ci_high: float | None = None
     production_replicating_cost: float | None = None
@@ -595,8 +590,7 @@ class FrontierVerdict(EvalBaseModel):
     #: cheapest is among the pick and :attr:`tied_with`, and the verdict names that set rather than a winner;
     #: ``untested`` — no test against any rival left in the set could decide (too few priced cases, or every
     #: case differing by one amount over too few cases for the exact test to reach α); ``only_cleared`` — no
-    #: other contestant cleared the bar with a cost. ``None`` on a verdict stored before the pick was tested:
-    #: that one was the lowest point cost, a winner the data may not have shown.
+    #: other contestant cleared the bar with a cost.
     cost_decision: FrontierCostDecision | None = None
     #: The rivals the pick was not shown cheaper than, ordered by point cost. Empty when ``cost_decision``
     #: is ``shown_cheapest`` or ``only_cleared``.
@@ -608,7 +602,7 @@ class FrontierVerdict(EvalBaseModel):
     #: The evidence tier the pass^k the bar was read on stands on, where a judge scored the criteria it conjoins:
     #: the weakest tier among the judges that served the pick's capability scores (the tier every judged reading
     #: carries, #679). ``undetermined`` where nothing measured them; None where no judge scored any of the pick's
-    #: criteria — a pass^k over goal checks alone — and on a verdict stored before it was recorded.
+    #: criteria — a pass^k over goal checks alone.
     judge_evidence_tier: JudgedEvidenceTier | None = None
 
 
@@ -656,13 +650,7 @@ class FrontierResult(EvalDocumentModel):
     subject says how its boundary pillar was read. ``exclusions`` and the
     ``n_*`` counts keep an all-excluded corpus from rendering as an empty one,
     exactly as :class:`PivotTable` does.
-
-    ``two_pillar`` (``TwoPillarDisclosure``, the statement that the boundary pillar was descoped) is retired: the
-    pillar is decided (#613). A frozen bundle carrying it reads with it discarded — what it said is no longer true
-    of any answer this build gives.
     """
-
-    __retired_fields__: ClassVar[dict[str, str | None]] = {"two_pillar": None}
 
     bar: float | None = None
     #: The control the boundary pillar held every contestant against — the campaign's control arm on the bundle's
@@ -671,8 +659,6 @@ class FrontierResult(EvalDocumentModel):
     #: The 1–5 level a capability criterion had to reach for an attempt to pass, in every pass^k here
     #: (#642): the behavior's declared threshold
     #: (:meth:`~threetears.evals.kernel.host.BarRegistry.pass_threshold`) where the caller had one, else 3.
-    #: A frontier stored before this was recorded defaults to 3, which is the threshold every pass^k was
-    #: computed at then.
     rubric_threshold: int = 3
     subjects: list[SubjectFrontier] = []
     n_results: int = 0
@@ -807,16 +793,11 @@ def _frontier_point(
     # cost — production-replicating roles only, meaned over the results that
     # reported one. None when none did; partial when some did and some did not.
     # Reads the RAW persisted `usage` where the run-summary aggregate reads
-    # `resolve_result_usage`. The two once answered differently — a result whose
-    # decomposition could be reconstructed at read counted toward that denominator and not
-    # this one — which is why this site was deliberately left divergent: this is the surface
-    # that RANKS contestants, and moving it was a ranking decision rather than a reporting
-    # one. That reconstruction no longer exists, and with it gone the resolver returns rows
-    # this call cannot distinguish from the raw field: identical on `captured`, `None` on
-    # both sides when nothing was observed, and an empty list on a cancelled cell, which
-    # sums to `None` exactly as the absent field does. So the two agree here in every case,
-    # and reading the raw field is no longer a divergence to justify — it is the shorter way
-    # to the same number. Aligning the call sites would be tidying, not a fix.
+    # `resolve_result_usage`. The resolver returns rows this call cannot distinguish from
+    # the raw field: identical on `captured`, `None` on both sides when nothing was
+    # observed, and an empty list on a cancelled cell, which sums to `None` exactly as the
+    # absent field does. So the two agree here in every case, and reading the raw field is
+    # the shorter way to the same number. Aligning the call sites would be tidying, not a fix.
     #
     # The substitution disclosure is NOT part of that divergence and is read per result
     # regardless: a seeded or replayed delivery spent neither inner-agent dollars nor

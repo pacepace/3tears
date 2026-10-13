@@ -216,6 +216,7 @@ class TestAnInsightsStandingIsReadOffItsMintingAnalysis:
                 statement=f"observed {name}",
                 confidence="medium",
                 source_analysis_id=source,
+                invalidation_trigger="retired when its analysis is archived, or replaced by a later analysis restating it",
             )
 
         asked: list[str] = []
@@ -267,6 +268,7 @@ class TestRetractionReadsOnlyTheArchivedFlag:
             statement="the wide chunk is cheaper",
             confidence="low",
             source_analysis_id="an-archived",
+            invalidation_trigger="retired when its analysis is archived, or replaced by a later analysis restating it",
         )
         profile = toyhost_profile()
         campaign, storage = toyhost_campaign(insights=[retracted])

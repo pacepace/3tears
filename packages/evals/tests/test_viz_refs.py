@@ -163,6 +163,8 @@ def _cell(
                 evidence_tier="undetermined",
             )
         ],
+        n_candidate_failed=0,
+        n_no_turn=0,
     )
 
 
@@ -193,6 +195,9 @@ def _bar(cells: list[CellFacts]) -> BarAdjudication:
                 value=value,
                 n=8,
                 n_independent=8,
+                # A decided verdict is decided on an interval; a tight one on the value's own side of the bar.
+                ci_low=value - 0.01,
+                ci_high=value + 0.01,
                 cleared=value >= 0.8,
             )
         )
@@ -537,7 +542,7 @@ def test_a_reading_over_five_cases_draws_a_band():
 
 
 def test_a_small_reading_with_no_recorded_cases_is_refused_rather_than_banded():
-    """An analysis stored before per-case values were recorded cannot draw the points, and never draws the band."""
+    """A small reading that recorded no per-case values cannot draw the points, and never draws the band."""
     cells = [_small("A", None), _cell("B"), _cell("C")]
     with pytest.raises(UnresolvableReference, match="per-case values were not recorded"):
         build(VALID["distribution"], surface(cells))
@@ -724,13 +729,6 @@ def test_an_arm_the_lens_gave_no_standing_reads_untested():
     assert dominance == {LABEL["A"]: "untested", LABEL["B"]: "untested", LABEL["C"]: "dominated"}
 
 
-def test_a_surface_frozen_before_standings_states_no_domination():
-    """No standings recorded: nothing is flagged, and nothing is called tested."""
-    payload = build(VALID["frontier"])
-
-    assert all(point["dominance"] is None and point["dominated"] is False for point in payload["points"])
-
-
 def test_a_frontiers_axis_titles_are_computed_from_its_measures():
     """The authored chart carries no label, so each title is what a reader calls the measure and, when it has one, its unit.
 
@@ -831,6 +829,8 @@ def test_an_arm_the_index_cannot_describe_is_labelled_as_such():
         run_ids=["run-x"],
         n_observations=8,
         measures=_cell("A").measures,
+        n_candidate_failed=0,
+        n_no_turn=0,
     )
     unavailable = VariantIndexEntry(variant_key="e" * 64, levers={}, levels_unavailable="minted under predicate v3")
     orphan = stranger.model_copy(update={"variant_key": "e" * 64})

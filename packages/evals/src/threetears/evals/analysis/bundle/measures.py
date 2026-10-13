@@ -589,8 +589,9 @@ def _open_map_leaves(
     absence of a name, not a name that failed to resolve). Skip rather than raise, so one
     malformed key cannot destroy the analysis it appears in.
     """
-    # A core-named covariate no covariate writer lands — a result stored by another writer, or before the rule —
-    # is dropped and named, never pooled, as an undeclarable host measure is (`_undeclarable_host_entries`).
+    # A core-named covariate no covariate writer lands — a result stored by another writer, or before its name
+    # became engine-owned — is dropped and named, never pooled, as an undeclarable host measure is
+    # (`_undeclarable_host_entries`).
     stray = set(undeclarable_covariates(result.covariates))
     for name, value in result.covariates.items():
         if name.strip() and name not in stray:
@@ -612,7 +613,7 @@ def _open_map_leaves(
     # `run_eval` refuses a scorer so named. A core name still arrives here legitimately — the
     # classifier track lands `match` and `confusion_cell` as host measures — and those pass. Any
     # other engine-owned key is one no host could have declared: the runner refuses a kind landing
-    # one, and a result stored before that refusal has it dropped here and named as unreported
+    # one, and a result stored before its name became engine-owned has it dropped here and named as unreported
     # (`_undeclarable_host_entries`), never pooled into the engine's own observations of the name.
     smuggled = set(undeclarable_host_measures(result.host_measures))
     for name, value in result.host_measures.items():

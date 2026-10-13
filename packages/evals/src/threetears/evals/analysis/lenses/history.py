@@ -257,8 +257,7 @@ class RegressionFlag(EvalBaseModel):
     #: moved by one amount the bounded test's on the measure's declared range — and ``None``
     #: on an ``untested`` step and where ``not_separated_reason`` says no test ran. Carried
     #: for the same reason ``hedges_g`` is: a verdict whose statistic is absent cannot be
-    #: checked. A flag computed before 0.66 carried the exact sign-flip p there, a test of
-    #: symmetry rather than of the mean, and its ``test`` says so.
+    #: checked.
     p: float | None = None
     #: The TOST p an ``equivalent`` label was thresholded against — the larger of the
     #: two one-sided p's, each the bounded test's on the measure's declared range — or

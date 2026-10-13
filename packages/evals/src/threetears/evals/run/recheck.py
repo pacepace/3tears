@@ -76,7 +76,7 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 #: The one termination whose checks were graded against the cell's end. Any other left them
-#: unevaluated (a deadline), never ran them (excluded before a turn), or predates the field.
+#: unevaluated (a deadline) or never ran them (excluded before a turn).
 GRADED_TERMINATION = "completed"
 
 

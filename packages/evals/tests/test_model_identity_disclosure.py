@@ -67,7 +67,11 @@ def _result(case: str, *, served: str | None, judge_served: str | None = _JUDGE_
         test_case_id=case,
         model=_ALIAS,
         usage=[RoleUsage(role="candidate", model=_ALIAS, served_model=served, cost_usd=0.01, call_count=1)],
-        rubric_scores=[RubricScore(dim=_DIM, score=4, scale="ordinal", served_model=judge_served)],
+        rubric_scores=[
+            RubricScore(
+                dim=_DIM, score=4, scale="ordinal", served_model=judge_served, axis="capability", judge_temperature=0.0
+            )
+        ],
     )
 
 

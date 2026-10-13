@@ -188,7 +188,7 @@ SCOPED_METRICS_HELP = " ".join(
 
 
 #: The token a served-model coordinate (:attr:`ScoreRecord.served_model`) carries for candidate calls whose
-#: response named no model, or that were stored before served models were recorded. Never the requested id.
+#: response named no model. Never the requested id.
 SERVED_MODEL_UNRECORDED = "unrecorded"
 
 #: How a served-model coordinate joins the models one result's candidate calls named. A result answered by two
@@ -221,8 +221,7 @@ class ResultServedReading(NamedTuple):
     Attributes:
         requested: The candidate model the result's run asked for — the id an arm is keyed by.
         served: Every model the provider's responses named for its candidate calls.
-        unrecorded: Some candidate row names no served model — a response that named none, or a row
-            stored before served models were recorded.
+        unrecorded: Some candidate row names no served model: a response that named none.
     """
 
     requested: str

@@ -343,9 +343,10 @@ def compute_comparison_sets(
 
         # Through the resolver, not off the raw field. `resolve_context_identity` is
         # the single place the stamped-or-derived decision is made, and reading
-        # `run.context_key` directly opted this surface out of it: a run stamped under
-        # an older predicate kept comparing on a key that predicate no longer produces,
-        # and a run whose roles were never recorded reported a key as if it were whole.
+        # `run.context_key` directly would opt this surface out of it: a run stamped under
+        # an older predicate would keep comparing on a key the current predicate does not
+        # produce, and a run whose roles were never recorded would report a key as if it
+        # were whole.
         identities = {run.id: resolve_context_identity(run, profile) for run in grouped}
 
         # The group's distinct case sets, keyed by the run's own `case_basis` digest.

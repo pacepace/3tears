@@ -139,7 +139,16 @@ def _calibration(
         judge_score = rng.choices(_SCALE, weights=marginal)[0]
         result = make_eval_result(
             id=f"result-{index}",
-            rubric_scores=[RubricScore(dim=_DIM, score=judge_score, scale="ordinal", served_model=_JUDGE)],
+            rubric_scores=[
+                RubricScore(
+                    dim=_DIM,
+                    score=judge_score,
+                    scale="ordinal",
+                    served_model=_JUDGE,
+                    axis="capability",
+                    judge_temperature=0.0,
+                )
+            ],
         )
         results.append(result)
         who = rng.sample(list(raters), 2 if rng.random() < 0.5 else 1)
@@ -333,7 +342,16 @@ def _correlated_calibration(
         judge = truth if rng.random() < agreement else rng.choices(_SCALE, weights=marginal)[0]
         result = make_eval_result(
             id=f"result-{index}",
-            rubric_scores=[RubricScore(dim=_DIM, score=judge, scale="ordinal", served_model=_JUDGE)],
+            rubric_scores=[
+                RubricScore(
+                    dim=_DIM,
+                    score=judge,
+                    scale="ordinal",
+                    served_model=_JUDGE,
+                    axis="capability",
+                    judge_temperature=0.0,
+                )
+            ],
         )
         results.append(result)
         for rater in rng.sample(["ana", "ben", "cai"], 2 if rng.random() < 0.5 else 1):
@@ -356,7 +374,7 @@ def test_the_pooled_tier_from_several_people_holds_its_error_at_the_bar(label: s
     rng = random.Random(f"pooled-tier-at-bar-{label}")
     replicates = 400
     met = 0
-    key = JudgeKey(_DIM, "ordinal", _JUDGE, None)
+    key = JudgeKey(_DIM, "ordinal", _JUDGE, None, 0.0)
     for _ in range(replicates):
         ratings, results = draw(rng)
         (tier,) = judge_evidence_tiers(judge_agreement(ratings, results), judge_self_agreement([]), {key})

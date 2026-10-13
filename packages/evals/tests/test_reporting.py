@@ -62,7 +62,7 @@ from threetears.evals.analysis.lenses.pivot import (
     PivotError,
     compute_pivot,
 )
-from threetears.evals.analysis.lenses.frontier import FrontierResult, FrontierError, compute_frontier
+from threetears.evals.analysis.lenses.frontier import FrontierError, compute_frontier
 from threetears.evals.analysis.lenses.history import HistoryError, compute_history
 from threetears.evals.analysis.lenses.program_budget import compute_program_budget
 from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
@@ -226,7 +226,9 @@ class TestProjectionCoordinates:
         untold = make_eval_result(
             eval_run_id=run.id,
             scope_id=run.scope_id,
-            rubric_scores=[RubricScore(dim="reply.tone", score=4, scale="ordinal")],
+            rubric_scores=[
+                RubricScore(dim="reply.tone", score=4, scale="ordinal", axis="capability", judge_temperature=0.0)
+            ],
             judge_cannot_tell={"reply.refusal": "nothing to refuse", TRANSCRIPT_DIM_ID: "no turns"},
         )
 
@@ -351,7 +353,9 @@ class TestCompositeIsPerObservation:
             scope_id=run.scope_id,
             test_case_id="tc-1",
             k_iteration=k_iteration,
-            rubric_scores=[RubricScore(dim="reply.quality", score=score, scale="ordinal")],
+            rubric_scores=[
+                RubricScore(dim="reply.quality", score=score, scale="ordinal", axis="capability", judge_temperature=0.0)
+            ],
         )
 
     def test_iterations_of_one_case_keep_their_own_values(self):
@@ -374,7 +378,9 @@ class TestCompositeIsPerObservation:
             eval_run_id=run.id,
             scope_id=run.scope_id,
             infra_error="judge timeout",
-            rubric_scores=[RubricScore(dim="reply.quality", score=4, scale="ordinal")],
+            rubric_scores=[
+                RubricScore(dim="reply.quality", score=4, scale="ordinal", axis="capability", judge_temperature=0.0)
+            ],
         )
 
         composites = [
@@ -500,8 +506,8 @@ class TestPerDimensionRows:
         result = self._scored(
             run,
             rubric_scores=[
-                RubricScore(dim="reply.grounding", score=5, scale="ordinal"),
-                RubricScore(dim="reply.coverage", score=2, scale="ordinal"),
+                RubricScore(dim="reply.grounding", score=5, scale="ordinal", axis="capability", judge_temperature=0.0),
+                RubricScore(dim="reply.coverage", score=2, scale="ordinal", axis="capability", judge_temperature=0.0),
             ],
         )
 
@@ -527,8 +533,12 @@ class TestPerDimensionRows:
         result = self._scored(
             run,
             rubric_scores=[
-                RubricScore(dim="planner.character", score=5, scale="ordinal"),
-                RubricScore(dim="speaker.character", score=1, scale="ordinal"),
+                RubricScore(
+                    dim="planner.character", score=5, scale="ordinal", axis="capability", judge_temperature=0.0
+                ),
+                RubricScore(
+                    dim="speaker.character", score=1, scale="ordinal", axis="capability", judge_temperature=0.0
+                ),
             ],
         )
 
@@ -558,7 +568,12 @@ class TestPerDimensionRows:
         coordinate, and everything that IS one must match exactly. That is the cell.
         """
         run, _ = _run_with_results()
-        result = self._scored(run, rubric_scores=[RubricScore(dim="reply.grounding", score=5, scale="ordinal")])
+        result = self._scored(
+            run,
+            rubric_scores=[
+                RubricScore(dim="reply.grounding", score=5, scale="ordinal", axis="capability", judge_temperature=0.0)
+            ],
+        )
 
         records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
         composite = next(r for r in records if r.metric == METRIC_COMPOSITE)
@@ -608,8 +623,10 @@ class TestPerDimensionRows:
             run,
             candidate_error="402",
             rubric_scores=[
-                RubricScore(dim="reply.grounding", score=4, scale="ordinal"),
-                RubricScore(dim="reply.treats_as_present", scale="pass_fail", score=1),
+                RubricScore(dim="reply.grounding", score=4, scale="ordinal", axis="capability", judge_temperature=0.0),
+                RubricScore(
+                    dim="reply.treats_as_present", scale="pass_fail", score=1, axis="capability", judge_temperature=0.0
+                ),
             ],
         )
 
@@ -651,7 +668,12 @@ class TestPerDimensionRows:
         """
         run, _ = _run_with_results()
         colliding = self._scored(
-            run, rubric_scores=[RubricScore(dim=f"reply.{METRIC_COMPOSITE}", score=5, scale="ordinal")]
+            run,
+            rubric_scores=[
+                RubricScore(
+                    dim=f"reply.{METRIC_COMPOSITE}", score=5, scale="ordinal", axis="capability", judge_temperature=0.0
+                )
+            ],
         )
 
         records = project_score_records([run], [colliding], profile=_JUDGED_HOST, archived_run_ids=None).records
@@ -670,8 +692,12 @@ class TestPerDimensionRows:
                 run,
                 test_case_id=case,
                 rubric_scores=[
-                    RubricScore(dim="reply.grounding", score=5, scale="ordinal"),
-                    RubricScore(dim="reply.coverage", score=3, scale="ordinal"),
+                    RubricScore(
+                        dim="reply.grounding", score=5, scale="ordinal", axis="capability", judge_temperature=0.0
+                    ),
+                    RubricScore(
+                        dim="reply.coverage", score=3, scale="ordinal", axis="capability", judge_temperature=0.0
+                    ),
                 ],
             )
             for case in ("tc-1", "tc-2")
@@ -705,19 +731,31 @@ class TestPerDimensionRows:
                 run,
                 test_case_id="tc-1",
                 k_iteration=1,
-                rubric_scores=[RubricScore(dim="reply.grounding", score=5, scale="ordinal")],
+                rubric_scores=[
+                    RubricScore(
+                        dim="reply.grounding", score=5, scale="ordinal", axis="capability", judge_temperature=0.0
+                    )
+                ],
             ),
             self._scored(
                 run,
                 test_case_id="tc-1",
                 k_iteration=2,
-                rubric_scores=[RubricScore(dim="reply.grounding", score=5, scale="ordinal")],
+                rubric_scores=[
+                    RubricScore(
+                        dim="reply.grounding", score=5, scale="ordinal", axis="capability", judge_temperature=0.0
+                    )
+                ],
             ),
             self._scored(
                 run,
                 test_case_id="tc-2",
                 k_iteration=1,
-                rubric_scores=[RubricScore(dim="reply.grounding", score=2, scale="ordinal")],
+                rubric_scores=[
+                    RubricScore(
+                        dim="reply.grounding", score=2, scale="ordinal", axis="capability", judge_temperature=0.0
+                    )
+                ],
             ),
             self._scored(run, test_case_id="tc-3", k_iteration=1, rubric_scores=[]),
         ]
@@ -793,7 +831,7 @@ class TestPerDimensionRows:
             self._scored(
                 run,
                 rubric_scores=[
-                    RubricScore(dim=d, score=4, scale="ordinal")
+                    RubricScore(dim=d, score=4, scale="ordinal", axis="capability", judge_temperature=0.0)
                     for d in ("reply.grounding", "reply.coverage", "reply.honesty")
                 ],
             )
@@ -839,7 +877,10 @@ class TestPerDimensionRows:
         run, _ = _run_with_results()
         result = self._scored(
             run,
-            rubric_scores=[RubricScore(dim=d, score=4, scale="ordinal") for d in ("reply.grounding", "reply.coverage")],
+            rubric_scores=[
+                RubricScore(dim=d, score=4, scale="ordinal", axis="capability", judge_temperature=0.0)
+                for d in ("reply.grounding", "reply.coverage")
+            ],
         )
         records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
@@ -970,7 +1011,12 @@ class TestPerDimensionRows:
         only assertion that can tell working guidance from a plausible sentence.
         """
         run, _ = _run_with_results()
-        result = self._scored(run, rubric_scores=[RubricScore(dim="reply.character", score=3, scale="ordinal")])
+        result = self._scored(
+            run,
+            rubric_scores=[
+                RubricScore(dim="reply.character", score=3, scale="ordinal", axis="capability", judge_temperature=0.0)
+            ],
+        )
         records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
         with pytest.raises(PivotError, match="rubric dimension") as excinfo:
@@ -1049,7 +1095,9 @@ class TestPerDimensionJudgeAttribution:
         return make_eval_result(
             eval_run_id=run.id,
             scope_id=run.scope_id,
-            rubric_scores=[RubricScore(dim=dim, score=5, scale="ordinal") for dim in dims],
+            rubric_scores=[
+                RubricScore(dim=dim, score=5, scale="ordinal", axis="capability", judge_temperature=0.0) for dim in dims
+            ],
         )
 
     def _score_rows(self, run, result):
@@ -1195,8 +1243,12 @@ class TestPerDimensionJudgeAttribution:
             effective_judges_source="recorded",
         )
         result = self._scored(run, "reply.grounding")
-        result.transcript_score = RubricScore(dim=TRANSCRIPT_DIM_ID, score=4, scale="ordinal")
-        result.outcome_score = RubricScore(dim=OUTCOME_DIM_ID, score=3, scale="ordinal")
+        result.transcript_score = RubricScore(
+            dim=TRANSCRIPT_DIM_ID, score=4, scale="ordinal", axis="capability", judge_temperature=0.0
+        )
+        result.outcome_score = RubricScore(
+            dim=OUTCOME_DIM_ID, score=3, scale="ordinal", axis="capability", judge_temperature=0.0
+        )
 
         rows = self._score_rows(run, result)
 
@@ -1217,7 +1269,9 @@ class TestPerDimensionJudgeAttribution:
         """
         run = self._run(effective_judges={TRANSCRIPT_DIM_ID: "gemini-lite"}, effective_judges_source="recorded")
         result = self._scored(run, "reply.grounding")
-        result.transcript_score = RubricScore(dim="reply.transcript", score=4, scale="ordinal")
+        result.transcript_score = RubricScore(
+            dim="reply.transcript", score=4, scale="ordinal", axis="capability", judge_temperature=0.0
+        )
 
         with caplog.at_level(logging.WARNING, logger="threetears.evals.analysis.reporting"):
             records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
@@ -1247,8 +1301,12 @@ class TestPerDimensionJudgeAttribution:
             effective_judges_source="recorded",
         )
         result = self._scored(run, "reply.grounding")
-        result.transcript_score = RubricScore(dim=TRANSCRIPT_DIM_ID, score=4, scale="ordinal")
-        result.outcome_score = RubricScore(dim=OUTCOME_DIM_ID, score=3, scale="ordinal")
+        result.transcript_score = RubricScore(
+            dim=TRANSCRIPT_DIM_ID, score=4, scale="ordinal", axis="capability", judge_temperature=0.0
+        )
+        result.outcome_score = RubricScore(
+            dim=OUTCOME_DIM_ID, score=3, scale="ordinal", axis="capability", judge_temperature=0.0
+        )
 
         rows = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
         by_metric = {r.metric: r for r in rows if r.metric in (TRANSCRIPT_DIM_ID, OUTCOME_DIM_ID)}
@@ -1274,8 +1332,12 @@ class TestPerDimensionJudgeAttribution:
             eval_run_id=run.id,
             scope_id=run.scope_id,
             rubric_scores=[
-                RubricScore(dim="reply.house_style", score=5, scale="ordinal"),
-                RubricScore(dim="reply.selection_fit", score=1, scale="ordinal"),
+                RubricScore(
+                    dim="reply.house_style", score=5, scale="ordinal", axis="capability", judge_temperature=0.0
+                ),
+                RubricScore(
+                    dim="reply.selection_fit", score=1, scale="ordinal", axis="capability", judge_temperature=0.0
+                ),
             ],
         )
         rows = self._score_rows(run, result)
@@ -1955,7 +2017,9 @@ class TestPivotDisclosure:
                 eval_run_id=run.id,
                 scope_id=run.scope_id,
                 test_case_id="tc-1",
-                rubric_scores=[RubricScore(dim="reply.quality", score=5, scale="ordinal")],
+                rubric_scores=[
+                    RubricScore(dim="reply.quality", score=5, scale="ordinal", axis="capability", judge_temperature=0.0)
+                ],
             ),
             make_eval_result(eval_run_id=run.id, scope_id=run.scope_id, test_case_id="tc-2", infra_error="boom"),
         ]
@@ -4757,7 +4821,15 @@ def _fr_result(
         )
     else:
         overrides.update(
-            rubric_scores=[RubricScore(dim="reply.quality", score=4 if passes else 2, scale="ordinal")],
+            rubric_scores=[
+                RubricScore(
+                    dim="reply.quality",
+                    score=4 if passes else 2,
+                    scale="ordinal",
+                    axis="capability",
+                    judge_temperature=0.0,
+                )
+            ],
             goal_state_outcomes=[GoalStateOutcome(expression="ok", passed=passes)],
         )
     if roles is not None:
@@ -6355,7 +6427,7 @@ def _with_boundary(results, score):
     for result in results:
         result.rubric_scores = [
             *result.rubric_scores,
-            RubricScore(dim=_BOUNDARY_DIM, scale="pass_fail", axis="boundary", score=score),
+            RubricScore(dim=_BOUNDARY_DIM, scale="pass_fail", axis="boundary", score=score, judge_temperature=0.0),
         ]
     return results
 
@@ -6410,14 +6482,6 @@ class TestFrontierBoundaryPillar:
         subject = compute_frontier([run], results, archived_run_ids=None, control_variant_key="vk").subjects[0]
 
         assert (subject.boundary_dimensions, subject.boundary_pillar) == ([], None)
-
-    def test_a_frozen_frontier_carrying_the_retired_disclosure_still_reads(self):
-        stored = compute_frontier([], [], archived_run_ids=None).to_dict()
-        stored["two_pillar"] = {"boundary_pillar_available": False}
-
-        assert FrontierResult.from_dict(stored).subjects == []
-        with pytest.raises(ValidationError, match="two_pillar"):
-            FrontierResult.model_validate(stored)
 
 
 class TestFrontierExclusions:
@@ -6507,15 +6571,23 @@ def _hist_run(
     for case_id in cases:
         overrides = dict(eval_run_id=run.id, scope_id=run.scope_id, test_case_id=case_id, model=model, cost_usd=cost)
         if score is not None:
-            overrides["rubric_scores"] = [RubricScore(dim="conversation.tone", score=score, scale="ordinal")]
+            overrides["rubric_scores"] = [
+                RubricScore(
+                    dim="conversation.tone", score=score, scale="ordinal", axis="capability", judge_temperature=0.0
+                )
+            ]
         if latency_ms is not None:
             overrides["latency"] = LatencyMetrics(total_ms=latency_ms)
         if variant_key is not None:
             overrides["variant_key"] = variant_key
         if transcript is not None:
-            overrides["transcript_score"] = RubricScore(dim=TRANSCRIPT_DIM_ID, score=transcript, scale="ordinal")
+            overrides["transcript_score"] = RubricScore(
+                dim=TRANSCRIPT_DIM_ID, score=transcript, scale="ordinal", axis="capability", judge_temperature=0.0
+            )
         if outcome is not None:
-            overrides["outcome_score"] = RubricScore(dim=OUTCOME_DIM_ID, score=outcome, scale="ordinal")
+            overrides["outcome_score"] = RubricScore(
+                dim=OUTCOME_DIM_ID, score=outcome, scale="ordinal", axis="capability", judge_temperature=0.0
+            )
         results.append(make_eval_result(**overrides))
     return run, results
 
@@ -6563,7 +6635,9 @@ class TestAMisStampedDualScoreAxisIsNotAnObservation:
 
     def test_a_dim_that_names_no_reserved_axis_is_excluded(self, caplog):
         run, results = _hist_run(cases=["c1", "c2"], transcript=5, created_at="2026-07-01T00:00:00Z")
-        results[1].transcript_score = RubricScore(dim="conversation.tone", score=1, scale="ordinal")
+        results[1].transcript_score = RubricScore(
+            dim="conversation.tone", score=1, scale="ordinal", axis="capability", judge_temperature=0.0
+        )
 
         with caplog.at_level("WARNING"):
             out = compute_history([run], results, metric=METRIC_TRANSCRIPT, profile=_JUDGED_HOST, archived_run_ids=None)
@@ -6576,7 +6650,9 @@ class TestAMisStampedDualScoreAxisIsNotAnObservation:
     def test_the_other_axis_id_is_refused_too_not_only_a_template_dim(self):
         """Tighter than the projection's guard, which only asks 'is this a reserved id'."""
         run, results = _hist_run(cases=["c1", "c2"], outcome=5, created_at="2026-07-01T00:00:00Z")
-        results[1].outcome_score = RubricScore(dim=TRANSCRIPT_DIM_ID, score=1, scale="ordinal")
+        results[1].outcome_score = RubricScore(
+            dim=TRANSCRIPT_DIM_ID, score=1, scale="ordinal", axis="capability", judge_temperature=0.0
+        )
 
         out = compute_history([run], results, metric=METRIC_OUTCOME, profile=_JUDGED_HOST, archived_run_ids=None)
 
@@ -6675,7 +6751,9 @@ class TestHistoryDualScoreAxes:
         make the quality measures on ONE surface answer different questions.
         """
         run, results = _hist_run(cases=["c1", "c2"], transcript=5, created_at="2026-07-01T00:00:00Z")
-        results[1].transcript_score = RubricScore(dim=TRANSCRIPT_DIM_ID, score=1, scale="ordinal")
+        results[1].transcript_score = RubricScore(
+            dim=TRANSCRIPT_DIM_ID, score=1, scale="ordinal", axis="capability", judge_temperature=0.0
+        )
         results[1].infra_error = "apparatus: cassette miss in replay mode"
 
         out = compute_history([run], results, metric=METRIC_TRANSCRIPT, profile=_JUDGED_HOST, archived_run_ids=None)
@@ -6687,7 +6765,9 @@ class TestHistoryDualScoreAxes:
     def test_a_candidate_failure_the_judge_scored_is_still_an_observation(self):
         """The guard must not widen into 'any error' — a scored failure is real data."""
         run, results = _hist_run(cases=["c1", "c2"], transcript=5, created_at="2026-07-01T00:00:00Z")
-        results[1].transcript_score = RubricScore(dim=TRANSCRIPT_DIM_ID, score=1, scale="ordinal")
+        results[1].transcript_score = RubricScore(
+            dim=TRANSCRIPT_DIM_ID, score=1, scale="ordinal", axis="capability", judge_temperature=0.0
+        )
         results[1].candidate_error = "the candidate returned nothing"
 
         out = compute_history([run], results, metric=METRIC_TRANSCRIPT, profile=_JUDGED_HOST, archived_run_ids=None)

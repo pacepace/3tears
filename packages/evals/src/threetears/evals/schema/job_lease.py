@@ -3,7 +3,7 @@
 A job's work runs in one process, and its record — a run, a sweep, an analysis attempt — lives in a store
 several processes share. Which process (if any) is still running the work is therefore a fact the record
 must carry, or every process answers it from its own memory and two of them answer differently: a poll in
-the process that did not start a job used to read a live job as lost, and a cancel there was refused.
+the process that did not start a job would read a live job as lost, and a cancel there would be refused.
 
 So the record carries a **lease** (:class:`JobLease`): the holding process's id and an expiry, renewed by the
 holder with a conditional write every third of its duration. A record that has not ended by its own account
@@ -12,10 +12,10 @@ reader to see that writes it down (:class:`JobLoss`, with the record's own endin
 is durable and the same everywhere rather than recomputed.
 
 A **cancel** is a field on the record too (``cancel_requested_at`` and ``cancel_request_reason``), written by whichever
-process was asked and read by the holder at its next renewal, so a cancel no longer needs the job to be
+process was asked and read by the holder at its next renewal, so a cancel does not need the job to be
 live in the process that hears it.
 
-A record also keeps its **faults** (:data:`FaultsField`, core v13): what went wrong at the lease's boundary while
+A record also keeps its **faults** (:data:`FaultsField`): what went wrong at the lease's boundary while
 the job had not yet ended — chiefly a holder whose renewals failed for a whole lease, which stops the job. A
 record's own ending (a run's status and reason, a sweep's ``detail``, an attempt's ``error``) is one value, and the
 loss a reader writes later replaces it; a fault written there would be overwritten by the very loss it explains.
@@ -26,7 +26,7 @@ The fields are declared on each job record's model through the aliases here (:da
 a base class, so each record keeps its own field order and one more record type takes the same five lines;
 :class:`LeasedRecord` is the surface the lease machinery reads off any of them. The four single values are declared
 with ``= None`` (``lease: LeaseField = None``), and the list with ``= Field(default_factory=list)``: every one is
-optional, and a record written before it reads it as None, or as no faults.
+optional, and a record none of them has been written on reads it as None, or as no faults.
 
 Times are ISO-8601 in UTC, stamped in the store's time when the store keeps a clock
 (:class:`~threetears.evals.schema.store_port.StoreClock`) and in the writer's own otherwise.
@@ -76,14 +76,15 @@ class JobLoss(EvalBaseModel):
     cause: str = Field(min_length=1, description="Why the job is lost, in words a poll reports.")
 
 
-#: A job record's lease: who is running its work and until when; None once released, and on a record written
-#: before leases (which reads lost while it has not ended — nothing can be renewing it).
+#: A job record's lease: who is running its work and until when; None once released, and on a record no process
+#: has leased — a run a launch prepared and never started (which reads lost while it has not ended — nothing can
+#: be renewing it).
 LeaseField = Annotated[
     JobLease | None,
     Field(
         description=(
-            "The lease of the process running this job's work; None on a record written before leases, or "
-            "released at a shutdown. A record that has not ended reads lost once this lapses or is None."
+            "The lease of the process running this job's work; None on a record no process has leased (a run "
+            "a launch prepared and never started), or released at a shutdown. A record that has not ended reads lost once this lapses or is None."
         ),
     ),
 ]
@@ -125,7 +126,7 @@ JOB_FAULTS_MAX: Final[int] = 32
 #: How long one fault may be, in characters; a longer one is cut to it (:func:`with_fault`), marked as cut.
 JOB_FAULT_MAX_CHARS: Final[int] = 2000
 
-#: A job record's faults: what went wrong at its lease's boundary before it ended (core v13).
+#: A job record's faults: what went wrong at its lease's boundary before it ended.
 FaultsField = Annotated[
     list[Annotated[str, StringConstraints(min_length=1, max_length=JOB_FAULT_MAX_CHARS)]],
     Field(
@@ -135,7 +136,7 @@ FaultsField = Annotated[
             "where it happened, then the error (its type and message) — a holder whose renewals failed for a "
             "whole lease, which stopped the job, writes the last renewal's error here. Beside the record's own "
             "ending, which a loss writes over, so the loss never erases what explains it. Empty on a job with "
-            "none, and on a record stored before core v13. At most 32, each at most 2000 characters."
+            "none. At most 32, each at most 2000 characters."
         ),
     ),
 ]

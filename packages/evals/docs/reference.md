@@ -212,8 +212,8 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`'input'` | `'record'` | `'derived'`
 - **`EvalRunStatus`** · literal · `budget_stopped` is a budget the run was launched under binding — its cost cap or its wall-clock budget, `EvalRun.budget_stop_reason` says which: a designed stop that keeps what the run delivered, never `failed`.
   <br>`'pending'` | `'running'` | `'completed'` | `'failed'` | `'cancelled'` | `'budget_stopped'` | `'exhausted'`
-- **`FaultsField`** · type alias · A job record's faults: what went wrong at its lease's boundary before it ended (core v13).
-  <br>`Annotated[list[Annotated[str, StringConstraints(min_length=1, max_length=JOB_FAULT_MAX_CHARS)]], Field(max_length=JOB_FAULTS_MAX, description="Faults at this job's lease boundary, written on the record before it ended, oldest first: each names where it happened, then the error (its type and message) — a holder whose renewals failed for a whole lease, which stopped the job, writes the last renewal's error here. Beside the record's own ending, which a loss writes over, so the loss never erases what explains it. Empty on a job with none, and on a record stored before core v13. At most 32, each at most 2000 characters.")]`
+- **`FaultsField`** · type alias · A job record's faults: what went wrong at its lease's boundary before it ended.
+  <br>`Annotated[list[Annotated[str, StringConstraints(min_length=1, max_length=JOB_FAULT_MAX_CHARS)]], Field(max_length=JOB_FAULTS_MAX, description="Faults at this job's lease boundary, written on the record before it ended, oldest first: each names where it happened, then the error (its type and message) — a holder whose renewals failed for a whole lease, which stopped the job, writes the last renewal's error here. Beside the record's own ending, which a loss writes over, so the loss never erases what explains it. Empty on a job with none. At most 32, each at most 2000 characters.")]`
 - **`GoalCheckIntent`** · literal · What a goal check says about the behaviour it grades, and so which verdict "the candidate did nothing" must get.
   <br>`'act'` | `'hold'`
 - **`GoalCheckProof`** · literal · Whether a goal check was shown, when its run launched, to tell its outcomes apart (`threetears.evals.run.check_controls.goal_check_proofs`).
@@ -224,8 +224,8 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`'recorded'` | `'derived'` | `'absent'`
 - **`JudgeTemperature`** · type alias · The temperature a judge call was actually sent at: a number, or `MODEL_DEFAULT_TEMPERATURE`.
   <br>`float | Literal['model_default']`
-- **`LeaseField`** · type alias · A job record's lease: who is running its work and until when; None once released, and on a record written before leases (which reads lost while it has not ended — nothing can be renewing it).
-  <br>`Annotated[JobLease | None, Field(description="The lease of the process running this job's work; None on a record written before leases, or released at a shutdown. A record that has not ended reads lost once this lapses or is None.")]`
+- **`LeaseField`** · type alias · A job record's lease: who is running its work and until when; None once released, and on a record no process has leased — a run a launch prepared and never started (which reads lost while it has not ended — nothing can be renewing it).
+  <br>`Annotated[JobLease | None, Field(description="The lease of the process running this job's work; None on a record no process has leased (a run a launch prepared and never started), or released at a shutdown. A record that has not ended reads lost once this lapses or is None.")]`
 - **`LostField`** · type alias · How a job was lost, when it was: the record's own ending is written beside it.
   <br>`Annotated[JobLoss | None, Field(description="Set when the job was found lost — its lease lapsed, or its process shut down — by whoever found it. The record's own status says how it reads beside that; None on a job that was not lost.")]`
 - **`MeteredCallOrigin`** · literal · Which tier supplied a run's metered-call ceiling (`EvalRun.max_metered_calls_origin`): the three `CostCapOrigin` tiers, read with the currency swapped, and one more — `none_declared`, a host declaring it has no metered tools (`LaunchSettings.max_metered_calls` of `None`).
@@ -240,8 +240,8 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`'person'` | `'agent'`
 - **`ReasoningEffort`** · literal · A reasoning effort level, as the router's `reasoning.effort` takes it.
   <br>`'max'` | `'xhigh'` | `'high'` | `'medium'` | `'low'` | `'minimal'` | `'none'`
-- **`RefusalField`** · type alias · A job record's `refusal` field (`JobRefusal`): declared on each record that can end on a refusal with `= None`, so a record written before it — or ended any other way — reads None.
-  <br>`Annotated[JobRefusal | None, Field(description="The engine refusal the job ended on, as data — its kind and status, as a refused call's are — when it ended `failed` because an engine error refused its work; None while it runs, when it ended any other way, and on a record written before it was kept.")]`
+- **`RefusalField`** · type alias · A job record's `refusal` field (`JobRefusal`): declared on each record that can end on a refusal with `= None`, so a record that ended any other way reads None.
+  <br>`Annotated[JobRefusal | None, Field(description="The engine refusal the job ended on, as data — its kind and status, as a refused call's are — when it ended `failed` because an engine error refused its work; None while it runs, and when it ended any other way.")]`
 - **`RefusalKind`** · literal · What refused a call or ended a job: the public engine error it was, by kind.
   <br>`'refused'` | `'not_found'` | `'conflict'` | `'validation_failed'` | `'storage_failed'` | `'provider_refused'` | `'admission_refused'`
 - **`RequestCeiling`** · type alias · The longest one request capped at `max_tokens` output tokens can take on the host's client, in seconds: every provider call the client makes for that one request and every wait between them (re-sends of a severed body, SDK retries, their back-off sleeps).
@@ -274,11 +274,11 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`CANDIDATE_SPEAKER`** · constant (str) · The speaker label the candidate's own turns carry in a simulated transcript.
   <br>`= '__candidate__'`
 - **`CORE_ADDRESSING_FIELDS`** · constant (mappingproxy) · Per core type, every field the store reads on the stored bytes, before any upgrade: what a query filters or orders on, what a projection keeps, and what a partial write merges.
-- **`CORE_BASELINE_VERSION`** · constant (int) · The first core version a public release wrote, and the oldest this and every later build reads.
-  <br>`= 8`
+- **`CORE_BASELINE_VERSION`** · constant (int) · The first core version a public release wrote, and the oldest this and every later build reads. Below it a document is pre-release, and is refused by name.
+  <br>`= 14`
 - **`CORE_DOC_TYPES`** · constant (frozenset) · The kept documents, by `doc_type`: the `kept` entries of `DOC_TYPE_FACTS`, derived so the registry is the one place a type's lifecycle is decided.
 - **`CORE_SCHEMA_VERSION`** · constant (int) · The core version this build writes. Every bump appends one line here and one `CoreUpgrader`.
-  <br>`= 13`
+  <br>`= 14`
 - **`CORE_UPGRADERS`** · constant (tuple) · The registered steps, oldest first: `[s.from_version for s in CORE_UPGRADERS]` is `range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION)`.
 - **`DEFAULT_JUDGE_TEMPERATURE`** · constant (float) · The temperature every judge call is requested at unless a `JudgeConfig` for its dimension says otherwise, and that config's own default (#633).
   <br>`= 0.0`
@@ -304,7 +304,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 'x-model-prose'`
 - **`REFUSAL_KINDS`** · constant (tuple) · Every refusal kind.
 - **`REGENERABLE_SCHEMA_VERSION`** · constant (int) · The version every regenerable document is written under, and the only one a read of one accepts.
-  <br>`= 8`
+  <br>`= 9`
 - **`RESERVED_DIM_IDS`** · constant (frozenset) · The reserved dim ids, which are deliberately NOT namespaced: they identify the two dual-score axes rather than a rubric dimension scored in some context, so there is no context to name. `require_namespaced_dim_name` exempts them — a judge service is built for these ids on every run.
 - **`ROUND_DONE`** · constant (str) · The scheduler's answer that the current speaker round is over and the candidate answers next.
   <br>`= 'round_done'`
@@ -509,7 +509,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`EvalJudgeProfile`** · model · What one judge was measured to be on one criterion, over frozen cases, by a judge campaign — stored for reuse.
 - **`EvalRunScan`** · class · What a scan of every run in one scope found (`EvalStorage.scan_eval_runs`): how many read, which did not.
 - **`EvalServiceError`** · exception · Structured error from the eval service layer.
-- **`EvalStorage`** · class · Storage for v1-shape eval documents over one document store.
+- **`EvalStorage`** · class · Storage for eval documents over one document store.
 - **`EvalSweep`** · model · A multi-arm launch run arm after arm: its arms, its campaign, and how it ended — the record its job reads.
 - **`EvidenceRef`** · model · One reading at one cell. Code fills the number, its sample size and its spread.
 - **`EvidenceRow`** · model · One reading at one cell, and the number code resolved it to, with its basis.
@@ -649,7 +649,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`'held'` | `'breached'` | `'undecided'`
 - **`JudgedEvidenceTier`** · literal · The tier a judged reading stands on: one of the three the evidence can establish, or `undetermined` when it establishes none of them.
   <br>`'calibrated'` | `'separation'` | `'incidental'` | `'undetermined'`
-- **`JudgedTierRule`** · literal · The rule a stored analysis's judged tiers were decided by.
+- **`JudgedTierRule`** · literal · The rule a stored analysis's judged tiers were decided by. `interval_lower_bound`: each criterion on confidence bounds for its agreement against the bar.
   <br>`'interval_lower_bound'`
 - **`JudgeTrialOutcome`** · literal · How a trial ended, as far as its readout is concerned.
   <br>`'scored'` | `'cannot_tell'` | `'invalid'` | `'no_reply'`
@@ -1783,7 +1783,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`REPORTER_KIND_CONTRACT`** · constant (KindContract) · The reporter kind's contract, for a profile's `kinds`: its overlay is the prompt preset, and it seats the judge and the spend ceiling. `reporter_kind_contract` builds it with a host's own seats added.
 - **`SCOPED_METRICS_HELP`** · constant (str) · How each scoped metric must be read, in one sentence per metric, for every surface's help text (REST and MCP alike) — rendered from the table rather than written beside it, so no surface can describe a subset.
 - **`SECTION_TITLES`** · constant (dict) · Each section's heading, in reading order — the order every serializer lays the sections out in, and the heading every block carries as its `section_title`.
-- **`SERVED_MODEL_UNRECORDED`** · constant (str) · The token a served-model coordinate (`ScoreRecord.served_model`) carries for candidate calls whose response named no model, or that were stored before served models were recorded.
+- **`SERVED_MODEL_UNRECORDED`** · constant (str) · The token a served-model coordinate (`ScoreRecord.served_model`) carries for candidate calls whose response named no model. Never the requested id.
   <br>`= 'unrecorded'`
 - **`UNPRICED`** · constant (str) · What an amount no client could price reads as. Never `$0`: an unpriced call may have been billed.
   <br>`= 'unpriced'`
@@ -2615,7 +2615,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schema_version` | `int` | `49` | Bundle-shape version, for future evolution + fingerprint clarity. |
+| `schema_version` | `int` | `50` | Bundle-shape version, for future evolution + fingerprint clarity. |
 | `campaign_id` | `str` | required | The campaign this bundle summarises. |
 | `subject_id` | `str` | required | The analysed subject's stable id. |
 | `subject_kind` | `str` | `''` | Discriminator; data, never a code branch. |
@@ -2659,7 +2659,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `judge_change` | `JudgeChange` | `JudgeChange(levels=[], drift_links=[], sentence=None)` | Each judge the judged member runs were scored by (model pin, configs, temperature), the runs and arms under each, and the drift readings that span a change. |
 | `goal_check_proofs` | `list[GoalCheckProofReading]` | `[]` | Per goal check the member runs graded: whether it was shown, at launch, to tell its outcomes apart (`proven`), or not (`unproven`: no control, or a proof recorded under an earlier rule (`stale`); `refuted`: a control it does not beat, or a check the grammar refused at launch (`refused`)). |
 | `multiple_comparisons` | `MultipleComparisons` | `MultipleComparisons(families=[], withheld=None)` | Each contrast tested against the control on every reading a live question asks about, per rig, with Holm correction inside each question's family: the family's size, each comparison's adjusted p and the verdict read off it. |
-| `guardrails` | `GuardrailReadings` | `GuardrailReadings(measures=[], dimensions=[], checks=[], withheld=None, unstamped_dimensions=[])` | The guardrails — boundary judged dimensions and measures declared `guardrail`, what the candidate must not get worse on — each decided for every arm against the control on its own 95% interval: `held` (shown no worse than its margin), `breached` (shown worse) or `undecided`. |
+| `guardrails` | `GuardrailReadings` | `GuardrailReadings(measures=[], dimensions=[], checks=[], withheld=None)` | The guardrails — boundary judged dimensions and measures declared `guardrail`, what the candidate must not get worse on — each decided for every arm against the control on its own 95% interval: `held` (shown no worse than its margin), `breached` (shown worse) or `undecided`. |
 | `run_margins` | `dict[str, float]` | `{}` | Margins on core rate measures (`accuracy`) that every member run declared alike at launch (`EvalRun.declared_margins`), by measure. |
 | `launch_declarations` | `list[str]` | `[]` | One sentence per host measure that is read here otherwise than the reading host now declares it. |
 | `run_margins_withheld` | `str \| None` | `None` | Why a margin some member runs declared on a core rate measure is read on none of its comparisons: the runs do not all declare it, or declare different ones, and a contrast between two arms read against a margin only one of them chose would be read against a margin nobody chose for the pair. |
@@ -2676,8 +2676,8 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `arm_mechanisms` | `list[ArmMechanismReading]` | `[]` | Each arm's mean of every covariate read as an observed mechanism (today the candidate's reasoning share, `reasoning_ratio`), sorted by arm then covariate. |
 | `arm_served_models` | `list[ArmServedModel]` | `[]` | Which model the provider's responses named as having answered each arm's candidate calls, sorted by arm. |
 | `arm_production_footings` | `dict[str, PooledProductionFooting]` | `{}` | Arm (variant key) -> what each of its runs set away from the subject's production configuration, read off the host's sweepable declarations: `runs` maps run id -> that run's footing (`moved` with levels, `unchecked`, `held`; null for a run nobody could check). |
-| `cell_model_version` | `int` | `11` | Which definition of a cell produced `cells`. |
-| `host_declarations_digest` | `str \| None` | `None` | sha256 of the host's declared sweepables (each one's name, role and blank rule) and world dimension names — the declarations that partition observations into apparatus classes and arms (`host_declarations_digest`). |
+| `cell_model_version` | `int` | `12` | Which definition of a cell produced `cells`. |
+| `host_declarations_digest` | `str` | required | sha256 of the host's declared sweepables (each one's name, role and blank rule) and world dimension names — the declarations that partition observations into apparatus classes and arms (`host_declarations_digest`). |
 | `cells` | `list[Cell]` | `[]` | Every (variant, apparatus class) that any observation landed in, with how many observations pooled there and over how many cases and repeats per case. |
 | `variant_index` | `list[VariantIndexEntry]` | `[]` | One entry per keyed variant — the variant key and the resolved lever map it was digested from. |
 | `refused_merges` | `list[RefusedMerge]` | `[]` | Same-variant cells that did NOT pool, and which rule kept them apart. |

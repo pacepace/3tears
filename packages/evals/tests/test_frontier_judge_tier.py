@@ -49,7 +49,16 @@ def _corpus(*, judged: bool) -> tuple[EvalRun, list[Any]]:
             variant_key="vk-a",
             test_case_id=f"tc{case}",
             rubric_scores=(
-                [RubricScore(dim=_DIM, score=_score(case), scale="ordinal", served_model=_JUDGE, judge_temperature=0.0)]
+                [
+                    RubricScore(
+                        dim=_DIM,
+                        score=_score(case),
+                        scale="ordinal",
+                        served_model=_JUDGE,
+                        judge_temperature=0.0,
+                        axis="capability",
+                    )
+                ]
                 if judged
                 else []
             ),

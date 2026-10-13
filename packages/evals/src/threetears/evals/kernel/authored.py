@@ -17,9 +17,8 @@ hooks code acts on, never what it says or how much it says:
 **What the headline and summary rest on.** ``headline_rests_on`` and ``summary_rests_on`` (one entry per bullet, as
 :func:`summary_bullets` splits the summary) link the two to findings by position, as a decision's ``rests_on`` does, so
 code can show each at the weakest confidence and evidence tier of the findings under it
-(:mod:`threetears.evals.analysis.standing`). Both default to empty so an analysis stored before them reads; the
-generator refuses a new one that leaves them empty over findings, so an empty list beside findings means "stored
-before the link existed", never "rests on nothing".
+(:mod:`threetears.evals.analysis.standing`). Both default to empty, for an analysis with no findings; the
+generator refuses one that leaves them empty over findings.
 
 **Sized to what every writer accepts.** A strict schema derived from the stored analysis models was
 refused by every Anthropic writer as a grammar too large, and the limit counts free-text and list

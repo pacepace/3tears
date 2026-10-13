@@ -129,8 +129,8 @@ def superseding_insights(
 
     A RETRACTED insight (its analysis archived, :func:`retracted_insights`) is not live and is never replaced:
     a new analysis stating a claim an archive withdrew mints it afresh, and archiving that new analysis is
-    what would withdraw it again. Where the ledger already holds several live insights stating one claim —
-    written before this rule — the newest is the one replaced.
+    what would withdraw it again. Where the ledger already holds several live insights stating one claim — an
+    archived analysis restored beside the claim minted afresh, say — the newest is the one replaced.
 
     Args:
         minted: The insights a generation returned, in its order.

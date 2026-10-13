@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field
 
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
 from threetears.evals.analysis.generator import build_user_message
-from threetears.evals.analysis.reporter_kind import ReporterCase, rebuild_bundle
+from threetears.evals.analysis.reporter_kind import ReporterCase
 from threetears.evals.kernel import EvalCampaign
 from threetears.evals.kernel.host import HostProfile, KindContract, ResolvesInto, Sweepable, freeze
 from threetears.evals.schema import EvalRun, LatencyMetrics, SweepableValue
@@ -295,20 +295,3 @@ def _case(frozen: dict[str, Any]) -> ReporterCase:
     return ReporterCase(
         bundle=frozen, bundle_fingerprint=canonical_digest(frozen), bundle_assembled_at="2026-01-01T00:00:00+00:00"
     )
-
-
-class TestAReporterCaseFrozenBeforeTheMoveStillRebuilds:
-    """A frozen bundle is the evidence a case's labels were written against: the move loses none of its values."""
-
-    def test_each_swing_is_read_off_its_divergences_once(self) -> None:
-        bundle = _bundle(("m-a", "m-b"), runs_per_level=1, seed="frozen")
-        rebuilt = rebuild_bundle(_case(_frozen_before_49(bundle)))
-        assert rebuilt.whole_swings == bundle.whole_swings
-        assert rebuilt.scope_divergences == bundle.scope_divergences
-        assert rebuilt.schema_version == 48, "the frozen document's own shape version is a frozen value too"
-
-    def test_two_different_copies_of_one_swing_are_refused(self) -> None:
-        frozen = _frozen_before_49(_bundle(("m-a", "m-b"), runs_per_level=1, seed="frozen"))
-        frozen["scope_divergences"][0]["carried_by"] = "tool_ms"
-        with pytest.raises(ValueError, match="two different swings of total_ms"):
-            rebuild_bundle(_case(frozen))

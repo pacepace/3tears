@@ -823,6 +823,30 @@ def _assemble_and_validate(
     return _resolved_analysis(document, bundle, generation, bundle_decision_surface(bundle), measures=profile.measures)
 
 
+def _reject_a_rendered_figure_opening_a_bullet(authored_bullets: int, rendered: AuthoredAnalysis) -> None:
+    """Refuse a summary whose rendered figures split it into other bullets than the writer linked.
+
+    The links are checked against the summary as written; the report reads the summary as stored, with its
+    figures rendered. A figure reference opening a line renders as a number, and a number followed by ``.`` or
+    ``)`` opens a numbered bullet, so the stored summary would hold a bullet the writer never linked, and every
+    reader of it would show a sentence standing on nothing.
+
+    Args:
+        authored_bullets: How many bullets the summary held as written.
+        rendered: The document with its figures rendered.
+
+    Raises:
+        SoundnessRefusal: Rendering changed how many bullets the summary holds (repaired once).
+    """
+    rendered_bullets = len(summary_bullets(rendered.summary))
+    if rendered_bullets != authored_bullets:
+        raise SoundnessRefusal(
+            f"the summary holds {authored_bullets} bullet(s) as written and {rendered_bullets} once its figures are "
+            "rendered: a figure reference opening a line renders as a number, which reads as a numbered bullet. "
+            "Begin each line of a bullet with words, and put the figure after them"
+        )
+
+
 def _resolved_analysis(
     document: AuthoredAnalysis,
     bundle: AnalysisContextBundle,
@@ -852,7 +876,9 @@ def _resolved_analysis(
     _reject_contradicted_arms(document, bundle)
     _reject_unseparated_adoptions(document, bundle)
     _reject_unestablished_nulls(document, bundle)
+    authored_bullets = len(summary_bullets(document.summary))
     document = render_prose_figures(document, surface)
+    _reject_a_rendered_figure_opening_a_bullet(authored_bullets, document)
     resolutions = [
         _resolution_of(finding, surface, bundle.variant_index, where=f"findings[{index}]", measures=measures)
         for index, finding in enumerate(document.findings)
@@ -1069,9 +1095,8 @@ def _reject_unrested_summary(document: AuthoredAnalysis) -> None:
     (:mod:`threetears.evals.analysis.standing`), and checks a null claim there against those findings
     (:func:`_reject_unestablished_nulls`), so each must name them: ``headline_rests_on``, and one
     ``summary_rests_on`` entry per bullet as :func:`~threetears.evals.kernel.authored.summary_bullets` splits the
-    summary. Over findings, an empty link is refused — a stored empty link then means only "stored before the link
-    existed" — and over none, there is nothing to name. A position past the findings is refused here rather than by
-    the stored model, so the refusal can say which sentence it was.
+    summary. Over findings, an empty link is refused, and over none, there is nothing to name. A position past the
+    findings is refused here rather than by the stored model, so the refusal can say which sentence it was.
 
     Raises:
         SoundnessRefusal: A link is missing, empty over findings, the wrong count, or names a position past them.

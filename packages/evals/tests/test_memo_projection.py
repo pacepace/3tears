@@ -70,6 +70,8 @@ def _generation() -> GenerationProvenance:
         repaired_refusal=None,
         cell_model_version=1,
         user_message_digest="sha256:message",
+        bundle_schema_version=50,
+        host_declarations_digest="sha256:declarations",
     )
 
 

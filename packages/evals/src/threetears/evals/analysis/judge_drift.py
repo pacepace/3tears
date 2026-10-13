@@ -67,18 +67,22 @@ class JudgeDriftDimension(EvalDocumentModel):
     judge_config_id: str | None = Field(
         description=(
             "The JudgeConfig that asked for the first scores, or a ``builtin:`` id = the built-in prompt, by its "
-            "wording; None = a built-in prompt whose wording was not recorded (judged before evaladopt.19)."
-        )
+            "wording."
+            " None = no judge identity was recorded (a score made outside a judge phase): an unknown judge, never "
+            "the same as a recorded one."
+        ),
     )
     judge_temperature: JudgeTemperature | None = Field(
-        default=None, description="The temperature the first scores were sent at; None = not recorded."
+        default=None,
+        description="The temperature the first scores were sent at; None = scores made outside a judge phase.",
     )
     second_model: str = Field(min_length=1, description="The model the second judge was asked as.")
     second_judge_config_id: str | None = Field(
         description=(
             "The JudgeConfig that asked the second judge, or a ``builtin:`` id = the built-in prompt, by its wording; "
-            "None = a built-in prompt whose wording was not recorded (asked before evaladopt.19)."
-        )
+            " None = no judge identity was recorded (a score made outside a judge phase): an unknown judge, never "
+            "the same as a recorded one."
+        ),
     )
     second_temperature: float | None = Field(
         description="The temperature the second judge was requested at; None = what each prompt asks for."
@@ -149,7 +153,7 @@ def _paired_test(
     - **Where every case moved by one amount** no t exists, and the bounded test by betting reads both
       (:func:`~threetears.evals.analysis.stats.bounded_difference_interval`, and
       :func:`~threetears.evals.analysis.stats.bounded_separation_p` with its stakes at the same tail): valid for the mean at
-      every n on the scale's range. The exact sign-flip p this once read here is a test of symmetry, not of the
+      every n on the scale's range. The exact sign-flip p is not read here: it is a test of symmetry, not of the
       mean: twenty cases each up one point arise about one time in ninety from a judge whose mean did not move (up one
       point four times in five, down four the fifth), where the sign flip states one in half a million. The
       price is the truth about a uniform move on a 1-5 scale: twenty cases do not show it, thirty do (with two

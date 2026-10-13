@@ -153,7 +153,6 @@ def _frontier_dominance(frontier: FrontierResult) -> dict[str, FrontierDominance
     second rule for one question, and on means it called one of two identical arms dominated a third of the
     time. Keyed by variant because a cell is one; a variant the lens placed as more than one point (under two
     identity versions, or two subjects) has no one standing and is left out, so a chart reads it as untested.
-    A point stored before domination was tested carries no standing either, and is left out the same way.
 
     Args:
         frontier: The bundle's frontier lens.

@@ -280,12 +280,10 @@ def derive_covariates(
             keyed by (role, model).
         concurrent_eval_jobs: How much eval work was executing when this cell ran, *including*
             this one — the eval jobs holding a slot, or the run's own cell width when it executes its
-            cells concurrently, whichever is larger — or ``None`` when nothing sampled it. Jobs, not runs —
-            a distinction with no live instance since template generation was removed with
-            the v6 eval surface, so every job this counts today IS a run. The wider word is
-            kept deliberately: the probe samples the job manager, and a future non-run job
-            would contend on the same provider account exactly as the generation one would
-            have. None yields no ``execution_mode`` key — "nobody
+            cells concurrently, whichever is larger — or ``None`` when nothing sampled it. Jobs, not runs:
+            every job this counts today IS a run, but the probe samples the job manager, and a non-run
+            job would contend on the same provider account exactly as a run does. None yields no
+            ``execution_mode`` key — "nobody
             looked" is not "nothing else was running".
         dropped_tool_calls: How many tool calls the candidate emitted that the client
             dropped before dispatch, or ``None`` when no candidate turn was observed —

@@ -281,7 +281,7 @@ def measure_title(name: str, reader_name: str | None = None) -> str:
     """A measure as a chart or column heads it: by its reader-facing name, and a measuring-spend measure says it is one.
 
     The reader-facing name (:attr:`MetricDescriptor.reader_name`) when the measure has one, and the key only when
-    it has none — a descriptor stored before the field existed, or a name nothing describes. ``cost_usd`` titled
+    it has none — a name nothing describes. ``cost_usd`` titled
     bare beside an arm reads as what the arm costs, and in a judged run it is that plus what the judge cost. So
     wherever it is shown at all it is labelled measuring spend, apart from the candidate's own.
 
@@ -370,8 +370,8 @@ class MetricDescriptor(EvalBaseModel):
             "What a reader calls the measure — a few words a table header, a chart title or an axis label prints in "
             "place of the key ('Output speed', not 'candidate_output_tokens_per_s'). REQUIRED of every measure a "
             "host registers (`MeasureRegistry` refuses one without it) and supplied by the engine for every core "
-            "measure and every one it describes by construction. None only on a descriptor stored before the field "
-            "existed, and on a name nothing describes; a surface then prints the key, which is all it has."
+            "measure and every one it describes by construction. None only on a name nothing describes; a surface "
+            "then prints the key, which is all it has."
         ),
     )
     data_type: MetricDataType | None = Field(
@@ -404,8 +404,7 @@ class MetricDescriptor(EvalBaseModel):
             "Every interval on its mean is then kept at or above zero, as `value_range` keeps one inside both "
             "bounds, since the mean of values that are never negative is never negative. It bounds one end only, "
             "so it does NOT license the bounded equivalence test, which needs both (`value_range`). An interval on "
-            "a DIFFERENCE in it is never floored: two such means can differ either way. False on a descriptor "
-            "stored before the field existed, whose intervals were stored unfloored."
+            "a DIFFERENCE in it is never floored: two such means can differ either way."
         ),
     )
     categories: tuple[str, ...] | None = Field(
@@ -1079,9 +1078,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
             "concurrency slot (never one queued for it), or other cells of its own run, which executes its cells "
             "concurrently when its launch did not declare latency under test. A condition, not a result: a "
             "`concurrent` observation's latency is kept out of every comparison, bar and ranking, and disclosed as "
-            "withheld. Results stored by 3tears-evals 0.66.0 and earlier counted queued runs too, so a stored "
-            "`serial` from then is trustworthy and a stored `concurrent` is only an upper bound: nothing recorded "
-            "which counted runs were waiting, so its latency is withheld too."
+            "withheld."
         ),
     ),
     # ---- Run-summary aggregates (RunSummaryRow / DimensionSummaryRow) -------
@@ -1272,8 +1269,7 @@ _SEED: tuple[MetricDescriptor, ...] = (
         ),
         description=(
             "Typical end-to-end wall-clock, less sensitive to one slow outlier than the mean. Over the same "
-            "candidate-measuring population as mean_total_ms: a cell an apparatus fault produced is excluded. A "
-            "figure computed before this rule was nearest-rank, the lower middle value at an even count."
+            "candidate-measuring population as mean_total_ms: a cell an apparatus fault produced is excluded."
         ),
     ),
     _d(
@@ -1292,9 +1288,8 @@ _SEED: tuple[MetricDescriptor, ...] = (
         description=(
             "Tail end-to-end wall-clock: as likely above the true 95th percentile as below it. Absent below 13 "
             "measured totals, where no estimate of a 95th percentile is — the slowest of 5 falls below the true one "
-            "77% of the time — and max_total_ms is the tail figure there. A row stored before this rule was "
-            "nearest-rank, the sample maximum at every n up to 19. Over the same candidate-measuring population as "
-            "mean_total_ms: a cell an apparatus fault produced is excluded."
+            "77% of the time — and max_total_ms is the tail figure there. Over the same candidate-measuring "
+            "population as mean_total_ms: a cell an apparatus fault produced is excluded."
         ),
     ),
     _d(

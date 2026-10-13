@@ -53,7 +53,7 @@ _NOW = CORE_SCHEMA_VERSION
 
 #: A synthetic two-step history for the run, ending at the current version: two versions back the judge's
 #: temperature was stored as ``judge_temp``, and the next version renamed it; the current version added
-#: ``cell_concurrency``, which a run one version back never recorded, so its step writes None, "not recorded".
+#: ``case_set``, which a run one version back never recorded, so its step writes None, "not recorded".
 _CHAIN = (
     CoreUpgrader(
         _NOW - 2,
@@ -61,13 +61,13 @@ _CHAIN = (
         "judge_temp renamed judge_temperature",
         _rename("judge_temp", "judge_temperature"),
     ),
-    CoreUpgrader(_NOW - 1, frozenset({"eval_run"}), "cell_concurrency joined", _add("cell_concurrency", None)),
+    CoreUpgrader(_NOW - 1, frozenset({"eval_run"}), "case_set joined", _add("case_set", None)),
 )
 
 
 def _as_two_back(run: dict[str, Any]) -> dict[str, Any]:
     """The same run as the synthetic build two versions back would have stored it."""
-    older = {key: value for key, value in run.items() if key not in ("judge_temperature", "cell_concurrency")}
+    older = {key: value for key, value in run.items() if key not in ("judge_temperature", "case_set")}
     return {**older, "judge_temp": run["judge_temperature"], "schema_version": _NOW - 2}
 
 
@@ -87,7 +87,7 @@ def test_a_run_from_two_versions_back_reads_as_the_run_it_was() -> None:
 
 
 def test_a_run_from_the_previous_version_takes_only_the_last_step() -> None:
-    previous = {key: value for key, value in _RUN.items() if key != "cell_concurrency"} | {"schema_version": _NOW - 1}
+    previous = {key: value for key, value in _RUN.items() if key != "case_set"} | {"schema_version": _NOW - 1}
 
     assert EvalRun.model_validate(_upgrade(previous)) == EvalRun.from_dict(_RUN)
 

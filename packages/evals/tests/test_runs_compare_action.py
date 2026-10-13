@@ -74,7 +74,15 @@ def _two_runs(fixture: OpsFixture, *, baseline: RunCompleteness, candidate: RunC
                     scope_id=TOYHOST_SCOPE,
                     model=model,
                     test_case_id=f"case-{index}",
-                    rubric_scores=[RubricScore(dim="conversation.tone", score=composite + index, scale="ordinal")],
+                    rubric_scores=[
+                        RubricScore(
+                            dim="conversation.tone",
+                            score=composite + index,
+                            scale="ordinal",
+                            axis="capability",
+                            judge_temperature=0.0,
+                        )
+                    ],
                 )
             )
         ids.append(run.id)

@@ -205,8 +205,16 @@ _OTHER_WRITERS_REPEAT = JudgeRepeat(
             scale="ordinal",
             first_score=1,
             first_served_model="judge/other-writer",
-            first_judge_config_id=None,
-            repeat=RubricScore(dim=_DIM, scale="ordinal", score=1, served_model="judge/other-writer"),
+            first_judge_config_id=_KEY.judge_config_id,
+            first_judge_temperature=MODEL_DEFAULT_TEMPERATURE,
+            repeat=RubricScore(
+                dim=_DIM,
+                scale="ordinal",
+                score=1,
+                served_model="judge/other-writer",
+                axis="capability",
+                judge_temperature=0.0,
+            ),
         )
     ],
 )
@@ -623,7 +631,7 @@ class TestWhatCannotBeReproducedIsRefusedBeforeAnySpend:
 
         assert report.repeated == [kept.id]
         (skip,) = report.skipped
-        assert skip.result_id == older.id and "records no identity for the built-in prompt" in skip.reason
+        assert skip.result_id == older.id and "records no judge for" in skip.reason
 
     async def test_a_result_outside_the_run_is_refused(self):
         judge = _PricedJudge()

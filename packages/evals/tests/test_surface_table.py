@@ -171,6 +171,8 @@ def analysis(surface: DecisionSurface, **overrides) -> EvalAnalysis:
             repaired_refusal=None,
             cell_model_version=1,
             user_message_digest="sha256:message",
+            bundle_schema_version=50,
+            host_declarations_digest="sha256:declarations",
         ),
         "document": AuthoredAnalysis.model_validate(
             {
@@ -529,13 +531,11 @@ class TestBarColumns:
         value = build_surface_table(analysis(surface)).rows[0].values[0]
         assert (value.verdict, value.verdict_word) == ("no_interval", "no interval")
 
-    def test_a_verdict_stored_before_intervals_says_it_was_decided_on_the_mean(self) -> None:
-        """An analysis frozen before bars read intervals keeps its word and is marked as the point comparison it was."""
-        surface = two_arm_surface()
-        surface.bars[0].verdicts = [verdict(c, 3.5, 0.25, True, interval=False) for c in surface.cells]
-        value = build_surface_table(analysis(surface)).rows[0].values[0]
-        assert value.verdict == "clears"
-        assert value.text == "3.5 ± 0.25 (n=6), decided on the mean"
+    def test_a_decision_with_no_interval_is_refused(self) -> None:
+        """A verdict is the interval against the line, so a decided one carries both ends of it."""
+        cell = two_arm_surface().cells[0]
+        with pytest.raises(ValidationError, match="decided on its interval"):
+            verdict(cell, 3.5, 0.25, True, interval=False)
 
     def test_a_judged_bars_verdict_states_its_judges_tier_beside_it(self) -> None:
         """A judged bar is as trustworthy as the judges behind it, and the cell says which tier they stand on (#679)."""

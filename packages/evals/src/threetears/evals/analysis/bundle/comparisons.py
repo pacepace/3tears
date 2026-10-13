@@ -90,7 +90,6 @@ from threetears.evals.analysis.bundle.cell_reads import (
     _judged_values,
     _non_faulted,
     _took_no_turn,
-    _unstamped_dimensions,
 )
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
@@ -602,12 +601,10 @@ def _multiple_comparisons(
         them, every guardrail decided for each arm against the control.
     """
     guardrail_readings = _guardrail_readings(catalog, judged_measures, declared)
-    unstamped = _unstamped_dimensions(result for members in results_by_cell.values() for result in members)
     if realized.control_arm is None:
         return MultipleComparisons(withheld=_NO_CONTROL_TO_COMPARE_AGAINST), _guardrails_of(
             guardrail_readings,
             [],
-            unstamped=unstamped,
             withheld=_NO_CONTROL_TO_HOLD_AGAINST if guardrail_readings else None,
         )
     questions = declared.live_questions() if declared is not None else []
@@ -688,7 +685,7 @@ def _multiple_comparisons(
         for control_key, contrast_key in sorted(pairs, key=lambda pair: (pair[0][1], pair[1][0]))
         if values[control_key].get(reading) or values[contrast_key].get(reading)
     ]
-    return MultipleComparisons(families=families), _guardrails_of(guardrail_readings, checks, unstamped=unstamped)
+    return MultipleComparisons(families=families), _guardrails_of(guardrail_readings, checks)
 
 
 def _reading_scope(
@@ -857,7 +854,6 @@ def _guardrails_of(
     readings: dict[tuple[ReadingKind, str], _Guardrail],
     checks: list[GuardrailCheck],
     *,
-    unstamped: list[str],
     withheld: str | None = None,
 ) -> GuardrailReadings:
     """The bundle's guardrail section, from the readings that are guardrails and the checks run on them."""
@@ -866,7 +862,6 @@ def _guardrails_of(
         dimensions=sorted(name for kind, name in readings if kind == "judged"),
         checks=checks,
         withheld=withheld,
-        unstamped_dimensions=unstamped,
     )
 
 

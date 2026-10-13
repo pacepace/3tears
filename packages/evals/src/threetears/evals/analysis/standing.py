@@ -11,10 +11,9 @@ finding's evidence tier from the readings it cites (:func:`~threetears.evals.ker
 - **evidence tier** — the weakest tier of every reading those findings cite.
 
 Derived on every read, never stored: the links are the writer's and are stored as written, and the tiers follow
-from them and the resolutions beside them. **An analysis stored before the links existed has none**, and reads
-``None`` here — "not recorded", which every surface says in words — never a tier guessed from its findings: which
-findings a headline summarized is exactly what such an analysis cannot say. The generator refuses a new analysis
-that leaves the links empty over findings, so an empty link beside findings can only mean that.
+from them and the resolutions beside them. The generator refuses an analysis that leaves the links empty over
+findings. A sentence resting on no finding — every one, over an analysis with none — reads ``None`` here: "not
+recorded", which every surface says in words, never a tier guessed from the findings.
 """
 
 from __future__ import annotations
@@ -64,39 +63,37 @@ def standing_of(analysis: EvalAnalysis, positions: list[int]) -> Standing:
     return Standing(rests_on=list(positions), confidence=confidence, evidence_tier=tier)
 
 
-def headline_standing(analysis: EvalAnalysis) -> Standing | None:
-    """What the headline stands on, or None for an analysis stored before the headline named its findings.
+def headline_standing(analysis: EvalAnalysis) -> Standing:
+    """What the headline stands on.
 
     Args:
         analysis: The analysis.
 
     Returns:
-        The standing; None when the analysis has findings and the headline names none of them.
+        The standing.
     """
-    document = analysis.document
-    if document.findings and not document.headline_rests_on:
-        return None
-    return standing_of(analysis, list(document.headline_rests_on))
+    return standing_of(analysis, list(analysis.document.headline_rests_on))
 
 
-def summary_standings(analysis: EvalAnalysis) -> list[tuple[str, Standing]] | None:
-    """Each summary bullet with what it stands on, or None for an analysis stored before the bullets named theirs.
+def summary_standings(analysis: EvalAnalysis) -> list[tuple[str, Standing]]:
+    """Each summary bullet with what it stands on.
 
     Args:
         analysis: The analysis.
 
     Returns:
-        ``(bullet, standing)`` per bullet (:func:`~threetears.evals.kernel.authored.summary_bullets`), in order; None
-        when the stored links are not one per bullet, which only an analysis stored before them can be.
+        ``(bullet, standing)`` per bullet (:func:`~threetears.evals.kernel.authored.summary_bullets`), in order. Over
+        no findings the links are empty and each bullet stands on nothing.
     """
     document = analysis.document
     bullets = summary_bullets(document.summary)
-    if len(document.summary_rests_on) != len(bullets):
-        return None
-    return [
-        (bullet, standing_of(analysis, list(positions)))
-        for bullet, positions in zip(bullets, document.summary_rests_on, strict=True)
-    ]
+    links = document.summary_rests_on if document.findings else [[] for _ in bullets]
+    if len(links) != len(bullets):
+        raise ValueError(
+            f"analysis {analysis.id!r} links {len(links)} summary bullet(s) and its summary has {len(bullets)}; the "
+            "generator refuses that before it is stored, so this analysis was not written by it"
+        )
+    return [(bullet, standing_of(analysis, list(positions))) for bullet, positions in zip(bullets, links, strict=True)]
 
 
 __all__ = ["Standing", "headline_standing", "standing_of", "summary_standings"]

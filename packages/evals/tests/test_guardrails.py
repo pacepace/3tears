@@ -64,27 +64,29 @@ class TestABoundaryScoreIsNeverAveragedWithCapability:
 
     def test_the_composite_reads_capability_scores_only(self):
         result = self._result(
-            RubricScore(dim=CAPABILITY, scale="pass_fail", axis="capability", score=1),
-            RubricScore(dim=BOUNDARY, scale="pass_fail", axis="boundary", score=0),
+            RubricScore(dim=CAPABILITY, scale="pass_fail", axis="capability", score=1, judge_temperature=0.0),
+            RubricScore(dim=BOUNDARY, scale="pass_fail", axis="boundary", score=0, judge_temperature=0.0),
         )
         assert result_composite(result) == 1.0
 
     def test_a_result_scored_only_on_boundary_has_no_composite(self):
-        result = self._result(RubricScore(dim=BOUNDARY, scale="pass_fail", axis="boundary", score=0))
+        result = self._result(
+            RubricScore(dim=BOUNDARY, scale="pass_fail", axis="boundary", score=0, judge_temperature=0.0)
+        )
         assert result_composite(result) is None
         assert compute_composite_summary([result])[(result.model, result.eval_run_id)]["mean_composite"] is None
 
     def test_a_score_judged_before_the_axis_was_stamped_is_read_as_capability_as_it_was(self):
         result = self._result(
-            RubricScore(dim=CAPABILITY, scale="pass_fail", score=1),
-            RubricScore(dim=BOUNDARY, scale="pass_fail", score=0),
+            RubricScore(dim=CAPABILITY, scale="pass_fail", score=1, axis="capability", judge_temperature=0.0),
+            RubricScore(dim=BOUNDARY, scale="pass_fail", score=0, axis="capability", judge_temperature=0.0),
         )
         assert result_composite(result) == 0.5
 
     def test_pass_k_is_not_failed_by_a_boundary_score(self):
         result = self._result(
-            RubricScore(dim=CAPABILITY, scale="pass_fail", axis="capability", score=1),
-            RubricScore(dim=BOUNDARY, scale="pass_fail", axis="boundary", score=0),
+            RubricScore(dim=CAPABILITY, scale="pass_fail", axis="capability", score=1, judge_temperature=0.0),
+            RubricScore(dim=BOUNDARY, scale="pass_fail", axis="boundary", score=0, judge_temperature=0.0),
         )
         (summary,) = compute_pass_hat_k([result]).values()
         assert summary["pass_hat_k"] == 1.0
@@ -92,7 +94,9 @@ class TestABoundaryScoreIsNeverAveragedWithCapability:
     def test_a_cannot_tell_on_a_boundary_dim_neither_drops_the_composite_nor_pass_k(self):
         result = make_eval_result(
             goal_state_outcomes=[],
-            rubric_scores=[RubricScore(dim=CAPABILITY, scale="pass_fail", axis="capability", score=1)],
+            rubric_scores=[
+                RubricScore(dim=CAPABILITY, scale="pass_fail", axis="capability", score=1, judge_temperature=0.0)
+            ],
             judge_cannot_tell={BOUNDARY: "the transcript never reaches the unsafe ask"},
             judge_cannot_tell_boundary=[BOUNDARY],
         )
@@ -151,11 +155,6 @@ class TestEachGuardrailIsDecidedAgainstTheControl:
         bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST), control=False)
         assert bundle.guardrails.checks == []
         assert bundle.guardrails.withheld is not None and "not the same as held" in bundle.guardrails.withheld
-
-    def test_scores_judged_before_the_axis_was_stamped_are_named(self):
-        bundle = two_arm_bundle([(CAPABILITY, "capability", CAPABILITY_GAIN), (BOUNDARY, None, GUARDRAIL_LOST)])
-        assert bundle.guardrails.unstamped_dimensions == [BOUNDARY]
-        assert bundle.guardrails.checks == [], "an unstamped score is read as capability, as it was then"
 
     def test_the_writer_sees_the_guardrails_by_cell_alias(self):
         message = build_user_message(two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST)))

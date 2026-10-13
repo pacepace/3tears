@@ -212,9 +212,10 @@ def test_a_configured_judge_s_identity_moves_with_the_reply_format_appended_to_i
     assert configured_judge_config_id("cfg", "Return JSON.") != configured_judge_config_id("cfg", "Return JSON. ")
     assert configured_judge_config_id("cfg", "Return JSON.") != configured_judge_config_id("cfg-2", "Return JSON.")
     assert judge_config_of(configured_judge_config_id("cfg", "Return JSON.")) == "cfg"
-    # Read back as they were recorded: a bare id (before the reply format was identified) names its config whole,
-    # and a built-in prompt or nothing names none.
-    assert judge_config_of("cfg") == "cfg"
+    # A bare config id names a config, not the prompt that was sent, so it is no judge's recorded identity; a
+    # built-in prompt or nothing names no config.
+    with pytest.raises(ValueError, match="not a recorded judge identity"):
+        judge_config_of("cfg")
     assert judge_config_of(builtin_judge_config_id("Score it.")) is None
     assert judge_config_of(None) is None
 
@@ -238,25 +239,6 @@ def test_the_reply_format_s_fingerprints_are_pinned_so_a_suffix_change_is_seen(j
     ids = judge_config_ids_for([_TONE, _PASS], every_dim, judged_artifact=judged_artifact)
     pinned = {dim: config_id for (artifact, dim), config_id in _PINNED_FORMATS.items() if artifact is judged_artifact}
     assert ids == pinned, "the reply-format suffix changed: every configured judge is a new judge (see _PINNED_FORMATS)"
-
-
-async def test_a_configured_result_stored_before_the_reply_format_was_identified_is_another_judge() -> None:
-    config = JudgeConfig(scope_id="uni-1", name="tone-v2", rubric_dim_id=_TONE.name, prompt_template="CUSTOM tone")
-    first = await _service(_Client(), {_TONE.name: config}).score_dimension(_TONE, _context(artifact="Candidate: nine"))
-    second = await _service(_Client(), {_TONE.name: config}).score_dimension(_TONE, _context(artifact="Candidate: ten"))
-    assert first.score is not None and second.score is not None
-    current = make_eval_result(
-        id="r-1", rubric_scores=[first.score], judge_config_ids=fold_judge_outcomes([(_TONE.name, first)]).config_ids
-    )
-    # As a pre-evaladopt.19 build stored it: the config's id alone.
-    stored_before = make_eval_result(
-        id="r-old", eval_run_id="run-old", rubric_scores=[second.score], judge_config_ids={_TONE.name: config.id}
-    )
-
-    agreement = judge_agreement(_ratings("r-1", "r-old"), [current, stored_before])
-
-    assert judge_key(stored_before, _TONE.name) != judge_key(current, _TONE.name)
-    assert len(agreement.dimensions) == 2
 
 
 def test_a_judge_config_may_not_take_an_id_spelled_as_a_configured_judge_s_identity() -> None:

@@ -92,6 +92,8 @@ def _cell(variant_key: str, *, rig: str = RIG, scale: float = 1.0) -> CellFacts:
                 evidence_tier="undetermined",
             )
         ],
+        n_candidate_failed=0,
+        n_no_turn=0,
     )
 
 
@@ -192,7 +194,14 @@ class TestTheDecisionSurfaceIsAStoredContract:
 
     def test_a_cell_names_at_least_one_member_run(self) -> None:
         with pytest.raises(ValidationError, match=r"run_ids"):
-            CellFacts(variant_key=BASELINE, apparatus_class_id=RIG, run_ids=[], n_observations=1)
+            CellFacts(
+                variant_key=BASELINE,
+                apparatus_class_id=RIG,
+                run_ids=[],
+                n_observations=1,
+                n_candidate_failed=0,
+                n_no_turn=0,
+            )
 
     def test_the_facts_survive_a_round_trip(self) -> None:
         again = DecisionSurface.model_validate(_surface().model_dump(mode="json"))

@@ -8,7 +8,7 @@ name here, so a caller that reads them off the bundle keeps working.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import Field, computed_field, model_validator
 
@@ -100,8 +100,7 @@ class MeasureSummary(EvalDocumentModel):
             "95th percentile — the bad tail when lower is better (numeric only). Median-unbiased (Hyndman-Fan "
             "type 8): as likely above the true 95th percentile as below. None below 13 observations, where no "
             "estimate of it is — the largest of 5 falls below the true p95 77% of the time — so read `max` there, "
-            "as the worst case seen and never as a percentile. A summary stored before this rule interpolated "
-            "linearly, which understates the tail at every size a cell has."
+            "as the worst case seen and never as a percentile."
         ),
     )
     max: float | None = Field(
@@ -134,8 +133,7 @@ class MeasureSummary(EvalDocumentModel):
         default=None,
         description=(
             "Each test case's mean over its observations (a boolean's share held), ascending, recorded only below 5 cases (the chart band "
-            "floor): a chart draws these as points rather than an interval band there. None at 5 cases or more, "
-            "and on a summary stored before it, which reads as not recorded."
+            "floor): a chart draws these as points rather than an interval band there. None at 5 cases or more."
         ),
     )
     categories: dict[str, int] = Field(
@@ -318,8 +316,7 @@ class BarVerdict(EvalDocumentModel):
         default=None,
         description=(
             "Low bound of the interval on `value` the verdict was decided on — the cell's own interval on the "
-            "measure, as its summary states it. None below two observations, and on a verdict stored before bars "
-            "read intervals."
+            "measure, as its summary states it. None below two observations."
         ),
     )
     ci_high: float | None = Field(
@@ -341,9 +338,7 @@ class BarVerdict(EvalDocumentModel):
             "on the bad side, so it is shown to fall short by more than the margin. None — no decision: the "
             "interval straddles the line (undecided), the cell has a value but no interval (fewer than two "
             "observations), or no observation. `decision` says which; none of the three is a pass or a failure. "
-            "A stored verdict with `cleared` set and no interval predates interval verdicts: it was the cell's "
-            "mean against the threshold, with no margin — read it as that point comparison "
-            "(`decided_on_the_mean`)."
+            "A verdict is decided on its interval, so `cleared` is set only beside both ends of it."
         ),
     )
 
@@ -354,8 +349,7 @@ class BarVerdict(EvalDocumentModel):
             "`judge_evidence_tiers` tier among the judges that served them — `undetermined` when none was counted "
             "or the evidence decides no tier. The verdict is the interval's either way; this says how far a judged "
             "clearance or miss is the judge's word rather than a measurement, and is stated beside it. None — not "
-            "applicable — for a bar on a measured quantity or a goal-state check, which no judge scored; also None "
-            "on a verdict stored before the tier was recorded (every bundle shape before 47)."
+            "applicable — for a bar on a measured quantity or a goal-state check, which no judge scored."
         ),
     )
 
@@ -378,15 +372,16 @@ class BarVerdict(EvalDocumentModel):
             return "no_interval"
         return "undecided"
 
-    @property
-    def decided_on_the_mean(self) -> bool:
-        """Whether this is a stored verdict from before bars read intervals: decided, with no interval.
+    @model_validator(mode="after")
+    def _decided_on_its_interval(self) -> Self:
+        """Refuse a decision with no interval: a verdict is the interval against the line, never the mean.
 
-        Every verdict decided now is decided on an interval, so a decision with none can only have been
-        the old point comparison — the cell's mean against the threshold. Read structurally rather than
-        from a stored flag, so an analysis frozen before the change needs no migration to say so.
+        Raises:
+            ValueError: ``cleared`` is set while either end of the interval is missing.
         """
-        return self.cleared is not None and (self.ci_low is None or self.ci_high is None)
+        if self.cleared is not None and (self.ci_low is None or self.ci_high is None):
+            raise ValueError("a bar verdict is decided on its interval: cleared is set only beside ci_low and ci_high")
+        return self
 
 
 class BarAdjudication(EvalDocumentModel):

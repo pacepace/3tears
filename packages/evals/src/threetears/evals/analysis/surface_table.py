@@ -599,9 +599,6 @@ def _bar_value(bar: BarAdjudication, cell: CellFacts, factor: float) -> SurfaceV
     # A bar that read nothing on a cell where no result took a turn read nothing because there was no turn —
     # a latency bar's measure leaves those failures out — and says that rather than a blank number.
     text = NO_SUCCESSFUL_RESULTS if value is None and cell.all_failed else _value_text(value, sem, verdict.n)
-    if verdict.decided_on_the_mean:
-        # Stored before bars read intervals: the word is the old point comparison, and says so.
-        text += ", decided on the mean"
     if verdict.judge_evidence_tier is not None:
         # A judged bar's verdict is as good as the judges behind it, and says which tier they stand on.
         text += f", judge tier {verdict.judge_evidence_tier}"
@@ -619,8 +616,6 @@ def _merit_columns(
             if facts.merit_axis != axis or name not in present:
                 continue
             factor, unit = rulers[name]
-            # A measuring-spend measure stood here only on a surface frozen before it left the cost axis; it is
-            # labelled for what it is, never as what the arm costs.
             title = surface.measure_heading(name)
             header = f"{title} ({unit})" if unit else title
             columns.append((SurfaceColumn(kind="merit", measure_id=name, unit=unit, header=header, axis=axis), factor))

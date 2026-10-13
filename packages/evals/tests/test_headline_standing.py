@@ -4,8 +4,8 @@ A finding is shown at its confidence and evidence tier, and the headline — wha
 none, so a headline over a medium finding read as settled. The writer names the findings each rests on, and code
 derives the standing (:mod:`threetears.evals.analysis.standing`): the weakest confidence among them, and the weakest
 evidence tier of every reading they cite. The report serves it beside the headline and every bullet, the listing
-beside the headline, and the memo the reporter judge reads beside both. An analysis stored before the links existed
-says its standing was not recorded, and is never given a guessed one.
+beside the headline, and the memo the reporter judge reads beside both. A summary whose rendered figures would split it
+into bullets the writer never linked is refused before it is stored.
 
 Driven over the toy campaign through :func:`~threetears.evals.analysis.generator.generate_analysis`, with two findings:
 0 on latency at high confidence, 1 on cost at medium.
@@ -28,7 +28,6 @@ from threetears.evals.analysis.report import build_report
 from threetears.evals.analysis.report.model import TextBlock
 from threetears.evals.analysis.report.serialize_html import report_html
 from threetears.evals.analysis.report.serialize_md import report_markdown
-from threetears.evals.analysis.report.words import STANDING_NOT_RECORDED
 from threetears.evals.analysis.reporter_kind import render_memo_as_written
 from threetears.evals.analysis.standing import headline_standing, summary_standings
 from threetears.evals.kernel.campaign import EvalAnalysis
@@ -78,14 +77,6 @@ def analysis() -> EvalAnalysis:
     return _generated()
 
 
-@pytest.fixture(scope="module")
-def stored_before(analysis: EvalAnalysis) -> EvalAnalysis:
-    """The same analysis as one stored before the links existed: its stored document carries neither key."""
-    document = analysis.model_dump(mode="json")
-    del document["document"]["headline_rests_on"], document["document"]["summary_rests_on"]
-    return EvalAnalysis.model_validate(document)
-
-
 class TestTheStandingIsTheWeakestOfTheFindingsUnderIt:
     def test_the_headline_stands_at_the_weakest_confidence_of_its_findings(self, analysis: EvalAnalysis) -> None:
         standing = headline_standing(analysis)
@@ -99,12 +90,6 @@ class TestTheStandingIsTheWeakestOfTheFindingsUnderIt:
             ("The wide width is slower.", "high"),
             ("It also costs more, though less surely.", "medium"),
         ]
-
-    def test_an_analysis_stored_before_the_links_has_no_standing_rather_than_a_guessed_one(
-        self, stored_before: EvalAnalysis
-    ) -> None:
-        assert headline_standing(stored_before) is None
-        assert summary_standings(stored_before) is None
 
 
 class TestTheReportServesIt:
@@ -135,29 +120,46 @@ class TestTheReportServesIt:
         )
         assert '<div data-role="headline"><p class="facts">The headline: Confidence: medium' in report_html(report)
 
-    def test_an_analysis_stored_before_the_links_says_its_standing_was_not_recorded(
-        self, stored_before: EvalAnalysis
-    ) -> None:
-        report = build_report(stored_before)
-        headline, summary = report.blocks[0], report.blocks[1]
-        assert isinstance(headline, TextBlock) and headline.role == "headline" and headline.rests_on == []
-        assert [(fact.name, fact.value) for fact in headline.facts] == [("Stands on", STANDING_NOT_RECORDED)]
-        assert isinstance(summary, TextBlock) and summary.body == _SUMMARY and summary.facts == []
-        assert STANDING_NOT_RECORDED in report_markdown(report)
 
-
-def test_the_listing_states_the_headlines_standing(analysis: EvalAnalysis, stored_before: EvalAnalysis) -> None:
+def test_the_listing_states_the_headlines_standing(analysis: EvalAnalysis) -> None:
     host = toyhost_host()
     host.storage.save_analysis(analysis)
-    host.storage.save_analysis(stored_before.model_copy(update={"id": "stored-before"}))
     lines = {line.id: line for line in analyses_list(host, analysis.campaign_id, analysis.scope_id).analyses}
     assert lines[analysis.id].headline_standing == (
         "Confidence: medium · Stands on: checks and measures · rests on finding 1, 2"
     )
-    assert lines["stored-before"].headline_standing == f"Stands on: {STANDING_NOT_RECORDED}"
 
 
 def test_the_memo_the_judge_reads_carries_the_standing(analysis: EvalAnalysis) -> None:
     memo = render_memo_as_written(analysis)
     assert "The headline: Confidence: medium · Stands on: checks and measures. Rests on finding 1, 2." in memo
     assert "- It also costs more, though less surely. — Confidence: medium" in memo
+
+
+def test_a_figure_that_would_render_as_a_new_bullet_is_refused_before_the_analysis_is_stored() -> None:
+    """The links are checked on the summary as written, and the report reads it as stored, figures rendered: a
+    figure opening a line renders as a number, which reads as a numbered bullet the writer never linked."""
+    profile = toyhost_profile()
+    campaign, storage = toyhost_campaign(profile=profile)
+    bundle = assemble_context_bundle(campaign, storage=storage, profile=profile)
+    payload = memo_payload(bundle)
+    narrow = alias_at(bundle, TOYHOST_NARROW)
+    summary = (
+        "- The wide width is slower, read over\n"
+        f"{{{{{narrow}|production_replicating_cost|measure|n}}}}. documents on the narrow arm.\n"
+        "- It also costs more."
+    )
+    payload |= {"findings": payload["findings"][:1], "headline_rests_on": [0], "summary": summary}
+    payload |= {"summary_rests_on": [[0], [0]]}
+    with pytest.raises(Exception, match="reads as a numbered bullet"):
+        asyncio.run(
+            generate_analysis(
+                bundle,
+                prompt=PROMPT,
+                model=MODEL,
+                client=FixturedClient(json.dumps(payload)),
+                prompt_id=PROMPT_ID,
+                bundle_assembled_at=utc_now_iso(),
+                profile=profile,
+            )
+        )

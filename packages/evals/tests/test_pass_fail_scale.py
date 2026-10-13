@@ -71,25 +71,41 @@ class TestTheStoredScore:
     @pytest.mark.parametrize(("scale", "score"), [("ordinal", 0), ("ordinal", 6), ("pass_fail", 2), ("pass_fail", -1)])
     def test_a_score_off_its_scale_is_refused(self, scale, score):
         with pytest.raises(ValidationError, match="not on the"):
-            RubricScore(dim="x.arc", scale=scale, score=score)
+            RubricScore(dim="x.arc", scale=scale, score=score, axis="capability", judge_temperature=0.0)
 
     def test_the_label_names_a_pass_or_fail_and_leaves_a_level_as_its_number(self):
         """`arc=0` reads as the lowest score, not as a judged fail."""
-        assert RubricScore(dim="x.a", scale="pass_fail", score=0).label == "fail"
-        assert RubricScore(dim="x.a", scale="pass_fail", score=1).label == "pass"
-        assert RubricScore(dim="x.a", score=4, scale="ordinal").label == "4"
+        assert (
+            RubricScore(dim="x.a", scale="pass_fail", score=0, axis="capability", judge_temperature=0.0).label == "fail"
+        )
+        assert (
+            RubricScore(dim="x.a", scale="pass_fail", score=1, axis="capability", judge_temperature=0.0).label == "pass"
+        )
+        assert RubricScore(dim="x.a", score=4, scale="ordinal", axis="capability", judge_temperature=0.0).label == "4"
 
     def test_normalized_and_the_bar_follow_the_scale(self):
-        assert RubricScore(dim="x.a", scale="pass_fail", score=1).normalized == 1.0
-        assert RubricScore(dim="x.a", scale="pass_fail", score=0).normalized == 0.0
-        assert RubricScore(dim="x.a", score=5, scale="ordinal").normalized == 1.0
-        assert RubricScore(dim="x.a", score=1, scale="ordinal").normalized == 0.0
+        assert (
+            RubricScore(dim="x.a", scale="pass_fail", score=1, axis="capability", judge_temperature=0.0).normalized
+            == 1.0
+        )
+        assert (
+            RubricScore(dim="x.a", scale="pass_fail", score=0, axis="capability", judge_temperature=0.0).normalized
+            == 0.0
+        )
+        assert (
+            RubricScore(dim="x.a", score=5, scale="ordinal", axis="capability", judge_temperature=0.0).normalized == 1.0
+        )
+        assert (
+            RubricScore(dim="x.a", score=1, scale="ordinal", axis="capability", judge_temperature=0.0).normalized == 0.0
+        )
         # The ordinal threshold says nothing about a pass/fail criterion: its bar is the pass.
-        assert RubricScore(dim="x.a", scale="pass_fail", score=1).clears(5)
-        assert not RubricScore(dim="x.a", scale="pass_fail", score=0).clears(1)
-        assert RubricScore(dim="x.a", score=3, scale="ordinal").clears(3) and not RubricScore(
-            dim="x.a", score=2, scale="ordinal"
-        ).clears(3)
+        assert RubricScore(dim="x.a", scale="pass_fail", score=1, axis="capability", judge_temperature=0.0).clears(5)
+        assert not RubricScore(dim="x.a", scale="pass_fail", score=0, axis="capability", judge_temperature=0.0).clears(
+            1
+        )
+        assert RubricScore(dim="x.a", score=3, scale="ordinal", axis="capability", judge_temperature=0.0).clears(
+            3
+        ) and not RubricScore(dim="x.a", score=2, scale="ordinal", axis="capability", judge_temperature=0.0).clears(3)
 
 
 class _Replying:
@@ -219,15 +235,22 @@ class TestAggregation:
     def test_the_composite_reads_a_pass_as_one_and_a_fail_as_zero(self):
         mixed = _result(
             rubric_scores=[
-                RubricScore(dim="x.a", scale="pass_fail", score=1),
-                RubricScore(dim="x.b", scale="pass_fail", score=0),
+                RubricScore(dim="x.a", scale="pass_fail", score=1, axis="capability", judge_temperature=0.0),
+                RubricScore(dim="x.b", scale="pass_fail", score=0, axis="capability", judge_temperature=0.0),
             ]
         )
         assert result_composite(mixed) == 0.5
 
     def test_pass_k_passes_a_pass_whatever_the_threshold_and_fails_a_fail(self):
-        passed = _result(rubric_scores=[RubricScore(dim="x.a", scale="pass_fail", score=1)])
-        failed = _result(test_case_id="tc-2", rubric_scores=[RubricScore(dim="x.a", scale="pass_fail", score=0)])
+        passed = _result(
+            rubric_scores=[RubricScore(dim="x.a", scale="pass_fail", score=1, axis="capability", judge_temperature=0.0)]
+        )
+        failed = _result(
+            test_case_id="tc-2",
+            rubric_scores=[
+                RubricScore(dim="x.a", scale="pass_fail", score=0, axis="capability", judge_temperature=0.0)
+            ],
+        )
 
         [row] = compute_pass_hat_k([passed, failed], rubric_threshold=5).values()
 
@@ -235,7 +258,12 @@ class TestAggregation:
 
     def test_a_dimension_summary_names_its_scale_and_its_mean_is_the_pass_rate(self):
         results = [
-            _result(test_case_id=f"tc-{i}", rubric_scores=[RubricScore(dim="x.a", scale="pass_fail", score=s)])
+            _result(
+                test_case_id=f"tc-{i}",
+                rubric_scores=[
+                    RubricScore(dim="x.a", scale="pass_fail", score=s, axis="capability", judge_temperature=0.0)
+                ],
+            )
             for i, s in enumerate([1, 1, 0, 1])
         ]
         summary = compute_dimension_summary(results)[("sonnet", "run-1", "x.a")]
@@ -243,8 +271,17 @@ class TestAggregation:
 
     def test_one_dimension_judged_on_two_scales_is_refused(self):
         results = [
-            _result(rubric_scores=[RubricScore(dim="x.a", scale="pass_fail", score=1)]),
-            _result(test_case_id="tc-2", rubric_scores=[RubricScore(dim="x.a", score=4, scale="ordinal")]),
+            _result(
+                rubric_scores=[
+                    RubricScore(dim="x.a", scale="pass_fail", score=1, axis="capability", judge_temperature=0.0)
+                ]
+            ),
+            _result(
+                test_case_id="tc-2",
+                rubric_scores=[
+                    RubricScore(dim="x.a", score=4, scale="ordinal", axis="capability", judge_temperature=0.0)
+                ],
+            ),
         ]
         with pytest.raises(ValueError, match="more than one scale"):
             compute_dimension_summary(results)
@@ -258,7 +295,15 @@ class TestTheProjection:
         return project_score_records([run], results, profile=profile, archived_run_ids=None).records
 
     def test_a_score_row_carries_its_scale(self):
-        records = self._project([_result(rubric_scores=[RubricScore(dim="x.a", scale="pass_fail", score=0)])])
+        records = self._project(
+            [
+                _result(
+                    rubric_scores=[
+                        RubricScore(dim="x.a", scale="pass_fail", score=0, axis="capability", judge_temperature=0.0)
+                    ]
+                )
+            ]
+        )
         [row] = [r for r in records if r.metric == "score"]
         assert (row.rubric_dim, row.rubric_scale, row.value) == ("x.a", "pass_fail", 0.0)
 
@@ -281,8 +326,8 @@ class TestTheProjection:
         results = [
             _result(
                 rubric_scores=[
-                    RubricScore(dim="x.a", scale="pass_fail", score=1),
-                    RubricScore(dim="x.b", score=4, scale="ordinal"),
+                    RubricScore(dim="x.a", scale="pass_fail", score=1, axis="capability", judge_temperature=0.0),
+                    RubricScore(dim="x.b", score=4, scale="ordinal", axis="capability", judge_temperature=0.0),
                 ]
             ),
         ]
@@ -298,8 +343,8 @@ class TestTheProjection:
             [
                 _result(
                     rubric_scores=[
-                        RubricScore(dim="x.a", scale="pass_fail", score=1),
-                        RubricScore(dim="x.b", score=4, scale="ordinal"),
+                        RubricScore(dim="x.a", scale="pass_fail", score=1, axis="capability", judge_temperature=0.0),
+                        RubricScore(dim="x.b", score=4, scale="ordinal", axis="capability", judge_temperature=0.0),
                     ]
                 )
             ]

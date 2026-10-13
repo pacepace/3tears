@@ -7,8 +7,8 @@ did not start a job read a live one as lost, and a cancel there was refused. Her
 - **The holder keeps a lease.** A job's record is written with a lease (:class:`~threetears.evals.schema.JobLease`:
   the holding process's id and an expiry) before its work starts, and :class:`JobLeases` — one per job manager,
   so one per process — renews it with a conditional write every third of its duration while the work runs.
-- **A job is lost only when its record has not ended and its lease has lapsed** (or it carries none: a record
-  written before leases). Every process answers that the same, and the first reader to see it WRITES it
+- **A job is lost only when its record has not ended and its lease has lapsed** (or it carries none: a run a
+  launch prepared and never started). Every process answers that the same, and the first reader to see it WRITES it
   (:func:`settle_job_record`): the record takes its own ending and :class:`~threetears.evals.schema.JobLoss`, with
   ``if_match``, so a race between two readers, or a reader and a renewal, is lost by one of them, which re-reads.
   Once written, the answer is the record's, never recomputed. There is no rule about the order a reader asks
@@ -220,12 +220,10 @@ def _document(record: EvalDocumentModel) -> dict[str, Any]:
 def lease_lapsed(record: LeasedRecord, now: datetime) -> bool:
     """Whether a record's lease has lapsed at ``now`` — or it has none, which no process can be renewing.
 
-    **No grace for a record with no lease.** One was written by a build before leases, which never renews one; a
-    grace measured from when it started, or was last written, would still read a live job lost once the grace ran
-    out, and would only hide that the two builds cannot share a store — the older one's own reclaim reads every
-    job it is not running as abandoned, the newer one's included. So the rule is stated rather than guessed at:
-    every process sharing a store runs a build that keeps leases before any job starts (stop every worker, then
-    upgrade — ``MIGRATIONS.toml``), and a lease-less record that has not ended is lost.
+    **No grace for a record with no lease.** A job's record takes its lease before its work starts, so one that
+    has not ended and carries none was left by a process that ended first — a run its launch prepared and never
+    started — and nothing will ever renew it. A grace measured from when it was written would only delay the same
+    answer, so the rule is stated rather than guessed at: a lease-less record that has not ended is lost.
 
     Args:
         record: A job record.
@@ -241,9 +239,8 @@ def _lapse_cause(record: LeasedRecord) -> str:
     """Why a record whose lease lapsed is lost, in a poll's words."""
     if record.lease is None:
         return (
-            "it carries no lease, so no process can be running it — it was started by a build that kept a job's "
-            "liveness in its own process, which has since gone. Every process sharing a store must run a build "
-            "that keeps leases before any job starts: stop every worker, then upgrade"
+            "it carries no lease, so no process can be running it — a job's record takes its lease before its "
+            "work starts, and the process that wrote this one ended before that"
         )
     return (
         f"its lease, held by process {record.lease.holder}, lapsed at {record.lease.expires_at} without renewal — "

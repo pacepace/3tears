@@ -100,8 +100,8 @@ class ArmMeasurement(EvalDocumentModel):
         ge=0,
         description=(
             "Distinct test cases behind the value (`EvidenceRow.n_cases`): the independent draws its interval is "
-            "read over, and the count a reader is shown. None where the evidence row recorded none (an analysis "
-            "stored before rows carried it), read as not recorded, never as `n`."
+            "read over, and the count a reader is shown. None where the evidence row recorded none, read as not "
+            "recorded, never as `n`."
         ),
     )
     dispersion: str = Field(description="Spread of the value.")
@@ -625,8 +625,8 @@ def _status_and_why(
     including an arm only a deferred decision names, since deferring is not a verdict.
 
     **An arm both adopted and rejected is contradicted, never the winner.** Generation refuses such a
-    memo (:func:`contradicted_arms`), so only an analysis stored before that refusal carries one, and
-    settling it by which disposition is looked at first would show a winner the memo also rules out.
+    memo (:func:`contradicted_arms`); were one read anyway, settling it by which disposition is looked at
+    first would show a winner the memo also rules out.
     Its findings are those of the first adopting and the first rejecting decision, in that order.
 
     Returns:

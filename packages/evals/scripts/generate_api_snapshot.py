@@ -14,10 +14,11 @@ The snapshot is every public root's ``__all__`` (the roots are ``threetears.eval
 surface is a diff in review rather than a surprise in an adopter's import.
 
 **What regenerating records, and what it refuses to.** A name added, or a kind or signature changed, is recorded
-by regenerating: the diff is the record. A name that left a root (moved, renamed or removed) is not: it must first
-be written down in ``MIGRATIONS.toml``'s newest section (its new home or ``removed``, and why), which is what
-the release notes are printed from (``release_notes.py``), and until it is this script writes nothing. A name
-exported from two roots must be dropped from all but its home, or declared in ``api/reexports.toml``.
+by regenerating: the diff is the record. A name that left a root (moved, renamed or removed) is not, when the
+release before shipped it: it must first be written down in ``MIGRATIONS.toml``'s newest section (its new home or
+``removed``, and why), which is what the release notes are printed from (``release_notes.py``), and until it is
+this script writes nothing. A name no release shipped leaves with a regeneration alone. A name exported from two
+roots must be dropped from all but its home, or declared in ``api/reexports.toml``.
 """
 
 from __future__ import annotations

@@ -59,7 +59,11 @@ def _arms(seed: int):
                 test_case_id=f"tc-{case}",
                 k_iteration=k,
                 goal_state_outcomes=[GoalStateOutcome(expression="saved", passed=True)],
-                rubric_scores=[RubricScore(dim="extraction.accuracy", score=4, scale="ordinal")],
+                rubric_scores=[
+                    RubricScore(
+                        dim="extraction.accuracy", score=4, scale="ordinal", axis="capability", judge_temperature=0.0
+                    )
+                ],
                 usage=[RoleUsage(role="candidate", cost_usd=0.02)],
             )
             for case in range(CASES)

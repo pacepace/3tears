@@ -52,7 +52,15 @@ def _bundle(behavior: str, threshold: int, *, score: int = 4):
                 model=model,
                 test_case_id=f"tc-{case}",
                 goal_state_outcomes=[GoalStateOutcome(expression="saved", passed=True)],
-                rubric_scores=[RubricScore(dim="extraction.accuracy", score=score, scale="ordinal")],
+                rubric_scores=[
+                    RubricScore(
+                        dim="extraction.accuracy",
+                        score=score,
+                        scale="ordinal",
+                        axis="capability",
+                        judge_temperature=0.0,
+                    )
+                ],
             )
             for case in range(4)
         ]

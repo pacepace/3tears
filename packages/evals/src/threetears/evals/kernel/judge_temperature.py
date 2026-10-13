@@ -10,9 +10,9 @@ between the two: the settings compared, what was selected, and each answer as it
 
 from __future__ import annotations
 
-from typing import Literal, NamedTuple
+from typing import Literal, NamedTuple, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import (
@@ -69,12 +69,19 @@ class TemperatureAnswer(EvalBaseModel):
     config_id: str | None = Field(
         default=None,
         description=(
-            "The versioned JudgeConfig that asked, or a ``builtin:`` id = the built-in prompt, by its wording; None = "
-            "a built-in prompt whose wording was not recorded (asked before evaladopt.19)."
+            "The versioned JudgeConfig that asked, or a ``builtin:`` id = the built-in prompt, by its wording; None "
+            "only for a call that raised before the judge could name either. A score always names it."
         ),
     )
     cannot_tell: str | None = Field(default=None, description="The judge's reason, when it could not tell.")
     error: str | None = Field(default=None, description="Why the call failed, when it did.")
+
+    @model_validator(mode="after")
+    def _a_score_names_its_judge(self) -> Self:
+        """Refuse a score with no judge identity: it could not be told from another judge's."""
+        if self.score is not None and self.config_id is None:
+            raise ValueError("a scored temperature answer names the judge config that asked")
+        return self
 
 
 class TemperatureCaseAnswers(EvalBaseModel):

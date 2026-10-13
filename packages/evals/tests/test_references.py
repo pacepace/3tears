@@ -80,6 +80,8 @@ def _surface(*, n_independent: int = 4, judged_cases: int = 4, judged_sem: float
                 evidence_tier="separation",
             )
         ],
+        n_candidate_failed=0,
+        n_no_turn=0,
     )
     return DecisionSurface(
         cells=[cell],

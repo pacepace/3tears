@@ -133,11 +133,6 @@ async def test_the_control_is_resolved_from_a_run_as_set_campaign_control_resolv
             "give one",
             id="a-typed-control-beside-a-control-run",
         ),
-        pytest.param(
-            {"declared_design": {**_design(), "controls": _design()["held_fixed"]}},
-            "renamed `held_fixed`",
-            id="the-old-name",
-        ),
         pytest.param({"declared_design": _design(axes=[])}, "axes", id="no-axes"),
     ],
 )

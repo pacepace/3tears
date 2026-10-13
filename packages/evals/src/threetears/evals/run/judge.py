@@ -120,10 +120,9 @@ JUDGE_MAX_TOKENS = JUDGE_REASONING_BUDGET_TOKENS + JUDGE_ANSWER_BUDGET_TOKENS
 #: One object read by both, so the stamp cannot say something the requests did not do.
 #:
 #: **Why it is recorded at all.** Moving either number regrades every later run without changing
-#: ``judge_model``: when these were introduced, every eval judge went from a flat 4096-token cap with no reasoning
-#: parameter to this derived cap with an explicit reasoning budget. Runs launched before that carry
-#: no stamp, and the ``judge_request_settings`` apparatus dimension reads them as unrecorded, so a
-#: campaign pooling runs from both sides of that change is told its judge may have moved.
+#: ``judge_model``, so the stamp differs on either side of the move, and the ``judge_request_settings``
+#: apparatus dimension tells a campaign pooling runs from both sides that its judge may have moved. A run
+#: that carries no stamp reads as unrecorded.
 JUDGE_REQUEST_SETTINGS = ClientRequestSettings(
     max_tokens=JUDGE_MAX_TOKENS,
     reasoning_max_tokens=JUDGE_REASONING_BUDGET_TOKENS,

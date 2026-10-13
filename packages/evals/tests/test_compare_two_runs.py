@@ -55,7 +55,11 @@ def _scored_run(storage: EvalStorage, run_id: str, scores: dict[str, int]) -> Ev
                 scope_id=run.scope_id,
                 model=run.candidate_model,
                 test_case_id=case,
-                rubric_scores=[RubricScore(dim="reply.quality", score=score, scale="ordinal")],
+                rubric_scores=[
+                    RubricScore(
+                        dim="reply.quality", score=score, scale="ordinal", axis="capability", judge_temperature=0.0
+                    )
+                ],
             )
         )
     return run

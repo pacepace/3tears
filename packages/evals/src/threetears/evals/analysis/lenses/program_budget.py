@@ -119,10 +119,9 @@ class ProgramBudget(EvalBaseModel):
     #: The half that stopped without completing — cancelled, failed, budget-stopped, and
     #: any terminal status added later. These dollars are final: the run is not coming
     #: back, so whatever it bought is all it will ever buy. That is a statement about the
-    #: RUN and deliberately no longer one about the quality views: those default to
-    #: ``status="completed"`` and so skip it, but ``status='all'`` admits it, where it
-    #: arrives carrying its DEGRADED completeness disclosure. The earlier wording said no
-    #: quality view would ever read it, which one call disproves.
+    #: RUN, not one about the quality views: those default to ``status="completed"`` and
+    #: so skip it, but ``status='all'`` admits it, where it arrives carrying its DEGRADED
+    #: completeness disclosure.
     n_terminal_incomplete_runs: int = 0
     terminal_incomplete_cost_usd: float = 0.0
     #: The statuses actually present in the terminal half, sorted and distinct — same
