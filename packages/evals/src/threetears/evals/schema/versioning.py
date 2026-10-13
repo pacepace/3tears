@@ -19,7 +19,10 @@ is re-captured, so they keep the strict rule they always had: a
 document written under any :data:`REGENERABLE_SCHEMA_VERSION` but this build's is refused on read, and the
 operator regenerates it. The bundle (``schema_version``), the report (``REPORT_VERSION``), the cell model and
 the identity keys (``IDENTITY_VERSION``) are separate version spaces with their own pins; an upgrader never
-recomputes a key or a digest.
+recomputes a key or a digest. A kept key is stored beside its pre-image and the identity version that computed
+it — a run's ``variant_levers`` beside the keys its results carry, a campaign control's ``control_levers`` and
+``control_identity_version`` beside ``control`` — so a read under a later ``IDENTITY_VERSION`` re-keys it from
+that map (``resolve_declared_control``) and no upgrader is needed to keep it naming its arm.
 
 **Reads stay strict.** A core document whose ``schema_version`` is not an integer, is above
 :data:`CORE_SCHEMA_VERSION` (written by a newer build — two builds sharing one store), or is below

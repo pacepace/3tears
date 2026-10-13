@@ -569,18 +569,29 @@ class RealizedDesign(EvalDocumentModel):
             "run that measured it. Null when no control resolved."
         ),
     )
-    control_excluded: Literal["archived", "unresolved", "unobserved"] | None = Field(
+    control_excluded: Literal["stale", "archived", "unresolved", "unobserved"] | None = Field(
         default=None,
         description=(
             "Set only when the campaign DID declare a control and no resolved observation carries it. "
-            "Three causes, three different operator actions, and collapsing any two sends someone the "
-            "wrong way. 'archived' = a member run carrying that variant was curated out, so the campaign "
-            "gave up its design by choice — un-archive it or declare another. 'unresolved' = some member "
+            "Four causes, four different operator actions, and collapsing any two sends someone the "
+            "wrong way. 'stale' = the control cannot be resolved under this build: it is a bare key (typed, "
+            "with no `control_levers` beside it) computed under an identity predicate other than this build's "
+            "(`declared_design.control_identity_version` says which), so nothing can say which of today's arms "
+            "it names — re-address it from a run with `control_from_run_id` on campaign_update, which records "
+            "the lever map a later predicate re-keys it from. 'archived' = a member run carrying that variant "
+            "was curated out, so the campaign gave up its design by choice — un-archive it or declare another. 'unresolved' = some member "
             "run could not be loaded at all, so whether it carried the variant is UNKNOWABLE rather than "
             "false; a membership outliving its run is a recurring state in a real store, and this is the arm that "
             "keeps it from being reported as a coverage gap. 'unobserved' = every member resolved and "
             "none carried it, which is the only one that says the experiment was not run as designed. "
             "Null alongside a null control_arm means no control was ever declared."
+        ),
+    )
+    stale_control_disclosure: str | None = Field(
+        default=None,
+        description=(
+            "Set exactly when control_excluded is 'stale': that the declared control cannot be resolved, the "
+            "identity predicate its key was computed under and this build's, and the remedy — say it as written."
         ),
     )
     contrasts: list[DesignArm] = Field(
@@ -2011,7 +2022,10 @@ class AnalysisContextBundle(EvalDocumentModel):
             "declared question got exactly one resolution' are both uncheckable without it, and inferring the "
             "declaration from `design` below would make coverage a description of whatever ran. None means the "
             "campaign declared nothing — an exploratory campaign, as `reading_scope.disclosure` says — which is a "
-            "different fact from declaring nothing to sweep."
+            "different fact from declaring nothing to sweep. Its `control` is keyed by the build that assembled "
+            "this bundle, as every cell here is: a control the campaign declared under another identity predicate "
+            "is carried re-keyed from its stored lever map, dated with this build's `control_identity_version`, "
+            "so it names the same arm the cells do."
         ),
     )
     design: RealizedDesign = Field(

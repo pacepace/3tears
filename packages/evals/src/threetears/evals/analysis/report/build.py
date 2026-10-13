@@ -1900,6 +1900,7 @@ def _evidence_disclosures(bundle: AnalysisContextBundle) -> list[ReportBlock]:
         )
     for cell in bundle.short_cells:
         say("runs", cell.sentence)
+    say("comparisons", bundle.design.stale_control_disclosure)
     say("surface", _verdict_order_sentence(bundle))
     say("measurement", bundle.launch_disclosure)
     say("measurement", bundle.measurement_window_disclosure)

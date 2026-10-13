@@ -413,6 +413,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`resolve_bar_name(name: str, *, rubric_dimensions: Mapping[str, RubricScale], goal_state_checks: Collection[str], measures: MeasureRegistry) -> BarName | UnreadableBarName`
 - **`resolve_context_identity`** · function · Return the identity a read surface should show for `run`.
   <br>`resolve_context_identity(run: EvalRun, profile: HostProfile) -> DerivedContextIdentity`
+- **`resolve_declared_control`** · function · Key a campaign's declared control under this build's identity predicate — the one place that is decided.
+  <br>`resolve_declared_control(design: CampaignDesign | None) -> ResolvedControl`
 - **`resolve_result_condition`** · function · Return the condition `result` is in, on every per-result axis.
   <br>`resolve_result_condition(result: EvalResult) -> ResultCondition`
 - **`resolve_result_usage`** · function · Return the per-role usage a read surface should show for `result`.
@@ -569,6 +571,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`RefusedInput`** · exception · A lower layer's refusal of what a caller asked for, held as its fault and its remedy apart.
 - **`RefusedRow`** · class · One stored row the current model refused to reconstruct: what the row itself says it is, and why.
 - **`ReplayedDelivery`** · dataclass · One recorded piece of background work, served in place of running it.
+- **`ResolvedControl`** · model · A declared control as this build keys it — a value, never written back onto the declaration.
 - **`ResolvedUsage`** · model · The per-role usage a read surface should show for one result, and how it got there.
 - **`ResultCondition`** · model · The condition one result is in, on every axis that is a property of the result.
 - **`ResultOutcome`** · enum · How a result participates in scoring, by its error category.
@@ -635,6 +638,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`'very_high'` | `'high'` | `'medium'` | `'low'`
 - **`ContractState`** · literal · How a stored copy reads against the output contract the engine reads its reply by: written for it, written for an earlier one, declaring none, or a prompt with no contract to be written for.
   <br>`'current'` | `'outdated'` | `'undeclared'` | `'unbound'`
+- **`ControlSource`** · literal · Where a resolved control's key came from, which is what a reader must not skip.
+  <br>`'undeclared'` | `'stored'` | `'rekeyed'` | `'stale'`
 - **`CriterionState`** · literal · How one criterion read: its interval wholly at or above the threshold over enough results (`met`), wholly below it (`not_met`), across it (`undecided`), or too little evidence to say (fewer distinct results than its floor, or a kappa or interval that is undefined).
   <br>`'met'` | `'not_met'` | `'undecided'` | `'insufficient'`
 - **`DeliveryOutcome`** · literal · How a recorded piece of background work ended when its capture cell did: it delivered a payload, it failed, or the cell ended with it still in flight.
@@ -2639,7 +2644,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `divergences_tested` | `int` | `0` | Whole-and-part pairs across every lever whose divergence test carried a p, published or not. |
 | `divergences_untested` | `int` | `0` | Whole-and-part pairs whose divergence could not be tested: fewer than two cases carrying both measures on a side, or a remainder (whole minus part) that moved by the same amount on every case where the two measures do not both declare value_range, so no test of the mean can call it; declare value_range on both for the bounded test to read it. |
 | `declared_design` | `CampaignDesign \| None` | `None` | What the campaign SET OUT to do, carried whole rather than reduced to its control. |
-| `design` | `RealizedDesign` | `RealizedDesign(control_arm=None, control_excluded=None, contrasts=[], unplaced_run_ids=[], shape='undesignated')` | What kind of experiment this is, inferred from the runs — never a declaration, and never to be called declared: the run carrying the declared control, each cell's moved levers, and whether the design is one-factor-at-a-time. |
+| `design` | `RealizedDesign` | `RealizedDesign(control_arm=None, control_excluded=None, stale_control_disclosure=None, contrasts=[], unplaced_run_ids=[], shape='undesignated')` | What kind of experiment this is, inferred from the runs — never a declaration, and never to be called declared: the run carrying the declared control, each cell's moved levers, and whether the design is one-factor-at-a-time. |
 | `incomplete_runs` | `dict[str, str]` | `{}` | Run id → status, for every resolved member run that did not reach 'completed'. |
 | `short_runs` | `dict[str, str]` | `{}` | Run id → the disclosure sentence for every resolved member run that delivered fewer cells than it promised, whatever status it ended on. |
 | `completeness_unknown_run_ids` | `list[str]` | `[]` | Resolved member runs carrying no completeness record, so whether they came up short is unknown rather than answered. |
