@@ -97,11 +97,15 @@ class TestHowARoleWasAskedIsAnApparatusInput:
 #: first. Append a row for every bump; never edit one.
 _CORE_V24 = frozenset({"judge_config_ids", "judge_dim_divergence", "judge_model", "max_cost_usd", "simulator_model"})
 CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
-    # 50/12: the baseline — every core apparatus dimension a cell id digests, the judge's request settings and
-    # temperature among them.
+    # 50/12: the apparatus set as first pinned for the baseline — every core apparatus dimension a cell id digests,
+    # the judge's request settings and temperature among them. Bundle shape 50 was the baseline until the control's
+    # earlier cells joined the bundle; no release shipped it, and the row stays as the earlier end the 51 row is
+    # checked against.
     ((50, 12), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
-    # 51/12: the first public release's — the bundle gains `RealizedDesign.earlier_control`; the apparatus set and
-    # the cell model hold.
+    # 51/12: the first public release's shape — the bundle gains `RealizedDesign.earlier_control` and
+    # `FrontierPoint.earlier_control`. The row repeats the 50 set on purpose: the apparatus set and the cell model
+    # hold, and `test_a_set_change_moves_both_versions` reads that as a shape-only bump (the bundle version moved,
+    # the cell model stayed). It is the last row, so it is also the one the current versions are checked against.
     ((51, 12), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
 )
 
