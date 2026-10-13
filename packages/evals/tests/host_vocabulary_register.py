@@ -275,6 +275,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "testing/import_boundary.py": {},
     "testing/jobs_conformance.py": {},
     "testing/reader_conformance.py": {},
+    "testing/recorded_completions.py": {},
     "testing/store_conformance.py": {},
     "vega/__init__.py": {},
     "vega/arms/__init__.py": {},
