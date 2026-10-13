@@ -631,6 +631,7 @@ def create_tool_search_tool(
     max_limit: int = DEFAULT_SEARCH_MAX_LIMIT,
     group_of: Callable[[BaseTool], str | None] | None = None,
     nothing_fits: Callable[[str, Sequence[tuple[BaseTool, float]]], bool] | None = None,
+    offer: Callable[[Sequence[BaseTool], Sequence[BaseTool]], tuple[list[str], list[BaseTool]]] | None = None,
 ) -> BaseTool:
     """Build the ``tool_search`` meta-tool.
 
@@ -664,6 +665,14 @@ def create_tool_search_tool(
     ranges; a caller judges by a margin it has measured. It is not asked when
     the ranking did not run: word matches carry no score to judge.
 
+    ``offer`` is how the caller shows what was found and decides what is
+    handed over. It is given the tools found and the whole catalog, and
+    answers with one line per tool found and the tools ``on_hit`` receives. A
+    caller whose surface keeps some tools behind another (a helper that runs
+    them) names the way in on the tool's line and hands that over instead.
+    Left out, each tool found is shown as :func:`tool_hit_line` and handed
+    over as it is. Every other sentence of the result stays this factory's.
+
     :param index: the shared relevance index (embeds + ranks)
     :ptype index: ToolRelevanceIndex
     :param full_catalog_provider: zero-arg callable returning the current
@@ -680,14 +689,25 @@ def create_tool_search_tool(
     :ptype group_of: Callable[[BaseTool], str | None] | None
     :param nothing_fits: given the query and the scored ranking, whether to offer none of it
     :ptype nothing_fits: Callable[[str, Sequence[tuple[BaseTool, float]]], bool] | None
+    :param offer: given the tools found and the whole catalog, the line for each and the tools to hand over
+    :ptype offer: Callable[[Sequence[BaseTool], Sequence[BaseTool]], tuple[list[str], list[BaseTool]]] | None
     :return: the ``tool_search`` ``BaseTool``
     :rtype: BaseTool
     """
     default_limit = max(1, min(limit, max_limit))
 
+    def _offered(matches: list[BaseTool], catalog: list[BaseTool]) -> list[str]:
+        """Hand the tools found to ``on_hit`` and answer with the line for each."""
+        if offer is None:
+            on_hit(matches)
+            return [tool_hit_line(t) for t in matches]
+        lines, handed = offer(matches, catalog)
+        if handed:
+            on_hit(handed)
+        return lines
+
     def _found(matches: list[BaseTool], catalog: list[BaseTool], header: str) -> str:
-        on_hit(matches)
-        lines = [tool_hit_line(t) for t in matches]
+        lines = _offered(matches, catalog)
         if group_of is not None:
             lines += also_in_family(matches, catalog, group_of)
         return header + "\n" + "\n".join(lines)
@@ -719,13 +739,11 @@ def create_tool_search_tool(
                     "tool_search: family listed",
                     extra={"extra_data": {"family": family_name, "family_size": len(catalog), "shown": len(shown)}},
                 )
-                on_hit(shown)
+                shown_lines = _offered(shown, whole_catalog)
                 rest = (
                     [f"The rest: {', '.join(t.name for t in catalog[wanted:])}."] if len(shown) < len(catalog) else []
                 )
-                return "\n".join(
-                    [f"The {family_name} family has {count}. {_CALL_AFTER}", *rest, *(tool_hit_line(t) for t in shown)]
-                )
+                return "\n".join([f"The {family_name} family has {count}. {_CALL_AFTER}", *rest, *shown_lines])
         if not query:
             return "[TOOL ERROR] tool_search: say what you need the tool to do."
 

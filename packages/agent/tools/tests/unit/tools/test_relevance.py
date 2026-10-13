@@ -1038,3 +1038,85 @@ async def test_word_matches_are_not_judged_for_they_have_no_score() -> None:
 
     assert "by matching words only" in await search_tool.ainvoke({"query": "search the web"})
     assert [[t.name for t in h] for h in hits] == [["web_search"]]
+
+
+def _through_the_door(found: Sequence[BaseTool], catalog: Sequence[BaseTool]) -> tuple[list[str], list[BaseTool]]:
+    """A caller's ``offer``: mail tools are reached through ``ping``, which is handed over once in their place."""
+    door = next(t for t in catalog if t.name == "ping")
+    lines: list[str] = []
+    handed: list[BaseTool] = []
+    for tool in found:
+        if tool.name.startswith("email_"):
+            lines.append(f"- {tool.name}: ask ping for it")
+            offered = door
+        else:
+            lines.append(f"- {tool.name}: yours")
+            offered = tool
+        if offered not in handed:
+            handed.append(offered)
+    return lines, handed
+
+
+async def test_tool_search_shows_and_hands_over_what_the_callers_offer_says() -> None:
+    catalog = _family_catalog()
+    index = _family_index(catalog, {"email_read": 1.0, "email_search": 0.9, "calendar_move": 0.8}, "read my mail")
+    hits: list[list[BaseTool]] = []
+    search_tool = create_tool_search_tool(
+        index=index,
+        full_catalog_provider=lambda: catalog,
+        on_hit=hits.append,
+        limit=3,
+        group_of=_family_of,
+        offer=_through_the_door,
+    )
+
+    result_text = await search_tool.ainvoke({"query": "read my mail"})
+
+    assert result_text.splitlines() == [
+        "Found these tools. Call them after this search returns, not alongside it:",
+        "- email_read: ask ping for it",
+        "- email_search: ask ping for it",
+        "- calendar_move: yours",
+        "Also in the calendar family: calendar_list, calendar_create.",
+    ]
+    assert [[t.name for t in h] for h in hits] == [["ping", "calendar_move"]]
+
+
+async def test_a_listed_family_is_shown_and_handed_over_by_the_callers_offer_too() -> None:
+    catalog = _family_catalog()
+    index = ToolRelevanceIndex(embedder=_FakeEmbeddings({}), top_k=2)
+    hits: list[list[BaseTool]] = []
+    search_tool = create_tool_search_tool(
+        index=index,
+        full_catalog_provider=lambda: catalog,
+        on_hit=hits.append,
+        group_of=_family_of,
+        offer=_through_the_door,
+    )
+
+    listed = await search_tool.ainvoke({"family": "mail"})
+
+    assert listed.splitlines() == [
+        "The mail family has 2 tools. Call them after this search returns, not alongside it:",
+        "- email_search: ask ping for it",
+        "- email_read: ask ping for it",
+    ]
+    assert [[t.name for t in h] for h in hits] == [["ping"]]
+
+
+async def test_an_offer_that_hands_nothing_over_binds_nothing() -> None:
+    catalog = _family_catalog()
+    index = _family_index(catalog, {"email_read": 1.0}, "read my mail")
+    hits: list[list[BaseTool]] = []
+    search_tool = create_tool_search_tool(
+        index=index,
+        full_catalog_provider=lambda: catalog,
+        on_hit=hits.append,
+        limit=1,
+        offer=lambda found, _catalog: ([f"- {t.name}: not yours here" for t in found], []),
+    )
+
+    result_text = await search_tool.ainvoke({"query": "read my mail"})
+
+    assert result_text.splitlines()[1:] == ["- email_read: not yours here"]
+    assert hits == []

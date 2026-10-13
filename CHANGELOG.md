@@ -71,6 +71,11 @@ failed tool for the rest of a turn then refused every later call to it.
   of it. The factory holds no similarity floor.
 - **Added, `ToolSearchResult.ranked`:** the whole ranking with scores; empty when the ranking did
   not run.
+- **Added, `create_tool_search_tool(..., offer=None)`:** `offer(found, catalog)` answers with the
+  line for each tool found and the tools `on_hit` receives, for a search and for a listed family. A
+  consumer whose surface keeps some tools behind another names the way in on the tool's line and
+  hands that over instead. Left out, each tool is shown as `tool_hit_line` and handed over as it is.
+  Every other sentence of the result stays the factory's.
 - **Added, `tool_arguments`, `tool_hit_line`, `tool_families`, `also_in_family`:** the pieces a
   consumer with its own hit lines uses instead of writing them again.
 - **Changed, the word-match fallback:** its first line says the tools were found by matching words
