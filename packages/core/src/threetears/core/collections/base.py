@@ -571,7 +571,11 @@ class BaseCollection(ABC, Generic[EntityT]):
     #:
     #: The max age is the backstop, not the mechanism: it bounds a marker only when a write
     #: commits and then fails to advance the generation, and it is the server-side lifetime that
-    #: keeps markers from filling the shared L2 bucket. Opting in requires a generation source on
+    #: keeps markers from filling the shared L2 bucket. It is the one age kept on a cache the
+    #: generations invalidate, by the owner's ruling of 2026-10-13: a writer that dies between
+    #: its commit and its advance raises nothing anywhere, and until the generation is advanced
+    #: in the write's own transaction this age is all that ends that window
+    #: (docs/epoch-task-06-collection-generations-by-default.md, "The One Timer That Stays"). Opting in requires a generation source on
     #: the registry, refuses deferred L3 flushes (a write visible before its row lands would be
     #: hidden by a marker recorded in between), and refuses subscript writes (fire-and-forget
     #: cannot report a generation it failed to advance).

@@ -1206,6 +1206,27 @@ Built on `feat/generations-contract` in 3tears, the hub (`14-eng-ai-bot-reports`
 (the reports plan's "Before Release"). The owner's rulings it applies: no TTL or other safety net
 on a cache the epoch system invalidates; derived caches row by row, ALL only for an unknown reach.
 
+### The One Timer That Stays, and Why (the owner's ruling, 2026-10-13)
+
+A recorded absence (`BaseCollection.negative_cache_max_age`, used by the revocation list in
+`threetears.core.coordination.tables`, 60 seconds) keeps its max age in 0.66.0. It is the one
+exception to "no TTL or other safety net on a cache the epoch system invalidates", and it is kept
+on purpose, not overlooked.
+
+- **What it covers.** A write commits to L3 and then advances the table's generation as a second
+  step. A writer that is cancelled or dies between the two leaves the row committed, the
+  generation unmoved and no error anywhere. Every recorded absence for that key then keeps
+  answering. For the revocation list that is a revoked session still answering "not revoked".
+  The max age ends that window after 60 seconds; nothing else does.
+- **Why it was not removed.** Removing it was tried on 2026-10-13 and stopped before any code
+  changed: without the age, the window above lasts until the table is next written, and the
+  shared L2 bucket has no other bound on live markers.
+- **What removes it.** Advancing the generation in the same L3 transaction as the write, with the
+  catch-up pass reconciling the epoch key from that row, so a commit cannot land without its
+  generation; and a bound on recorded absences that is not a lifetime (a count bound, or keeping
+  them out of L2). That work is scheduled with the release that follows this one, in the
+  `nats-receiver-trust` build plan (its "absence markers" chunk), which carries the analysis.
+
 ### What Must Already Be Deployed Everywhere
 
 Contract is the last step of expand, migrate, contract, so it is safe only once nothing older than
