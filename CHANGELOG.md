@@ -6,6 +6,82 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Tools: a note comes before the body it is about
+
+A reader that keeps only the head of a long result (a prompt budget, a stored copy, a digest) lost
+the one line saying the result was incomplete, because every tool wrote that line last. A page cut
+at its bound was discussed as if whole; a recall that lost a branch was presented as everything.
+
+- **Added, `TextWindow.rendered(note_first=True, notes=())`:** the window line first, then the
+  tool's other notes one per line, a blank line, then the text. The trailing form stays for a
+  caller that has not moved; `notes` is refused without `note_first`.
+- **Changed, `web_fetch`, `parse_document`, `dictionary`, the transcript `media_analyze` returns and
+  the copy `create_context_save_node` stores:** each renders note-first. `parse_document` puts its
+  OCR note second, above the title, pages and words. A stored copy's `short_desc` and `long_desc`
+  are of the result, not of the note.
+- **Changed, `memory_search`:** `(Partial results: ... failed, so more may exist.)` is the first
+  line, not the last. Sections are parted by one blank line and a result no longer opens with one.
+- **Enforcement, `tests/enforcement/test_a_tool_states_its_notes_first.py`:** no window is rendered
+  without `note_first=True`, no note is glued on behind a body, and no note is appended to a list
+  of lines after lines that are not notes, in any package.
+
+### Tools: a call that changed nothing is not a failure
+
+A consumer read failure only from `[TOOL ERROR]`. A duplicate `add_todo` came back as plain text and
+was recorded as done; a todo that was not found came back as an error, and a consumer that refuses a
+failed tool for the rest of a turn then refused every later call to it.
+
+- **Added, `threetears.agent.tools.utils`:** `NO_CHANGE_PREFIX` (`[NO CHANGE]`), `TOOL_ERROR_PREFIX`,
+  `tool_no_change(tool_name, what)` and `tool_result_status(result)`, which answers `ok`,
+  `no_change` or `error` from how the text opens. A consumer calls it and parses no sentence.
+- **Changed, `add_todo`:** a duplicate answers `[NO CHANGE] add_todo: ...`.
+- **Changed, `complete_todo`, `update_todo`, `remove_todo`:** a todo that is not there answers
+  `[NO CHANGE]` and lists what the list holds, or the lists that exist. `update_todo` with nothing
+  to change is a `[TOOL ERROR]`.
+- **Changed, `variable_set`, `variable_get`:** at the cap, and for a name that is not saved, the
+  answer is `[NO CHANGE]` with the saved names. A store failure is a `[TOOL ERROR]`, where it raised.
+- **Added, `VariableLimitError`** (a `ValueError`), raised by `ToolContextManager.set_variable` at
+  the cap.
+
+### Tools: `tool_search` shows arguments and families, and its caller judges the fit
+
+- **Added, the model's arguments `limit` and, with families, `family`:** `family` alone lists a
+  family, `family` with a query searches it, and a family that does not exist is answered with the
+  families that do.
+- **Changed, a hit line:** `- name(argument: type, optional?: type): description`. Arguments a host
+  injects are not shown.
+- **Added, `create_tool_search_tool(..., max_limit=20, group_of=None, nothing_fits=None)`:**
+  `group_of` names a tool's family, and a hit list then ends `Also in the <family> family: ...`.
+  `nothing_fits(query, ranked)` is handed the whole scored ranking and answers whether to offer none
+  of it. The factory holds no similarity floor.
+- **Added, `ToolSearchResult.ranked`:** the whole ranking with scores; empty when the ranking did
+  not run.
+- **Added, `tool_arguments`, `tool_hit_line`, `tool_families`, `also_in_family`:** the pieces a
+  consumer with its own hit lines uses instead of writing them again.
+- **Changed, the word-match fallback:** its first line says the tools were found by matching words
+  only, because the ranked search did not run.
+
+### Wake, memory: times in the zone the caller names
+
+A wake listing printed `2026-10-10T04:11:20.123456+00:00` and a memory `Oct 9, 2026 at 3:00 PM` with
+no zone, to a reader whose clock is somewhere else.
+
+- **Added, `threetears.core.utils.render_local_time(value, tz)` and `resolve_zone(tz)`:**
+  `Oct 9, 2026 at 9:11 PM PDT`. A name that is not a zone is refused, not read as UTC.
+- **Added, `tz=` on `load_memory_search_tool`, the wake schedule create, update, list and resume
+  loaders, and the webhook subscription create, update and list loaders:** a `tzinfo` or an IANA
+  name. Every time in a result is shown in it and names it. Ids stay as stored. With no `tz` the
+  text is unchanged.
+- **Added, `threetears.agent.wake.format_wake_time` and `describe_schedule`:** a wake's time and
+  its schedule in words (`every 4 hours`, `daily at 03:00 America/Los_Angeles`).
+
+### Wake: a change to a protected wake says what was there before
+
+- **Changed, `update_protected`:** returns `ProtectedWakeChange` (`schedule`, `schedule_type`,
+  `config_before`, `config_after`, `next_fire_before`, `next_fire_after`, `changed`, `said(tz)`)
+  where it returned the entity. The wake as it now stands is `.schedule`.
+  `said()` reads `Was every 3 hours, next fire <time>. Now every 6 hours, next fire <time>.`
+
 ## v0.66.0 -- 2026-10-05
 
 ### Wake: a check that found nothing is a fire status of its own
