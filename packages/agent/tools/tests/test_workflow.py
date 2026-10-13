@@ -131,6 +131,32 @@ async def test_context_recall_tool(ctx: ToolContextManager) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_long_result_is_recalled_in_parts_and_the_parts_are_the_whole(ctx: ToolContextManager) -> None:
+    """One call returns one window, its window line first; the offset it names returns the next."""
+    from threetears.agent.tools.context import RECALL_MAX_CHARS
+
+    full = "".join(f"line {n:05d} of the page\n" for n in range(2000))
+    cid = await ctx.save_tool_result("web_fetch", full)
+    tool = _make_tools(ctx)["context_recall"]
+    assert "offset" in tool.args, "the offset a window line names is an argument"
+    parts: list[str] = []
+    offset = 0
+    for _ in range(10):
+        result = await tool.ainvoke({"context_id": cid, "offset": offset})
+        line, blank, body = result.split("\n", 2)
+        assert line.startswith(f"[characters {offset:,}-") and blank == "", line
+        assert len(body) <= RECALL_MAX_CHARS
+        parts.append(body)
+        if "the end of it" in line:
+            break
+        assert f"call context_recall again with offset={offset + len(body)} " in line
+        offset += len(body)
+    whole = "".join(parts)
+    assert whole.endswith(full) and whole.index(": ") == len(whole) - len(full) - 2, "the key, then all of it"
+    assert len(parts) == -(-len(whole) // RECALL_MAX_CHARS) > 2
+
+
+@pytest.mark.asyncio
 async def test_a_result_written_once_is_recalled_with_no_note(ctx: ToolContextManager) -> None:
     cid = await ctx.save_tool_result("web_search", "old results", input_fingerprint="query=moon")
     result = await _make_tools(ctx)["context_recall"].ainvoke({"context_id": cid})

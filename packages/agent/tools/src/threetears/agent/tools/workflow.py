@@ -12,7 +12,8 @@ from threetears.observe import get_logger
 
 from threetears.core.utils.local_time import resolve_zone
 
-from threetears.agent.tools.context import ToolContextManager, VariableLimitError, refreshed_note
+from threetears.agent.tools.context import ToolContextManager, VariableLimitError, recalled_text
+from threetears.agent.tools.text_window import WindowedInput
 from threetears.agent.tools.utils import TOOL_ERROR_PREFIX, tool_no_change
 
 log = get_logger(__name__)
@@ -45,7 +46,7 @@ class GetVariableInput(BaseModel):
     key: str = Field(description="The name it was saved under.")
 
 
-class RecallContextInput(BaseModel):
+class RecallContextInput(WindowedInput):
     """Input for the recall_context tool."""
 
     context_id: str = Field(description="The id in a [ctx:<id>] mark, with or without the ctx: part.")
@@ -95,13 +96,13 @@ async def _get_variable(tool_context: ToolContextManager, key: str) -> str:
     return f"{key} ({var['value_type']}): {var['value']}"
 
 
-async def _recall_context(tool_context: ToolContextManager, context_id: str, zone: tzinfo | None = None) -> str:
+async def _recall_context(
+    tool_context: ToolContextManager, context_id: str, zone: tzinfo | None = None, offset: int = 0
+) -> str:
     item = await tool_context.get_context_item(context_id)
     if item is None:
         return f"Saved result '{context_id}' not found in this conversation."
-    body = f"{item.get('key', 'unknown')}: {item.get('content', '')}"
-    note = refreshed_note(item, zone)
-    return body if note is None else f"{note}\n\n{body}"
+    return recalled_text(item, offset=offset, tz=zone, label=f"{item.get('key', 'unknown')}: ")
 
 
 def _declare_workflow(tool_context: ToolContextManager, plan: str, steps: list[str]) -> str:
@@ -148,10 +149,13 @@ def load_workflow_tools(tool_context: ToolContextManager, *, tz: tzinfo | str | 
             args_schema=GetVariableInput,
         ),
         StructuredTool.from_function(
-            func=lambda context_id: None,
-            coroutine=lambda context_id: _recall_context(tool_context, context_id, zone),
+            func=lambda context_id, offset=0: None,
+            coroutine=lambda context_id, offset=0: _recall_context(tool_context, context_id, zone, offset),
             name="context_recall",
-            description="Read the whole of a saved tool result by the id in its [ctx:<id>] mark.",
+            description=(
+                "Read a saved tool result by the id in its [ctx:<id>] mark. A long one comes in parts: "
+                "each part names the offset of the next."
+            ),
             args_schema=RecallContextInput,
         ),
         StructuredTool.from_function(

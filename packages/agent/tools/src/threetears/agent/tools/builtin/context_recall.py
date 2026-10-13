@@ -26,7 +26,8 @@ from threetears.core.utils.local_time import resolve_zone
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
-from threetears.agent.tools.context import refreshed_note
+from threetears.agent.tools.text_window import WindowedInput
+from threetears.agent.tools.context import recalled_text
 
 __all__ = [
     "ContextRecallTool",
@@ -105,6 +106,12 @@ class ContextRecallTool(TearsTool):
                 "type": "string",
                 "description": "The id in a [ctx:<id>] mark, with or without the ctx: part.",
             },
+            "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 0,
+                "description": WindowedInput.model_fields["offset"].description,
+            },
         },
         "required": ["context_id"],
     }
@@ -119,10 +126,13 @@ class ContextRecallTool(TearsTool):
            no scope at all the error names what the caller must supply
            (:func:`~threetears.agent.tools.call_scope.no_call_scope_message`).
         3. unknown id -> "not found".
-        4. found -> success with the full stored content, opened by one line
-           when a later call with the same input replaced what the row first held.
+        4. found -> success with the stored content from ``offset``, at most
+           :data:`~threetears.agent.tools.context.RECALL_MAX_CHARS` of it. A
+           part opens with its window line, which names the next offset, and a
+           result a later call with the same input replaced opens with one line
+           saying so.
 
-        :param kwargs: must include ``context_id`` (string handle).
+        :param kwargs: must include ``context_id`` (string handle); may include ``offset``.
         :ptype kwargs: Any
         :return: the stored content on success, else a clear failure
             result the LLM can reason about.
@@ -154,9 +164,8 @@ class ContextRecallTool(TearsTool):
                     error="not found",
                 )
             else:
-                body = str(item.get("content", ""))
-                note = refreshed_note(item, self._zone)
-                result = ToolResult(success=True, content=body if note is None else f"{note}\n\n{body}")
+                offset = max(int(kwargs.get("offset") or 0), 0)
+                result = ToolResult(success=True, content=recalled_text(item, offset=offset, tz=self._zone))
         return result
 
     def mcp_schema(self) -> MCPToolDefinition:
@@ -169,8 +178,8 @@ class ContextRecallTool(TearsTool):
             name=self.mcp_name(),
             version=self.mcp_version(),
             description=(
-                "Recall the full content of a previously-offloaded tool result "
-                "by its context id (the '<id>' from a '[ctx:<id>]' handle)."
+                "Recall a previously-offloaded tool result by its context id (the '<id>' from a "
+                "'[ctx:<id>]' handle). A long one comes in parts: each part names the offset of the next."
             ),
             input_schema=self._INPUT_SCHEMA,
         )

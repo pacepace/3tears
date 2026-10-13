@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Tools: a stored result is recalled in parts
+
+`context_recall` returned a stored result whole, whatever its size. A recalled result is a tool
+message, sent again on every later round of the loop that recalled it, so a consumer either put
+tens of thousands of tokens in every round or cut the recall and left the rest unreachable.
+
+- **Changed, `context_recall` (both `load_workflow_tools` and the `threetears.context_recall`
+  builtin):** one call returns at most `RECALL_MAX_CHARS` (15,000) characters, and takes `offset`.
+  A part opens with its window line, which names the offset of the next part; the line saying a
+  later call replaced the row comes second. A result under the bound is returned as before.
+  **A consumer that read a long recall as the whole result now reads its first part.**
+- **Added, `threetears.agent.tools.context.recalled_text(item, offset=, tz=, label=)` and
+  `RECALL_MAX_CHARS`:** the one rendering both tools use.
+
 ### Tools: a note comes before the body it is about
 
 A reader that keeps only the head of a long result (a prompt budget, a stored copy, a digest) lost

@@ -5,11 +5,12 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping
 from datetime import UTC, datetime, tzinfo
-from typing import Any
+from typing import Any, Final
 from uuid import UUID, uuid7
 
 from threetears.agent.memory.collections import MemoryRefsCollection
 from threetears.agent.tools.collections import ContextItemCollection
+from threetears.agent.tools.text_window import window_text
 from threetears.core.utils.local_time import render_local_time
 from threetears.observe import get_logger
 from threetears.langgraph.fence import explained_fence
@@ -17,9 +18,11 @@ from threetears.langgraph.fence import explained_fence
 log = get_logger(__name__)
 
 __all__ = [
+    "RECALL_MAX_CHARS",
     "ToolContextManager",
     "VariableLimitError",
     "make_tool_result_dedup_key",
+    "recalled_text",
     "refreshed_note",
 ]
 
@@ -34,6 +37,37 @@ class VariableLimitError(ValueError):
 
 
 _MEMORY_REF_FIFO_CAPACITY = 50
+
+
+#: What ONE ``context_recall`` returns of a stored result. A recalled result is a tool message,
+#: sent again on every later round of the loop that recalled it, so a stored result of any size
+#: is read a part at a time: the window line names the offset of the next part.
+RECALL_MAX_CHARS: Final[int] = 15_000
+
+
+def recalled_text(item: Mapping[str, Any], *, offset: int = 0, tz: tzinfo | str | None = None, label: str = "") -> str:
+    """A stored result as ``context_recall`` returns it: one window of it, its notes first.
+
+    The window line first when this is a part, then the line saying a later call replaced what
+    the row first held, then a blank line and the text. ``offset`` counts characters of the text
+    the tool returns (``label`` and the stored content), so the offset a window line names is the
+    one to pass back.
+
+    :param item: a context item, with its ``content``
+    :ptype item: Mapping[str, Any]
+    :param offset: where in the text to start
+    :ptype offset: int
+    :param tz: the zone a refreshed result's time is said in
+    :ptype tz: tzinfo | str | None
+    :param label: what the text opens with, such as the item's key and a colon
+    :ptype label: str
+    :return: what the model reads
+    :rtype: str
+    :raises ValueError: when ``tz`` is a name that is not a known zone
+    """
+    window = window_text(f"{label}{item.get('content', '')}", offset=offset, max_chars=RECALL_MAX_CHARS)
+    note = refreshed_note(item, tz)
+    return window.rendered(tool="context_recall", note_first=True, notes=[note] if note else [])
 
 
 def refreshed_note(item: Mapping[str, Any], tz: tzinfo | str | None = None) -> str | None:

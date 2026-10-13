@@ -88,6 +88,48 @@ class TestContextRecallExecute:
         assert result.content == full
 
     @pytest.mark.asyncio
+    async def test_a_long_result_is_read_in_parts_and_the_parts_are_the_whole(
+        self, manager: ToolContextManager
+    ) -> None:
+        """one call returns one window; the window line names the next offset; walking them loses nothing."""
+        from threetears.agent.tools.context import RECALL_MAX_CHARS
+
+        full = "".join(f"line {n:05d} of the scan\n" for n in range(2000))
+        assert len(full) > 2 * RECALL_MAX_CHARS
+        cid = await manager.save_tool_result("nmap", full)
+        tool = ContextRecallTool()
+        parts: list[str] = []
+        offset = 0
+        async with enter_call_scope(_scope_for(manager)):
+            for _ in range(10):
+                result = await tool.execute(context_id=cid, offset=offset)
+                assert result.success is True
+                line, blank, body = result.content.split("\n", 2)
+                assert line.startswith(f"[characters {offset:,}-") and blank == "", line
+                assert len(body) <= RECALL_MAX_CHARS, "one call never returns more than the window"
+                parts.append(body)
+                if "the end of it" in line:
+                    break
+                assert f"call context_recall again with offset={offset + len(body)} " in line
+                offset += len(body)
+        assert "".join(parts) == full
+        assert len(parts) == -(-len(full) // RECALL_MAX_CHARS) > 2
+
+    @pytest.mark.asyncio
+    async def test_a_part_of_a_refreshed_result_states_the_window_then_the_refresh(
+        self, manager: ToolContextManager
+    ) -> None:
+        """both notes come before the text: that this is a part, then that the row was replaced."""
+        cid = await manager.save_tool_result("nmap", "a" * 20_000, input_fingerprint="host=a")
+        await manager.save_tool_result("nmap", "b" * 20_000, input_fingerprint="host=a")
+        async with enter_call_scope(_scope_for(manager)):
+            result = await ContextRecallTool().execute(context_id=cid)
+        window, refreshed, blank, body = result.content.split("\n", 3)
+        assert window.startswith("[characters 0-15,000 of 20,000.")
+        assert refreshed.startswith("(Updated at ")
+        assert (blank, body) == ("", "b" * 15_000)
+
+    @pytest.mark.asyncio
     async def test_recall_accepts_ctx_prefix(self, manager: ToolContextManager) -> None:
         """a 'ctx:<id>' handle resolves to the same item as '<id>'."""
         full = "payload"
@@ -162,6 +204,11 @@ class TestContextRecallSchema:
     def test_mcp_name(self) -> None:
         """canonical mcp name is threetears.context_recall."""
         assert ContextRecallTool().mcp_name() == "threetears.context_recall"
+
+    def test_schema_takes_an_offset(self) -> None:
+        """the offset a window line names is an argument a caller can pass."""
+        offset = ContextRecallTool().mcp_schema().input_schema["properties"]["offset"]
+        assert offset["type"] == "integer" and offset["default"] == 0
 
     def test_schema_requires_context_id(self) -> None:
         """the input schema requires context_id."""
