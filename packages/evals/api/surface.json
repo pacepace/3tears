@@ -6141,11 +6141,6 @@
       "signature": "callable_kind_contracts(levers: Sequence[str] = ()) -> tuple[KindContract, KindContract]",
       "tier": "host-contract"
     },
-    "threetears.evals.quick.CALLABLE_UNSEATED": {
-      "kind": "constant (frozenset)",
-      "signature": "",
-      "tier": "closure"
-    },
     "threetears.evals.quick.Candidate": {
       "kind": "type alias",
       "signature": "Callable[[Mapping[str, Any]], Awaitable[Any] | Any]",
@@ -6256,11 +6251,6 @@
       "signature": "",
       "tier": "closure"
     },
-    "threetears.evals.quick.JUDGED_CALLABLE_KIND_CONTRACT": {
-      "kind": "constant (KindContract)",
-      "signature": "",
-      "tier": "closure"
-    },
     "threetears.evals.quick.JUDGED_CALLABLE_UNSEATED": {
       "kind": "constant (frozenset)",
       "signature": "",
@@ -6289,11 +6279,6 @@
     "threetears.evals.quick.Scorer": {
       "kind": "type alias",
       "signature": "Callable[[Mapping[str, Any], Any], float | bool]",
-      "tier": "closure"
-    },
-    "threetears.evals.quick.SHARED_ARM_MODEL": {
-      "kind": "constant (str)",
-      "signature": "",
       "tier": "closure"
     },
     "threetears.evals.quick.Tool": {

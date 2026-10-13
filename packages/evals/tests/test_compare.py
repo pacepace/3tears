@@ -19,7 +19,8 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import DisclosureBlock, TableBlock, report_markdown, variant_key_of_run
-from threetears.evals.quick import ARM_LEVER, SHARED_ARM_MODEL, Comparison, callable_host, compare
+from threetears.evals.quick import ARM_LEVER, Comparison, callable_host, compare
+from threetears.evals.quick.one_call import SHARED_ARM_MODEL
 from packages.evals.tests.example_loader import load_example
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 from packages.evals.tests.off_loop import off_loop
