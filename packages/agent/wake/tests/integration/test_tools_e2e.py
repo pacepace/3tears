@@ -700,3 +700,93 @@ async def test_webhook_lifecycle_create_list_rotate_delete(
         assert await subs.get((conv_id, sub_id)) is None
     finally:
         await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_the_same_wake_made_twice_is_made_once_and_a_different_one_is_made(
+    pg_schema: tuple[str, str],
+) -> None:
+    """A wake made twice fires twice; the second create names the first and makes nothing."""
+    url, schema = pg_schema
+    pool = await _apply_schema(url, schema)
+    try:
+        schedules, _ = _build_collections(pool)
+        conv_id, other_conv, user_id, agent_id = _new_uuid(), _new_uuid(), _new_uuid(), _new_uuid()
+
+        def _create(conversation: UUID, agent: UUID = agent_id) -> Any:
+            return load_wake_schedule_create_tool(
+                conversation_id=conversation,
+                user_id=user_id,
+                agent_id=agent,
+                schedules_collection=schedules,
+                registry=_PermissiveRegistry(),
+            )[0]
+
+        wake = {
+            "schedule_type": "interval",
+            "schedule_config": {"seconds": 600},
+            "name": "mail check",
+            "task_prompt": "Read the inbox.",
+        }
+        first = await _create(conv_id).ainvoke(wake)
+        assert first.startswith("[schedule:"), first
+        first_id = first.split("]")[0].removeprefix("[schedule:")
+
+        # the same wake again, from another conversation of the same agent, in another turn
+        again = await _create(other_conv).ainvoke(dict(wake))
+        assert again.startswith("[NO CHANGE] wake_schedule_create: you already have this wake"), again
+        assert f"[schedule:{first_id}]" in again and "(active)" in again and "Nothing was made." in again
+        assert await pool.fetchval("SELECT count(*) FROM agent_wake_schedules WHERE agent_id = $1", agent_id) == 1
+
+        # good traffic: a wake that differs in any one part is another wake, and is made
+        for changed in (
+            {"schedule_config": {"seconds": 900}},
+            {"task_prompt": "Read the inbox and the calendar."},
+            {"name": "mail check 2"},
+            {"include_conversation_history": False},
+            {"missed_fire_policy": "catch_up"},
+            {"schedule_type": "one_shot_at", "schedule_config": {"fire_at_iso": "2099-01-01T00:00:00+00:00"}},
+        ):
+            made = await _create(conv_id).ainvoke({**wake, **changed})
+            assert made.startswith("[schedule:"), (changed, made)
+        # and another agent's identical wake is its own
+        theirs = await _create(_new_uuid(), agent=_new_uuid()).ainvoke(dict(wake))
+        assert theirs.startswith("[schedule:"), theirs
+        assert await pool.fetchval("SELECT count(*) FROM agent_wake_schedules WHERE agent_id = $1", agent_id) == 7
+        # two wakes with no name and no text say nothing of what they are for: both are made
+        bare = {"schedule_type": "interval", "schedule_config": {"seconds": 600}}
+        assert (await _create(conv_id).ainvoke(bare)).startswith("[schedule:")
+        assert (await _create(conv_id).ainvoke(dict(bare))).startswith("[schedule:")
+
+        # a wake that was deleted no longer stands in the way
+        await pool.execute("DELETE FROM agent_wake_schedules WHERE schedule_id = $1", UUID(first_id))
+        remade = await _create(conv_id).ainvoke(dict(wake))
+        assert remade.startswith("[schedule:"), remade
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_a_listing_that_cannot_be_read_does_not_cost_the_create(
+    pg_schema: tuple[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url, schema = pg_schema
+    pool = await _apply_schema(url, schema)
+    try:
+        schedules, _ = _build_collections(pool)
+
+        async def _down(*_args: Any, **_kwargs: Any) -> Any:
+            raise OSError("the listing is down")
+
+        monkeypatch.setattr(schedules, "list_for_agent", _down)
+        tool = load_wake_schedule_create_tool(
+            conversation_id=_new_uuid(),
+            user_id=_new_uuid(),
+            agent_id=_new_uuid(),
+            schedules_collection=schedules,
+            registry=_PermissiveRegistry(),
+        )[0]
+        made = await tool.ainvoke({"schedule_type": "interval", "schedule_config": {"seconds": 600}, "name": "n"})
+        assert made.startswith("[schedule:"), made
+    finally:
+        await pool.close()

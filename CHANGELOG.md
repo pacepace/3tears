@@ -6,6 +6,25 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Wake: the same wake made twice is made once
+
+`wake_schedule_create` had no notion of two rows being one wake: called again with the same
+arguments, in another turn, it made a second schedule that fired beside the first, each fire a turn
+of its own (and, with wake conversations, a second conversation).
+
+- **Changed, `wake_schedule_create`:** before anything is made it reads the agent's active and
+  paused wakes (`list_for_agent`). One with the same name, schedule type and config, text, skill,
+  missed-fire policy, context source and history flag is not made again; the result is
+  `[NO CHANGE] wake_schedule_create: you already have this wake, [schedule:<id>] (<status>): the
+  same name, schedule, text and settings. Nothing was made. To change it use wake_schedule_update.`
+  A wake with no name and no text is never judged the same as another. A listing that cannot be
+  read is logged and the create goes ahead. A consumer that makes identical named wakes on purpose
+  now gets one.
+- **Added, `tools.schedule_tools.standing_same_wake`:** the lookup, for a host tool that makes a
+  wake by another road.
+- Not changed: `webhook_subscription_create` still makes a second subscription, with its own
+  endpoint and secret, on a second identical call.
+
 ### Models: a refusal by the model's safeguards is its own error, says what ran it, and can be tried again on a CLI of its own
 
 On one deployment a subscription model's safeguards refused ten ordinary requests in fourteen days

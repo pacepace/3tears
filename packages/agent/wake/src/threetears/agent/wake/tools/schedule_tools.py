@@ -332,6 +332,67 @@ def _tool_error(tool_name: str, description: str) -> str:
     return f"[TOOL ERROR] {tool_name}: {description}"
 
 
+async def standing_same_wake(
+    schedules_collection: WakeScheduleCollection,
+    agent_id: UUID,
+    *,
+    name: str | None,
+    schedule_type: str,
+    schedule_config: dict[str, Any],
+    task_prompt: str | None,
+    skill_id: UUID | None,
+    missed_fire_policy: str,
+    context_from_schedule_id: UUID | None,
+    include_conversation_history: bool,
+) -> Any | None:
+    """The agent's active or paused wake that is this one in every part, or ``None``.
+
+    The same name, schedule, text, skill and settings. A wake made twice fires
+    twice, each fire a turn of its own; nothing on the table says two rows are
+    one wake, so the create asks first. A wake that differs in any part is
+    another wake. A wake with no name and no text says nothing of what it is
+    for, so two of those are never taken for one.
+
+    :param schedules_collection: the wake schedules
+    :ptype schedules_collection: WakeScheduleCollection
+    :param agent_id: the agent
+    :ptype agent_id: UUID
+    :param name: the new wake's name
+    :ptype name: str | None
+    :param schedule_type: its schedule type
+    :ptype schedule_type: str
+    :param schedule_config: its schedule
+    :ptype schedule_config: dict[str, Any]
+    :param task_prompt: its text
+    :ptype task_prompt: str | None
+    :param skill_id: its skill
+    :ptype skill_id: UUID | None
+    :param missed_fire_policy: its missed-fire policy
+    :ptype missed_fire_policy: str
+    :param context_from_schedule_id: the wake whose context it reads
+    :ptype context_from_schedule_id: UUID | None
+    :param include_conversation_history: whether its fires read the conversation
+    :ptype include_conversation_history: bool
+    :return: the standing wake, or ``None``
+    :rtype: Any | None
+    """
+    if not (name or "").strip() and not (task_prompt or "").strip():
+        return None
+    for held in await schedules_collection.list_for_agent(agent_id):
+        if (
+            held.schedule_type == schedule_type
+            and dict(held.schedule_config or {}) == dict(schedule_config)
+            and (held.task_prompt or None) == (task_prompt or None)
+            and (held.name or None) == (name or None)
+            and held.skill_id == skill_id
+            and held.missed_fire_policy == missed_fire_policy
+            and held.context_from_schedule_id == context_from_schedule_id
+            and bool(held.include_conversation_history) == bool(include_conversation_history)
+        ):
+            return held
+    return None
+
+
 def _validate_name(name: str | None) -> str | None:
     """Validate optional schedule/subscription name."""
     if name is None:
@@ -576,6 +637,34 @@ def load_wake_schedule_create_tool(
                     "wake_schedule_create",
                     f"invalid context_from_schedule_id {context_from_schedule_id!r}",
                 )
+
+        # The same wake made twice fires twice. Asked before anything is made; a
+        # listing that cannot be read leaves the create to go ahead, as it did.
+        try:
+            standing = await standing_same_wake(
+                schedules_collection,
+                agent_id,
+                name=name,
+                schedule_type=schedule_type,
+                schedule_config=schedule_config,
+                task_prompt=task_prompt,
+                skill_id=attached_skill,
+                missed_fire_policy=missed_fire_policy,
+                context_from_schedule_id=parsed_context_from,
+                include_conversation_history=include_conversation_history,
+            )
+        except Exception as exc:  # noqa: BLE001 - the check must not cost the create
+            log.warning(
+                "wake_schedule_create could not read the agent's wakes; creating without the same-wake check",
+                extra={"extra_data": {"error": str(exc)}},
+            )
+            standing = None
+        if standing is not None:
+            return (
+                f"[NO CHANGE] wake_schedule_create: you already have this wake, [schedule:{standing.schedule_id}] "
+                f"({standing.status}): the same name, schedule, text and settings. Nothing was made. "
+                "To change it use wake_schedule_update."
+            )
 
         # Compute next_fire_at via the pure helper from shard 02.
         now = datetime.now(UTC)
