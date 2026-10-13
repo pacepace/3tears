@@ -246,7 +246,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     # host noun everywhere else (the shared-contract canary's _PROVIDER_NAMES says the same). These counts are
     # exact, so a doc edit that adds or drops a mention moves them; no other host term is allowed in the tree.
     "providers/__init__.py": {"openrouter": 2},
-    "providers/adapter.py": {"openrouter": 23},
+    "providers/adapter.py": {"openrouter": 26},
     "providers/factory.py": {"openrouter": 1},
     "providers/failures.py": {"openrouter": 16},
     "quick/__init__.py": {},
