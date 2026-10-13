@@ -7,7 +7,7 @@
 #     uv run python packages/evals/scripts/release_notes.py v<version>
 #
 # Every public name has a stability tier, recorded in api/surface.json and declared in one place, HOST_CONTRACT in
-# scripts/public_surface.py. The promise starts at 0.66.0, the first tagged release:
+# scripts/public_surface.py. The promise starts at 0.67.0, the first tagged release:
 #   host-contract  a name a host writes against. It moves only with a record here AND a deprecation cycle: the
 #                  release that moves it exports the new name beside the old one, which keeps working for that minor
 #                  release and is named in that section's `notes`; the next minor release drops the old name, and its
@@ -22,8 +22,9 @@
 # are history and are not checked against today's surface.
 #
 # Only final releases (tags v<x>.<y>.<z>) count. A pre-release tag, with any suffix, is never followed and never
-# measured from, and has no section here. 0.66.0 is the package's first release: v0.65.0, the release before it,
-# had no 3tears-evals, so nothing can have left a root before 0.66.0 and its section records no names.
+# measured from, and has no section here. 0.67.0 is the package's first release: v0.66.0, the release before it,
+# had no 3tears-evals, so nothing can have left a root before 0.67.0 and its section records no names. (The
+# pre-release tags up to v0.66.0-evaladopt.23 were cut while evals was planned for 0.66.0, which shipped without it.)
 #
 # Before tagging a release, rename the first section from "unreleased" to its version; after the tag, the next
 # release's work goes in a new "unreleased" section since that tag. tests/test_api_surface.py fails once the tree
@@ -59,7 +60,7 @@ removed: every name on the surface is new, and api/surface.json is the baseline 
 """
 notes = [
     "The public API has two stability tiers (this file's header): a `host-contract` name moves only with a deprecation cycle, from this release on, and any other public name may move in any release. Every name that leaves a public root from here on is recorded in this file and printed in that release's notes, with its new home or `removed`.",
-    "The `v0.66.0-evaladopt.N` tags are pre-releases, never published to PyPI, and nothing here is measured from them. A host that ran one imports each name from the root `docs/reference.md` lists it under; each pre-release tag's own `MIGRATIONS.toml` and `CHANGELOG.md` still describe the moves between them.",
+    "The `v0.66.0-evaladopt.N` tags (through `.23`) and the `v0.67.0-evaladopt.N` tags after them are pre-releases of this first release, never published to PyPI, and nothing here is measured from them. A host that ran one imports each name from the root `docs/reference.md` lists it under; each pre-release tag's own `MIGRATIONS.toml` and `CHANGELOG.md` still describe the moves between them.",
     "A store a pre-release wrote is not read. Core schema v14 is the baseline: a core document at v8 to v13 is refused by name as pre-release, and regenerable documents (schema v9), bundles (shape 52) and cells (model 12) are refused or re-assembled at their new versions. Delete every eval document a pre-release wrote before deploying this release.",
     "A cassette has a version space of its own: `EvalCassette.schema_version` is `CASSETTE_SCHEMA_VERSION` (1, exported from `threetears.evals.schema`), no longer `REGENERABLE_SCHEMA_VERSION`. A cassette a pre-release wrote (at v9) is refused by name and its corpus re-captured. A regenerable bump no longer refuses any cassette; only a change to the cassette's own format bumps its version.",
     "Since `v0.66.0-evaladopt.20`, fields every writer sets are required: on `EvalRun`, `judge_temperature` exactly when `judge_model` is, `goal_check_proof_rules` exactly when `goal_check_proofs` is, and `cell_concurrency` (default 1); on `RubricScore`, `axis`; on `EvalAnalysis`'s provenance, `bundle_schema_version` and `host_declarations_digest`; on `EvalInsight`, `invalidation_trigger`; on `BarVerdict`, an interval beside any decision. A recorded judge identity is a `builtin:<sha12>` id or `<config id>@<sha12>`; a bare config id is refused. `__retired_fields__` and the stored-read context are gone, `GuardrailReadings.unstamped_dimensions` and `BarVerdict.decided_on_the_mean` are removed, `BundleInspection.mismatch_cause` loses `cannot_say`, and a cell id now digests every apparatus dimension (`judge_temperature` included).",

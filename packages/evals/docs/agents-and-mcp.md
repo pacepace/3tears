@@ -211,7 +211,7 @@ The FastMCP transport (`threetears.evals.transports.fastmcp`) needs the extra; t
 pip install "3tears-evals[fastmcp]"
 ```
 
-That is the form once 0.66.0 is on PyPI. Until then, install the extra from the repository at the tag
+That is the form once 0.67.0 is on PyPI. Until then, install the extra from the repository at the tag
 [the README names](../README.md#first-result-in-10-minutes):
 `pip install "3tears-evals[fastmcp] @ git+https://github.com/pacepace/3tears.git@<tag>#subdirectory=packages/evals"`.
 
