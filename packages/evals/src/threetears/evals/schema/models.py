@@ -13,8 +13,11 @@ Four managed shapes carry an evaluation:
 Schema rule: every stored entity carries ``schema_version``, and a read is strict — an unknown field
 or a missing required one is refused, never coerced. The evidence core (the template, test case, run,
 result, trace, calibration rating, case set and the definitions with their tombstones here; the campaign,
-sweep and analysis attempt in the kernel) is kept: a stored read of an older core version upgrades it
-through registered upgraders, and a newer or pre-release version is refused. A regenerable document (the
+sweep and analysis attempt in the kernel) is kept: a stored read of an older core major upgrades it
+through registered upgraders, a newer major or a pre-release version is refused, and a newer minor of
+this build's major — additive by rule — is read, keeping what this build does not declare for the next
+write (:class:`~threetears.evals.schema.base.CoreShapeModel`, which every shape a core document embeds
+carries). A regenerable document (the
 cassette here; the analysis, insight and judge profile in the kernel) written under another version is
 refused and regenerated. Which is which is :data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`.
 :mod:`~threetears.evals.schema.versioning` holds both versions, their ledgers, and the rules.
@@ -35,7 +38,6 @@ from typing import Annotated, Any, Final, Literal, NamedTuple, Self, get_args
 
 from pydantic import (
     AfterValidator,
-    BaseModel,
     ConfigDict,
     Field,
     PrivateAttr,
@@ -49,6 +51,7 @@ from pydantic import (
 
 from threetears.evals.schema.base import (
     CoreDocumentModel,
+    CoreShapeModel,
     EvalBaseModel,
     EvalDocumentModel,
     VerbatimJsonObject,
@@ -192,7 +195,7 @@ def utc_now_iso() -> str:
 # =============================================================================
 
 
-class VariationAxis(EvalDocumentModel):
+class VariationAxis(EvalDocumentModel, CoreShapeModel):
     """One axis along which test cases vary for a template.
 
     Three generator types:
@@ -226,7 +229,7 @@ class VariationAxis(EvalDocumentModel):
     )
 
 
-class ActorPolicy(EvalDocumentModel):
+class ActorPolicy(EvalDocumentModel, CoreShapeModel):
     """One simulated actor in a template's conversation.
 
     A conversation may have several: a party of players, a panel, a room. Each speaks under its
@@ -265,7 +268,7 @@ CANDIDATE_SPEAKER = "__candidate__"
 WORLD_SPEAKER = "__world__"
 
 
-class WorldRound(EvalDocumentModel):
+class WorldRound(EvalDocumentModel, CoreShapeModel):
     """A round whose stimulus is a world event rather than an actor's line.
 
     Before the candidate's ``turn``-th answer, the engine fires ``dimension`` through the cell's world session —
@@ -282,7 +285,7 @@ class WorldRound(EvalDocumentModel):
     )
 
 
-class ConversationSpec(EvalDocumentModel):
+class ConversationSpec(EvalDocumentModel, CoreShapeModel):
     """The simulated side of a conversing candidate: who talks to it, in what order, for how long.
 
     One optional block on :class:`EvalTemplate` rather than loose fields, because they mean something
@@ -393,7 +396,7 @@ class ConversationSpec(EvalDocumentModel):
         return next((world for world in self.world_rounds if world.turn == turn), None)
 
 
-class WorldSeed(EvalDocumentModel):
+class WorldSeed(EvalDocumentModel, CoreShapeModel):
     """Initial state for the eval's stateful world.
 
     ``namespaces`` keys are carriers and each sub-key names one state dimension, through the host
@@ -443,7 +446,7 @@ class WorldSeed(EvalDocumentModel):
         return value
 
 
-class Precondition(EvalDocumentModel):
+class Precondition(EvalDocumentModel, CoreShapeModel):
     """One thing a template presumes about the world before the subject's first turn.
 
     A scenario that only makes sense against a particular starting state presumes one, and this
@@ -553,7 +556,7 @@ GOAL_CHECK_PROOF_RULES = 2
 CHECK_REFUSED_UNDER_CURRENT_GRAMMAR = "refused under the current grammar"
 
 
-class ControlEndState(EvalDocumentModel):
+class ControlEndState(EvalDocumentModel, CoreShapeModel):
     """An end state a template's author states, to prove its goal checks can tell outcomes apart.
 
     Authoring data, and nothing else: it is read when the template is written, to evaluate the
@@ -620,7 +623,7 @@ class ControlEndState(EvalDocumentModel):
     )
 
 
-class GoalCheckControl(EvalDocumentModel):
+class GoalCheckControl(EvalDocumentModel, CoreShapeModel):
     """One goal check's intent, and the end state that proves it discriminates."""
 
     check: str = Field(min_length=1, description="The goal check, verbatim as it appears in goal_state_checks.")
@@ -640,7 +643,7 @@ class GoalCheckControl(EvalDocumentModel):
     )
 
 
-class GoalCheckControls(EvalDocumentModel):
+class GoalCheckControls(EvalDocumentModel, CoreShapeModel):
     """Proof, at authoring, that each of a template's goal checks can tell its outcomes apart.
 
     Each check is evaluated twice: against the untouched seed with no calls — the candidate did
@@ -857,7 +860,7 @@ def _namespaced_dim_name(name: str) -> str:
 DimName = Annotated[str, AfterValidator(_namespaced_dim_name)]
 
 
-class RubricDim(EvalDocumentModel):
+class RubricDim(EvalDocumentModel, CoreShapeModel):
     """One judge-scored rubric dimension.
 
     Reserved for genuinely subjective qualities (tone, style) —
@@ -1011,7 +1014,7 @@ def _label_key_halves(output: str | None, criterion: str | None, owner: str) -> 
     return None if output is None or criterion is None else LabelKey(output, criterion)
 
 
-class GoalStateOutcome(EvalDocumentModel):
+class GoalStateOutcome(EvalDocumentModel, CoreShapeModel):
     """One judge-free fact a candidate's execution established, and whether it held.
 
     Named for the check it was built for — a goal-state expression evaluated against the
@@ -1028,7 +1031,7 @@ class GoalStateOutcome(EvalDocumentModel):
     detail: str = Field(default="", description="Brief explanation; e.g. 'queue.length=2 satisfies >= 1'")
 
 
-class PreconditionOutcome(EvalDocumentModel):
+class PreconditionOutcome(EvalDocumentModel, CoreShapeModel):
     """Outcome of one precondition asserted against the world at t=0.
 
     The reader :class:`Precondition`'s required ``presumes`` prose exists for. A precondition
@@ -1066,7 +1069,7 @@ MODEL_DEFAULT_TEMPERATURE: Literal["model_default"] = "model_default"
 JudgeTemperature = float | Literal["model_default"]
 
 
-class RubricScore(EvalDocumentModel):
+class RubricScore(EvalDocumentModel, CoreShapeModel):
     """Outcome of one rubric judge dimension.
 
     ``dim`` carries the dimension's identifier — a template ``RubricDim`` name
@@ -1984,7 +1987,7 @@ def case_set_doc_id(name: str, version: int) -> str:
     return f"case_set:{name}:v{version}"
 
 
-class CaseSetRef(EvalBaseModel):
+class CaseSetRef(EvalBaseModel, CoreShapeModel):
     """Which named, versioned case set a run was launched against: a label on its frozen case ids.
 
     Not an identity of its own: the run's case-set identity stays the frozen ids (``case_basis``), so two runs
@@ -2203,7 +2206,7 @@ class EvalCaseStratum(EvalDocumentModel):
 # =============================================================================
 
 
-class ContextComponents(EvalDocumentModel):
+class ContextComponents(EvalDocumentModel, CoreShapeModel):
     """The separately-recorded pieces a run's ``context_key`` is composed from.
 
     ``context_key`` alone answers "are these two runs comparable?"; it cannot
@@ -2492,7 +2495,7 @@ def resolve_effective_judges(
 #: ``stored_results`` is what a later process can reconstruct after the one executing
 #: the run died with its tally. They are not interchangeable and the record says which,
 #: because a reconstruction's *attribution* of the shortfall is weaker than its total.
-class VariationCounts(EvalDocumentModel):
+class VariationCounts(EvalDocumentModel, CoreShapeModel):
     """How many test cases a launch asked generation for, and how many it froze.
 
     Generation may legitimately return fewer cases than asked — a ``sample`` or ``enum``
@@ -2533,7 +2536,7 @@ class VariationCounts(EvalDocumentModel):
 CompletenessSource = Literal["run_loop", "stored_results"]
 
 
-class RunCompleteness(EvalDocumentModel):
+class RunCompleteness(EvalDocumentModel, CoreShapeModel):
     """How much of its matrix a run actually delivered.
 
     A run whose status says ``completed`` while three of its twelve cells never
@@ -2646,7 +2649,7 @@ class RunCompleteness(EvalDocumentModel):
 ReasoningEffort = Literal["max", "xhigh", "high", "medium", "low", "minimal", "none"]
 
 
-class ClientRequestSettings(EvalDocumentModel):
+class ClientRequestSettings(EvalDocumentModel, CoreShapeModel):
     """The request parameters a host applied to one apparatus role's LLM client, for one run.
 
     Recorded because the same model can be asked two different ways, and the asking is part of
@@ -2726,7 +2729,7 @@ DEFAULT_LAUNCH_K_RUNS = 3
 DeclaredMeritAxis = Literal["quality", "cost", "latency", "reliability"]
 
 
-class MeasureDeclaration(EvalBaseModel):
+class MeasureDeclaration(EvalBaseModel, CoreShapeModel):
     """How the launching host declared one of its own measures to be read, frozen onto the run it launched.
 
     The reading-side half of a :class:`~threetears.evals.kernel.metrics.MetricDescriptor`: which way is better,
@@ -3667,7 +3670,7 @@ class EvalRunStamp(EvalDocumentModel):
 # =============================================================================
 
 
-class LatencyMetrics(EvalDocumentModel):
+class LatencyMetrics(EvalDocumentModel, CoreShapeModel):
     """Per-result latency decomposition: harvested OTel spans, plus what they miss.
 
     The price/performance verdict needs a performance-time axis alongside
@@ -3769,7 +3772,7 @@ class LatencyMetrics(EvalDocumentModel):
 AsyncDeliveryStatus = Literal["delivered", "failed", "undelivered"]
 
 
-class AsyncExternalSpend(EvalDocumentModel):
+class AsyncExternalSpend(EvalDocumentModel, CoreShapeModel):
     """Paid non-LLM calls one piece of background work made at one provider, as the work reports them.
 
     The caller reports and the engine prices: these are the calls, the provider's own units, and —
@@ -3828,7 +3831,7 @@ class AsyncExternalSpend(EvalDocumentModel):
         return self
 
 
-class AsyncDelivery(EvalDocumentModel):
+class AsyncDelivery(EvalDocumentModel, CoreShapeModel):
     """One piece of background work the candidate started: acknowledged at once, delivered later.
 
     A candidate can hand work to a tool that answers immediately ("on it") and reports back turns
@@ -3999,7 +4002,7 @@ UsageRole = Literal["candidate", "judge", "simulator", "inner_agent", "external"
 SimulatorPurpose = Literal["utterance", "schedule"]
 
 
-class RoleUsage(EvalDocumentModel):
+class RoleUsage(EvalDocumentModel, CoreShapeModel):
     """Per-role token + cost observation for one :class:`EvalResult`.
 
     One row per (role, model) that spent tokens or dollars producing a result.
@@ -4282,7 +4285,7 @@ class JudgedArtifact(StrEnum):
     """Nothing a judge reads — the kind's grade is code (``host_measures``); a judged run refuses it."""
 
 
-class JudgeEvidence(BaseModel):
+class JudgeEvidence(CoreShapeModel):
     """Everything a judge reads about one cell's candidate, rendered by the kind that ran it.
 
     The engine renders none of it and reads none of it. A judge needs to know what it is
@@ -4414,7 +4417,7 @@ class EvalTrace(CoreDocumentModel):
         return self
 
 
-class JudgeRescore(EvalDocumentModel):
+class JudgeRescore(EvalDocumentModel, CoreShapeModel):
     """One re-judge of a result's failed judge dimensions, recorded on the result it changed.
 
     A judge call can fail after the trial it scores has finished — a reply cut off at its
@@ -4466,7 +4469,7 @@ class JudgeRescore(EvalDocumentModel):
     )
 
 
-class RepeatedScore(EvalDocumentModel):
+class RepeatedScore(EvalDocumentModel, CoreShapeModel):
     """One dimension's stored judge score, asked again of the same judge from the same evidence.
 
     The pair a judge's self-agreement is read from: ``first_score`` is the score the result held
@@ -4529,7 +4532,7 @@ class RepeatedScore(EvalDocumentModel):
         return self
 
 
-class JudgeRepeat(EvalDocumentModel):
+class JudgeRepeat(EvalDocumentModel, CoreShapeModel):
     """One repeat of a result's judge scores: the same judge asked the same question again, recorded beside them.
 
     A judge's agreement with ITSELF — re-scoring evidence it already scored, under the apparatus the run
@@ -4568,7 +4571,7 @@ class JudgeRepeat(EvalDocumentModel):
         return scores
 
 
-class SecondJudge(EvalDocumentModel):
+class SecondJudge(EvalDocumentModel, CoreShapeModel):
     """A judge other than the one a run was scored by: a model, the prompt per dimension, and a temperature.
 
     The three things a judge's identity is made of (:class:`~threetears.evals.analysis.JudgeKey`), named for a
@@ -4597,7 +4600,7 @@ class SecondJudge(EvalDocumentModel):
     )
 
 
-class SecondJudgeScore(EvalDocumentModel):
+class SecondJudgeScore(EvalDocumentModel, CoreShapeModel):
     """One dimension's stored judge score beside a second judge's answer to the same question.
 
     The pair inter-judge agreement and judge drift are read from. Both halves are carried here, as a
@@ -4651,7 +4654,7 @@ class SecondJudgeScore(EvalDocumentModel):
         return self
 
 
-class SecondJudging(EvalDocumentModel):
+class SecondJudging(EvalDocumentModel, CoreShapeModel):
     """A second judge's scores of one result's stored evidence, recorded beside the scores the run's judge gave.
 
     A measurement of the JUDGE — how far a second judge agrees with the first (inter-judge agreement), or how far

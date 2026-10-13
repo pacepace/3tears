@@ -20,7 +20,7 @@ being exported from a public root. Code inside the package imports its own modul
 
 from __future__ import annotations
 
-from threetears.evals.schema.base import CoreDocumentModel, EvalBaseModel, EvalDocumentModel
+from threetears.evals.schema.base import CoreDocumentModel, CoreShapeModel, EvalBaseModel, EvalDocumentModel
 from threetears.evals.schema.call_ledger import PASS_ACTION, PASS_TOOL, CallLedger, RecordedCall, is_pass
 from threetears.evals.schema.doc_types import DOC_TYPE_FACTS, DocLifecycle, DocOrigin, DocTypeFacts
 from threetears.evals.schema.completion import (
@@ -189,8 +189,10 @@ from threetears.evals.schema.versioning import (
     CORE_ADDRESSING_FIELDS,
     CORE_BASELINE_VERSION,
     CORE_DOC_TYPES,
+    CORE_SCHEMA_MINOR,
     CORE_SCHEMA_VERSION,
     CORE_UPGRADERS,
+    MINOR_ADDITIVITY_SENTENCE,
     REGENERABLE_SCHEMA_VERSION,
     CoreUpgrader,
 )
@@ -225,10 +227,13 @@ __all__ = [
     "CORE_ADDRESSING_FIELDS",
     "CORE_BASELINE_VERSION",
     "CORE_DOC_TYPES",
+    "CORE_SCHEMA_MINOR",
     "CORE_SCHEMA_VERSION",
     "CORE_UPGRADERS",
+    "MINOR_ADDITIVITY_SENTENCE",
     "REGENERABLE_SCHEMA_VERSION",
     "CoreDocumentModel",
+    "CoreShapeModel",
     "CoreUpgrader",
     "JSON_OBJECT_RESPONSE_FORMAT",
     "MODEL_DEFAULT_TEMPERATURE",

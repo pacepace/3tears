@@ -1,31 +1,37 @@
-"""The evidence core's shape is pinned: a core shape cannot change without a version bump and an upgrader.
+"""The evidence core's shape is pinned: a core shape cannot change without a minor or a major, as the change is.
 
-``schema/versioning.py`` promises that a core document is read forever from the baseline. This holds that
-promise from both ends: every core type's validation JSON schema is pinned to a digest under the version
-recorded here, so a shape change without a bump goes red here; and a frozen corpus of stored core
-documents, one directory per core version, must keep reading under the current build, which also catches
-a validator tightening the JSON schema cannot show (the goal grammar, an ``AfterValidator``).
+``schema/versioning.py`` promises that a core document is read forever from the baseline, and that a newer minor of
+this build's major is read too. This holds the first promise from both ends: every core type's validation JSON schema
+is pinned to a digest under the major and minor recorded here, so a shape change without a version goes red here; and
+a frozen corpus of stored core documents, one directory per core major, must keep reading under the current build,
+which also catches a validator tightening the JSON schema cannot show (the goal grammar, an ``AfterValidator``).
 
 **When this goes red**, one of these happened:
 
-- **A core shape moved and the version did not.** Any change to a core type's shape is a bump, an added
-  optional field included. Before changing the shape, copy ``tests/fixtures/core_documents/v{N}/`` to
-  ``v{N+1}/`` (the old directory stays as it is: it is what an old store holds). Then bump
-  ``CORE_SCHEMA_VERSION`` with a ledger line above it, append one ``CoreUpgrader`` from ``N`` (an identity
-  step for a purely additive change), re-pin the digests and the version here, and regenerate the new
-  directory's fixtures from :func:`~packages.evals.tests.stored_models.stored_sample`, pinning their files.
-  Give the step its own test of the fields it transforms.
-- **The version moved and the pins did not.** Re-pin every digest under the new version, even where a
+- **A core shape moved and the version did not.** Any change to a core type's shape is a version, an added
+  optional field included. If it is additive only (a new optional field with a default, a new optional
+  sub-object, a new member of an open vocabulary, a new doc type) it is a **minor**: bump ``CORE_SCHEMA_MINOR``
+  with a ledger line ending in ``MINOR_ADDITIVITY_SENTENCE``, and re-pin the digests and the minor here. Nothing
+  else is a minor: before changing the shape, copy ``tests/fixtures/core_documents/v{N}/`` to ``v{N+1}/`` (the old
+  directory stays as it is: it is what an old store holds), bump ``CORE_SCHEMA_VERSION`` with a ledger line above
+  it, reset ``CORE_SCHEMA_MINOR`` to 0, append one ``CoreUpgrader`` from ``N``, re-pin the digests and the version
+  here, and regenerate the new directory's fixtures from
+  :func:`~packages.evals.tests.stored_models.stored_sample`, pinning their files. Give the step its own test of the
+  fields it transforms.
+- **The version moved and the pins did not.** Re-pin every digest under the new major or minor, even where a
   shape held, so this file states what it was checked under.
-- **The version moved and the ledger or the chain has no entry for it.** Write the ledger line, and the
-  upgrader.
+- **The version moved and the ledger or the chain has no entry for it.** Write the ledger line (a minor's
+  carrying the additivity sentence), and for a major the upgrader.
 - **A frozen fixture stopped reading.** The current build no longer reads a document an older build
-  stored. Either a validator tightened (a bump and a step that brings old documents into line, or a None
+  stored. Either a validator tightened (a major and a step that brings old documents into line, or a None
   for what cannot be derived), or a step is wrong. Never edit the fixture: its digest is pinned so it
   cannot be.
 - **A frozen fixture's digest moved.** Someone edited a stored document of the past. Restore it.
 - **The core's membership moved.** A type became core or stopped being core; that is a decision about
   what is kept, recorded in ``CORE_DOC_TYPES`` and here together.
+
+The v14 corpus is the baseline of a release that has not been published: no store a released build wrote holds a
+v14 document yet, so while that is true a baseline change regenerates it in place rather than copying it.
 """
 
 from __future__ import annotations
@@ -47,35 +53,40 @@ from threetears.evals.schema.versioning import (
     CORE_ADDRESSING_FIELDS,
     CORE_BASELINE_VERSION,
     CORE_DOC_TYPES,
+    CORE_SCHEMA_MINOR,
     CORE_SCHEMA_VERSION,
     CORE_UPGRADERS,
+    MINOR_ADDITIVITY_SENTENCE,
 )
 
 #: The ``CORE_SCHEMA_VERSION`` every digest below was taken under.
 PINNED_CORE_SCHEMA_VERSION = 14
 
+#: The ``CORE_SCHEMA_MINOR`` every digest below was taken under.
+PINNED_CORE_SCHEMA_MINOR = 0
+
 #: Each core type's validation JSON schema, normalised (:func:`core_shape_digest`), by ``doc_type``.
 CORE_SHAPE_DIGESTS: dict[str, str] = {
-    "calibration_rating": "825e3639a2174894ed356b5f8a75feeac145698e3cf2bb0a91af59ab38fd9342",
-    "case_set": "e8b3eab78db2316c8eb8295d41b1c937a9e1ed5381b91dad7870715251d9e46e",
-    "eval_action_job": "304e5c7845d124355c72ec9e42e2647513154766d4a66960e1fc606b82f8e5c4",
-    "eval_analysis_attempt": "6e8b0c20ff14d13beaa77535dc0b597e8502d02b93f91ad3b6985c24a482b703",
-    "eval_campaign": "4dd5daa94ed5c7298cda14cca45e08e7b4582ac3a5ff96849b0a30fe75dcccd0",
-    "eval_generation_slot": "f5782b025d43c87474c10d1ccb426a3e1129a0d61043c42368959dfac64c2170",
-    "eval_judge_temperature_check": "fe73098f16780ff7f08c58fd18d8d5b979a43b124683117c471ce4ae2a67d099",
-    "eval_launch": "ccda7572311aa02dabf5790b99891182c53b8f5d9ec4eb4d6affbf0554ecbb21",
-    "eval_out_of_run_spend": "27225b5f04091b13f2ea49337f8a03eac5ff6e63101919f396fd2d54cd32d9b7",
-    "eval_result": "f64ba46c9856296ce3e91715cabad750af12947e08211e00cb9f601f33222d40",
-    "eval_run": "8e78eb2fb83433114b1ad3d345cda5febb8019a26adbc6e85aebce2f81f9e42a",
-    "eval_second_judge_pass": "9a5ba57bff5e0c27841e80b97557e31563af1fd2b25e6f2c365e1eb5da644cb7",
-    "eval_sweep": "1fb99c3636c18ebd176e2e5d6b12c74533e955123c2249d2f78b1185421e9e08",
-    "eval_template": "e13e5a3192984be060d15e90de46b4dac81ab20d32553c349d57940c521adc92",
-    "eval_test_case": "75ae7a69db2cfa81f7fbeff2f4066ee8f0a9ffcf91bb26830e7d929832eba6f0",
-    "eval_trace": "12c45a35fe0445e86b4a84897065fb5982565e87164c9cb57810ba0594241563",
-    "judge_config": "c83905f8a12b90787d56b4a9893082c52ded9501ab49b183a1848255560ab856",
-    "judge_config_tombstone": "04710a7d9aa03d663fbbee62281d4a91b360fd81578bd99ecd5317008378ef57",
-    "rubric_dim": "4d07547ddd66e10f5217f515b6439ba3d72c927674e0a1b32cfeb5878a4035d5",
-    "rubric_dim_tombstone": "99d16d84a4918f8c0e41d4b13ff57077c01b890c55c9dd463d421e16f15fe8fc",
+    "calibration_rating": "eb82930180e483123fedb43115bcccc25072743a75b362ca36c6405a011ab840",
+    "case_set": "cd9240cfe0ba3d5bc47a5d1745e9550d5635c97dec673a07e369ecaaa0d4cd2d",
+    "eval_action_job": "34a319ad2d80e03af4230c7fd743217e5b8077612346acab5cf2046da60edf3d",
+    "eval_analysis_attempt": "bf64f0740df0680db480ec6ce27bbe06706482673c866b48a22245e17782af3e",
+    "eval_campaign": "80c372f8bc21bdb3dab458044f54eafe8199d1a3291a6121187b721099c6f440",
+    "eval_generation_slot": "ca9d09bbe419cfa67397aa779301656c3c55e0a8d5ce682f961fa7afa9001a02",
+    "eval_judge_temperature_check": "bb30f648778effb15139f519595277af05dc1f12cdbc84994a487a4091dc5a51",
+    "eval_launch": "068f35d01499ee970dd142663dd5fce44ef61ac2ad57f06e66d10bc0fd69115e",
+    "eval_out_of_run_spend": "f2e3cd674e1b5f8dcc7d0ef5c66cbc5f1b610ecdbcae112a3873f34712c68716",
+    "eval_result": "8128b07a619c442d91030fea873063ab124c6b005a728575f169f11e2c2e4ddd",
+    "eval_run": "e43ff83a6be08add5e725b5ac00e545b815ec19526a654d0322670ca8d05cf8a",
+    "eval_second_judge_pass": "849b1f0bae7466e15032b71f9e620c6060b0de94aed7d107aedd76ac5cae814c",
+    "eval_sweep": "36ed86de4dcd89bdc989b9bdb7542440a39cdd27f1b96d027b4b3ac4d187b3d0",
+    "eval_template": "82c4f3b331d903623cff91168c442ecabbe99c5a35224b1ef26d914f93923611",
+    "eval_test_case": "8b8529be10e69772fbd20a86732730a9be3002bfe8c91e94cb0adb32f3cce414",
+    "eval_trace": "9a661ba216e98bf33eedaa7b1ec0677ba0c2d6de3eaa7fe50435a03338f8ba0b",
+    "judge_config": "2442bfc1477ef2dc08c1e0005a1be3111dc2618342eb8bb05c1773c867dae9c9",
+    "judge_config_tombstone": "9f2516ea3389b3e6d2821f30afc4c9d87281b6939bf9a6f29e4dcc5227f8d795",
+    "rubric_dim": "16426934e0e2310cc31657bf770bcd2be2e5468bfc1b8f68d4fc4751af1063f6",
+    "rubric_dim_tombstone": "78d56efa5301b61be7bd483a95bea43146e30492dbb5f3dcea68777064f0370f",
 }
 
 #: The fields the store addresses each core type by, pinned: a step may never touch one, so the set moving
@@ -172,26 +183,26 @@ FIRST_STORED_AT: dict[str, int] = {}
 
 #: Each frozen fixture's sha256, so a stored document of the past is never edited.
 FIXTURE_DIGESTS: dict[str, str] = {
-    "v14/calibration_rating.json": "9c636ca118ac5c7e892c7945bf0b3977c23bb4d5886739ddb9ffcc3c2da989b7",
-    "v14/case_set.json": "60727fdce3fb7974fe538839ec69a123ed4bded49551baeeaa715de071b50ea0",
-    "v14/eval_action_job.json": "457798928b4a84e9955a59236191705cd5c73cbad29bfeded5ef47ea7842015d",
-    "v14/eval_analysis_attempt.json": "ed1978d51f41a36848d05d4f2bf5a0a0d66cecd8a9b3deccaf7760f16c10f0c8",
-    "v14/eval_campaign.json": "f7d2090a0ea512c5db96bf1b35b362927b59d8378c64425b91222d07bd047e87",
-    "v14/eval_generation_slot.json": "69fc3ff88b4ae358cfd2264a8c3c56ed9a0f0963f5acf48ff5696a81edc30c42",
-    "v14/eval_judge_temperature_check.json": "ee90abe154be83f2df7fbd4c5ebc9edffd677025b820218ed7b183c247096487",
-    "v14/eval_launch.json": "d56f4f6c17d17757341dc007d71a7f164a688541fb29eddf5b45131ea4d142e9",
-    "v14/eval_out_of_run_spend.json": "6dda8ed287c06c06204473d1b2f483122af996584979a922d13edd15b1f44003",
-    "v14/eval_result.json": "98393f7900953fc182521a7b163faf7416e89b1d5dbfcec6a8bce8527b387961",
-    "v14/eval_run.json": "015917d9b33cb9fe7436e83d312b7706ccc145d3ef4ad294c310eb49ae512d0e",
-    "v14/eval_second_judge_pass.json": "f031527abde57d637ca7ddcb2686841f0c8d84f44d688534f0301ca925fcc167",
-    "v14/eval_sweep.json": "5cafa98838646d31d8a600b4f5664aaafdada789d6d7fd948d4a6be014a61c9f",
-    "v14/eval_template.json": "d990cde181da4efce44f0f11a62055cea034f541d06ee9bd93b47bacb8def182",
-    "v14/eval_test_case.json": "1fa14ca848bb1b30c9bb786ef85f08880236b7db2f378fc27e573836e166408f",
-    "v14/eval_trace.json": "b1bf582cbe1910a29e9c57fb27e511a2f3d1de19f79b7df7a8725ba572db6366",
-    "v14/judge_config.json": "0a170b88593d77ae32daf362ce4badb3e383c620a322169021db3b635952efe1",
-    "v14/judge_config_tombstone.json": "ae77010820dab9220b9828ccb7c836b38e95c2168fe9bb6450068dfda88588ef",
-    "v14/rubric_dim.json": "53cff745825cdbf79b0b59460e35fb8afd70357b4a798c534f4559ccd7e391bf",
-    "v14/rubric_dim_tombstone.json": "f572fd474b7f68a5c1e813ff2754490fd925aec6b61d7884b7f2b9f2dd6879b6",
+    "v14/calibration_rating.json": "bf707deb719e83eb83974f7af844b4b5e4c0b2d83edbd460586956252b17a4a3",
+    "v14/case_set.json": "ccdff6b0635adf883991c89c44b3e2a604db2513790010a370a00b52bf999654",
+    "v14/eval_action_job.json": "828d1eea5030b330efb7b00537ae13924941d6504c4425abad6b27d740c3c639",
+    "v14/eval_analysis_attempt.json": "829b1182bea47947263627d303dd193e028f70ed1a808b94d5071c49b3c9ecca",
+    "v14/eval_campaign.json": "faf6562effd8a683b9fc35fce612fc345b4e8a5efc3a31fd64129df5c4981840",
+    "v14/eval_generation_slot.json": "1cd595e453b2b517fb93de7a00fbe9940acddfdccb15e79f2f15010ab04ffafc",
+    "v14/eval_judge_temperature_check.json": "0da0c6f4052126c1293ae09aace9e4591c5a3d461d9171734bab964b7489ef62",
+    "v14/eval_launch.json": "18d959b6f2fb54da17358e93fd9a361d5521257eb3f74ecf19f5dc7dcc2b01de",
+    "v14/eval_out_of_run_spend.json": "e265120f73f4e819219777edbd4c94c33827803ec2f670c9fa37eda00dad298a",
+    "v14/eval_result.json": "7e5f76f4dd5ada43e7e13dc9e635d5beb3bc2f2f0afdb99f8618e75af27b4640",
+    "v14/eval_run.json": "a8e7813f8cbb4d83942482e710275cf946c1d0daf878aabe625e7c3f4352d2c0",
+    "v14/eval_second_judge_pass.json": "84efd573fed017f339033d8b87625ebf151f2a282564d883f7d101955164dea9",
+    "v14/eval_sweep.json": "fda0545809a15cf1f4fe33f7626259f6cc5d1b05cc18d097ecdb5ec51b6ea244",
+    "v14/eval_template.json": "ed58c584ac2de9e33902877ace38d5124bd1938830f835e6d22292a35e0b1fa3",
+    "v14/eval_test_case.json": "f1dbebe6ab126c26e78eba85c91ebb91bd5b59341f2396a2bdc3704104f7a74b",
+    "v14/eval_trace.json": "1447db5bf777035550f7f6695a838322b8d62dd45769732fd877ecdf7e73a08b",
+    "v14/judge_config.json": "953a71d18c72fafdf1fc254bed202aa4c4f86b7d8e3c7fd01643fb64ec40f3b7",
+    "v14/judge_config_tombstone.json": "f5130f149870ce29e0dc668d4109868b85e623e1c57ec95cf58d336ec40818c8",
+    "v14/rubric_dim.json": "8e9f903ebe838bded11813a1f48ae82b28bab6fedf90cdaa26fbe989bfcff120",
+    "v14/rubric_dim_tombstone.json": "817b4efd4f7195abeb59c39d691b54fc8e29cde5b924e4d9b027584ce39a719f",
 }
 
 #: Keys whose dict values are maps of names to schemas, not schema nodes: their own keys are field or
@@ -253,18 +264,25 @@ def test_the_pins_were_taken_under_this_build_s_core_version() -> None:
     )
 
 
+def test_the_pins_were_taken_under_this_build_s_core_minor() -> None:
+    assert PINNED_CORE_SCHEMA_MINOR == CORE_SCHEMA_MINOR, (
+        "CORE_SCHEMA_MINOR moved: re-pin every digest under the new minor (see the module docstring)"
+    )
+
+
 @pytest.mark.parametrize("doc_type", sorted(CORE_SHAPE_DIGESTS))
 def test_each_core_shape_matches_its_pin(doc_type: str) -> None:
     """A core type that accepts something new, or refuses something it read, is a bump."""
     model = _core_models()[doc_type]
     assert core_shape_digest(model) == CORE_SHAPE_DIGESTS[doc_type], (
-        f"{model.__name__} ({doc_type}) changed shape under core v{CORE_SCHEMA_VERSION}. A core shape change is a "
-        "version bump with an upgrader, an added optional field included; see this module's docstring"
+        f"{model.__name__} ({doc_type}) changed shape under core v{CORE_SCHEMA_VERSION}.{CORE_SCHEMA_MINOR}. A core "
+        "shape change is a minor (additive only) or a major (with an upgrader), an added optional field included; see "
+        "this module's docstring"
     )
 
 
 def test_an_added_optional_field_moves_a_pin() -> None:
-    """The case the pin exists for: an OPTIONAL field joining a core type is a shape change, and is seen."""
+    """The case the pin exists for: an OPTIONAL field joining a core type is a shape change — a minor — and is seen."""
     from pydantic import create_model
 
     run = _core_models()["eval_run"]
@@ -311,6 +329,48 @@ def test_every_core_version_has_a_ledger_entry_and_an_upgrader() -> None:
     assert set(range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION + 1)) <= recorded
     assert [step.from_version for step in CORE_UPGRADERS] == list(range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION))
     assert all(step.doc_types <= CORE_DOC_TYPES and step.reason for step in CORE_UPGRADERS)
+
+
+#: A minor's ledger entry, as the comment block above ``CORE_SCHEMA_MINOR`` writes one: ``#: - **v14.1** — …``,
+#: through the end of its (possibly wrapped) comment lines.
+_MINOR_ENTRY = re.compile(r"^#: - \*\*v(\d+)\.(\d+)\*\*(.*(?:\n#:   .*)*)", re.MULTILINE)
+
+
+def _minor_entries(ledger: str) -> dict[tuple[int, int], str]:
+    """Each minor's ledger entry in ``ledger``, keyed by its major and minor, its wrapped lines joined."""
+    return {
+        (int(major), int(minor)): " ".join(line.removeprefix("#:").strip() for line in text.splitlines())
+        for major, minor, text in _MINOR_ENTRY.findall(ledger)
+    }
+
+
+def _minors_missing_the_sentence(ledger: str, major: int, newest: int) -> list[int]:
+    """The minors after a major's first, up to ``newest``, whose ledger entry is absent or lacks the sentence."""
+    entries = _minor_entries(ledger)
+    return [minor for minor in range(1, newest + 1) if MINOR_ADDITIVITY_SENTENCE not in entries.get((major, minor), "")]
+
+
+def test_every_core_minor_has_a_ledger_entry_carrying_the_additivity_sentence() -> None:
+    """Every minor of this major is explained, and each one asserts in words that an older build reads it right."""
+    source = inspect.getsource(versioning)
+    ledger = source[source.index("CORE_SCHEMA_VERSION: int =") : source.index("CORE_SCHEMA_MINOR: int =")]
+
+    assert (CORE_SCHEMA_VERSION, 0) in _minor_entries(ledger)
+    assert not _minors_missing_the_sentence(ledger, CORE_SCHEMA_VERSION, CORE_SCHEMA_MINOR)
+
+
+def test_a_minor_entry_without_the_additivity_sentence_is_named() -> None:
+    """The rule above, on a made-up ledger, so it is seen firing while the real one has no minor past the first."""
+    words = MINOR_ADDITIVITY_SENTENCE.split(" ")
+    ledger = (
+        "#: - **v14.0** — the baseline minor.\n"
+        f"#: - **v14.1** — a run's optional note. {' '.join(words[:6])}\n"
+        f"#:   {' '.join(words[6:])}\n"
+        "#: - **v14.2** — a result's optional tag.\n"
+    )
+
+    assert _minors_missing_the_sentence(ledger, 14, 2) == [2]
+    assert _minors_missing_the_sentence(ledger, 14, 3) == [2, 3]
 
 
 # --- the frozen corpus -----------------------------------------------------------------------------

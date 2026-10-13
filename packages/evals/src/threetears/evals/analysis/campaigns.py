@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from pydantic import Field
 
 from threetears.evals.analysis.bundle.observations import variant_key_of_run
-from threetears.evals.kernel.authoring_fields import reject_unknown_authoring_fields
+from threetears.evals.kernel.authoring_fields import edited_core_document, reject_unknown_authoring_fields
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign_writes import serialized_campaign_write
 from threetears.evals.kernel.host.profile import HostProfile
@@ -113,6 +113,7 @@ CAMPAIGN_SERVER_FIELDS: tuple[str, ...] = (
     "id",
     "doc_type",
     "schema_version",
+    "schema_minor",
     "created_at",
     "created_by",
     "scope_id",
@@ -586,8 +587,7 @@ def update_campaign(
             remedy="withdraw the declaration with it (declared_design: null), or leave exploratory out",
         )
 
-    merged = campaign.model_dump(mode="json")
-    merged.update({k: v for k, v in updates.items() if k != "declared_design"})
+    changes = {k: v for k, v in updates.items() if k != "declared_design"}
 
     # The declaration this update leaves, and whether it writes one: the stored one, untouched, until the update
     # withdraws it, replaces it, or names its control.
@@ -662,12 +662,12 @@ def update_campaign(
         )
 
     if rewrites:
-        merged["declared_design"] = (
+        changes["declared_design"] = (
             None if design is None else _stamp_declaration(design, updated_by).model_dump(mode="json")
         )
 
     try:
-        updated = EvalCampaign(**merged)
+        updated = edited_core_document(EvalCampaign, campaign, changes)
     except ValidationError as e:
         raise ValidationFailedError(f"invalid campaign update: {e}", remedy=SCHEMA_REMEDY) from e
 

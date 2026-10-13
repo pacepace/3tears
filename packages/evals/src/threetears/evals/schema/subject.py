@@ -46,8 +46,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import ConfigDict, Field, field_validator
 
+from threetears.evals.schema.base import CoreShapeModel
 from threetears.evals.schema.values import SweepableValue
 
 
@@ -60,7 +61,7 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-class SubjectSnapshot(BaseModel):
+class SubjectSnapshot(CoreShapeModel):
     """The subject a set of observations was taken against, frozen at capture.
 
     Crosses storage, so every field is a persisted-format commitment.

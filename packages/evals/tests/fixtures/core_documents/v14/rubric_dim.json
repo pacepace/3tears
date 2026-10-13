@@ -1,7 +1,7 @@
 {
   "archived": false,
   "axis": "capability",
-  "created_at": "2026-10-13T01:41:35.675102+00:00",
+  "created_at": "2026-10-13T04:34:17.806235+00:00",
   "dim": {
     "axis": "capability",
     "description": "Sounds like itself",
@@ -10,10 +10,11 @@
     "scoring_guide": {}
   },
   "doc_type": "rubric_dim",
-  "id": "01a132ec-173b-737b-b61e-0efda2864659",
+  "id": "01a1338a-344e-7528-a80f-198e839bde32",
   "key": "conversation.tone",
+  "schema_minor": 0,
   "schema_version": 14,
   "scope_id": "uni-1",
   "universal": false,
-  "updated_at": "2026-10-13T01:41:35.675110+00:00"
+  "updated_at": "2026-10-13T04:34:17.806242+00:00"
 }

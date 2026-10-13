@@ -45,7 +45,7 @@ from pydantic import Field, field_validator
 
 from threetears.evals.kernel.job_leases import LeasedJobKind
 from threetears.evals.run.job_work import JobOutcome, JobRecorder, JobWork, end_record, leased_job_kind
-from threetears.evals.schema.base import CoreDocumentModel, EvalBaseModel
+from threetears.evals.schema.base import CoreDocumentModel, CoreShapeModel, EvalBaseModel
 from threetears.evals.schema.job_lease import (
     CancelRequestedAtField,
     CancelRequestReasonField,
@@ -97,7 +97,7 @@ _WRITE_ATTEMPTS = 3
 DEFAULT_SECOND_JUDGE_SEED = 0
 
 
-class SecondJudgeSkip(EvalBaseModel):
+class SecondJudgeSkip(EvalBaseModel, CoreShapeModel):
     """A result of the run that the second judge is not asked about, and why."""
 
     result_id: str
@@ -135,7 +135,7 @@ class SecondJudgeEstimate(EvalBaseModel):
     skipped: list[SecondJudgeSkip]
 
 
-class SecondJudgeReport(EvalBaseModel):
+class SecondJudgeReport(EvalBaseModel, CoreShapeModel):
     """What a second judge's pass did, what it spent apart from the candidate's cost, and what it read.
 
     Attributes:

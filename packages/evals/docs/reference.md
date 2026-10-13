@@ -106,7 +106,8 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`ConversationSpec`** · model · The simulated side of a conversing candidate: who talks to it, in what order, for how long.
 - **`ConversationStopCause`** · enum · Why a conversation trial's turn loop stopped — one structural signal, never a reading of prose.
   <br>values: `'max_turns'`, `'user_done'`, `'participants_ended'`, `'simulator_error'`, `'apparatus_error'`, `'candidate_error'`, `'budget_stopped'`
-- **`CoreDocumentModel`** · model · A stored document in the evidence core: kept across releases, and upgraded when read at an older version.
+- **`CoreDocumentModel`** · model · A stored document in the evidence core: kept across releases, upgraded when read at an older major, and kept whole when read at a newer minor.
+- **`CoreShapeModel`** · model · A model the evidence core stores: a core document, or a shape one embeds, at any depth.
 - **`CoreUpgrader`** · dataclass · One step of the core's upgrade chain: a document at `from_version` rewritten to `from_version + 1`.
 - **`DocTypeFacts`** · dataclass · The facts of one stored document type.
 - **`DocumentStore`** · protocol · A narrow document store over one `(scope_id, doc_type, id)`-keyed collection.
@@ -277,6 +278,8 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`CORE_BASELINE_VERSION`** · constant (int) · The first core version a public release wrote, and the oldest this and every later build reads. Below it a document is pre-release, and is refused by name.
   <br>`= 14`
 - **`CORE_DOC_TYPES`** · constant (frozenset) · The kept documents, by `doc_type`: the `kept` entries of `DOC_TYPE_FACTS`, derived so the registry is the one place a type's lifecycle is decided.
+- **`CORE_SCHEMA_MINOR`** · constant (int) · The core minor this build writes within `CORE_SCHEMA_VERSION`.
+  <br>`= 0`
 - **`CORE_SCHEMA_VERSION`** · constant (int) · The core version this build writes. Every bump appends one line here and one `CoreUpgrader`.
   <br>`= 14`
 - **`CORE_UPGRADERS`** · constant (tuple) · The registered steps, oldest first: `[s.from_version for s in CORE_UPGRADERS]` is `range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION)`.
@@ -291,6 +294,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`JOB_FAULTS_MAX`** · constant (int) · How many faults a job record keeps: a record whose lease machinery kept failing says so without growing without bound.
   <br>`= 32`
 - **`JSON_OBJECT_RESPONSE_FORMAT`** · constant (dict) · `response_format` directive asking for any JSON object, with no shape.
+- **`MINOR_ADDITIVITY_SENTENCE`** · constant (str) · The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When it is false for a change, the change is a major.
 - **`MODEL_DEFAULT_TEMPERATURE`** · constant (str) · A judge call SENT with no temperature, because its model refuses one (some reasoning models do): the model's own default applied.
   <br>`= 'model_default'`
 - **`NON_TERMINAL_RUN_STATUSES`** · constant (frozenset) · Statuses a run can still leave under its own power — it is either queued or executing, and something in-process is expected to write its terminal status.

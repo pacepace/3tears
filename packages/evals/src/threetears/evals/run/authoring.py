@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ValidationError
 
-from threetears.evals.kernel.authoring_fields import reject_unknown_authoring_fields
+from threetears.evals.kernel.authoring_fields import edited_core_document, reject_unknown_authoring_fields
 from threetears.evals.schema.goal_grammar import DSLError, extract_paths
 from threetears.evals.kernel.dsl import (
     call_parameter_matches,
@@ -85,6 +85,7 @@ TEMPLATE_SERVER_FIELDS: tuple[str, ...] = (
     "id",
     "doc_type",
     "schema_version",
+    "schema_minor",
     "created_at",
     "updated_at",
     "scope_id",
@@ -505,14 +506,10 @@ def update_template(
         )
     reject_unknown_authoring_fields("update_template", fields, EvalTemplate, TEMPLATE_SERVER_FIELDS)
 
-    merged = existing.to_dict()
-    for key, value in fields.items():
-        if key in TEMPLATE_SERVER_FIELDS:
-            continue
-        merged[key] = value
-    merged["updated_at"] = utc_now_iso()
+    changes = {key: value for key, value in fields.items() if key not in TEMPLATE_SERVER_FIELDS}
+    changes["updated_at"] = utc_now_iso()
     try:
-        template = EvalTemplate(**merged)
+        template = edited_core_document(EvalTemplate, existing, changes)
     except ValidationError as e:
         raise ValidationFailedError(f"invalid template update: {e}", remedy=SCHEMA_REMEDY) from e
 
@@ -578,6 +575,7 @@ RUBRIC_DIM_SERVER_FIELDS: tuple[str, ...] = (
     "id",
     "doc_type",
     "schema_version",
+    "schema_minor",
     "created_at",
     "updated_at",
     "scope_id",
@@ -681,14 +679,10 @@ def update_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str, fiel
         )
     reject_unknown_authoring_fields("update_rubric_dim", fields, CatalogRubricDim, RUBRIC_DIM_SERVER_FIELDS)
 
-    merged = existing.to_dict()
-    for key, value in fields.items():
-        if key in RUBRIC_DIM_SERVER_FIELDS:
-            continue
-        merged[key] = value
-    merged["updated_at"] = utc_now_iso()
+    changes = {key: value for key, value in fields.items() if key not in RUBRIC_DIM_SERVER_FIELDS}
+    changes["updated_at"] = utc_now_iso()
     try:
-        dim = CatalogRubricDim(**merged)
+        dim = edited_core_document(CatalogRubricDim, existing, changes)
     except ValidationError as e:
         raise ValidationFailedError(f"invalid rubric dim update: {e}", remedy=SCHEMA_REMEDY) from e
 
@@ -769,6 +763,7 @@ JUDGE_CONFIG_SERVER_FIELDS: tuple[str, ...] = (
     "id",
     "doc_type",
     "schema_version",
+    "schema_minor",
     "created_at",
     "scope_id",
 )
@@ -890,19 +885,14 @@ def update_judge_config(storage: DefinitionStore, config_id: str, scope_id: str,
 
     # Build the new version from the existing fields overlaid with the
     # caller's changes, then drop server-owned identity/lifecycle fields so
-    # the new record gets a fresh id/created_at and stays non-archived.
-    merged = existing.to_dict()
-    for key, value in fields.items():
-        if key in JUDGE_CONFIG_SERVER_FIELDS:
-            continue
-        merged[key] = value
-    for key in JUDGE_CONFIG_SERVER_FIELDS:
-        merged.pop(key, None)
-    merged["rubric_dim_id"] = existing.rubric_dim_id
-    merged["scope_id"] = scope_id
-    merged["archived"] = False
+    # the new record gets a fresh id/created_at and stays non-archived. Its
+    # version and minor are the old record's: it carries every field the old
+    # one held, a newer build's among them.
+    changes = {key: value for key, value in fields.items() if key not in JUDGE_CONFIG_SERVER_FIELDS}
+    changes.update(rubric_dim_id=existing.rubric_dim_id, scope_id=scope_id, archived=False)
+    reminted = [key for key in JUDGE_CONFIG_SERVER_FIELDS if key not in ("schema_version", "schema_minor", "scope_id")]
     try:
-        new_config = JudgeConfig(**merged)
+        new_config = edited_core_document(JudgeConfig, existing, changes, drop=reminted)
     except ValidationError as e:
         raise ValidationFailedError(f"invalid judge config update: {e}", remedy=SCHEMA_REMEDY) from e
 

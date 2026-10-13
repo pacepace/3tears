@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
 
 from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_validator
 
-from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.schema.base import CoreShapeModel, EvalDocumentModel
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.covariates import COVARIATE_KEYS
 from threetears.evals.kernel.host.bars import Bar, BarRegistrationError, contradicts_descriptor, no_better_end
@@ -78,7 +78,7 @@ if TYPE_CHECKING:
 _VARIANT_KEY_LENGTH = 64
 
 
-class SweptAxis(EvalDocumentModel):
+class SweptAxis(EvalDocumentModel, CoreShapeModel):
     """One axis this campaign set out to vary, and the levels it meant to compare.
 
     ``axis_id`` must be something the campaign's host will accept as an axis — checked at campaign
@@ -194,7 +194,7 @@ class SweptAxis(EvalDocumentModel):
         return addressed
 
 
-class BarOverride(EvalDocumentModel):
+class BarOverride(EvalDocumentModel, CoreShapeModel):
     """A standard this campaign holds itself to, tighter than the registered one.
 
     Tighter only. A campaign that could lower the bar it is judged against is not being judged;
@@ -231,7 +231,7 @@ class BarOverride(EvalDocumentModel):
     )
 
 
-class GuardrailMargin(EvalDocumentModel):
+class GuardrailMargin(EvalDocumentModel, CoreShapeModel):
     """How much worse than the control an arm may be on one judged guardrail, and still hold it.
 
     A measure's margin is its descriptor's ``materiality_threshold``, declared by the host. A judged dimension has
@@ -258,7 +258,7 @@ class GuardrailMargin(EvalDocumentModel):
     )
 
 
-class Question(EvalDocumentModel):
+class Question(EvalDocumentModel, CoreShapeModel):
     """Something this campaign is trying to find out.
 
     Questions live on the campaign; **resolutions live on the analysis**, because a resolution
@@ -356,7 +356,7 @@ def exploratory_reading(axis: MeritAxis | None, questions: Sequence[Question]) -
     return not any(axis_in_question_scope(axis, question.merit_axes) for question in questions)
 
 
-class ControlDeclaration(EvalDocumentModel):
+class ControlDeclaration(EvalDocumentModel, CoreShapeModel):
     """What held still, stated — because an absent control is a fact, not a null.
 
     Two independent axes, and the engine must not collapse them. ``stimulus`` says whether a
@@ -401,7 +401,7 @@ class ControlDeclaration(EvalDocumentModel):
         return self
 
 
-class CampaignDesign(EvalDocumentModel):
+class CampaignDesign(EvalDocumentModel, CoreShapeModel):
     """The declaration: what this campaign set out to learn, before it learned anything.
 
     Operator input throughout. Every field here is a statement of intent, and none of it is

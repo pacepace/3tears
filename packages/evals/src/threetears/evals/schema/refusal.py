@@ -18,7 +18,7 @@ from typing import Annotated, Literal, get_args
 
 from pydantic import ConfigDict, Field
 
-from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema.base import CoreShapeModel, EvalBaseModel
 
 #: What refused a call or ended a job: the public engine error it was, by kind. One kind per
 #: :class:`~threetears.evals.kernel.EvalServiceError` class (``JobFenced``, which no caller is told, is none) —
@@ -39,7 +39,7 @@ RefusalKind = Literal[
 REFUSAL_KINDS: tuple[RefusalKind, ...] = get_args(RefusalKind)
 
 
-class JobRefusal(EvalBaseModel):
+class JobRefusal(EvalBaseModel, CoreShapeModel):
     """The engine refusal a job ended on, as data: its kind, and the status that error carries.
 
     Set on a job's record exactly when the job ended ``failed`` because an engine error refused its work, and served
