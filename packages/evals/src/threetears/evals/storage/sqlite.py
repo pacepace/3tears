@@ -30,8 +30,9 @@ local disk.
 **The file's layout is versioned** (``PRAGMA user_version``): a file written by a later layout is refused,
 never read as this one. The documents inside it are the engine's, read as from any store: a later release reads the evidence
 core it holds (runs, results, cases, campaigns and the definitions they name) through the core's upgraders,
-and refuses a regenerable document (an analysis, an insight, a cassette) written under another version, which
-the host regenerates from the core (:mod:`~threetears.evals.schema.versioning`).
+and refuses a regenerable document written under another version: an analysis or an insight, which the host
+regenerates from the core, or a cassette, whose format has a version of its own and which the host re-captures
+(:mod:`~threetears.evals.schema.versioning`).
 """
 
 from __future__ import annotations

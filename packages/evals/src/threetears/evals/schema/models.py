@@ -16,8 +16,9 @@ result, trace, calibration rating, case set and the definitions with their tombs
 sweep and analysis attempt in the kernel) is kept: a stored read of an older core version upgrades it
 through registered upgraders, and a newer or pre-release version is refused. A regenerable document (the
 cassette here; the analysis, insight and judge profile in the kernel) written under another version is
-refused and regenerated. Which is which is :data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`.
-:mod:`~threetears.evals.schema.versioning` holds both versions, their ledgers, and the rules.
+refused and regenerated; the cassette's version is its own, so an analysis change never refuses a corpus. Which is
+which is :data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`. :mod:`~threetears.evals.schema.versioning` holds
+the three versions, their ledgers, and the rules.
 """
 
 from __future__ import annotations
@@ -60,7 +61,11 @@ from threetears.evals.schema.hashing import bytes_digest, canonical_digest
 from threetears.evals.schema.goal_grammar import DSLError, extract_paths, parse, referenced_fires
 from threetears.evals.schema.external_spend import ExternalSpend
 from threetears.evals.schema.subject import SubjectSnapshot
-from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION, REGENERABLE_SCHEMA_VERSION
+from threetears.evals.schema.versioning import (
+    CASSETTE_SCHEMA_VERSION,
+    CORE_SCHEMA_VERSION,
+    REGENERABLE_SCHEMA_VERSION,
+)
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.schema.judge_attribution import JudgeAttributionSource, JudgeAttributionState, attribution_state
 from threetears.evals.schema.prose import ModelProse
@@ -101,6 +106,35 @@ def _current_schema_only(version: int) -> int:
 #: The ``schema_version`` field type of every regenerable stored document: defaulted to the current version on
 #: write, and refusing any other on read.
 SchemaVersion = Annotated[int, AfterValidator(_current_schema_only)]
+
+
+def _current_cassette_only(version: int) -> int:
+    """Refuse a cassette written under any cassette version but this build's.
+
+    The cassette's version space is its own (:data:`~threetears.evals.schema.versioning.CASSETTE_SCHEMA_VERSION`),
+    so a bump of the regenerable version, which every analysis shape change makes, leaves a recorded corpus readable.
+
+    Args:
+        version: The cassette's ``schema_version``.
+
+    Returns:
+        The version, unchanged.
+
+    Raises:
+        ValueError: ``version`` is not :data:`~threetears.evals.schema.versioning.CASSETTE_SCHEMA_VERSION`.
+    """
+    if version != CASSETTE_SCHEMA_VERSION:
+        raise ValueError(
+            f"this cassette was written under cassette format v{version} and this build reads cassette format "
+            f"v{CASSETTE_SCHEMA_VERSION} only; a cassette is never migrated across a format change: re-capture the "
+            "template (a new run with cassette_mode='capture', so a new corpus) and replay that corpus"
+        )
+    return version
+
+
+#: The ``schema_version`` field type of a cassette: defaulted to the current cassette version on write, and refusing
+#: any other on read. A version space apart from :data:`SchemaVersion`'s, so a corpus outlives an analysis bump.
+CassetteSchemaVersion = Annotated[int, AfterValidator(_current_cassette_only)]
 
 
 def _current_core_only(version: int) -> int:
@@ -5200,7 +5234,9 @@ class EvalCassette(EvalDocumentModel):
 
     id: str = Field(min_length=1)
     doc_type: Literal["eval_cassette"] = "eval_cassette"
-    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
+    #: Its own version space (:data:`~threetears.evals.schema.versioning.CASSETTE_SCHEMA_VERSION`), never the
+    #: analyses': re-capturing a corpus spends the third-party quota a cassette exists to spare.
+    schema_version: CassetteSchemaVersion = CASSETTE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     corpus_id: str = Field(min_length=1)
@@ -5333,6 +5369,7 @@ __all__ = [
     "case_set_doc_id",
     "CANDIDATE_SPEAKER",
     "DEFAULT_JUDGE_TEMPERATURE",
+    "CassetteSchemaVersion",
     "CoreSchemaVersion",
     "MODEL_DEFAULT_TEMPERATURE",
     "JudgeTemperature",

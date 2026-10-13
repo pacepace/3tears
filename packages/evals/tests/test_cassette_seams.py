@@ -38,7 +38,9 @@ from threetears.evals.kernel.cassettes import (
     ToolWrap,
 )
 from threetears.evals.kernel.host.apparatus import ApparatusError
+from threetears.evals.schema import models as schema_models
 from threetears.evals.schema.models import CassetteKey, EvalCassette
+from threetears.evals.schema.versioning import CASSETTE_SCHEMA_VERSION, REGENERABLE_SCHEMA_VERSION
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.run.cassette_proxy import (
     DELIVERY_ACTION,
@@ -670,6 +672,34 @@ async def test_a_recording_that_no_longer_reads_back_is_the_rig_s_failure(
     with pytest.raises(CassetteCorrupt) as caught:
         await _CALLS[seam](replay)
     assert isinstance(caught.value, ApparatusError)
+
+
+@pytest.mark.parametrize("seam", ["action", "delivery"])
+async def test_a_recording_from_another_cassette_version_names_it_and_the_recapture(seam: str) -> None:
+    """The replay's refusal says which cassette format the row is and what makes the corpus again."""
+    storage, store = memory_storage()
+    await _captured(storage)
+    _corrupt(store, seam=seam, change=lambda document: document.update(schema_version=CASSETTE_SCHEMA_VERSION + 1))
+    replay = _replay_session()
+    _wire(_lane(storage, "replay"), replay)
+
+    with pytest.raises(CassetteCorrupt) as caught:
+        await _CALLS[seam](replay)
+    assert f"cassette format v{CASSETTE_SCHEMA_VERSION + 1} " in str(caught.value)
+    assert "re-capture the template" in str(caught.value)
+
+
+async def test_a_corpus_replays_unchanged_across_a_regenerable_bump(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An analysis shape change bumps the regenerable version; the corpus it would have refused still replays whole."""
+    storage, _ = memory_storage()
+    captured, captured_answers = await _captured(storage)
+    monkeypatch.setattr(schema_models, "REGENERABLE_SCHEMA_VERSION", REGENERABLE_SCHEMA_VERSION + 1)
+
+    replay = _replay_session()
+    _wire(_lane(storage, "replay"), replay)
+
+    assert await _play(replay) == captured_answers
+    assert replay.roll.live_calls == [] and replay.rules.live_calls == [] and replay.scout.live_scouts == []
 
 
 # parity-with: threetears.evals.schema.store_port.DocumentStore

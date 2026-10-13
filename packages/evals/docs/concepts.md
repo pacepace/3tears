@@ -261,7 +261,8 @@ calibration ratings, out-of-run spend, case sets, the templates, judge configs a
 campaigns, sweeps, analysis attempts, generation slots, and the records of every other job (launches, second
 judge passes, judge temperature comparisons, host action jobs). An older one is upgraded as it is read. Analyses, insights, judge
 profiles and cassettes are outside it: a release that changes their format refuses them, and they are made again
-([what is kept](adopting-a-host.md#stored-data-what-is-kept)).
+([what is kept](adopting-a-host.md#stored-data-what-is-kept)). A cassette's format has a version of its own, so a
+change to the analyses never refuses a corpus.
 
 #### Battery
 The universal templates, run as one pre-flighted set (`start_universal_battery`): templates marked
@@ -270,7 +271,9 @@ The universal templates, run as one pre-flighted set (`start_universal_battery`)
 #### Cassette
 A recording of what a candidate's tools answered. A run in `cassette_mode="capture"` records one; a run in
 `"replay"` is served that recording instead of calling the tools live, so two arms can face exactly the
-same tool answers. It records the tools only, never the candidate (`examples/cassettes.py`).
+same tool answers. It records the tools only, never the candidate (`examples/cassettes.py`). Its stored format has
+its own version (`CASSETTE_SCHEMA_VERSION`), apart from the analyses': a corpus is refused only when the cassette's
+own format changes, and is then re-captured.
 
 #### Simulator
 The engine's simulated user: the other side of a conversation a conversing kind holds

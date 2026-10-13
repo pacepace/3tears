@@ -81,6 +81,10 @@
       "kind": "model",
       "signature": "CaseSetRef(name: str, version: int)"
     },
+    "threetears.evals.schema.CASSETTE_SCHEMA_VERSION": {
+      "kind": "constant (int)",
+      "signature": ""
+    },
     "threetears.evals.schema.CassetteKey": {
       "kind": "dataclass",
       "signature": "CassetteKey(corpus_id: str, template_id: str, test_case_id: str, tool: str, action: str, params_hash: str, occurrence: int)"
@@ -235,7 +239,7 @@
     },
     "threetears.evals.schema.EvalCassette": {
       "kind": "model",
-      "signature": "EvalCassette(id: str, doc_type: Literal['eval_cassette'] = 'eval_cassette', schema_version: SchemaVersion = 9, scope_id: str, corpus_id: str, template_id: str, test_case_id: str, tool: str, action: str, params_hash: str, occurrence: int, seam: CassetteSeam, outcome: CassetteDeliveryOutcome | None = None, response: dict[str, Any] | None = None, error: str | None = None, captured_model: str, captured_at: str = utc_now_iso())"
+      "signature": "EvalCassette(id: str, doc_type: Literal['eval_cassette'] = 'eval_cassette', schema_version: CassetteSchemaVersion = 1, scope_id: str, corpus_id: str, template_id: str, test_case_id: str, tool: str, action: str, params_hash: str, occurrence: int, seam: CassetteSeam, outcome: CassetteDeliveryOutcome | None = None, response: dict[str, Any] | None = None, error: str | None = None, captured_model: str, captured_at: str = utc_now_iso())"
     },
     "threetears.evals.schema.EvalDocumentModel": {
       "kind": "model",

@@ -212,7 +212,7 @@ types the engine stores, and says three things about each:
   judge temperature comparisons, host action jobs) or `derived` (computed from other stored
   documents: analyses, insights, judge profiles).
 - **lifecycle**: `kept` (read by every later release, below) or `regenerable` (refused after a format change,
-  and made again).
+  and made again: an analysis, insight or judge profile is regenerated, a cassette re-captured).
 - **suppresses**: for a tombstone, the type it suppresses (`rubric_dim_tombstone` holds a `rubric_dim`'s
   slot, `judge_config_tombstone` a `judge_config`'s).
 
@@ -229,8 +229,9 @@ a judge temperature comparison (every answer, stored nowhere else) and a host ac
 `CORE_DOC_TYPES` lists them.
 
 **The first public release is the baseline.** It writes core v14 (`CORE_BASELINE_VERSION`, equal to
-`CORE_SCHEMA_VERSION`) and regenerable v9 (`REGENERABLE_SCHEMA_VERSION`), and registers no upgrade steps
-(`CORE_UPGRADERS` is empty): there is nothing older for it to read.
+`CORE_SCHEMA_VERSION`), regenerable v9 (`REGENERABLE_SCHEMA_VERSION`) and cassette v1
+(`CASSETTE_SCHEMA_VERSION`), and registers no upgrade steps (`CORE_UPGRADERS` is empty): there is nothing older
+for it to read.
 
 **A release that changes a core shape ships an upgrader, and your store needs no migration.** Every change
 to a core shape bumps `CORE_SCHEMA_VERSION`, an added optional field included. Each bump comes with one
@@ -241,15 +242,19 @@ engine next writes that document, at the current version. So one scope can hold 
 versions. A step never changes a field the store filters, sorts or projects on (`CORE_ADDRESSING_FIELDS`), so
 an index your adapter keeps on those fields stays valid.
 
-**Everything else is regenerated.** Analyses, insights and judge profiles are built over the core, and a
-cassette is re-captured. When one of their shapes changes, `REGENERABLE_SCHEMA_VERSION` is bumped and a
-document written under another version is refused: make it again over the kept runs (generate the analysis,
-profile the judge), or re-capture the cassette (a new capture run, so a new corpus). After a bump, `analyses_undescribable` (operation and action) lists the scope's analyses holding
-an arm this build can no longer describe.
+**Everything else is regenerated.** Analyses, insights and judge profiles are built over the core. When one of
+their shapes changes, `REGENERABLE_SCHEMA_VERSION` is bumped and a document written under another version is
+refused: make it again over the kept runs (generate the analysis, profile the judge). After a bump,
+`analyses_undescribable` (operation and action) lists the scope's analyses holding an arm this build can no longer
+describe. A cassette is not touched by that bump: its format has its own `CASSETTE_SCHEMA_VERSION`, bumped only
+when the cassette itself changes, because re-capturing a corpus calls your third-party tools again. A cassette
+written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
+corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
-**Each version space moves on its own.** Core documents (v14), regenerable documents (v9), the bundle shape
-(the bundle's `schema_version`, 50), the cell model (`CELL_MODEL_VERSION`, 12), the report (`REPORT_VERSION`, 9)
-and the identity keys (`IDENTITY_VERSION`, 24) carry separate versions, each at its first public release's value.
+**Each version space moves on its own.** Core documents (v14), regenerable documents (v9), cassettes
+(`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 50), the cell model
+(`CELL_MODEL_VERSION`, 12), the report (`REPORT_VERSION`, 9) and the identity keys (`IDENTITY_VERSION`, 24) carry
+separate versions, each at its first public release's value.
 An upgrade never recomputes an identity key, so keys from different predicates never silently pool.
 
 **Reads stay strict.** Every stored model refuses an unknown field and a missing required one. A core

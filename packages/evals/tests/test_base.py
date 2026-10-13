@@ -16,8 +16,14 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.schema.base import CoreDocumentModel, EvalBaseModel, EvalDocumentModel
-from threetears.evals.schema.versioning import CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION, REGENERABLE_SCHEMA_VERSION
+from threetears.evals.schema.versioning import (
+    CASSETTE_SCHEMA_VERSION,
+    CORE_BASELINE_VERSION,
+    CORE_SCHEMA_VERSION,
+    REGENERABLE_SCHEMA_VERSION,
+)
 from threetears.evals.schema.models import (
+    EvalCassette,
     EvalResult,
     EvalRun,
 )
@@ -318,7 +324,10 @@ def test_every_stored_model_refuses_a_field_it_does_not_declare(model: type[Eval
 
 
 def _regenerable_models() -> list[type[EvalBaseModel]]:
-    return [model for model in stored_models() if not issubclass(model, CoreDocumentModel)]
+    """The regenerable models governed by ``REGENERABLE_SCHEMA_VERSION``: every one but the cassette, which has its own."""
+    return [
+        model for model in stored_models() if not issubclass(model, CoreDocumentModel) and model is not EvalCassette
+    ]
 
 
 def _core_models() -> list[type[EvalBaseModel]]:
@@ -335,6 +344,32 @@ def test_every_regenerable_model_refuses_a_document_from_another_schema_version(
 
     with pytest.raises(ValidationError, match=f"eval schema v{version}"):
         model.from_dict({**document, "schema_version": version})
+
+
+@pytest.mark.parametrize(
+    "version", [CASSETTE_SCHEMA_VERSION - 1, CASSETTE_SCHEMA_VERSION + 1, REGENERABLE_SCHEMA_VERSION], ids=str
+)
+def test_a_cassette_refuses_a_document_from_another_cassette_version_naming_the_recapture(version: int) -> None:
+    """A cassette at any cassette version but this build's does not load, and says how to make the corpus again.
+
+    The regenerable version is among those refused: a cassette is never read against the analyses' number, so one
+    stamped with it is a cassette from another format, not this one.
+    """
+    document = stored_sample(EvalCassette)
+
+    with pytest.raises(ValidationError) as refused:
+        EvalCassette.from_dict({**document, "schema_version": version})
+    assert f"cassette format v{version} " in str(refused.value)
+    assert f"reads cassette format v{CASSETTE_SCHEMA_VERSION} only" in str(refused.value)
+    assert "re-capture the template" in str(refused.value)
+    assert "a new corpus" in str(refused.value)
+
+
+def test_a_cassette_at_this_build_s_cassette_version_loads() -> None:
+    document = stored_sample(EvalCassette)
+
+    assert document["schema_version"] == CASSETTE_SCHEMA_VERSION
+    assert EvalCassette.from_dict(document).schema_version == CASSETTE_SCHEMA_VERSION
 
 
 @pytest.mark.parametrize("version", [CORE_BASELINE_VERSION - 1, CORE_SCHEMA_VERSION + 1, "8", None])
