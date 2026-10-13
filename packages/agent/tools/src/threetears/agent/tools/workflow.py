@@ -12,7 +12,12 @@ from threetears.observe import get_logger
 
 from threetears.core.utils.local_time import resolve_zone
 
-from threetears.agent.tools.context import ToolContextManager, VariableLimitError, recalled_text
+from threetears.agent.tools.context import (
+    ToolContextManager,
+    VariableLimitError,
+    missing_result_text,
+    recalled_text,
+)
 from threetears.agent.tools.text_window import WindowedInput
 from threetears.agent.tools.utils import TOOL_ERROR_PREFIX, tool_no_change
 
@@ -101,7 +106,7 @@ async def _recall_context(
 ) -> str:
     item = await tool_context.get_context_item(context_id)
     if item is None:
-        return f"Saved result '{context_id}' not found in this conversation."
+        return missing_result_text(context_id, tool_context.items)
     return recalled_text(item, offset=offset, tz=zone, label=f"{item.get('key', 'unknown')}: ")
 
 

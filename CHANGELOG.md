@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Tools: a recall that misses names what is saved
+
+- **Changed, `context_recall` (both `load_workflow_tools` and the `threetears.context_recall`
+  builtin):** asked for an id nothing is saved under, it still opens `Saved result '<id>' not found
+  in this conversation.` and then lists the conversation's saved tool results, newest first, each
+  with the `[ctx:<id>]` mark it opens by: the newest 10, with the count when there are more.
+- **Added, `threetears.agent.tools.context.missing_result_text(context_id, items)`:** the one
+  rendering both tools use.
+
 ### Tools: a stored result is recalled in parts
 
 `context_recall` returned a stored result whole, whatever its size. A recalled result is a tool

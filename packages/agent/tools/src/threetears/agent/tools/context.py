@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, tzinfo
 from typing import Any, Final
 from uuid import UUID, uuid7
@@ -22,6 +22,7 @@ __all__ = [
     "ToolContextManager",
     "VariableLimitError",
     "make_tool_result_dedup_key",
+    "missing_result_text",
     "recalled_text",
     "refreshed_note",
 ]
@@ -68,6 +69,33 @@ def recalled_text(item: Mapping[str, Any], *, offset: int = 0, tz: tzinfo | str 
     window = window_text(f"{label}{item.get('content', '')}", offset=offset, max_chars=RECALL_MAX_CHARS)
     note = refreshed_note(item, tz)
     return window.rendered(tool="context_recall", note_first=True, notes=[note] if note else [])
+
+
+#: How many saved results a miss names.
+_MISS_NAMES: Final[int] = 10
+
+
+def missing_result_text(context_id: str, items: Sequence[Mapping[str, Any]]) -> str:
+    """What ``context_recall`` says for an id nothing is saved under: so, and the saved results that exist.
+
+    A bare "not found" leaves the caller guessing at another id. The newest
+    saved results are named with the mark each is opened by, newest first.
+
+    :param context_id: the id asked for
+    :ptype context_id: str
+    :param items: the conversation's context items, oldest first
+    :ptype items: Sequence[Mapping[str, Any]]
+    :return: what the model reads
+    :rtype: str
+    """
+    head = f"Saved result '{context_id}' not found in this conversation."
+    saved = [item for item in items if item.get("context_type") == "tool_result"]
+    if not saved:
+        return f"{head} No tool result is saved in it."
+    newest = saved[-_MISS_NAMES:][::-1]
+    count = f"The newest {len(newest)} of {len(saved)} saved" if len(newest) < len(saved) else "Saved"
+    lines = [f"- [ctx:{item['context_id']}] {item.get('key', 'unknown')}" for item in newest]
+    return "\n".join([f"{head} {count} here:", *lines])
 
 
 def refreshed_note(item: Mapping[str, Any], tz: tzinfo | str | None = None) -> str | None:

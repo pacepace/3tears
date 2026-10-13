@@ -27,7 +27,7 @@ from threetears.core.utils.local_time import resolve_zone
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
 from threetears.agent.tools.text_window import WindowedInput
-from threetears.agent.tools.context import recalled_text
+from threetears.agent.tools.context import missing_result_text, recalled_text
 
 __all__ = [
     "ContextRecallTool",
@@ -160,7 +160,7 @@ class ContextRecallTool(TearsTool):
             if item is None:
                 result = ToolResult(
                     success=False,
-                    content=f"Saved result '{context_id}' not found in this conversation.",
+                    content=missing_result_text(context_id, getattr(manager, "items", None) or []),
                     error="not found",
                 )
             else:

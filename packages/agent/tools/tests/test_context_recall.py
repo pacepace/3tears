@@ -171,6 +171,17 @@ class TestContextRecallExecute:
         assert "not found" in result.content.lower()
 
     @pytest.mark.asyncio
+    async def test_a_miss_names_the_results_that_are_saved(self, manager: ToolContextManager) -> None:
+        """a bare "not found" leaves the caller guessing at another id."""
+        cid = await manager.save_tool_result("nmap", "one scan", input_fingerprint="host=a")
+        async with enter_call_scope(_scope_for(manager)):
+            result = await ContextRecallTool().execute(context_id="0190abcd-0000-7000-8000-000000000000")
+        assert "\n- [ctx:" in result.content, "the miss lists nothing"
+        head, listed = result.content.split("\n", 1)
+        assert head.endswith("not found in this conversation. Saved here:")
+        assert listed.startswith(f"- [ctx:{cid.removeprefix('ctx:')}] nmap")
+
+    @pytest.mark.asyncio
     async def test_recall_without_scope_is_unavailable(self) -> None:
         """no call scope -> a clear unavailable result, not an exception."""
         tool = ContextRecallTool()
