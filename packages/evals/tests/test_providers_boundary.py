@@ -60,14 +60,19 @@ def _names_the_adapter(text: str) -> bool:
     return text == PROVIDERS or text.startswith(f"{PROVIDERS}.")
 
 
+#: The package-level declarations that name every public root by string: ``PUBLIC_ROOTS``, and ``ROOT_EXTRAS``, which
+#: names the roots that need an extra. Naming the adapter's root there is declaring it, not reaching it.
+_ROOT_DECLARATIONS = frozenset({"PUBLIC_ROOTS", "ROOT_EXTRAS"})
+
+
 def _public_roots_declaration(tree: ast.Module) -> set[int]:
-    """The ids of the string constants inside the package's ``PUBLIC_ROOTS`` declaration, which names every root."""
+    """The ids of the string constants inside the package's root declarations (:data:`_ROOT_DECLARATIONS`)."""
     declared: set[int] = set()
     for node in tree.body:
         targets = (
             node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
         )
-        if any(isinstance(target, ast.Name) and target.id == "PUBLIC_ROOTS" for target in targets):
+        if any(isinstance(target, ast.Name) and target.id in _ROOT_DECLARATIONS for target in targets):
             declared |= {id(constant) for constant in ast.walk(node) if isinstance(constant, ast.Constant)}
     return declared
 
@@ -252,6 +257,7 @@ def test_importing_every_other_root_loads_neither_the_adapter_nor_models() -> No
         ("run/planted.py", "NOTE = 'the providers root is optional'\n", False),
         ("providers/planted.py", "from threetears.evals.providers.adapter import models_client\n", False),
         ("__init__.py", "PUBLIC_ROOTS: tuple[str, ...] = ('threetears.evals.providers',)\n", False),
+        ("__init__.py", "ROOT_EXTRAS = {'threetears.evals.providers': 'models'}\n", False),
         ("__init__.py", "OTHER = 'threetears.evals.providers'\n", True),
     ],
 )
