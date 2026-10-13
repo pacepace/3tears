@@ -693,6 +693,15 @@ def _lever_cohort(lever: str, design: RealizedDesign, all_run_ids: list[str]) ->
     there is no contrast to narrow to, and the whole campaign is the honest cohort — which is what
     it was before any control was designated.
 
+    **The control's cells under an earlier identity predicate** (``design.earlier_control``) follow
+    the same two branches, and neither excludes them by name. A contrast's cohort is the control ARM
+    and the arms that moved this lever, and those cells are neither — the control's numbers are its
+    current predicate's cells only, and a contrast read over both would put two keys into one side.
+    A marginal cohort is every run, so it counts them: at each lever they sit at the control's level,
+    because their lever map is the control's and only the digest differs, and they pool there as any
+    cell at that level does. That is the reading a marginal comparison exists to give, so nothing
+    here sets them apart, and the disclosure on the design still names them.
+
     Args:
         lever: The lever under comparison.
         design: The derived design.

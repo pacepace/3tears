@@ -524,7 +524,9 @@ class EarlierControl(EvalDocumentModel):
     predicates into one number; contrasting them would compare the control with itself under another digest and
     let a reader report the control "not separated" from the control. So they are named, kept out of every
     contrast, guardrail and adoption check, never a contestant on the frontier (its point is marked and is in no
-    dominance test, never the pick and never a cost tie), and said once.
+    dominance test, never the pick and never a cost tie), and said once. A marginal comparison, read over every run
+    rather than against the control, still counts them, at the control's level of each lever, as it counts any cell
+    there.
     """
 
     variant_key: str = Field(min_length=1, description="The key the control's earlier cells carry: the stored key.")

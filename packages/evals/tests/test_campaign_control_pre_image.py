@@ -15,7 +15,8 @@ on the cells stamped after — and the control must name both. Pinned here:
 - **A campaign carrying both keys keeps ONE control arm**: the cells under this build's predicate. The cells under
   the earlier one are named as the control under that predicate, disclosed in the bundle, the code-only report and
   the time positions they ran at, and kept out of every contrast, guardrail, frontier boundary check and adoption
-  check, and out of the control's numbers.
+  check, and out of the control's numbers. A marginal row, read over the whole campaign, counts them at the
+  control's level, as it counts every cell there.
 - **Every reading agrees on which arm is the control**: the realized design decides it once, and the decision
   surface, the surface's row order, the time axis, the adoption check and the arm table read that.
 - **A key nothing can carry is disclosed, never silent**: a typed key from another predicate that no cell carries
@@ -48,13 +49,13 @@ from threetears.evals.analysis.surface_table import surface_table_of
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.analysis.report.build import build_code_only_report
 from threetears.evals.kernel import EvalCampaign, IDENTITY_VERSION
-from threetears.evals.kernel.declaration import CampaignDesign, resolve_declared_control
+from threetears.evals.kernel.declaration import CampaignDesign, SweptAxis, resolve_declared_control
 from threetears.evals.kernel.identity import compute_variant_key, resolve_variant_identity
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.schema.values import SweepableValue
 from packages.evals.tests.factories import minimal_declaration
-from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, toyhost_design
+from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_AXIS, TOYHOST_NARROW, toyhost_design
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, TOYHOST_SUBJECT, OpsFixture, ops_fixture
 from packages.evals.tests.off_loop import off_loop
@@ -751,6 +752,48 @@ def test_the_split_is_disclosed_in_the_bundle_and_the_code_only_report() -> None
     surface = surface_table_of(bundle_decision_surface(bundle), bundle.variant_index)
     (marked,) = [row for row in surface.rows if row.variant_key == stored_key]
     assert marked.label.endswith(f"the control under identity predicate v{_EARLIER}") and not marked.is_control
+
+
+def test_a_marginal_row_pools_the_earlier_control_cells_at_the_controls_level() -> None:
+    fixture, campaign, earlier_run, _rerun, _stored_key, _current_key = _split_control_campaign()
+    storage = fixture.host.eval_host.storage
+    # A declared axis no arm moved: its row is read over the whole campaign, a marginal comparison, beside the swept
+    # axis's row, which is a contrast against the control.
+    unmoved = SweptAxis(
+        axis_id="retriever_top_k",
+        values=[SweepableValue.of(level, display=str(level)) for level in (3, 5)],
+        rationale="does a deeper retrieval find the field a shallow one misses",
+    )
+    declared = campaign.declared_design
+    assert declared is not None
+    campaign = campaign.model_copy(
+        update={
+            "declared_design": CampaignDesign.model_validate(
+                declared.model_copy(update={"axes": [*declared.axes, unmoved]}).model_dump(mode="json")
+            )
+        }
+    )
+    storage.save_campaign(campaign)
+    results = {run_id: len(storage.query_eval_results_by_run(run_id, TOYHOST_SCOPE)) for run_id in campaign.run_ids}
+
+    bundle = _assemble(fixture, campaign)
+
+    rows = {row.name: row for row in bundle.coverage}
+    contrast, marginal = rows[TOYHOST_AXIS], rows[unmoved.axis_id]
+    assert contrast.cohort_scope == "control_referenced"
+    assert contrast.n == sum(results.values()) - results[earlier_run], "a contrast reads the control's current cells"
+    assert marginal.cohort_scope == "campaign"
+    assert marginal.n == sum(results.values()), "a marginal row counts every cell, the earlier control's among them"
+    assert bundle.design.control_arm is not None
+    (control_summary,) = [s for s in bundle.run_summaries if s.run_id in bundle.design.control_arm.run_ids]
+    (earlier_summary,) = [s for s in bundle.run_summaries if s.run_id == earlier_run]
+    assert earlier_summary.config[unmoved.axis_id] == control_summary.config[unmoved.axis_id]
+    assert marginal.levels == [control_summary.config[unmoved.axis_id]], (
+        "the earlier cells pool at the control's level, never a level of their own"
+    )
+    assert bundle.design.earlier_control is not None and bundle.design.earlier_control.run_ids == [earlier_run], (
+        "the pool includes them, so the bundle still names them"
+    )
 
 
 def test_a_time_position_before_the_change_names_its_control_rather_than_reading_as_having_none() -> None:
