@@ -54,7 +54,9 @@ v<version>` prints a release's notes).
   model 3tears-models builds for Anthropic, OpenAI or OpenRouter into the completion client, `models_clients` is
   the role factory a host hands `EvalHost` as `clients` (keys from `api_keys=` or each provider's environment
   variable, refused by name at first use), and `ModelsFailureDescriber` maps each SDK's errors onto the failure
-  port without repeating a payload. Every request is sent once, under a breaker of the adapter's own; a reply's
+  port without repeating a payload. Every request is sent once, under a breaker of the adapter's own, except that a
+  request the provider refused for its temperature (unbilled) is sent again without one, and that client then sends
+  none and reports `temperature=None`, so a model that takes no temperature never fails the call; a reply's
   served model, stop reason, reasoning tokens and the temperature actually sent are read per provider, and which
   members each provider exposes is pinned by a test, so a LangChain or models upgrade that moves one fails by
   name. Anthropic and OpenAI calls are priced from models' price catalogue, OpenRouter calls by OpenRouter's own

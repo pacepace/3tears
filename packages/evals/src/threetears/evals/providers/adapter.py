@@ -20,6 +20,17 @@ provider and key. The temperature, the output cap and the reasoning setting are 
 temperature is read back from it, because LangChain drops a temperature some models refuse at construction and
 what the engine records is what was sent.
 
+**A temperature the model refuses is dropped, not failed** (owner ruling, 2026-10-13: a model that lacks a request
+feature never fails the request). 3tears-models' capabilities say nothing of which models take a temperature, so
+the adapter learns it from the provider's own refusal: a request refused for the temperature it carried (Anthropic's
+``invalid_request_error`` naming ``temperature`` as deprecated or unsupported; OpenAI's ``unsupported_parameter`` or
+``unsupported_value`` on ``temperature``; on OpenRouter, a 404 for a call under ``require_parameters``, which
+excludes every upstream that cannot take the temperature) is sent once more without it, and once that is served the
+client sends none for the rest of its life, logged once at WARNING. That is not a hidden retry: the refused request
+was rejected before anything was generated and is not billed. The completion reports ``temperature=None``, as the
+request carried none, and the engine records the model's default. Any other refusal, and a failure of the resend,
+propagates as it was raised.
+
 **Built per call.** The messages and the bind that carries a ``response_format`` (and, on Anthropic, the effort in
 the same ``output_config``). Nothing about a call is written to the client, so concurrent calls on one instance
 each send exactly their own prompt pair, as the port requires.
@@ -59,9 +70,13 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Final, Literal, Self, get_args
 
+import anthropic
 import httpx
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+import openai
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableBinding
+from openrouter import errors as openrouter_errors
 
 from threetears.evals.schema import KnownReasoningEffort, StopReason
 from threetears.evals.schema.logs import get_logger
@@ -216,6 +231,17 @@ _RESPONSES_PAYLOAD_KEYS: Final = frozenset(
 #: cache rates, so those tokens were priced at the plain input rate, and the stored cost is approximate, in either
 #: direction (a provider bills a cache read below the input rate and an Anthropic cache write above it).
 _CACHE_APPROXIMATE: Final = ";cache-approximate"
+
+#: Words a provider's refusal uses when a parameter is not taken at all, as against a value out of range (Anthropic's
+#: range error), which is the caller's to fix and is never resent. Anthropic's refusal names the parameter in its
+#: message only ("`temperature` is deprecated for this model."), so the message is read for the parameter's name and
+#: one of these words, never matched as a whole sentence.
+_NOT_TAKEN_WORDS: Final = ("deprecated", "not supported", "unsupported", "does not support")
+
+#: OpenAI's error codes for a parameter the model does not take (``Unsupported parameter: 'temperature' …``) and for
+#: a value of it the model does not take (``Unsupported value: 'temperature' does not support 0.2 …``); either
+#: arrives with ``param`` naming the parameter.
+_OPENAI_NOT_TAKEN_CODES: Final = frozenset({"unsupported_parameter", "unsupported_value"})
 
 #: What an absent or unknown finish reason reads as: cut short, cause unnamed, never finished. A reply with no
 #: finish reason (a stream that ended without one) or with one this build does not know (a future provider value)
@@ -604,13 +630,106 @@ def _responses_temperature(bound: object, temperature: float | None) -> float | 
     return temperature
 
 
+def _error_message(body: object) -> str | None:
+    """The provider's own message in an SDK error's ``body``: ``error.message``, else ``message``, else ``None``.
+
+    Anthropic's SDK keeps the whole body (``{"type": "error", "error": {...}}``), OpenAI's the inner ``error``
+    object; this reads either.
+    """
+    error = _mapping(body).get("error")
+    message = _mapping(error if isinstance(error, Mapping) else body).get("message")
+    return message if isinstance(message, str) and message else None
+
+
+def _requires_parameters(bound: object, call_kwargs: Mapping[str, Any]) -> bool:  # Any: the bind's keyword values
+    """Whether an OpenRouter call routes only to an upstream that takes every parameter it carries.
+
+    ``require_parameters`` comes per call from models' structured-output translation (a ``json_schema`` directive),
+    or from routing the host built the model with (``openrouter_provider``).
+
+    Args:
+        bound: The built ``ChatOpenRouter``.
+        call_kwargs: The keywords the call is bound with.
+
+    Returns:
+        Whether the call carries ``provider.require_parameters``.
+    """
+    per_call = _mapping(call_kwargs.get("provider")).get("require_parameters")
+    built = _mapping(getattr(bound, "openrouter_provider", None)).get("require_parameters")
+    return per_call is True or built is True
+
+
+def _temperature_refusal(provider: SupportedProvider, exc: Exception, *, routing_required: bool) -> str | None:
+    """Whether ``exc`` is the provider refusing a request for the temperature it carried, and in what words.
+
+    Read by each SDK's error type and structured fields, never by the exception's text, which on Anthropic and
+    OpenAI repeats the whole body:
+
+    * Anthropic: a 400 ``invalid_request_error`` whose message names ``temperature`` and says it is not taken
+      (:data:`_NOT_TAKEN_WORDS`: "`temperature` is deprecated for this model.").
+    * OpenAI: a 400 whose ``param`` is ``temperature`` and whose ``code`` is ``unsupported_parameter`` or
+      ``unsupported_value`` (:data:`_OPENAI_NOT_TAKEN_CODES`).
+    * OpenRouter: by default it drops a parameter the routed upstream does not take, so no refusal arrives; under
+      ``require_parameters`` it instead excludes such an upstream, and when that leaves none it answers 404 (no
+      endpoint can take the request's parameters), which names no parameter: a refusal of the temperature only if
+      the same request without it is served, which the resend settles.
+
+    Args:
+        provider: The provider the request went to.
+        exc: What the call raised.
+        routing_required: Whether the request carried OpenRouter's ``require_parameters``.
+
+    Returns:
+        The provider's message, or ``None`` when ``exc`` is anything else.
+    """
+    if provider == "anthropic" and isinstance(exc, anthropic.BadRequestError):
+        error = _mapping(_mapping(exc.body).get("error"))
+        message = _error_message(exc.body)
+        if error.get("type") != "invalid_request_error" or message is None:
+            return None
+        said = message.lower()
+        if "temperature" in said and any(word in said for word in _NOT_TAKEN_WORDS):
+            return message
+        return None
+    if provider == "openai" and isinstance(exc, openai.BadRequestError):
+        if exc.param == "temperature" and exc.code in _OPENAI_NOT_TAKEN_CODES:
+            return _error_message(exc.body) or f"{exc.code}: temperature"
+        return None
+    if provider == "openrouter" and routing_required and isinstance(exc, openrouter_errors.NotFoundResponseError):
+        return exc.message
+    return None
+
+
+def _without_temperature(chat: RunnableBinding[Any, Any]) -> RunnableBinding[Any, Any]:  # Any: LangChain's types
+    """``chat`` with its model copied at no temperature: the same client, config and callbacks, sending none.
+
+    Each provider's LangChain model leaves a ``None`` temperature out of the request. The copy is shallow, so it
+    shares the SDK client the original owns (OpenRouter's, which :meth:`ModelsCompletionClient.aclose` closes),
+    and the binding keeps its class and config, so models' tracker and the client's breaker still run.
+
+    Args:
+        chat: The binding ``create_chat_model`` returned.
+
+    Returns:
+        A binding of the same model with no temperature.
+
+    Raises:
+        TypeError: The binding holds something other than a LangChain chat model.
+    """
+    model = chat.bound
+    if not isinstance(model, BaseChatModel):
+        raise TypeError(f"create_chat_model's binding holds {type(model).__name__}, not a LangChain chat model")
+    return chat.model_copy(update={"bound": model.model_copy(update={"temperature": None})})
+
+
 class ModelsCompletionClient:
     """The completion port over one chat model 3tears-models built: :func:`models_client` returns one.
 
     Implements :class:`~threetears.evals.schema.CompletionClient` and
     :class:`~threetears.evals.schema.BoundCompletionClient`. ``generate`` is safe to call concurrently: every call
-    builds its own messages and its own bind, and the only state it writes is the price book's (under its locks)
-    and :attr:`last_pricing_failure`.
+    builds its own messages and its own bind, and the only state it writes is the price book's (under its locks),
+    :attr:`last_pricing_failure`, and once, when the model refuses a temperature, the chat model it sends with
+    (:meth:`generate`).
 
     **Await** :meth:`load_prices` **once after building it**, before the engine makes an out-of-run call on it under
     an enforced cap: :meth:`price_ceiling` answers only from loaded rates.
@@ -677,7 +796,8 @@ class ModelsCompletionClient:
         Read after construction, never echoed from the argument: LangChain drops a temperature a model refuses at
         build (OpenAI's ``gpt-5`` family), and again from the request on OpenAI's Responses API for a reasoning
         ``gpt-5`` model, and on Anthropic a thinking budget is built with none, since the API refuses one beside
-        extended thinking.
+        extended thinking. It turns ``None`` once the provider refused a request for its temperature and the same
+        request without one was served (:meth:`generate`), and stays so for the client's life.
         """
         return self._temperature
 
@@ -756,6 +876,15 @@ class ModelsCompletionClient:
     ) -> ModelsCompletion:
         """Send the prompt pair once and read the reply into the port's members.
 
+        **A temperature the model refuses is dropped, once, and remembered.** When the provider refuses the request
+        for the temperature it carried (read by each SDK's error type and fields, as the module docstring lists), the
+        same request is sent again without it, and once that is served the client sends no temperature for the rest of its life
+        (:attr:`temperature` reads ``None``), logging it at WARNING once with the provider's message. This is not a
+        hidden retry: the provider refused the first request before generating anything, and a refusal is not
+        billed, so the call costs what the one served request costs and :meth:`price_ceiling` holds. The completion
+        reports ``temperature=None``, which the engine records as the model's default. Any other failure, and a
+        failure of the resend, propagates as it was raised.
+
         Args:
             system: The system message.
             user: The one human message.
@@ -774,16 +903,73 @@ class ModelsCompletionClient:
             ModelsClientRefused: ``response_format`` is not a directive the adapter translates, or the model is on
                 OpenAI's Responses API.
             TypeError: The chat model returned something other than an ``AIMessage``.
+            Exception: The provider SDK's own error for a refused or failed request, as it was raised (for a
+                refused temperature, the resend's, when that fails too).
         """
         kwargs = self._request_kwargs(response_format)
-        runnable = self._chat.bind(**kwargs) if kwargs else self._chat
-        reply = await runnable.ainvoke([SystemMessage(content=system), HumanMessage(content=user)])
+        messages: list[BaseMessage] = [SystemMessage(content=system), HumanMessage(content=user)]
+        chat, temperature = self._chat, self._temperature
+        try:
+            reply = await self._send(chat, kwargs, messages)
+        except (anthropic.BadRequestError, openai.BadRequestError, openrouter_errors.NotFoundResponseError) as exc:
+            refused = (
+                _temperature_refusal(self.provider, exc, routing_required=_requires_parameters(chat.bound, kwargs))
+                if temperature is not None
+                else None
+            )
+            if refused is None:
+                raise
+            without = _without_temperature(chat)
+            reply = await self._send(without, kwargs, messages)
+            self._forget_temperature(without, refused)
+            temperature = None
+        return await self._read(reply, temperature)
+
+    async def _send(
+        self,
+        chat: RunnableBinding[Any, Any],  # Any: as in __init__
+        kwargs: Mapping[str, Any],  # Any: the bind's keyword values
+        messages: list[BaseMessage],
+    ) -> AIMessage:
+        """One request: ``chat`` bound with the call's keywords, given the prompt pair.
+
+        Args:
+            chat: The binding to send through: the client's, or its copy at no temperature.
+            kwargs: The call's bind keywords (:meth:`_request_kwargs`).
+            messages: The system and human messages.
+
+        Returns:
+            The reply.
+
+        Raises:
+            TypeError: The chat model returned something other than an ``AIMessage``.
+        """
+        runnable = chat.bind(**kwargs) if kwargs else chat
+        reply = await runnable.ainvoke(messages)
         if not isinstance(reply, AIMessage):
             raise TypeError(f"{self.provider} chat model returned {type(reply).__name__}, not an AIMessage")
-        return await self._read(reply)
+        return reply
 
-    async def _read(self, reply: AIMessage) -> ModelsCompletion:
-        """The reply's members, per provider."""
+    def _forget_temperature(self, without: RunnableBinding[Any, Any], refusal: str) -> None:  # Any: as in __init__
+        """Send no temperature from now on: the model refused one, and the request without it was served.
+
+        Logged once per client: concurrent calls refused together each resend, and only the first to be served
+        swaps the chat model and logs.
+        """
+        if self._temperature is None:
+            return
+        self._chat = without
+        self._temperature = None
+        log.warning(
+            "eval.providers model refuses a temperature provider=%s model=%s; the request was resent without one "
+            "and none is sent from now on: %s",
+            self.provider,
+            self.model_name,
+            refusal,
+        )
+
+    async def _read(self, reply: AIMessage, temperature: float | None) -> ModelsCompletion:
+        """The reply's members, per provider; ``temperature`` is what the served request carried."""
         meta = _mapping(reply.response_metadata)
         usage = _mapping(reply.usage_metadata)
         input_tokens = _int_or_none(usage.get("input_tokens"))
@@ -816,7 +1002,7 @@ class ModelsCompletionClient:
             price_source=source,
             model=self.model_name,
             served_model=self._served_model(meta),
-            temperature=self._temperature,
+            temperature=temperature,
             stop_reason=stop_reason,
             provider_stop_reason=provider_stop_reason,
             served_provider=served_provider if isinstance(served_provider, str) and served_provider else None,
@@ -933,7 +1119,9 @@ class ModelsCompletionClient:
 
         The client's catalogue rates applied to a bound on the prompt's tokens (its UTF-8 bytes, which no
         byte-level tokenizer exceeds, plus an allowance for the framing the provider adds) and to the output cap
-        the model was built with, reasoning included. One attempt per request, since the adapter retries nothing.
+        the model was built with, reasoning included. One served request per call, since the adapter retries
+        nothing: the one resend it makes, without a temperature the model refused (:meth:`generate`), follows a
+        refusal that was not billed, so the ceiling is the same with or without it.
 
         ``None`` until the rates are loaded: **await** :meth:`load_prices` **once at boot** (on Anthropic and OpenAI a
         first priced call also loads them; on OpenRouter only ``load_prices`` does, since its calls are priced by
@@ -1067,7 +1255,9 @@ def models_client(
         provider: The provider, overriding models' capability registry; required for an id the registry does not
             know (every OpenRouter route beyond the few models registers).
         temperature: The sampling temperature to build with, or ``None`` for the provider's default. What a
-            completion reports is what the built model sends (:attr:`ModelsCompletionClient.temperature`).
+            completion reports is what the built model sends (:attr:`ModelsCompletionClient.temperature`), and
+            ``None`` once the provider refused a request for it: that request is sent again without it, and none is
+            sent after (:meth:`ModelsCompletionClient.generate`).
         reasoning_effort: The reasoning level, one of the engine's seven words, or ``None`` to send none.
         reasoning_max_tokens: The reasoning token budget, or ``None`` to send none; Anthropic only.
         max_tokens: The output cap, or ``None`` for the provider's default (Anthropic's is the model profile's;

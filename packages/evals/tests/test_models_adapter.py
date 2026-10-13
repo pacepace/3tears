@@ -29,7 +29,8 @@ from langchain_core.runnables import RunnableBinding
 
 from threetears.evals.kernel import OutOfRunBudget, PlannedCall, ValidationFailedError
 from threetears.evals.providers import ModelsClientRefused, ModelsCompletion, ModelsCompletionClient, models_client
-from threetears.evals.schema import OutOfRunSpend
+from threetears.evals.run.judge import sent_temperature
+from threetears.evals.schema import MODEL_DEFAULT_TEMPERATURE, OutOfRunSpend
 from threetears.evals.testing import check_completion_conformance
 from threetears.models import DEFAULT_CHAT_MODEL, DEFAULT_EMBEDDING_MODEL, CircuitOpenError, create_chat_model
 
@@ -47,6 +48,7 @@ from packages.evals.tests.models_adapter_support import (
     ok,
     openai_reply,
     openai_responses_reply,
+    openrouter_stream,
     plan_reply,
     status,
 )
@@ -330,6 +332,210 @@ async def test_the_temperature_reported_is_the_one_sent(net: ProviderTransport) 
     plan_reply(net, "anthropic")
     unset = await _generate(build(net, "anthropic"))
     assert unset.temperature is None and "temperature" not in net.last(ANTHROPIC_HOST)
+
+
+#: Each provider's refusal of a request for the temperature it carried, as its API sends it.
+TEMPERATURE_REFUSALS: dict[str, Any] = {
+    "anthropic": status(
+        400,
+        {
+            "type": "error",
+            "error": {"type": "invalid_request_error", "message": "`temperature` is deprecated for this model."},
+        },
+    ),
+    "openai": status(
+        400,
+        {
+            "error": {
+                "message": "Unsupported parameter: 'temperature' is not supported with this model.",
+                "type": "invalid_request_error",
+                "param": "temperature",
+                "code": "unsupported_parameter",
+            }
+        },
+    ),
+    # OpenRouter drops a parameter an upstream does not take, unless the call requires every parameter (a schema
+    # directive does), when an upstream that cannot take the temperature is excluded and none may be left.
+    "openrouter": status(
+        404, {"error": {"code": 404, "message": "No endpoints found that can handle the requested parameters."}}
+    ),
+}
+
+#: The call that meets each provider's refusal: on OpenRouter only a call under ``require_parameters`` can.
+REFUSED_CALL: dict[str, dict[str, Any]] = {
+    "anthropic": {},
+    "openai": {},
+    "openrouter": {"response_format": SCHEMA_DIRECTIVE},
+}
+
+
+def _plan_refusal_then_reply(net: ProviderTransport, provider: str, *refusals: Any) -> None:
+    """``provider`` refuses as given, then serves its canned reply for every later request."""
+    if provider == "anthropic":
+        served = ok(anthropic_reply())
+    elif provider == "openai":
+        served = ok(openai_reply())
+    else:
+        served = ok(openrouter_stream())
+    net.plan(HOSTS[provider], *refusals, served)
+
+
+@pytest.mark.parametrize("provider", PROVIDERS)
+async def test_a_model_that_refuses_a_temperature_is_answered_without_one_and_sent_none_after(
+    net: ProviderTransport, caplog: pytest.LogCaptureFixture, provider: str
+) -> None:
+    """Owner ruling, 2026-10-13: a model that lacks a request feature never fails the request.
+
+    The refused request was not generated or billed; the same request goes again without the temperature, the
+    completion says none was sent, and the client never sends one again.
+    """
+    _plan_refusal_then_reply(net, provider, TEMPERATURE_REFUSALS[provider])
+    client = build(net, provider, temperature=0.0)
+    with caplog.at_level(logging.WARNING, logger=ADAPTER_LOGGER):
+        first = await _generate(client, **REFUSED_CALL[provider])
+        second = await _generate(client, **REFUSED_CALL[provider])
+    refused, resent, later = net.sent(HOSTS[provider])
+    assert refused["temperature"] == 0.0
+    assert "temperature" not in resent and "temperature" not in later, "one refused request, then none carries it"
+    assert first.temperature is None and second.temperature is None and client.temperature is None
+    assert resent["messages"] == refused["messages"], "the same request, less the temperature"
+    logged = [r.getMessage() for r in caplog.records if "refuses a temperature" in r.getMessage()]
+    assert len(logged) == 1, "logged once per client"
+    assert f"provider={provider} model={MODELS[provider]}" in logged[0]
+    assert ("deprecated" if provider == "anthropic" else "parameter") in logged[0], "with the provider's message"
+
+
+async def test_openai_s_refusal_of_a_temperature_value_is_answered_the_same_way(net: ProviderTransport) -> None:
+    """``Unsupported value``: the model takes only its default; the request goes without one."""
+    value_refusal = status(
+        400,
+        {
+            "error": {
+                "message": "Unsupported value: 'temperature' does not support 0.2 with this model. Only the default "
+                "(1) value is supported.",
+                "type": "invalid_request_error",
+                "param": "temperature",
+                "code": "unsupported_value",
+            }
+        },
+    )
+    _plan_refusal_then_reply(net, "openai", value_refusal)
+    result = await _generate(build(net, "openai", model="o3", temperature=0.2))
+    assert result.temperature is None
+    assert [body.get("temperature") for body in net.sent(OPENAI_HOST)] == [0.2, None]
+
+
+@pytest.mark.parametrize("provider", PROVIDERS)
+async def test_a_model_that_takes_a_temperature_is_sent_it_and_reports_it(
+    net: ProviderTransport, provider: str
+) -> None:
+    plan_reply(net, provider)
+    client = build(net, provider, temperature=0.0)
+    result = await _generate(client, **REFUSED_CALL[provider])
+    assert net.last(HOSTS[provider])["temperature"] == 0.0
+    assert result.temperature == 0.0 and client.temperature == 0.0
+    assert len(net.sent(HOSTS[provider])) == 1
+
+
+@pytest.mark.parametrize(
+    ("provider", "failure", "call"),
+    [
+        (
+            "anthropic",
+            status(400, {"type": "error", "error": {"type": "invalid_request_error", "message": "messages: required"}}),
+            {},
+        ),
+        # Names the temperature, but its value is out of range: the caller's to fix, never dropped.
+        (
+            "anthropic",
+            status(
+                400,
+                {"type": "error", "error": {"type": "invalid_request_error", "message": "temperature: range: 0..1"}},
+            ),
+            {},
+        ),
+        (
+            "openai",
+            status(
+                400,
+                {
+                    "error": {
+                        "message": "Invalid 'temperature': decimal above maximum value.",
+                        "type": "invalid_request_error",
+                        "param": "temperature",
+                        "code": "decimal_above_max_value",
+                    }
+                },
+            ),
+            {},
+        ),
+        (
+            "openai",
+            status(
+                400,
+                {
+                    "error": {
+                        "message": "Unsupported parameter: 'top_k'.",
+                        "type": "invalid_request_error",
+                        "param": "top_k",
+                        "code": "unsupported_parameter",
+                    }
+                },
+            ),
+            {},
+        ),
+        # A 404 on a call that does not require every parameter is not about the temperature.
+        ("openrouter", TEMPERATURE_REFUSALS["openrouter"], {}),
+        ("openrouter", status(400, {"error": {"code": 400, "message": "bad request"}}), REFUSED_CALL["openrouter"]),
+    ],
+)
+async def test_any_other_refusal_is_raised_and_not_resent(
+    net: ProviderTransport, provider: str, failure: Any, call: dict[str, Any]
+) -> None:
+    net.plan(HOSTS[provider], failure)
+    client = build(net, provider, temperature=0.0)
+    with pytest.raises(Exception):  # noqa: B017 -- each SDK's own error type; the count is what is held
+        await _generate(client, **call)
+    assert len(net.sent(HOSTS[provider])) == 1, "sent once, as before"
+    assert client.temperature == 0.0, "nothing was learned"
+
+
+@pytest.mark.parametrize("provider", PROVIDERS)
+async def test_a_refusal_of_the_resend_is_raised(net: ProviderTransport, provider: str) -> None:
+    """The resend is the one extra request: if it is refused too, that refusal is raised and nothing is learned."""
+    net.plan(HOSTS[provider], TEMPERATURE_REFUSALS[provider])
+    client = build(net, provider, temperature=0.0)
+    with pytest.raises(Exception):  # noqa: B017 -- each SDK's own error type; the count is what is held
+        await _generate(client, **REFUSED_CALL[provider])
+    refused, resent = net.sent(HOSTS[provider])
+    assert refused["temperature"] == 0.0 and "temperature" not in resent
+    assert client.temperature == 0.0, "nothing was learned from a resend that was not served"
+
+
+async def test_a_client_built_without_a_temperature_is_never_resent(net: ProviderTransport) -> None:
+    """A refusal naming the temperature, of a request that carried none, is not the adapter's to answer."""
+    net.plan(ANTHROPIC_HOST, TEMPERATURE_REFUSALS["anthropic"])
+    with pytest.raises(anthropic.BadRequestError):
+        await _generate(build(net, "anthropic"))
+    assert len(net.sent(ANTHROPIC_HOST)) == 1
+
+
+async def test_a_learned_refusal_leaves_the_price_ceiling_as_it_was(net: ProviderTransport) -> None:
+    """The refused request was not billed, so the ceiling for one call is still one served request."""
+    _plan_refusal_then_reply(net, "anthropic", TEMPERATURE_REFUSALS["anthropic"])
+    client = build(net, "anthropic", temperature=0.0, max_tokens=1000)
+    assert await client.load_prices() is None
+    before = client.price_ceiling(system="s", user="u")
+    await _generate(client)
+    assert client.temperature is None
+    assert client.price_ceiling(system="s", user="u") == before is not None
+
+
+async def test_the_engine_records_a_refused_temperature_as_the_model_s_default(net: ProviderTransport) -> None:
+    """``sent_temperature`` reads the completion's ``None`` as the model's default, which is what was sent."""
+    _plan_refusal_then_reply(net, "anthropic", TEMPERATURE_REFUSALS["anthropic"])
+    result = await _generate(build(net, "anthropic", temperature=0.0))
+    assert sent_temperature(result) == MODEL_DEFAULT_TEMPERATURE
 
 
 # --- pricing --------------------------------------------------------------------------------------------
