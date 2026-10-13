@@ -16,8 +16,10 @@ completion that it lacks — the usage ledger reads its own defensively, so a re
 silent. The jobs conformance kit: every action in a catalogue, the host's included, as a :class:`JobsConformanceCase`
 from :func:`jobs_conformance_cases` — each action's call makes no completion request, and each spend action's happy
 path returns ``JobsStarted`` and its job makes at least one — watched through a :class:`CompletionGuard` the host
-wraps its client factory in (:mod:`threetears.evals.testing.jobs_conformance`). All five are plain Python and import
-no test runner. See
+wraps its client factory in (:mod:`threetears.evals.testing.jobs_conformance`). Beside the kits, one client: the
+recorded completions, :class:`RecordedCompletions`, which records the calls a host's real completion client answers
+into a JSONL file once and replays them exactly with no network, refusing by name a prompt the recording does not hold
+(:mod:`threetears.evals.testing.recorded_completions`). All of it is plain Python and imports no test runner. See
 :mod:`threetears.evals.testing.store_conformance` and :mod:`threetears.evals.testing.reader_conformance` for
 an example under pytest.
 
@@ -55,6 +57,12 @@ from threetears.evals.testing.reader_conformance import (
     ReaderConformanceFailure,
     ReaderSample,
 )
+from threetears.evals.testing.recorded_completions import (
+    RecordedCompletions,
+    RecordedPrompt,
+    RecordingRefused,
+    ReplayedCompletion,
+)
 from threetears.evals.testing.store_conformance import (
     STORE_CONFORMANCE_CASES,
     StoreConformanceCase,
@@ -81,6 +89,10 @@ __all__ = [
     "ReaderConformanceCase",
     "ReaderConformanceFailure",
     "ReaderSample",
+    "RecordedCompletions",
+    "RecordedPrompt",
+    "RecordingRefused",
+    "ReplayedCompletion",
     "StoreConformanceCase",
     "StoreConformanceFailure",
     "check_completion_conformance",

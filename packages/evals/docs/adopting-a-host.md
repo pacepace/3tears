@@ -116,6 +116,39 @@ host's, because one subject id means a live entity to one kind, a fixed prompt k
 third; `launchable_judge_kind` brings its own, which admits any non-blank label. It is asked at admission, once the
 template's kind is known, so `launch_estimate` and a launch refuse an unknown subject alike, before anything is priced.
 
+### Recording completions for CI
+
+**Record your real client once, and replay it in your suite.** `RecordedCompletions` (in
+`threetears.evals.testing`) wraps your completion client: `record` sends every call through and appends what it
+returned to a JSONL file, and `replay` serves those completions back in order with no network, so a suite that
+judges, simulates or analyses runs offline on what a real model said rather than on a stand-in's text. The
+examples run this way, and `RECORD=1` re-records one:
+
+```python
+from threetears.evals.testing import RecordedCompletions
+
+RECORDING = Path("tests/recordings/judge.jsonl")
+
+
+def judge_client():
+    if os.environ.get("RECORD"):
+        return RecordedCompletions.record(my_judge_client(), RECORDING, replace=True)
+    return RecordedCompletions.replay(RECORDING, rerecord="RECORD=1 pytest tests/test_judge.py")
+```
+
+A call is matched on its prompt (`system`, `user`, `response_format`), the model and temperature its completion
+reported, and how many times that prompt was asked before, so `k` repeats replay as the `k` answers they were. A
+prompt the recording does not hold, or one asked once more than it was, is refused (`RecordingRefused`) with the
+prompt's first 80 characters and the re-record command, never sent live; it is an `ApparatusError`, so a candidate
+that meets one has its cell excluded rather than scored. To name a prompt that changed under its recording before a
+replay starts, hand `RecordedCompletions.check_covers(RECORDING, prompts)` the prompts your code sends. One file can
+hold two clients' calls (two models answering one prompt): each replays its own with `replay(path, model=...)`.
+
+Recording onto a file that exists appends to it, and only `replace=True` starts afresh. A replayed price
+(`cost_usd`, `price_source`) is what the call cost when it was recorded, not a quote at today's rates. Every
+attribute your completion type declares beyond the ten is kept under the replayed completion's `extra`, and one JSON
+cannot hold is refused when it is recorded.
+
 ## Tenancy: the scope
 
 **Tenancy is one opaque `scope_id`.** Every stored document carries a non-empty `scope_id`, and the
