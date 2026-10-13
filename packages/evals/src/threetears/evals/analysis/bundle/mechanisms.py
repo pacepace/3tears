@@ -215,7 +215,7 @@ def _levels_separate(
     they share at least two, else Welch's over each level's per-case values, the pairs Holm-corrected as one
     family and read against the same alpha. A gap with no spread at all (every case moved by the same nonzero
     amount, or two different constants) is read by the bounded test on the measure's declared range, and with
-    none is not tested (the exact sign-flip test it once read asks about symmetry, not the mean — #597).
+    none is not tested (the exact sign-flip test asks about symmetry, not the mean — #597).
 
     Args:
         per_case: Level -> its exact per-case means, for every level that observed the measure.

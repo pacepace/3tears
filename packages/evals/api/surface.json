@@ -283,7 +283,7 @@
     },
     "threetears.evals.schema.FaultsField": {
       "kind": "type alias",
-      "signature": "Annotated[list[Annotated[str, StringConstraints(min_length=1, max_length=JOB_FAULT_MAX_CHARS)]], Field(max_length=JOB_FAULTS_MAX, description=\"Faults at this job's lease boundary, written on the record before it ended, oldest first: each names where it happened, then the error (its type and message) — a holder whose renewals failed for a whole lease, which stopped the job, writes the last renewal's error here. Beside the record's own ending, which a loss writes over, so the loss never erases what explains it. Empty on a job with none, and on a record stored before core v13. At most 32, each at most 2000 characters.\")]"
+      "signature": "Annotated[list[Annotated[str, StringConstraints(min_length=1, max_length=JOB_FAULT_MAX_CHARS)]], Field(max_length=JOB_FAULTS_MAX, description=\"Faults at this job's lease boundary, written on the record before it ended, oldest first: each names where it happened, then the error (its type and message) — a holder whose renewals failed for a whole lease, which stopped the job, writes the last renewal's error here. Beside the record's own ending, which a loss writes over, so the loss never erases what explains it. Empty on a job with none. At most 32, each at most 2000 characters.\")]"
     },
     "threetears.evals.schema.fingerprint_criterion": {
       "kind": "function",
@@ -419,7 +419,7 @@
     },
     "threetears.evals.schema.LeaseField": {
       "kind": "type alias",
-      "signature": "Annotated[JobLease | None, Field(description=\"The lease of the process running this job's work; None on a record written before leases, or released at a shutdown. A record that has not ended reads lost once this lapses or is None.\")]"
+      "signature": "Annotated[JobLease | None, Field(description=\"The lease of the process running this job's work; None on a record no process has leased (a run a launch prepared and never started), or released at a shutdown. A record that has not ended reads lost once this lapses or is None.\")]"
     },
     "threetears.evals.schema.LostField": {
       "kind": "type alias",
@@ -555,7 +555,7 @@
     },
     "threetears.evals.schema.RefusalField": {
       "kind": "type alias",
-      "signature": "Annotated[JobRefusal | None, Field(description=\"The engine refusal the job ended on, as data — its kind and status, as a refused call's are — when it ended `failed` because an engine error refused its work; None while it runs, when it ended any other way, and on a record written before it was kept.\")]"
+      "signature": "Annotated[JobRefusal | None, Field(description=\"The engine refusal the job ended on, as data — its kind and status, as a refused call's are — when it ended `failed` because an engine error refused its work; None while it runs, and when it ended any other way.\")]"
     },
     "threetears.evals.schema.RefusalKind": {
       "kind": "literal",

@@ -41,8 +41,7 @@ def _contestant_key(result: EvalResult) -> ContestantKey:
     **The stamp is one counter over two predicates, so it is a conservative
     discriminator rather than a precise one.** ``IDENTITY_VERSION`` backs the variant and
     context predicates together, so a bump on the CONTEXT side moves the number stamped
-    beside a ``variant_key`` whose own predicate did not change — v9 and v10 are both that
-    case. Such a pair carries a byte-identical digest under two stamps and is partitioned
+    beside a ``variant_key`` whose own predicate did not change. Such a pair carries a byte-identical digest under two stamps and is partitioned
     here anyway. That is deliberate and errs the safe way: the stamp cannot say WHICH
     predicate moved, and merging on a digest whose provenance is unverifiable is the wrong
     direction, since nothing downstream undoes a wrong merge. What it costs is a split that

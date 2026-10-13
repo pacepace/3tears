@@ -291,8 +291,8 @@ A number code computes about a result, declared in your host's measure registry 
 classifier lands two core measures, `match` and `confusion_cell`, and the analysis derives `accuracy` from
 `match`. A host may not declare a measure named like a core one (`score`, `f1`, `cost_usd` and the rest), whose
 readings would pool with the engine's own; the runner likewise refuses a kind that lands a core-named key on
-`host_measures` (other than the classifier's `match` and `confusion_cell`), and a result stored before that
-refusal has the key dropped on read. A result's covariates are held to the same rule. *Example:* `match` is 1 when ticket 17 went to `billing`, else 0.
+`host_measures` (other than the classifier's `match` and `confusion_cell`), and a result stored before a
+release made its key engine-owned has the key dropped on read and named as unreported. A result's covariates are held to the same rule. *Example:* `match` is 1 when ticket 17 went to `billing`, else 0.
 
 #### Scorer
 In `run_eval`, a plain function `(case, answer) -> bool | number` that becomes one measure, named by its

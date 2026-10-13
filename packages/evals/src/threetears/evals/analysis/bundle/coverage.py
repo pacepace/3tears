@@ -528,8 +528,8 @@ def _coverage_map(
             if (level := _lever_value(record, lever, effective_by_run)) is not None:
                 result_ids_by_level.setdefault(level, set()).add(record.result_id)
         k = _lever_k_floor(lever, cohort_records, k_by_arm, group_of_run, effective_by_run)
-        # A declared axis is asked the authoring gate's own question. A campaign stored before that
-        # gate, or past it, can still declare an apparatus or label input, and its row is then
+        # A declared axis is asked the authoring gate's own question. A campaign stored past that gate, or
+        # before its host moved the axis's role, can still declare an apparatus or label input, and its row is then
         # `unswept` for a reason no run could change — said here, in the host's words, so the memo
         # can state the cause rather than report a sweep that never happened (#675).
         controllable = profile.controllable(lever) if lever in declared else None

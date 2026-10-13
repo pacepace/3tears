@@ -56,12 +56,9 @@ document. The value carries ``source`` so a reconstructed key is never mistaken
 for a recorded one, and names the components it could not know rather than
 papering over them. See :class:`DerivedContextIdentity`.
 
-Two coordinates that distinguished nothing were found while the predicate still read the first
-host's subject record field by field, and both were removed rather than disclosed: a graph-version
-hash no production code ever wrote (retired at v15), and a system-prompt field that was always
-empty yet read as though it carried the subject's prose, so two subjects differing only in that
-prose merged (replaced at v2). Neither can recur in that form: since v8 the predicate reads no
-subject field at all, and hashes only what a host resolves for the levers it registered.
+**The predicate reads no subject field.** It hashes only what a host resolves for the levers and
+state levels it registered, so a coordinate cannot distinguish nothing by reading a field of a
+host's record that no writer fills.
 """
 
 from __future__ import annotations
@@ -82,351 +79,13 @@ if TYPE_CHECKING:
 #: keys — conservative in the safe direction, since re-deriving unchanged inputs
 #: reproduces the same digest. What moves is the label, not the key.
 #:
-#: **How to read the entries before v8.** Until v8 the predicate read the first host's subject
-#: record field by field, so those entries describe that record's fields; they are named here by
-#: what each field WAS (the subject's prose, the model its background tool ran on) because the
-#: record is the host's and the engine no longer reads it. From v8 on, the predicate hashes what a
-#: host resolves for its own registered levers and state levels, and v13 to v19 record bumps that
-#: the first host's registrations caused — a host growing a coordinate moves the pre-image exactly
-#: as an engine change does.
+#: **The ledger.** Every bump appends one entry here, ``#: - **vN** — …``, saying what moved and why, and
+#: re-pins every golden in ``tests/test_identity_golden_keys.py`` under the new version — that test fails
+#: until both are done, so a bump cannot land unrecorded. A change to a host's own lever or state
+#: registrations moves that host's pre-images exactly as an engine change does.
 #:
-#: - **v2** — the variant predicate swapped an always-empty system-prompt field for the subject's
-#:   four identity-prose fields. The context predicate did not change.
-#: - **v3** — the ``roles`` component now composes the **resolved** judge instead of the
-#:   judge as declared at launch. Under v2 a run that inherited its judge stored ``None``
-#:   there, so every inheriting run hashed alike no matter which judge each actually used.
-#:   The bump is what makes those keys re-derive: derivation now treats an absent judge as
-#:   an unrecoverable role pin and drops the whole component, so such a run reads as
-#:   *partial* rather than silently sitting in the same namespace as a complete one.
-#: - **v4** — the ``catalog`` component now composes the run's frozen seeded findings — what a
-#:   background tool was seeded to return — beside ``resolved_world_seed``. A seeded payload is
-#:   part of what the candidate was handed, exactly as the seeded world is, so two runs differing
-#:   only in what that tool returned were previously sharing a context key and being pooled as
-#:   repetitions of one condition. Under v3 nothing could seed, so no stored key is wrong —
-#:   the bump is what keeps the first seeded run from landing in a live run's namespace.
-#: - **v5** — the ``roles`` component now composes the run's ``effective_judges`` beside
-#:   the two role pins. ``judge_model`` names the run's PIN, but under the judge-model
-#:   cascade a dim whose ``JudgeConfig`` names a model is scored by that instead — so two
-#:   runs whose rubric dims were judged by DIFFERENT models hashed alike and were pooled as
-#:   repetitions of one condition, which is the confound the roles component exists to
-#:   prevent, one level down from the one v3 closed. Derivation treats absent
-#:   ``effective_judges`` the way v3 treats an absent judge — the whole component drops and
-#:   the run reads as *partial* — because a run predating the field genuinely cannot say
-#:   whether its dims diverged. Attribution reconstructed after the fact (``derived``) is
-#:   NOT eligible: it INFERS what scored each dim from stored records rather than recording
-#:   it, so hashing it would put an inference in the namespace of measurements.
-#: - **v6** — the ``roles`` component now composes the run's pinned ``judge_config_ids``
-#:   beside its attribution. v5 closed the case of two runs whose dims were scored by
-#:   different judge MODELS; this closes the one where the model is identical and the
-#:   *instrument* is not — a different judge prompt, or the same prompt at a different
-#:   temperature, is a different measurement, and two such runs were sharing a key and
-#:   pooling as repetitions of one condition. That case stopped being hypothetical when a
-#:   run gained the ability to pin a configuration set at launch, since selecting a set is
-#:   precisely how an operator produces two runs identical but for their judges. Config
-#:   ids are hashed rather than config content because configs are immutable-versioned —
-#:   re-authoring one mints a new id — which also means a cosmetic re-authoring splits the
-#:   namespace, the cost immutable versioning already charges wherever else it is read.
-#:   A run that recorded no set drops the whole component and reads as *partial*, on v5's
-#:   reasoning; note that an EMPTY set is a recording, not an absence (it says no scored
-#:   dim carried a config), so the test is on ``is not None``, never on truthiness.
-#: - **v7** — one audit, three changes, one bump.
-#:   **(a)** The variant predicate gained the resolved model of the subject's background tool. Only
-#:   the ``inherited`` tier was ever invisible — the chosen and subject-level tiers already rode
-#:   ``resolved_tool_configs`` — so two runs that both inherited the system default for it,
-#:   spanning a change to it, were identical on both keys and pooled as repetitions of one
-#:   condition. It lands in the VARIANT key rather than the context key deliberately: that model
-#:   is a lever, and a lever in the condition key would give a bake-off's arms different context
-#:   keys and report a deliberate sweep as not-comparable. Putting it here also keeps all three
-#:   tiers of one value in one place instead of hashing the same field into both keys.
-#:   **(b)** ``case_basis`` gained the snapshot's subject id. Two DIFFERENT subjects could
-#:   produce an identical context key whenever both carried no memory and no catalog — the shape
-#:   of a fresh subject or a memory-stripped probe — and pool as one condition, while
-#:   ``compare_two_runs`` withholds cross-subject composites as invalid measurements. The guard
-#:   existed only at the grouping layer, so the key was not self-sufficient. The subject's display name is
-#:   deliberately NOT hashed: a rename must not split a cohort.
-#:   **(c)** ``k_runs`` was REMOVED from the context key, and ``ContextComponents.k`` with it.
-#:   ``k`` is not a condition — it is how many repetitions were taken under one — so two runs at
-#:   k=1 and k=3 were measured identically and differ only in precision. Keeping it made a k=1
-#:   pilot badge ``context_differs`` against the k=3 run that followed, a caveat about nothing.
-#:   Depth is disclosed by the surfaces that own it (``Iters/case``, the per-point case counts on
-#:   the pass^k curve, the completeness sentence).
-#:   **Read this before assuming (c) changed pooling: at the time it did not.** ``context_key``
-#:   gated no grouping then — ``comparison_sets`` groups by ``(subject_id, template_id)`` and
-#:   uses the key only to raise ``BADGE_CONTEXT_DIFFERS``, and the frontier pools by
-#:   ``variant_key``. So (c) removed a false badge and nothing else; the pass^k of the day
-#:   (``compute_pass_k``) grouped attempts by ``(model, eval_run_id, test_case_id)``, so three k=1
-#:   runs could not compose a pass^3 finding under any key. Since #591 they can: the frontier's
-#:   pass^k pools a case's attempts across the runs of one variant that share a context key
-#:   (``scoring.pass_hat_k_cell``), and (c) is what lets runs at different k share one.
-#: - **v8** — the variant predicate stopped naming its inputs. It hashed ten fields of the first
-#:   host's subject snapshot plus a prompt-override map, so only a host with that subject shape
-#:   could produce a key; it now hashes whatever the host resolved for its own registered levers,
-#:   checked against that host's registry. Two changes ride in the same bump because both move
-#:   what is hashed.
-#:   **(a)** A subject's components enter as content hashes rather than as prose read off named
-#:   fields, so the same predicate serves a host whose subjects share nothing with the first's.
-#:   **(b)** The prompt-override lever is addressed by its RESOLVED TEXT rather than by the preset
-#:   names that select it. Under v7 two runs naming the same preset across an edit to that
-#:   preset's content produced one key over two different prompts — the live half of R9's defect,
-#:   and a wrong merge rather than a wrong split, which is the direction that cannot be corrected
-#:   downstream. Resolution happens at capture, where the registry is in hand; the key sees only
-#:   the hash.
-#:   No stored key survives this bump: the corpus it would have re-derived over was dropped in
-#:   the same commit, deliberately, rather than migrated.
-#: - **v9** — the context predicate gained a ``world`` component: which of the host's declared
-#:   world dimensions this run SEEDED, and which its subject merely witnessed. The world a subject
-#:   is placed in is stimulus, and stimulus belongs to the conditions a cell holds constant — so
-#:   two runs that placed one world differently were sharing a key and pooling as repetitions of
-#:   one condition while one of them had not controlled what the other did. It is the same
-#:   distinction ``family-convergence.md`` §4.3 already draws between a declared apparatus and a
-#:   witnessed one, one axis over: apparatus is the rig, this is the world.
-#:   The component composes the PLACEMENTS and not the seeded values, deliberately: the values are
-#:   already composed into ``catalog_hash`` as it then was (``resolved_world_seed`` since v4,
-#:   the seeded findings with it — both under the ``seeded_world`` mapping that replaced them at
-#:   v10), and hashing them again here would split nothing further while making the reader of a
-#:   badge unable to say which of two components moved. A run that recorded no placements drops the
-#:   whole component and reads as *partial*, on v5's reasoning — a run predating the record
-#:   genuinely cannot say what it placed, and an empty MAP is a recording rather than an absence
-#:   (it says this host's world holds nothing this run could place), so the test is on ``is not
-#:   None`` and never on truthiness.
-#: - **v10** — the context predicate stopped naming one host tool in its signature.
-#:   ``resolved_world_seed`` and the seeded findings were two parameters for one concept —
-#:   what a run froze into the world before the subject's first turn — and the second was the first
-#:   host's tool name sitting in the pre-image of every context key this engine has ever minted.
-#:   They are now one ``seeded_world`` mapping, keyed by carrier, composed by the caller. What is
-#:   hashed is the same information: the values still entered ``catalog_hash``, sorted, so no
-#:   run's condition is described more loosely than before. The keys around them moved, which is
-#:   why this is a bump and not a rename.
-#:   It is deliberately NOT a move into the ``world`` component, which is where the design note
-#:   that asked for this put it: ``world`` drops whole when a run recorded no placements, so
-#:   seeded values living there would stop being hashed for every run predating that record —
-#:   two runs that faced different frozen payloads pooling as repetitions of one condition,
-#:   which is a wrong merge and uncorrectable downstream.
-#:   No stored key survives this bump either, and for the same reason v8's did not: a bump drops
-#:   and rebuilds the corpus rather than migrating it, in every deployment — production holds
-#:   eval rows and they are expendable on the same terms. So landing a bump before a deploy that
-#:   would drop the corpus anyway saves exactly one drop-and-rebuild: the ordering is a
-#:   convenience and never a constraint on when a predicate may move.
-#: - **v11** — the context predicate stops being shaped like one host's subject, and one condition
-#:   it never hashed joins it. Four changes ride one bump because each moves a context key's
-#:   pre-image, and taking them separately would split one corpus four times over.
-#:   **(a)** The variant predicate's prompt-override component stops dropping empty resolved
-#:   bodies. A slot that resolved to ``""`` was filtered out of the digest, so overlaying a slot
-#:   with nothing hashed identically to never having overlaid it, and a run whose every body was
-#:   empty produced no hash at all — which that lever declares as "the run predates the capture".
-#:   Both are wrong merges: an operator who substituted an empty prompt did something to the
-#:   candidate, and a run that recorded doing it is not a run nobody recorded.
-#:   **(b)** The component carrying the storage scope is named ``scope``, not the first host's word
-#:   for its storage partition. :func:`compute_context_key` digests ``model_dump()``, so a
-#:   component's field NAME sits in the pre-image of every context key this engine has ever
-#:   minted. Carrying the identical value under a different name is therefore a new predicate
-#:   rather than a rename: every stored key stops matching, which is what a bump is for.
-#:   **(c)** The context predicate stops reading the first host's subject record. It composed a
-#:   subject's carried memory, its catalogue and its record id off a host snapshot the engine had to
-#:   reach into the host adapter to recover, so only that host could produce a key. It now
-#:   composes what the host supplies: ``subject_state``, the snapshot's own map of what the subject
-#:   CARRIED IN, kept as the map rather than digested so a badge can name which of the host's state
-#:   names moved. ``memory_hash`` and ``catalog_hash`` are gone — the first is that map, the host
-#:   half of the second is one name inside it, and the frozen world the second also carried
-#:   becomes its own ``seeded_world`` component, because the two halves had different availability
-#:   and sharing a component hid that: a catalogue is a host value a capture can fail to record,
-#:   while a run that froze nothing passes an empty value per carrier and is always composable. It
-#:   is deliberately NOT a move into ``world``, on v10's own reasoning, which survives unchanged.
-#:   ``case_basis`` reads the engine's own ``subject_snapshot.subject_id``, which is the same value
-#:   the host record's own id was, so v7's reasoning is served identically by a field the engine
-#:   already requires and refuses to let be blank. An absent state map drops the component and
-#:   reads *partial*, on v5's rule; an empty MAP is a recording — this subject carries nothing
-#:   outside its variant components — so the test is ``is not None`` and never truthiness.
-#:   **(d)** The context predicate gains a ``tool_permissions`` component over the allowlist frozen
-#:   onto the run at launch. The allowlist is frozen there BECAUSE the template is mutable, so
-#:   ``template_id`` inside ``case_basis`` cannot stand for it: two runs on one template spanning an
-#:   edit to its allowlist shared a key while one candidate could reach for capabilities the other
-#:   could not, and pooled as repetitions of one condition. Unlike every other absence in this
-#:   signature, no allowlist means UNBOUNDED — a recorded level, hashed as one — so the component is
-#:   always composable and two unbounded runs hash equal.
-#: - **v12** — the variant predicate's lever NAMES change, because the engine stopped holding two
-#:   vocabularies for one knob. :func:`compute_variant_key` digests the resolved map, so a lever's
-#:   name sits in the pre-image of every variant key this engine has minted; carrying the identical
-#:   level under a different name is a new predicate rather than a rename.
-#:   **(a)** The candidate model's lever is ``model``, not ``models``. The core declared one name
-#:   while every reporting lens — the coverage map, ``RunSummary.config``, a finding's scope —
-#:   used the other, so a campaign that DECLARED the candidate model as its swept axis got a
-#:   coverage row nothing could match the declaration to, and the completeness check read the
-#:   answer as silent about an axis it had answered.
-#:   **(b)** The background tool's model lever took its dotted spelling (the tool's name, then the
-#:   field), for the same reason from the other side: the dotted spelling is the one three lenses
-#:   and the generator prompt already used, and it is now the declared name rather than a carrier
-#:   path a lens flattened for itself.
-#:   The levels are unchanged — the same candidate model, the same resolved background-tool model —
-#:   so nothing about what a variant IS moved. Only what it is CALLED did, which is exactly the
-#:   class of change this counter exists to make visible rather than silent.
-#: - **NOT bumped when the roles component's MEMBERSHIP became host-scoped**.
-#:   ``derive_context_identity`` now drops a roles input the host DECLARED it
-#:   does not have, so the pre-image can be a proper subset or empty — which is a change in how a
-#:   component is composed, and the rule above would ordinarily bump for it. It does not, because a
-#:   host whose kinds declare no seats omits nothing: the pre-image is the same four keys in the
-#:   same shape, every key the first host had stored still derives to itself, and only a declaring
-#:   host's keys move — of which none has stored data. Pinned by
-#:   ``test_the_roles_pre_image_is_unchanged_for_a_host_that_declares_no_inapplicability``, so the
-#:   claim is checked rather than asserted. Recorded here because this ledger is the authority a
-#:   later reader consults before deciding their own bump, and a rule with a silent exception is a
-#:   rule the next person follows differently.
-#: - **v13** — the first host's variant map gains a coordinate: the subject's RESOLVED output-token
-#:   cap for its own model call. The cap was a hardcoded constant on the client constructor at first,
-#:   so no observation had ever varied on it and its absence from the key was correct;
-#:   the day it became configurable — system tier, subject tier, and a run-scoped overlay — two runs
-#:   at different caps became two contestants with one key, which is a wrong MERGE, the direction
-#:   nothing downstream undoes. The coordinate is the resolved value off the snapshot, not the
-#:   request: an arm that asked for the default cap and an arm that inherited it ran the same
-#:   candidate. A snapshot written before the field carries an explicit not-recorded level rather
-#:   than today's config — the candidate ran under some cap and nobody recorded which, and
-#:   re-reading the system tier now would name one that may not have been in force. Every stored
-#:   variant key re-derives (the map gained a name, and the name is in the pre-image); no live eval
-#:   data is valued, and the context predicate is untouched. The cap's bisection reader is declared
-#:   beside it in the host's registrations.
-#: - **v14** — the first host's variant map gains a second subject coordinate: the RESOLVED
-#:   reasoning effort the subject's own model call ran at. Its absence from the key was correct
-#:   while no observation could vary on it: the subject's client sent no ``reasoning`` parameter at
-#:   all at first. The day it became configurable — system tier, subject tier, and a
-#:   run-scoped overlay — two runs at different efforts became two contestants with one key, the
-#:   wrong MERGE that nothing downstream undoes. It is a SEPARATE coordinate from v13's cap rather
-#:   than a refinement of it: the provider expresses effort as a fraction of ``max_tokens``, so the
-#:   two vary independently and a run may move either. Three levels, kept apart on purpose — a named
-#:   effort; a recorded run that sent no reasoning parameter (its own sentinel, so it cannot arrive
-#:   looking like an absence); and a snapshot written before the field, which carries an explicit
-#:   not-recorded level rather than today's config. Every stored variant key re-derives; no live
-#:   eval data is valued, and the context predicate and its golden vector are untouched.
-#: - **v15** — the first host's variant map LOSES a coordinate: a prompt-graph version hash read
-#:   off its subject snapshot. Removing a factor is a bump on this ledger's own rule, and it is the
-#:   one direction the rule exists for: every stored map named the coordinate, so no stored key
-#:   derives to itself under the new predicate.
-#:   **It is a retirement and not a deferral, which is the opposite of what the note above used
-#:   to promise.** The field was kept in the hashed tuple against the day a producer was wired;
-#:   that day was never coming. The host's prompt graph was an AUTHORING and visualisation surface
-#:   that only its admin layer imported, while a subject's system prompt was assembled from
-#:   templates through a registry — so no observation the host could produce was rendered by a
-#:   prompt graph, and the only hash available to stamp mirrored the DEFAULT template rather than
-#:   the resolved one a subject ran under. Writing it would have put a fabricated apparatus
-#:   condition in the pre-image of every key.
-#:   **The cost of leaving it declared was real and observed**, which is what forced the
-#:   decision rather than another deferral: a coordinate that is always ``None`` distinguishes
-#:   nothing, and its apparatus twin (``EvalResult.graph_version_hash``, retired in the same
-#:   commit) made every analysis over this corpus hedge its findings on a prompt-graph version
-#:   nobody recorded — a caveat no campaign could ever discharge by running. What an observation
-#:   genuinely varies on here is the resolved prompt TEXT, which this predicate has hashed since
-#:   v11(a). Nothing that could distinguish two variants stops being hashed.
-#:   Losing a coordinate is a wrong-MERGE risk in general, and it is not one here: the coordinate
-#:   held one level for every observation ever taken, so no two variants were ever kept apart by
-#:   it. Every stored variant key re-derives; no live eval data is valued, and the context
-#:   predicate and its golden vector are untouched.
-#: - **v16** — the first host's variant map gains a coordinate: the subject's own statement of what
-#:   it is ABOUT, its domain. Its absence was correct while nothing read it; from the commit that
-#:   interpolated it into the measured classifier's resolved prompt, two subjects differing only
-#:   here sent DIFFERENT prompts to the classifier while deriving the same subject key — a wrong
-#:   MERGE, the direction nothing downstream undoes. The host's classifier launch made it reachable
-#:   rather than theoretical: it captured the resolved prompt for the candidate but built the run's
-#:   identity from the subject snapshot, so the two halves of one run disagreed about whether the
-#:   arms differed, and two such runs had to be kept apart by hand. Empty is a level like any
-#:   other — a subject that declares no domain runs a classifier that infers one, which is a
-#:   different prompt from one that is told. Every stored variant key re-derives (the map gained a
-#:   name, and the name is in the pre-image); no live eval data is valued, and the context
-#:   predicate and its golden vector are untouched. **What this bump does NOT cover**, stated
-#:   because the next reader will assume it does: a subject's stored CLASSIFIER PROMPT OVERRIDE was
-#:   still absent from the snapshot and from the components, so switching a subject between a
-#:   forked prompt and the shared default moved no key. That is the same class and was tracked
-#:   separately rather than folded in here, because the override
-#:   is a whole prompt rather than a field and capturing it raises a retention question this
-#:   coordinate does not.
-#: - **v17** — the first host's variant map gains a coordinate: WHETHER the subject has an
-#:   optional speech capability (named apart from ``style``; WHICH capability configuration is not
-#:   hashed, since the candidate is offered the same with any).
-#:   It decides what the candidate is OFFERED, not only how it sounds: the host grants the matching
-#:   tools, and the state sections and perceptions that go with them, only to a subject that has
-#:   the capability. Before this, the subject snapshot did not carry it at all, so every eval
-#:   subject ran without it whatever its live self had, and a capable subject and an incapable one
-#:   derived the same subject key. That was invisible while the snapshot dropped it everywhere; once
-#:   it is carried (the same change), the two send different tool catalogs to the candidate and
-#:   would be a wrong MERGE without this coordinate. Empty is a level (not capable), and a snapshot
-#:   predating the field reads as not recorded.
-#:   The same bump adds the subject's persisted settings: the snapshot had dropped every persisted
-#:   key it did not name, so an eval subject ran at the code defaults for tool rounds and attention
-#:   per turn, the ground-rules and tool-reaction presets, role, attributes, timezone and memory
-#:   windows — all of which shape the turn. They travel now, in the persisted form, and are one
-#:   coordinate. The accumulated turn state that travelled with them (todos, turn summaries, recent
-#:   spoken lines, turn counter) is a state level of its own, ``turn_state``, not a variant
-#:   coordinate — and because state levels are CONTEXT inputs, this bump moves the context key as
-#:   well. Every stored variant and context key re-derives; no live eval data is valued.
-#: - **v18** — a subject state level stops composing over one of the entries it hashed: the host's
-#:   ``turn_state`` no longer carries what the subject last said aloud, which became a world
-#:   dimension the run's world seed states instead — so the same fact is still hashed into the
-#:   context key, once, through the ``world_seed`` component, where a run SETS it rather than
-#:   inheriting whatever the captured subject last did. The predicate's shape is unchanged and both
-#:   golden vectors hold, since neither fixture carries that entry; what moves is the pre-image of a
-#:   real subject's ``turn_state`` level, so a stored run whose subject had spoken derives a
-#:   different context key under v18.
-#: - **v19** — the subject's carried state stops composing over its recent turns and turn number: what it
-#:   remembers of its last turns, the number its next turn runs as and the time it reads became host world dimensions
-#:   a run's world seed states (each defaulted into the resolved seed when a template states none), so they are
-#:   hashed once, through the ``world_seed`` component, where a run SETS them rather than inheriting the live
-#:   subject's last hour. The predicate's shape is unchanged; what moves is the pre-image of a real subject's
-#:   ``carried_memory`` level (no recent turns in it) and every resolved world seed (a session namespace in it),
-#:   so every stored run derives a different context key under v19.
-#: - **v20** — a kind owns what a launch may turn and what a judge is asked. **(a)** The four
-#:   named overlay fields a run carried are gone: a launch's overlays are one map the kind's own model
-#:   validates, frozen on the run whole, defaults included (``EvalRun.overlays``), and a host reads its
-#:   overlay levers off that map through the levers its kind contract derives. The variant predicate's
-#:   arithmetic is unchanged; what moves is every overlay lever's pre-image, which is now the resolved
-#:   model rather than the request — a launch restating a default and one naming nothing hash alike.
-#:   **(b)** The ``roles`` component's per-dim attribution names only the dims a kind's judge is asked
-#:   (``scored_dim_ids``): a document run no longer records a judge for the transcript and outcome
-#:   axes no judge scores it on, so every document run's context key moves. **(c)** The
-#:   ``seeded_world`` component composes the run's frozen ``kind_spec`` — what its template stated
-#:   for the kind, re-validated and frozen at launch (``EvalRun.kind_spec``) — under the key
-#:   ``kind_spec``, in place of the seeded background-tool findings a template could carry: those
-#:   leave the template with the rest of one host's kind content, and a kind that seeds findings
-#:   states them in its spec. **(d)** An unjudged run's ``roles`` component composes without its judge
-#:   inputs rather than dropping whole: the runner refuses to execute a judged run that names no judge,
-#:   so ``judge_model=None`` records that the run was not judged — a level, where it used to be read as
-#:   an unrecorded pin and left every unjudged run on a judge-capable host ``partial``. **(e)** The
-#:   ``cassette`` component composes the corpus a replay serves (``EvalRun.cassette_corpus_id``) in
-#:   place of a ``cassette_version`` label nothing bound: two replays of different corpora were served
-#:   different tool output, and a capture run's own corpus is not a condition its live tools ran under.
-#:   One bump for (a)-(e), since nothing between them was released.
-#: - **v21** — the variant map gains the candidate KIND, and the engine composes the map itself. A run's
-#:   kind is now a core lever (``candidate_kind``) resolved for every run, so two runs of different kinds
-#:   are two variants however alike everything else is: before, runs of two kinds at one model with no
-#:   overlays (or overlays all at ``None``) derived one key and pooled into one arm — a wrong MERGE. The
-#:   engine also resolves the candidate model and every kind contract's levers itself (a host's reader
-#:   returns only its own levers), and a kind contract's "not a run of this kind" level is addressed so it
-#:   can equal no value a field holds, where it used to hash as ``None``. Every stored variant key
-#:   re-derives (each map gained a name). The context predicate composes v20's inputs, with the
-#:   ``seeded_world`` component's seed now keyed ``world_seed`` (the engine's one word for the seeded
-#:   world, beside ``WorldRegistry``), so every context key re-derives too. One bump for both, since
-#:   nothing between them was released.
-#: - **v22** — the ``seeded_world`` component composes the turns before which the run's world session
-#:   perturbed undeclared state (``EvalRun.resolved_ambient_perturbation_turns``), under the key
-#:   ``ambient_perturbation_turns``. A run whose template scheduled ambient perturbation faced a world that
-#:   moved under it; one that did not, faced a world that held still, and the two were pooled as one
-#:   condition. Composed for every run (``[]`` for none), so every stored context key re-derives.
-#: - **v23** — a new context component, ``apparatus_settings``: the digest of the host-declared apparatus
-#:   values a launch set (``EvalRun.apparatus_settings``, the ``apparatus_settings`` launch argument) — who
-#:   sat in an adjudicator's seat, say. One template is now run at two such values to compare them, and
-#:   those runs were measured on two rigs; without the component they shared every hashed input and pooled
-#:   as repetitions of one condition, a wrong MERGE. Composed for every run (``{}`` — the launch set none —
-#:   is a level), so every stored context key re-derives. Variant keys are unchanged: an apparatus value is
-#:   the rig, not the candidate.
-#:   The same (unreleased) version also carries an unjudged run's empty ``judge_config_ids`` out of the
-#:   ``roles`` pre-image with the rest of its judge inputs: a run naming no judge has no judge-config seat
-#:   (``HostProfile.seats``), so ``{}`` there no longer hashes apart from ``None`` — two unjudged runs that
-#:   both recorded no config were one condition split in two. A config such a run did record still hashes.
-#: - **v24** — the ``roles`` component composes the temperature a judged run's dims with no ``JudgeConfig``
-#:   were requested at (``EvalRun.judge_temperature``, #633). A config's temperature rides its config id, but
-#:   an unconfigured dim was judged at the provider's default (around 1.0 on some) while a configured one was
-#:   judged at its 0.0, and nothing hashed the difference; every judge call now asks for
-#:   ``DEFAULT_JUDGE_TEMPERATURE`` (0) unless a config says otherwise, and the run records it. A run launched
-#:   before this recorded none, so on a judged run the roles component drops and its context reads *partial*
-#:   — v5's treatment of an unrecorded judge input — and it never pools with a run judged at 0. An unjudged
-#:   run's judge inputs leave the pre-image as before. Variant keys are unchanged.
+#: - **v24** — the baseline: the first public release's identity version. The versions before it were
+#:   pre-release, and their history is not carried here.
 IDENTITY_VERSION: int = 24
 """Version of the key-derivation predicate below.
 
@@ -606,27 +265,27 @@ def compute_context_components(
             model each dim was REQUESTED from once the cascade (role default <
             run pin < per-dim ``JudgeConfig.model``) is applied. A floating alias
             can be served by a different model; ``RubricScore.served_model``
-            records the one that scored, and this key does not. Folded in from
-            v5, because the pin alone let two runs whose rubric dims were judged
+            records the one that scored, and this key does not. Composed because
+            the pin alone would let two runs whose rubric dims were judged
             by different models share a key and pool as one condition. Only
             ``recorded`` attribution is eligible: a reconstruction infers what
             each dim was requested from, from stored records, so hashing it would put an
             inference in the namespace of measurements. ``None`` for a run that recorded none, which is a
             reason to drop the component, not to hash around it.
         judge_config_ids: The ``JudgeConfig`` set the run pinned at launch,
-            ``{dim_id: config_id}`` over the dims that carry one. Folded in from
-            v6, because ``effective_judges`` names the model each dim was
+            ``{dim_id: config_id}`` over the dims that carry one. Composed because
+            ``effective_judges`` names the model each dim was
             requested from and says nothing about the prompt it was scored with — so two runs
-            differing only in their judge configuration hashed alike, which is the
+            differing only in their judge configuration would hash alike, which is the
             difference a judge A/B exists to create. ``{}`` is a value here, not an
             absence: it records that no scored dim carried a config. ``None`` is
             the absence, and drops the component.
-        judge_temperature: The temperature every dim with no ``JudgeConfig`` was requested at. Folded in
-            from v24 (#633): a config's temperature already rides its config id, but an unconfigured dim's
-            did not, so a run judged at the provider's default and one judged at 0 hashed alike while their
-            judges sampled differently. The REQUEST, as ``judge_model`` is the pin: what each call was sent
-            at is on its score, and with the model pinned beside it the request decides what is sent. ``None``
-            on a judged run is an absence (launched before it was recorded) and drops the component.
+        judge_temperature: The temperature every dim with no ``JudgeConfig`` was requested at. Composed
+            because a config's temperature rides its config id but an unconfigured dim's does not, so
+            without it a run judged at the provider's default and one judged at 0 would hash alike while
+            their judges sampled differently. The REQUEST, as ``judge_model`` is the pin: what each call was
+            sent at is on its score, and with the model pinned beside it the request decides what is sent.
+            ``None`` on an unjudged run, which records none (``EvalRun`` requires it on a judged one).
         simulator_model: The RESOLVED simulator model.
         cassette_mode: Whether tool output was live, captured, or replayed.
         cassette_corpus_id: The corpus a replay run serves — ``None`` for a capture run, whose tools ran
@@ -646,7 +305,7 @@ def compute_context_components(
             two are the same value wearing different jobs.
         world_placements: What the run did with each dimension the host's world declares —
             seeded-and-perceived, seeded-and-unperceived, perceived-and-unseeded, or neither.
-            Folded in from v9, because the world a subject is placed in is stimulus and two runs
+            Composed because the world a subject is placed in is stimulus and two runs
             that placed it differently are not repetitions of one condition. ``{}`` is a value
             here, not an absence: it records that this host's world held nothing this run could
             place. ``None`` is the absence — a run whose writer placed nothing — and drops the component.
@@ -694,11 +353,11 @@ def compute_context_components(
         case_basis=canonical_digest(
             {
                 # WHO was measured, not just what against. Without it two different subjects
-                # produced an identical context key whenever both carried nothing — a fresh
-                # subject, or a stripped-snapshot probe — and pooled as repetitions of one
+                # would produce an identical context key whenever both carried nothing — a fresh
+                # subject, or a stripped-snapshot probe — and pool as repetitions of one
                 # condition, while ``compare_two_runs`` withholds cross-subject composites
-                # precisely because rubric dims derive from each subject's own description. The
-                # guard existed only in ``comparison_sets``' grouping, so the key was not
+                # precisely because rubric dims derive from each subject's own description. A
+                # guard in ``comparison_sets``' grouping alone would leave the key not
                 # self-sufficient. The subject's LABEL is deliberately absent: a rename is a label
                 # change, and splitting a cohort on it would be the same error ``bisect_runs``
                 # avoids by reporting the pair.
@@ -745,8 +404,8 @@ def _roles_payload(
     caller sets it from whether ALL of its inputs are recorded. Reaching here with
     a missing input therefore means the two disagree — a programming error, not an
     unrecorded run — so it raises rather than hashing a component that would wear the
-    same name as a complete one while meaning something narrower. That is the
-    failure v3 was created to stop being silent.
+    same name as a complete one while meaning something narrower — a failure that
+    would otherwise be silent.
 
     Args:
         judge_model: The resolved run-level pin.
@@ -983,7 +642,7 @@ def derive_context_identity(run: EvalRun, profile: HostProfile) -> DerivedContex
         does not have is a different case and does not make the component absent:
         it leaves the pre-image instead, so a host that grades with code composes
         a roles component over what it actually pins, and one that declares
-        nothing composes exactly the four it always did. ``world`` is absent when the run recorded
+        nothing composes every one of them. ``world`` is absent when the run recorded
         no placements, which is lost for a sharper reason: the world registry is
         host CODE and moves under the record, so deriving placements now would
         report today's world for a run measured under an older one.
@@ -1024,12 +683,12 @@ def derive_context_identity(run: EvalRun, profile: HostProfile) -> DerivedContex
     # built-in prompt. Reading that as absent would drop the roles component for exactly
     # the runs whose judging is most uniform, and stop them pooling with each other.
     hashable_judges = run.hashable_effective_judges
-    # ALL the roles inputs THIS HOST HAS, or none. The set used to be the four core names
-    # unconditionally, which made the predicate permanently False for a host that grades with
-    # code: its kind seats neither `judge_model` nor `simulator_model`, could never record one,
-    # and so every comparison carried `context_incomplete` — glossed "at least one run never
-    # recorded a pinned role model". That is a false sentence about a host that never had the
-    # role, and all three surfaces hang off this one predicate.
+    # ALL the roles inputs THIS HOST HAS, or none. Requiring the core names unconditionally would
+    # make the predicate permanently False for a host that grades with code: its kind seats neither
+    # `judge_model` nor `simulator_model`, could never record one, and so every comparison would
+    # carry `context_incomplete` — glossed "at least one run never recorded a pinned role model".
+    # That is a false sentence about a host that never had the role, and all three surfaces hang
+    # off this one predicate.
     #
     # The DECLARATION decides membership and the VALUE still decides the claim: `omits_apparatus`
     # takes what this run recorded, so a kind that left a seat unfilled and then recorded
@@ -1052,9 +711,9 @@ def derive_context_identity(run: EvalRun, profile: HostProfile) -> DerivedContex
     # role out of an unjudged run's rig, and the judge's inputs follow it out here.
     #
     # Only an input this host DECLARES as apparatus has a seat to ask about — `omits_apparatus` refuses any
-    # other name. The five names above are the engine's, fixed here, and a registry built without one of them
-    # (a profile predating `judge_temperature`) has declared nothing that could take it away: the input stays
-    # required, which is the answer the seats gave it before they refused the question.
+    # other name. The five names above are the engine's, fixed here, and a registry that does not declare one of
+    # them (a profile that leaves `judge_temperature` out) has declared nothing that could take it away: the
+    # input stays required.
     apparatus = {declared.name for declared in profile.sweepables.declarations if declared.role == "apparatus"}
     declared_omitted = {
         name for name, value in role_inputs if name in apparatus and profile.omits_apparatus(name, [(run, value)])
@@ -1272,8 +931,8 @@ def resolve_variant_identity(*, run: EvalRun, profile: HostProfile) -> DerivedVa
     Here the run holds the pre-image itself: the map is what was digested, so nothing is being
     reconstructed and there is no predicate to be out of date. Re-deriving it would replay
     today's lever map over an older run and either disagree with the stored key or describe the
-    arm with a stack it never carried — which is precisely how a bump used to erase a whole
-    campaign's arm table while its keys stayed authoritative for pooling.
+    arm with a stack it never carried — so a bump would erase a whole campaign's arm table while
+    its keys stayed authoritative for pooling.
 
     The version reported is therefore the one that RECORDED the map, not this build's: the map
     was resolved by that predicate and saying otherwise would date it wrongly.

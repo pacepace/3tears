@@ -6,10 +6,9 @@ numbers it rests on are arithmetic over the campaign's cells, and a number a mod
 reaches the reader with the same authority as one code computed while nothing checks it. So the
 per-cell numbers are computed once, at bundle assembly, and frozen onto the analysis here.
 
-**Every number on the page resolves here.** On an analysis generated with references, a finding's
-evidence rows, chart payloads, merit claims and caveat magnitudes name a cell and a measure, and
-code fills the figure from these facts (:mod:`threetears.evals.analysis.references`). An older
-analysis's figures were typed by the model and are marked as such.
+**Every number on the page resolves here.** A finding's evidence rows, chart payloads, merit claims
+and caveat magnitudes name a cell and a measure, and code fills the figure from these facts
+(:mod:`threetears.evals.analysis.references`).
 
 **Persisted: the facts. Derived: the table.** A :class:`CellFacts` holds everything measured in one
 cell — every measure, every judged dimension, its replication, the notes on its runs — and nothing
@@ -124,8 +123,7 @@ class JudgedReading(EvalDocumentModel):
         default=None,
         description=(
             "Each test case's mean over its observations, ascending, recorded only below 5 cases (the chart band "
-            "floor): a chart draws these as points rather than an interval band there. None at 5 cases or more, "
-            "and on a summary stored before it, which reads as not recorded."
+            "floor): a chart draws these as points rather than an interval band there. None at 5 cases or more."
         ),
     )
     n_infra_excluded: int = Field(
@@ -148,8 +146,7 @@ class JudgedReading(EvalDocumentModel):
         description=(
             "The same mean re-estimated with people's calibration ratings of some of these observations "
             "(prediction-powered inference), beside the judge-only `mean` and never replacing it. None when no "
-            "person rated any of them on this dimension, and on a surface frozen before it, which reads as not "
-            "recorded."
+            "person rated any of them on this dimension."
         ),
     )
 
@@ -198,14 +195,14 @@ class MeasureFacts(EvalDocumentModel):
         default=None,
         description=(
             "`interval` when the measure's zero is arbitrary, so a chart states no relative change in it; `ratio` "
-            "when it is none of it; None when undeclared — and on a surface frozen before the field existed."
+            "when it is none of it; None when undeclared."
         ),
     )
     guardrail: bool = Field(
         default=False,
         description=(
             "True when the host declared the measure a guardrail: something the arm must not get worse on, never "
-            "an optimizing reading. False on a surface frozen before the field existed, when no measure was one."
+            "an optimizing reading. False otherwise."
         ),
     )
 
@@ -227,14 +224,14 @@ class JudgedDimensionFacts(EvalDocumentModel):
         default=None,
         description=(
             "`interval` for a 1-5 score, whose zero is below the scale, so no chart states a relative change in "
-            "it; `ratio` for a pass rate. None on a surface frozen before the field existed."
+            "it; `ratio` for a pass rate. None when undeclared."
         ),
     )
     axis: RubricAxis | None = Field(
         default=None,
         description=(
             "`boundary` when any score on the dimension was judged as a boundary dimension — a guardrail, never "
-            "averaged with capability — else `capability`. None on a surface frozen before the field existed."
+            "averaged with capability — else `capability`."
         ),
     )
 
@@ -766,8 +763,7 @@ class DecisionSurface(EvalDocumentModel):
         default_factory=list,
         description=(
             "One entry per cell: the control's cells first as the reference, then every other arm alphabetically by "
-            "name, each arm's rigs by id. A surface frozen before bundle schema 47 is ordered by (variant_key, "
-            "apparatus_class_id); the surface and strata tables order the cells themselves, so either lays out alike."
+            "name, each arm's rigs by id. The surface and strata tables order the cells themselves."
         ),
     )
     bars: list[BarAdjudication] = Field(

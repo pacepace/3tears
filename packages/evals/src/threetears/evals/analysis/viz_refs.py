@@ -406,7 +406,7 @@ def _distribution_group(reading: ResolvedReading, label: str) -> dict[str, Any]:
 
     Raises:
         UnresolvableReference: The reading has no interval at all, or is below the band floor and its
-            per-case values were not recorded (a surface stored before they were).
+            per-case values were not recorded.
     """
     interval = _interval(reading, banded=False)
     if not _below_band_floor(reading):
@@ -415,7 +415,7 @@ def _distribution_group(reading: ResolvedReading, label: str) -> dict[str, Any]:
         raise UnresolvableReference(
             f"reference names {reading.measure_id!r} at cell {reading.cell_ref!r}, which has "
             f"{_cases_phrase(reading)}, fewer than the {stats.SMALL_N_BAND_FLOOR} an interval band is drawn from, "
-            "and its per-case values were not recorded — this analysis was stored before they were"
+            "and its per-case values were not recorded"
         )
     return {"label": label, "samples": list(reading.case_means), "n": reading.n_cases}
 

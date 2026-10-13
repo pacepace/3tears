@@ -607,7 +607,8 @@ class ResultRated(EvalBaseModel):
         default=None,
         description=(
             "The fingerprint of the judged output rated, copied from the judge score: the rating holds for every "
-            "judgement of a byte-identical output on the same criterion. None when the score predates the stamp."
+            "judgement of a byte-identical output on the same criterion. None when the score carries no stamp (a "
+            "score made outside a judge phase)."
         ),
     )
     criterion_fingerprint: str | None = Field(

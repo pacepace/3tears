@@ -666,7 +666,7 @@ class EvalSummary(BaseModel):
             for an unjudged run.
         strata: The run read again per stratum of its cases (:class:`StratumSummary`), named strata in name order
             then the cases declaring none; empty when none of its cases declares a stratum, so an unstratified
-            run reads as it did before strata existed.
+            run reads pooled, with nothing per stratum.
         goal_checks: Each goal-state check the results carry, in the order first met; empty for a run
             with none.
         intent: The template's intent, which a judged run's judge read beside every answer; ``None`` for an

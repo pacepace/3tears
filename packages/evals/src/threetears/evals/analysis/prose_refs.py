@@ -386,8 +386,8 @@ def reference_grammar() -> str:
 
     It opens by saying it supersedes any other description of the grammar, because the prompt it is
     appended to is store-master and may predate it: a deployment whose prompt still teaches an
-    older form (the pre-alias ``<variant_key>:<apparatus_class_id>`` cell, a statistic list without
-    ``n_zero``) would otherwise hand the writer two contracts and leave it to guess which binds.
+    older form of the grammar would otherwise hand the writer two contracts and leave it to guess
+    which binds.
     Refusing that prompt is not an option (a retuned prompt's divergence is disclosed, never
     refused), and disclosing it only on a failed generation reports the cost after it is paid;
     saying here which description holds is what makes the stale text harmless.

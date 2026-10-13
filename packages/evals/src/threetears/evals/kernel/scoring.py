@@ -921,15 +921,13 @@ def compute_latency_summary(
 
     **The median is the standard one**, read by the same rule as the tail —
     :func:`median_unbiased_quantile` at 0.5, whose position ``(n + 1) / 2`` is the middle value, or the mean of
-    the two middle values at an even count — so it agrees with the bundle's ``p50``. A figure computed before
-    this rule read nearest-rank, which took the lower of the two middle values at an even count.
+    the two middle values at an even count — so it agrees with the bundle's ``p50``.
 
     **The tail is the 95th percentile only where one can be estimated.** ``p95_total_ms`` is
     :func:`median_unbiased_quantile` (Hyndman–Fan type 8), present from 13 measured totals, and absent below:
     there the only figure a sample offers for its tail is its slowest observation, which is not a 95th
     percentile — at five totals it falls below the true one 77% of the time — so it is reported as
-    ``max_total_ms``, under its own name, at every size. A row stored before this rule read its ``p95_total_ms``
-    nearest-rank, which is that same maximum for every ``n <= 19``.
+    ``max_total_ms``, under its own name, at every size.
 
     Returns:
         ``{(model, eval_run_id): {"mean_total_ms", "median_total_ms",

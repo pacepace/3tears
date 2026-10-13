@@ -122,7 +122,7 @@ class JudgeCaseSource(EvalBaseModel):
         default=None,
         description=(
             "The versioned JudgeConfig that asked for it, or a ``builtin:`` id = the built-in prompt, by its wording; "
-            "None = a built-in prompt whose wording was not recorded (judged before evaladopt.19)."
+            "None = no judge identity recorded (a score made outside a judge phase)."
         ),
     )
     first_judge_temperature: JudgeTemperature | None = Field(

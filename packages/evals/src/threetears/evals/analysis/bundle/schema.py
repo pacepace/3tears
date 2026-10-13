@@ -135,8 +135,7 @@ class MeasureMovement(EvalDocumentModel):
         description=(
             "Set when `direction` is not_separated with no test run: every case moved by the same amount on a measure "
             "that declares no value_range, where no test of the mean can call the move (or a value lies outside the "
-            "declared range). Names the remedy. None otherwise, and on a bundle assembled before 0.66, which read "
-            "such a move by the exact sign-flip test, a test of symmetry rather than of the mean."
+            "declared range). Names the remedy. None otherwise."
         ),
     )
     materiality: Materiality = Field(
@@ -394,8 +393,7 @@ class MechanismCheck(EvalDocumentModel):
             "one level only. levels_unobserved = some level observed none of it. too_few_observations = some pair "
             "of levels had fewer than two cases on a side. uniform_move_needs_range = no pair separated, and some "
             "pair shifted every case by the same amount on a measure that declares no value_range, where no test of "
-            "the mean can call the shift; declare value_range on the measure for the bounded test to read it. A "
-            "bundle assembled before 0.66 read such a shift by the exact sign-flip test and keeps its state."
+            "the mean can call the shift; declare value_range on the measure for the bounded test to read it."
         ),
     )
 
@@ -459,8 +457,8 @@ class ArmServedModel(EvalDocumentModel):
     n_unrecorded: int = Field(
         ge=0,
         description=(
-            "Of those, the results with at least one candidate call whose response named no model — or stored "
-            "before served models were recorded. Not recorded, never a match with the requested id."
+            "Of those, the results with at least one candidate call whose response named no model. Not recorded, "
+            "never a match with the requested id."
         ),
     )
     state: Literal["one", "pooled", "unrecorded"] = Field(
@@ -859,8 +857,7 @@ class JudgedArm(EvalDocumentModel):
         default=None,
         description=(
             "Each test case's mean over its observations, ascending, recorded only below 5 cases (the chart band "
-            "floor): a chart draws these as points rather than an interval band there. None at 5 cases or more, "
-            "and on a summary stored before it, which reads as not recorded."
+            "floor): a chart draws these as points rather than an interval band there. None at 5 cases or more."
         ),
     )
     n_cannot_tell: int = Field(
@@ -902,11 +899,11 @@ class JudgedArm(EvalDocumentModel):
 class JudgedMeasure(EvalDocumentModel):
     """A judged dimension, measured — carried so its exclusion from ranking is not read as its absence.
 
-    Judged dimensions are kept off the ranking surface permanently, and that exclusion used to erase
-    them: a rubric leaf reached the measure walk as a bare ``score`` with the dimension's name already
-    lost, was refused by the ranking filter, and appeared nowhere else, so a campaign whose judge scored
-    every result read to the generator as one that measured no quality at all. This is the surface they
-    live on instead — named, per cell, with the reason they are not ranked stated once rather than
+    Judged dimensions are kept off the ranking surface permanently, and that exclusion must not erase
+    them: a rubric leaf reaching the measure walk as a bare ``score`` with the dimension's name already
+    lost would be refused by the ranking filter and appear nowhere else, so a campaign whose judge scored
+    every result would read to the generator as one that measured no quality at all. This is the surface
+    they live on instead — named, per cell, with the reason they are not ranked stated once rather than
     inferred from where they are not.
     """
 
@@ -1156,8 +1153,8 @@ class RunSummary(EvalDocumentModel):
             "input the run set off production with its level, `unchecked` each lever whose departure could not "
             "be decided, `held` the inputs checked and found at production. Only an empty `moved` AND an empty "
             "`unchecked` say the cost was measured at production's configuration; anything in either means it "
-            "was not, or may not have been. None when nobody checked: a summary assembled before the "
-            "disclosure existed, or one built from a run read without its host payload."
+            "was not, or may not have been. None when nobody checked: a summary built from a run read without "
+            "its host payload."
         ),
     )
     measures: MeasureCollection = Field(
@@ -1595,7 +1592,7 @@ class FamilyComparison(EvalDocumentModel):
             "over the family, so every interval in it covers its true difference together at least 95% of the time. "
             "A separation needs it to exclude zero. Where the values have no spread (every shared case moved by one "
             "amount, or each side constant) it is the bounded test's on the declared range (`basis` `bounded`). "
-            "None when no test ran. A bundle assembled before 0.66 stated none where the values had no spread."
+            "None when no test ran."
         ),
     )
     hedges_g: float | None = Field(
@@ -1618,7 +1615,7 @@ class FamilyComparison(EvalDocumentModel):
         description=(
             "Pearson's r between the control's and the contrast's per-case means over the cases the paired test read, "
             "with their count: what pairing bought. None for an unpaired test, when no test ran, below three paired "
-            "cases, and where either side has no spread. A bundle shape before 48 carries none."
+            "cases, and where either side has no spread."
         ),
     )
     basis: Literal["t", "bounded", "identical"] | None = Field(
@@ -1628,8 +1625,7 @@ class FamilyComparison(EvalDocumentModel):
             "min(n) − 1 degrees of freedom when unpaired; `bounded` = the bounded test by betting on the reading's "
             "declared range, where the values have no spread (every shared case moved by one amount, or each side "
             "constant), valid for the mean at every n; `identical` = identical values on both sides, p 1. None when "
-            "no test ran, and on a bundle assembled before 0.66, whose no-spread rows read the exact sign-flip test, "
-            "a test of symmetry rather than of the mean, and keep the verdicts they were assembled with."
+            "no test ran."
         ),
     )
     p_raw: float | None = Field(
@@ -1695,8 +1691,7 @@ class FamilyComparison(EvalDocumentModel):
         description=(
             "Set when `verdict` is not_separated with no test run: every shared case moved by the same amount (or "
             "each side is constant) on a reading that declares no `value_range`, where no test of the mean can call "
-            "the gap, or a value lies outside the declared range. The sentence names the remedy. None otherwise, and "
-            "on a bundle assembled before 0.66."
+            "the gap, or a value lies outside the declared range. The sentence names the remedy. None otherwise."
         ),
     )
     materiality: Materiality | None = Field(
@@ -1903,8 +1898,8 @@ class AnalysisContextBundle(EvalDocumentModel):
     # changed shape reads as evidence that moved, which is the one thing this number separates. A
     # HOST editing its own declarations is not a reason to bump it, and a host has no way to: that
     # move is carried by `host_declarations_digest`, derived from the declarations themselves. An
-    # A/B set spanning a bump must be read as spanning it. Why each earlier version moved is in
-    # this file's history.
+    # A/B set spanning a bump must be read as spanning it. 50 is the first public release's bundle
+    # shape; the shapes before it were pre-release.
     schema_version: int = Field(
         default=50, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
@@ -1985,8 +1980,7 @@ class AnalysisContextBundle(EvalDocumentModel):
         description=(
             "Where each diverging whole-run movement went: one entry per lever, level pair and whole-run measure "
             "among `scope_divergences`, naming the component that carried it. Stated once here rather than on each "
-            "divergence, because one whole diverges from several parts. A bundle shape before 49 carried it on "
-            "every divergence instead."
+            "divergence, because one whole diverges from several parts."
         ),
     )
     divergences_omitted: int = Field(
@@ -2006,8 +2000,7 @@ class AnalysisContextBundle(EvalDocumentModel):
             "Whole-and-part pairs whose divergence could not be tested: fewer than two cases carrying both measures "
             "on a side, or a remainder (whole minus part) that moved by the same amount on every case where the two "
             "measures do not both declare value_range, so no test of the mean can call it; declare value_range on "
-            "both for the bounded test to read it. Nothing is known of them. A bundle assembled before 0.66 read a "
-            "remainder with no spread by the exact sign-flip test, a test of symmetry rather than of the mean."
+            "both for the bounded test to read it. Nothing is known of them."
         ),
     )
     declared_design: CampaignDesign | None = Field(
@@ -2257,8 +2250,8 @@ class AnalysisContextBundle(EvalDocumentModel):
             "direction, merit axis, guardrail, margin, range), so a stored comparison's verdicts do not depend on who "
             "reads them; a sentence names the declaration read and the reading host's. Where the runs were launched "
             "under different declarations, no margin is read on the measure and the sentence says so. Empty when "
-            "every measure is read as the reading host declares it, and for runs stored before launches recorded "
-            "their declarations."
+            "every measure is read as the reading host declares it, and for runs that froze no declarations (runs "
+            "their host assembled without a launch)."
         ),
     )
     run_margins_withheld: str | None = Field(
@@ -2361,8 +2354,7 @@ class AnalysisContextBundle(EvalDocumentModel):
         default=None,
         description=(
             "Every pair of varying factors checked for co-varying, with a pivot (unrun combinations as not_run) "
-            "for each co-varying pair outside a lockstep group, and how many pairs were examined. None on a "
-            "bundle assembled before the scan existed."
+            "for each co-varying pair outside a lockstep group, and how many pairs were examined."
         ),
     )
     declared_crossing: DeclaredCrossing | None = Field(
@@ -2401,7 +2393,7 @@ class AnalysisContextBundle(EvalDocumentModel):
             "`unchecked`, `held`; null for a run nobody could check). An arm's production_replicating_cost — on its "
             "cells, contrasts and bars — is what production would spend only where every run moved nothing; where a "
             "run moved or left unchecked an input, it is the cost of those settings, with no reliable sign of "
-            "error. Empty on a bundle assembled before it was read: nobody checked, never 'nothing moved'."
+            "error."
         ),
     )
     cell_model_version: int = Field(
@@ -2441,7 +2433,7 @@ class AnalysisContextBundle(EvalDocumentModel):
             "joins a cell, or the campaign's declared control, to a declared axis level, so an arm "
             "table derives every row as unresolved. An entry is described from the run's RECORDED lever "
             "map wherever the run carries one, so an IDENTITY_VERSION bump between a campaign and its "
-            "analysis no longer costs a single description. A variant that has none — a run its host "
+            "analysis costs no description. A variant that has none — a run its host "
             "assembled without the launch, read by a build whose predicate no longer reproduces its key — "
             "is PRESENT carrying "
             "`levels_unavailable` rather than described by levels it never carried; it pooled either "
@@ -2620,13 +2612,13 @@ class AnalysisContextBundle(EvalDocumentModel):
 class BundleInspection(EvalDocumentModel):
     """A bundle handed to a reader instead of to a model — the read surface's payload.
 
-    The bundle used to be assembled, hashed, sent to a paid generator and dropped,
-    so the only post-hoc trace of what it *refused* to publish — a subtraction
-    rejected as unsound, a swing withheld by the containment default, a divergence
-    dropped by the reporting cap — was whatever the generator chose to write into
-    prose. That made the disclosure of a deterministic judgement depend on the
-    model's discretion, which is the exact dependency moving those judgements into
-    the bundle was meant to remove. This is the projection that closes it.
+    A bundle that was only assembled, hashed, sent to a paid generator and dropped
+    would leave, as the only post-hoc trace of what it *refused* to publish — a
+    subtraction rejected as unsound, a swing withheld by the containment default, a
+    divergence dropped by the reporting cap — whatever the generator chose to write
+    into prose. That would make the disclosure of a deterministic judgement depend on
+    the model's discretion, the exact dependency moving those judgements into the
+    bundle removes. This is the projection that closes it.
 
     **Projected, never stored.** There is no second copy: the surface re-assembles
     from the same :func:`assemble_context_bundle` a generation calls, so no
@@ -2785,15 +2777,18 @@ class GoalCheckProofReading(EvalDocumentModel):
     )
     runs: int = Field(ge=1, description="Member runs that graded it, or for a refused check, that refused it.")
     unrecorded: int = Field(
-        ge=0, description="Of those, runs launched before proofs were recorded — read as unproven, never as proven."
+        ge=0,
+        description=(
+            "Of those, runs that recorded no proofs (runs their host assembled without a launch) — read as "
+            "unproven, never as proven."
+        ),
     )
     stale: int = Field(
         default=0,
         ge=0,
         description=(
-            "Of those, runs that recorded it `proven` under an earlier proof rule (before a control's case "
-            "parameters were read as a case stores them, #665) — read as unproven, and needing a new launch to "
-            "be proven again."
+            "Of those, runs that recorded it `proven` under an earlier proof rule (`GOAL_CHECK_PROOF_RULES` has "
+            "moved since they launched) — read as unproven, and needing a new launch to be proven again."
         ),
     )
     refused: str | None = Field(

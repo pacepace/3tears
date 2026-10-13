@@ -152,7 +152,7 @@ def _paired_test(
     - **Where every case moved by one amount** no t exists, and the bounded test by betting reads both
       (:func:`~threetears.evals.analysis.stats.bounded_difference_interval`, and
       :func:`~threetears.evals.analysis.stats.bounded_separation_p` with its stakes at the same tail): valid for the mean at
-      every n on the scale's range. The exact sign-flip p this once read here is a test of symmetry, not of the
+      every n on the scale's range. The exact sign-flip p is not read here: it is a test of symmetry, not of the
       mean: twenty cases each up one point arise about one time in ninety from a judge whose mean did not move (up one
       point four times in five, down four the fifth), where the sign flip states one in half a million. The
       price is the truth about a uniform move on a 1-5 scale: twenty cases do not show it, thirty do (with two

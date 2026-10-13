@@ -33,8 +33,8 @@ floor counts (:mod:`threetears.evals.kernel.evidence_tiers`).
 **One group per dimension, scale and judge** (:class:`JudgeKey`). The judge is the model that served the
 score (:attr:`~threetears.evals.schema.models.RubricScore.served_model`), the versioned judge config
 that asked for it (the result's ``judge_config_ids``: a config's id, or ``builtin:<sha12>`` for the built-in
-prompt, by its wording; ``None`` = a built-in prompt judged before its wording was recorded, never the same
-judge as a ``builtin:`` one) AND the temperature the
+prompt, by its wording; ``None`` = no judge identity was recorded, as on a score made outside a judge phase,
+never the same judge as a ``builtin:`` one) AND the temperature the
 call was sent at (:attr:`~threetears.evals.schema.models.RubricScore.judge_temperature`), so a campaign
 sweeping its judge — model, prompt or sampling — reads each judge's agreement separately: pooling them would
 credit one judge with the other's calibration, which is the comparison a judge swap is decided on. A dimension rated on a
@@ -420,7 +420,7 @@ def _scores_by_label_key(results: Sequence[EvalResult]) -> dict[LabelKey, list[t
 
     Returns:
         ``{label_key: [(result, score), ...]}`` over every judge score — rubric dimensions and the two dual-score
-        axes — that carries a key. A score judged before the stamp is absent.
+        axes — that carries a key. A score with none (one restated from a judge trial) is absent.
     """
     found: dict[LabelKey, list[tuple[EvalResult, RubricScore]]] = {}
     for result in results:

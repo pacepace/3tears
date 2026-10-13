@@ -613,7 +613,7 @@ class LaunchEstimate(EvalBaseModel):
         would_launch: Whether no arm would be refused on its price.
         computed_at: When the estimate was made, the stamp a pivot's prediction carries.
         detectable_effect: What the launch could detect, per reading (:class:`DetectableEffects`); ``None`` on
-            an estimate made before the pre-flight existed.
+            an estimate handed in without one.
     """
 
     template_id: str

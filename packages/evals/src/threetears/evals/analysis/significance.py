@@ -183,10 +183,9 @@ def cross_subject_disclosure(subject_a: str | None, subject_b: str | None) -> st
     deciding. A surface that re-derived the rule from subject ids of its own
     would be the second implementation this exists to prevent.
 
-    There is no undecidable case. This used to carry one — two runs whose subject nobody recorded
-    are not evidence of sameness, and comparing two blanks for equality would manufacture exactly
-    the claim this refuses — but a subject key can no longer be blank, so the pair is not
-    constructible and the branch would answer about nothing.
+    There is no undecidable case. Two runs whose subject nobody recorded would not be evidence of
+    sameness, and comparing two blanks for equality would manufacture exactly the claim this refuses,
+    but a subject key cannot be blank, so the pair is not constructible.
 
     Args:
         subject_a: Run A's subject key.

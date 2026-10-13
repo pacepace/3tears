@@ -249,8 +249,8 @@ class ProductionFooting(BaseModel):
     any of them being edited. Three buckets, never two: an input whose departure nothing can decide is
     ``unchecked``, not held, so "moved nothing" is claimed only when every input was checked.
 
-    Crosses storage on a bundle's run summary; a summary assembled before it carries ``None``, which
-    reads as "nobody checked", never as "nothing moved".
+    Crosses storage on a bundle's run summary; a summary built from a run read without its host payload
+    carries ``None``, which reads as "nobody checked", never as "nothing moved".
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)

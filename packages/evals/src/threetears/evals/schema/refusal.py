@@ -54,14 +54,14 @@ class JobRefusal(EvalBaseModel):
 
 
 #: A job record's ``refusal`` field (:class:`JobRefusal`): declared on each record that can end on a refusal with
-#: ``= None``, so a record written before it — or ended any other way — reads None.
+#: ``= None``, so a record that ended any other way reads None.
 RefusalField = Annotated[
     JobRefusal | None,
     Field(
         description=(
             "The engine refusal the job ended on, as data — its kind and status, as a refused call's are — when it "
-            "ended `failed` because an engine error refused its work; None while it runs, when it ended any other "
-            "way, and on a record written before it was kept."
+            "ended `failed` because an engine error refused its work; None while it runs, and when it ended any other "
+            "way."
         )
     ),
 ]

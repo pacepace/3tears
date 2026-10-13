@@ -219,8 +219,8 @@ def evidence_rows(
         values: dict[str, ChartValue] = {
             "arm": arm(row.cell_ref),
             "measure": surface.measure_heading(row.measure_id, row.reading),
-            # Cases, never observations: the count every interval is read over. An analysis stored before rows
-            # recorded it shows none rather than its observation count under this heading.
+            # Cases, never observations: the count every interval is read over. A row with no case count shows
+            # none rather than its observation count under this heading.
             "cases": row.n_cases,
             "spread": _restated_spread(analysis, row, ruler.factor),
         }

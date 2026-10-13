@@ -412,9 +412,9 @@ class RolePins:
 #: "nobody recorded this" and refuse to compare two runs that in fact agree. The sentinel says
 #: "no result was scored by one" rather than "every scored dim used the built-in prompt", because
 #: a run whose cells all died before scoring reaches this state too and the narrower claim is
-#: true in both cases. Since evaladopt.19 a judged result records its built-in prompts by their
-#: identity too (``builtin:<sha12>``), so only results judged before then reach this state
-#: scored — on built-in prompts whose wording nobody recorded, which no ``builtin:`` level matches.
+#: true in both cases. A judged result records its built-in prompts by their identity too
+#: (``builtin:<sha12>``), so a run reaches this state scored only on scores made outside a judge
+#: phase (a host's own reviewers), which no ``builtin:`` level matches.
 NO_JUDGE_CONFIGS = "(none — no result was scored by a versioned judge config)"
 
 #: What a run reports when it recorded attribution and every dim was scored by the pin. Explicit
@@ -1614,8 +1614,7 @@ def _request_settings(settings: Any) -> dict[str, Any] | None:
         The settings as a plain mapping — ``reasoning_max_tokens: None`` and ``reasoning_effort:
         None`` inside it are a recorded level (no reasoning parameter was sent), so the mapping is
         never blank — or ``None`` when the run carries no stamp. ``strict_output`` appears only when
-        True: False is what every stamp stored before the flag reads as, so leaving it out keeps
-        those runs at the level they always had, while a strict stamp reads as a different one.
+        True, so a strict stamp reads as a level of its own and every other stamp as its settings alone.
     """
     if settings is None:
         return None
@@ -1650,7 +1649,7 @@ def _candidate_model_departs(run: EvalRun, _results: Sequence[EvalResult]) -> bo
     under ``model_role_provenance["candidate"]`` whether the launch NAMED its model (``chosen``: moved,
     even where the name happens to be production's, since the engine cannot see which model that is) or
     ran at the kind's own default, the model its launcher supplies for the subject (``inherited``: held).
-    A run stored before that key was written says neither, and reads unchecked.
+    A run its host assembled without a launch says neither, and reads unchecked.
 
     Args:
         run: The run.
@@ -1709,9 +1708,9 @@ CORE_SWEEPABLES: tuple[Sweepable, ...] = (
         result_level=True,
     ),
     # The temperature each judge call was actually SENT at, observed across the results like the model
-    # that scored them (#633). A dimension with no JudgeConfig once sampled at the provider's default while
-    # one with a config sampled at its 0.0, in one run; both now ask for the same default, and a model that
-    # refuses a temperature is sent none ('model_default'). A judge at another temperature is another judge.
+    # that scored them (#633). A dimension with no JudgeConfig and one with a config ask for the same default,
+    # and a model that refuses a temperature is sent none ('model_default'). A judge at another temperature is
+    # another judge.
     # Indeterminate when blank: a score that recorded no temperature cannot be said to match one that did.
     Sweepable(
         name="judge_temperature",

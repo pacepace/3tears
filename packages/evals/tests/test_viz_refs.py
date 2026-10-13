@@ -542,7 +542,7 @@ def test_a_reading_over_five_cases_draws_a_band():
 
 
 def test_a_small_reading_with_no_recorded_cases_is_refused_rather_than_banded():
-    """An analysis stored before per-case values were recorded cannot draw the points, and never draws the band."""
+    """A small reading that recorded no per-case values cannot draw the points, and never draws the band."""
     cells = [_small("A", None), _cell("B"), _cell("C")]
     with pytest.raises(UnresolvableReference, match="per-case values were not recorded"):
         build(VALID["distribution"], surface(cells))

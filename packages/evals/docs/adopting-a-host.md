@@ -218,7 +218,7 @@ types the engine stores, and says three things about each:
 
 `EVAL_DOC_TYPES` (what the operator wipe sweeps) and `CORE_DOC_TYPES` (what is kept) are derived from it.
 
-**The evidence core is kept.** Every later release reads it, from core v8 (the first release) on. The core is
+**The evidence core is kept.** Every release reads it, from core v14 (the first public release's baseline) on. The core is
 what the engine cannot regenerate and an audit needs: test cases, runs, results, traces, calibration ratings,
 the out-of-run spend ledger, case sets, and the templates, judge configs and rubric dims (with their
 tombstones) those documents name by id; and the campaigns people declared and gathered runs into, and the
@@ -228,13 +228,18 @@ a live one), and the records of every other job: a launch (the runs it started),
 a judge temperature comparison (every answer, stored nowhere else) and a host action's job (its result).
 `CORE_DOC_TYPES` lists them.
 
+**The first public release is the baseline.** It writes core v14 (`CORE_BASELINE_VERSION`, equal to
+`CORE_SCHEMA_VERSION`) and regenerable v9 (`REGENERABLE_SCHEMA_VERSION`), and registers no upgrade steps
+(`CORE_UPGRADERS` is empty): there is nothing older for it to read.
+
 **A release that changes a core shape ships an upgrader, and your store needs no migration.** Every change
 to a core shape bumps `CORE_SCHEMA_VERSION`, an added optional field included. Each bump comes with one
-upgrade step, tested against stored documents from every earlier core version. Reading an older core
-document upgrades it in memory before it is validated; the stored bytes stay as they are until the engine
-next writes that document, at the current version. So one scope can hold documents at several core versions.
-A step never changes a field the store filters, sorts or projects on (`CORE_ADDRESSING_FIELDS`), so an index
-your adapter keeps on those fields stays valid.
+upgrade step (a `CoreUpgrader` appended to `CORE_UPGRADERS`), tested against frozen stored documents from every
+core version since the baseline. Reading an older core document upgrades it in memory, one version at a time,
+before it is validated as strictly as a document written today; the stored bytes stay as they are until the
+engine next writes that document, at the current version. So one scope can hold documents at several core
+versions. A step never changes a field the store filters, sorts or projects on (`CORE_ADDRESSING_FIELDS`), so
+an index your adapter keeps on those fields stays valid.
 
 **Everything else is regenerated.** Analyses, insights and judge profiles are built over the core, and a
 cassette is re-captured. When one of their shapes changes, `REGENERABLE_SCHEMA_VERSION` is bumped and a
@@ -242,13 +247,17 @@ document written under another version is refused: make it again over the kept r
 profile the judge), or re-capture the cassette (a new capture run, so a new corpus). After a bump, `analyses_undescribable` (operation and action) lists the scope's analyses holding
 an arm this build can no longer describe.
 
-**Each version space moves on its own.** Core documents, regenerable documents, the bundle, the report
-(`REPORT_VERSION`) and the identity keys (`IDENTITY_VERSION`) carry separate versions. An upgrade never
-recomputes an identity key, so keys from different predicates never silently pool.
+**Each version space moves on its own.** Core documents (v14), regenerable documents (v9), the bundle shape
+(the bundle's `schema_version`, 50), the cell model (`CELL_MODEL_VERSION`, 12), the report (`REPORT_VERSION`, 9)
+and the identity keys (`IDENTITY_VERSION`, 24) carry separate versions, each at its first public release's value.
+An upgrade never recomputes an identity key, so keys from different predicates never silently pool.
 
 **Reads stay strict.** Every stored model refuses an unknown field and a missing required one. A core
 document written by a newer release is refused, never guessed at, so when two builds share one store,
-upgrade the older one. A core document from before the first release (below core v8) is refused too.
+upgrade the older one. A core document written before the first public release (below core v14) is refused
+too: its read fails validation on `schema_version`, with a message that names it a pre-release document and
+the baseline it is below. Pre-release documents are never read, so delete them (the operator wipe) rather than
+keep them beside released ones.
 A refused run stays as stored, and the boot reclaim (`sweep_abandoned_runs`) counts it `unreadable` rather than
 settling it. `runs_unreadable` (operation and action) names each stored run of the scope the current model refuses,
 of any status, with the fields it refused and why. The ones stored pending or running are marked stranded: they are

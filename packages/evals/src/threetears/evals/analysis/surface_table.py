@@ -616,8 +616,6 @@ def _merit_columns(
             if facts.merit_axis != axis or name not in present:
                 continue
             factor, unit = rulers[name]
-            # A measuring-spend measure stood here only on a surface frozen before it left the cost axis; it is
-            # labelled for what it is, never as what the arm costs.
             title = surface.measure_heading(name)
             header = f"{title} ({unit})" if unit else title
             columns.append((SurfaceColumn(kind="merit", measure_id=name, unit=unit, header=header, axis=axis), factor))

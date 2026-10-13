@@ -127,12 +127,9 @@ configured call records `<config id>@<sha12>`: the config's id and a fingerprint
 dimension's scale and artifact. A release that rewords the suffix makes every configured judge a new judge, as a
 new config version would, though no config changed. `judge_config_of` reads the config's id back from either form.
 
-A result stored before `v0.66.0-evaladopt.19` recorded nothing for a built-in dimension, and only the config's id
-for a configured one. Its judge reads as config `None` (a built-in prompt whose wording nobody recorded) or as the
-bare config id (a config sent a suffix nobody recorded). Each is kept apart from every judge recorded since, and
-pools only with other results of that era. Such a result is not re-judged or repeated, because whether today's
-prompt is the judge that scored it cannot be told. The same refusal applies to a result whose recorded identity is
-not today's. A second judge, a freeze into judge cases and a temperature comparison choose their own judge, so they are
+A result whose recorded judge identity is not today's (a release has reworded the built-in prompt or the suffix
+since it was judged) is not re-judged or repeated, because whether today's prompt is the judge that scored it cannot
+be told. A second judge, a freeze into judge cases and a temperature comparison choose their own judge, so they are
 unaffected.
 
 The built-in instructions also say where the judge's own memory stands. Facts the evidence shows the candidate got
@@ -193,7 +190,8 @@ key = label_key_of(evidence, rubric_dim)  # a JudgeEvidence, and a RubricDim or 
 labels = host.storage.query_calibration_ratings(scope_id, label_key=key)
 ```
 
-A score judged before the stamp has no key, and so does its rating. Such a rating is read by its result alone.
+A score no key was computed for (one restated from a judge trial) has none, and neither does a rating of it. Such a
+rating is read by its result alone.
 
 ## Step 6: read agreement: kappa
 
@@ -654,8 +652,7 @@ re-recorded or newly read changes the bundle's fingerprint.
 **A changed judge reads no profile.** A profile is found by an id derived from the whole judge and the criterion's
 wording. Change the model, the prompt (a new `JudgeConfig` version, or a release that rewords the built-in prompt
 or the reply-format suffix, whose recorded identity then changes), the temperature, or the rubric dimension's
-wording, and the campaign looks for a profile that does not exist. A profile measured on results stored before
-prompts were identified (config `None`, or a bare config id) is never read for a judge recorded since. The old one is stale and is never read for the
+wording, and the campaign looks for a profile that does not exist. The old one is stale and is never read for the
 new judge. The wording comes from the template each run was judged against. A run with no template, or whose
 template was edited after the run was created, has an unknown criterion and reads no profile.
 

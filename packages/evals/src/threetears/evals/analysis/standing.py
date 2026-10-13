@@ -11,10 +11,9 @@ finding's evidence tier from the readings it cites (:func:`~threetears.evals.ker
 - **evidence tier** — the weakest tier of every reading those findings cite.
 
 Derived on every read, never stored: the links are the writer's and are stored as written, and the tiers follow
-from them and the resolutions beside them. **An analysis stored before the links existed has none**, and reads
-``None`` here — "not recorded", which every surface says in words — never a tier guessed from its findings: which
-findings a headline summarized is exactly what such an analysis cannot say. The generator refuses a new analysis
-that leaves the links empty over findings, so an empty link beside findings can only mean that.
+from them and the resolutions beside them. The generator refuses an analysis that leaves the links empty over
+findings. A sentence resting on no finding — every one, over an analysis with none — reads ``None`` here: "not
+recorded", which every surface says in words, never a tier guessed from the findings.
 """
 
 from __future__ import annotations

@@ -970,8 +970,8 @@ def run_summary(
         group none of whose results watched for background work, the durations absent when no real
         delivery measured one, and the 95th percentile absent below 13 durations.
         ``measure_latency`` and ``cell_concurrency`` are the run's own record of whether its launch declared
-        latency under test and how many of its cells executed at once (None on a run stored before either was
-        recorded, whose cells executed one at a time); ``latency_disclosure`` is the line to render beside the
+        latency under test and how many of its cells executed at once (``measure_latency`` None on a run its host
+        assembled without a launch, which declared nothing); ``latency_disclosure`` is the line to render beside the
         latency keys when any of them was read under concurrency (the results' ``execution_mode``), null
         otherwise — the figures describe this run as it ran and are never compared with another run's.
         ``model_identity_disclosure`` is the sentence to render beside the ``model`` the rows name when some of

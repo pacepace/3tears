@@ -444,8 +444,8 @@ class CampaignDesign(EvalDocumentModel):
         default_factory=list,
         description=(
             "The margin of each judged guardrail (a boundary rubric dimension) this campaign decides, one per "
-            "dimension. Empty = none declared, and every judged guardrail is held at zero change, as it was before "
-            "this field existed. A measure's margin is its descriptor's `materiality_threshold`, never declared here."
+            "dimension. Empty = none declared, and every judged guardrail is held at zero change. A measure's "
+            "margin is its descriptor's `materiality_threshold`, never declared here."
         ),
     )
     control: str | None = Field(
@@ -495,8 +495,7 @@ class CampaignDesign(EvalDocumentModel):
             "Which combinations of the declared levels (cells) this design meant to run. full = every combination; "
             "star = the centre (each axis's FIRST declared level) and every cell differing from it on one axis "
             "only, the rest skipped by design. None = the design says nothing about combinations, and no cell is "
-            "read as skipped or missing, as before this field existed (unless skipped_cells names some, which then "
-            "reads as full less those)."
+            "read as skipped or missing (unless skipped_cells names some, which then reads as full less those)."
         ),
     )
     skipped_cells: list[dict[str, str]] = Field(
@@ -513,10 +512,9 @@ class CampaignDesign(EvalDocumentModel):
             "Whether latency is under test in this campaign — the declaration a bar, a question or a ranking on "
             "latency needs (#701). Its runs must then be launched with `measure_latency=True`, which executes their "
             "cells one at a time with nothing beside them; latency a run read under concurrency is withheld from "
-            "every reading, and the bundle says which. False (the default, and what a campaign stored before the "
-            "field reads as): latency is not what this campaign asks about, so a bar on a latency measure, a "
-            "question naming the latency axis or `latency` in `merit_priority` is refused when the design is "
-            "declared."
+            "every reading, and the bundle says which. False (the default): latency is not what this campaign asks "
+            "about, so a bar on a latency measure, a question naming the latency axis or `latency` in "
+            "`merit_priority` is refused when the design is declared."
         ),
     )
     declared_at: str = Field(default_factory=utc_now_iso, description="When the declaration was made (ISO-8601).")

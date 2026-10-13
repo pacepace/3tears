@@ -717,7 +717,7 @@ class CassetteStore(Protocol):
 
 
 class EvalStorage:
-    """Storage for v1-shape eval documents over one document store.
+    """Storage for eval documents over one document store.
 
     Load paths go through each model's own ``from_dict``, which validates exactly as construction
     does: a stored document with a field the model does not declare, without one it requires, or
@@ -2089,8 +2089,7 @@ class EvalStorage:
         delete's outcome means. ``save_eval_result`` stamps the marker when the cell produced
         a trace, so it is the stored record of whether a trace document should be there:
 
-        - ``has_trace`` false (or a document predating the marker, which reads as
-          false): no trace was written, a trace delete that removes nothing is the
+        - ``has_trace`` false: no trace was written, a trace delete that removes nothing is the
           expected case, and the result is deleted as before.
         - ``has_trace`` true and the trace delete removed nothing: the trace is read
           back. Still there means the delete did not take, and deleting the result

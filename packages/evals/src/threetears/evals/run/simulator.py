@@ -159,12 +159,9 @@ SIMULATOR_MAX_TOKENS = SIMULATOR_REASONING_ALLOWANCE_TOKENS + SIMULATOR_ANSWER_B
 #: the simulated user's client, and what a run launched with a simulated user records as
 #: ``simulator_request_settings``. Recorded on the run for the reason
 #: :data:`threetears.evals.run.judge.JUDGE_REQUEST_SETTINGS` is — moving it changes the conversation
-#: every later candidate is handed, with ``simulator_model`` unchanged. The setting has moved twice:
-#: runs launched before the first move record a flat 4096-token cap with no reasoning parameter,
-#: runs between the two record a 1024-token reasoning budget under a 5120 cap, and runs after record
-#: this effort level. The three stamps differ, so the ``simulator_request_settings`` apparatus
-#: dimension tells a campaign pooling runs from either side of either move that its simulated user
-#: was asked differently.
+#: every later candidate is handed, with ``simulator_model`` unchanged. A move changes the stamp, so the
+#: ``simulator_request_settings`` apparatus dimension tells a campaign pooling runs from either side of it
+#: that its simulated user was asked differently.
 SIMULATOR_REQUEST_SETTINGS = ClientRequestSettings(
     max_tokens=SIMULATOR_MAX_TOKENS,
     reasoning_effort=SIMULATOR_REASONING_EFFORT,

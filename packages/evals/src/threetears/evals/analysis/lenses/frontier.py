@@ -381,8 +381,7 @@ class FrontierPoint(EvalBaseModel):
     pass_hat_k_curve: list[PassHatPoint] = []
     #: The interval on ``pass_hat_k`` at :data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL`, over its
     #: cases (:func:`~threetears.evals.analysis.stats.case_rate_interval`): the cases are the draws, and each
-    #: case's own estimate is noisy too. ``None`` below two cases, where none is estimable, and on a point
-    #: stored before pass^k carried one.
+    #: case's own estimate is noisy too. ``None`` below two cases, where none is estimable.
     pass_hat_k_ci_low: float | None = None
     #: The high end of that interval; ``None`` exactly when ``pass_hat_k_ci_low`` is.
     pass_hat_k_ci_high: float | None = None
@@ -407,8 +406,7 @@ class FrontierPoint(EvalBaseModel):
     composite_sem: float | None = None
     n_composite_cases: int = 0
     #: What ``mean_composite`` was meaned over (:func:`pooled_composite_basis`), ``ragged`` when this point's
-    #: results were scored on different dimension sets (#638). ``None`` when no composite was pooled, and on a
-    #: point stored before the basis was carried — which says nothing about whether that pool was ragged.
+    #: results were scored on different dimension sets (#638). ``None`` when no composite was pooled.
     composite_basis: CompositeBasis | None = None
 
     # Cost — production-replicating only. ``None`` (never 0) when no
@@ -435,7 +433,7 @@ class FrontierPoint(EvalBaseModel):
     #: What the runs behind ``production_replicating_cost`` set away from the subject's production configuration
     #: (#571), each run's own footing read off the host's sweepable declarations: the cost is what production would
     #: spend only where no run moved anything (``moved_nothing``). ``None`` when the frontier was computed without
-    #: the host's declarations, and on a point stored before it was read — nobody checked, never "nothing moved".
+    #: the host's declarations — nobody checked, never "nothing moved".
     production_footing: PooledProductionFooting | None = None
 
     # Latency — total wall-clock ms, the performance axis. Mean over the turns the candidate took
@@ -558,8 +556,7 @@ class FrontierVerdict(EvalBaseModel):
     pass_hat_k: float
     #: The depth ``pass_hat_k`` was read at — the subject's, the same as every point's.
     k: int = 1
-    #: The interval the bar was decided on (:attr:`FrontierPoint.pass_hat_k_ci_low`). ``None`` only on a
-    #: verdict stored before the bar read intervals: that one compared the point pass^k with the bar.
+    #: The interval the bar was decided on (:attr:`FrontierPoint.pass_hat_k_ci_low`).
     pass_hat_k_ci_low: float | None = None
     pass_hat_k_ci_high: float | None = None
     production_replicating_cost: float | None = None
@@ -593,8 +590,7 @@ class FrontierVerdict(EvalBaseModel):
     #: cheapest is among the pick and :attr:`tied_with`, and the verdict names that set rather than a winner;
     #: ``untested`` — no test against any rival left in the set could decide (too few priced cases, or every
     #: case differing by one amount over too few cases for the exact test to reach α); ``only_cleared`` — no
-    #: other contestant cleared the bar with a cost. ``None`` on a verdict stored before the pick was tested:
-    #: that one was the lowest point cost, a winner the data may not have shown.
+    #: other contestant cleared the bar with a cost.
     cost_decision: FrontierCostDecision | None = None
     #: The rivals the pick was not shown cheaper than, ordered by point cost. Empty when ``cost_decision``
     #: is ``shown_cheapest`` or ``only_cleared``.
@@ -606,7 +602,7 @@ class FrontierVerdict(EvalBaseModel):
     #: The evidence tier the pass^k the bar was read on stands on, where a judge scored the criteria it conjoins:
     #: the weakest tier among the judges that served the pick's capability scores (the tier every judged reading
     #: carries, #679). ``undetermined`` where nothing measured them; None where no judge scored any of the pick's
-    #: criteria — a pass^k over goal checks alone — and on a verdict stored before it was recorded.
+    #: criteria — a pass^k over goal checks alone.
     judge_evidence_tier: JudgedEvidenceTier | None = None
 
 
@@ -663,8 +659,6 @@ class FrontierResult(EvalDocumentModel):
     #: The 1–5 level a capability criterion had to reach for an attempt to pass, in every pass^k here
     #: (#642): the behavior's declared threshold
     #: (:meth:`~threetears.evals.kernel.host.BarRegistry.pass_threshold`) where the caller had one, else 3.
-    #: A frontier stored before this was recorded defaults to 3, which is the threshold every pass^k was
-    #: computed at then.
     rubric_threshold: int = 3
     subjects: list[SubjectFrontier] = []
     n_results: int = 0
@@ -799,16 +793,11 @@ def _frontier_point(
     # cost — production-replicating roles only, meaned over the results that
     # reported one. None when none did; partial when some did and some did not.
     # Reads the RAW persisted `usage` where the run-summary aggregate reads
-    # `resolve_result_usage`. The two once answered differently — a result whose
-    # decomposition could be reconstructed at read counted toward that denominator and not
-    # this one — which is why this site was deliberately left divergent: this is the surface
-    # that RANKS contestants, and moving it was a ranking decision rather than a reporting
-    # one. That reconstruction no longer exists, and with it gone the resolver returns rows
-    # this call cannot distinguish from the raw field: identical on `captured`, `None` on
-    # both sides when nothing was observed, and an empty list on a cancelled cell, which
-    # sums to `None` exactly as the absent field does. So the two agree here in every case,
-    # and reading the raw field is no longer a divergence to justify — it is the shorter way
-    # to the same number. Aligning the call sites would be tidying, not a fix.
+    # `resolve_result_usage`. The resolver returns rows this call cannot distinguish from
+    # the raw field: identical on `captured`, `None` on both sides when nothing was
+    # observed, and an empty list on a cancelled cell, which sums to `None` exactly as the
+    # absent field does. So the two agree here in every case, and reading the raw field is
+    # the shorter way to the same number. Aligning the call sites would be tidying, not a fix.
     #
     # The substitution disclosure is NOT part of that divergence and is read per result
     # regardless: a seeded or replayed delivery spent neither inner-agent dollars nor

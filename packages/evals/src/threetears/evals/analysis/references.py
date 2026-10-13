@@ -87,8 +87,7 @@ class ResolvedReading(BaseModel):
     #: A judged reading's evidence tier, as the surface froze it for the cell's judges; None for a measure.
     judged_tier: JudgedEvidenceTier | None
     #: Each case's mean, ascending, where the cell has fewer cases than a chart draws a band from
-    #: (:data:`~threetears.evals.analysis.stats.SMALL_N_BAND_FLOOR`); None at or above it, or where the surface
-    #: was stored before the values were recorded.
+    #: (:data:`~threetears.evals.analysis.stats.SMALL_N_BAND_FLOOR`); None at or above it.
     case_means: list[float] | None = None
 
 

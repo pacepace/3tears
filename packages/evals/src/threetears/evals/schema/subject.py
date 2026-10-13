@@ -2,12 +2,10 @@
 
 An eval run has a **subject** — the thing under test whose identity decides what may be pooled
 with what. One host's subject is a conversational agent; another's is a retrieval configuration,
-a scrape recipe, or a model release. The engine once read the subject through a host-shaped
-snapshot field, a required field carrying the first host's prose fields and catalogue, with a
-live round-trip contract against that host's running component. Every consumer that wanted
-"which subject was this" reached through that host's concept to get it.
+a scrape recipe, or a model release. So the engine reads the subject through no host's concept:
+a consumer asking "which subject was this" reads this snapshot, whatever the host.
 
-Two rules shape what replaced it.
+Two rules shape it.
 
 **The snapshot holds identity, never content.** :attr:`SubjectSnapshot.components` maps a
 host-registered name to a :class:`~threetears.evals.schema.values.SweepableValue`, which carries a

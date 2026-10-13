@@ -1069,9 +1069,8 @@ def _reject_unrested_summary(document: AuthoredAnalysis) -> None:
     (:mod:`threetears.evals.analysis.standing`), and checks a null claim there against those findings
     (:func:`_reject_unestablished_nulls`), so each must name them: ``headline_rests_on``, and one
     ``summary_rests_on`` entry per bullet as :func:`~threetears.evals.kernel.authored.summary_bullets` splits the
-    summary. Over findings, an empty link is refused — a stored empty link then means only "stored before the link
-    existed" — and over none, there is nothing to name. A position past the findings is refused here rather than by
-    the stored model, so the refusal can say which sentence it was.
+    summary. Over findings, an empty link is refused, and over none, there is nothing to name. A position past the
+    findings is refused here rather than by the stored model, so the refusal can say which sentence it was.
 
     Raises:
         SoundnessRefusal: A link is missing, empty over findings, the wrong count, or names a position past them.

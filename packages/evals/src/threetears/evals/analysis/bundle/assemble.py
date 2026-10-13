@@ -738,7 +738,7 @@ def _as_launched(runs: Sequence[EvalRun], profile: HostProfile) -> tuple[HostPro
     declaration declared alike is read on that declaration, whatever the reading host says; a difference from the
     reader's is named. Runs launched under different declarations of one measure have no one declaration to read:
     the measure keeps the reader's, with no margin read on it (no comparison on it can read ``equivalent``), and
-    that is named too. Runs that recorded none (stored before launches recorded them) are read on the reader's.
+    that is named too. Runs that recorded none (runs their host assembled without a launch) are read on the reader's.
 
     Args:
         runs: The resolved member runs.

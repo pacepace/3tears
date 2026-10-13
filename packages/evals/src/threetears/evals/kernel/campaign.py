@@ -522,8 +522,8 @@ class EvidenceRow(EvalDocumentModel):
         ge=0,
         description=(
             "Distinct test cases behind the value, filled by code: the independent draws its interval is read "
-            "over, and the count a reader is shown. None on an analysis stored before it, read as not recorded "
-            "(never as `n`, which counts observations)."
+            "over, and the count a reader is shown. None when the summary behind it counted no distinct case, read "
+            "as not recorded (never as `n`, which counts observations)."
         ),
     )
     dispersion: str = Field(description="Spread of the value, filled by code.")

@@ -249,9 +249,7 @@ def _summary_blocks(analysis: EvalAnalysis) -> list[ReportBlock]:
 
     The headline block leads, carrying the headline as written, its ``rests_on`` and the weakest confidence and
     evidence of those findings (:mod:`threetears.evals.analysis.standing`) — the caveat slot a headline lacked, written
-    by code. The summary follows as one block per bullet, each with its own. An analysis stored before the headline
-    and bullets named their findings keeps its summary as one block, and its headline block says the standing was
-    not recorded rather than guessing one.
+    by code. The summary follows as one block per bullet, each with its own.
 
     Args:
         analysis: The analysis.
@@ -375,7 +373,7 @@ def _unproven_check_sentence(proof: GoalCheckProofReading) -> str:
         else "no control shows it tells acting from doing nothing"
     )
     if proof.unrecorded:
-        why += f" ({proof.unrecorded} of {proof.runs} run(s) launched before proofs were recorded)"
+        why += f" ({proof.unrecorded} of {proof.runs} run(s) recorded no proof, assembled without a launch)"
     if proof.stale:
         why += f" ({proof.stale} of {proof.runs} run(s) recorded it proven under an earlier proof rule; relaunch to re-prove)"
     return (
@@ -563,7 +561,7 @@ def _guardrail_standing(cells: Sequence[str], surface: DecisionSurface, arm: Cal
     """What an adopted decision's arms leave not held among the guardrails, in words; None when every one held.
 
     Stated by code on the decision, so an arm recommended over an undecided guardrail cannot be read as
-    shown safe. None too on a surface frozen before guardrails were decided, which says nothing either way.
+    shown safe. None too on a slice of a surface (one time position), which decides no guardrail of its own.
     """
     guardrails = surface.guardrails
     if guardrails is None:
@@ -967,7 +965,7 @@ def _strata_blocks(surface: DecisionSurface, variant_index: Sequence[VariantInde
 
     Returns:
         The table and its disclosure, or no block at all for a surface none of whose cells has strata — a
-        campaign whose cases declare no stratum reads exactly as it did before strata existed.
+        campaign whose cases declare no stratum reads with no strata table at all.
     """
     control = surface.control_variant_key
     cells = surface_order(

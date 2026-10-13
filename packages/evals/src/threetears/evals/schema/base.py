@@ -303,7 +303,7 @@ class CoreDocumentModel(EvalDocumentModel):
     number at all) is raised as a ``ValidationError`` on ``schema_version``, so every caller that
     isolates an unreadable stored document already isolates it.
 
-    Every other path is strict as before: constructing a core document, or validating a payload,
+    Every other path stays strict: constructing a core document, or validating a payload,
     at any version but the current one is refused by the ``schema_version`` field itself.
     """
 

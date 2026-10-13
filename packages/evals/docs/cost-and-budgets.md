@@ -85,15 +85,15 @@ the cell timeout, plus a margin, clamped between a floor and an 8-hour cap). Whe
 `budget_stopped` too, not `failed`: like the cost cap, it is a bound someone set doing its job, and the
 results already delivered are kept and counted in the run's completeness record. `budget_stop_reason` tells
 the two apart (a clock stop's reason opens with `wall-clock budget`), and `error_details` stays empty,
-because that list counts faults. A run stopped by its clock under 0.66.0 or earlier stays stored `failed`
-(`Job timed out after Ns`).
+because that list counts faults.
 
 **The cell deadline.** Each cell runs under a deadline: the kind's own (its launcher's
 `KindWiring.cell_timeout_s`, else 600 s). A cell that outlives it is excluded as `cell_timeout`. A launch can
 name `cell_timeout_s` for a long-horizon run, up to the host's `LaunchSettings.max_cell_timeout_s`. A host that
 declares no ceiling lets a launch only lower the kind's deadline. The job's wall-clock budget is sized from
 the deadline in force. The run records it as `cell_timeout_s`, with `cell_timeout_s_origin` (`launch`, `kind`
-or `default`). A run stored before 0.66.0 records neither, and its deadline reads as unknown.
+or `default`). A run its host assembled without a launch records neither, and its deadline reads as unknown,
+never as today's default.
 
 **Wall time.** A run executes its cells (case × repeat) in a shuffled order, several at once: as many as its
 kind declares it is safe at (`CandidateKind.max_concurrent_cells`, handed to the launch as
@@ -307,8 +307,7 @@ asked for, and its summary says which model answered is unconfirmed
 **Every surface that states what an arm costs reads `production_replicating_cost`**, the spend of the roles
 production runs: the contrasts, each decision-surface cell, its cost column and a frontier's cost axis (which
 refuses `cost_usd`). `cost_usd` and `program_cost` also sum what a judge spent, which is measuring cost: never
-tested between arms, and labelled measuring spend wherever drawn. An analysis stored before cells carried the
-candidate's spend shows its frozen `cost_usd` column under that label.
+tested between arms, and labelled measuring spend wherever drawn.
 
 **What an arm costs and what the program spent count different results.** A comparison cost — the
 candidate's own spend, `production_replicating_cost`, and every mean of it (`mean_prod_cost_usd` in a run
@@ -331,9 +330,9 @@ the inputs `held`; only an empty `moved` and an empty `unchecked` say the cost w
 configuration. A lever with no `departs_production` reader is read by the engine's rule: unset is the
 subject's own setting, a value is unchecked, so a lever you declare reaches the disclosure with nothing
 else edited. Declare `departs_production` on a lever to decide its value against production, and on an
-apparatus input that moves the candidate off its production footing. A run launched before the candidate
-model's origin was recorded reads its model as unchecked; a summary assembled before the disclosure
-carries `None`, "nobody checked".
+apparatus input that moves the candidate off its production footing. A run whose writer recorded no
+origin for the candidate model (a run its host assembled without a launch) reads its model as unchecked; a
+summary built from a run read without its host payload carries `None`, "nobody checked".
 
 A cost pooled over runs carries every run's footing (`PooledProductionFooting`, run id to footing), and says
 where the runs ran at different footings rather than merging them: a frontier point's cost axis and its

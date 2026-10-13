@@ -1,9 +1,9 @@
 """How a number is spelled for a reader — the one rule the analysis surfaces share (arm table, decision surface, reference resolver, chart compiler).
 
 A leaf on purpose: the arm table, the decision-surface table, the reference resolver, the chart
-compiler and the MCP renders all state numbers from one analysis, often on one line, and each of
-them used to reach for whichever formatter was nearest. Two formatters meant one analysis spelled
-a latency ``1.235e+04`` in its value column and ``12,346`` in the interval beside it. Anything that
+compiler and the MCP renders all state numbers from one analysis, often on one line. Two formatters
+would spell one analysis's latency ``1.235e+04`` in its value column and ``12,346`` in the interval
+beside it. Anything that
 shows a reader a number imports it from here, and nothing here imports anything of the engine's.
 Over the trees listed in ``_SPELLING_TREES`` in ``tests/test_numbers.py``,
 that is checked from the source by that test, which names each deliberate fixed spelling it allows — such as a

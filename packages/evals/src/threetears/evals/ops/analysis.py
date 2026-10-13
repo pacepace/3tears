@@ -175,7 +175,7 @@ class AnalysisLine(EvalBaseModel):
     headline_standing: str = Field(
         description=(
             "What the headline stands on, in words: the weakest confidence and evidence of the findings it rests on, "
-            "and which those are; or that it was not recorded, for an analysis stored before the headline named them."
+            "and which those are."
         )
     )
     generator_model: str
