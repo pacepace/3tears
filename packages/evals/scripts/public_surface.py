@@ -551,6 +551,10 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.schema.ProviderFailureDescriber",
         "threetears.evals.schema.CompletionClient",
         "threetears.evals.schema.CompletionResult",
+        # The five words a host's own client maps its provider's finish reason onto, and the role names that key
+        # `CompletionClients` and the shipped factory's `defaults=`.
+        "threetears.evals.schema.StopReason",
+        "threetears.evals.kernel.host.CompletionRole",
         "threetears.evals.schema.TraceSink",
         # The registries a profile holds: the host's vocabulary of levers, measures, bars and world.
         "threetears.evals.kernel.host.SHARED_CORE",
@@ -619,6 +623,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # Recorded completions in CI is a pattern a host uses: record its real client once, replay it in its suite.
         "threetears.evals.testing.RecordedCompletions",
         "threetears.evals.testing.RecordedPrompt",
+        # What the recorder raises on a replay miss or a recording it cannot read, which a host's suite catches.
+        "threetears.evals.testing.RecordingRefused",
         # The request settings a recording is matched on, required by `record` and `replay`, and the judge's own
         # value a host passes for its judge client: a host cannot call the recorder without naming one.
         "threetears.evals.schema.ClientRequestSettings",
@@ -713,6 +719,10 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.providers.models_client",
         "threetears.evals.providers.models_clients",
         "threetears.evals.providers.ModelsFailureDescriber",
+        # The factory's own type, whose `aclose_all()` a host calls at shutdown, and the adapter's refusal of a
+        # setting it cannot carry, a role with no model or a provider with no key, which a host catches.
+        "threetears.evals.providers.ModelsClients",
+        "threetears.evals.providers.ModelsClientRefused",
     }
 )
 

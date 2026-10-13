@@ -188,7 +188,9 @@ def _probe(source: str) -> subprocess.CompletedProcess[str]:
         [sys.executable, "-c", source],
         capture_output=True,
         text=True,
-        timeout=60,
+        # A guard against a hung interpreter, not a speed bound: importing every root loads the provider
+        # adapter's LangChain stack too, and on a loaded machine that alone ran past a minute.
+        timeout=300,
         cwd=REPO_ROOT,
         check=False,
     )

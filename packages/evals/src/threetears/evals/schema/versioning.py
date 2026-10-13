@@ -74,7 +74,8 @@ field, a new member of a closed vocabulary, any change to what a stored value me
   The tolerance has a floor, the build that introduced the minor (``v0.66.0-evaladopt.22``): a build before it
   declares no ``schema_minor`` (nor ``CampaignDesign.control_levers``) and forbids every field it does not
   declare, so it refuses every core document a build from that one on writes, though the major is 14 for both.
-  A fleet rolls back no further than that build.
+  A fleet rolls back no further than that build, and no further than ``v0.67.0-evaladopt.24`` once any document
+  carries ``stop_reason="truncated"``, which the v14 baseline gained before its release (``StopReason``, below).
 - *Its major is older:* upgraded through :data:`CORE_UPGRADERS` to this build's shape at this build's minor; a
   field the chain left behind is refused.
 - *Its major is newer, below* :data:`CORE_BASELINE_VERSION`*, or not an integer, or its minor is not a whole
@@ -141,7 +142,10 @@ the document, so extending one is a major. Each, and why:
 - ``OutOfRunOutcome`` — binary and complete.
 - ``SecondJudgeAskedBy`` — an unknown asker's pass would be pooled into the wrong agreement.
 - ``StopReason`` — the normalized provider contract, which already has a catch-all for output cut short by a
-  cause it does not name (``truncated``), kept apart from a call that failed (``error``).
+  cause it does not name (``truncated``), kept apart from a call that failed (``error``). ``truncated`` joined the
+  v14 baseline in ``v0.67.0-evaladopt.24``, with no new version since the baseline was unreleased: ``.22`` and
+  ``.23`` read and write v14.0 with four words and refuse an out-of-run spend document carrying it, so once any
+  document does, a fleet rolls back no further than ``.24``.
 - Every ``doc_type`` — a new type is a new model, never a new value.
 
 **A minor's ledger entry asserts its additivity in words**, and review holds it there, because a schema diff
