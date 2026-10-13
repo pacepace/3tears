@@ -10,6 +10,9 @@ tools an agent corrects and retires its own memories with:
 - :func:`correct_beside` writes the new memory and links it to the ones it
   corrects without replacing them: how a correction to a permanent memory is
   kept next to it.
+- :func:`write_once` writes a new memory and, when a memory from the same
+  turn or the one before already says nearly the same thing, replaces that
+  one with it: one event is stored once, whichever writers wrote it.
 - :func:`retract` takes a memory out of recall without a replacement: it is
   tagged retracted, with why, which every search, dedup and dream skips, and
   its salience goes to the bottom. It stays recallable by id, and
@@ -28,9 +31,10 @@ Nothing here deletes a row.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
 from uuid_utils import uuid7
@@ -45,13 +49,16 @@ __all__ = [
     "RETRACTED_BECAUSE_PREFIX",
     "RETRACTED_SALIENCE_PREFIX",
     "RETRACTED_TAG",
+    "SAME_EVENT_RATIONALE",
     "MemoryMarks",
+    "Written",
     "correct_beside",
     "is_permanent",
     "marks_of",
     "restore",
     "retract",
     "supersede",
+    "write_once",
 ]
 
 log = get_logger(__name__)
@@ -63,6 +70,8 @@ RETRACTED_BECAUSE_PREFIX = "retracted_because:"
 #: The tag that carries what the memory's salience was, so a restore puts it back.
 RETRACTED_SALIENCE_PREFIX = "retracted_salience:"
 _BECAUSE = RETRACTED_BECAUSE_PREFIX
+#: Why a memory was replaced by :func:`write_once`, kept on the edge.
+SAME_EVENT_RATIONALE = "the same event, written again in the same turn or the next"
 
 
 def is_permanent(memory: MemoryEntity | dict[str, Any] | None) -> bool:
@@ -222,6 +231,104 @@ async def supersede(
     )
     await memories.mark_superseded(agent_id, source_memory_ids=source_ids, gist_id=new_id)
     return new_id
+
+
+@dataclass(frozen=True)
+class Written:
+    """What :func:`write_once` did.
+
+    :ivar memory_id: the memory written, or ``None`` when nothing was
+    :ivar replaced: the earlier writes of the same event it replaced, as
+        :meth:`MemoriesCollection.find_same_event` returned them
+    :ivar standing: a permanent earlier write of the same event, left as it is
+    """
+
+    memory_id: UUID | None
+    replaced: tuple[dict[str, Any], ...] = ()
+    standing: dict[str, Any] | None = None
+
+
+async def write_once(
+    memories: MemoriesCollection,
+    consolidations: MemoryConsolidationsCollection | None,
+    *,
+    agent_id: UUID,
+    fields: dict[str, Any],
+    near_message_ids: Sequence[UUID] = (),
+    threshold: float | None = None,
+    when_permanent: Literal["beside", "skip"] = "beside",
+) -> Written:
+    """Write a new memory, replacing an earlier write of the same event from this turn or the one before.
+
+    The one place a new memory is written by the writers that can each write
+    the same event: extraction after a turn, and the agent's own ``memory_add``.
+    One event was stored three and four times in a few minutes (extraction,
+    then the agent's own save, then extraction again), each a separate memory.
+
+    "The same event" is two things together: the earlier memory's source
+    message is one of ``near_message_ids``, and it is at least ``threshold``
+    like the new one. Both, because either alone is wrong: two facts from one
+    turn are two memories, and two memories from different months that read
+    alike may be two events.
+
+    The new write replaces the earlier ones through :func:`supersede`, so they
+    stay readable by id and the edge says why. A permanent earlier write is
+    never replaced: with ``when_permanent="skip"`` the new one is not written
+    (the permanent one already says it), and with ``"beside"`` it is written
+    beside it.
+
+    With no ``threshold``, no ``near_message_ids`` or no edges collection the
+    rule is off and this is a plain write.
+
+    :param memories: the memories collection
+    :ptype memories: MemoriesCollection
+    :param consolidations: the provenance edges collection; ``None`` turns the rule off
+    :ptype consolidations: MemoryConsolidationsCollection | None
+    :param agent_id: the partition
+    :ptype agent_id: UUID
+    :param fields: the new memory's columns, as :func:`supersede` takes them;
+        ``user_id`` and ``embedding`` are read for the search
+    :ptype fields: dict[str, Any]
+    :param near_message_ids: the source messages of this turn and the one before it
+    :ptype near_message_ids: Sequence[UUID]
+    :param threshold: the cosine similarity at which two such memories are one event
+    :ptype threshold: float | None
+    :param when_permanent: what a permanent earlier write of the event means for the new one
+    :ptype when_permanent: Literal["beside", "skip"]
+    :return: what was written, replaced and left standing
+    :rtype: Written
+    """
+    same: list[dict[str, Any]] = []
+    if threshold is not None and near_message_ids and consolidations is not None and fields.get("embedding"):
+        same = await memories.find_same_event(
+            user_id=fields["user_id"],
+            agent_id=agent_id,
+            embedding=fields["embedding"],
+            message_ids=list(near_message_ids),
+            threshold=threshold,
+        )
+    standing = next((row for row in same if row["evergreen"]), None)
+    replaceable = [row for row in same if not row["evergreen"]]
+    if standing is not None and when_permanent == "skip":
+        return Written(memory_id=None, standing=standing)
+    if replaceable:
+        assert consolidations is not None  # ``same`` is empty without it
+        new_id = await supersede(
+            memories,
+            consolidations,
+            agent_id=agent_id,
+            source_ids=[row["memory_id"] for row in replaceable],
+            fields=fields,
+            rationale=SAME_EVENT_RATIONALE,
+        )
+        return Written(memory_id=new_id, replaced=tuple(replaceable), standing=standing)
+    new_id = UUID(str(uuid7()))
+    now = datetime.now(UTC)
+    entity = memories.create(
+        {**fields, "memory_id": new_id, "agent_id": agent_id, "date_created": now, "date_updated": now}
+    )
+    await memories.save_entity(entity)
+    return Written(memory_id=new_id, standing=standing)
 
 
 async def correct_beside(

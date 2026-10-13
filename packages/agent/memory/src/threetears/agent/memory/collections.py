@@ -422,6 +422,57 @@ def _admit_and_rank(
     return admitted
 
 
+#: What a candidate scored on this query alone, kept on the row for
+#: :func:`_cap_recent` and stripped before rows reach a caller.
+_EVIDENCE_KEY = "_evidence"
+
+
+def _cap_recent(
+    ranked: list[dict[str, Any]],
+    *,
+    top_k: int,
+    recent_cap: int | None,
+    recent_window_hours: float,
+) -> list[dict[str, Any]]:
+    """The top ``top_k`` of ``ranked``, holding at most ``recent_cap`` memories written inside the window.
+
+    The composite ranks: its order is kept. What the cap decides is which
+    recent memories may be in the list at all, and it decides that on evidence
+    that the memory answers this query (semantic and keyword), never on how new
+    it is. Chosen by the composite, the capped places go to whatever was
+    written last, and a five-day-old memory that answers the message exactly
+    loses its place to three from this morning that barely touch it.
+
+    A memory older than the window is never dropped here, and with fewer
+    recent candidates than the cap nothing is.
+
+    :param ranked: admitted candidates, best composite first, each carrying
+        ``date_created`` and the private evidence score
+    :ptype ranked: list[dict[str, Any]]
+    :param top_k: how many to return
+    :ptype top_k: int
+    :param recent_cap: the most recent memories allowed; ``None`` is no cap
+    :ptype recent_cap: int | None
+    :param recent_window_hours: how old a memory may be and still count as recent
+    :ptype recent_window_hours: float
+    :return: the list, best composite first
+    :rtype: list[dict[str, Any]]
+    """
+    kept = ranked
+    if recent_cap is not None:
+        now = datetime.now(UTC)
+        recent = [c for c in ranked if (now - c["date_created"]).total_seconds() / 3600 <= recent_window_hours]
+        if len(recent) > recent_cap:
+            # stable: among equal evidence the better composite keeps its place
+            allowed = sorted(recent, key=lambda c: c.get(_EVIDENCE_KEY, 0.0), reverse=True)[: max(recent_cap, 0)]
+            allowed_ids = {id(c) for c in allowed}
+            recent_ids = {id(c) for c in recent}
+            kept = [c for c in ranked if id(c) not in recent_ids or id(c) in allowed_ids]
+    for c in ranked:
+        c.pop(_EVIDENCE_KEY, None)
+    return kept[:top_k]
+
+
 def _chunk_row_to_dict(row: Any, score_key: str, score_value: float) -> dict[str, Any]:
     """shape a single chunk SQL row into the canonical result dict.
 
@@ -1190,6 +1241,77 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             if float(row["similarity"]) >= threshold
         ]
 
+    async def find_same_event(
+        self,
+        *,
+        user_id: UUID,
+        agent_id: UUID,
+        embedding: list[float],
+        message_ids: list[UUID],
+        threshold: float,
+        top_k: int = 5,
+    ) -> list[dict[str, Any]]:
+        """the stored memories that came from these source messages and say nearly what ``embedding`` says.
+
+        How a writer finds the first write of an event it is about to write
+        again: the memories whose ``message_id_source`` is one of
+        ``message_ids`` (this turn's message and the one before it), nearest
+        first, at or above ``threshold``. Retracted memories and ones a live
+        replacement stands in for are not candidates, as in
+        :meth:`find_similar_for_dedup`. Permanent ones are returned and marked
+        ``evergreen``: the caller decides what a permanent first write means.
+
+        :param user_id: owning user UUID (row filter)
+        :ptype user_id: UUID
+        :param agent_id: partition column on memories; required
+        :ptype agent_id: UUID
+        :param embedding: the new memory's embedding
+        :ptype embedding: list[float]
+        :param message_ids: the source messages that count as the same turn or the one before
+        :ptype message_ids: list[UUID]
+        :param threshold: minimum cosine similarity
+        :ptype threshold: float
+        :param top_k: the most to return
+        :ptype top_k: int
+        :return: ``{memory_id, content, type_memory, evergreen, date_created, similarity}``, nearest first
+        :rtype: list[dict[str, Any]]
+        """
+        if self.l3_pool is None or not message_ids:
+            return []
+        # cache-bypass: vector-distance search, as find_similar_for_dedup.
+        rows = await self.l3_pool.fetch(
+            f"""
+            SELECT memory_id, content, type_memory, evergreen, date_created,
+                   1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
+            FROM memories
+            WHERE agent_id = $2 AND user_id = $3 AND embedding IS NOT NULL
+              AND message_id_source = ANY($4::uuid[])
+              AND (superseded_by IS NULL OR NOT EXISTS (
+                    SELECT 1 FROM memories g
+                    WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
+              AND {_NOT_RETRACTED}
+            ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
+            LIMIT $5
+            """,
+            json.dumps(embedding),
+            agent_id,
+            user_id,
+            message_ids,
+            top_k,
+        )
+        return [
+            {
+                "memory_id": _as_pk_uuid(row["memory_id"]),
+                "content": row["content"],
+                "type_memory": row["type_memory"],
+                "evergreen": bool(row["evergreen"]),
+                "date_created": row["date_created"],
+                "similarity": float(row["similarity"]),
+            }
+            for row in rows
+            if float(row["similarity"]) >= threshold
+        ]
+
     async def find_by_alias(
         self,
         *,
@@ -1238,6 +1360,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         date_after: datetime | None = None,
         date_before: datetime | None = None,
         scope: RetrievalScope | None = None,
+        recent_cap: int | None = None,
+        recent_window_hours: float = 168.0,
     ) -> list[dict[str, Any]]:
         """parallel vector + FTS hybrid search across the memories table.
 
@@ -1290,6 +1414,14 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             today's behaviour, an empty allow-list or tag tuple returns
             ``[]`` (fail-closed, never fail-open)
         :ptype scope: RetrievalScope | None
+        :param recent_cap: at most this many of the returned memories were
+            written inside ``recent_window_hours``; which ones is decided on
+            semantic and keyword evidence, never on recency
+            (:func:`_cap_recent`). ``None`` is no cap
+        :ptype recent_cap: int | None
+        :param recent_window_hours: how old a memory may be and still count
+            against ``recent_cap``
+        :ptype recent_window_hours: float
         :return: ranked candidate list, top_k entries
         :rtype: list[dict[str, Any]]
         """
@@ -1476,14 +1608,12 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         for c in candidates:
             recency = _recency_weight(c["date_created"], recency_half_life_hours)
             c["recency"] = round(recency, 4)
-            c["hybrid_score"] = round(
-                signal_weights["semantic"] * c["similarity"]
-                + signal_weights["keyword"] * c["fts_rank"]
-                + signal_weights["recency"] * recency,
-                4,
-            )
+            evidence = signal_weights["semantic"] * c["similarity"] + signal_weights["keyword"] * c["fts_rank"]
+            c[_EVIDENCE_KEY] = evidence
+            c["hybrid_score"] = round(evidence + signal_weights["recency"] * recency, 4)
 
-        return _admit_and_rank(candidates, similarity_threshold=similarity_threshold)[:top_k]
+        ranked = _admit_and_rank(candidates, similarity_threshold=similarity_threshold)
+        return _cap_recent(ranked, top_k=top_k, recent_cap=recent_cap, recent_window_hours=recent_window_hours)
 
     async def search_by_ids(
         self,
@@ -2307,7 +2437,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         query = (
             "SELECT m.memory_id, m.customer_id, m.user_id, m.conversation_id, "
             "m.type_memory, m.content, m.embedding::text AS embedding, "
-            "m.date_created "
+            "m.date_created, m.tags "
             "FROM memories m "
             f"WHERE {where_clause} "
             "AND NOT m.evergreen "

@@ -36,7 +36,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, date, datetime, time, tzinfo
 from typing import Any, Literal
 from uuid import UUID
@@ -54,6 +54,7 @@ from threetears.agent.memory.revisions import (
     restore,
     retract,
     supersede,
+    write_once,
 )
 from threetears.agent.memory.authorize import (
     ACTION_MEMORY_READ,
@@ -74,7 +75,6 @@ from threetears.agent.memory.collections import (
 from langchain_core.embeddings import Embeddings
 
 from threetears.agent.memory.embedding_utils import _safe_aembed_query
-from threetears.agent.memory.entities import MemoryEntity
 from threetears.agent.memory.types import MemoryType
 from threetears.core.utils.local_time import render_local_time, resolve_zone
 from threetears.observe import get_logger
@@ -92,6 +92,9 @@ __all__ = [
     "MemorySearchInput",
     "MemoryUpdateInput",
     "PERMANENT_IS_THE_PERSONS",
+    "NearMessageIds",
+    "PERMANENT_NEEDS_THE_PERSON",
+    "PermanentAllowed",
     "PersonAsked",
     "load_chunk_recall_tool",
     "load_chunk_search_tool",
@@ -133,6 +136,18 @@ PersonAsked = Callable[[UUID], Awaitable[bool]]
 
 #: What a tool says when it leaves a permanent memory standing.
 PERMANENT_IS_THE_PERSONS = "Only your person can change or retire a permanent memory."
+
+#: Whether a memory with this text may be made permanent by the agent alone.
+#: The host answers per call, from the text: ``False`` for one that needs the
+#: person's word first (a memory the agent writes about its own failure).
+PermanentAllowed = Callable[[str], Awaitable[bool]]
+
+#: What a tool says when it stores or leaves a memory not permanent because
+#: the host said that needs the person's word.
+PERMANENT_NEEDS_THE_PERSON = "It is not kept permanently: making this one permanent needs your person's word."
+
+#: The source messages of this turn and the one before it, read per call.
+NearMessageIds = Callable[[], Awaitable[Sequence[UUID]]]
 
 _VALID_MEMORY_TYPES = frozenset(t.value for t in MemoryType)
 _TYPES_LISTED = ", ".join(sorted(_VALID_MEMORY_TYPES))
@@ -1130,8 +1145,15 @@ async def load_memory_recall_tool(
     *,
     tz: tzinfo | str | None = None,
     consolidations_collection: MemoryConsolidationsCollection | None = None,
+    salience_bump: float = 0.0,
 ) -> list[BaseTool]:
     """create a memory_recall tool that returns a memory + its chunks.
+
+    With ``salience_bump`` above zero, opening a memory raises its salience by
+    that much (permanent ones are pinned and skipped): the recall the agent
+    asked for is what keeps a memory from sinking out of ambient recall, for a
+    consumer whose ambient recall no longer does
+    (``MemoryConfig.ambient_bumps_salience``).
 
     v0.7.0 (transcript-chunks shard C) replaced the old ``(id, type)``
     discriminator surface with a memory-centric one: the tool takes
@@ -1251,6 +1273,11 @@ async def load_memory_recall_tool(
         if memory is None:
             return "[TOOL ERROR] No memory with that id that you can read."
         marks = marks_of(memory)
+        if salience_bump > 0 and marks.current:
+            try:
+                await memories_collection.bump_salience([mem_uuid], agent_id=agent_id, access_bump=salience_bump)
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- reinforcement is bookkeeping; the read it follows must still answer
+                log.warning("memory_recall: salience bump failed", extra={"extra_data": {"error": str(exc)}})
 
         # ── chunks (mode dispatch) ──────────────────────────────
         chunks: list[dict[str, Any]] = []
@@ -1559,6 +1586,31 @@ def load_memory_list_tool(
     return [memory_list]
 
 
+async def _may_be_permanent(permanent_allowed: PermanentAllowed | None, content: str) -> bool:
+    """Whether the host lets the agent make a memory with this text permanent on its own.
+
+    No resolver is a yes: the rule is the host's to turn on. One that fails is
+    a no, because a memory wrongly left to fade can be kept later and one
+    wrongly made permanent cannot be undone by the agent.
+
+    :param permanent_allowed: the host's resolver, if it gave one
+    :ptype permanent_allowed: PermanentAllowed | None
+    :param content: the memory's text
+    :ptype content: str
+    :return: ``False`` only when the resolver says no, or fails
+    :rtype: bool
+    """
+    if permanent_allowed is None:
+        return True
+    try:
+        return bool(await permanent_allowed(content))
+    except (
+        Exception
+    ):  # prawduct:allow prawduct/broad-except -- a host resolver may fail in any way, and every way is a no
+        log.exception("permanent_allowed resolver failed; the memory is not made permanent")
+        return False
+
+
 class MemoryAddInput(BaseModel):
     """Input schema for memory_add tool.
 
@@ -1711,8 +1763,23 @@ async def load_memory_add_tool(
     consolidations_collection: MemoryConsolidationsCollection | None = None,
     tz: tzinfo | str | None = None,
     person_asked: PersonAsked | None = None,
+    permanent_allowed: PermanentAllowed | None = None,
+    near_message_ids: NearMessageIds | None = None,
+    same_event_threshold: float | None = None,
 ) -> list[BaseTool]:
     """create a memory_add tool for explicit memory storage.
+
+    **One event, written once.** With ``near_message_ids`` and
+    ``same_event_threshold`` a memory that says nearly what one from this turn
+    or the one before already says replaces it
+    (:func:`~threetears.agent.memory.revisions.write_once`): post-turn
+    extraction and the agent's own save of the same event are one memory. The
+    result says so in the words a near-duplicate's replacement uses.
+    ``replace=false`` writes beside it, as for any near-duplicate.
+
+    **Permanent, when the host says that needs the person.** With
+    ``permanent_allowed`` a ``permanent=true`` the resolver refuses is stored
+    as an ordinary memory, and the result says why.
 
     data-layer-task-01 sub-task 4: ``conversation_id`` + ``message_id``
     are resolved per-call via ``context_resolver`` rather than bound at
@@ -1771,6 +1838,15 @@ async def load_memory_add_tool(
         memory to be changed; asked per permanent ``corrects`` target. ``None``
         means never: a permanent memory is corrected beside, not replaced
     :ptype person_asked: PersonAsked | None
+    :param permanent_allowed: whether a memory with this text may be made
+        permanent without the person's word; ``None`` allows every one
+    :ptype permanent_allowed: PermanentAllowed | None
+    :param near_message_ids: the source messages of this turn and the one
+        before, read per call; ``None`` turns the same-event rule off
+    :ptype near_message_ids: NearMessageIds | None
+    :param same_event_threshold: the similarity at which a memory from those
+        messages is the same event; ``None`` turns the rule off
+    :ptype same_event_threshold: float | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     :raises ValueError: when ``tz`` is a name that is not a known zone
@@ -1868,6 +1944,11 @@ async def load_memory_add_tool(
         if embedding is None:
             return _tool_error("memory_add", "embed", "embedding provider returned None")
 
+        not_kept = ""
+        if permanent and not await _may_be_permanent(permanent_allowed, content):
+            permanent = False
+            not_kept = f" {PERMANENT_NEEDS_THE_PERSON}"
+
         fields: dict[str, Any] = {
             "customer_id": customer_id,
             "user_id": user_id,
@@ -1883,7 +1964,7 @@ async def load_memory_add_tool(
             "evergreen": permanent,
         }
         alias_clause = f" with alias '{normalised_alias}'" if normalised_alias is not None else ""
-        kept = " Kept permanently." if permanent else ""
+        kept = " Kept permanently." if permanent else not_kept
 
         def _alias_taken(exc: Exception) -> str | None:
             # The partial unique index ``ix_memories_user_alias`` raises a
@@ -2030,17 +2111,40 @@ async def load_memory_add_tool(
             )
 
         try:
-            now = datetime.now(UTC)
-            memory_id = UUID(str(uuid7()))
-            new_data: dict[str, Any] = {
-                **fields,
-                "memory_id": memory_id,
-                "agent_id": agent_id,
-                "date_created": now,
-                "date_updated": now,
-            }
-            entity: MemoryEntity = memories_collection.create(new_data)
-            await memories_collection.save_entity(entity)
+            near: Sequence[UUID] = ()
+            if replace and standing is None and near_message_ids is not None and same_event_threshold is not None:
+                try:
+                    near = await near_message_ids()
+                except Exception as exc:  # prawduct:allow prawduct/broad-except -- a host resolver may fail in any way; the memory is still stored
+                    log.warning(
+                        "memory_add: near_message_ids resolver failed, storing without the same-event check",
+                        extra={"extra_data": {"error": str(exc)}},
+                    )
+            wrote = await write_once(
+                memories_collection,
+                consolidations_collection,
+                agent_id=agent_id,
+                fields=fields,
+                near_message_ids=near,
+                threshold=same_event_threshold,
+            )
+            assert wrote.memory_id is not None  # "beside" always writes
+            memory_id = wrote.memory_id
+            if wrote.replaced:
+                said = [f"Stored as [memory:{memory_id}]{alias_clause}: {content}."]
+                for row in wrote.replaced:
+                    when = _fmt_dt(row.get("date_created"), zone)
+                    written_at = f", written {when}" if when else ""
+                    said.append(
+                        f"It replaces [memory:{row['memory_id']}] ({float(row['similarity']):.0%} the same"
+                        f"{written_at}), which said {_quoted(row)} and stays readable by its id."
+                    )
+                if kept:
+                    said.append(kept.strip())
+                said.append("If they are two facts and not one, store it again with replace=false.")
+                return " ".join(said)
+            if standing is None and wrote.standing is not None:
+                standing = (wrote.standing, float(wrote.standing["similarity"]))
 
             log.info(
                 "memory_add: stored new memory",
@@ -2541,12 +2645,17 @@ def load_memory_keep_tool(
     customer_id: UUID,
     authorizer: MemoryAuthorizerDependencies,
     memories_collection: MemoriesCollection,
+    *,
+    permanent_allowed: PermanentAllowed | None = None,
 ) -> list[BaseTool]:
     """create memory_keep: pin a stored memory permanent.
 
     A permanent (``evergreen``) memory never decays, is never merged by dream,
     and is never replaced by a later conversation: a change to it is a new
     memory beside it. The pin is one way; nothing here unpins.
+
+    With ``permanent_allowed`` a memory the resolver refuses is left as it is,
+    and the result says making it permanent needs the person's word.
 
     :param user_id: the caller; a memory of anyone else is refused
     :ptype user_id: UUID
@@ -2558,6 +2667,9 @@ def load_memory_keep_tool(
     :ptype authorizer: MemoryAuthorizerDependencies
     :param memories_collection: the memories collection
     :ptype memories_collection: MemoriesCollection
+    :param permanent_allowed: whether a memory with this text may be made
+        permanent without the person's word; ``None`` allows every one
+    :ptype permanent_allowed: PermanentAllowed | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
@@ -2583,6 +2695,8 @@ def load_memory_keep_tool(
             return _tool_error("memory_keep", "memory_id", f"No memory [memory:{memory_uuid}].")
         if entity.evergreen:
             return f"[memory:{memory_uuid}] was already kept permanently."
+        if not await _may_be_permanent(permanent_allowed, entity.content or ""):
+            return _no_change("memory_keep", f"[memory:{memory_uuid}] is as it was. {PERMANENT_NEEDS_THE_PERSON}")
         entity.evergreen = True
         await memories_collection.save_entity(entity)
         return f"[memory:{memory_uuid}] is kept permanently: {entity.content}"

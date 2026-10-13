@@ -40,6 +40,7 @@ from threetears.agent.memory.collections import (
 from langchain_core.embeddings import Embeddings
 
 from threetears.agent.memory.embedding_utils import _estimate_tokens, _safe_aembed_query
+from threetears.agent.memory.retrieval_scope import RetrievalScope
 from threetears.agent.memory.types import MemoryConfig
 from threetears.langgraph.fence import nonce_for, untrusted_fence, untrusted_rule
 from threetears.observe import get_logger, traced
@@ -621,6 +622,11 @@ class MemoryRetriever:
                 customer_id=customer_id,
                 fts_min_len=cfg.fts_min_query_len,
                 fts_max_len=cfg.fts_max_query_len,
+                # what ambient recall leaves out stays searchable: the tools read
+                # through ``search_by_semantic`` / ``search_by_fts``, not this
+                scope=RetrievalScope(tags_none=cfg.ambient_excluded_tags) if cfg.ambient_excluded_tags else None,
+                recent_cap=cfg.ambient_recent_cap,
+                recent_window_hours=cfg.ambient_recent_days * 24.0,
             ),
             self._media_content.hybrid_search(
                 user_id=user_id,
@@ -677,9 +683,11 @@ class MemoryRetriever:
 
         # v024 reinforcement: ambient retrieval bumps the salience of the
         # memories it surfaced (evergreen excluded) so used memories climb
-        # back up; only the neglected sink under scheduled decay. Direct
-        # id / alias recall does NOT bump -- this tracks proactive surfacing.
-        if memories:
+        # back up; only the neglected sink under scheduled decay. A consumer
+        # turns it off (``ambient_bumps_salience``) when being shown must not
+        # be what keeps a memory shown; a recall the agent asks for then
+        # counts instead (the tools' ``salience_bump``).
+        if memories and cfg.ambient_bumps_salience:
             await self._memories.bump_salience(
                 [m["memory_id"] for m in memories],
                 agent_id=agent_id,
