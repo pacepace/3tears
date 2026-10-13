@@ -42,6 +42,7 @@ from threetears.evals.analysis.arms import arm_table
 from threetears.evals.analysis.campaigns import set_campaign_control, update_campaign
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.generator import generate_analysis
+from threetears.evals.analysis.lenses.frontier import compute_frontier
 from threetears.evals.analysis.references import cell_aliases
 from threetears.evals.analysis.surface_table import surface_table_of
 from threetears.evals.kernel.errors import ValidationFailedError
@@ -696,6 +697,41 @@ def test_the_earlier_control_cells_are_in_no_contrast_and_no_guardrail() -> None
         for point in subject.points:
             if point.variant_key == stored_key:
                 assert point.boundary_checks == [] and point.disqualified_by == []
+
+
+def test_the_earlier_control_point_is_no_contestant_on_the_frontier() -> None:
+    fixture, campaign, _earlier_run, _rerun, stored_key, _current_key = _split_control_campaign()
+    storage = fixture.host.eval_host.storage
+    bundle = _assemble(fixture, campaign)
+    runs = [run for run_id in campaign.run_ids if (run := storage.load_eval_run(run_id, TOYHOST_SCOPE)) is not None]
+    results = [result for run in runs for result in storage.query_eval_results_by_run(run.id, TOYHOST_SCOPE)]
+    assert bundle.design.control_arm is not None and bundle.design.earlier_control is not None
+
+    # A bar every point clears, so the pick and its cost ties are read over every point. The earlier cells are the
+    # control's own observations restamped, so as a contestant they would tie with the control on cost.
+    frontier = compute_frontier(
+        runs,
+        results,
+        bar=0.0,
+        known_run_ids={run.id for run in runs},
+        archived_run_ids=None,
+        profile=fixture.host.eval_host.profile,
+        control_variant_key=bundle.design.control_arm.variant_key,
+        earlier_control=bundle.design.earlier_control,
+    )
+
+    for lens in (frontier, bundle.frontier):
+        (earlier,) = [point for subject in lens.subjects for point in subject.points if point.variant_key == stored_key]
+        assert earlier.earlier_control == f"the control under identity predicate v{_EARLIER}"
+        assert (earlier.dominated, earlier.dominated_by, earlier.dominance) == (False, [], "untested")
+        assert earlier.boundary_checks == [] and earlier.disqualified_by == []
+        others = [point for subject in lens.subjects for point in subject.points if point.variant_key != stored_key]
+        assert others and all(point.earlier_control is None for point in others)
+        assert stored_key not in {rival.variant_key for point in others for rival in point.dominated_by}
+    (subject,) = frontier.subjects
+    assert subject.verdict is not None, "with every point clearing the bar there is a pick"
+    assert subject.verdict.variant_key != stored_key, "the control under an earlier predicate is never the pick"
+    assert stored_key not in {tie.variant_key for tie in subject.verdict.tied_with}
 
 
 def test_the_split_is_disclosed_in_the_bundle_and_the_code_only_report() -> None:

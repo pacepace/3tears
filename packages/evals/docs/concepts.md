@@ -363,7 +363,7 @@ change to how a lever map is digested, not a renamed lever, kind or overlay fiel
 old cells and is never stale while they are in the campaign. The control ARM (`design.control_arm` in the bundle),
 which every reading names and every contrast is read against, is the cells under the current identity version
 wherever any run carries the recomputed key; the cells under the earlier version are then the control under that
-version (`design.earlier_control`), named on every surface, disclosed once, in no contrast and in no adoption check,
+version (`design.earlier_control`), named on every surface, disclosed once, in no contrast or adoption check, no contestant on the frontier,
 and not in the control's numbers. A key typed by hand records no lever map; when no cell carries it under a later
 identity version it is **stale**: the bundle says it cannot be resolved (`control_excluded`), and the remedy is to
 address it again from a run. *Example:* the v1 arm.
