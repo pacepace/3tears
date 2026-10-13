@@ -1185,8 +1185,10 @@ def package_at(tag: str) -> bool:
     return _git("cat-file", "-e", f"{tag}:{_PACKAGE_INIT}").returncode == 0
 
 
-def _source_at(ref: str | None, path: str) -> str | None:
-    """A file under the repository at ``ref``, or in the working tree when ``ref`` is ``None``."""
+def source_at(ref: str | None, path: str) -> str | None:
+    """A file under the repository at ``ref``, or in the working tree when ``ref`` is ``None``; ``None`` when that
+    tree holds no such file. The one way the dev tools read a released tree without installing it: the surface here,
+    the released judge pins (``tests/test_judge_identity_pins.py``)."""
     if ref is None:
         local = PACKAGE_ROOT.parent.parent / path
         return local.read_text(encoding="utf-8") if local.exists() else None
@@ -1210,14 +1212,14 @@ def exports_at(ref: str | None) -> dict[str, set[str]]:
     """
     if ref is not None and not package_at(ref):
         return {}
-    package = _source_at(ref, _PACKAGE_INIT)
+    package = source_at(ref, _PACKAGE_INIT)
     if package is None:
         raise SystemExit(f"threetears.evals is not in the tree at {ref or 'the working tree'}")
     roots = _literal_assignment(package, "PUBLIC_ROOTS")
     found: dict[str, set[str]] = {}
     for root in roots:
         base = f"{_SOURCE}/{root.replace('.', '/')}"
-        source = _source_at(ref, f"{base}/__init__.py") or _source_at(ref, f"{base}.py")
+        source = source_at(ref, f"{base}/__init__.py") or source_at(ref, f"{base}.py")
         names = _literal_assignment(source, "__all__") if source is not None else None
         if names is None:
             raise SystemExit(f"{root} has no literal __all__ at {ref or 'the working tree'}")

@@ -19,12 +19,18 @@ it today, and as the newest final release shipped it.
 - **The unreleased section moved to a new ``since`` tag.** A release was cut, and its pins are now the ones a
   later wording change is measured from. Copy ``JUDGE_IDENTITIES`` as that tag shipped them into
   ``RELEASED_JUDGE_IDENTITIES`` and set ``RELEASED_AT`` to the tag.
+- **The released table is not the one the release shipped.** The baseline is read from the tree at ``RELEASED_AT``
+  (this file's ``JUDGE_IDENTITIES`` as the release carried it, which its own pin held to what it computed), never
+  taken on trust from the typed copy: re-pin ``RELEASED_JUDGE_IDENTITIES`` to the values the failure prints. Until
+  a final release ships 3tears-evals there is no released judge to read, and the typed table, empty, stands.
 - **A fingerprint was added or removed** (a new built-in prompt, a new scale, a new judged artifact). Pin it in
   both tables as the new tree computes it; a prompt no release shipped needs no note.
 """
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from typing import Any, get_args
 
 from packages.evals.tests.script_loader import load_script
@@ -62,8 +68,13 @@ JUDGE_IDENTITIES: dict[str, str] = {
 RELEASED_AT = "v0.65.0"
 
 #: Every judge fingerprint as :data:`RELEASED_AT` shipped it, the baseline a wording change is announced against.
-#: v0.65.0 shipped no 3tears-evals, so it shipped no judge and no fingerprint can have moved since it.
+#: v0.65.0 shipped no 3tears-evals, so it shipped no judge and no fingerprint can have moved since it. A copy for
+#: the reader: what a wording change is measured from is read from the release's tree
+#: (:func:`released_judge_identities`), and this table is held to it.
 RELEASED_JUDGE_IDENTITIES: dict[str, str] = {}
+
+#: This file, as a path inside the repository: where a released tree's pins are read.
+PINS_PATH = "packages/evals/tests/test_judge_identity_pins.py"
 
 #: A configured judge's id, which the suffix fingerprints are read off.
 _CONFIG = "pinned-config"
@@ -109,6 +120,87 @@ def moved_without_a_note(released: dict[str, str], today: dict[str, str], notes:
     return moved
 
 
+def judge_table_in(source: str) -> dict[str, str] | None:
+    """The ``JUDGE_IDENTITIES`` literal a copy of this file assigns, read as written rather than imported.
+
+    The released tree's own pin held that literal equal to what the tree computed, so reading it is reading the
+    fingerprints the release wrote, without installing the release.
+
+    Args:
+        source: A copy of this file.
+
+    Returns:
+        The table, or None when the copy assigns no ``JUDGE_IDENTITIES`` literal.
+    """
+    for node in ast.parse(source).body:
+        if "JUDGE_IDENTITIES" in surface.assigned_names(node) and isinstance(node, ast.AnnAssign) and node.value:
+            table = ast.literal_eval(node.value)
+            return table if isinstance(table, dict) else None
+    return None
+
+
+def released_judge_identities(tag: str) -> dict[str, str] | None:
+    """Every judge fingerprint the release ``tag`` shipped, computed from its tree, never typed.
+
+    Args:
+        tag: A final release tag (:data:`RELEASED_AT`).
+
+    Returns:
+        The table, or None when the release shipped no 3tears-evals and so no judge.
+
+    Raises:
+        AssertionError: The checkout lacks ``tag``, which says nothing about what it shipped; or the release shipped
+            the package without a readable pin table, so what it wrote cannot be told.
+    """
+    assert surface.tag_exists(tag), (
+        f"{tag} is not a tag in this checkout, so the judge fingerprints it shipped cannot be read: fetch the tags "
+        "(git fetch --tags, or fetch-depth: 0 in CI)."
+    )
+    if not surface.package_at(tag):
+        return None
+    source = surface.source_at(tag, PINS_PATH)
+    table = judge_table_in(source) if source is not None else None
+    assert table is not None, (
+        f"{tag} shipped 3tears-evals, and its tree holds no JUDGE_IDENTITIES literal at {PINS_PATH}, so the "
+        "fingerprints it wrote cannot be read from it. Every release since this file was added carries it: check "
+        "that RELEASED_AT names the final release MIGRATIONS.toml's `unreleased` section follows."
+    )
+    return table
+
+
+def released_table_disagreement(tag: str, computed: dict[str, str] | None, typed: dict[str, str]) -> str | None:
+    """Why the typed released table is not the one ``tag`` shipped, or None when it is.
+
+    Args:
+        tag: The release the tables are taken at.
+        computed: What :func:`released_judge_identities` read from its tree; None when it shipped no judge.
+        typed: :data:`RELEASED_JUDGE_IDENTITIES`.
+
+    Returns:
+        The failure, with its remedy, or None.
+    """
+    if computed is None:
+        if not typed:
+            return None
+        return (
+            f"{tag} shipped no 3tears-evals, so it shipped no judge, and RELEASED_JUDGE_IDENTITIES names {typed}: "
+            "empty it, or set RELEASED_AT to the final release that shipped those fingerprints."
+        )
+    if typed == computed:
+        return None
+    return (
+        f"RELEASED_JUDGE_IDENTITIES is not what {tag} shipped: its tree pins {computed}. Re-pin "
+        "RELEASED_JUDGE_IDENTITIES to that table; a wording change since it is measured from it either way."
+    )
+
+
+def released_baseline() -> dict[str, str]:
+    """What a wording change is measured from: :data:`RELEASED_AT`'s tree, or, while that release shipped no
+    judge, the typed table, which is then empty."""
+    computed = released_judge_identities(RELEASED_AT)
+    return RELEASED_JUDGE_IDENTITIES if computed is None else computed
+
+
 def _unreleased() -> Any:
     newest = surface.load_migrations().releases[0]
     assert newest.version == "unreleased", "MIGRATIONS.toml's first section is the release being prepared"
@@ -140,8 +232,22 @@ def test_the_released_pins_are_the_unreleased_sections_baseline() -> None:
     )
 
 
+def test_the_released_table_is_the_one_the_release_shipped() -> None:
+    """Computed from the tree at :data:`RELEASED_AT`, so editing ``RELEASED_AT`` alone cannot satisfy the rule.
+
+    RELEASED_AT is v0.65.0 today, which shipped no 3tears-evals: there is no released judge to read, and the test
+    passes on the typed table, which must then be empty. The first final release that ships the package carries
+    this file, and from then on the typed table must equal what its tree pins.
+    """
+    disagreement = released_table_disagreement(
+        RELEASED_AT, released_judge_identities(RELEASED_AT), RELEASED_JUDGE_IDENTITIES
+    )
+
+    assert disagreement is None, disagreement
+
+
 def test_a_judge_wording_change_since_the_last_release_is_in_the_notes() -> None:
-    moved = moved_without_a_note(RELEASED_JUDGE_IDENTITIES, JUDGE_IDENTITIES, _unreleased().notes)
+    moved = moved_without_a_note(released_baseline(), JUDGE_IDENTITIES, _unreleased().notes)
 
     assert not moved, (
         f"the judge fingerprints {moved} moved since {RELEASED_AT}, so results judged before this release are "
@@ -179,3 +285,21 @@ def test_a_moved_fingerprint_with_no_note_is_named() -> None:
 
 def test_a_prompt_no_release_shipped_needs_no_note() -> None:
     assert moved_without_a_note({}, {"builtin:transcript-axis": "cccccccccccc"}, []) == []
+
+
+def test_a_typed_table_that_disagrees_with_a_released_tree_is_named() -> None:
+    """Once a release ships the package, its tree decides; before then only an empty typed table stands."""
+    shipped = {"builtin:transcript-axis": "aaaaaaaaaaaa"}
+
+    assert released_table_disagreement("v1.0.0", shipped, shipped) is None
+    stale = released_table_disagreement("v1.0.0", shipped, {})
+    assert stale is not None and "aaaaaaaaaaaa" in stale and "Re-pin RELEASED_JUDGE_IDENTITIES" in stale
+    assert released_table_disagreement("v1.0.0", shipped, {"builtin:transcript-axis": "bbbbbbbbbbbb"}) is not None
+    assert released_table_disagreement("v0.65.0", None, {}) is None
+    assert released_table_disagreement("v0.65.0", None, shipped) is not None
+
+
+def test_a_released_copy_of_this_file_gives_back_its_pinned_table() -> None:
+    """The reader a released tree goes through, run over this tree's copy: it reads the table as typed."""
+    assert judge_table_in(Path(__file__).read_text(encoding="utf-8")) == JUDGE_IDENTITIES
+    assert judge_table_in("RELEASED_AT = 'v0.65.0'\n") is None
