@@ -32,9 +32,9 @@ Import only from these roots, and only the names below: a module under a root is
 - [`threetears.evals.quick`](#api-quick)
 - [`threetears.evals.ops`](#api-ops)
 - [`threetears.evals.actions`](#api-actions)
-- [`threetears.evals.transports.fastmcp`](#api-transports-fastmcp)
-- [`threetears.evals.vega`](#api-vega)
-- [`threetears.evals.providers`](#api-providers)
+- [`threetears.evals.transports.fastmcp`](#api-transports-fastmcp) (needs the `[fastmcp]` extra)
+- [`threetears.evals.vega`](#api-vega) (needs the `[vega]` extra)
+- [`threetears.evals.providers`](#api-providers) (needs the `[models]` extra)
 
 <a id="api-threetears-evals"></a>
 ### `threetears.evals`
@@ -44,7 +44,8 @@ The eval engine: templates, cases, runs and results; the trial loop, its judge a
 **Constants**
 
 - **`__version__`** · *host contract* · constant (str) · The installed distribution's version, as its metadata states it (`importlib.metadata`): the build a host records beside what it stores, since no stored document or analysis bundle carries it.
-- **`PUBLIC_ROOTS`** · constant (tuple) · The public roots, as absolute module names.
+- **`PUBLIC_ROOTS`** · *host contract* · constant (tuple) · The public roots, as absolute module names.
+- **`ROOT_EXTRAS`** · *host contract* · constant (mappingproxy) · Each public root that imports only with an extra installed, mapped to that extra's name: what a consumer reads to import every root its install can, rather than keep its own list.
 
 <a id="api-schema"></a>
 ### `threetears.evals.schema`
@@ -2436,6 +2437,8 @@ The action catalogue: every eval action, declared once, for any transport to mou
 <a id="api-transports-fastmcp"></a>
 ### `threetears.evals.transports.fastmcp`
 
+*Imports only with the `[fastmcp]` extra installed (`pip install "3tears-evals[fastmcp]"`); see `threetears.evals.ROOT_EXTRAS`.*
+
 The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
 
 **Functions**
@@ -2473,6 +2476,8 @@ The FastMCP transport: mounts the action catalogue as tools on a FastMCP server.
 
 <a id="api-vega"></a>
 ### `threetears.evals.vega`
+
+*Imports only with the `[vega]` extra installed (`pip install "3tears-evals[vega]"`); see `threetears.evals.ROOT_EXTRAS`.*
 
 The Vega-Lite chart renderer — an optional adapter over eval's chart intent.
 
@@ -2522,6 +2527,8 @@ The Vega-Lite chart renderer — an optional adapter over eval's chart intent.
 
 <a id="api-providers"></a>
 ### `threetears.evals.providers`
+
+*Imports only with the `[models]` extra installed (`pip install "3tears-evals[models]"`); see `threetears.evals.ROOT_EXTRAS`.*
 
 The shipped provider adapter: a chat model 3tears-models builds, as the engine's completion client.
 

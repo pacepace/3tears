@@ -650,6 +650,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # The version constants a host checks a store or a stored document against, one per version space, and the
         # installed build's own version, which a host records beside what it stores since nothing stored carries it.
         "threetears.evals.__version__",
+        # The public roots a consumer imports from, and which of them need an extra: what its own import gate reads.
+        "threetears.evals.PUBLIC_ROOTS",
+        "threetears.evals.ROOT_EXTRAS",
         "threetears.evals.schema.CORE_SCHEMA_VERSION",
         "threetears.evals.schema.CORE_SCHEMA_MINOR",
         "threetears.evals.schema.CORE_BASELINE_VERSION",

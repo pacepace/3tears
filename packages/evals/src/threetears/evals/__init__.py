@@ -33,7 +33,9 @@ stored document carries it (each carries its own schema version), so a host that
 what records it beside what it stores.
 """
 
+from collections.abc import Mapping
 from importlib.metadata import version as _distribution_version
+from types import MappingProxyType
 
 #: The installed distribution's version, as its metadata states it (``importlib.metadata``): the build a host
 #: records beside what it stores, since no stored document or analysis bundle carries it. A build from a
@@ -66,7 +68,7 @@ def __getattr__(name: str) -> str:
 #: The public roots, as absolute module names. A consumer imports from these and from no module
 #: below them, and only the names each root's ``__all__`` declares. ``kernel.host`` and
 #: ``analysis.viz`` are roots of their own inside a package: the contract a host implements, and
-#: the chart intent with the seam a renderer sits behind. Three roots need an extra: ``vega``, the
+#: the chart intent with the seam a renderer sits behind. Three roots need an extra (:data:`ROOT_EXTRAS`): ``vega``, the
 #: optional Vega-Lite renderer, whose rasteriser needs ``[vega]``; ``transports.fastmcp``, which
 #: needs ``[fastmcp]``; and ``providers``, the shipped provider adapter over 3tears-models, which
 #: needs ``[models]``.
@@ -88,4 +90,16 @@ PUBLIC_ROOTS: tuple[str, ...] = (
     "threetears.evals.providers",
 )
 
-__all__ = ["PUBLIC_ROOTS", "__version__"]
+#: Each public root that imports only with an extra installed, mapped to that extra's name: what a consumer reads to
+#: import every root its install can, rather than keep its own list. A root not here imports on the base install,
+#: whose only dependency is pydantic. ``tests/test_extraction_import_boundary.py`` holds it equal to the extras the
+#: package's manifest declares and the roots each one serves.
+ROOT_EXTRAS: Mapping[str, str] = MappingProxyType(
+    {
+        "threetears.evals.transports.fastmcp": "fastmcp",
+        "threetears.evals.vega": "vega",
+        "threetears.evals.providers": "models",
+    }
+)
+
+__all__ = ["PUBLIC_ROOTS", "ROOT_EXTRAS", "__version__"]
