@@ -34,6 +34,7 @@ Import only from these roots, and only the names below: a module under a root is
 - [`threetears.evals.actions`](#api-actions)
 - [`threetears.evals.transports.fastmcp`](#api-transports-fastmcp)
 - [`threetears.evals.vega`](#api-vega)
+- [`threetears.evals.providers`](#api-providers)
 
 <a id="api-threetears-evals"></a>
 ### `threetears.evals`
@@ -2514,6 +2515,24 @@ The Vega-Lite chart renderer — an optional adapter over eval's chart intent.
 
 - **`Theme`** · literal · The colour theme a chart is drawn for.
   <br>`'light'` | `'dark'`
+
+<a id="api-providers"></a>
+### `threetears.evals.providers`
+
+The shipped provider adapter: a chat model 3tears-models builds, as the engine's completion client.
+
+**Classes**
+
+- **`ModelsClientRefused`** · exception · A setting the adapter cannot carry to the provider, refused before anything is sent.
+
+**Types**
+
+- **`SupportedProvider`** · literal · The providers the adapter builds a client for, as models' registry names them.
+  <br>`'anthropic'` | `'openai'` | `'openrouter'`
+
+**Constants**
+
+- **`SUPPORTED_PROVIDERS`** · constant (tuple) · Every `SupportedProvider`, in the order the docs list them.
 
 <a id="configuration"></a>
 ## Configuration

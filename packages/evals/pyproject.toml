@@ -43,8 +43,17 @@ vega = [
 # The cap is the major this is tested against.
 fastmcp = ["fastmcp>=3.4.2,<4"]
 
+# The shipped provider adapter (`threetears.evals.providers`): turns a chat model 3tears-models builds into the
+# completion client, priced through models' price-source registry. Optional, so the engine stays provider-neutral
+# and pydantic-only; a host that brings its own client installs without it. The lockstep bound, as every
+# intra-family dependency carries (tests/enforcement/test_intra_family_version_bounds.py).
+models = ["3tears-models>=0.66.0,<0.67.0"]
+
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/threetears"]
+
+[tool.uv.sources]
+3tears-models = { workspace = true }

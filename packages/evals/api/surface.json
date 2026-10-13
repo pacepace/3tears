@@ -7545,6 +7545,21 @@
       "kind": "function",
       "signature": "write_font_metrics(advances: dict[str, float], *, fallback_advance: float, worst_label: str, worst_ratio: float, font: str, measured_with: str, probe_size: int, weights: list[int], font_files: Mapping[str, str], path: Path = Path('<package>/src/threetears/evals/vega/font_metrics.json')) -> Path",
       "tier": "closure"
+    },
+    "threetears.evals.providers.ModelsClientRefused": {
+      "kind": "exception",
+      "signature": "ModelsClientRefused(setting: str, why: str, *, provider: str | None = None) -> None",
+      "tier": "closure"
+    },
+    "threetears.evals.providers.SUPPORTED_PROVIDERS": {
+      "kind": "constant (tuple)",
+      "signature": "",
+      "tier": "closure"
+    },
+    "threetears.evals.providers.SupportedProvider": {
+      "kind": "literal",
+      "signature": "'anthropic'` | `'openai'` | `'openrouter'",
+      "tier": "closure"
     }
   }
 }

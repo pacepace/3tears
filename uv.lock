@@ -710,17 +710,21 @@ dependencies = [
 fastmcp = [
     { name = "fastmcp" },
 ]
+models = [
+    { name = "3tears-models" },
+]
 vega = [
     { name = "vl-convert-python" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "3tears-models", marker = "extra == 'models'", editable = "packages/models" },
     { name = "fastmcp", marker = "extra == 'fastmcp'", specifier = ">=3.4.2,<4" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "vl-convert-python", marker = "extra == 'vega'", specifier = "==1.9.0.post1" },
 ]
-provides-extras = ["vega", "fastmcp"]
+provides-extras = ["vega", "fastmcp", "models"]
 
 [[package]]
 name = "3tears-geo"
