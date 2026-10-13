@@ -67,9 +67,10 @@ notes).
   field at this build's minor or older, and a newer major, are refused as before; only the stored read is ever
   tolerant, and `schema_minor` is a server field every authoring surface ignores. The vocabularies that grow
   (usage roles, simulator purposes, ceiling and role origins, reasoning effort, out-of-run purposes, refusal kinds)
-  are open strings with a registry of the values this build knows, and every reader names a value it does not
-  know rather than folding or dropping it; every other vocabulary on a core shape is closed, and extending one is a
-  major, deployed with no job running.
+  are open strings on stored documents, with a registry of the values this build knows, and every reader names a
+  value it does not know rather than folding or dropping it; what a caller passes in (an action's filter, a
+  writer's argument) still takes only a known value. Every other vocabulary on a core shape is closed, and
+  extending one is a major, deployed with no job running.
 - **Identity.** A configuration is keyed by the content that ran (`IDENTITY_VERSION` 24), so an edited prompt is
   never averaged in with its old version, and a run's kind is part of its variant. A key is stored beside the lever
   map it was computed from: a run's `variant_levers`, and a campaign control's `control_levers` and

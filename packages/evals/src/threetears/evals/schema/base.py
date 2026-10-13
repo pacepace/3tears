@@ -59,7 +59,6 @@ import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from functools import cache
-from types import MappingProxyType
 from typing import Annotated, Any, Self, get_args
 
 from pydantic import (
@@ -329,15 +328,20 @@ def _newer_minor_read(info: ValidationInfo) -> int | None:
 
 @dataclass(frozen=True)
 class _NewerMinorFields:
-    """The fields a newer minor's document held on one shape that this build does not declare.
+    """What a newer minor's stored read left on one shape: the minor it was read at, and the fields it kept.
+
+    Set on every shape a newer minor's read validates, whether or not it held a field this build does not declare,
+    so a shape carrying only a value of an open vocabulary this build does not know still carries its minor into
+    any document it is moved to. A plain ``dict``, copied on the read and again on every write, so the marker
+    deep-copies and pickles with its instance; nothing mutates it.
 
     Attributes:
-        minor: The minor the document they were read from was written at.
-        fields: Each undeclared key and its stored value, exactly as read.
+        minor: The minor the document it was read from was written at.
+        fields: Each undeclared key and its stored value, exactly as read; empty when there were none.
     """
 
     minor: int
-    fields: Mapping[str, Any]
+    fields: dict[str, Any]
 
 
 @cache
@@ -396,17 +400,16 @@ class CoreShapeModel(BaseModel):
             info: The validation's context, which says whether this is that read.
 
         Returns:
-            The validated instance, carrying the fields it does not declare when there were any.
+            The validated instance, marked with the minor it was read at and carrying the fields it does not
+            declare (none, often).
         """
         minor = _newer_minor_read(info)
         if minor is None or not isinstance(data, Mapping):
             return handler(data)
         declared = cls._declared_keys()
         undeclared = {key: value for key, value in data.items() if key not in declared}
-        if not undeclared:
-            return handler(data)
         shape: CoreShapeModel = handler({key: value for key, value in data.items() if key in declared})
-        shape._newer_minor_fields = _NewerMinorFields(minor=minor, fields=MappingProxyType(copy.deepcopy(undeclared)))
+        shape._newer_minor_fields = _NewerMinorFields(minor=minor, fields=copy.deepcopy(undeclared))
         return shape
 
     @classmethod
@@ -425,12 +428,14 @@ class CoreShapeModel(BaseModel):
         Args:
             shape: A shape, and ``dumped`` its dump.
             dumped: The mapping ``to_dict`` dumped ``shape`` to, written into in place.
-            minors: Collects the minor of every kept field written, so the document is stamped no older.
+            minors: Collects the minor of every shape a newer minor's read marked, so the document is stamped no
+                older than anything it carries — a kept field, or a value of an open vocabulary this build does not
+                know.
             by_alias: Whether the dump is keyed by alias.
         """
         kept = shape._newer_minor_fields
         if kept is not None:
-            dumped.update(copy.deepcopy(dict(kept.fields)))
+            dumped.update(copy.deepcopy(kept.fields))
             minors.append(kept.minor)
         model_fields = type(shape).model_fields
         for name in _fields_holding_shapes(type(shape)):
@@ -473,7 +478,7 @@ class CoreShapeModel(BaseModel):
 
     def _shape_holds_kept_fields(self, shape: CoreShapeModel) -> bool:
         """:meth:`_holds_kept_fields` for one shape: its own kept fields, or any below it."""
-        if shape._newer_minor_fields is not None:
+        if shape._newer_minor_fields is not None and shape._newer_minor_fields.fields:
             return True
         return any(self._holds_kept_fields(getattr(shape, name)) for name in _fields_holding_shapes(type(shape)))
 
@@ -554,10 +559,10 @@ class CoreDocumentModel(EvalDocumentModel, CoreShapeModel):
     or at any minor but this build's, is refused by the ``schema_version`` and ``schema_minor`` fields
     themselves.
 
-    **Only stored bytes reach the tolerant read.** :meth:`from_dict` and :meth:`from_json` are the
-    stored read; every caller in the engine hands them what a store returned, or a ``to_dict`` of a
-    document a store returned. A payload a caller supplied — an action's arguments, a request body, a
-    host's dict — is validated with ``model_validate``, which never tolerates.
+    **Only stored bytes reach the tolerant read.** :meth:`from_dict` is the stored read; every caller
+    in the engine hands it what a store returned, or a ``to_dict`` of a document a store returned. A
+    payload a caller supplied — an action's arguments, a request body, a host's dict, a document on a
+    wire (:meth:`from_json`) — is validated with ``model_validate``, which never tolerates.
     """
 
     schema_minor: CoreSchemaMinor = CORE_SCHEMA_MINOR
@@ -612,9 +617,11 @@ class CoreDocumentModel(EvalDocumentModel, CoreShapeModel):
 
         The kept fields go back where they were read, at whatever depth, exactly as stored — ``exclude_none``
         and ``exclude_unset`` apply to the fields this build declares, never to another build's bytes — and
-        ``schema_minor`` is stamped with the newest minor any of them was read at, or this document's own when
-        that is newer. So a rewrite never drops a newer build's field, and a shape carried into another document
-        carries its minor with it.
+        ``schema_minor`` is stamped with the newest minor any shape it carries was read at, or this document's own
+        when that is newer. So a rewrite of a document a newer build wrote keeps every field that build wrote on
+        each shape the rewrite carries over, and a shape carried into another document carries its minor with it.
+        A shape the rewrite REPLACES with one built afresh (a renewed lease, a recomputed completeness record)
+        takes its kept fields with it: they described the shape that was replaced.
 
         Args:
             exclude_none: If True, exclude declared fields with None values
@@ -636,37 +643,50 @@ class CoreDocumentModel(EvalDocumentModel, CoreShapeModel):
         return document
 
     def to_json(self, *, indent: int | None = None, exclude_none: bool = False) -> str:
-        r"""Serialize to a JSON string: :meth:`to_dict`, encoded, so a newer minor's kept fields travel too.
+        r"""Serialize to a JSON string, for a wire: refused when the document holds fields a newer minor wrote.
 
-        Lone UTF-16 surrogates (\uD800-\uDFFF) are replaced with U+FFFD, as the base does.
+        The JSON pair is a transport of what this build declares, and :meth:`from_json` reads it as strictly as
+        any payload. A document read at a newer minor that kept fields this build does not know cannot travel
+        that way whole, and dropping them silently is the one outcome worse than refusing, so it is refused by
+        name: write it through :meth:`to_dict`, which every store path does. Lone UTF-16 surrogates
+        (\uD800-\uDFFF) are replaced with U+FFFD, as the base does.
 
         Args:
             indent: Indentation level for pretty printing (None for compact)
-            exclude_none: If True, exclude declared fields with None values
+            exclude_none: If True, exclude fields with None values
 
         Returns:
             JSON string representation
+
+        Raises:
+            ValueError: The document, or a shape it carries, holds fields a newer minor's stored read kept.
         """
-        separators = (",", ":") if indent is None else None
-        raw = json.dumps(
-            self.to_dict(exclude_none=exclude_none), indent=indent, ensure_ascii=False, separators=separators
-        )
-        return _LONE_SURROGATE_RE.sub("\ufffd", raw)
+        if self._shape_holds_kept_fields(self):
+            raise ValueError(
+                f"{type(self).__name__} '{getattr(self, 'id', '?')}' holds fields a newer minor wrote, which this build "
+                "does not know; to_json is a transport of what this build declares and would drop them, so it is "
+                "refused — write the document through to_dict, which keeps them"
+            )
+        return super().to_json(indent=indent, exclude_none=exclude_none)
 
     @classmethod
     def from_json(cls, json_str: str) -> Self:
-        """Read a core document from JSON: the stored read (:meth:`from_dict`) of the object it encodes.
+        """Read a core document from a wire, as strictly as any payload: never the stored read's tolerance.
+
+        A document a transport carries is caller input, so it is validated as construction is: a newer minor
+        is refused, an unknown field is refused, and an older major is refused rather than upgraded. A stored
+        document is read with :meth:`from_dict`.
 
         Args:
             json_str: JSON string to parse
 
         Returns:
-            Model instance, as :meth:`from_dict` reads it
+            Model instance
 
         Raises:
-            ValidationError: If the JSON is invalid, is not an object, or fails :meth:`from_dict`
+            ValidationError: If the JSON is invalid or fails validation
         """
-        return cls.from_dict(_VERBATIM_OBJECT.validate_json(json_str))
+        return cls.model_validate_json(json_str)
 
 
 __all__ = [

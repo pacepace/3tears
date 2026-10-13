@@ -663,9 +663,9 @@ def update_campaign(
         )
 
     if rewrites:
-        changes["declared_design"] = (
-            None if design is None else _stamp_declaration(design, updated_by).model_dump(mode="json")
-        )
+        # The instance, not its dump: a stored design the update carries over keeps every field a newer build wrote
+        # on it, its questions and axes, which a dump would drop.
+        changes["declared_design"] = None if design is None else _stamp_declaration(design, updated_by)
 
     try:
         updated = edited_core_document(EvalCampaign, campaign, changes)

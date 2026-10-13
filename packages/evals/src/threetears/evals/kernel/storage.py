@@ -78,7 +78,7 @@ from threetears.evals.schema.models import (
     case_set_doc_id,
     eval_trace_doc_id,
 )
-from threetears.evals.schema.out_of_run_spend import OutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
+from threetears.evals.schema.out_of_run_spend import KnownOutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
 from threetears.evals.schema.store_port import DocumentStore, StoreClock, StoreConflict, refuse_on_event_loop
 from threetears.evals.schema.logs import get_logger
 
@@ -1451,7 +1451,7 @@ class EvalStorage:
         self,
         scope_id: str,
         *,
-        purpose: OutOfRunPurpose | None = None,
+        purpose: KnownOutOfRunPurpose | None = None,
         launch_group_id: str | None = None,
         template_id: str | None = None,
     ) -> list[OutOfRunSpend]:

@@ -76,6 +76,7 @@ from threetears.evals.run.rejudge import (
     judged_template,
     recorded_judge_pins,
     reproducible_judge_inputs,
+    request_settings_drift,
 )
 from threetears.evals.run.runner import build_judge_context, judge_dims, judge_requests
 from threetears.evals.schema.logs import get_logger
@@ -247,8 +248,8 @@ def _collect(
     recorded_judge_pins(run, request_settings="as_recorded")
     if run.judge_request_settings != JUDGE_REQUEST_SETTINGS:
         raise ValidationFailedError(
-            f"run '{run_id}' was judged with request settings {run.judge_request_settings!r} and a judge call now "
-            f"sends {JUDGE_REQUEST_SETTINGS!r}; the second judge would differ from the first by more than it names",
+            f"run '{run_id}' {request_settings_drift(run.judge_request_settings)}; the second judge would differ "
+            "from the first by more than it names",
             remedy=RELAUNCH_TO_REJUDGE,
         )
     if _same_judge(run, judge):

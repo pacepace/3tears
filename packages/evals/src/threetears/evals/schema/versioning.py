@@ -59,10 +59,14 @@ build wrote: it is copied (``model_copy``), or read again from its ``to_dict`` (
 writer here does).
 
 **How a core document is written.** ``to_dict`` writes every field this build declares, puts back every field a
-newer minor's read kept, where it was found, and stamps ``schema_minor`` with the newest minor any of them was
-read at, or this build's when that is newer. A write therefore never drops a newer build's field, and never
-claims a minor older than a field it carries. Two rules keep that true on the paths that write less than a
-whole document, and on the digests:
+newer minor's read kept, where it was found, and stamps ``schema_minor`` with the newest minor any shape it
+carries was read at (a shape read at a newer minor carries that minor whether or not it held a field this build
+does not know, so a value of an open vocabulary moves with its minor too), or this build's when that is newer. A
+write therefore keeps every field a newer build wrote on each shape it carries over, and never claims a minor older
+than anything it carries. A shape the write REPLACES with one built afresh — a renewed lease, a recomputed
+completeness record, a re-scored rubric list — takes its kept fields with it, which is right: they described the
+shape that was replaced, and the additivity sentence below is what makes the fields beside it stay true. Two
+rules keep that true on the paths that write less than a whole document, and on the digests:
 
 - **A partial write carries baseline fields only.** ``merge_fields`` sets top-level fields on the stored bytes
   and cannot take the newest of a minor it never read, so it names only fields of its major's first minor
@@ -75,7 +79,10 @@ whole document, and on the digests:
 with the values this build knows registered beside it; a new value is a minor, because every reader that branches
 on it has a branch for a value it does not know, which names that value (a role's spend on a line of its own, an
 origin stated by name, a departure read as "cannot say") rather than folding it into one it knows. A value outside
-the registry is read only from a newer minor's document, and refused anywhere else. The open vocabularies:
+the registry is read only from a newer minor's document, and refused anywhere else. Only a STORED field is open:
+each vocabulary also has a ``Literal`` of the values this build knows (``KnownUsageRole``, …), which every
+caller-facing parameter (an action's filter, a query's) and every writer here takes, so a caller's misspelt value
+is refused as before, and the registry is that ``Literal``'s values. The open vocabularies:
 ``UsageRole`` (``USAGE_ROLES``), ``SimulatorPurpose`` (``SIMULATOR_PURPOSES``), ``CostCapOrigin``
 (``COST_CAP_ORIGINS``), ``MeteredCallOrigin`` (``METERED_CALL_ORIGINS``), ``CellTimeoutOrigin``
 (``CELL_TIMEOUT_ORIGINS``), ``ModelRoleOrigin`` (``MODEL_ROLE_ORIGINS``), ``RoleModelOrigin``

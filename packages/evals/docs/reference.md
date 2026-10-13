@@ -225,6 +225,26 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`'recorded'` | `'derived'` | `'absent'`
 - **`JudgeTemperature`** · type alias · The temperature a judge call was actually sent at: a number, or `MODEL_DEFAULT_TEMPERATURE`.
   <br>`float | Literal['model_default']`
+- **`KnownCellTimeoutOrigin`** · literal · A value of `CellTimeoutOrigin` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
+  <br>`'launch'` | `'kind'` | `'default'`
+- **`KnownCostCapOrigin`** · literal · A value of `CostCapOrigin` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
+  <br>`'chosen'` | `'inherited'` | `'uncapped'`
+- **`KnownMeteredCallOrigin`** · literal · A value of `MeteredCallOrigin` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
+  <br>`'chosen'` | `'inherited'` | `'uncapped'` | `'none_declared'`
+- **`KnownModelRoleOrigin`** · literal · A value of `ModelRoleOrigin` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
+  <br>`'chosen'` | `'inherited'`
+- **`KnownOutOfRunPurpose`** · literal · A value of `OutOfRunPurpose` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
+  <br>`'variation'` | `'proposer'` | `'analysis'` | `'judge'` | `'second_judge'`
+- **`KnownReasoningEffort`** · literal · A value of `ReasoningEffort` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
+  <br>`'max'` | `'xhigh'` | `'high'` | `'medium'` | `'low'` | `'minimal'` | `'none'`
+- **`KnownRefusalKind`** · literal · A value of `RefusalKind` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
+  <br>`'refused'` | `'not_found'` | `'conflict'` | `'validation_failed'` | `'storage_failed'` | `'provider_refused'` | `'admission_refused'`
+- **`KnownRoleModelOrigin`** · literal · A value of `RoleModelOrigin` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
+  <br>`'chosen'` | `'inherited'` | `'alternate'`
+- **`KnownSimulatorPurpose`** · literal · A value of `SimulatorPurpose` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
+  <br>`'utterance'` | `'schedule'`
+- **`KnownUsageRole`** · literal · A value of `UsageRole` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
+  <br>`'candidate'` | `'judge'` | `'simulator'` | `'inner_agent'` | `'external'`
 - **`LeaseField`** · type alias · A job record's lease: who is running its work and until when; None once released, and on a record no process has leased — a run a launch prepared and never started (which reads lost while it has not ended — nothing can be renewing it).
   <br>`Annotated[JobLease | None, Field(description="The lease of the process running this job's work; None on a record no process has leased (a run a launch prepared and never started), or released at a shutdown. A record that has not ended reads lost once this lapses or is None.")]`
 - **`LostField`** · type alias · How a job was lost, when it was: the record's own ending is written beside it.
@@ -339,7 +359,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`agreement_statistic`** · function · The one agreement figure both tiers are held to: weighted kappa on 1-5, kappa on pass/fail.
   <br>`agreement_statistic(scale: RubricScale, kappa: float | None, weighted_kappa: float | None) -> float | None`
 - **`blended_cost_roles`** · function · The roles a run's blended `EvalResult.cost_usd` sums, in stored order.
-  <br>`blended_cost_roles(rate_table: ExternalRateTable | None) -> tuple[UsageRole, ...]`
+  <br>`blended_cost_roles(rate_table: ExternalRateTable | None) -> tuple[KnownUsageRole, ...]`
 - **`calibration_criterion`** · function · The calibration criterion over `n` judge–human pairs covering `results` results, at `agreement`.
   <br>`calibration_criterion(n: int, results: int, agreement: float | None, interval: tuple[float, float] | None = None) -> TierCriterion`
 - **`call_ceiling`** · function · The most `attempts` requests of one prompt pair on `client` can cost, or `None` when it cannot say.
@@ -1126,7 +1146,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`resolve_case_set`** · function · The set a launch names, and its cases in its order — or the refusal.
   <br>`resolve_case_set(storage: CaseSetStore, ref: CaseSetRef, *, template: EvalTemplate, scope_id: str) -> tuple[CaseSet, list[EvalTestCase]]`
 - **`resolve_ceiling_origin`** · function · Return which tier of the cascade supplied the ceiling a run is bounded by.
-  <br>`resolve_ceiling_origin(override: float | None, *, enforcement_enabled: bool) -> CostCapOrigin`
+  <br>`resolve_ceiling_origin(override: float | None, *, enforcement_enabled: bool) -> KnownCostCapOrigin`
 - **`resolve_constructor`** · function · Import a contract's constructor.
   <br>`resolve_constructor(contract: FidelityContract) -> object`
 - **`resolve_effective_ceiling`** · function · Return the ceiling a run is actually bounded by, or `None` when nothing bounds it.
@@ -1492,7 +1512,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`running_analysis_attempt`** · function · The attempt a background generation writes as it starts: `running`, nothing sent yet.
   <br>`running_analysis_attempt(prepared: PreparedGeneration, *, prompt_id: str, started_at: str | None = None) -> EvalAnalysisAttempt`
 - **`scope_out_of_run_spend`** · function · What the engine spent outside any run in a scope, call by call and summed, optionally narrowed.
-  <br>`scope_out_of_run_spend(host: EvalHost, scope_id: str, *, purpose: OutOfRunPurpose | None = None, launch_group_id: str | None = None, template_id: str | None = None) -> OutOfRunSpendReport`
+  <br>`scope_out_of_run_spend(host: EvalHost, scope_id: str, *, purpose: KnownOutOfRunPurpose | None = None, launch_group_id: str | None = None, template_id: str | None = None) -> OutOfRunSpendReport`
 - **`serialize_report`** · function · A report in one of its three forms.
   <br>`serialize_report(report: Report, format: ReportFormat) -> str`
 - **`set_campaign_control`** · function · Designate (or clear) the campaign's control, ADDRESSED from a member observation.
@@ -2219,7 +2239,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`start_job`** · async function · Start admitted work as a job: its record written, leased, and the work run in the background.
   <br>`start_job(host: OpsHost, admitted: AdmittedJob) -> JobsStarted`
 - **`start_paid_call`** · async function · Start a host action's one paid model call: admitted against its cap in the call, made in a job.
-  <br>`start_paid_call(host: OpsHost, scope_id: str, *, action: str, role: CompletionRole, model: str | None, purpose: OutOfRunPurpose, budget: OutOfRunBudget, call: PlannedCall, make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]], label: str, budget_s: float) -> JobsStarted`
+  <br>`start_paid_call(host: OpsHost, scope_id: str, *, action: str, role: CompletionRole, model: str | None, purpose: KnownOutOfRunPurpose, budget: OutOfRunBudget, call: PlannedCall, make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]], label: str, budget_s: float) -> JobsStarted`
 - **`sweep_job_id`** · function · The job id of a sweep.
   <br>`sweep_job_id(sweep_id: str) -> str`
 - **`sweep_launch`** · async function · Create the sweep's campaign and start the job that launches its arms in order.
@@ -3069,7 +3089,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `overlays` | `object` or `null` | The knobs this launch turns on the template's kind, by field. |
 | `part` | `'record'` \| `'judge'` \| `'spans'` | Which part of the stored trace to return: record (the output the kind stored, its call ledger and end state, beside the result), judge (what the judge was sent) or spans (the stored spans). |
 | `predicted_cost` | `object` or `null` | A cost pivot's plan: the structured result launch_estimate returned before these runs. The cell at each priced arm's model and template then shows its predicted cost beside the cost observed. |
-| `purpose_filter` | `string` or `null` | Only calls made for this purpose: variation (a launch's case generation), proposer (a rubric draft) or analysis (an analysis generation). |
+| `purpose_filter` | `'variation'` \| `'proposer'` \| `'analysis'` \| `'judge'` \| `'second_judge'` or `null` | Only calls made for this purpose: variation (a launch's case generation), proposer (a rubric draft), analysis (an analysis generation), judge (a judge's repeat or temperature comparison) or second_judge (a second judge's pass). |
 | `rating_reason` | `string` | Why that score, in the rater's own words. |
 | `reason` | `string` or `null` | Why, recorded on a cancelled run. |
 | `recorded_analysis_id` | `string` or `null` | A stored analysis of the campaign whose memo the case pins as the one it got, as analyses_list names it; omitted freezes the bundle alone, which only a generating candidate can run. |

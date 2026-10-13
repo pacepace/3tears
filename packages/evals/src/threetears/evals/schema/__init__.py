@@ -48,6 +48,14 @@ from threetears.evals.schema.judge_attribution import (
     JudgeAttributionState,
 )
 from threetears.evals.schema.models import (
+    KnownModelRoleOrigin,
+    KnownRoleModelOrigin,
+    KnownCostCapOrigin,
+    KnownMeteredCallOrigin,
+    KnownCellTimeoutOrigin,
+    KnownReasoningEffort,
+    KnownUsageRole,
+    KnownSimulatorPurpose,
     CELL_TIMEOUT_ORIGINS,
     COST_CAP_ORIGINS,
     METERED_CALL_ORIGINS,
@@ -155,6 +163,7 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.schema.out_of_run_spend import (
     OUT_OF_RUN_PURPOSES,
+    KnownOutOfRunPurpose,
     OutOfRunOutcome,
     OutOfRunPurpose,
     OutOfRunSpend,
@@ -186,7 +195,7 @@ from threetears.evals.schema.job_lease import (
     LostField,
     with_fault,
 )
-from threetears.evals.schema.refusal import REFUSAL_KINDS, JobRefusal, RefusalField, RefusalKind
+from threetears.evals.schema.refusal import REFUSAL_KINDS, JobRefusal, KnownRefusalKind, RefusalField, RefusalKind
 from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.schema.traces import CellIdentity, CellTrace, TraceSink
 from threetears.evals.schema.values import (
@@ -213,6 +222,16 @@ from threetears.evals.schema.versioning import (
 )
 
 __all__ = [
+    "KnownModelRoleOrigin",
+    "KnownRoleModelOrigin",
+    "KnownCostCapOrigin",
+    "KnownMeteredCallOrigin",
+    "KnownCellTimeoutOrigin",
+    "KnownReasoningEffort",
+    "KnownUsageRole",
+    "KnownSimulatorPurpose",
+    "KnownOutOfRunPurpose",
+    "KnownRefusalKind",
     "CELL_TIMEOUT_ORIGINS",
     "COST_CAP_ORIGINS",
     "METERED_CALL_ORIGINS",

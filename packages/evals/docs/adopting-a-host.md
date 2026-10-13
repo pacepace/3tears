@@ -244,8 +244,11 @@ or the other, an added optional field included:
   major: every field it does not declare, at every depth, is kept on the model, out of every attribute, dump and
   digest, and written back where it was the next time the engine writes that document, stamped with the newer
   minor. So while a fleet is half upgraded, an older process reads what a newer one wrote as if the new fields
-  were not there, and never drops them; two builds can print different numbers from one store for that window,
-  which each analysis bundle's package version discloses.
+  were not there, and keeps them on every part of the document it carries over (a part it replaces with one it
+  built afresh, such as a renewed lease, takes them with it); two builds can print different numbers from one
+  store for that window, which each analysis bundle's package version discloses. **The tolerance follows the
+  stored bytes, which are trusted:** a host that writes core documents straight into the store, with a
+  `schema_minor` above the build's, gets it too, so write the minor your build writes.
 - **A major is everything else**, and ships an upgrade step (a `CoreUpgrader` appended to `CORE_UPGRADERS`),
   tested against frozen stored documents from every core major since the baseline. Reading an older core
   document upgrades it in memory, one major at a time, before it is validated as strictly as a document written
@@ -263,7 +266,9 @@ while a fleet is mixed.
 reasoning effort, an out-of-run purpose and a stored refusal kind are strings, with the values this build knows
 registered beside each (`USAGE_ROLES`, `COST_CAP_ORIGINS`, …). A newer minor can add a value; this build reads it
 from that minor's document and names it wherever it reports one (a role's spend on a line of its own, an origin
-by name), and refuses it anywhere else. Every other vocabulary on a core document (a run's status, a cell's
+by name), and refuses it anywhere else. Only what is stored is open: a parameter you pass in (an action's filter,
+a writer's argument) takes a value this build knows (`KnownUsageRole`, …) and refuses any other. Every other
+vocabulary on a core document (a run's status, a cell's
 termination, a scale, a provenance, …) is closed: a new value is a major. `schema/versioning.py` lists each.
 
 **Everything else is regenerated.** Analyses, insights and judge profiles are built over the core. When one of

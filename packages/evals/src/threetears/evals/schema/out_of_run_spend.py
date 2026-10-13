@@ -15,7 +15,7 @@ unreadable, never a reason to drop the row of a call that was paid for.
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, Self
+from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, Self, get_args
 
 from pydantic import Field, field_validator, model_validator
 from threetears.evals.schema.base import CoreDocumentModel, known_unless_newer_minor
@@ -42,8 +42,13 @@ if TYPE_CHECKING:
 #: into a value it knows (:mod:`~threetears.evals.schema.versioning`).
 OutOfRunPurpose = str
 
+#: A value of :data:`OutOfRunPurpose` this build knows, as a type: what a caller names (an action's argument, a
+#: filter) and what this build writes, refused outside the set as any ``Literal`` is. A stored field reads
+#: the open :data:`OutOfRunPurpose` instead.
+KnownOutOfRunPurpose = Literal["variation", "proposer", "analysis", "judge", "second_judge"]
+
 #: The values of :data:`OutOfRunPurpose` this build knows, in the order its readers list them.
-OUT_OF_RUN_PURPOSES: Final[tuple[str, ...]] = ("variation", "proposer", "analysis", "judge", "second_judge")
+OUT_OF_RUN_PURPOSES: Final[tuple[str, ...]] = get_args(KnownOutOfRunPurpose)
 
 #: The type of a stored field carrying a out-of-run purpose: one of :data:`OUT_OF_RUN_PURPOSES`, or, on the stored read
 #: of a newer minor's document, a value that minor added.
@@ -163,6 +168,7 @@ class OutOfRunSpendStore(Protocol):
 
 __all__ = [
     "OUT_OF_RUN_PURPOSES",
+    "KnownOutOfRunPurpose",
     "OutOfRunOutcome",
     "OutOfRunPurpose",
     "OutOfRunSpend",

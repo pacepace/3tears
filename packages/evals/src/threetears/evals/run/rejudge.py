@@ -39,6 +39,7 @@ from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, FIND_TEMPLATE, F
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
     from threetears.evals.schema.models import (
+        ClientRequestSettings,
         EvalResult,
         EvalRun,
         EvalTemplate,
@@ -226,6 +227,27 @@ def _refuse_another_judge_prompt(
             )
 
 
+def request_settings_drift(recorded: ClientRequestSettings | None) -> str:
+    """How a run's recorded judge request settings differ from the ones a judge call sends now, in words.
+
+    Two settings can differ where this build cannot see: a run a newer build judged may record a field of the
+    settings this build does not know, which its read keeps, so the two compare unequal while every field this
+    build declares agrees — and printing both would show two identical values. That case is named as what it is.
+
+    Args:
+        recorded: The run's recorded judge request settings (``None`` when it recorded none).
+
+    Returns:
+        A clause for a refusal: "was judged with request settings ... and a judge call now sends ...".
+    """
+    if recorded is not None and recorded.model_dump() == JUDGE_REQUEST_SETTINGS.model_dump():
+        return (
+            f"was judged with request settings that match the ones a judge call now sends ({JUDGE_REQUEST_SETTINGS!r}) "
+            "in every field this build knows, and carry a field it does not, which a newer build recorded"
+        )
+    return f"was judged with request settings {recorded!r} and a judge call now sends {JUDGE_REQUEST_SETTINGS!r}"
+
+
 def recorded_judge_pins(run: EvalRun, *, request_settings: RequestSettingsPolicy) -> str:
     """The run's judge pin, refusing a run whose judging apparatus it did not record.
 
@@ -267,8 +289,8 @@ def recorded_judge_pins(run: EvalRun, *, request_settings: RequestSettingsPolicy
         )
     if request_settings == "today" and run.judge_request_settings != JUDGE_REQUEST_SETTINGS:
         raise ValidationFailedError(
-            f"run '{run.id}' was judged with request settings {run.judge_request_settings!r} and the judge client "
-            f"now sends {JUDGE_REQUEST_SETTINGS!r}; a new call would be asked differently from the rest of the run",
+            f"run '{run.id}' {request_settings_drift(run.judge_request_settings)}; a new call would be asked "
+            "differently from the rest of the run",
             remedy=RELAUNCH_TO_REJUDGE,
         )
     # The judge service asks every dim with no config for DEFAULT_JUDGE_TEMPERATURE. A run that recorded
@@ -520,4 +542,5 @@ __all__ = [
     "recorded_judge_pins",
     "recorded_judged_dims",
     "reproducible_judge_inputs",
+    "request_settings_drift",
 ]
