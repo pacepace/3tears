@@ -6103,7 +6103,7 @@
     },
     "threetears.evals.testing.RecordedCompletions": {
       "kind": "class",
-      "signature": "RecordedCompletions(path: Path, *, inner: CompletionClient | None, recorded: Mapping[str, Sequence[ReplayedCompletion]], model: str | None = None, temperature: float | None | Literal['any'] = 'any', rerecord: str | None = None) -> None",
+      "signature": "RecordedCompletions(path: Path, *, inner: CompletionClient | None, settings: ClientRequestSettings | None, recorded: Mapping[str, tuple[ClientRequestSettings | None, Sequence[ReplayedCompletion]]], model: str | None = None, temperature: float | None | Literal['any'] = 'any', rerecord: str | None = None) -> None",
       "tier": "host-contract"
     },
     "threetears.evals.testing.RecordedPrompt": {

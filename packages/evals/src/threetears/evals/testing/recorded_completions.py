@@ -9,19 +9,26 @@ made, with no network. The examples run this way: live when the provider's key i
 recording when it is not, and ``RECORD=1`` re-records one.
 
 **What a call is matched on.** Each recorded line is keyed by the sha256 of the canonical JSON of the call's
-``system``, ``user`` and ``response_format`` and of the ``model`` and ``temperature`` the completion reported, and
-carries the call's index under that key: the first identical call is index 0, the next 1, so ``k`` repeats of one
-prompt replay as the ``k`` different answers they were. A replaying client knows the prompt it is asked but not the
-model behind it, so it finds the key from the models and temperatures the recording holds; one file can hold several
-clients' calls (two models answering one prompt), and a client replaying one of them names it
-(``replay(path, model=...)``).
+``system``, ``user`` and ``response_format``, of the ``model`` and ``temperature`` the completion reported, and of the
+request settings the client was built with (a :class:`~threetears.evals.schema.ClientRequestSettings`, or ``None``
+for a client built with none), and carries the call's index under that key: the first identical call is index 0, the
+next 1, so ``k`` repeats of one prompt replay as the ``k`` different answers they were. The settings never reach
+``generate`` (a client is built per model, temperature and settings, and is asked only a prompt), so both
+:meth:`RecordedCompletions.record` and :meth:`RecordedCompletions.replay` are told them, and each line carries the
+settings it was recorded under. They are matched because they change the answer: a judge given a reasoning budget
+thinks before it scores and one sent none may not, so a recording made under one is no answer for a client built
+with the other, and a replay asked under settings the prompt was not recorded with is refused naming each setting
+that differs. A replaying client knows the prompt it is asked but not the model behind it, so it finds the key from
+the models and temperatures the recording holds; one file can hold several clients' calls (two models answering one
+prompt, or one model under two settings), and a client replaying one of them names it (``replay(path, model=...)``).
 
-**A miss is refused, never served live.** A prompt the recording does not hold, or one asked more times than it was
-recorded, raises :class:`RecordingRefused` naming the prompt (its first 80 characters), the call's index, and the
-command that re-records it. It is an :class:`~threetears.evals.kernel.host.ApparatusError`: a replay that cannot
-serve is a fault of the rig, not of the code under test, so a candidate that raises it has its cell excluded rather
-than scored. :meth:`RecordedCompletions.check_covers` asks the same question of a list of prompts before any replay
-starts, which is how a test says by name that a prompt changed under its recording.
+**A miss is refused, never served live.** A prompt the recording does not hold, one it holds only under other request
+settings, or one asked more times than it was recorded, raises :class:`RecordingRefused` naming the prompt (its first
+80 characters), the call's index or the settings that differ, and the command that re-records it. It is an
+:class:`~threetears.evals.kernel.host.ApparatusError`: a replay that cannot serve is a fault of the rig, not of the code
+under test, so a candidate that raises it has its cell excluded rather than scored.
+:meth:`RecordedCompletions.check_covers` asks the same question of a list of prompts before any replay starts, which is
+how a test says by name that a prompt changed under its recording.
 
 **What is kept.** All ten :class:`~threetears.evals.schema.CompletionResult` members as the inner client returned
 them, and every other attribute its completion type declares (a dataclass field, a Pydantic field, an instance
@@ -42,7 +49,7 @@ from __future__ import annotations
 
 import json
 import threading
-from collections import Counter, defaultdict
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import UTC, datetime
@@ -58,6 +65,7 @@ from threetears.evals.schema.completion import (
     StopReason,
 )
 from threetears.evals.schema.hashing import canonical_digest
+from threetears.evals.schema.models import ClientRequestSettings
 from threetears.evals.testing.completion_conformance import (
     CompletionConformanceFailure,
     check_completion_conformance,
@@ -72,7 +80,9 @@ _FORMAT_VERSION = 1
 _PROMPT_HEAD = 80
 
 #: The top-level members every recorded line carries, and nothing else at this format version.
-_LINE_MEMBERS = frozenset({"recorder_version", "recorded_at", "key", "index", "user_head", "result", "extra"})
+_LINE_MEMBERS = frozenset(
+    {"recorder_version", "recorded_at", "key", "index", "user_head", "settings", "result", "extra"}
+)
 
 #: Serialises every append in this process, so two recording clients on one file never interleave a line or give two
 #: calls one index.
@@ -158,6 +168,13 @@ class ReplayedCompletion:
     extra: Mapping[str, Any]
 
 
+#: What a recording holds under one key: the request settings it was recorded under, and its calls in index order.
+_Recorded = tuple[ClientRequestSettings | None, list[ReplayedCompletion]]
+
+#: What one recorded key was recorded under beyond its prompt: the model, the temperature and the request settings.
+_HeldUnder = tuple[str, float | None, ClientRequestSettings | None]
+
+
 class RecordedCompletions:
     """A completion client that records the calls an inner client answers, or replays a recording of them.
 
@@ -167,7 +184,8 @@ class RecordedCompletions:
     See the module docstring for what a call is matched on and what is kept.
 
     One replaying client per recorded client: two clients replaying the same model's calls from one file each serve
-    the first answer first, so ``k`` repeats split between them replay out of order.
+    the first answer first, so ``k`` repeats split between them replay out of order. Two clients that differ only in
+    their request settings are two recorded clients, and each replays its own calls.
 
     Attributes:
         FORMAT_VERSION: The recording format this build writes, and the newest it reads.
@@ -182,7 +200,8 @@ class RecordedCompletions:
         path: Path,
         *,
         inner: CompletionClient | None,
-        recorded: Mapping[str, Sequence[ReplayedCompletion]],
+        settings: ClientRequestSettings | None,
+        recorded: Mapping[str, tuple[ClientRequestSettings | None, Sequence[ReplayedCompletion]]],
         model: str | None = None,
         temperature: float | None | Literal["any"] = "any",
         rerecord: str | None = None,
@@ -194,7 +213,10 @@ class RecordedCompletions:
         Args:
             path: The recording.
             inner: The client every call goes to while recording; ``None`` replays.
-            recorded: The calls the recording already holds, by key, in index order.
+            settings: The request settings the client is built with (recording ``inner``, or replaying the client
+                that was recorded), or ``None`` for one built with none: recorded on every line, and matched on replay.
+            recorded: The calls the recording already holds, by key: the request settings the key was recorded under,
+                and its calls in index order.
             model: While replaying, the model whose calls this client serves; ``None`` serves any.
             temperature: While replaying, the temperature whose calls this client serves; ``"any"`` serves any.
             rerecord: The command that re-records ``path``, quoted in every refusal; ``None`` names the convention.
@@ -202,7 +224,8 @@ class RecordedCompletions:
         self.path = path
         self.mode: Literal["record", "replay"] = "replay" if inner is None else "record"
         self._inner = inner
-        self._recorded = {key: list(calls) for key, calls in recorded.items()}
+        self._settings = settings
+        self._recorded = {key: (held, list(calls)) for key, (held, calls) in recorded.items()}
         self._model = model
         self._temperature = temperature
         self._remedy = _rerecord_remedy(path, rerecord)
@@ -213,16 +236,31 @@ class RecordedCompletions:
         self._size = _file_size(path)
 
     @classmethod
-    def record(cls, inner: CompletionClient, path: Path, *, replace: bool = False) -> Self:
+    def record(
+        cls,
+        inner: CompletionClient,
+        path: Path,
+        *,
+        settings: ClientRequestSettings | None,
+        replace: bool = False,
+    ) -> Self:
         """A client that sends every call to ``inner`` and appends what it returns to ``path``.
 
         The completion goes back to the caller unchanged, after its line is written. A recording that exists is
         appended to, its calls numbered after the ones it holds, and read first: one this build cannot read is refused
         before any call is made. ``inner`` is this client's to close: :meth:`aclose` closes it.
 
+        ``settings`` is required and has no default, as :func:`~threetears.evals.ops.start_paid_call`'s ``budget_s``
+        has none: the settings ``inner`` was built with are not on the client and never reach ``generate``, so the
+        recorder cannot read them, and a default would record every client as built with none, which is the one
+        mistake a replay under changed settings could then not catch.
+
         Args:
             inner: The host's real client.
             path: The recording. Its directory is created when missing.
+            settings: The request settings ``inner`` was built with, the same value its builder applied (for a judge,
+                :data:`~threetears.evals.run.JUDGE_REQUEST_SETTINGS`), or ``None`` when it was built with none.
+                Every line carries them and every key covers them.
             replace: Remove ``path`` first and record afresh. Pass it when building the client, before any call;
                 without it, an existing recording is never overwritten.
 
@@ -236,21 +274,30 @@ class RecordedCompletions:
             path.unlink(missing_ok=True)
         path.parent.mkdir(parents=True, exist_ok=True)
         recorded = _read_recording(path, _rerecord_remedy(path, None)) if path.exists() else {}
-        return cls(path, inner=inner, recorded=recorded)
+        return cls(path, inner=inner, settings=settings, recorded=recorded)
 
     @classmethod
     def replay(
         cls,
         path: Path,
         *,
+        settings: ClientRequestSettings | None,
         model: str | None = None,
         temperature: float | None | Literal["any"] = "any",
         rerecord: str | None = None,
     ) -> Self:
         """A client that serves every call from the recording at ``path``, by prompt and call index, with no network.
 
+        Only calls recorded under ``settings`` are served. ``settings`` is required and has no default, as it is for
+        :meth:`record`: a replaying client is asked only a prompt, so the settings the replayed client is built with
+        are known to the caller alone, and a recording made under others is an answer the current configuration never
+        asked for.
+
         Args:
             path: The recording.
+            settings: The request settings the client this one stands in for is built with, the same value
+                :meth:`record` was given for it, or ``None`` for one built with none (which matches only calls recorded
+                with none).
             model: The model whose recorded calls this client serves, when the recording holds a prompt answered by
                 more than one; ``None`` serves whichever the recording holds, and refuses a prompt it holds under two.
             temperature: The same, for a prompt recorded at more than one temperature (``None`` is a call sent with
@@ -266,7 +313,15 @@ class RecordedCompletions:
                 one from a newer format.
         """
         recorded = _readable_replay(path, _rerecord_remedy(path, rerecord))
-        return cls(path, inner=None, recorded=recorded, model=model, temperature=temperature, rerecord=rerecord)
+        return cls(
+            path,
+            inner=None,
+            settings=settings,
+            recorded=recorded,
+            model=model,
+            temperature=temperature,
+            rerecord=rerecord,
+        )
 
     @classmethod
     def check_covers(
@@ -274,6 +329,7 @@ class RecordedCompletions:
         path: Path,
         prompts: Iterable[RecordedPrompt],
         *,
+        settings: ClientRequestSettings | None,
         model: str | None = None,
         temperature: float | None | Literal["any"] = "any",
         rerecord: str | None = None,
@@ -282,28 +338,37 @@ class RecordedCompletions:
 
         What a test calls before a replay starts, so a prompt that changed under its recording is named as such
         rather than surfacing as a miss partway through. A prompt listed ``n`` times needs ``n`` recorded calls.
-        ``model`` and ``temperature`` select the client's calls as :meth:`replay` does.
+        ``settings``, ``model`` and ``temperature`` select the client's calls as :meth:`replay` does, and a prompt held
+        only under other request settings is named with the settings that differ.
 
         Args:
             path: The recording.
             prompts: Every call the code under test will make.
+            settings: As :meth:`replay`'s, and required for the same reason.
             model: As :meth:`replay`'s.
             temperature: As :meth:`replay`'s.
             rerecord: As :meth:`replay`'s.
 
         Raises:
             RecordingRefused: The recording cannot be read (as :meth:`replay`), or holds fewer calls than asked for
-                one or more prompts, each named.
+                one or more prompts, or holds them only under other request settings, each named.
         """
         remedy = _rerecord_remedy(path, rerecord)
         recorded = _readable_replay(path, remedy)
         uncovered: list[str] = []
         for prompt, asked in Counter(prompts).items():
-            keys = _keys_for(recorded, prompt, model, temperature)
+            held_under = _keys_for(recorded, prompt, model, temperature)
+            keys = _under_settings(held_under, settings)
+            if held_under and not keys:
+                uncovered.append(
+                    f"{_head(prompt.user)} is recorded only under other request settings "
+                    f"({_settings_drift(held_under.values(), settings)})"
+                )
+                continue
             if len(keys) > 1:
                 uncovered.append(f"{_head(prompt.user)} is recorded under {_pairs(keys.values())}")
                 continue
-            held = sum(len(recorded[key]) for key in keys)
+            held = sum(len(recorded[key][1]) for key in keys)
             if held < asked:
                 uncovered.append(f"{_head(prompt.user)} is asked {asked} time(s) and recorded {held}")
         if uncovered:
@@ -330,8 +395,9 @@ class RecordedCompletions:
             :class:`ReplayedCompletion`.
 
         Raises:
-            RecordingRefused: Replaying, the recording holds no call for this prompt, holds it under more than one
-                model or temperature this client could serve, or holds fewer calls for it than this one's index.
+            RecordingRefused: Replaying, the recording holds no call for this prompt, holds it only under other
+                request settings, holds it under more than one model or temperature this client could serve, or holds
+                fewer calls for it than this one's index.
             CompletionConformanceFailure: Recording, the inner client's completion lacks a member, or holds a value
                 of the wrong type or one JSON cannot hold.
         """
@@ -342,7 +408,18 @@ class RecordedCompletions:
         return completion
 
     def _serve(self, system: str, user: str, response_format: dict[str, Any] | None) -> ReplayedCompletion:
-        keys = _keys_for(self._recorded, RecordedPrompt(system, user, response_format), self._model, self._temperature)
+        held_under = _keys_for(
+            self._recorded, RecordedPrompt(system, user, response_format), self._model, self._temperature
+        )
+        keys = _under_settings(held_under, self._settings)
+        if held_under and not keys:
+            raise RecordingRefused(
+                self.path,
+                f"the prompt {_head(user)}{self._selection()} is recorded only under other request settings "
+                f"({_settings_drift(held_under.values(), self._settings)}), and a recording serves only a client built "
+                "with the settings it was made under",
+                self._remedy,
+            )
         if not keys:
             raise RecordingRefused(
                 self.path,
@@ -359,7 +436,7 @@ class RecordedCompletions:
         ((key, (model, temperature)),) = keys.items()
         with self._lock:
             index = self._served[key]
-            calls = self._recorded[key]
+            _, calls = self._recorded[key]
             if index >= len(calls):
                 raise RecordingRefused(
                     self.path,
@@ -383,17 +460,18 @@ class RecordedCompletions:
         check_completion_conformance(completion)
         members = _recordable_members(completion)
         extra = _declared_extras(completion)
-        key = _call_key(system, user, response_format, members["model"], members["temperature"])
+        key = _call_key(system, user, response_format, members["model"], members["temperature"], self._settings)
         with _APPEND_LOCK, self._lock:
             if _file_size(self.path) != self._size:
                 self._recorded = _read_recording(self.path, self._remedy) if self.path.exists() else {}
-            calls = self._recorded.setdefault(key, [])
+            _, calls = self._recorded.setdefault(key, (self._settings, []))
             line = {
                 "recorder_version": _FORMAT_VERSION,
                 "recorded_at": datetime.now(UTC).isoformat(),
                 "key": key,
                 "index": len(calls),
                 "user_head": user[:_PROMPT_HEAD],
+                "settings": None if self._settings is None else self._settings.model_dump(mode="json"),
                 "result": members,
                 "extra": extra,
             }
@@ -433,7 +511,33 @@ def _pairs(pairs: Iterable[tuple[str, float | None]]) -> str:
     return ", ".join(f"model {model!r} at temperature {temperature!r}" for model, temperature in sorted(pairs, key=str))
 
 
-def _readable_replay(path: Path, remedy: str) -> dict[str, list[ReplayedCompletion]]:
+def _stated(settings: ClientRequestSettings | None, names: Iterable[str]) -> str:
+    if settings is None:
+        return "no request settings"
+    return ", ".join(f"{name}={getattr(settings, name)!r}" for name in names)
+
+
+def _drift(
+    first: ClientRequestSettings | None,
+    second: ClientRequestSettings | None,
+    labels: tuple[str, str] = ("recorded with", "asked with"),
+) -> str:
+    """How two request settings values differ: each field that differs, the first's value against the second's.
+
+    A value against none names every field the value holds.
+    """
+    names = list(ClientRequestSettings.model_fields)
+    if first is not None and second is not None:
+        names = [name for name in names if getattr(first, name) != getattr(second, name)]
+    return f"{labels[0]} {_stated(first, names)}, {labels[1]} {_stated(second, names)}"
+
+
+def _settings_drift(held: Iterable[_HeldUnder], asked: ClientRequestSettings | None) -> str:
+    """How each request settings value a prompt is recorded under differs from the ones asked, once per value."""
+    return "; ".join(dict.fromkeys(_drift(settings, asked) for _, _, settings in held))
+
+
+def _readable_replay(path: Path, remedy: str) -> dict[str, _Recorded]:
     """The calls a recording holds, refused when there is none to replay: no file, or a file with no calls."""
     if not path.exists():
         raise RecordingRefused(path, "there is no recording at this path", remedy)
@@ -444,34 +548,60 @@ def _readable_replay(path: Path, remedy: str) -> dict[str, list[ReplayedCompleti
 
 
 def _keys_for(
-    recorded: Mapping[str, Sequence[ReplayedCompletion]],
+    recorded: Mapping[str, _Recorded],
     prompt: RecordedPrompt,
     model: str | None,
     temperature: float | None | Literal["any"],
-) -> dict[str, tuple[str, float | None]]:
-    """The recorded keys ``prompt`` could be served from under ``model`` and ``temperature``, each with its pair.
+) -> dict[str, _HeldUnder]:
+    """The recorded keys ``prompt`` is held under for ``model`` and ``temperature``, each with what it was held under.
 
-    A replaying client knows the prompt and not the model behind it, so every (model, temperature) the recording
-    holds is tried, narrowed to the ones the client was told it replays.
+    A replaying client knows the prompt and not the model behind it, so every (model, temperature, request settings)
+    the recording holds is tried, narrowed to the models and temperatures the client was told it replays. The settings
+    are not narrowed here: a key held only under other settings is what a refusal names (:func:`_under_settings`).
     """
-    pairs = {(call.model, call.temperature) for calls in recorded.values() for call in calls}
+    held: dict[str, _HeldUnder] = {}
+    for settings, calls in recorded.values():
+        # Settings are not hashable; their canonical JSON tells two values apart as the key does.
+        settings_form = json.dumps(_settings_member(settings), sort_keys=True)
+        for call in calls:
+            held.setdefault(
+                f"{call.model!r} {call.temperature!r} {settings_form}", (call.model, call.temperature, settings)
+            )
     candidates = {
-        _call_key(prompt.system, prompt.user, prompt.response_format, held_model, held_temperature): (
-            held_model,
-            held_temperature,
-        )
-        for held_model, held_temperature in pairs
-        if (model is None or held_model == model) and (temperature == "any" or held_temperature == temperature)
+        _call_key(prompt.system, prompt.user, prompt.response_format, *under): under
+        for under in held.values()
+        if (model is None or under[0] == model) and (temperature == "any" or under[1] == temperature)
     }
-    return {key: pair for key, pair in candidates.items() if key in recorded}
+    return {key: under for key, under in candidates.items() if key in recorded}
+
+
+def _under_settings(
+    held: Mapping[str, _HeldUnder], settings: ClientRequestSettings | None
+) -> dict[str, tuple[str, float | None]]:
+    """The keys of ``held`` recorded under exactly ``settings`` (``None`` matches only ``None``), with their pairs."""
+    return {key: (model, temperature) for key, (model, temperature, under) in held.items() if under == settings}
 
 
 def _file_size(path: Path) -> int:
     return path.stat().st_size if path.exists() else 0
 
 
+def _settings_member(settings: ClientRequestSettings | None) -> dict[str, Any] | None:
+    """Request settings as a key covers them: the fields that differ from their defaults, or ``None`` for none.
+
+    Defaults are left out so a field ``ClientRequestSettings`` gains later, at a default meaning what was sent before
+    it existed, leaves every recorded key where it was; two values holding the same settings key alike either way.
+    """
+    return None if settings is None else settings.model_dump(mode="json", exclude_defaults=True)
+
+
 def _call_key(
-    system: str, user: str, response_format: dict[str, Any] | None, model: str, temperature: float | None
+    system: str,
+    user: str,
+    response_format: dict[str, Any] | None,
+    model: str,
+    temperature: float | None,
+    settings: ClientRequestSettings | None,
 ) -> str:
     """The sha256 a call is recorded and replayed under. Raises ``UnhashableContentError`` for a directive JSON cannot hold."""
     return canonical_digest(
@@ -481,6 +611,7 @@ def _call_key(
             "response_format": response_format,
             "model": model,
             "temperature": temperature,
+            "settings": _settings_member(settings),
         }
     )
 
@@ -559,24 +690,34 @@ def _completion_of(members: Mapping[str, Any], extra: Mapping[str, Any]) -> Repl
     return ReplayedCompletion(**members, extra=MappingProxyType(dict(extra)))
 
 
-def _read_recording(path: Path, remedy: str) -> dict[str, list[ReplayedCompletion]]:
-    """Every call ``path`` holds, by key in index order, each line checked; the first bad line refuses the file."""
-    recorded: defaultdict[str, list[ReplayedCompletion]] = defaultdict(list)
+def _read_recording(path: Path, remedy: str) -> dict[str, _Recorded]:
+    """Every call ``path`` holds, by key in index order with its settings, each line checked; a bad line refuses all."""
+    recorded: dict[str, _Recorded] = {}
     lines = path.read_text(encoding="utf-8").split("\n")
     if lines and lines[-1] == "":
         lines.pop()  # the newline that ends the last line
     for number, text in enumerate(lines, start=1):
-        key, index, completion = _read_line(path, number, text, remedy)
-        if index != len(recorded[key]):
+        key, index, settings, completion = _read_line(path, number, text, remedy)
+        held, calls = recorded.setdefault(key, (settings, []))
+        if index != len(calls):
             raise _malformed(
                 path,
                 number,
-                f"its call index is {index}, and the lines before it hold {len(recorded[key])} call(s) under its key: "
+                f"its call index is {index}, and the lines before it hold {len(calls)} call(s) under its key: "
                 "the file was edited, or two processes recorded onto it at once",
                 remedy,
             )
-        recorded[key].append(completion)
-    return dict(recorded)
+        if settings != held:
+            raise _malformed(
+                path,
+                number,
+                f"its settings are not the ones the lines before it under its key carry "
+                f"({_drift(held, settings, ('they carry', 'it carries'))}), and a key covers its settings: the file "
+                "was edited",
+                remedy,
+            )
+        calls.append(completion)
+    return recorded
 
 
 def _mismatch(expected: frozenset[str], found: Iterable[str]) -> str | None:
@@ -594,7 +735,28 @@ def _malformed(path: Path, number: int, problem: str, remedy: str) -> RecordingR
     return RecordingRefused(path, f"line {number} is not a recorded call: {problem}", remedy)
 
 
-def _read_line(path: Path, number: int, text: str, remedy: str) -> tuple[str, int, ReplayedCompletion]:
+def _read_settings(path: Path, number: int, settings: Any, remedy: str) -> ClientRequestSettings | None:
+    """A line's ``settings``: ``null``, or request settings this build reads exactly, with no value coerced."""
+    if settings is None:
+        return None
+    if not isinstance(settings, dict):
+        raise _malformed(
+            path, number, f"its settings are a JSON {type(settings).__name__}, not an object or null", remedy
+        )
+    try:
+        return ClientRequestSettings.model_validate(settings, strict=True)
+    except ValueError as invalid:  # a pydantic ValidationError is one
+        raise _malformed(
+            path,
+            number,
+            f"its settings are not request settings this build reads ({' '.join(str(invalid).split())})",
+            remedy,
+        ) from None
+
+
+def _read_line(
+    path: Path, number: int, text: str, remedy: str
+) -> tuple[str, int, ClientRequestSettings | None, ReplayedCompletion]:
     try:
         line = json.loads(text)
     except json.JSONDecodeError as undecodable:
@@ -627,6 +789,7 @@ def _read_line(path: Path, number: int, text: str, remedy: str) -> tuple[str, in
         raise _malformed(path, number, f"its recorded_at {recorded_at!r} is not an ISO 8601 time", remedy) from None
     if not isinstance(line["user_head"], str):
         raise _malformed(path, number, "its user_head is not text", remedy)
+    settings = _read_settings(path, number, line["settings"], remedy)
     if not isinstance(extra, dict):
         raise _malformed(path, number, f"its extra is a JSON {type(extra).__name__}, not an object", remedy)
     if not isinstance(result, dict):
@@ -638,4 +801,4 @@ def _read_line(path: Path, number: int, text: str, remedy: str) -> tuple[str, in
     ]:
         raise _malformed(path, number, "its result's " + "; ".join(problems), remedy)
     members = {name: _normalised(name, result[name]) for name in COMPLETION_RESULT_ATTRIBUTES}
-    return key, index, _completion_of(members, extra)
+    return key, index, settings, _completion_of(members, extra)

@@ -145,8 +145,10 @@ v<version>` prints a release's notes).
 - **Conformance kits** (`testing`): the store, reader, jobs and completion kits, and the import-boundary check
   (`nonpublic_evals_imports`) a host runs over its own code. Beside them, `RecordedCompletions` records the calls a
   host's real completion client answers into a JSONL file once and replays them with no network, so a suite runs
-  offline on what a model actually said; a prompt the recording does not hold is refused by name with the command
-  that re-records it, never sent live.
+  offline on what a model actually said. A call is matched on its prompt and on the model, temperature and request
+  settings (`ClientRequestSettings`, a required `settings=` on `record` and `replay`) it was made with; a prompt the
+  recording does not hold, or holds only under other settings, is refused by name with the command that re-records
+  it, never sent live.
 - **Docs.** The package README; a tutorial; guides to classifier eval sets, reading reports, evaluating agents,
   judges and calibration, adopting a host, choosing a design, cost and budgets, MCP and the command line; and the
   background pages (principles, measuring soundly, the world model, design rationale, prior art, open problems).

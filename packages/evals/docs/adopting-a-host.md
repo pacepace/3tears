@@ -131,18 +131,35 @@ RECORDING = Path("tests/recordings/judge.jsonl")
 
 
 def judge_client():
+    # The settings my_judge_client() is built with: for the judge, the JUDGE_REQUEST_SETTINGS its builder applies.
     if os.environ.get("RECORD"):
-        return RecordedCompletions.record(my_judge_client(), RECORDING, replace=True)
-    return RecordedCompletions.replay(RECORDING, rerecord="RECORD=1 pytest tests/test_judge.py")
+        return RecordedCompletions.record(
+            my_judge_client(), RECORDING, settings=JUDGE_REQUEST_SETTINGS, replace=True
+        )
+    return RecordedCompletions.replay(
+        RECORDING, settings=JUDGE_REQUEST_SETTINGS, rerecord="RECORD=1 pytest tests/test_judge.py"
+    )
 ```
 
+**Pass the settings your client is built with.** `record` and `replay` both require `settings=`: the
+`ClientRequestSettings` your client builder applies to that client (for the judge, `threetears.evals.run`'s
+`JUDGE_REQUEST_SETTINGS`), or `None` for a client built with none. They never reach `generate`, so the recorder
+cannot read them off the client, and they change the answer: a judge given a reasoning budget thinks before it
+scores and one sent none may not. Every line carries them, and a recording made under other settings is refused,
+not served: `RecordingRefused` names each setting that differs, recorded value against asked
+(`recorded with reasoning_max_tokens=8192, reasoning_effort=None, asked with reasoning_max_tokens=None,
+reasoning_effort='high'`), so moving your judge's reasoning budget or output cap tells you to re-record rather than
+replaying answers the new configuration never asked for.
+
 A call is matched on its prompt (`system`, `user`, `response_format`), the model and temperature its completion
-reported, and how many times that prompt was asked before, so `k` repeats replay as the `k` answers they were. A
-prompt the recording does not hold, or one asked once more than it was, is refused (`RecordingRefused`) with the
-prompt's first 80 characters and the re-record command, never sent live; it is an `ApparatusError`, so a candidate
-that meets one has its cell excluded rather than scored. To name a prompt that changed under its recording before a
-replay starts, hand `RecordedCompletions.check_covers(RECORDING, prompts)` the prompts your code sends. One file can
-hold two clients' calls (two models answering one prompt): each replays its own with `replay(path, model=...)`.
+reported, the settings the client was built with, and how many times that prompt was asked before, so `k` repeats
+replay as the `k` answers they were. A prompt the recording does not hold, or one asked once more than it was, is
+refused (`RecordingRefused`) with the prompt's first 80 characters and the re-record command, never sent live; it is
+an `ApparatusError`, so a candidate that meets one has its cell excluded rather than scored. To name a prompt that
+changed under its recording before a replay starts, hand
+`RecordedCompletions.check_covers(RECORDING, prompts, settings=...)` the prompts your code sends. One file can hold
+several clients' calls (two models answering one prompt, or one model under two settings): each replays its own,
+with `replay(path, settings=..., model=...)`.
 
 Recording onto a file that exists appends to it, and only `replace=True` starts afresh. A replayed price
 (`cost_usd`, `price_source`) is what the call cost when it was recorded, not a quote at today's rates. Every
