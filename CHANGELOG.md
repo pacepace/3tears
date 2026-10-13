@@ -50,7 +50,8 @@ failed tool for the rest of a turn then refused every later call to it.
   families that do.
 - **Changed, a hit line:** `- name(argument: type, optional?: type): description`. Arguments a host
   injects are not shown.
-- **Added, `create_tool_search_tool(..., max_limit=20, group_of=None, nothing_fits=None)`:**
+- **Added, `create_tool_search_tool(..., max_limit=DEFAULT_SEARCH_MAX_LIMIT, group_of=None, nothing_fits=None)`**
+  (`DEFAULT_SEARCH_MAX_LIMIT` is 20):
   `group_of` names a tool's family, and a hit list then ends `Also in the <family> family: ...`.
   `nothing_fits(query, ranked)` is handed the whole scored ranking and answers whether to offer none
   of it. The factory holds no similarity floor.
