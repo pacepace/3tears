@@ -248,7 +248,10 @@ or the other, an added optional field included:
   built afresh, such as a renewed lease, takes them with it); two builds can print different numbers from one
   store for that window, which each analysis bundle's package version discloses. **The tolerance follows the
   stored bytes, which are trusted:** a host that writes core documents straight into the store, with a
-  `schema_minor` above the build's, gets it too, so write the minor your build writes.
+  `schema_minor` above the build's, gets it too, so write the minor your build writes. **The roll has a floor:**
+  the tolerance arrived with the minor, in `v0.66.0-evaladopt.22`. A build before it (`.21` included) declares no
+  `schema_minor` and refuses every field it does not declare, so it refuses every core document `.22` or a later
+  build writes, though the major is 14 for both. Roll back no further than `.22`.
 - **A major is everything else**, and ships an upgrade step (a `CoreUpgrader` appended to `CORE_UPGRADERS`),
   tested against frozen stored documents from every core major since the baseline. Reading an older core
   document upgrades it in memory, one major at a time, before it is validated as strictly as a document written
@@ -284,6 +287,16 @@ corpus); a replay that asks for a refused recording stops its cell with a `Casse
 (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 51), the cell model
 (`CELL_MODEL_VERSION`, 12), the report (`REPORT_VERSION`, 9) and the identity keys (`IDENTITY_VERSION`, 24) carry
 separate versions, each at its first public release's value.
+**A judge's identity moves with its wording, and no version number moves with it.** Each result records what asked
+each dim (`EvalResult.judge_config_ids`): `builtin:<sha12>`, a fingerprint of the engine's own judge prompt, or
+`<config id>@<sha12>`, your `JudgeConfig` and a fingerprint of the reply-format suffix the engine appends to its
+prompt. A release that rewords either changes the fingerprint, so every result judged before it is another judge
+for agreement, judge profiles, drift and evidence tiers, and a `calibrated` tier reads `undetermined` until you
+calibrate the new judge. Nothing stored is refused or rewritten. Such a release's notes (`MIGRATIONS.toml`, printed
+by `scripts/release_notes.py`) carry `JUDGE_WORDING_CHANGE_SENTENCE` (in `threetears.evals.schema.models`) and name
+the wording that moved, so read them before you upgrade a scope whose readings rest on calibration. A run's own `judge_config_ids` (the
+config set it launched with, part of its context key) holds bare config ids and no built-in dim, so a wording change
+does not split runs' context: only the results' recorded judges tell the two judges apart.
 An upgrade never recomputes an identity key, so keys from different predicates never silently pool. A kept
 key is stored beside its pre-image and the identity version that computed it, so a read under a later
 `IDENTITY_VERSION` needs no upgrader: a run keeps `variant_levers` beside the keys its results carry, and a
@@ -708,7 +721,7 @@ a default and one leaving it out are one condition.
 
 The engine steers three LLM calls of its own with a prompt: the analysis generator (`ANALYSIS_GEN_PROMPT`,
 one string), the capability proposer (`PROPOSER_PROMPT`) and the boundary proposer (`BOUNDARY_GEN_PROMPT`),
-both sectioned templates. Each is store-master. Your prompt registry holds the copy that runs, an operator
+both sectioned templates (`SeedSection`'s zones are [provisional](#provisional-mechanisms)). Each is store-master. Your prompt registry holds the copy that runs, an operator
 tunes it with no deploy, and the engine ships only the default a fresh deployment starts from.
 
 `SEED_PROMPTS` (from `threetears.evals.kernel`) is that list, one `SeedPrompt` per prompt. Each names its id
@@ -854,7 +867,8 @@ on the profile (`WorldRegistry`), and each cell's `prepare` is handed a `WorldSe
 - **Seeding.** The kind seeds through it — the seed walk, the dimensions' own `seed` handles, then each
   attached carrier's `settle` handle before the first turn.
 - **Turns.** It announces each turn (`at_turn`, which applies any ambient perturbation the template's seed
-  scheduled), and fires or observes its triggered dimensions (`fire`, `observe`).
+  scheduled), and fires or observes its triggered dimensions (`fire`, `observe`; triggered dimensions are
+  [provisional](#provisional-mechanisms)).
 - **Reading back.** Once `invoke` returns, the runner reads every attached dimension back through its
   `read` handle and stores it as the cell's end state; what fired is stored on the result as
   `world_events`.
@@ -905,7 +919,8 @@ harness supplied it, and what it spent — its tokens, model calls, `cost_usd` w
 `price_source`, and any paid non-LLM calls (`external_spend`) — their calls, the provider's own units, and
 `money` where the provider itself billed a figure. The engine folds that spend into the result's
 `inner_agent` and `external` usage, for work still in flight when the cell ended as well as work that
-delivered; a substituted entry reports no spend.
+delivered; a substituted entry reports no spend. Both shapes and both roles are
+[provisional](#provisional-mechanisms).
 
 **Payloads.** Anything else your kind wants kept with a result goes in `kind_payload`, which the engine
 stores and never reads; register a measure for whatever should be compared.
@@ -961,3 +976,35 @@ that errored: a judge's "can't tell" is an answer. Every dim the judge phase ask
 it in `EvalResult.judge_config_ids`, an unfinished one included: a config's id with the reply format's
 fingerprint (`<config id>@<sha12>`; `judge_config_of` reads the id back), or the built-in prompt's `builtin:`
 identity. A re-judge refuses a dim whose recorded identity is not the prompt it would send today.
+
+## Provisional mechanisms
+
+Each mechanism below exists because the first host to adopt the engine needed it. Each was generalised out of
+that host's vocabulary, and none has yet been used by a second host. Use whichever fits your subject. Your
+adoption, as the second host, decides whether each one stays an engine concept. A mechanism no second host uses
+may be removed in a later release, and that release's `MIGRATIONS.toml` notes say so (the core ones then move
+with a core major and an upgrader). None is deprecated, and nothing here changes what is stored.
+
+- **`AsyncDelivery` and `AsyncExternalSpend`** (on `EvalResult.async_deliveries`, a core document). They cover
+  background work a candidate hands off and gets back turns later, with its own model spend and the paid
+  non-LLM calls it made. Skip them and the engine does not see work that finishes after the turn that asked
+  for it: its spend, its timing and whether a harness substituted its payload are yours to keep, in
+  `kind_payload`, which the engine never reads ([Background work](#background-work-payloads-and-spend)).
+- **The `inner_agent` and `external` usage roles** (`KnownUsageRole`). They put a background task's own model
+  calls and its paid third-party calls on spend lines of their own. Skip them and that spend is not in the
+  role breakdown or the blended cost.
+- **`MeteredCallLedger`** (`run.metering`). It caps the third-party calls a run's tools may make, counted at
+  your action dispatcher (`max_metered_calls`), for a provider quota the cost cap cannot see (search credits,
+  a billed API). Skip it and a run's third-party quota is bounded only by your tools' own configuration.
+- **Triggered world dimensions** (`Triggered`, `ConversationSpec.world_rounds`). State that arrives on a
+  condition (a turn, an event, a person) rather than at the first turn: a case's seed arms it, and a world
+  round or your kind fires it. Skip them and your world is set once, before the first turn, and no goal check
+  can ask what `fired(...)` ([A world](#a-world-through-the-cells-session)).
+- **`ChartFont`** (`kernel.host`). A brand face for chart text, declared with the per-character advance widths
+  a renderer lays labels out by. Skip it and charts are drawn in the renderer's own face; nothing a chart
+  states changes.
+- **`SeedSection`'s zones** (`primacy`, `reference`, `recency`, in `kernel`). The sectioned prompt template the
+  two proposer prompts are declared in, ordered by zone, each section with its own condition, formatter and
+  cache class. Without a registry for sectioned templates, you render those sections into the system prompt
+  you hand the proposer yourself (`plan_draft` reads the rendered prompt;
+  [The engine's prompts](#the-engines-prompts-seeded-into-your-registry)).

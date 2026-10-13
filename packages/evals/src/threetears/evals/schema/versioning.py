@@ -35,6 +35,25 @@ only: a host renaming a lever, a kind or an overlay field, or the engine adding 
 a different map, which no recomputation of the stored one reaches, so across such a change the control names only
 the cells stamped before it and the map keeps it described.
 
+**A judge's identity is a version space that is a fingerprint, not a counter.** A result records, per dim, what
+asked it (``EvalResult.judge_config_ids``): ``builtin:<sha12>``, a digest of the engine's own judge prompt as sent
+(:func:`~threetears.evals.schema.models.builtin_judge_config_id`), or ``<config id>@<sha12>``, a configured judge's
+config and a digest of the reply-format suffix the engine appends to its prompt
+(:func:`~threetears.evals.schema.models.configured_judge_config_id`). Nothing is bumped and nothing stored is
+refused when either wording changes; the fingerprint moves, and every result judged before the change is another
+judge to everything that keys a judge by it — agreement, judge profiles, drift and evidence tiers — so a scope's
+``calibrated`` tier reads ``undetermined`` until the new judge is calibrated. Two wordings are two instruments, so
+that is the design; the policy is that it never ships unannounced. A release that rewords a built-in prompt or the
+suffix is breaking, and its ``MIGRATIONS.toml`` notes carry
+:data:`~threetears.evals.schema.models.JUDGE_WORDING_CHANGE_SENTENCE` verbatim, naming the wording that moved;
+``tests/test_judge_identity_pins.py`` pins every fingerprint by value, as the tree computes it and as the newest
+final release shipped it, and fails while one moved since that release and the notes do not carry the sentence.
+**The run is not re-keyed by it.** ``EvalRun.judge_config_ids``, the config set a run committed to and a component
+of its context key, holds the bare config id: the launch writes ``judge.config_ids`` (``run/launch.py``), and
+``RunJudge.config_ids`` is ``{dim_id: config.id for dim_id, config in self.configs.items()}``, with no key for a dim
+the built-in prompt asks. So runs either side of a wording change share their context, and only their results'
+recorded judges tell the two judges apart.
+
 **A core version is a major and a minor.** ``schema_version`` is the major (:data:`CORE_SCHEMA_VERSION`) and
 ``schema_minor`` the minor within it (:data:`CORE_SCHEMA_MINOR`); the store addresses documents by the major
 alone, so the minor is not one of :data:`CORE_ADDRESSING_FIELDS`. A **minor** is additive and nothing else: a new
@@ -52,6 +71,10 @@ field, a new member of a closed vocabulary, any change to what a stored value me
   validated, never an attribute, never in ``model_dump`` or in any digest, and written back exactly as read. A
   value of an open vocabulary this build does not know is read, and every reader that branches on that
   vocabulary has a branch for it that names it rather than folding it into a value it knows.
+  The tolerance has a floor, the build that introduced the minor (``v0.66.0-evaladopt.22``): a build before it
+  declares no ``schema_minor`` (nor ``CampaignDesign.control_levers``) and forbids every field it does not
+  declare, so it refuses every core document a build from that one on writes, though the major is 14 for both.
+  A fleet rolls back no further than that build.
 - *Its major is older:* upgraded through :data:`CORE_UPGRADERS` to this build's shape at this build's minor; a
   field the chain left behind is refused.
 - *Its major is newer, below* :data:`CORE_BASELINE_VERSION`*, or not an integer, or its minor is not a whole
