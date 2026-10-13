@@ -24,6 +24,15 @@ unreachable, a grant missing) serves nothing it holds and stores nothing: every 
 hub, which is never stale, and losing trust empties the cache, so nothing held from before can be
 served when trust returns (the watches' first push judges anything missed meanwhile).
 
+**Bounded by count, not by age.** The cache holds at most ``max_entries`` answers
+(:data:`DEFAULT_CALLER_CACHE_MAX_ENTRIES` unless the constructor is told otherwise). Storing one more
+drops the answer least recently asked for or stored; a dropped answer is simply asked of the hub
+again, so the bound costs a round trip and never a stale answer. Behind a public reader the key is
+one per distinct person, and without the bound the cache would grow for the life of the process in
+any stretch where the access tables are quiet. :attr:`CallerAccessCache.size`,
+:attr:`CallerAccessCache.max_entries` and :attr:`CallerAccessCache.capacity_evictions` say how full
+it is and how often the bound has dropped an answer; reaching the bound for the first time is logged.
+
 **Why an answer asked after an eviction is fresh.** The hub answers ``namespace.discover`` with one
 query of the access tables in the database, never from a cache, and a write's row broadcast goes out
 after its commit; so an eviction heard here means the database already holds the change, and any
@@ -45,6 +54,7 @@ left stale. Binding alone (:func:`bind_caller_cache_to_access_tables`) never cat
 from __future__ import annotations
 
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Generic, Protocol, TypeVar
 from uuid import UUID, uuid7
@@ -65,6 +75,7 @@ __all__ = [
     "CallerKey",
     "CallerNamespaces",
     "CallerNamespacesUnavailable",
+    "DEFAULT_CALLER_CACHE_MAX_ENTRIES",
     "NamespaceDiscovery",
     "bind_caller_cache_to_access_tables",
 ]
@@ -74,6 +85,11 @@ log = get_logger(__name__)
 V = TypeVar("V")
 
 _GROUP_MEMBERS: Final = GroupMemberCollection.schema.name
+
+#: how many callers' answers a :class:`CallerAccessCache` holds unless told otherwise. An answer is a
+#: small value (a set of namespace names), so this is a few megabytes at most, and far more distinct
+#: callers than one pod serves between two access-table changes
+DEFAULT_CALLER_CACHE_MAX_ENTRIES: Final = 10_000
 
 #: the member kinds a caller is made of; a ``group`` member's row is a nesting change and drops all
 _CALLER_KINDS: Final = frozenset({MemberType.USER.value, MemberType.AGENT.value})
@@ -96,15 +112,27 @@ class CallerAccessCache(Generic[V]):
 
     Thread-safe: the registry's listener evicts on the event loop while a tool may read from a worker
     thread.
+
+    :param max_entries: the most answers held at once; one more drops the least recently used
+    :ptype max_entries: int
+    :raises ValueError: when ``max_entries`` is below 1
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_entries: int = DEFAULT_CALLER_CACHE_MAX_ENTRIES) -> None:
         """start empty.
 
+        :param max_entries: the most answers held at once
+        :ptype max_entries: int
         :return: nothing
         :rtype: None
+        :raises ValueError: when ``max_entries`` is below 1
         """
-        self._entries: dict[CallerKey, V] = {}
+        if max_entries < 1:
+            raise ValueError(f"a per-caller cache holds at least one answer, not {max_entries}")
+        self._max_entries = max_entries
+        # least recently used first; a hit and a store both move a caller to the end
+        self._entries: OrderedDict[CallerKey, V] = OrderedDict()
+        self._capacity_evictions = 0
         self._lock = threading.Lock()
         # moved by every eviction; see read_fence
         self._evictions = 0
@@ -166,10 +194,15 @@ class CallerAccessCache(Generic[V]):
         if self.trusted:
             with self._lock:
                 held = self._entries.get(caller)
+                if held is not None:
+                    self._entries.move_to_end(caller)
         return held
 
     def put(self, caller: CallerKey, value: V, *, fence: int) -> bool:
         """hold ``value`` as the caller's answer, unless an eviction landed since ``fence`` was taken.
+
+        Storing past ``max_entries`` drops the least recently used answer; that is a size bound and
+        does not move the fence, since nothing held became stale.
 
         :param caller: the caller
         :ptype caller: CallerKey
@@ -181,14 +214,26 @@ class CallerAccessCache(Generic[V]):
         :rtype: bool
         """
         trusted = self.trusted
+        first_at_bound = False
         with self._lock:
             stored = trusted and fence == self._evictions
             if stored:
                 self._entries[caller] = value
+                self._entries.move_to_end(caller)
+                while len(self._entries) > self._max_entries:
+                    self._entries.popitem(last=False)
+                    first_at_bound = self._capacity_evictions == 0
+                    self._capacity_evictions += 1
             else:
                 self._fence_skipped_stores += 1
         if not stored:
             log.debug("a caller's answer was not stored: an access-table change landed while it was asked")
+        if first_at_bound:
+            log.warning(
+                "the per-caller cache reached its bound; the least recently used answer is dropped for each "
+                "new one from here, and asked of the hub again when wanted",
+                extra={"extra_data": {"max_entries": self._max_entries}},
+            )
         return stored
 
     @property
@@ -200,6 +245,25 @@ class CallerAccessCache(Generic[V]):
         """
         with self._lock:
             return len(self._entries)
+
+    @property
+    def max_entries(self) -> int:
+        """the most answers held at once.
+
+        :return: the bound
+        :rtype: int
+        """
+        return self._max_entries
+
+    @property
+    def capacity_evictions(self) -> int:
+        """answers dropped because the cache was full, since it was built.
+
+        :return: the count
+        :rtype: int
+        """
+        with self._lock:
+            return self._capacity_evictions
 
     @property
     def fence_skipped_stores(self) -> int:

@@ -471,6 +471,10 @@ refused later, by the hub.
   dropped table drop every answer. A read fence keeps an answer asked before an eviction from being
   stored after it. It serves and keeps answers only while it is followed and every watch is running
   (`trusted`); otherwise every question goes to the hub, and losing trust empties it.
+  It holds at most `max_entries` answers (`CallerAccessCache(*, max_entries=)`, default
+  `DEFAULT_CALLER_CACHE_MAX_ENTRIES`, 10,000): one more drops the least recently used, which is
+  asked of the hub again when wanted. A size bound, not an age. `size`, `max_entries` and
+  `capacity_evictions` report it, and reaching the bound for the first time is logged at WARNING.
 - **Added, `threetears.agent.acl.generation_follow.follow_caller_access_cache`**: binds the cache and
   follows the access tables in one call, as `follow_access_tables` does for `AclCache`, and tells the
   cache whether its watches are running (`TableFollower.watching`: running, none failing; a key

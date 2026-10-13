@@ -312,3 +312,92 @@ async def test_an_answer_whose_caller_changed_while_it_was_asked_is_returned_but
     assert cache.fence_skipped_stores == 1
     await names.names_for(**caller)
     assert len(discovery.asked) == 2
+
+
+def test_the_cache_holds_at_most_its_bound_and_drops_the_least_recently_used() -> None:
+    cache: CallerAccessCache[Any] = _followed(CallerAccessCache(max_entries=2))
+    agent = uuid4()
+    first, second, third = (CallerKey(agent, uuid4()) for _ in range(3))
+    for key in (first, second, third):
+        assert cache.put(key, frozenset({"va"}), fence=cache.read_fence())
+    assert cache.size == 2
+    assert cache.max_entries == 2
+    assert cache.capacity_evictions == 1
+    assert cache.get(first) is None, "the least recently used answer is the one dropped"
+    assert cache.get(second) is not None
+    assert cache.get(third) is not None
+
+
+def test_reading_an_answer_keeps_it_ahead_of_one_not_read() -> None:
+    cache: CallerAccessCache[Any] = _followed(CallerAccessCache(max_entries=2))
+    agent = uuid4()
+    first, second, third = (CallerKey(agent, uuid4()) for _ in range(3))
+    cache.put(first, frozenset({"va"}), fence=cache.read_fence())
+    cache.put(second, frozenset({"va"}), fence=cache.read_fence())
+    assert cache.get(first) is not None
+    cache.put(third, frozenset({"va"}), fence=cache.read_fence())
+    assert cache.get(first) is not None
+    assert cache.get(second) is None
+
+
+def test_storing_a_caller_already_held_drops_nobody() -> None:
+    cache: CallerAccessCache[Any] = _followed(CallerAccessCache(max_entries=2))
+    agent = uuid4()
+    first, second = CallerKey(agent, uuid4()), CallerKey(agent, uuid4())
+    cache.put(first, frozenset({"va"}), fence=cache.read_fence())
+    cache.put(second, frozenset({"va"}), fence=cache.read_fence())
+    cache.put(first, frozenset({"tx"}), fence=cache.read_fence())
+    assert cache.size == 2
+    assert cache.capacity_evictions == 0
+    assert cache.get(first) == frozenset({"tx"})
+
+
+def test_a_drop_for_size_does_not_refuse_an_answer_asked_before_it() -> None:
+    # the bound is not a staleness event: an answer whose question was asked before another
+    # caller's answer was dropped for room is still current, and is stored
+    cache: CallerAccessCache[Any] = _followed(CallerAccessCache(max_entries=1))
+    agent = uuid4()
+    first, second, third = (CallerKey(agent, uuid4()) for _ in range(3))
+    cache.put(first, frozenset({"va"}), fence=cache.read_fence())
+    asked_before = cache.read_fence()
+    assert cache.put(second, frozenset({"va"}), fence=cache.read_fence())
+    assert cache.capacity_evictions == 1
+    assert cache.put(third, frozenset({"va"}), fence=asked_before)
+    assert cache.fence_skipped_stores == 0
+
+
+def test_reaching_the_bound_is_logged_once(caplog: pytest.LogCaptureFixture) -> None:
+    cache: CallerAccessCache[Any] = _followed(CallerAccessCache(max_entries=1))
+    agent = uuid4()
+    with caplog.at_level("WARNING", logger="threetears.agent.acl.caller_cache"):
+        for _ in range(4):
+            cache.put(CallerKey(agent, uuid4()), frozenset({"va"}), fence=cache.read_fence())
+    reached = [record for record in caplog.records if "reached its bound" in record.getMessage()]
+    assert len(reached) == 1
+    assert cache.capacity_evictions == 3
+
+
+def test_the_default_bound_is_the_documented_one_and_a_bound_below_one_is_refused() -> None:
+    from threetears.agent.acl import DEFAULT_CALLER_CACHE_MAX_ENTRIES
+
+    assert CallerAccessCache[Any]().max_entries == DEFAULT_CALLER_CACHE_MAX_ENTRIES == 10_000
+    with pytest.raises(ValueError, match="at least one"):
+        CallerAccessCache[Any](max_entries=0)
+
+
+async def test_an_answer_dropped_for_size_is_asked_of_the_hub_again() -> None:
+    from threetears.agent.acl import CallerNamespaces
+
+    discovery = _Discovery(["tools.enr.state.va.1-0"])
+    cache: CallerAccessCache[frozenset[str]] = _followed(CallerAccessCache(max_entries=1))
+    names = CallerNamespaces(lambda: discovery, cache)
+    agent = uuid4()
+    ann = {"agent_id": agent, "user_id": uuid4(), "identity_token": "t", "user_identity_token": "ann"}
+    bob = {"agent_id": agent, "user_id": uuid4(), "identity_token": "t", "user_identity_token": "bob"}
+
+    await names.names_for(**ann)
+    await names.names_for(**ann)
+    assert [asked["user_identity_token"] for asked in discovery.asked] == ["ann"]
+    await names.names_for(**bob)
+    assert await names.names_for(**ann) == frozenset({"tools.enr.state.va.1-0"})
+    assert [asked["user_identity_token"] for asked in discovery.asked] == ["ann", "bob", "ann"]
