@@ -8,8 +8,12 @@ it first appears, and [Concepts](concepts.md) is the glossary.
 The running example is a support-ticket router. It reads a ticket and picks one queue: `billing`, `bug`,
 `account` or `other`.
 
-**Setup.** Install the package (`pip install 3tears-evals`, Python 3.14+), or run `uv sync` in a checkout of this
-repo. Build one file, `triage.py`, as you go. Step 1 starts it. Each later step adds code below what is there and
+**Setup.** Install the package (Python 3.14+), or run `uv sync` in a checkout of this repo. It is not on PyPI until
+0.66.0 ships, so `pip install 3tears-evals` finds nothing yet; until then install it from the repository at the tag
+[the README names](../README.md#first-result-in-10-minutes):
+`pip install "3tears-evals @ git+https://github.com/pacepace/3tears.git@<tag>#subdirectory=packages/evals"`.
+
+Build one file, `triage.py`, as you go. Step 1 starts it. Each later step adds code below what is there and
 replaces the `main()` function and the `asyncio.run(main())` line at the bottom. Run it with
 `python triage.py` (`uv run python triage.py` in the checkout).
 

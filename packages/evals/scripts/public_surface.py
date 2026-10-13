@@ -6,8 +6,8 @@ read it. ``generate_reference.py`` renders the walk as ``docs/reference.md`` for
 holds the installed package to. They share this one walk so the page a reader trusts and the snapshot a test
 trusts never disagree about what a public name is, its kind or its signature.
 
-The walk starts at each public root's ``__all__`` (the roots are ``threetears.evals.PUBLIC_ROOTS``) and reads
-everything else from code: first docstring paragraphs and ``#:`` comments, signatures, Pydantic and dataclass
+The walk starts at the package's own ``__all__`` and each public root's (the roots are
+``threetears.evals.PUBLIC_ROOTS``) and reads everything else from code: first docstring paragraphs and ``#:`` comments, signatures, Pydantic and dataclass
 fields with their annotations as written. Everything it renders is deterministic: stable ordering, no
 timestamps, no object addresses, sets sorted.
 
@@ -345,7 +345,9 @@ def describe(root: str, name: str, obj: Any) -> Item:
         return Item(name, "Types", "type variable", one_line(doc), "")
     simple = isinstance(obj, (str, int, float, bool, type(None), re.Pattern))
     text = stable_repr(obj.pattern if isinstance(obj, re.Pattern) else obj) if simple else ""
-    detail = f"`= {text}`" if simple and len(text) <= 80 else ""
+    # The installed version is read from the distribution's metadata, not written in the source: printing it would
+    # make the page describe the checkout's install rather than the package, and go stale on every release.
+    detail = f"`= {text}`" if simple and len(text) <= 80 and name != "__version__" else ""
     return Item(name, "Constants", f"constant ({type(obj).__name__})", one_line(doc), detail)
 
 
@@ -413,12 +415,23 @@ def factory_name(factory: Callable[[], Any]) -> str:
 # --- the surface -------------------------------------------------------------------------------------------------
 
 
-def public_names() -> Iterator[tuple[str, str, Any]]:
-    """(root, name, object) for every name in every public root's ``__all__``: roots in ``PUBLIC_ROOTS`` order, names
-    sorted as the reference lists them."""
+#: The package itself. Its own ``__all__`` (the public roots, and the installed version) is public too and is walked
+#: first: a consumer reads both from ``threetears.evals``, and no root holds either.
+PACKAGE = "threetears.evals"
+
+
+def walked_modules() -> tuple[str, ...]:
+    """Every module whose ``__all__`` is public: the package itself, then each public root in ``PUBLIC_ROOTS``
+    order."""
     from threetears.evals import PUBLIC_ROOTS
 
-    for root in PUBLIC_ROOTS:
+    return (PACKAGE, *PUBLIC_ROOTS)
+
+
+def public_names() -> Iterator[tuple[str, str, Any]]:
+    """(root, name, object) for every name in every walked module's ``__all__`` (:func:`walked_modules`): the
+    package, then the roots in ``PUBLIC_ROOTS`` order, names sorted as the reference lists them."""
+    for root in walked_modules():
         module = importlib.import_module(root)
         for name in sorted(module.__all__, key=lambda n: (n.casefold(), n)):
             yield root, name, getattr(module, name)
@@ -621,7 +634,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.kernel.AdmissionRefusedError",
         "threetears.evals.kernel.UnreadableRunError",
         "threetears.evals.schema.RefusalKind",
-        # The version constants a host checks a store or a stored document against: one per version space.
+        # The version constants a host checks a store or a stored document against, one per version space, and the
+        # installed build's own version, which a host records beside what it stores since nothing stored carries it.
+        "threetears.evals.__version__",
         "threetears.evals.schema.CORE_SCHEMA_VERSION",
         "threetears.evals.schema.CORE_SCHEMA_MINOR",
         "threetears.evals.schema.CORE_BASELINE_VERSION",
@@ -1202,8 +1217,9 @@ def _literal_assignment(source: str, name: str) -> Any:
 
 
 def exports_at(ref: str | None) -> dict[str, set[str]]:
-    """Each public root at ``ref`` (a tag, or ``None`` for the working tree) → its ``__all__``, read from the source
-    as written there rather than imported, so a release's surface is read without installing it.
+    """Each walked module at ``ref`` (a tag, or ``None`` for the working tree) → its ``__all__``: the package itself
+    and each public root, read from the source as written there rather than imported, so a release's surface is read
+    without installing it.
 
     A tag from before the package existed has no public root, so its surface is empty: every name is new since
     it, and none has left.
@@ -1214,7 +1230,10 @@ def exports_at(ref: str | None) -> dict[str, set[str]]:
     if package is None:
         raise SystemExit(f"threetears.evals is not in the tree at {ref or 'the working tree'}")
     roots = _literal_assignment(package, "PUBLIC_ROOTS")
-    found: dict[str, set[str]] = {}
+    own = _literal_assignment(package, "__all__")
+    if own is None:
+        raise SystemExit(f"{PACKAGE} has no literal __all__ at {ref or 'the working tree'}")
+    found: dict[str, set[str]] = {PACKAGE: set(own)}
     for root in roots:
         base = f"{_SOURCE}/{root.replace('.', '/')}"
         source = _source_at(ref, f"{base}/__init__.py") or _source_at(ref, f"{base}.py")

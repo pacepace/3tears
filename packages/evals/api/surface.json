@@ -1,6 +1,16 @@
 {
   "format": 2,
   "names": {
+    "threetears.evals.__version__": {
+      "kind": "constant (str)",
+      "signature": "",
+      "tier": "host-contract"
+    },
+    "threetears.evals.PUBLIC_ROOTS": {
+      "kind": "constant (tuple)",
+      "signature": "",
+      "tier": "closure"
+    },
     "threetears.evals.schema.ActorPolicy": {
       "kind": "model",
       "signature": "ActorPolicy(id: str, name: str | None = None, policy: str, intent: str, initial_utterance_template: str | None = None)",

@@ -11,7 +11,7 @@ Dev tooling for ``3tears-evals``: it lives beside the package, not in it, and is
     # List the public items that carry no description:
     uv run python packages/evals/scripts/generate_reference.py --gaps
 
-Everything on the page is read from code: each public root's ``__all__`` (the roots are
+Everything on the page is read from code: the package's own ``__all__`` and each public root's (the roots are
 ``threetears.evals.PUBLIC_ROOTS``), first docstring paragraphs and ``#:`` comments, signatures, Pydantic field
 descriptions, the goal-check language's module docstring and builtins, the action catalogue, the command line's
 argparse definition and ``METRIC_DESCRIPTORS``. Nothing on it is written here except headings and the intro, so a
@@ -51,6 +51,7 @@ from public_surface import (
     paragraphs,
     public_names,
     stable_repr,
+    walked_modules,
 )
 from pydantic import BaseModel
 
@@ -110,23 +111,22 @@ def root_slug(root: str) -> str:
 
 
 def api_section() -> Iterator[str]:
-    from threetears.evals import PUBLIC_ROOTS
-
     yield anchor("public-api")
     yield "## Public API"
     yield ""
     yield (
         "Import only from these roots, and only the names below: a module under a root is internal and may move. "
+        "The package itself, `threetears.evals`, exports only the list of roots and the installed version. "
         "Within a root, names are grouped as functions, classes, types and constants, each sorted by name. A "
         "class's kind says what it is: a `model` is a Pydantic model, a `protocol` is something a host implements."
     )
     yield ""
-    for root in PUBLIC_ROOTS:
+    for root in walked_modules():
         yield f"- [`{root}`](#{root_slug(root)})"
     yield ""
     first_root: dict[int, str] = {}
     names = list(public_names())
-    for root in PUBLIC_ROOTS:
+    for root in walked_modules():
         module = importlib.import_module(root)
         yield anchor(root_slug(root))
         yield f"### `{root}`"

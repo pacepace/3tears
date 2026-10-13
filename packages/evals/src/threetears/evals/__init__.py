@@ -27,7 +27,18 @@ engine reads a module-level, context-variable or default host, and importing thi
 and configures nothing, so two hosts in one process — even in one event loop — are two values that
 never meet. ``tests/test_two_hosts_one_process.py`` and ``tests/test_no_process_global_state.py``
 hold that.
+
+**Which build is installed** is :data:`__version__`, the distribution's version as its metadata states it. No
+stored document carries it (each carries its own schema version), so a host that wants to say which build wrote
+what records it beside what it stores.
 """
+
+from importlib.metadata import version as _distribution_version
+
+#: The installed distribution's version, as its metadata states it (``importlib.metadata``): the build a host
+#: records beside what it stores, since no stored document or analysis bundle carries it. A build from a
+#: pre-release tag (``v0.66.0-evaladopt.N``) states the version it prepares, so a host running one records the tag.
+__version__: str = _distribution_version("3tears-evals")
 
 #: The public roots, as absolute module names. A consumer imports from these and from no module
 #: below them, and only the names each root's ``__all__`` declares. ``kernel.host`` and
@@ -52,4 +63,4 @@ PUBLIC_ROOTS: tuple[str, ...] = (
     "threetears.evals.vega",
 )
 
-__all__ = ["PUBLIC_ROOTS"]
+__all__ = ["PUBLIC_ROOTS", "__version__"]

@@ -17,8 +17,9 @@
 <a id="public-api"></a>
 ## Public API
 
-Import only from these roots, and only the names below: a module under a root is internal and may move. Within a root, names are grouped as functions, classes, types and constants, each sorted by name. A class's kind says what it is: a `model` is a Pydantic model, a `protocol` is something a host implements.
+Import only from these roots, and only the names below: a module under a root is internal and may move. The package itself, `threetears.evals`, exports only the list of roots and the installed version. Within a root, names are grouped as functions, classes, types and constants, each sorted by name. A class's kind says what it is: a `model` is a Pydantic model, a `protocol` is something a host implements.
 
+- [`threetears.evals`](#api-threetears-evals)
 - [`threetears.evals.schema`](#api-schema)
 - [`threetears.evals.kernel`](#api-kernel)
 - [`threetears.evals.kernel.host`](#api-kernel-host)
@@ -33,6 +34,16 @@ Import only from these roots, and only the names below: a module under a root is
 - [`threetears.evals.actions`](#api-actions)
 - [`threetears.evals.transports.fastmcp`](#api-transports-fastmcp)
 - [`threetears.evals.vega`](#api-vega)
+
+<a id="api-threetears-evals"></a>
+### `threetears.evals`
+
+The eval engine: templates, cases, runs and results; the trial loop, its judge and simulated user; and the analysis over what runs produced.
+
+**Constants**
+
+- **`__version__`** · constant (str) · The installed distribution's version, as its metadata states it (`importlib.metadata`): the build a host records beside what it stores, since no stored document or analysis bundle carries it.
+- **`PUBLIC_ROOTS`** · constant (tuple) · The public roots, as absolute module names.
 
 <a id="api-schema"></a>
 ### `threetears.evals.schema`

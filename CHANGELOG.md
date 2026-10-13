@@ -24,7 +24,9 @@ v<version>` prints a release's notes).
   examples need the `anthropic` SDK, which the package does not depend on.
 - **Public roots** (`threetears.evals.PUBLIC_ROOTS`): `schema`, `kernel`, `kernel.host`, `run`, `analysis`,
   `analysis.viz`, `gen`, `storage`, `testing`, `quick`, `ops`, `actions`, `transports.fastmcp`, `vega`. A consumer
-  imports only the names each root's `__all__` declares. `api/surface.json` snapshots the surface.
+  imports only the names each root's `__all__` declares. `api/surface.json` snapshots the surface. The package
+  itself exports the roots and `__version__`, the installed version, which a host records beside what it stores
+  since no stored document or analysis bundle carries it.
 - **The quick path** (`threetears.evals.quick`). `run_eval(cases, candidate, expected=..., k=...)` grades any async
   function from a case to an answer. `summary.misses()` lists each miss with its reason. `compare` runs arms
   against a control and returns a typed verdict per measure: `improved`, `regressed`, `not_separated` or
