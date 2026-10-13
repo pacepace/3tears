@@ -8,18 +8,25 @@ diff-visible on its own terms.
 
 **Reads are strict, and so is construction.** ``extra="forbid"`` refuses an unknown key on every
 path — a kwarg typed in code, a key in a stored document, a field in a payload a host supplied.
-There is no tolerant read and no filter on the way in: a filter would turn "this document is from
-another schema" into a quietly different document, which is the one outcome worse than refusing it.
-``schema_version`` on the stored models says which schema wrote a document, and the two kinds of
-stored document read it differently (:mod:`~threetears.evals.schema.versioning`):
+There is no filter on the way in: a filter would turn "this document is from another schema" into a
+quietly different document, which is the one outcome worse than refusing it. ``schema_version`` on
+the stored models says which schema wrote a document, and the two kinds of stored document read it
+differently (:mod:`~threetears.evals.schema.versioning`):
 
 - **A core document is kept** (:class:`CoreDocumentModel`). Its stored read upgrades an older core
-  version step by step through registered upgraders before validating, and refuses a version it
-  cannot read: one from a newer build, one from before the first release, or one that is not a number.
+  major step by step through registered upgraders before validating, and refuses a version it
+  cannot read: a newer major, one from before the first release, or one that is not a number.
 - **A regenerable document is refused at any other version**, and regenerated from the core.
 
-When two builds share one store, the older refuses what the newer wrote, by name. That is the
-deliberate cost of never guessing what a newer field means.
+**One tolerance, scoped to the case a contract makes safe: a core document of this build's major at
+a newer minor.** A minor is additive only, so what a newer minor added is a field this build may
+ignore. Its stored read keeps every field this build does not declare — at the top level and inside
+every shape the document embeds (:class:`CoreShapeModel`) — on the instance it was found on, out of
+every attribute, dump and digest, and its ``to_dict`` writes them back where they were. Only the
+stored read is tolerant: construction and payload validation at a newer minor are refused, and a
+core document at this build's minor or older is read exactly as strictly as any other. When two
+builds share one store, the older refuses only what a newer MAJOR wrote, by name; that is the
+deliberate cost of never guessing what a changed field means.
 
 **The JSON pair is a transport API.** Every eval store path goes through :meth:`to_dict`, so
 :meth:`to_json` / :meth:`from_json` serve a consumer that moves these models over a wire.
@@ -46,23 +53,38 @@ differing only by a space collapse into one and a value is silently lost.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
-from collections.abc import Mapping
-from typing import Annotated, Any, Self
+from collections.abc import Collection, Mapping
+from dataclasses import dataclass
+from functools import cache
+from types import MappingProxyType
+from typing import Annotated, Any, Self, get_args
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ValidationError,
     ConfigDict,
     JsonValue,
     PlainValidator,
+    PrivateAttr,
+    StrictInt,
     StringConstraints,
     TypeAdapter,
+    ValidationInfo,
+    ValidatorFunctionWrapHandler,
     model_validator,
 )
 
-from threetears.evals.schema.versioning import CoreVersionRefused, upgrade_core_document
+from threetears.evals.schema.versioning import (
+    CORE_SCHEMA_MINOR,
+    CORE_SCHEMA_VERSION,
+    CoreVersionRefused,
+    read_core_minor,
+    upgrade_core_document,
+)
 from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
@@ -291,60 +313,371 @@ def without_computed_field_echo(model: type[BaseModel], data: Any) -> Any:
     return {key: value for key, value in data.items() if key not in derived}
 
 
-class CoreDocumentModel(EvalDocumentModel):
-    """A stored document in the evidence core: kept across releases, and upgraded when read at an older version.
+#: The validation-context key :meth:`CoreDocumentModel.from_dict` sets, and nothing else does: this validation is
+#: the stored read of a document of this build's major at a newer minor, whose value is that minor.
+_NEWER_MINOR_READ = "threetears.evals.newer_minor_read"
+
+
+def _newer_minor_read(info: ValidationInfo) -> int | None:
+    """The newer minor a stored read is reading at, or ``None`` when this validation is not one."""
+    context = info.context
+    if not isinstance(context, Mapping):
+        return None
+    minor = context.get(_NEWER_MINOR_READ)
+    return minor if type(minor) is int else None
+
+
+@dataclass(frozen=True)
+class _NewerMinorFields:
+    """The fields a newer minor's document held on one shape that this build does not declare.
+
+    Attributes:
+        minor: The minor the document they were read from was written at.
+        fields: Each undeclared key and its stored value, exactly as read.
+    """
+
+    minor: int
+    fields: Mapping[str, Any]
+
+
+@cache
+def _fields_holding_shapes(model: type[BaseModel]) -> tuple[str, ...]:
+    """The fields of ``model`` whose declared type can hold a model, which a write walks for kept fields.
+
+    Args:
+        model: A model class.
+
+    Returns:
+        The names, in declaration order.
+    """
+
+    def holds_a_model(annotation: Any) -> bool:
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            return True
+        return any(holds_a_model(argument) for argument in get_args(annotation))
+
+    return tuple(name for name, field in model.model_fields.items() if holds_a_model(field.annotation))
+
+
+class CoreShapeModel(BaseModel):
+    """A model the evidence core stores: a core document, or a shape one embeds, at any depth.
+
+    It declares no field and no configuration; it carries the one tolerance the core has
+    (the module's rule). On the stored read of a document of this build's major at a newer minor —
+    and only there, signalled by a validation context only :meth:`CoreDocumentModel.from_dict` sets —
+    the keys a stored mapping holds that this class does not declare are split off before the class's
+    own strict validation runs, and kept on the instance that validation returns. The split is each
+    class's own field declarations (its fields, their aliases, its computed fields), and pydantic
+    carries the context into every nested validation — a list item, a dict value, an optional, a
+    discriminated union's member — so every level keeps its own, with no type walked here. Whatever
+    the class declares is validated exactly as it is anywhere else, ``extra="forbid"`` included.
+
+    The kept fields are not data: they are no attribute, and appear in no ``model_dump``,
+    ``model_dump_json``, ``repr`` or JSON schema, so no digest a pre-image is taken over a dump of can
+    reach them. :meth:`CoreDocumentModel.to_dict` alone writes them back. They travel with the
+    instance through ``model_copy`` (with or without ``update``), a validated assignment, a deep copy
+    and a pickle; an instance built afresh from a read one is a new instance and carries none, which is
+    why construction at a newer minor is refused (:data:`CoreSchemaMinor`).
+
+    Every model a core document embeds carries this base; ``tests/test_core_minor.py`` walks the core's
+    declarations and names one that does not.
+    """
+
+    _newer_minor_fields: _NewerMinorFields | None = PrivateAttr(default=None)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _keep_newer_minor_fields(cls, data: Any, handler: ValidatorFunctionWrapHandler, info: ValidationInfo) -> Any:
+        """On a newer minor's stored read, validate what this class declares and keep the rest on the instance.
+
+        Args:
+            data: The input under validation; only a mapping, on a newer minor's stored read, is split.
+            handler: The class's own validation.
+            info: The validation's context, which says whether this is that read.
+
+        Returns:
+            The validated instance, carrying the fields it does not declare when there were any.
+        """
+        minor = _newer_minor_read(info)
+        if minor is None or not isinstance(data, Mapping):
+            return handler(data)
+        declared = cls._declared_keys()
+        undeclared = {key: value for key, value in data.items() if key not in declared}
+        if not undeclared:
+            return handler(data)
+        shape: CoreShapeModel = handler({key: value for key, value in data.items() if key in declared})
+        shape._newer_minor_fields = _NewerMinorFields(minor=minor, fields=MappingProxyType(copy.deepcopy(undeclared)))
+        return shape
+
+    @classmethod
+    def _declared_keys(cls) -> frozenset[str]:
+        """Every key a mapping of this class may hold: its fields, their aliases, and its computed fields."""
+        keys = set(cls.model_fields) | set(cls.model_computed_fields)
+        for field in cls.model_fields.values():
+            keys.update(alias for alias in (field.alias, field.validation_alias) if isinstance(alias, str))
+        return frozenset(keys)
+
+    def _write_kept_fields(
+        self, shape: CoreShapeModel, dumped: dict[str, Any], minors: list[int], *, by_alias: bool
+    ) -> None:
+        """Put back into ``shape``'s dump what a newer minor's read kept on it and on every shape below it.
+
+        Args:
+            shape: A shape, and ``dumped`` its dump.
+            dumped: The mapping ``to_dict`` dumped ``shape`` to, written into in place.
+            minors: Collects the minor of every kept field written, so the document is stamped no older.
+            by_alias: Whether the dump is keyed by alias.
+        """
+        kept = shape._newer_minor_fields
+        if kept is not None:
+            dumped.update(copy.deepcopy(dict(kept.fields)))
+            minors.append(kept.minor)
+        model_fields = type(shape).model_fields
+        for name in _fields_holding_shapes(type(shape)):
+            field = model_fields[name]
+            key = (field.serialization_alias or field.alias or name) if by_alias else name
+            if key in dumped:
+                self._write_kept_value(getattr(shape, name), dumped[key], minors, by_alias=by_alias)
+
+    def _write_kept_value(self, value: Any, dumped: Any, minors: list[int], *, by_alias: bool) -> None:
+        """:meth:`_write_kept_fields` for one field's value: a shape, or a list, tuple or mapping holding some.
+
+        Raises:
+            ValueError: ``value`` holds kept fields where its dump does not mirror it, so they cannot be put back
+                where they were read; refused rather than dropped.
+        """
+        if isinstance(value, CoreShapeModel) and isinstance(dumped, dict):
+            self._write_kept_fields(value, dumped, minors, by_alias=by_alias)
+        elif isinstance(value, (list, tuple)) and isinstance(dumped, list) and len(dumped) == len(value):
+            for item, dumped_item in zip(value, dumped, strict=True):
+                self._write_kept_value(item, dumped_item, minors, by_alias=by_alias)
+        elif isinstance(value, Mapping) and isinstance(dumped, dict) and all(isinstance(key, str) for key in value):
+            for key, item in value.items():
+                if key in dumped:
+                    self._write_kept_value(item, dumped[key], minors, by_alias=by_alias)
+        elif self._holds_kept_fields(value):
+            raise ValueError(
+                f"{type(self).__name__} holds fields a newer minor wrote in a value its dump does not mirror "
+                f"({type(value).__name__}), so they cannot be written back where they were read"
+            )
+
+    def _holds_kept_fields(self, value: Any) -> bool:
+        """Whether ``value`` holds, at any depth, a shape carrying fields a newer minor's read kept."""
+        if isinstance(value, CoreShapeModel):
+            return self._shape_holds_kept_fields(value)
+        if isinstance(value, Mapping):
+            return any(self._holds_kept_fields(item) for item in value.values())
+        if isinstance(value, Collection) and not isinstance(value, (str, bytes)):
+            return any(self._holds_kept_fields(item) for item in value)
+        return False
+
+    def _shape_holds_kept_fields(self, shape: CoreShapeModel) -> bool:
+        """:meth:`_holds_kept_fields` for one shape: its own kept fields, or any below it."""
+        if shape._newer_minor_fields is not None:
+            return True
+        return any(self._holds_kept_fields(getattr(shape, name)) for name in _fields_holding_shapes(type(shape)))
+
+
+def _built_at_this_minor(minor: int, info: ValidationInfo) -> int:
+    """Refuse a core document at any minor but this build's, except the newer one its own stored read is reading.
+
+    A stored read at this build's minor or older reaches here at this build's minor (its read stamps it, and the
+    document now holds this build's defaults); a newer minor's read reaches here at that minor, carrying what it
+    kept. Anything else is a construction or a payload naming a minor this build did not write.
+
+    Args:
+        minor: The document's ``schema_minor``.
+        info: The validation's context.
+
+    Returns:
+        The minor, unchanged.
+
+    Raises:
+        ValueError: ``minor`` is neither this build's nor the newer one this validation is the stored read of.
+    """
+    if minor == CORE_SCHEMA_MINOR or minor == _newer_minor_read(info):
+        return minor
+    raise ValueError(
+        f"a core document is built at core minor {CORE_SCHEMA_MINOR}, not {minor}; a newer minor is read only by its "
+        "stored read (from_dict), which keeps the fields this build does not know"
+    )
+
+
+#: The ``schema_minor`` field type of every core document: this build's minor, or the newer one its stored read is
+#: reading at.
+CoreSchemaMinor = Annotated[StrictInt, AfterValidator(_built_at_this_minor)]
+
+
+def known_unless_newer_minor(vocabulary: str, known: tuple[str, ...]) -> AfterValidator:
+    """The validator an open vocabulary's stored field carries: a value this build knows, or a newer minor's.
+
+    An open vocabulary grows by a minor: a new value is additive, because every reader that branches on the
+    vocabulary has a branch for a value it does not know that names it. So a value outside ``known`` is read on
+    a newer minor's stored read, and refused everywhere else — a writer at this build's minor cannot have written
+    it, which makes it drift or a typo.
+
+    Args:
+        vocabulary: What a value names, for the refusal (``"usage role"``).
+        known: The values this build knows, in the order its readers list them.
+
+    Returns:
+        An ``AfterValidator`` for ``Annotated[str, ...]``.
+    """
+
+    def known_or_newer(value: str, info: ValidationInfo) -> str:
+        if value in known or _newer_minor_read(info) is not None:
+            return value
+        raise ValueError(
+            f"{value!r} is not a {vocabulary} this build knows ({', '.join(known)}); a {vocabulary} this build does "
+            "not know is read only from a document a newer minor wrote"
+        )
+
+    return AfterValidator(known_or_newer)
+
+
+class CoreDocumentModel(EvalDocumentModel, CoreShapeModel):
+    """A stored document in the evidence core: kept across releases, upgraded when read at an older major, and
+    kept whole when read at a newer minor.
 
     Its stored read, :meth:`from_dict`, upgrades the document through
-    :data:`~threetears.evals.schema.versioning.CORE_UPGRADERS` to the current core version before
+    :data:`~threetears.evals.schema.versioning.CORE_UPGRADERS` to the current core major before
     validating it, so every validator — the model's own and its bases' — sees today's shape. Upgrading
     before validation rather than in a ``before`` validator is deliberate: pydantic runs a concrete
     model's own ``before`` validators ahead of one it inherits, so an inherited upgrade could not
-    promise to run first. A refusal (a newer build's version, a pre-release version, or no version
-    number at all) is raised as a ``ValidationError`` on ``schema_version``, so every caller that
-    isolates an unreadable stored document already isolates it.
+    promise to run first. A refusal (a newer major, a pre-release version, no version number at all,
+    or a minor that is not a whole number) is raised as a ``ValidationError`` on ``schema_version`` or
+    ``schema_minor``, so every caller that isolates an unreadable stored document already isolates it.
 
-    Every other path stays strict: constructing a core document, or validating a payload,
-    at any version but the current one is refused by the ``schema_version`` field itself.
+    A document of this build's major at a newer minor is read with the one tolerance the core has
+    (:class:`CoreShapeModel`), and :meth:`to_dict` writes what it kept back. Every other path stays
+    strict: constructing a core document, or validating a payload, at any major but the current one,
+    or at any minor but this build's, is refused by the ``schema_version`` and ``schema_minor`` fields
+    themselves.
+
+    **Only stored bytes reach the tolerant read.** :meth:`from_dict` and :meth:`from_json` are the
+    stored read; every caller in the engine hands them what a store returned, or a ``to_dict`` of a
+    document a store returned. A payload a caller supplied — an action's arguments, a request body, a
+    host's dict — is validated with ``model_validate``, which never tolerates.
     """
+
+    schema_minor: CoreSchemaMinor = CORE_SCHEMA_MINOR
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Self:
-        """Read a stored core document, upgrading it to the current core version first.
+        """Read a stored core document: upgraded to the current major first, and kept whole at a newer minor.
 
         Args:
             data: The stored document, as the store returned it.
 
         Returns:
-            Model instance, at the current core version.
+            Model instance, at the current core major. Its ``schema_minor`` is this build's, or the newer minor
+            the document was written at, whose fields this build does not know it keeps.
 
         Raises:
-            ValidationError: The document's version is not one this build reads, or the upgraded
+            ValidationError: The document's version or minor is not one this build reads, or the upgraded
                 document fails validation.
         """
-        if isinstance(data, Mapping):
-            try:
-                data = upgrade_core_document({"doc_type": cls.model_fields["doc_type"].default, **data})
-            except CoreVersionRefused as refused:
-                raise ValidationError.from_exception_data(
-                    cls.__name__,
-                    [
-                        {
-                            "type": "value_error",
-                            "loc": ("schema_version",),
-                            "input": data.get("schema_version"),
-                            "ctx": {"error": refused},
-                        }
-                    ],
-                ) from refused
-        return cls.model_validate(data)
+        if not isinstance(data, Mapping):
+            return cls.model_validate(data)
+        try:
+            upgraded = upgrade_core_document({"doc_type": cls.model_fields["doc_type"].default, **data})
+        except CoreVersionRefused as refused:
+            raise cls._refused("schema_version", data.get("schema_version"), refused) from refused
+        try:
+            stored_minor = read_core_minor(data)
+        except CoreVersionRefused as refused:
+            raise cls._refused("schema_minor", data.get("schema_minor"), refused) from refused
+        newer = data.get("schema_version") == CORE_SCHEMA_VERSION and stored_minor > CORE_SCHEMA_MINOR
+        upgraded["schema_minor"] = stored_minor if newer else CORE_SCHEMA_MINOR
+        if newer:
+            return cls.model_validate(upgraded, context={_NEWER_MINOR_READ: stored_minor})
+        return cls.model_validate(upgraded)
+
+    @classmethod
+    def _refused(cls, field: str, value: Any, refused: CoreVersionRefused) -> ValidationError:
+        """A version refusal as the ``ValidationError`` on ``field`` every caller already isolates."""
+        return ValidationError.from_exception_data(
+            cls.__name__,
+            [{"type": "value_error", "loc": (field,), "input": value, "ctx": {"error": refused}}],
+        )
+
+    def to_dict(
+        self,
+        *,
+        exclude_none: bool = False,
+        exclude_unset: bool = False,
+        by_alias: bool = False,
+    ) -> dict[str, Any]:
+        """The document as it is written: every declared field, and every field a newer minor's read kept.
+
+        The kept fields go back where they were read, at whatever depth, exactly as stored — ``exclude_none``
+        and ``exclude_unset`` apply to the fields this build declares, never to another build's bytes — and
+        ``schema_minor`` is stamped with the newest minor any of them was read at, or this document's own when
+        that is newer. So a rewrite never drops a newer build's field, and a shape carried into another document
+        carries its minor with it.
+
+        Args:
+            exclude_none: If True, exclude declared fields with None values
+            exclude_unset: If True, exclude declared fields that were not explicitly set
+            by_alias: If True, use field aliases as keys
+
+        Returns:
+            Dictionary representation with JSON-compatible types
+
+        Raises:
+            ValueError: A kept field sits in a value whose dump does not mirror it, so it cannot be written
+                back where it was read.
+        """
+        document = super().to_dict(exclude_none=exclude_none, exclude_unset=exclude_unset, by_alias=by_alias)
+        minors: list[int] = []
+        self._write_kept_fields(self, document, minors, by_alias=by_alias)
+        if "schema_minor" in document or minors:
+            document["schema_minor"] = max([self.schema_minor, *minors])
+        return document
+
+    def to_json(self, *, indent: int | None = None, exclude_none: bool = False) -> str:
+        r"""Serialize to a JSON string: :meth:`to_dict`, encoded, so a newer minor's kept fields travel too.
+
+        Lone UTF-16 surrogates (\uD800-\uDFFF) are replaced with U+FFFD, as the base does.
+
+        Args:
+            indent: Indentation level for pretty printing (None for compact)
+            exclude_none: If True, exclude declared fields with None values
+
+        Returns:
+            JSON string representation
+        """
+        separators = (",", ":") if indent is None else None
+        raw = json.dumps(
+            self.to_dict(exclude_none=exclude_none), indent=indent, ensure_ascii=False, separators=separators
+        )
+        return _LONE_SURROGATE_RE.sub("\ufffd", raw)
+
+    @classmethod
+    def from_json(cls, json_str: str) -> Self:
+        """Read a core document from JSON: the stored read (:meth:`from_dict`) of the object it encodes.
+
+        Args:
+            json_str: JSON string to parse
+
+        Returns:
+            Model instance, as :meth:`from_dict` reads it
+
+        Raises:
+            ValidationError: If the JSON is invalid, is not an object, or fails :meth:`from_dict`
+        """
+        return cls.from_dict(_VERBATIM_OBJECT.validate_json(json_str))
 
 
 __all__ = [
     "CoreDocumentModel",
+    "CoreSchemaMinor",
+    "CoreShapeModel",
     "EvalBaseModel",
     "EvalDocumentModel",
     "VerbatimJsonObject",
     "VerbatimObject",
     "VerbatimText",
+    "known_unless_newer_minor",
     "without_computed_field_echo",
 ]

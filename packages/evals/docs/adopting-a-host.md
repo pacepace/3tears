@@ -228,19 +228,43 @@ a live one), and the records of every other job: a launch (the runs it started),
 a judge temperature comparison (every answer, stored nowhere else) and a host action's job (its result).
 `CORE_DOC_TYPES` lists them.
 
-**The first public release is the baseline.** It writes core v14 (`CORE_BASELINE_VERSION`, equal to
-`CORE_SCHEMA_VERSION`), regenerable v9 (`REGENERABLE_SCHEMA_VERSION`) and cassette v1
-(`CASSETTE_SCHEMA_VERSION`), and registers no upgrade steps (`CORE_UPGRADERS` is empty): there is nothing older
-for it to read.
+**The first public release is the baseline.** It writes core v14.0 (major `CORE_BASELINE_VERSION`, equal to
+`CORE_SCHEMA_VERSION`, and minor `CORE_SCHEMA_MINOR`, 0), regenerable v9 (`REGENERABLE_SCHEMA_VERSION`) and
+cassette v1 (`CASSETTE_SCHEMA_VERSION`), and registers no upgrade steps (`CORE_UPGRADERS` is empty): there is
+nothing older for it to read.
 
-**A release that changes a core shape ships an upgrader, and your store needs no migration.** Every change
-to a core shape bumps `CORE_SCHEMA_VERSION`, an added optional field included. Each bump comes with one
-upgrade step (a `CoreUpgrader` appended to `CORE_UPGRADERS`), tested against frozen stored documents from every
-core version since the baseline. Reading an older core document upgrades it in memory, one version at a time,
-before it is validated as strictly as a document written today; the stored bytes stay as they are until the
-engine next writes that document, at the current version. So one scope can hold documents at several core
-versions. A step never changes a field the store filters, sorts or projects on (`CORE_ADDRESSING_FIELDS`), so
-an index your adapter keeps on those fields stays valid.
+**A core version is a major and a minor, and your store needs no migration for either.** Every core document
+carries `schema_version`, the major, and `schema_minor`, the minor within it. Every change to a core shape is one
+or the other, an added optional field included:
+
+- **A minor is additive only**: a new optional field with a default, a new optional sub-object, a new value of an
+  open vocabulary, a new doc type. Its ledger entry says, in words, that an older build that ignores the change
+  reads the document correctly and its writes leave it true (`MINOR_ADDITIVITY_SENTENCE`); when that is false, the
+  change is a major. **A minor rolls with no stop, in either direction.** A build reads any newer minor of its own
+  major: every field it does not declare, at every depth, is kept on the model, out of every attribute, dump and
+  digest, and written back where it was the next time the engine writes that document, stamped with the newer
+  minor. So while a fleet is half upgraded, an older process reads what a newer one wrote as if the new fields
+  were not there, and never drops them; two builds can print different numbers from one store for that window,
+  which each analysis bundle's package version discloses.
+- **A major is everything else**, and ships an upgrade step (a `CoreUpgrader` appended to `CORE_UPGRADERS`),
+  tested against frozen stored documents from every core major since the baseline. Reading an older core
+  document upgrades it in memory, one major at a time, before it is validated as strictly as a document written
+  today; the stored bytes stay as they are until the engine next writes that document, at the current version. A
+  newer major is refused, so every process sharing the store moves to it together.
+
+So one scope can hold documents at several core versions. Neither a minor nor a step changes a field the store
+filters, sorts or projects on (`CORE_ADDRESSING_FIELDS`, which the minor is not one of), so an index your adapter
+keeps on those fields stays valid. Two things an older build cannot do for a new doc type a minor adds: its
+operator wipe does not sweep it, and its deletes (`run_delete` and the cascades it runs) cannot reach it, so a
+document of the new type can be left orphaned for the upgraded build. Wipe and delete from the newest build
+while a fleet is mixed.
+
+**Some vocabularies are open.** A usage role, a simulator purpose, a ceiling's or a role model's origin, a
+reasoning effort, an out-of-run purpose and a stored refusal kind are strings, with the values this build knows
+registered beside each (`USAGE_ROLES`, `COST_CAP_ORIGINS`, …). A newer minor can add a value; this build reads it
+from that minor's document and names it wherever it reports one (a role's spend on a line of its own, an origin
+by name), and refuses it anywhere else. Every other vocabulary on a core document (a run's status, a cell's
+termination, a scale, a provenance, …) is closed: a new value is a major. `schema/versioning.py` lists each.
 
 **Everything else is regenerated.** Analyses, insights and judge profiles are built over the core. When one of
 their shapes changes, `REGENERABLE_SCHEMA_VERSION` is bumped and a document written under another version is
@@ -251,7 +275,7 @@ when the cassette itself changes, because re-capturing a corpus calls your third
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
-**Each version space moves on its own.** Core documents (v14), regenerable documents (v9), cassettes
+**Each version space moves on its own.** Core documents (v14.0), regenerable documents (v9), cassettes
 (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 50), the cell model
 (`CELL_MODEL_VERSION`, 12), the report (`REPORT_VERSION`, 9) and the identity keys (`IDENTITY_VERSION`, 24) carry
 separate versions, each at its first public release's value.
@@ -264,9 +288,12 @@ recomputes the control's key from that map, so it still names its arm's new runs
 records no map; under another version it reads as `stale` (`RealizedDesign.control_excluded`), and the remedy is
 to address it again from a run.
 
-**Reads stay strict.** Every stored model refuses an unknown field and a missing required one. A core
-document written by a newer release is refused, never guessed at, so when two builds share one store,
-upgrade the older one. A core document written before the first public release (below core v14) is refused
+**Reads stay strict everywhere the contract cannot vouch for the unknown.** Every stored model refuses an
+unknown field and a missing required one, at any depth, with one exception: a core document of this build's major
+at a newer minor, read as above. A core document written by a newer major is refused, never guessed at, so when
+two builds share one store across a major, upgrade the older one. Only the stored read is tolerant: a document a
+caller hands an authoring surface is validated strictly, and `schema_minor` is a server field it ignores. A core
+document written before the first public release (below core v14) is refused
 too: its read fails validation on `schema_version`, with a message that names it a pre-release document and
 the baseline it is below. Pre-release documents are never read, so delete them (the operator wipe) rather than
 keep them beside released ones.

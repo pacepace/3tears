@@ -32,7 +32,7 @@ from threetears.evals.kernel.declaration import CampaignDesign
 from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier, JudgedTierRule, weakest_judged_tier
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
-from threetears.evals.schema.base import CoreDocumentModel, EvalDocumentModel
+from threetears.evals.schema.base import CoreDocumentModel, CoreShapeModel, EvalDocumentModel
 from threetears.evals.schema.job_lease import (
     CancelRequestReasonField,
     CancelRequestedAtField,
@@ -1146,7 +1146,7 @@ class EvalGenerationSlot(CoreDocumentModel):
 SweepOutcome = Literal["running", "completed", "failed", "cancelled", "timed_out"]
 
 
-class SweepArmRecord(EvalDocumentModel):
+class SweepArmRecord(EvalDocumentModel, CoreShapeModel):
     """One arm of a sweep as its record carries it: what it is called, its model, and its run once launched."""
 
     label: str = Field(min_length=1, description="The arm's name, unique within the sweep.")

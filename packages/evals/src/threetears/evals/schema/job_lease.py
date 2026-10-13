@@ -39,10 +39,10 @@ from typing import Annotated, Final, Protocol
 
 from pydantic import Field, StringConstraints
 
-from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema.base import CoreShapeModel, EvalBaseModel
 
 
-class JobLease(EvalBaseModel):
+class JobLease(EvalBaseModel, CoreShapeModel):
     """Which process holds a job, and until when: renewed while the work runs, and lost once it lapses."""
 
     holder: str = Field(
@@ -69,7 +69,7 @@ class JobLease(EvalBaseModel):
         return datetime.fromisoformat(self.expires_at)
 
 
-class JobLoss(EvalBaseModel):
+class JobLoss(EvalBaseModel, CoreShapeModel):
     """How a job was found lost: when, and why — written once, by whoever found it."""
 
     at: str = Field(min_length=1, description="When the loss was written (ISO-8601, UTC).")

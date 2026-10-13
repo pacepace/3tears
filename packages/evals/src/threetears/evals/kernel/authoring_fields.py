@@ -1,15 +1,19 @@
-"""The write-seam refusal every eval authoring surface shares: a field the target model does not declare.
+"""The write seam every eval authoring surface shares: a field the target model does not declare, and an edit of a
+stored document that keeps what a newer build wrote on it.
 
 Templates, rubric dimensions, judge configs and campaigns are authored by the same two surfaces
-(MCP and REST) through functions in two packages that may not import each other, so the one guard
-they share lives here rather than in either.
+(MCP and REST) through functions in two packages that may not import each other, so the guards
+they share live here rather than in either.
 """
 
 from __future__ import annotations
 
+from collections.abc import Collection, Mapping
 from typing import TYPE_CHECKING, Any
 
 from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.schema.base import CoreDocumentModel
+from threetears.evals.schema.versioning import CORE_SCHEMA_MINOR
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -56,6 +60,44 @@ def reject_unknown_authoring_fields(
         )
 
 
+def edited_core_document[M: CoreDocumentModel](
+    model: type[M], existing: M, changes: Mapping[str, Any], *, drop: Collection[str] = ()
+) -> M:
+    """``existing`` with ``changes`` set on it: what the caller sent validated strictly, what a newer build wrote kept.
+
+    An edit of a stored core document is two questions, answered by two validations. **Is what the caller sent
+    valid?** The stored document as THIS build declares it (``model_dump``, which carries no field a newer minor's
+    read kept, at any depth), with ``changes`` on top, at this build's minor, is validated as strictly as any
+    payload — so a value the caller sent, at any depth, is refused exactly as it is on a document this build wrote,
+    and a caller can never reach the stored read's tolerance (an unknown field NAME is refused before this, by
+    :func:`reject_unknown_authoring_fields`, and ``schema_minor`` is a server field every authoring surface
+    ignores). **What is written?** The stored document's ``to_dict`` — every field a newer build wrote on it, at its
+    minor — with the same ``changes`` on top, read back through ``from_dict``, the stored read, which keeps them. Only
+    the second is returned; the first only refuses.
+
+    Args:
+        model: The core document's model.
+        existing: The document as its stored read returned it.
+        changes: The fields to set, each to its new value: the caller's (already checked by name) and the
+            surface's own (``updated_at``).
+        drop: Fields to leave out of the result, so their defaults are taken (a new version's fresh ``id``).
+
+    Returns:
+        The edited document, ready to write.
+
+    Raises:
+        ValidationError: ``changes`` makes a document this build refuses.
+    """
+    declared = {**existing.model_dump(mode="json"), **changes, "schema_minor": CORE_SCHEMA_MINOR}
+    written = {**existing.to_dict(), **changes}
+    for key in drop:
+        declared.pop(key, None)
+        written.pop(key, None)
+    model.model_validate(declared)
+    return model.from_dict(written)
+
+
 __all__ = [
+    "edited_core_document",
     "reject_unknown_authoring_fields",
 ]

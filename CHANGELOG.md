@@ -48,15 +48,28 @@ notes).
   store, a routed store that sends each doc type to its own backend, and `bridge_async_store` for an async
   backend. A store call made on an event-loop thread is refused (`StoreCalledOnEventLoop`), and the refusal names
   the host's own frame. `run_blocking` moves the call off the loop. Stored documents are read strictly: an unknown
-  field, a missing required one, or a newer schema is refused by name, never guessed.
+  field, a missing required one, or a newer schema is refused by name, never guessed. The one exception is a newer
+  minor of the evidence core, below.
 - **History is kept across releases.** The evidence core (cases, runs, results, traces, calibration ratings, the
   out-of-run spend ledger, templates, judge configs, rubric dims, campaigns and job records) is read forever from
   this release's **core schema v14**, the baseline. A later release upgrades an older core document in memory, one
   version at a time, and the stored bytes change only on the next write. Analyses, insights and judge profiles can
   be regenerated: one written by another build is refused, and the operator regenerates it. A cassette's format has
   a version of its own (`CASSETTE_SCHEMA_VERSION` 1), so a change to the analyses never refuses a recorded corpus;
-  only a change to the cassette itself does, and the corpus is then re-captured. A store is upgraded with no job
+  only a change to the cassette itself does, and the corpus is then re-captured. A major is deployed with no job
   running.
+- **An additive core change rolls with no stop.** The core version is a major (`schema_version`, 14) and a minor
+  (`schema_minor`, 0). A minor is additive only (a new optional field, a new optional sub-object, a new value of an
+  open vocabulary, a new doc type) and carries a ledger sentence asserting that an older build that ignores it
+  reads the document correctly and writes it true. This release reads any newer minor of its own major, keeps
+  every field it does not declare (at every depth, out of every attribute, dump and digest) and writes them back on
+  its next write, so a mixed fleet shares one store through an additive change in either direction. An unknown
+  field at this build's minor or older, and a newer major, are refused as before; only the stored read is ever
+  tolerant, and `schema_minor` is a server field every authoring surface ignores. The vocabularies that grow
+  (usage roles, simulator purposes, ceiling and role origins, reasoning effort, out-of-run purposes, refusal kinds)
+  are open strings with a registry of the values this build knows, and every reader names a value it does not
+  know rather than folding or dropping it; every other vocabulary on a core shape is closed, and extending one is a
+  major, deployed with no job running.
 - **Identity.** A configuration is keyed by the content that ran (`IDENTITY_VERSION` 24), so an edited prompt is
   never averaged in with its old version, and a run's kind is part of its variant. A key is stored beside the lever
   map it was computed from: a run's `variant_levers`, and a campaign control's `control_levers` and
@@ -123,9 +136,10 @@ notes).
   Each tag's own `CHANGELOG.md` and `MIGRATIONS.toml` hold that pre-release's notes and the names that moved. **A
   store written before `v0.66.0-evaladopt.21` is not read:** its core documents (schema v8 to v13) are refused by
   name as pre-release and its regenerable ones by version, so such an adopter deletes its eval documents. From
-  `.21` on, the store is the v14 baseline this release reads, and every core shape change bumps the version with
-  an upgrader, as it will after release. Every pre-release, `.21` included, stamped its cassettes with the
-  regenerable version; this release reads them at cassette v1 and refuses them, so their corpora are re-captured.
+  `.21` on, the store is the v14 baseline this release reads, and every core shape change is a version, as it will
+  be after release: a minor for an additive change, a major with an upgrader for any other. Every pre-release,
+  `.21` included, stamped its cassettes with the regenerable version; this release reads them at cassette v1 and
+  refuses them, so their corpora are re-captured.
 
 ## v0.65.0 -- 2026-10-05
 

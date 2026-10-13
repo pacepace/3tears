@@ -14,7 +14,7 @@ from typing import Literal, NamedTuple, Self
 
 from pydantic import Field, model_validator
 
-from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema.base import CoreShapeModel, EvalBaseModel
 from threetears.evals.schema.models import (
     DEFAULT_JUDGE_TEMPERATURE,
     MODEL_DEFAULT_TEMPERATURE,
@@ -55,14 +55,14 @@ TEMPERATURE_SETTINGS: tuple[TemperatureSettingSpec, ...] = (
 )
 
 
-class TemperatureSkip(EvalBaseModel):
+class TemperatureSkip(EvalBaseModel, CoreShapeModel):
     """A result of the run the comparison did not re-judge, and why."""
 
     result_id: str
     reason: str
 
 
-class TemperatureAnswer(EvalBaseModel):
+class TemperatureAnswer(EvalBaseModel, CoreShapeModel):
     """One judge call's answer: a score, a "can't tell", or a failure."""
 
     score: RubricScore | None = Field(default=None, description="The score, as the judge gave it and recorded it.")
@@ -84,7 +84,7 @@ class TemperatureAnswer(EvalBaseModel):
         return self
 
 
-class TemperatureCaseAnswers(EvalBaseModel):
+class TemperatureCaseAnswers(EvalBaseModel, CoreShapeModel):
     """Every answer one result's dimension got at one setting, in call order."""
 
     result_id: str
@@ -95,7 +95,7 @@ class TemperatureCaseAnswers(EvalBaseModel):
     answers: list[TemperatureAnswer]
 
 
-class JudgeTemperatureAnswers(EvalBaseModel):
+class JudgeTemperatureAnswers(EvalBaseModel, CoreShapeModel):
     """What a judge temperature comparison asked, was answered and spent — before anything is read off it.
 
     Attributes:

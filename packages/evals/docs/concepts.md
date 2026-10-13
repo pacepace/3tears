@@ -259,7 +259,9 @@ scores, cost and what the kind reported. Its turn-by-turn trace is stored beside
 The stored documents a later release always reads (`CORE_DOC_TYPES`): cases, runs, results and their traces,
 calibration ratings, out-of-run spend, case sets, the templates, judge configs and rubric dims they name,
 campaigns, sweeps, analysis attempts, generation slots, and the records of every other job (launches, second
-judge passes, judge temperature comparisons, host action jobs). An older one is upgraded as it is read. Analyses, insights, judge
+judge passes, judge temperature comparisons, host action jobs). An older one is upgraded as it is read, and one a
+newer minor wrote (an additive change) is read with the fields this build does not know kept and written back.
+Analyses, insights, judge
 profiles and cassettes are outside it: a release that changes their format refuses them, and they are made again
 ([what is kept](adopting-a-host.md#stored-data-what-is-kept)). A cassette's format has a version of its own, so a
 change to the analyses never refuses a corpus.

@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Literal, Self
 
 from pydantic import Field, model_validator
 
-from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.schema.base import CoreShapeModel, EvalDocumentModel
 
 if TYPE_CHECKING:
     from threetears.evals.schema.models import ApparatusProvenance
@@ -58,7 +58,7 @@ WorldEventKind = Literal["turn", "event", "human", "ambient"]
 WorldEventCause = Literal["rig", "world"]
 
 
-class WorldEvent(EvalDocumentModel):
+class WorldEvent(EvalDocumentModel, CoreShapeModel):
     """One thing that moved a cell's world after it was seeded, in the order it happened."""
 
     kind: WorldEventKind = Field(description="A triggered dimension's trigger kind, or ``ambient``.")
