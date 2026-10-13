@@ -302,7 +302,7 @@ result's `cost_usd` is derived from the row, the summary prints `candidate spend
 Pass `served_model=` too, the model the provider's response named: without it the run records only the model
 asked for, and its summary says which model answered is unconfirmed
 ([Reading reports](reading-reports.md#which-model-answered)).
-`examples/compare_two_models.py` prices each call this way.
+`examples/compare_two_efforts.py` returns each call's spend this way.
 
 **Every surface that states what an arm costs reads `production_replicating_cost`**, the spend of the roles
 production runs: the contrasts, each decision-surface cell, its cost column and a frontier's cost axis (which

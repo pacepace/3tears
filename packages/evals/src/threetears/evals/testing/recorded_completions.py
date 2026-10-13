@@ -5,7 +5,8 @@ never the same answer twice), stand a scripted double in for it (free, but what 
 a model's), or call it once and keep what it said. :class:`RecordedCompletions` is the third.
 :meth:`RecordedCompletions.record` wraps the host's real client and appends every completion it returns to a JSONL
 file; :meth:`RecordedCompletions.replay` reads that file and hands the same completions back, in the order they were
-made, with no network.
+made, with no network. The package's examples run on it: live with a key, recorded with ``RECORD=1``, and otherwise
+replayed from ``examples/recordings/`` (``examples/README.md``).
 
 **What a call is matched on.** Each recorded line is keyed by the sha256 of the canonical JSON of the call's
 ``system``, ``user`` and ``response_format``, of the ``model`` and ``temperature`` the completion reported, and of the
@@ -369,7 +370,7 @@ class RecordedCompletions:
         remedy = _rerecord_remedy(path, rerecord)
         recorded = _readable_replay(path, remedy)
         uncovered: list[str] = []
-        for prompt, asked in Counter(prompts).items():
+        for prompt, asked in _tally(prompts):
             held_under = _keys_for(recorded, prompt, model, temperature)
             keys = _under_settings(held_under, settings)
             if held_under and not keys:
@@ -575,6 +576,26 @@ def _rerecord_remedy(path: Path, rerecord: str | None) -> str:
     if rerecord:
         return f"re-record {path} with `{rerecord}`, the provider's key set"
     return f"re-record {path} with the client it stands in for (RecordedCompletions.record(..., replace=True))"
+
+
+def _tally(prompts: Iterable[RecordedPrompt]) -> list[tuple[RecordedPrompt, int]]:
+    """Each distinct prompt with how many times it is listed, in first-listed order.
+
+    Counted by the prompt's canonical JSON, not by hashing it: a ``response_format`` is a dict, which does not hash,
+    and two directives equal as JSON are the same call however their keys were ordered.
+
+    Args:
+        prompts: The prompts, each repeat listed once per repeat.
+
+    Returns:
+        ``(prompt, times listed)`` per distinct prompt.
+    """
+    tally: dict[str, tuple[RecordedPrompt, int]] = {}
+    for prompt in prompts:
+        identity = json.dumps([prompt.system, prompt.user, prompt.response_format], sort_keys=True)
+        first, listed = tally.get(identity, (prompt, 0))
+        tally[identity] = (first, listed + 1)
+    return list(tally.values())
 
 
 def _head(user: str) -> str:

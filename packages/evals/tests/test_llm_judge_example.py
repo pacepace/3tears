@@ -1,85 +1,60 @@
-"""``examples/llm_judge.py`` runs as a newcomer would run it, with no API key, and reads its judge's misses.
+"""``examples/llm_judge.py`` runs as a newcomer would run it with no API key: against its recording, and reads its misses.
 
-Offline, the candidate and the judge are its stand-ins, so the run is deterministic and its output must say it is
-not a model's. The judge is pass/fail, so a failed dimension is a miss the example prints with the judge's reason.
-The live client is ``examples/_live.py``'s, tested in ``test_live_example.py``; here the live path is driven over a
-faked SDK only to hold the call count the docstring states.
+With no key the example replays ``examples/recordings/llm_judge.jsonl``, what Claude answered and judged when the
+run was recorded, so no test calls the API. Its answers are checked against the recording before the run, so a
+prompt that changed under it is named rather than met as a miss partway through; a judge prompt depends on the
+answer it judges, so a miss there fails the test with the refusal that names it. Nothing here assumes what Claude
+said: the run is held to its shape, the counts its docstring states, and the misses it prints.
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any
-
 import pytest
 
 from threetears.evals.analysis import EvalSummary
-from packages.evals.tests.example_loader import EXAMPLES, load_example
+from threetears.evals.run import JUDGE_REQUEST_SETTINGS
+from threetears.evals.testing import RecordedPrompt
+from packages.evals.tests.example_loader import EXAMPLES, check_covers, load_example, replaying
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 
 
-async def test_with_no_api_key_the_example_runs_offline_and_prints_each_miss_with_the_judge_s_reason(
+async def test_with_no_api_key_the_example_replays_its_recording_and_prints_each_miss_with_the_judge_s_reason(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    summary = await load_example("llm_judge.py").main()
+    module = load_example("llm_judge.py")
+    answers = [RecordedPrompt(module.SYSTEM, case["question"]) for case in module.CASES for _ in range(2)]
+    check_covers(module, answers, settings=module.SETTINGS, model=module.MODEL)
+    replay = replaying(module, monkeypatch)
+
+    summary = await module.main()
+
+    assert replay.served() == 30, "5 questions x 2 repeats, each answered once and judged on 2 dimensions"
+    asked = [settings for settings, _, _ in replay.calls]
+    assert (asked.count(module.SETTINGS), asked.count(module.JUDGE_SETTINGS)) == (10, 20)
     assert isinstance(summary, EvalSummary)
-    assert summary.status == "completed"
+    assert summary.status == "completed" and summary.errors == []
     assert (summary.n_cases, summary.k_runs, summary.n_results, summary.n_scored) == (5, 2, 10, 10)
     assert summary.measures == [], "the judge is the only grade"
     judged = {dimension.name: dimension for dimension in summary.judged}
     assert list(judged) == ["answer.helpful", "answer.grounded"]
     assert all(dimension.scale == "pass_fail" and dimension.n == 10 for dimension in judged.values())
-    assert (judged["answer.helpful"].mean, judged["answer.grounded"].mean) == (1.0, 0.8)
-    assert summary.role_spend("judge").calls == 20 and summary.errors == []
-    assert summary.judge_shares_candidate_model == [], "the stand-in judge is not the stand-in candidate"
+    assert summary.role_spend("judge").calls == 20
+    assert summary.judge_shares_candidate_model == [module.MODEL], "a model judging its own answers is disclosed"
 
-    misses = summary.misses()
-    assert [(miss.input["question"], miss.repeat) for miss in misses] == [
-        ("Do you offer gift wrapping?", 1),
-        ("Do you offer gift wrapping?", 2),
-    ]
     out = capsys.readouterr().out
-    assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE")
+    assert out.startswith("ANTHROPIC_API_KEY is not set: replaying recordings/llm_judge.jsonl, Claude (")
     assert summary.render() in out
-    assert "the judge failed it on answer.grounded: offline stand-in, word overlap: 2 of the answer's 8 words" in out
+    for miss in summary.misses():  # every miss is printed with the judge's reason
+        assert f"  {miss.input['question']!r}, repeat {miss.repeat}, answered {miss.answer!r}\n" in out
+        assert f"    {'; '.join(miss.missed_because)}\n" in out
+
+
+def test_the_judge_is_asked_as_a_judged_run_records_it() -> None:
+    module = load_example("llm_judge.py")
+    assert module.JUDGE_SETTINGS == JUDGE_REQUEST_SETTINGS, "what a judged run records is what the judge is sent"
+    assert module.SETTINGS.reasoning_effort == "low"
 
 
 def test_the_example_reaches_the_engine_only_through_public_roots() -> None:
     path = EXAMPLES / "llm_judge.py"
     assert public_root_violations(SOURCE_ROOT, [("llm_judge.py", path)], consumer_root=REPO_ROOT) == []
-
-
-async def test_live_it_makes_the_thirty_calls_its_docstring_states(monkeypatch: pytest.MonkeyPatch) -> None:
-    anthropic = pytest.importorskip("anthropic")
-    module = load_example("llm_judge.py")
-    sent: list[dict[str, Any]] = []
-
-    async def create(**request: Any) -> Any:
-        sent.append(request)
-        judging = "criteria_scores" in request["system"]
-        dimension = request["system"].split('single key "', 1)[1].split('"', 1)[0] if judging else ""
-        text = f'{{"reasoning": "ok", "criteria_scores": {{"{dimension}": "pass"}}}}' if judging else "30 days."
-        return anthropic.types.Message.model_validate(
-            {
-                "id": "msg_1",
-                "type": "message",
-                "role": "assistant",
-                "model": module.MODEL,
-                "content": [{"type": "text", "text": text}],
-                "stop_reason": "end_turn",
-                "stop_sequence": None,
-                "usage": {"input_tokens": 400, "output_tokens": 60},
-            }
-        )
-
-    async def close() -> None:
-        return None
-
-    monkeypatch.setattr(
-        anthropic, "AsyncAnthropic", lambda: SimpleNamespace(messages=SimpleNamespace(create=create), close=close)
-    )
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    summary = await module.main()
-    assert len(sent) == 30 and summary.role_spend("judge").calls == 20
-    assert summary.judge_shares_candidate_model == [module.MODEL], "a model judging its own answers is disclosed"

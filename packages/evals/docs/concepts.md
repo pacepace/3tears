@@ -156,7 +156,8 @@ itself, the candidate model (`model`) and the candidate kind (`candidate_kind`);
 more. *Example:* `model` and `ticket_router.prompt_version`.
 With no host of your own, `run_eval(..., levers={"prompt": "v2"})` states one beside the model, as
 `callable.prompt` (`callable-judged.prompt` on a judged run), and `compare(..., factors=("model", "prompt"))`
-keys each arm by its level of both (`examples/prompt_x_model.py`).
+keys each arm by its level of both (`examples/prompt_x_effort.py` crosses the prompt with a reasoning effort, the
+model named as a factor at its one level).
 
 #### Label (sweepable role)
 A sweepable that identifies a run without determining its score (role `label`), so a difference in it is

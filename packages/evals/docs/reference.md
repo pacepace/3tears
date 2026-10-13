@@ -1556,7 +1556,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 
 - **`AliasedFactors`** · model · Factors that moved in lockstep: every one splits the runs into the same groups, so no comparison separates them.
 - **`AmbiguousPair`** · dataclass · A (campaign, recorded memo) pair holding more than one live case.
-- **`AnalysisContextBundle`** · model · The closed context bundle a generation prompt runs over.
+- **`AnalysisContextBundle`** · *host contract* · model · The closed context bundle a generation prompt runs over.
 - **`AnalysisGenerationEstimate`** · model · What a generation would be priced at before it starts, against the cap it would be held to.
 - **`AnalysisStore`** · protocol · The storage calls the analysis service makes — its own, plus the bundle assembly's it hands the store to.
 - **`ArmLevel`** · model · One coordinate of an arm — which lever, and the level it carried.

@@ -708,6 +708,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.analysis.inspect_campaign_bundle",
         "threetears.evals.analysis.generate_analysis",
         "threetears.evals.analysis.EVAL_ANALYSIS_GEN_DEFAULT",
+        # The frozen bundle an analysis is written from, reloaded from its file (`from_json`) to write over it again.
+        "threetears.evals.analysis.AnalysisContextBundle",
         "threetears.evals.analysis.report_markdown",
         "threetears.evals.analysis.report_html",
         "threetears.evals.analysis.format_number",

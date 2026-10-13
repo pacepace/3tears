@@ -1,20 +1,21 @@
 """``examples/guardrails.py`` declares a guardrail, reads held and breached per arm, and never ships a breach.
 
-The example is the quick path's guardrail rung: a prompt that answers more questions and repeats the card's digits
-is shown improved on the capability and breached on the guardrail, and its decision is "do not ship". Offline, the
-stand-ins carry no real model's name; live, the SDK is faked, so no test calls the API, and the model id is read
-off the example, never written here.
+The example is the quick path's guardrail rung: a prompt that answers more questions may repeat the card's digits,
+and an arm that breached the guardrail is never the one to ship, whatever it gained. With no API key the example
+replays its recording, so no test calls the API, and nothing here assumes what Claude answered: each arm's printed
+decision is the one its typed outcomes map to, and every leak printed is a reply that failed the guardrail.
 """
 
 from __future__ import annotations
 
-from types import ModuleType, SimpleNamespace
-from typing import Any
+from types import ModuleType
 
 import pytest
 
-from packages.evals.tests.example_loader import load_example
 from threetears.evals.quick import Comparison
+from threetears.evals.testing import RecordedPrompt
+from packages.evals.tests.example_loader import EXAMPLES, check_covers, load_example, replaying
+from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 
 NAME = "guardrails.py"
 
@@ -23,32 +24,44 @@ def _load() -> ModuleType:
     return load_example(NAME)
 
 
-async def test_offline_the_arm_that_gained_and_breached_is_never_the_one_to_ship(
+async def test_with_no_api_key_it_replays_and_an_arm_that_breached_is_never_the_one_to_ship(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     module = _load()
+    asked = [
+        RecordedPrompt(prompt, f"{case['record']}\n\nCustomer: {case['question']}")
+        for prompt in module.PROMPTS.values()
+        for case in module.CASES
+    ]
+    check_covers(module, asked, settings=module.SETTINGS, model=module.MODEL)
+    replay = replaying(module, monkeypatch)
+
     comparison = await module.main()
 
+    assert replay.served() == 150, "50 questions x 3 prompts, as the docstring says"
     assert isinstance(comparison, Comparison) and list(comparison.arms) == ["current", "friendlier", "careful"]
     for summary in comparison.arms.values():
         assert summary.status == "completed" and (summary.n_cases, summary.k_runs, summary.n_scored) == (50, 1, 50)
-    gains = {row["arm"]: row["verdict"] for row in comparison.contrasts("gives_status")}
-    assert gains == {"friendlier": "improved on the control", "careful": "improved on the control"}
+    assert {row["arm"] for row in comparison.contrasts("gives_status")} == {"friendlier", "careful"}
     assert comparison.contrasts("keeps_card_private") == [], "the guardrail is in no contrast"
     outcomes = {row["arm"]: row["outcome"] for row in comparison.guardrails()}
-    assert outcomes == {"friendlier": "breached", "careful": "held"}
-    assert comparison.guardrail_standing("friendlier").breached == ["keeps_card_private"]
+    assert set(outcomes) == {"friendlier", "careful"}
+    assert set(outcomes.values()) <= {"held", "breached", "undecided"}
 
     out = capsys.readouterr().out
-    assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE")
-    assert "claude" not in out.lower() and "haiku" not in out.lower(), "a stand-in's output reads as a model's"
-    assert "  friendlier: 1.00 -> 0.66, interval [-0.5153, -0.2238] at 95%: breached\n" in out
-    assert "  careful: 1.00 -> 1.00, interval [-0.08106, 0.08106] at 95%: held\n" in out
-    assert "  friendlier: improved on the control; guardrail breached: do not ship it, whatever it gained.\n" in out
-    assert "  careful: improved on the control; guardrail held: a candidate to ship.\n" in out
-    assert "card ending" in out.split("Where the guardrail broke")[1], "the example ends by reading a breach"
-    assert "Arm friendlier breached the guardrail Keeps card private score" in comparison.render()
+    assert out.startswith("ANTHROPIC_API_KEY is not set: replaying recordings/guardrails.jsonl, Claude (")
+    for row in comparison.contrasts("gives_status"):
+        standing = comparison.guardrail_standing(row["arm"])
+        guardrail = "breached" if standing.breached else "undecided" if standing.undecided else "held"
+        assert guardrail == outcomes[row["arm"]]
+        decision = module.what_to_do(row["outcome"], guardrail)
+        assert f"  {row['arm']}: {row['verdict']}; guardrail {guardrail}: {decision}\n" in out
+        if guardrail == "breached":
+            assert decision == "do not ship it, whatever it gained."
+    for arm in comparison.arms:  # the example ends by reading a leak, when an arm leaked
+        leaks = [result for result in comparison.results(arm) if result.scores.get("keeps_card_private") == 0]
+        if leaks:
+            assert f"  {arm}, order {leaks[0].input['order']}: {leaks[0].answer!r}\n" in out
 
 
 def test_only_a_held_guardrail_with_a_gain_is_a_candidate_to_ship() -> None:
@@ -61,44 +74,5 @@ def test_only_a_held_guardrail_with_a_gain_is_a_candidate_to_ship() -> None:
     assert "keep the current prompt" in module.what_to_do("improved on the control", "held"), "words are no outcome"
 
 
-def _fake_sdk(monkeypatch: pytest.MonkeyPatch, anthropic: ModuleType) -> list[dict[str, Any]]:
-    """Point ``anthropic.AsyncAnthropic`` at a client that states the record's status and nothing else."""
-    sent: list[dict[str, Any]] = []
-
-    async def create(**request: Any) -> Any:
-        sent.append(request)
-        status = request["messages"][0]["content"].split(": ", 1)[1].split(".", 1)[0]
-        return anthropic.types.Message.model_validate(
-            {
-                "id": "msg_1",
-                "type": "message",
-                "role": "assistant",
-                "model": request["model"],
-                "content": [{"type": "text", "text": f"Your order is {status}."}],
-                "stop_reason": "end_turn",
-                "stop_sequence": None,
-                "usage": {"input_tokens": 60, "output_tokens": 12},
-            }
-        )
-
-    async def close() -> None:
-        return None
-
-    monkeypatch.setattr(
-        anthropic, "AsyncAnthropic", lambda: SimpleNamespace(messages=SimpleNamespace(create=create), close=close)
-    )
-    return sent
-
-
-async def test_live_three_prompts_alike_hold_the_guardrail_and_ship_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    anthropic = pytest.importorskip("anthropic")
-    module = _load()
-    sent = _fake_sdk(monkeypatch, anthropic)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-
-    comparison = await module.main()
-
-    assert len(sent) == 150, "50 questions x 3 prompts, as the docstring says"
-    assert {request["model"] for request in sent} == {module.MODEL}
-    assert {row["arm"]: row["outcome"] for row in comparison.guardrails()} == {"friendlier": "held", "careful": "held"}
-    assert all(row["verdict"].startswith("not separated") for row in comparison.contrasts("gives_status"))
+def test_the_example_reaches_the_engine_only_through_public_roots() -> None:
+    assert public_root_violations(SOURCE_ROOT, [(NAME, EXAMPLES / NAME)], consumer_root=REPO_ROOT) == []

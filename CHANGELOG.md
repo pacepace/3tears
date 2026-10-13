@@ -21,8 +21,7 @@ v<version>` prints a release's notes).
 
 - **Dependencies.** Python 3.14+ and `pydantic` only. The engine depends on no other 3tears package. Three extras:
   `[vega]` (`vl-convert-python`, for rendering charts to SVG and PNG), `[fastmcp]` (the FastMCP transport) and
-  `[models]` (`3tears-models`, for the shipped provider adapter). The live examples need the `anthropic` SDK, which
-  the package does not depend on.
+  `[models]` (`3tears-models`, for the shipped provider adapter). The examples that call a model need `[models]`.
 - **Public roots** (`threetears.evals.PUBLIC_ROOTS`): `schema`, `kernel`, `kernel.host`, `run`, `analysis`,
   `analysis.viz`, `gen`, `storage`, `testing`, `quick`, `ops`, `actions`, `transports.fastmcp`, `vega`,
   `providers`. A consumer
@@ -37,8 +36,10 @@ v<version>` prints a release's notes).
   and served model), `stratum_key=` (results per kind of case), `factors=` and `Comparison.against` (grids),
   `guardrails=` (held, breached or undecided per arm, decided apart from capability), `tools=` with
   `cassette_mode=` (capture and replay tool results), and `world=`, `seed=` and `goal_checks=` (grade what an
-  agent did to a world). Ten examples under `packages/evals/examples/` climb that ladder. They run offline by
-  default and against Claude when given a key.
+  agent did to a world). Ten examples under `packages/evals/examples/` climb that ladder. Those that call a model
+  run live by default, against `claude-haiku-5-5` through the shipped adapter, and with no key replay a recording of
+  a live run kept beside them (`RecordedCompletions`; `RECORD=1` records it again), so they run offline on what
+  Claude said: no example has a scripted stand-in for a model, and the `_live.py` helper is gone.
 - **A command line.** `python -m threetears.evals` runs `run`, `ls`, `report`, `bundle`, `spend`, `gate`,
   `frontier` and `judge-temperature` against a host named as `--host module:factory`. `gate --fail-on
   regressed,breached` is a CI gate. A host adds its own subcommands (`HostCommand`). Exit codes are named:

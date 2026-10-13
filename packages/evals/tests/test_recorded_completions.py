@@ -323,6 +323,25 @@ async def test_check_covers_names_every_prompt_the_recording_no_longer_covers(tm
     assert message.endswith("re-record " + str(path) + " with `RECORD=1 python dice.py`, the provider's key set")
 
 
+async def test_check_covers_counts_prompts_that_carry_a_response_format(tmp_path: Path) -> None:
+    path = tmp_path / "rec.jsonl"
+    inner = _FakeInner(_Reply(content="{}"), _Reply(content="{}"))
+    async with RecordedCompletions.record(inner, path, settings=BUDGETED) as client:
+        for _ in range(2):
+            await client.generate(system=SYSTEM, user="Shape it.", response_format=SCHEMA)
+    reordered = json.loads(json.dumps(SCHEMA, sort_keys=True))  # the same directive, its keys in another order
+
+    RecordedCompletions.check_covers(
+        path,
+        [RecordedPrompt(SYSTEM, "Shape it.", SCHEMA), RecordedPrompt(SYSTEM, "Shape it.", reordered)],
+        settings=BUDGETED,
+    )
+    with pytest.raises(RecordingRefused, match="'Shape it.' is asked 3 time\\(s\\) and recorded 2"):
+        RecordedCompletions.check_covers(path, [RecordedPrompt(SYSTEM, "Shape it.", SCHEMA)] * 3, settings=BUDGETED)
+    with pytest.raises(RecordingRefused, match="'Shape it.' is asked 1 time\\(s\\) and recorded 0"):
+        RecordedCompletions.check_covers(path, [RecordedPrompt(SYSTEM, "Shape it.")], settings=BUDGETED)
+
+
 async def test_replay_refuses_a_missing_or_empty_recording_with_the_remedy(tmp_path: Path) -> None:
     with pytest.raises(RecordingRefused, match="there is no recording at this path; re-record .* with the client it"):
         RecordedCompletions.replay(tmp_path / "never.jsonl", settings=BUDGETED)

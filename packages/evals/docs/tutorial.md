@@ -325,8 +325,9 @@ quality you care about, each scored 1 to 5 by default.
 
 Give `run_eval` a `Judge`: a completion client, the model it calls, the rubric, and the material each answer is
 judged against. The client below is an offline stand-in that looks for an apology. A real one calls your model
-provider; [`_live.py`](../examples/_live.py) is a small adapter for the `anthropic` SDK, which
-[`llm_judge.py`](../examples/llm_judge.py) hands to its judge. A stand-in of your own returns what a model would:
+provider: `models_client` from `threetears.evals.providers` (the `[models]` extra) is the shipped one, which
+[`llm_judge.py`](../examples/llm_judge.py) hands to its judge, replaying a recording of it when no key is set. A
+stand-in of your own returns what a model would:
 a JSON reply with a string `reasoning` and `criteria_scores`, an object whose one key is the dimension asked
 about as `<context>.<dimension>` (`answer.acknowledges` here, the key the engine's prompt names), mapped to a score
 of 1 to 5 (`"pass"` or `"fail"` on a pass/fail dimension).
@@ -527,8 +528,8 @@ Run the file twice. The second run reads the first run's results from the file, 
 |---|---|---|
 | run against a real model | [Running the examples](../examples/README.md#running-them) | [`llm_judge.py`](../examples/llm_judge.py) |
 | hold a guardrail across a real change, to held | [Reading the guardrails](reading-reports.md#reading-the-guardrails) | [`guardrails.py`](../examples/guardrails.py) |
-| weigh accuracy against cost | [Cost and budgets](cost-and-budgets.md) | [`compare_two_models.py`](../examples/compare_two_models.py) |
-| vary several things at once, such as prompt and model | [Choosing a campaign design](choosing-a-design.md) | [`prompt_x_model.py`](../examples/prompt_x_model.py) |
+| weigh accuracy against cost | [Cost and budgets](cost-and-budgets.md) | [`compare_two_efforts.py`](../examples/compare_two_efforts.py) |
+| vary several things at once, such as prompt and effort | [Choosing a campaign design](choosing-a-design.md) | [`prompt_x_effort.py`](../examples/prompt_x_effort.py) |
 | evaluate an agent by what it does, not what it says | [Evaluating a tool-using agent](evaluating-agents.md) | [`world.py`](../examples/world.py) |
 | write reports to files | [Reading reports](reading-reports.md) | [`reports.py`](../examples/reports.py) |
 | build a classifier set worth trusting | [Designing a classifier eval set](designing-classifier-evals.md) | |
