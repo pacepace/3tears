@@ -47,6 +47,7 @@ def _time_axis(
     short_runs: dict[str, str],
     incomplete_runs: dict[str, str],
     profile: HostProfile,
+    control: str | None,
     names: Mapping[str, str],
 ) -> tuple[TimeAxis | None, str | None]:
     """Place the campaign's runs in time, or say why they cannot be.
@@ -70,6 +71,9 @@ def _time_axis(
         short_runs: The bundle's short-run sentences, by run id.
         incomplete_runs: The bundle's incomplete-run statuses, by run id.
         profile: The host, whose ``release_label`` names its builds.
+        control: The control arm's variant key as the realized design matched it
+            (``RealizedDesign.control_arm``), or None — never the declaration's own key, which can name the arm
+            by a key its cells do not carry.
         names: The bundle's arm names, which order each position's cells as the whole surface's are.
 
     Returns:
@@ -107,7 +111,7 @@ def _time_axis(
                     short_runs=short_runs,
                     incomplete_runs=incomplete_runs,
                     profile=profile,
-                    control=design.control if design else None,
+                    control=control,
                     names=names,
                 ),
             )

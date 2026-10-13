@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 from threetears.evals.analysis.cells import Observation
 from threetears.evals.analysis.reporting import lever_level
 from threetears.evals.kernel.campaign import VariantIndexEntry
-from threetears.evals.kernel.declaration import CampaignDesign
+from threetears.evals.kernel.declaration import CampaignDesign, ResolvedControl
 from threetears.evals.schema.hashing import canonical_json
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.values import SweepableValue
@@ -439,17 +439,25 @@ def _arm_repeats(members: list[EvalRun]) -> int:
 
 def _campaign_design(
     runs: list[EvalRun],
-    control_variant: str | None,
+    declared_control: ResolvedControl,
     *,
     results_by_run: dict[str, list[EvalResult]],
     arms: _CampaignArms | None = None,
     archived_control_variants: Collection[str] = (),
-    stale_control: str | None = None,
     has_unresolved_members: bool = False,
     folds: _SurfaceFolds | None = None,
     profile: HostProfile,
 ) -> RealizedDesign:
-    """Derive the campaign's design from its arms and the DECLARED control variant.
+    """Derive the campaign's design from its arms and the DECLARED control — and decide which arm the control is.
+
+    **This is the one place the control is matched to a cell, and every consumer reads its answer**
+    (``control_arm``). The declared control names its arm by a SET of keys
+    (:class:`~threetears.evals.kernel.declaration.ResolvedControl`): the key as stored, which the cells
+    stamped under its predicate carry for good, and the key its lever map re-keys to under this build's.
+    The control arm is the arm carrying the first of them, in that resolution's order of preference, so
+    a control declared under an older predicate keeps naming its old cells and names its new ones too. A
+    lens that matched ``declared_design.control`` itself would disagree with this one the moment the
+    predicate moved — the defect this signature exists to make unexpressible.
 
     An arm's moved levers are the keys where its EFFECTIVE configuration differs from the control
     arm's, plus ``model`` when the candidate differs — the same notion of "lever" the rest of this
@@ -464,8 +472,8 @@ def _campaign_design(
 
     Args:
         runs: The campaign's resolved runs.
-        control_variant: The declared control's variant key as this build keys it
-            (:func:`~threetears.evals.kernel.declaration.resolve_declared_control`), or None.
+        declared_control: The declared control as the keys that name its arm
+            (:func:`~threetears.evals.kernel.declaration.resolve_declared_control`); ``undeclared`` names none.
         results_by_run: Each run's results, keyed by run id — the observation side of
             effective-config resolution, and where a variant key resolves.
         arms: :func:`_campaign_arms`'s answer, when the caller already has it; derived otherwise.
@@ -473,11 +481,6 @@ def _campaign_design(
             Supplied by the caller because archived runs are held out of every lens and their
             results are not otherwise read; it is what tells a deliberate exclusion apart from a
             variant nobody ever ran.
-        stale_control: The disclosure of a declared control this build cannot key — a bare key
-            computed under another identity predicate, with no lever map to recompute it from
-            (:attr:`~threetears.evals.kernel.declaration.ResolvedControl.disclosure`) — or None. Its
-            ``control_variant`` is None, and without this the campaign would read as one that
-            declared no control at all.
         has_unresolved_members: Whether any member run failed to load at all. Such a run's
             observations cannot be read, so whether it carried the control is unknowable — and
             reporting that as "never run" is the conflation the ``unresolved`` arm exists to
@@ -503,14 +506,12 @@ def _campaign_design(
             variant_key=key, run_ids=[run.id for run in members], k=_arm_repeats(members), moved=moved or {}
         )
 
-    if not control_variant or control_variant not in arms_by_key:
+    control_variant = declared_control.matched(arms_by_key)
+    if control_variant is None:
         excluded: Literal["stale", "archived", "unresolved", "unobserved"] | None = None
-        if stale_control is not None:
-            # Certain, and first: no cell can be matched to a key this build cannot compute, so asking
-            # whether a carrier was archived or never ran would answer a question that has no subject.
-            excluded = "stale"
-        elif control_variant:
-            if control_variant in set(archived_control_variants):
+        stale: str | None = None
+        if declared_control.variant_keys:
+            if set(declared_control.variant_keys) & set(archived_control_variants):
                 # Certain, and the most actionable: a carrier exists and somebody removed it.
                 excluded = "archived"
             elif has_unresolved_members:
@@ -518,11 +519,14 @@ def _campaign_design(
                 # cannot be keyed, so "nothing carries it" is unproven — claiming `unobserved`
                 # here sends an operator to re-run an experiment that may already have run.
                 excluded = "unresolved"
+            elif declared_control.stale_disclosure is not None:
+                # Every member resolved, none carries the stored key, and no run this build stamps can:
+                # `unobserved` would send the operator to re-run an arm whose new runs would not match
+                # either. The remedy is to re-address the control, which the disclosure names.
+                excluded, stale = "stale", declared_control.stale_disclosure
             else:
                 excluded = "unobserved"
-        return RealizedDesign(
-            control_excluded=excluded, stale_control_disclosure=stale_control, unplaced_run_ids=unplaced
-        )
+        return RealizedDesign(control_excluded=excluded, stale_control_disclosure=stale, unplaced_run_ids=unplaced)
 
     folds = folds if folds is not None else _SurfaceFolds(runs, results_by_run, profile=profile)
     control = arms_by_key[control_variant][0]

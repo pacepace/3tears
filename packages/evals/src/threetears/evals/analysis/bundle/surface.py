@@ -117,8 +117,10 @@ def bundle_decision_surface(bundle: AnalysisContextBundle) -> DecisionSurface:
     """Freeze the bundle's per-cell facts into the decision surface an analysis — or a code-only report — reads.
 
     Copied, never recomputed: each per-cell number is the one assembly computed over the evidence. The
-    control is the declaration's own variant key — the same value ``declared_design`` carries and the arm
-    table marks as the control — so the two cannot name different arms.
+    control is the arm the realized design matched the declared control to (``design.control_arm``) — the
+    one place that match is made — never the declaration's own key, which names the arm by a key its cells
+    need not carry once the identity predicate has moved. The arm table of a stored analysis reads it from
+    here, so the two cannot name different arms.
 
     Args:
         bundle: The evidence set.
@@ -127,7 +129,7 @@ def bundle_decision_surface(bundle: AnalysisContextBundle) -> DecisionSurface:
         The decision surface.
     """
     return DecisionSurface(
-        control_variant_key=bundle.declared_design.control if bundle.declared_design else None,
+        control_variant_key=bundle.design.control_arm.variant_key if bundle.design.control_arm is not None else None,
         cells=bundle.cell_measures,
         bars=bundle.bar_adjudications,
         measures=cell_measure_facts(bundle),

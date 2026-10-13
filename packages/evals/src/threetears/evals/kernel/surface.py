@@ -757,7 +757,12 @@ class DecisionSurface(EvalDocumentModel):
     """
 
     control_variant_key: str | None = Field(
-        default=None, description="The declared control's variant, or None when the campaign declared none."
+        default=None,
+        description=(
+            "The control arm's variant: the key, of those naming the declared control under the build that "
+            "assembled the bundle, its cells carry (the realized design's `control_arm`). None when the campaign "
+            "declared no control, and when no cell carries it (the bundle's `design.control_excluded` says why)."
+        ),
     )
     cells: list[CellFacts] = Field(
         default_factory=list,

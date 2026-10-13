@@ -28,8 +28,12 @@ The bundle (``schema_version``), the report (``REPORT_VERSION``), the cell model
 (``IDENTITY_VERSION``) are separate version spaces with their own pins too; an upgrader never recomputes a key or a
 digest. A kept key is stored beside its pre-image and the identity version that computed
 it — a run's ``variant_levers`` beside the keys its results carry, a campaign control's ``control_levers`` and
-``control_identity_version`` beside ``control`` — so a read under a later ``IDENTITY_VERSION`` re-keys it from
-that map (``resolve_declared_control``) and no upgrader is needed to keep it naming its arm.
+``control_identity_version`` beside ``control`` — so no upgrader recomputes it. A read under a later
+``IDENTITY_VERSION`` names the control's arm by its stored key, which the cells stamped under its own predicate keep,
+and by the key its map re-keys to (``resolve_declared_control``). That follows a change to how a map is DIGESTED
+only: a host renaming a lever, a kind or an overlay field, or the engine adding a lever to every map, gives new runs
+a different map, which no recomputation of the stored one reaches, so across such a change the control names only
+the cells stamped before it and the map keeps it described.
 
 **A core version is a major and a minor.** ``schema_version`` is the major (:data:`CORE_SCHEMA_VERSION`) and
 ``schema_minor`` the minor within it (:data:`CORE_SCHEMA_MINOR`); the store addresses documents by the major

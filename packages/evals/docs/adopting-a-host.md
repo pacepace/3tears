@@ -283,10 +283,13 @@ An upgrade never recomputes an identity key, so keys from different predicates n
 key is stored beside its pre-image and the identity version that computed it, so a read under a later
 `IDENTITY_VERSION` needs no upgrader: a run keeps `variant_levers` beside the keys its results carry, and a
 campaign's declared control keeps `control_levers` and `control_identity_version` beside `control`, recorded when
-the control is addressed from a run (`control_from_run_id`, `set_campaign_control`). A read under another version
-recomputes the control's key from that map, so it still names its arm's new runs. A control key typed by hand
-records no map; under another version it reads as `stale` (`RealizedDesign.control_excluded`), and the remedy is
-to address it again from a run.
+the control is addressed from a run (`control_from_run_id`, `set_campaign_control`) and never taken from a caller.
+Under another version the control names its arm by its stored key, which the cells stamped under its own version
+keep, and by the key recomputed from that map, which the arm's new runs carry. The recomputation follows a change to
+how a map is digested only: a lever, kind or overlay field your host renames, or a lever added to every map, gives
+new runs a different map, and the control then names only the cells from before it. A control key typed by hand
+records no map; when no cell carries it under another version it reads as `stale`
+(`RealizedDesign.control_excluded`), and the remedy is to address it again from a run.
 
 **Reads stay strict everywhere the contract cannot vouch for the unknown.** Every stored model refuses an
 unknown field and a missing required one, at any depth, with one exception: a core document of this build's major

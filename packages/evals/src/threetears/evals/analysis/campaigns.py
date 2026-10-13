@@ -24,7 +24,7 @@ a read within that one scope, and a member it cannot see is one no analysis of t
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 from pydantic import Field
@@ -183,8 +183,9 @@ def create_campaign(
     gates one. Its control is a variant key, which nobody types: ``control_from_run_id`` names one of the
     campaign's runs and the key is resolved from it exactly as :func:`set_campaign_control` resolves
     one, its pre-image recorded beside it. A design that types ``control`` itself is held to the key's
-    shape by the contract, and is a bare key: it records no lever map, so a later identity predicate cannot
-    re-key it.
+    shape by the contract, and is a bare key dated this build's: it records no lever map, so a later identity
+    predicate cannot re-key it. The pre-image (``control_levers``, ``control_identity_version``) is the
+    server's and is refused when sent with another value.
 
     **A campaign is declared or exploratory, and the caller says which.** Exactly one of a ``declared_design``
     in ``definition`` and ``exploratory=True`` is given: neither is refused, naming both, and both are refused as
@@ -219,7 +220,7 @@ def create_campaign(
             and ``exploratory`` is True; fails campaign validation, names a run that does
             not exist in ``scope_id``, or declares a design this host cannot honour; or
             ``control_from_run_id`` is given with no design, beside a typed ``control``, or names a run
-            the campaign does not hold.
+            the campaign does not hold; or the design sends a control pre-image the server would not store.
         LeverCoordinateError: ``control_from_run_id``'s run recorded no lever map, and the host's variant
             map disagrees with its own registry.
         StorageError: The campaign failed to persist (a failed write must not
@@ -247,6 +248,14 @@ def create_campaign(
         raise ValidationFailedError(f"invalid campaign definition: {e}", remedy=SCHEMA_REMEDY) from e
     _refuse_runs_outside_scope(storage, campaign.run_ids, scope_id)
     campaign = campaign.model_copy(update={"template_id": _campaign_template(storage, campaign)})
+    if campaign.declared_design is not None:
+        campaign = campaign.model_copy(
+            update={
+                "declared_design": _with_server_owned_pre_image(
+                    definition["declared_design"], campaign.declared_design, stored=None
+                )
+            }
+        )
     if control_from_run_id is not None:
         if campaign.declared_design is None:
             raise ValidationFailedError(
@@ -515,7 +524,9 @@ def update_campaign(
     refused designation leaves the design as it was too, as it does at creation. Either needs a declaration —
     the one this update writes, or the stored one — and neither may stand beside a design that types its own
     ``control``. A design this update writes replaces the stored one whole, so it keeps no control it does not
-    type or name here.
+    type or name here. **A typed control's pre-image is the server's**: a key unchanged from the stored one
+    keeps the stored lever map and identity version (an echoed declaration is not re-dated), any other typed
+    key has none and is dated this build's, and either one sent with another value is refused.
 
     Args:
         storage: The campaign store.
@@ -541,7 +552,8 @@ def update_campaign(
             host cannot honour; sets ``declared_design`` to None without ``exploratory``;
             ``exploratory`` is True beside a design, or on a declared campaign this update leaves declared;
             or ``control_from_run_id`` is given beside ``clear_control``, with no declaration to hold it, beside a
-            design typing ``control``, or naming a run the campaign does not hold.
+            design typing ``control``, or naming a run the campaign does not hold; or the design sends a control
+            pre-image the server would not store.
         LeverCoordinateError: ``control_from_run_id``'s run recorded no lever map, and the host's variant
             map disagrees with its own registry.
         StorageError: The updated campaign failed to persist.
@@ -631,6 +643,7 @@ def update_campaign(
             )
         except DesignRefused as e:
             raise ValidationFailedError(f"invalid campaign design: {e.fault}", remedy=e.remedy) from e
+        incoming = _with_server_owned_pre_image(supplied, incoming, campaign.declared_design)
         _gate_declaration(storage, campaign, incoming, profile=profile)
         if names_control and incoming.control is not None:
             raise ValidationFailedError(
@@ -1094,6 +1107,74 @@ def _with_control(design: CampaignDesign, addressed: _AddressedControl | None) -
             "control_identity_version": addressed.identity_version,
         }
     )
+
+
+#: The control's pre-image: what the server records beside a control's key, and a caller never sets.
+_CONTROL_PRE_IMAGE: tuple[str, ...] = ("control_levers", "control_identity_version")
+
+
+def _with_server_owned_pre_image(
+    supplied: CampaignDesign | Mapping[str, Any], design: CampaignDesign, stored: CampaignDesign | None
+) -> CampaignDesign:
+    """``design`` as a caller typed it, with its control's pre-image set by the server — or a refusal of the caller's.
+
+    The lever map and the identity version are what lets a later predicate re-key the control, so they are
+    worth exactly as much as their tie to the key. A caller can only break it: a lever map sent beside a
+    hand-changed key re-keys, on read, onto the map's arm rather than the key's, and the map is checked
+    against the key only under this build's predicate; a declaration echoed WITHOUT the pair would be
+    dated this build's by validation, which turns a control a later predicate cannot re-key into one that
+    reads as current. So the server decides the pair from the key alone: **a typed key unchanged from the
+    stored declaration keeps the stored pair**, and **any other typed key has no map and is dated this
+    build's** — the only predicate a key typed now can have been read under. A pre-image comes only from a
+    run (``control_from_run_id``), which writes all three together after this.
+
+    Refused rather than ignored when a value is sent that the server would not store, because a caller who
+    sends a lever map believes it set one; a value equal to the server's (a read echoed back whole) is
+    accepted, so round-tripping a declaration stays possible, and a null is no value.
+
+    Args:
+        supplied: The declaration as the caller sent it — a mapping, whose keys say what was sent, or a model,
+            whose lever map is compared and whose version is replaced.
+        design: That declaration, validated.
+        stored: The declaration the campaign holds now, or None (a create, or a campaign that declared none).
+
+    Returns:
+        ``design`` with the server's pre-image.
+
+    Raises:
+        ValidationFailedError: ``supplied`` sends a lever map or an identity version the server would not store.
+    """
+    from threetears.evals.kernel.identity import IDENTITY_VERSION
+
+    if design.control is None:
+        server: dict[str, Any] = {"control_levers": None, "control_identity_version": None}
+    elif stored is not None and stored.control == design.control:
+        server = {"control_levers": stored.control_levers, "control_identity_version": stored.control_identity_version}
+    else:
+        server = {"control_levers": None, "control_identity_version": IDENTITY_VERSION}
+    # A null states nothing: it is what a declaration dumped without a control carries for both, and what the
+    # server stores for a typed key's map, so it can set nothing either way. A model's version is not compared:
+    # validation dates a typed key on construction, so a stamped version cannot be told from a stated one, and
+    # the server's replaces it either way. Its lever map is compared, as a mapping's is.
+    if isinstance(supplied, Mapping):
+        sent = {
+            field: getattr(design, field) if field == "control_levers" else supplied[field]
+            for field in _CONTROL_PRE_IMAGE
+            if supplied.get(field) is not None
+        }
+    else:
+        sent = {} if supplied.control_levers is None else {"control_levers": supplied.control_levers}
+    if refused := sorted(field for field, value in sent.items() if value != server[field]):
+        raise ValidationFailedError(
+            f"the design sends {' and '.join(f'`{field}`' for field in refused)}, which the server records beside "
+            "the control's key and never takes from a caller: a lever map is recorded from the run the control "
+            "is addressed from, and a typed key is dated by the build accepting it",
+            remedy=(
+                "leave control_levers and control_identity_version out; name the control with control_from_run_id "
+                "to have its lever map recorded"
+            ),
+        )
+    return design.model_copy(update=server)
 
 
 if TYPE_CHECKING:

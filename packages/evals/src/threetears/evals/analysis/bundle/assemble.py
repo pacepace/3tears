@@ -362,21 +362,18 @@ def assemble_context_bundle(
     # disclose it — the coverage map (where most findings are formed), the divergences, and
     # the campaign-wide scan that answers even when neither of those exists.
     apparatus_levels = _apparatus_levels(runs, results_by_run, profile=profile)
-    # Derived before the lenses, because it decides which runs each of them compares — and keyed by this
-    # build, through the one function that decides it: the declared key as stored under the same identity
-    # predicate, recomputed from its stored lever map under another, and `stale` where nothing stored can
-    # recompute it. Every lens below reads the declaration as this build keys it (`declared`), never the
-    # stored key, so a control declared under one predicate names its arm under the next. Nothing is
-    # written back: the campaign keeps the key the operator declared, under the predicate they declared it.
+    # Derived before the lenses, because it decides which runs each of them compares: the keys that name the
+    # declared control's arm under this build — the stored key, which cells stamped under its predicate carry
+    # for good, and the key its lever map re-keys to under this one. `_campaign_design` matches them against
+    # the arms and is the only place that does: every lens below reads its answer (`design.control_arm`),
+    # never `declared_design.control`, so no two of them can disagree about which cell is the control.
     declared_control = resolve_declared_control(campaign.declared_design)
-    declared = campaign.declared_design.as_keyed_by_this_build() if campaign.declared_design is not None else None
-    control_variant = declared_control.variant_key
     # Read only when a declared control might have been curated out, and only over the archived
     # set: "the runs carrying your control were archived" and "nothing ever ran it" are different
     # operator actions, and the archived runs' results are the only place the difference lives.
     # Every other path pays nothing for the distinction.
     archived_control_variants: set[str] = set()
-    if control_variant and archived:
+    if declared_control.variant_keys and archived:
         for run_id in archived:
             archived_key = variant_key_of_run(storage.query_eval_results_by_run(run_id, scope_id))
             if archived_key is not None:
@@ -394,11 +391,10 @@ def assemble_context_bundle(
     served = _served_models(results)
     design = _campaign_design(
         runs,
-        control_variant,
+        declared_control,
         results_by_run=results_by_run,
         arms=arms,
         archived_control_variants=archived_control_variants,
-        stale_control=declared_control.disclosure,
         has_unresolved_members=bool(unresolved),
         folds=folds,
         profile=profile,
@@ -415,7 +411,7 @@ def assemble_context_bundle(
         apparatus_levels,
         design,
         results_by_run,
-        declared,
+        campaign.declared_design,
         folds=folds,
         observations=mechanisms,
         served=served,
@@ -433,7 +429,7 @@ def assemble_context_bundle(
         runs, results_by_run, apparatus_classes, scope_id=scope_id, profile=profile
     )
     variant_index = _name_arms(variant_index, observations, folds, run_ids)
-    variant_index = _declared_level_names(variant_index, declared)
+    variant_index = _declared_level_names(variant_index, campaign.declared_design)
     cells, refused_merges, next_experiments = pool_observations(
         observations, {c.apparatus_class_id: c for c in apparatus_classes.values()}
     )
@@ -474,7 +470,7 @@ def assemble_context_bundle(
     )
 
     # The campaign's effective bar on the measure the frontier ranks on, or why it takes none.
-    frontier_bar, frontier_bar_withheld = _frontier_bar(campaign.behavior, declared, profile=profile)
+    frontier_bar, frontier_bar_withheld = _frontier_bar(campaign.behavior, campaign.declared_design, profile=profile)
     # Ratings are read once, because the agreement and the prediction-powered estimates both pair them with the
     # judge (#598): the members' per run, in run order, then any in the scope labelling an output a member's judge
     # scored (#628), so the unpaired list is deterministic for the fingerprint.
@@ -520,15 +516,15 @@ def assemble_context_bundle(
             # at the margins it declares, by the rule the bundle's guardrails are decided by (#613).
             control_variant_key=design.control_arm.variant_key if design.control_arm is not None else None,
             guardrail_margins=(
-                {entry.dimension: entry.margin for entry in declared.guardrail_margins}
-                if declared is not None
+                {entry.dimension: entry.margin for entry in campaign.declared_design.guardrail_margins}
+                if campaign.declared_design is not None
                 else None
             ),
         ),
         frontier_bar_withheld=frontier_bar_withheld,
         telemetry=_telemetry_rollup(runs, results, budget, profile=profile),
         coverage=coverage,
-        declared_design=declared,
+        declared_design=campaign.declared_design,
         design=design,
         # A run that did not finish is still IN every aggregate above — archiving is what
         # removes a run, and a cancelled run that nobody archived stays pooled. Naming them
@@ -547,8 +543,8 @@ def assemble_context_bundle(
         # rather than folded into the first — reporting unknown as complete is the same error
         # one layer down.
         completeness_unknown_run_ids=[run.id for run in runs if run.completeness is None],
-        short_cells=_short_cells(cells, declared),
-        held_fixed_reading=_held_fixed_reading(runs, declared),
+        short_cells=_short_cells(cells, campaign.declared_design),
+        held_fixed_reading=_held_fixed_reading(runs, campaign.declared_design),
         # ``full`` because this bundle's reader is a model that cannot go and look:
         # above the inline cap the collapsed form names two spans and says where to
         # get the rest, which is an instruction only a human at a terminal can follow.
@@ -566,7 +562,7 @@ def assemble_context_bundle(
         apparatus_confounds=_apparatus_confounds(run_ids, apparatus_levels, profile=profile),
         aliased_factors=aliasing[0],
         factor_pairs=aliasing[1],
-        declared_crossing=_declared_crossing(declared, runs, results_by_run, profile=profile),
+        declared_crossing=_declared_crossing(campaign.declared_design, runs, results_by_run, profile=profile),
         arm_mechanisms=_arm_mechanisms(arms, results_by_run, mechanisms),
         arm_served_models=_arm_served_models(arms, results_by_run, served),
         arm_production_footings=_arm_production_footings(arms, results_by_run, profile=profile),
@@ -608,7 +604,7 @@ def assemble_context_bundle(
     bundle.latency_contended_cells, bundle.latency_contended = _latency_contended(
         results_by_cell,
         contended_ids,
-        declared=declared is not None and declared.measure_latency,
+        declared=campaign.declared_design is not None and campaign.declared_design.measure_latency,
     )
     bundle.judged_measures = [
         measure.model_copy(
@@ -621,26 +617,26 @@ def assemble_context_bundle(
         for measure in _judged_measures(
             projection.records,
             results_by_cell,
-            declared,
+            campaign.declared_design,
             tiers=bundle.judge_evidence_tiers,
             person_scores=person_scores,
         )
     ]
     bundle.bar_adjudications = _bar_adjudications(
         campaign.behavior,
-        declared,
+        campaign.declared_design,
         results_by_cell,
         projection.records,
         tiers=bundle.judge_evidence_tiers,
         frontier_bar=frontier_bar,
         profile=profile,
     )
-    bundle.verdict_order = _verdict_order(bundle.bar_adjudications, declared)
+    bundle.verdict_order = _verdict_order(bundle.bar_adjudications, campaign.declared_design)
     # The decision surface, over the same grouping and the same population the bars were read over,
     # and before the catalog: its collections are measure collections like any other here, so the
     # catalog has to describe their names too. Laid out in the surface's one row order (the control as
     # the reference, then the arms by name), which the writer reads and the frozen surface keeps.
-    control = declared.control if declared else None
+    control = design.control_arm.variant_key if design.control_arm is not None else None
     names = arm_names(bundle.variant_index)
     bundle.cell_measures = _cell_measures(
         cells,
@@ -655,7 +651,7 @@ def assemble_context_bundle(
                 for case in storage.load_case_strata(sorted({result.test_case_id for result in results}), scope_id)
             },
             projection.records,
-            declared,
+            campaign.declared_design,
             tiers=bundle.judge_evidence_tiers,
             profile=profile,
             person_scores=person_scores,
@@ -675,11 +671,12 @@ def assemble_context_bundle(
         observations,
         {c.apparatus_class_id: c for c in apparatus_classes.values()},
         projection.records,
-        declared,
+        campaign.declared_design,
         tiers=bundle.judge_evidence_tiers,
         short_runs=bundle.short_runs,
         incomplete_runs=bundle.incomplete_runs,
         profile=profile,
+        control=control,
         names=names,
     )
     bundle.measure_catalog = _measure_catalog(bundle, profile=profile)
@@ -688,7 +685,7 @@ def assemble_context_bundle(
     # After the catalog, which says each measure's better direction and axis: a family is the readings a
     # question's axes name, and a reading with no better end has no verdict to correct.
     bundle.multiple_comparisons, bundle.guardrails = _multiple_comparisons(
-        declared,
+        campaign.declared_design,
         design,
         results_by_cell,
         projection.records,
@@ -702,7 +699,7 @@ def assemble_context_bundle(
             key for key, members in results_by_cell.items() if any(result.id in contended_ids for result in members)
         },
     )
-    bundle.reading_scope = _reading_scope(declared, bundle.measure_catalog, bundle.judged_measures)
+    bundle.reading_scope = _reading_scope(campaign.declared_design, bundle.measure_catalog, bundle.judged_measures)
     # Divergences pair measures by unit, which only the catalog knows, so they are derived
     # after it — and from the same descriptors the generator will read, never a second lookup
     # that could disagree with what the bundle says a measure is.

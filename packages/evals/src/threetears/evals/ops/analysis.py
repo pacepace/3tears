@@ -354,9 +354,10 @@ def campaign_update(
         ValidationFailedError: No field is set; a design this host cannot honour, or one dropping a stored
             question; ``declared_design`` null without ``exploratory``; ``exploratory`` beside a design, or on a
             declared campaign the update leaves declared; or a control run with no declaration to hold it, beside
-            a design typing its control, or that the campaign does not hold.
-        LeverCoordinateError: The control run has no results and recorded no lever map, and the host's variant
-            map disagrees with its own registry.
+            a design typing its control, or that the campaign does not hold; or a design sending a control
+            pre-image (``control_levers``, ``control_identity_version``) the server would not store.
+        LeverCoordinateError: The control run recorded no lever map, and the host's variant map disagrees with
+            its own registry — whether or not the run has results.
         StorageError: The write failed.
     """
     campaign = update_campaign(
