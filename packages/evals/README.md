@@ -10,37 +10,6 @@ the open tickets it closed, the meeting it booked, the light it switched on.
 > may change in any release, recorded in `MIGRATIONS.toml`
 > ([stability tiers](docs/adopting-a-host.md#stability-tiers)).
 
-## What is different
-
-Evaluating an agent in a seeded starting state is established practice. Three things here are new; we found no
-prior system that combines them ([The world model](docs/world-model.md#what-is-new-here)):
-
-1. **Your application declares the world to the engine.** Each piece of state (a dimension) has a JSON Schema,
-   seed and read handles that use production's own write paths, and a list of the surfaces where the agent can
-   see it.
-2. **Every run records, per dimension, whether the case set it and whether the agent could see it.** State the
-   agent saw but the run did not set is disclosed as a confound (a rival explanation), never averaged with state
-   the case set.
-3. **A conformance kit your application runs against its own world** checks that seeds read back, that each
-   named surface moves when its dimension does while the others hold still, and that dimensions are
-   independent. A check it cannot run is reported as unavailable, with its reason, never waived.
-
-It also holds a set of measurement rules, each explained on its page:
-
-- **Paired arms on frozen cases.** Every version (an arm) runs over the same stored cases and is compared case
-  by case ([why](docs/design-rationale.md#the-arm-is-the-unit)).
-- **Identity keys for configurations.** A configuration is keyed by the content that ran, so an edited prompt is
-  never averaged in with its old version ([why](docs/design-rationale.md#identity-is-content-with-a-rendering)).
-- **"Not separated", never "no difference".** Evidence that cannot tell two versions apart is reported as exactly
-  that ([why](docs/principles.md#numbers)).
-- **A swept lever is checked against its mechanism.** A lever (a setting you vary) can name what it acts on, so
-  a setting that never took effect does not read as one that changed nothing
-  ([why](docs/measuring-soundly.md#did-the-lever-move)).
-- **Every confound is disclosed.** When something besides the lever moved, the comparison says so rather than
-  hiding it ([why](docs/design-rationale.md#confounds-qualify-never-suppress)).
-- **Guardrails are kept apart from capability.** What the agent must never do is decided on its own, so a gain
-  cannot pay for a breach ([why](docs/design-rationale.md#guardrails-are-a-pillar-apart-from-capability)).
-
 ## First result in 10 minutes
 
 1. **Install** (Python 3.14+). **3tears-evals is not on PyPI until 0.66.0 ships**, so `pip install 3tears-evals`
@@ -79,9 +48,9 @@ It also holds a set of measurement rules, each explained on its page:
    from threetears.evals.quick import run_eval
 
    CASES = [
-       {"text": "Exactly what I ordered, and it arrived early.", "expected": "positive"},
-       {"text": "The box came crushed.", "expected": "negative"},
-       {"text": "It works.", "expected": "neutral"},
+       {"id": "early", "text": "Exactly what I ordered, and it arrived early.", "expected": "positive"},
+       {"id": "crushed", "text": "The box came crushed.", "expected": "negative"},
+       {"id": "works", "text": "It works.", "expected": "neutral"},
    ]
 
 
@@ -94,7 +63,7 @@ It also holds a set of measurement rules, each explained on its page:
        summary = await run_eval(CASES, classify, expected=lambda case: case["expected"], k=2)
        print(summary.render())
        for miss in summary.misses():
-           print(miss.case, miss.missed_because)
+           print(f"{miss.case} (repeat {miss.repeat}): {'; '.join(miss.missed_because)}")
 
 
    asyncio.run(main())
@@ -104,6 +73,37 @@ Then do the [tutorial](docs/tutorial.md): it is the
 one starting path. It covers reading misses, comparing two versions, reading the verdict, and adding a judge.
 To run the examples against Claude, see
 [the examples](examples/README.md).
+
+## What is different
+
+Evaluating an agent in a seeded starting state is established practice. Three things here are new; we found no
+prior system that combines them ([The world model](docs/world-model.md#what-is-new-here)):
+
+1. **Your application declares the world to the engine.** Each piece of state (a dimension) has a JSON Schema,
+   seed and read handles that use production's own write paths, and a list of the surfaces where the agent can
+   see it.
+2. **Every run records, per dimension, whether the case set it and whether the agent could see it.** State the
+   agent saw but the run did not set is disclosed as a confound (a rival explanation), never averaged with state
+   the case set.
+3. **A conformance kit your application runs against its own world** checks that seeds read back, that each
+   named surface moves when its dimension does while the others hold still, and that dimensions are
+   independent. A check it cannot run is reported as unavailable, with its reason, never waived.
+
+It also holds a set of measurement rules, each explained on its page:
+
+- **Paired arms on frozen cases.** Every version (an arm) runs over the same stored cases and is compared case
+  by case ([why](docs/design-rationale.md#the-arm-is-the-unit)).
+- **Identity keys for configurations.** A configuration is keyed by the content that ran, so an edited prompt is
+  never averaged in with its old version ([why](docs/design-rationale.md#identity-is-content-with-a-rendering)).
+- **"Not separated", never "no difference".** Evidence that cannot tell two versions apart is reported as exactly
+  that ([why](docs/principles.md#numbers)).
+- **A swept lever is checked against its mechanism.** A lever (a setting you vary) can name what it acts on, so
+  a setting that never took effect does not read as one that changed nothing
+  ([why](docs/measuring-soundly.md#did-the-lever-move)).
+- **Every confound is disclosed.** When something besides the lever moved, the comparison says so rather than
+  hiding it ([why](docs/design-rationale.md#confounds-qualify-never-suppress)).
+- **Guardrails are kept apart from capability.** What the agent must never do is decided on its own, so a gain
+  cannot pay for a breach ([why](docs/design-rationale.md#guardrails-are-a-pillar-apart-from-capability)).
 
 ## Words to know
 

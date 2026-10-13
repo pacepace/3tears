@@ -66,7 +66,7 @@ carrying ten attributes: `content`, `input_tokens`, `output_tokens`, `reasoning_
 the check: hand it one completion your client returned, and it names each attribute missing and a `stop_reason`
 the engine does not know (`end_turn`, `max_tokens`, `content_filter` or `error`).
 
-Live runs use the cheapest Haiku models over 5 to 14 cases, so each costs cents. Each file's
+Live runs use the cheapest Haiku models over 5 to 14 cases (50 for `guardrails.py`), so each costs cents. Each file's
 docstring gives its call count and rough live cost. `reports.py` and `llm_analysis.py` write their files under
 the directory you run from (`./eval-report/` and `./eval-analysis/`).
 
@@ -89,7 +89,8 @@ numbers. `cassettes.py`, `reports.py` and `llm_analysis.py` grade nothing new: t
 | 8 | [`llm_analysis.py`](llm_analysis.py) | Can a model write the analysis from a frozen copy of the evidence? | `generate_analysis` over a fingerprinted bundle |
 | 9 | [`guardrails.py`](guardrails.py) | The new prompt answers more questions. Does it still keep the customer's card private? | `guardrails=`: a guardrail with its margin, held / breached / undecided per arm, apart from the contrasts |
 
-The [tutorial](../docs/tutorial.md) walks the same capabilities in the same order.
+The [tutorial](../docs/tutorial.md) covers rungs 0 to 3 and 9 (in its own order, the judge after the comparison),
+and keeping your runs in a file. The other rungs are here alone.
 
 ## Not covered by an example yet
 

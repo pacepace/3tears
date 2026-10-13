@@ -4649,12 +4649,12 @@
     "threetears.evals.analysis.format_number": {
       "kind": "function",
       "signature": "format_number(value: float | None, *, prefix: str = '') -> str",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.analysis.format_signed": {
       "kind": "function",
       "signature": "format_signed(value: float | None) -> str",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.analysis.format_significance": {
       "kind": "function",

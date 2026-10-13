@@ -686,6 +686,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.analysis.EVAL_ANALYSIS_GEN_DEFAULT",
         "threetears.evals.analysis.report_markdown",
         "threetears.evals.analysis.report_html",
+        "threetears.evals.analysis.format_number",
+        "threetears.evals.analysis.format_signed",
         "threetears.evals.analysis.ChartBlock",
         "threetears.evals.kernel.EvalAnalysis",
         "threetears.evals.vega.VegaRenderer",

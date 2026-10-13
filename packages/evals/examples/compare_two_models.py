@@ -28,6 +28,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from _live import anthropic_sdk, claude, online, spent
+from threetears.evals.analysis import format_number, format_signed
 from threetears.evals.quick import Answer, Comparison, compare
 
 LIVE = ("claude-haiku-4-5", "claude-haiku-5-5")  # the model you run today, and the cheaper one you might switch to
@@ -140,10 +141,13 @@ async def main() -> Comparison:
 
     # The verdicts: accuracy, then spend (lower is better, so a saving reads "improved").
     print("\nEach reading against the control (Production cost is US dollars per answer):")
+    # Every number spelled as the report spells it (format_number), so a cent and a millionth read alike on a line.
     for row in comparison.contrasts():
-        p = "" if row["p_adjusted"] is None else f", Holm-adjusted p {row['p_adjusted']:.2g}"  # none if nothing varied
-        print(f"{row['arm']} vs {comparison.control} on {row['reading']}: {row['control_mean']:.3g} -> ", end="")
-        print(f"{row['arm_mean']:.3g}, delta {row['delta']:+.3g}, interval {row['interval']}{p}: {row['verdict']}")
+        # No p when nothing varied.
+        p = "" if row["p_adjusted"] is None else f", Holm-adjusted p {format_number(row['p_adjusted'])}"
+        means = f"{format_number(row['control_mean'])} -> {format_number(row['arm_mean'])}"
+        print(f"{row['arm']} vs {comparison.control} on {row['reading']}: {means}, ", end="")
+        print(f"delta {format_signed(row['delta'])}, interval {row['interval']}{p}: {row['verdict']}")
 
     (accuracy,) = comparison.verdicts("accuracy")  # typed: branch on its outcome, never on the printed words
     print(f"\nOn accuracy, {accuracy.outcome.replace('_', ' ')}: {WHAT_TO_DO[accuracy.outcome]}")
