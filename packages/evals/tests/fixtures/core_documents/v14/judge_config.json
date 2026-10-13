@@ -1,9 +1,9 @@
 {
   "archived": false,
-  "created_at": "2026-10-12T23:46:13.761731+00:00",
+  "created_at": "2026-10-13T00:54:18.704536+00:00",
   "description": "",
   "doc_type": "judge_config",
-  "id": "01a13282-7881-7633-a384-692986be689b",
+  "id": "01a132c0-cd50-70cd-a90a-8430b3a5f5b6",
   "model": "",
   "name": "tone-v1",
   "prompt_template": "Score the tone.",
