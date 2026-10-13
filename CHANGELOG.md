@@ -359,6 +359,10 @@ again.
   object names takes them only while no write claim stands in the pod's pointer bucket
   (`object_store_requests.is_write_claim_key`), and then every one; `older_than` and
   `ORPHAN_CHUNK_MIN_AGE` are gone. A declarer must pass the pod's pointer bucket.
+  The sweep lists the chunk subjects first, then reads the claims, then the named objects, the
+  order the pod-side sweep already keeps: read the other way round, a put that started between the
+  claim read and the listing had its first chunks purged and then wrote metadata for an object no
+  `get` could verify.
 - **Added, `threetears.nats.ObjectStoreFullError`** (`bucket`, `name`), an `ObjectStoreError` raised
   for a store failure that reports its max bytes exceeded (JetStream 10077) and for insufficient
   server resources (10047); any other store failure stays a plain `ObjectStoreError`.
@@ -366,10 +370,23 @@ again.
 ### Agent acl, core, nats, registry, memory and conversations: the access tables' contract stage
 
 Stage 5 of `docs/epoch-task-06-collection-generations-by-default.md`, for the access tables. The
-write generations are now the only invalidation of every cache derived from them. **Deploy
-precondition: every hub, gateway, agent pod, tool pod and standalone registry is on the switch-on
-release (3tears `5173b662`, hub `e6b3f9f2`, SDK `3db24dd2`) or later before this ships anywhere;**
-see "What Must Already Be Deployed Everywhere" in the note.
+write generations are now the only invalidation of every cache derived from them.
+
+**Deploy rule for 0.66.0. There is no rolling-safe path from 0.65.0 for the access tables.** The
+stages this was built in (expand, switch-on, contract) all ship in 0.66.0; none was released on its
+own. While a 0.65.0 hub or gateway replica and a 0.66.0 one run together, a grant the 0.65.0
+replica changes (a group member, a role, a role assignment) advances no write generation, so no
+0.66.0 hub, gateway, registry or pod sees the change, and nothing ages it out of their caches. So:
+
+1. **During the deploy, make no access changes and reload no geography layer.** The second because
+   a 0.65.0 writer does not maintain `config_epochs.previous_epoch`: a tile epoch it bumps keeps the
+   previous version an earlier move recorded, and a pod reporting next keeps that generation and
+   deletes the one clients still hold (`generations_to_delete`).
+2. **Once the last 0.65.0 process is gone, restart every hub, gateway, registry, agent pod and tool
+   pod once.** A restart drops whatever a 0.66.0 process cached while a 0.65.0 one could still write.
+3. **Do not roll any of them back below 0.66.0 while any 0.66.0 process runs.**
+
+See "What Must Already Be Deployed Everywhere" in the note.
 
 - **Removed, breaking:** `threetears.agent.acl.invalidation_bus` (`subscribe_acl_invalidation`,
   `unsubscribe_acl_invalidation`, `publish_membership_invalidation`,
@@ -420,10 +437,10 @@ see "What Must Already Be Deployed Everywhere" in the note.
   `async` method to it.
 - **Switched on:** `concepts`, `playbook_entries` (`threetears.agent.knowledge`), `datasources` and
   `datasource_tables` (`threetears.datasources`). A process caching knowledge scans follows them
-  beside the access tables: `generation_follow.follow_tables(registry, reader,
+  beside the access tables: `threetears.epoch.follow_tables(registry, reader,
   KNOWLEDGE_SCAN_TABLES)`. The scans' dependencies name `namespaces` too.
 - **Fixed:** a write-generation watch whose connection is closed stops instead of restarting forever
-  (`EpochGenerationReader.closed`), and `AccessTableFollower.stop` is bounded (`stop_timeout`, 5 s);
+  (`EpochGenerationReader.closed`), and `TableFollower.stop` is bounded (`stop_timeout`, 5 s);
   a tool pod no longer hangs on SIGTERM.
 
 ### Core coordination: a fence on a producer's ready signal
@@ -467,9 +484,13 @@ refused later, by the hub.
   dropped table drop every answer. A read fence keeps an answer asked before an eviction from being
   stored after it. It serves and keeps answers only while it is followed and every watch is running
   (`trusted`); otherwise every question goes to the hub, and losing trust empties it.
+  It holds at most `max_entries` answers (`CallerAccessCache(*, max_entries=)`, default
+  `DEFAULT_CALLER_CACHE_MAX_ENTRIES`, 10,000): one more drops the least recently used, which is
+  asked of the hub again when wanted. A size bound, not an age. `size`, `max_entries` and
+  `capacity_evictions` report it, and reaching the bound for the first time is logged at WARNING.
 - **Added, `threetears.agent.acl.generation_follow.follow_caller_access_cache`**: binds the cache and
   follows the access tables in one call, as `follow_access_tables` does for `AclCache`, and tells the
-  cache whether its watches are running (`AccessTableFollower.watching`: running, none failing; a key
+  cache whether its watches are running (`TableFollower.watching`: running, none failing; a key
   never written is watched though never pushed).
 - **Added, `threetears.agent.acl.CallerNamespaces`**: the namespaces the hub's `namespace.discover`
   lists for a caller, asked with the caller's own tokens, kept in a `CallerAccessCache`, and failing
@@ -541,8 +562,8 @@ subjects and `AclCache`'s TTL stay until the contract stage.
   it; `GroupNamespaceEntry.role_ids`, recorded by the evaluator, so a role edit evicts exactly the
   entries that read the role.
 - **Added, `threetears.agent.acl.bind_acl_cache_to_access_tables` and `ACCESS_TABLES`**, and
-  `threetears.agent.acl.generation_follow.AccessTableFollower` (one supervised generation-key watch
-  per table; `3tears-epoch` joins the `[bus]` extra).
+  `threetears.epoch.TableFollower` (one supervised generation-key watch per table; the acl half
+  that uses it needs the `3tears-agent-acl[follow]` extra, which brings `3tears-epoch`).
 - **Changed, a broker reply carrying no generations field says the broker advanced nothing**
   (owner, 2026-10-08): `BrokerGenerationSource.advance` returns `None`, the rows name no
   generation, and a warning is logged once per table, so a pod switched on ahead of its hub still
@@ -558,7 +579,7 @@ subjects and `AclCache`'s TTL stay until the contract stage.
 - **Added, `follow_access_tables(registry, cache, reader)`** in
   `threetears.agent.acl.generation_follow`: binds and follows in one call, returning one handle
   (`AccessTableFollowing`) whose `stop()` undoes both; refuses unless the registry's invalidation
-  listener runs (`CollectionRegistry.invalidation_listener_running`, added). `AccessTableFollower`
+  listener runs (`CollectionRegistry.invalidation_listener_running`, added). `threetears.epoch.TableFollower`
   backs a failing watch off from one second to a sixty-second cap and exposes `WatchHealth` and
   `healthy`; `DegradedEvictions` counts rows whose reach was unknown. `follow_generation_key` takes
   any `threetears.epoch.GenerationWatcher`.
@@ -892,31 +913,59 @@ bound could not be tested against it.
   `False` is forgotten and its bucket stays absent; one that raises is logged at ERROR and the
   declaration is restored. Both are what the real restoration does.
 
+### Epoch and agent acl: the table follower lives in `threetears.epoch`
+
+The supervised follower knows nothing about access control: it follows any table's write generation
+on a registry, and the knowledge scan tables are followed through it. It was in
+`threetears.agent.acl.generation_follow`, behind an extra named for a bus this release deletes.
+
+- **Moved, before any release carried them:** `threetears.epoch.table_follow` holds `TableFollower`
+  (was `AccessTableFollower`; `tables` is now a required third argument, with no access-table
+  default), `WatchHealth`, `follow_tables`, `DEFAULT_WATCH_RESTART_DELAY`,
+  `MAX_WATCH_RESTART_DELAY` and `DEFAULT_STOP_TIMEOUT`, all exported from `threetears.epoch`.
+  Nothing is re-exported from the old path.
+- **Stays in `threetears.agent.acl.generation_follow`:** `follow_access_tables`,
+  `follow_caller_access_cache` and `AccessTableFollowing`, which bind a cache to the access tables
+  and follow them with a `TableFollower`.
+- **Changed, breaking, packaging:** the `3tears-agent-acl` extra `bus` is now `follow`
+  (`3tears-agent-acl[follow]`): `3tears-epoch` and the NATS client, needed only to import
+  `threetears.agent.acl.generation_follow`. The acl README names it.
+
 ### Epoch: a durable subject's versions can be read from a per-process copy
 
 `EpochClient.versions` read the `config_epochs` row on every call, and the hub calls it on every
 TileJSON and tile request; that read failed live when a pool connection dropped.
 
-- **Added, `EpochClient.versions(subject, *, max_age: timedelta | None = None, grace: timedelta =
-  timedelta(seconds=30))`**: with `max_age`, a per-process copy per subject answers for up to
-  `max_age` after it was read. This process's own `advance_to` writes the new versions into it
-  with no read, and its `bump` drops it. A read that fails answers the copy while it is no older
-  than `max_age + grace`, logged at WARNING; past that, or with nothing cached, it raises as
-  before. Without `max_age` every call reads the row, as before, and a non-durable subject still
-  raises `ValueError`. A read that left for the pool before this process moved the subject cannot
-  overwrite the move.
+- **Added, `EpochClient.versions(subject, *, cached: bool = False)`**: with `cached=True`, a
+  per-process copy per subject answers. The copy has no age and no grace: it answers until the
+  epoch system says the subject moved. This process's own `advance_to` writes the new versions
+  into it with no read, its `bump` drops it, a broadcast naming a later epoch drops it
+  (`observe_broadcast`), and a missed broadcast is repaired by the listener's catch-up
+  (`EpochListener.catch_up`, `catchup_tick`): the pass reads `EpochClient.current`, which drops a
+  copy the row has moved away from. Without `cached` every call reads the row, as before, and a
+  non-durable subject still raises `ValueError`. A read that fails raises, cached or not. A read
+  that left for the pool before this process moved the subject cannot overwrite the move.
+- **A copy is kept only for a subject a listener follows.** `EpochListener.subscribe` reports each
+  subscription to its client (`EpochClient.observe_subscription(subject)`, added), concrete or
+  wildcard. A subject no subscription covers has nothing that could drop its copy, so none is kept:
+  `cached=True` reads the row every time and logs that once, at WARNING. A process that wants the
+  cached answer subscribes the subject, or a wildcard covering it, on an `EpochListener` over the
+  same client, and schedules `catchup_tick` over `EpochClient.cached_subjects` (added: the durable
+  subjects a copy is held for).
 - **Added, `EpochClient.observe_broadcast(message: EpochBumpMessage) -> None`**: drops the cached
-  copy when a broadcast names a later epoch than it holds, and fences any read in flight when it
+  copy when a broadcast names a later epoch than it holds, and marks any read in flight when it
   arrives (cached or not), so that read cannot cache the row as it stood before the move.
   `EpochListener` now calls it for every broadcast it receives, before its dedupe, so another
   process's advance invalidates the copy as its broadcast arrives. A broadcast with an empty
-  `subject_path` is keyed by the subscribed subject for both the dedupe and the cache.
-- **Changed, for stand-in epoch clients**: because `EpochListener` calls `observe_broadcast` on every
-  broadcast, an object handed to it as the epoch client must have that method. A real `EpochClient`
-  or a subclass of it does; a hand-rolled duck-typed stub must add it (a no-op is enough).
-- **Constraint for callers**: a cached value may lag the row by up to `max_age` when a broadcast
-  is missed, so it is for choosing what to serve or advertise, never for building at a version
-  whose rows may already be gone. Read without `max_age` before reading source rows.
+  `subject_path` is keyed by the subscribed subject for both the dedupe and the cache. Nothing is
+  kept per broadcast subject: the only per-subject state is a copy, or a read in flight.
+- **Changed, for stand-in epoch clients**: because `EpochListener` calls `observe_subscription` once
+  per subscribe and `observe_broadcast` on every broadcast, an object handed to it as the epoch
+  client must have both methods. A real `EpochClient` or a subclass of it does; a hand-rolled
+  duck-typed stub must add them (no-ops are enough).
+- **Constraint for callers**: between a missed broadcast and the catch-up pass that repairs it a
+  cached value lags the row, so it is for choosing what to serve or advertise, never for building
+  at a version whose rows may already be gone. Read without `cached` before reading source rows.
 
 ### Geo: a feature-cache read with no L1 is one loader call, and a wide rectangle is read once
 

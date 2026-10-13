@@ -8,10 +8,12 @@ Typed NATS client wrapper, subject builders, and JetStream KV bucket primitives 
 - `Subject` + `Subjects` -- opaque subject dataclass and factory of every canonical subject family used by 3tears applications. Replaces ad-hoc `f"{namespace}.tools.call"` string-concatenation across the platform.
 - `NatsKvBucket` -- operations against one JetStream KV bucket (`get` / `put` / `delete` / `create` / `update` / `get_entry` / `list_keys`). Bucket name auto-prefixed by the connected client's `nats_subject_namespace`, unless it was declared with `ensure_kv_bucket(prefix_namespace=False)`, which uses the name exactly. Every operation follows the client onto its current connection, so a handle survives a credential renewal or a move off a lame-duck server.
 - `PersistedCopyBucket` -- the one owner of a KV bucket that is the persisted copy of an in-memory structure. It declares the bucket under its exact name in the background, retrying until the declaration lands; runs `load` (bucket into memory) once, at the first declaration; and runs `write_back` (memory into bucket) then and every time the client creates the bucket again empty. Use it rather than hand-rolling a declare/load/refill loop.
+- `NatsObjectStore` / `ObjectInfo` -- one JetStream Object Store bucket: immutable named objects, chunked on the wire in the NATS Object Store's own shape. See [Object Store](#object-store).
+- `CopyWriteHealth` -- whether writes to a persisted copy are landing, counted per write operation, as a readiness probe reads it (`persisting`).
 - `forward` / `serve_owner` -- payload-agnostic owner-routed request/reply: send a request to whichever pod currently serves a key and get its reply back. A separate election mechanism decides who owns the key; this only carries the message.
 - `attach_pipe` / `serve_pipe` / `open_pipe` -- a payload-agnostic byte pipe to whichever pod owns a key, for reaching a process that has no inbound network path. Rendezvous rides `forward`; the stream then moves to its own subjects with a sequenced framing (a lost frame raises rather than being skipped) and a credit window that stops the producer reading its source when the consumer falls behind.
 - `StreamTransport` -- narrow Protocol used by streaming consumers; lets test fakes substitute for the live client.
-- Errors -- `NatsClientError`, `SubscribeError`, `PublishError`, `RequestError`, `KvError`, and `KvBucketNotFoundError` (a `KvError`). See [KV errors](#kv-errors).
+- Errors -- `NatsClientError`, `SubscribeError`, `PublishError`, `RequestError`, `KvError`, and `KvBucketNotFoundError` (a `KvError`). See [KV errors](#kv-errors). The Object Store raises `ObjectStoreError`, with `ObjectStoreNotFoundError`, `ObjectNotFoundError`, `ObjectExistsError` and `ObjectStoreFullError` for the cases a caller answers differently.
 - `is_bucket_not_found` / `is_key_not_found` / `is_nats_error` -- classify the failures of a RAW nats-py handle by type, so a consumer that keeps `nats.*` imports out of its code never matches nats-py class names as strings.
 
 ## Why a separate package
@@ -70,6 +72,23 @@ await nc.shutdown()
 ## Distributed locks
 
 The cross-pod job lock is not in this package: `nats_distributed_lock` (with `LockHeld`, `LockHold`, `LockLost`) lives in core, `threetears.core.coordination`, beside the `KVLease` it runs on. It takes the `NatsClient` from this package as its `client`. Only `LockLossReason`, the reason a lost hold reports, is defined here (`threetears.nats.errors`).
+
+## Object Store
+
+`NatsObjectStore` wraps one Object Store bucket. Callers reach it through the client, never through `js.object_store`:
+
+- `NatsClient.ensure_object_store(name=..., max_bytes=...)` declares the bucket (memory storage by default) and is the bucket owner's call only.
+- `NatsClient.object_store(name=...)` binds a bucket another identity declared and never creates one; a bucket nobody declared raises `ObjectStoreNotFoundError`.
+
+On a bound store: `put(name, data) -> ObjectInfo`, `get(name) -> bytes`, `info(name)`, `list_objects(prefix=...)` and `bytes_held()`. What it holds to:
+
+- **A name is written once.** A second `put` of a name raises `ObjectExistsError`; the server refuses it, so a racing writer cannot overwrite the first. A changed object is a new name.
+- **`get` checks what it read** against the object's recorded size and digest.
+- **Reads use named consumers and the direct get**, the forms a pod's grant admits; nats-py's own Object Store reads through an unnamed consumer a pod is refused.
+- **Deletion is the declarer's.** `delete(name)` and `purge_orphan_chunks(pointers=...)` purge stream subjects, a management verb the hub holds and no pod does. The sweep removes chunks no object names only while no write claim stands in the pod's pointer bucket, judged by state and never by age.
+- A bucket at its `max_bytes` refuses a write with `ObjectStoreFullError`.
+
+A tool pod's own bucket is declared and swept by the hub on its behalf: `threetears.nats.object_store_requests` holds that contract (`bind_pod_object_store`, `declare_pod_object_store`, `retire_pod_objects`, and the request and reply models the hub imports).
 
 ## KV errors
 

@@ -184,7 +184,7 @@ pod, and a missed broadcast is caught at the next pass.
 The existing consumer side does not fit as it is. `EpochListener.catch_up` reads
 `EpochClient.current`, which decodes a `DistributedCounter` integer and cannot parse
 `{incarnation}:{count}`; `Subjects.collection_generation_epoch` is documented as never
-broadcast; `EpochClient.observe_broadcast` and `versions(max_age=)` serve the durable tile
+broadcast; `EpochClient.observe_broadcast` and `versions(cached=True)` serve the durable tile
 family only. So the follower is new: the per-table mark lives in core beside
 `GenerationSource`, and one pure-async pass lives in `3tears-epoch` beside `catchup_tick`,
 with the same contract (one pass per call, the consumer schedules it, one table's failure
@@ -1063,7 +1063,7 @@ hub. Its rbac stack's `AclCache` follows the access tables like every other.
   entry whose loader read began before any eviction is not stored.
 - **Following, one call**: `threetears.agent.acl.generation_follow.follow_access_tables(registry,
   cache, reader)` binds the cache and follows the tables, returning one handle whose `stop()` undoes
-  both; each half alone is unsafe. `AccessTableFollower` runs one `follow_generation_key` watch per
+  both; each half alone is unsafe. `threetears.epoch.TableFollower` runs one `follow_generation_key` watch per
   table as a task and starts it again when it ends or fails, after a delay that doubles from one
   second to a sixty-second cap and resets when the watch is pushed a value. That delay is the
   watch's liveness, not an age on any cached value. Each table's `WatchHealth` (consecutive
@@ -1098,9 +1098,9 @@ must reach cobalt before a hub image whose registry follows.
   agent pod and the owner-data stack pass their client, so their `BrokerGenerationSource` reads;
   the devx workspace runtime passes `None` (the dev `tooling` user holds no read of the bucket).
   The framework's tool-pod stack builds `BrokerGenerationSource(EpochGenerationReader(nc))`, so a
-  product's per-caller cache in a tool pod can follow these tables with `AccessTableFollower` or
+  product's per-caller cache in a tool pod can follow these tables with `threetears.epoch.TableFollower` or
   `follow_generation_key`. `3tears-epoch` joins `3tears-agent-tools`, `3tears-registry`,
-  `3tears-agent-acl[bus]` and the SDK.
+  `3tears-agent-acl[follow]` and the SDK.
 
 ### Writes the Database Made Outside a Collection, Put on the Epoch System
 
@@ -1189,7 +1189,7 @@ Built for the reports product's state limit (its wave 2 chunk 10), 2026-10-09, i
     database, never a cache, and a write's broadcast goes out after its commit.
   - **Trusted only while followed.** It serves and keeps answers only while
     `follow_caller_access_cache` follows it and every watch is running
-    (`AccessTableFollower.watching`); a cache nobody follows, a stopped one, or one whose watches
+    (`TableFollower.watching`); a cache nobody follows, a stopped one, or one whose watches
     are failing (the bucket unreachable, the read grant missing) asks the hub every time, and losing
     trust empties it, so nothing held across the failure is served after.
 - **`follow_caller_access_cache(registry, cache, reader)`** binds and follows in one call, the same
@@ -1209,26 +1209,40 @@ on a cache the epoch system invalidates; derived caches row by row, ALL only for
 ### What Must Already Be Deployed Everywhere
 
 Contract is the last step of expand, migrate, contract, so it is safe only once nothing older than
-the switch-on stage runs. **Before this release ships anywhere, every one of these is on the
-switch-on release: images built from 3tears `5173b662`, hub `e6b3f9f2` and SDK `3db24dd2`
-(`feature/reports` with the switch-on stage merged) or later:**
+the switch-on stage runs. **No release carries the switch-on stage on its own: expand, switch-on and
+contract all ship in 3tears 0.66.0, with the hub and SDK releases built on it. So there is no
+rolling-safe path from 0.65.0 for the access tables, and the precondition is a deploy rule.**
 
-- **every hub and gateway replica.** A hub older than switch-on neither advances the access tables
-  for its own writes and the broker's commits nor follows them. A contract follower has no TTL, so a
-  broadcast lost from such a writer would never be corrected.
-- **every agent pod (SDK) and tool pod (framework).** Their own writes go through the broker, which
-  advances, so as writers an older pod is safe; but as a reader a pod older than switch-on follows
-  nothing, and once the hub stops publishing `acl.*` its cache is bounded by its own TTL alone.
-- **the standalone registry**, for the same reason as a pod, with the static grant that lets it read
-  `{ns}-epochs` already rendered to cobalt (the switch-on stage's requirement).
+Why a 0.65.0 process cannot run beside a 0.66.0 one:
+
+- **a 0.65.0 hub or gateway replica** neither advances the access tables for its own writes and the
+  broker's commits nor follows them. It publishes `acl.*`, which no 0.66.0 process subscribes to. A
+  0.66.0 follower has no TTL, so a grant such a replica changes is not seen by any 0.66.0 hub,
+  gateway, registry or pod, and nothing ages it out.
+- **a 0.65.0 agent pod (SDK) or tool pod (framework)** writes through the broker, which advances, so
+  as a writer it is safe beside a 0.66.0 hub; as a reader it follows nothing, and once the hub stops
+  publishing `acl.*` its cache is bounded by its own TTL alone.
+- **a 0.65.0 standalone registry**, for the same reason as a pod. A 0.66.0 registry needs the static
+  grant that lets it read `{ns}-epochs` rendered before it starts.
 - **identity-core** writes these tables only through the hub's RPCs, so the hub covers it.
+- **a 0.65.0 writer of a durable tile epoch** does not maintain `config_epochs.previous_epoch`
+  (`EpochClient` `_BUMP_SQL` names the column only from 0.66.0). A tile epoch it bumps after a
+  0.66.0 move keeps the previous version that earlier move recorded, and
+  `threetears.datasources.geo_reload.generations_to_delete` then keeps that generation and deletes
+  the one clients still hold.
 
-A hub, gateway or registry still on the switch-on build, once its static grants are rendered from
-this release, still subscribes to `acl.*` and logs one refused-subscribe ERROR per connect; the
-connection stays up and nothing is lost, since nothing publishes those subjects. Within the
-contract release the pieces upgrade in any order: a contract hub publishes no `acl.*`,
-and a switch-on pod still subscribes but follows the generations; a contract pod subscribes nothing.
-**Rolling a hub or gateway back below switch-on, while any contract follower runs, is not safe.**
+**The rule, for the deploy that takes a fleet from 0.65.0 to 0.66.0:**
+
+1. While any 0.65.0 process runs beside a 0.66.0 one, make no access changes (group members, roles,
+   role assignments, groups, namespaces) and reload no geography layer.
+2. Once the last 0.65.0 process is gone, restart every hub, gateway, registry, agent pod and tool
+   pod once, so nothing cached while a 0.65.0 process could still write is kept.
+3. Do not roll a hub, gateway, registry or pod back below 0.66.0 while any 0.66.0 process runs.
+
+Within 0.66.0 the pieces start in any order: a 0.66.0 hub publishes no `acl.*`, and a 0.66.0 pod
+subscribes nothing. A 0.65.0 hub, gateway or registry whose static grants are already rendered from
+0.66.0 logs one refused-subscribe ERROR per connect for `acl.*`; the connection stays up and nothing
+is lost, since nothing publishes those subjects.
 
 ### What Was Removed
 
@@ -1307,7 +1321,7 @@ write to them is announced: the hub's template routes and schema endpoint write 
 removal invalidates the rows its delete cascades to (now including the datasources whose
 `origin_datasource_id` its delete clears), and the platform migrations are announced at every hub
 start. The hub and every agent pod follow the four tables beside the access tables
-(`threetears.agent.acl.generation_follow.follow_tables`, `KNOWLEDGE_SCAN_TABLES`). `ScanCache`
+(`threetears.epoch.follow_tables`, `KNOWLEDGE_SCAN_TABLES`). `ScanCache`
 has no TTL: it stores and serves an entry only while every table it depends on is followed with its
 watch running (`CollectionRegistry.tables_trusted`, fed by each follower through `watched_by`), and
 otherwise the scan reads L3. The scans' dependencies now name `namespaces`, which their visibility
@@ -1323,13 +1337,23 @@ SQLite backend's injected cached-at stamp, `CACHED_AT_COLUMN`, `TABLES_WITHOUT_C
 `entry_is_fresh` and `ScanCache`'s `DEFAULT_SCAN_TTL_SECONDS` and `stored_at_monotonic`. A row's own
 declared expiry (`expires_at_column`) is data, not a cache bound, and stays.
 
+**`EpochClient.versions` follows the same ruling (final review of 0.66.0).** Its per-process copy
+of a durable subject's versions was bounded by `max_age`, with a `grace` through a failed read: a
+timer under a cache the epoch broadcasts invalidate. Both are gone. `versions(subject, cached=True)`
+answers a copy until the epoch system says the subject moved: this process's own `advance_to` or
+`bump`, a broadcast heard by an `EpochListener` on the client, or the listener's catch-up, whose
+read of the row drops a copy the row has moved away from. A copy is kept only for a subject such a
+listener is subscribed to; any other is read from the row every time.
+- *Rejected: keeping the age as the cover for a missed broadcast* -- a timer; the catch-up pass is
+  the epoch system's repair for a missed broadcast and now reaches the copy.
+
 **Writes left unannounced, on purpose:** the hub's capability endpoints write `datasources.face_*`
 and `datasources.spec`, columns no collection declares or caches and no scan reads.
 
 **A follower that stops when its connection closes.** A tool pod on SIGTERM drained its client and
-`AccessTableFollower` restarted every watch against the closed connection, keeping the process
+`TableFollower` restarted every watch against the closed connection, keeping the process
 alive. A watch whose watcher reports its connection closed (`EpochGenerationReader.closed`) now
-stops, and `AccessTableFollower.stop` is bounded (`stop_timeout`, 5 s). The reports product's
+stops, and `TableFollower.stop` is bounded (`stop_timeout`, 5 s). The reports product's
 pod stops following after its server's drain (`storage_closing`); with this it no longer hangs, and
 moving that stop before the drain is the product's to do.
 

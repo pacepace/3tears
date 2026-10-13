@@ -62,7 +62,7 @@ _CONCEPT_SCAN_DEPENDS_ON: tuple[str, ...] = ("concepts", "datasource_tables", "d
 _ENTRY_SCAN_DEPENDS_ON: tuple[str, ...] = ("playbook_entries", "datasources", *ACCESS_TABLES)
 
 #: the tables beyond the access tables that a knowledge scan depends on: a process that caches
-#: these scans follows them (``threetears.agent.acl.generation_follow.follow_tables``) beside the
+#: these scans follows them (``threetears.epoch.follow_tables``, from ``3tears-epoch``) beside the
 #: access tables its ACL cache follows
 KNOWLEDGE_SCAN_TABLES: tuple[str, ...] = ("playbook_entries", "concepts", "datasources", "datasource_tables")
 

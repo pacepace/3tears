@@ -80,9 +80,17 @@ Exports (see `src/threetears/agent/acl/__init__.py`):
 
 ### Invalidation
 
-- `follow_access_tables(registry, cache, reader)` -- binds an `AclCache`
-  to the access tables' row broadcasts and follows their write
-  generations (epoch-task-06); the only invalidation there is.
+- `generation_follow.follow_access_tables(registry, cache, reader)` --
+  binds an `AclCache` to the access tables' row broadcasts and follows
+  their write generations (epoch-task-06); the only invalidation there is.
+  `generation_follow.follow_caller_access_cache(registry, cache, reader)`
+  does the same for a `CallerAccessCache`. Both return an
+  `AccessTableFollowing` whose `stop()` undoes the bind and the follow.
+- **`threetears.agent.acl.generation_follow` needs the `follow` extra:**
+  install `3tears-agent-acl[follow]`, which brings `3tears-epoch` and the
+  NATS client. The watches are `threetears.epoch.TableFollower`, the
+  family's follower for any table; the plain install does not include it,
+  and importing the module without it raises `ModuleNotFoundError`.
 - `evict_after_rbac_write(cache, member_actors=..., group_ids=...)` --
   what a helper that writes an rbac row evicts from its own cache at once.
 

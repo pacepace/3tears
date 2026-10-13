@@ -347,8 +347,8 @@ async def build_tool_pod_collection_stack(
     # switched-on table's write generation after committing the pod's write and names the token in
     # its reply; this source hands it to the collection. Its reader binds the epoch bucket the pod
     # is granted read of, so a collection caching absences can stamp them with a generation, and a
-    # cache the pod derives from a table can follow it (``threetears.epoch.follow_generation_key``,
-    # or ``threetears.agent.acl.generation_follow.AccessTableFollower`` for the access tables).
+    # cache the pod derives from a table can follow it (``threetears.epoch.follow_tables``, or
+    # ``threetears.agent.acl.generation_follow.follow_caller_access_cache`` for the access tables).
     registry.set_generation_source(BrokerGenerationSource(EpochGenerationReader(nats_client)))
     await registry.start_invalidation_listener(nats_client)
     log.info(

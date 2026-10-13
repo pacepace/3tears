@@ -28,8 +28,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Following the access tables' write generations (threetears.agent.acl.generation_follow).
-bus = ["3tears-nats[client]>=0.66.0,<0.67.0", "3tears-epoch>=0.66.0,<0.67.0"]
+# Following the access tables' write generations (threetears.agent.acl.generation_follow), over
+# 3tears-epoch's table follower and the NATS client it watches through.
+follow = ["3tears-nats[client]>=0.66.0,<0.67.0", "3tears-epoch>=0.66.0,<0.67.0"]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"

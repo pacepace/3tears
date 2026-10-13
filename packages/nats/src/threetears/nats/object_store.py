@@ -656,7 +656,8 @@ class NatsObjectStore:
         still running or one that failed part way. Its writer holds a claim in ``pointers`` while it
         writes (:func:`~threetears.nats.object_store_requests.is_write_claim_key`), so while any
         claim stands nothing is purged; with none standing, every unnamed chunk is a put that will
-        never finish. The DECLARER's operation, like :meth:`delete`.
+        never finish. The chunks are listed before the claims are read, so a put that starts while
+        the sweep runs loses nothing. The DECLARER's operation, like :meth:`delete`.
 
         :param pointers: the pod's pointer bucket, where its writers claim what they write
         :ptype pointers: KvBucketLike
@@ -665,6 +666,23 @@ class NatsObjectStore:
         :raises ObjectStoreError: when the stream cannot be read or a purge fails
         :raises KvError: when the pointer bucket cannot be listed (nothing is purged)
         """
+        js = self._client.jetstream_context()
+        # the order is the safety: the chunk subjects are listed FIRST, then the claims are read, then
+        # the named objects. a writer claims before its first chunk and holds the claim until its
+        # metadata has landed, so every chunk listed was written under a claim taken before the
+        # listing. if no claim stands when they are read afterwards, each listed chunk's writer
+        # either died (a true orphan) or released after its metadata landed, which the read of the
+        # named objects, later still, sees. a put that starts after the listing is not in it, so
+        # nothing of it is purged. read the other way round, a put starting between the claim read
+        # and the listing has its first chunks purged and then names an object no get can verify.
+        try:
+            info = await self._bounded(
+                lambda: js.stream_info(self.stream, subjects_filter=f"$O.{self._full_name}.C.>"),
+                what="object chunk listing",
+            )
+        except _FAILED as exc:
+            raise ObjectStoreError(f"sweeping unnamed chunks from {self._full_name} failed: {exc}") from exc
+        subjects = dict(info.state.subjects or {})
         claims = [key for key in await pointers.list_keys() if is_write_claim_key(key)]
         if claims:
             log.info(
@@ -672,14 +690,8 @@ class NatsObjectStore:
                 extra={"extra_data": {"bucket": self._full_name, "claims": len(claims)}},
             )
             return 0
-        js = self._client.jetstream_context()
         named = {raw.nuid for raw in await self._list_raw() if raw.nuid and not raw.deleted}
         try:
-            info = await self._bounded(
-                lambda: js.stream_info(self.stream, subjects_filter=f"$O.{self._full_name}.C.>"),
-                what="object chunk listing",
-            )
-            subjects = dict(info.state.subjects or {})
             purged = 0
             for subject in sorted(subjects):
                 if subject.rsplit(".", 1)[-1] in named:

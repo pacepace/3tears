@@ -141,6 +141,7 @@ from threetears.agent.acl.caller_cache import (
     CallerAccessCache,
     CallerKey,
     CallerNamespaces,
+    DEFAULT_CALLER_CACHE_MAX_ENTRIES,
     CallerNamespacesUnavailable,
     bind_caller_cache_to_access_tables,
 )
@@ -251,6 +252,7 @@ __all__ = [
     "CallerKey",
     "CallerNamespaces",
     "CallerNamespacesUnavailable",
+    "DEFAULT_CALLER_CACHE_MAX_ENTRIES",
     "CatalogViolation",
     "CatalogViolationKind",
     "ClaimsForAuthorization",
