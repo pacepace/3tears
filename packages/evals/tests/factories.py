@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.kernel.authored import AuthoredAnalysis
 from threetears.evals.kernel.campaign import (
     EvalAnalysis,
@@ -65,6 +66,7 @@ from threetears.evals.kernel.usage_capture import blended_cost_roles
 from threetears.evals.storage import InMemoryDocumentStore
 
 __all__ = [
+    "CURRENT_BUNDLE_SHAPE",
     "DEFAULT_KIND",
     "DEFAULT_SUBJECT",
     "RECORDED_REQUEST_SETTINGS",
@@ -98,6 +100,11 @@ DEFAULT_SUBJECT = SubjectSnapshot(
     state={},
     captured_at="2026-07-20T00:00:00+00:00",
 )
+
+#: The bundle-shape version a bundle built now carries (``AnalysisContextBundle.schema_version``): the value a test
+#: that records "an analysis generated from a bundle" writes as ``bundle_schema_version``, so it describes the shape
+#: this build writes and moves with it. A test of an older shape names its own number instead.
+CURRENT_BUNDLE_SHAPE: int = AnalysisContextBundle.model_fields["schema_version"].default
 
 #: The candidate kind a factory-built template, run or result names unless the test supplies one.
 DEFAULT_KIND = "test-kind"
@@ -467,7 +474,7 @@ def make_analysis(**overrides: Any) -> EvalAnalysis:
             repaired_refusal=None,
             cell_model_version=1,
             user_message_digest="sha256:message",
-            bundle_schema_version=50,
+            bundle_schema_version=CURRENT_BUNDLE_SHAPE,
             host_declarations_digest="sha256:declarations",
         ),
         document=AuthoredAnalysis(headline="h", summary="", findings=[], decisions=[], questions=[], next=[]),

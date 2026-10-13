@@ -25,6 +25,7 @@ from threetears.evals.kernel.campaign import EvalAnalysis, GenerationProvenance
 from threetears.evals.kernel.declaration import Question
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.kernel.surface import DecisionSurface
+from packages.evals.tests.factories import CURRENT_BUNDLE_SHAPE
 
 
 def _finding() -> Finding:
@@ -70,7 +71,7 @@ def _generation() -> GenerationProvenance:
         repaired_refusal=None,
         cell_model_version=1,
         user_message_digest="sha256:message",
-        bundle_schema_version=50,
+        bundle_schema_version=CURRENT_BUNDLE_SHAPE,
         host_declarations_digest="sha256:declarations",
     )
 

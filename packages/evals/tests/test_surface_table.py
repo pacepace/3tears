@@ -42,6 +42,7 @@ from threetears.evals.kernel.declaration import CampaignDesign, ControlDeclarati
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
 from threetears.evals.kernel.surface import CellFacts, DecisionSurface, MeasureFacts
+from packages.evals.tests.factories import CURRENT_BUNDLE_SHAPE
 
 
 AXIS = "candidate_model"
@@ -171,7 +172,7 @@ def analysis(surface: DecisionSurface, **overrides) -> EvalAnalysis:
             repaired_refusal=None,
             cell_model_version=1,
             user_message_digest="sha256:message",
-            bundle_schema_version=50,
+            bundle_schema_version=CURRENT_BUNDLE_SHAPE,
             host_declarations_digest="sha256:declarations",
         ),
         "document": AuthoredAnalysis.model_validate(
