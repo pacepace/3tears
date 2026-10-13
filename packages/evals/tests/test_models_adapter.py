@@ -485,7 +485,10 @@ async def test_the_stop_reason_is_the_engine_s_word(
         plan_reply(net, provider, stop_reason=raw)
     else:
         plan_reply(net, provider, finish_reason=raw)
-    assert (await _generate(build(net, provider))).stop_reason == engine
+    result = await _generate(build(net, provider))
+    assert result.stop_reason == engine
+    # The provider's own word rides beside the engine's, so a `truncated` names what, if anything, was sent.
+    assert result.provider_stop_reason == raw
 
 
 async def test_an_openai_refusal_beside_a_finished_reply_is_the_content_filter(net: ProviderTransport) -> None:

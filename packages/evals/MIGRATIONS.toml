@@ -82,4 +82,5 @@ notes = [
     "Since `v0.66.0-evaladopt.23`, `StopReason` has a fifth member, `truncated`: output that stopped early for a reason the provider did not name or named in words the mapping does not know (no finish reason, an unrecognised one, Anthropic's `pause_turn`); it is in `INCOMPLETE_STOP_REASONS`, and `describe_incomplete_completion` says it is not the output cap and that the raw provider value is what to look at.",
     "`error` now means only that the provider reported an error in place of a completion (OpenRouter's `error` finish reason) or returned no choices; a host whose client maps an absent or unknown finish reason to `error` should map it to `truncated`, which the shipped adapter does.",
     "`truncated` is part of the v14 core baseline (`EvalOutOfRunSpend.stop_reason`), with no new core version: the baseline has not been released.",
+    "`ModelsCompletion` (the `providers` adapter's completion) gains `provider_stop_reason`, the stop reason exactly as the provider named it or `None` when it named none: what to look at when `stop_reason` is `truncated`.",
 ]

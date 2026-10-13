@@ -172,8 +172,8 @@ _OPENAI_STOPS: Final[Mapping[str, StopReason]] = {
 #: What an absent or unknown finish reason reads as: cut short, cause unnamed, never finished. A reply with no
 #: finish reason (a stream that ended without one) or with one this build does not know (a future provider value)
 #: still carried output, so it is not ``error``, which says the call failed; and a truncation read as ``end_turn``
-#: is the defect the port exists to prevent. The raw value is not carried on the completion: the adapter has no
-#: public member for it, and adding one is a surface change this mapping does not need.
+#: is the defect the port exists to prevent. The raw value rides beside it, as
+#: :attr:`ModelsCompletion.provider_stop_reason`.
 _UNNAMED_STOP: Final[StopReason] = "truncated"
 
 
@@ -228,6 +228,9 @@ class ModelsCompletion:
         stop_reason: The provider's stop reason in the engine's words; an absent or unknown one, and Anthropic's
             ``pause_turn``, is ``truncated``, and only a provider-reported error (OpenRouter's ``error``) is
             ``error``.
+        provider_stop_reason: The stop reason as the provider named it (Anthropic's ``stop_reason``, the
+            ``finish_reason`` elsewhere), or ``None`` when it named none. It is what to look at when ``stop_reason``
+            is ``truncated``: the engine's word says the cause went unnamed, this says what, if anything, was sent.
         served_provider: The upstream that served an OpenRouter call, as OpenRouter's reply names it; ``None`` on
             a provider called directly, whose reply names no upstream, and on an OpenRouter reply that named none.
         pricing_failure: Why ``cost_usd`` is ``None``, in a sentence; ``None`` when the call was priced.
@@ -243,6 +246,7 @@ class ModelsCompletion:
     served_model: str | None
     temperature: float | None
     stop_reason: StopReason
+    provider_stop_reason: str | None
     served_provider: str | None
     pricing_failure: str | None
 
@@ -575,6 +579,7 @@ class ModelsCompletionClient:
             served_model=self._served_model(meta),
             temperature=self._temperature,
             stop_reason=self._stop_reason(reply, meta),
+            provider_stop_reason=self._provider_stop_reason(meta),
             served_provider=served_provider if isinstance(served_provider, str) and served_provider else None,
             pricing_failure=unpriced,
         )
@@ -590,6 +595,11 @@ class ModelsCompletionClient:
             # equal, the defect CompletionResult.served_model warns about.
             return None
         return named
+
+    def _provider_stop_reason(self, meta: Mapping[str, Any]) -> str | None:  # Any: LangChain's metadata
+        """The stop reason exactly as the provider named it, or ``None`` when it named none."""
+        raw = meta.get("stop_reason") if self.provider == "anthropic" else meta.get("finish_reason")
+        return raw if isinstance(raw, str) and raw else None
 
     def _stop_reason(self, reply: AIMessage, meta: Mapping[str, Any]) -> StopReason:  # Any: LangChain's metadata
         """The provider's stop reason in the engine's words; a refusal is the content filter, an unnamed stop is cut short."""
