@@ -19,6 +19,8 @@ from threetears.datasources.geo_config import (
     GeometryConfig,
     GeometryKind,
     MeasureAggregation,
+    WRITE_CONTEXT,
+    layer_name_fits,
 )
 
 
@@ -188,3 +190,85 @@ class TestDatasourceIntegration:
         assert tracts.cache is CacheClassConfig.PUBLIC
         assert locations.cache is CacheClassConfig.PRIVATE
         assert locations.geometry.kind is GeometryKind.LONLAT
+
+
+class TestCheckAgainstTables:
+    """a geo block declared beside its tables names only tables and columns they declare."""
+
+    COLUMNS = {"geoid", "geometry_wkb", "source_version", "bbox_minx", "bbox_miny", "bbox_maxx", "bbox_maxy", "name"}
+
+    def test_a_layer_reading_declared_columns_passes(self) -> None:
+        geo = GeoConfig.model_validate({"layers": [_layer(features={"attributes": ["name"]})]})
+        geo.check_against_tables({"census_tracts": self.COLUMNS})
+
+    def test_a_layer_naming_an_undeclared_table_is_refused(self) -> None:
+        geo = GeoConfig.model_validate({"layers": [_layer(table="tracts_2020")]})
+        with pytest.raises(ValueError, match="reads table 'tracts_2020', which is not declared"):
+            geo.check_against_tables({"census_tracts": self.COLUMNS})
+
+    def test_a_layer_reading_an_undeclared_column_is_refused(self) -> None:
+        # the band's attribute and the rank column are reads too, not only the geometry
+        geo = GeoConfig.model_validate({"layers": [_layer(features={"attributes": ["population"], "rank_by": "area"})]})
+        with pytest.raises(ValueError, match="reads column\\(s\\) area, population that table"):
+            geo.check_against_tables({"census_tracts": self.COLUMNS})
+
+    def test_the_columns_a_layer_reads(self) -> None:
+        layer = GeoLayerConfig.model_validate(
+            _layer(aggregate={"rollup_by": "county", "measures": {"votes": "sum"}}, features={"attributes": ["name"]})
+        )
+        assert layer.columns_read() == self.COLUMNS | {"county", "votes"}
+
+
+class TestLayerName:
+    """a layer's name becomes a token of a NATS subject (its tile epoch), so a writer refuses it unless
+    it is 1 to 128 letters, digits, ``-`` and ``_``: the one rule the hub applies too. A stored
+    declaration read back is not refused whole for one bad name: the reader leaves that layer out."""
+
+    @pytest.mark.parametrize("name", ["census_tracts", "locations", "precincts-2024", "Z9", "a", "_", "-", "x" * 128])
+    def test_a_fitting_name_is_accepted_on_write(self, name: str) -> None:
+        assert GeoLayerConfig.model_validate(_layer(name=name), context=WRITE_CONTEXT).name == name
+        assert layer_name_fits(name)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "",
+            "census.tracts",
+            "census tracts",
+            "tracts*",
+            "tracts>",
+            "a/b",
+            "caf\u00e9",
+            "\u0663",
+            "tracts\n",
+            "x" * 129,
+        ],
+        ids=[
+            "empty",
+            "dot",
+            "space",
+            "star",
+            "gt",
+            "slash",
+            "non-ascii-letter",
+            "non-ascii-digit",
+            "newline",
+            "too-long",
+        ],
+    )
+    def test_any_other_name_is_refused_on_write_with_the_rule(self, name: str) -> None:
+        assert not layer_name_fits(name)
+        with pytest.raises(ValidationError, match="ASCII letters, digits, '-' and '_'") as caught:
+            GeoLayerConfig.model_validate(_layer(name=name), context=WRITE_CONTEXT)
+        assert repr(name)[:40] in str(caught.value)
+
+    def test_a_datasource_written_with_an_unfit_layer_name_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="ASCII letters, digits"):
+            GeoConfig.for_write({"layers": [_layer(name="census_tracts"), _layer(name="census.tracts")]})
+
+    def test_a_stored_declaration_with_an_unfit_name_is_read_and_names_only_that_layer(self) -> None:
+        """one bad stored name must not make the datasource's other layers, or the datasource, unreadable."""
+        stored = GeoConfig.model_validate({"layers": [_layer(name="census_tracts"), _layer(name="census.tracts")]})
+        assert [layer.name for layer in stored.layers] == ["census_tracts", "census.tracts"]
+        assert stored.unfit_layer_names() == ["census.tracts"]
+        assert GeoConfig.model_validate({"layers": [_layer(name="census_tracts")]}).unfit_layer_names() == []

@@ -158,6 +158,7 @@ CI-required live test
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from threetears.datasources.config import BigQueryConnectionConfig
@@ -200,6 +201,18 @@ class BigQueryDriver(Driver):
         still produce valid metric streams
     :ptype datasource_name: str
     """
+
+    @property
+    def concurrent_queries(self) -> int:
+        """one at a time: this driver's logins are not guarded against a refused credential.
+
+        It does not yet tell a refused login from other failures, so a connect guard cannot pause a
+        wrong credential here; queries run side by side would each send a failing login at once.
+
+        :return: 1
+        :rtype: int
+        """
+        return 1
 
     def __init__(
         self,
@@ -268,13 +281,15 @@ class BigQueryDriver(Driver):
         """
         raise NotImplementedError(f"BigQueryDriver.list_columns is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
 
-    async def relation_fingerprint(self, relation: str, key: list[str]) -> RelationFingerprint:
+    async def relation_fingerprint(
+        self, relation: str, key: list[str], where: Mapping[str, str] | None = None
+    ) -> RelationFingerprint:
         """count and fingerprint a relation over its key -- NOT YET IMPLEMENTED.
 
         When this driver is built, note that BigQuery diverges further than the
         other engines: ``MD5()`` returns BYTES rather than a hex string, so the
         hash needs ``TO_HEX(MD5(k))`` before the substring, and the cast in
-        :func:`threetears.datasources.drivers.sql_fragments.build_relation_key_expression`
+        :func:`threetears.core.fingerprint.relation_key_expression`
         is ``STRING`` rather than ``VARCHAR``. The shared builder will need a
         dialect seam before this driver can use it.
 

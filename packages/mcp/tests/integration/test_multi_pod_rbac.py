@@ -110,8 +110,8 @@ async def pg_schema(db_container: str) -> AsyncIterator[tuple[str, str]]:
         register_mcp(runner)
         store = _AsyncpgStore(conn)
         count = await runner.apply_for_platform_schema(store)  # type: ignore[arg-type]
-        # epoch v01 + mcp v01 = 2 migrations.
-        assert count == 2, f"expected 2 platform migrations, applied {count}"
+        # epoch v001 + v002 (previous_epoch, da9e89fb) + mcp v001 = 3 migrations.
+        assert count == 3, f"expected 3 platform migrations, applied {count}"
     finally:
         await conn.close()
 

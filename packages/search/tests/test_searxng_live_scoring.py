@@ -16,7 +16,15 @@ reliably see it again. So the pin is the *invariant* --
 
 -- which holds over whatever came back, one engine or five, and fails the
 moment the formula the family encodes stops matching the one SearXNG runs.
-Asserting that a fused score appeared would be asserting the weather.
+Asserting that a live fused score appeared would be asserting the weather.
+
+**A fusion that does not depend on the weather.** The container also runs
+two engines of its own (``SEARXNG_FIXTURE_ENGINES``), answering every query
+from fixed lists it serves itself: one result comes back twice from one
+engine and once from the other -- three positions, two engines -- and one
+comes back once. Those results are SearXNG's own scoring of input that does
+not change, so the tests DEMAND them rather than skip when the internet's
+engines are throttled, which on a test client is most of the time.
 
 **A fused capture, recorded because it cannot be demanded.** On 2026-08-12
 this instance returned, before its engines were rate-limited::
@@ -43,7 +51,12 @@ from typing import Any
 
 import pytest
 
+from threetears.core.testing.fixtures import SEARXNG_FIXTURE_ENGINES
+
 from .searxng_payloads import searx_score
+
+#: the fixture engines' names, as SearXNG reports them on a result
+_FIXTURE_ENGINES = frozenset(name for name, _urls in SEARXNG_FIXTURE_ENGINES)
 
 pytestmark = pytest.mark.integration
 
@@ -83,9 +96,9 @@ def test_the_live_score_is_the_formula_the_family_encodes(searxng_container: str
     this pin catches a formula that is wrong in shape and cannot catch one
     that is wrong only in the multiplier.
 
-    The sibling below is what pins the multiplier, and it skips rather than
-    passes when the data cannot settle it. Neither is written to look
-    stronger than the results it was handed.
+    The fixture engines' results are scored here too, so the check never
+    runs over nothing; the sibling below is what pins the multiplier, on the
+    fixture engines' three-position result.
 
     :param searxng_container: base URL of the session's SearXNG
     :ptype searxng_container: str
@@ -103,8 +116,10 @@ def test_the_live_score_is_the_formula_the_family_encodes(searxng_container: str
             if "positions" in result and "score" in result
         )
 
-    if not scored:
-        pytest.skip("the instance returned no scored results; its engines are throttled")
+    assert any(_FIXTURE_ENGINES.intersection(result.get("engines", ())) for result in scored), (
+        "the container's own fixture engines returned no scored result; the check would have run over "
+        "whatever the throttled internet engines happened to return, or nothing"
+    )
 
     mismatched = [
         (result["positions"], result["score"], searx_score(result["positions"]))
@@ -120,9 +135,9 @@ def test_the_live_score_is_the_formula_the_family_encodes(searxng_container: str
 def test_the_weight_follows_positions_and_not_engine_count(searxng_container: str) -> None:
     """Where a result carries both, ``positions`` is what the score is built from.
 
-    Skips rather than fails when no such result appears: one engine returning
-    a page once is the common case, and a throttled instance returns only
-    those. What must never happen is a result whose score matches an
+    The fixture engines always return one such result -- three positions from
+    two engines -- so this never depends on the internet's engines happening
+    to fuse. What must never happen is a result whose score matches an
     engine-count reading of the formula and not a position-count one.
 
     :param searxng_container: base URL of the session's SearXNG
@@ -130,6 +145,7 @@ def test_the_weight_follows_positions_and_not_engine_count(searxng_container: st
     :return: nothing
     :rtype: None
     """
+    checked: list[tuple[list[int], list[str]]] = []
     for query in ("capybara habitat", "python asyncio timeout", "sqlite wal mode"):
         for result in _search(searxng_container, query).get("results", []):
             positions = result.get("positions")
@@ -139,5 +155,10 @@ def test_the_weight_follows_positions_and_not_engine_count(searxng_container: st
             assert float(result["score"]) == pytest.approx(searx_score(positions)), (
                 f"score {result['score']} matches neither reading for positions={positions} engines={engines}"
             )
-            return
-    pytest.skip("no result arrived with a position count differing from its engine count")
+            checked.append((positions, engines))
+    fused = [(positions, engines) for positions, engines in checked if _FIXTURE_ENGINES == set(engines)]
+    assert fused, (
+        f"no result from both fixture engines with more positions than engines arrived (checked {checked}); "
+        f"the container's own engines did not answer, so the multiplier went unchecked"
+    )
+    assert all(sorted(positions) == [1, 2, 2] for positions, _engines in fused), fused

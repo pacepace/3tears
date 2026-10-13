@@ -37,7 +37,7 @@ from threetears.agent.acl.types import (
 __all__ = ["FakeStore", "make_cache"]
 
 
-def make_cache(store: "FakeStore", ttl_seconds: int = 60) -> AclCache:
+def make_cache(store: "FakeStore") -> AclCache:
     """build an :class:`AclCache` whose loaders are backed by ``store``.
 
     convenience used by every evaluator unit test that needs a
@@ -46,15 +46,12 @@ def make_cache(store: "FakeStore", ttl_seconds: int = 60) -> AclCache:
 
     :param store: in-memory fake fixture
     :ptype store: FakeStore
-    :param ttl_seconds: cache ttl; defaults to sixty seconds
-    :ptype ttl_seconds: int
     :return: cache wired against ``store``
     :rtype: AclCache
     """
     return AclCache(
         membership_loader=store,
         grant_loader=store,
-        ttl_seconds=ttl_seconds,
     )
 
 

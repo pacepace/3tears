@@ -47,13 +47,6 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
         CrossWorkerCanceller,
         TaskCancelEnvelope,
     )
-    from threetears.nats.distributed_lock import (
-        LockHeld,
-        LockHold,
-        LockLossReason,
-        LockLost,
-        nats_distributed_lock,
-    )
     from threetears.nats.forward import (
         DEFAULT_FORWARD_TIMEOUT,
         ForwardError,
@@ -111,6 +104,7 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
     )
 
     from threetears.nats.kv import NatsKvBucket
+    from threetears.nats.object_store import NatsObjectStore, ObjectInfo
     from threetears.nats.oplog import AppendResult, OpLog, OpRecord
     from threetears.nats.raw_errors import (
         JS_ERR_STREAM_NOT_FOUND,
@@ -147,9 +141,15 @@ from threetears.nats.errors import (
     KvBucketNotFoundError,
     KvConfigMismatch,
     KvError,
+    LockLossReason,
     NamespaceNotConfiguredError,
     NatsClientError,
     NoRespondersError,
+    ObjectExistsError,
+    ObjectNotFoundError,
+    ObjectStoreError,
+    ObjectStoreFullError,
+    ObjectStoreNotFoundError,
     OpLogError,
     OpLogSequenceConflict,
     PayloadTooLargeError,
@@ -158,7 +158,7 @@ from threetears.nats.errors import (
     RequestTimeoutError,
     SubscribeError,
 )
-from threetears.nats.persisted_copy import PersistedCopyBucket
+from threetears.nats.persisted_copy import WRITE_FAILURE_THRESHOLD, CopyWriteHealth, PersistedCopyBucket
 from threetears.nats.renewal_request import (
     CREDENTIAL_RENEWAL_SUBJECT_TOKEN,
     CredentialRenewalReason,
@@ -181,6 +181,7 @@ from threetears.nats.subject_permissions import (
     CROSS_PLATFORM_CACHE_INVALIDATE,
     DATA_VERSIONS_BUCKET_SUFFIX,
     KV_KEY_SCOPE_GRAMMAR,
+    KV_STREAM_PREFIX,
     WORKSPACE_LOCKS_BUCKET_SUFFIX,
     AgentBucketGrant,
     AgentTableGrant,
@@ -202,6 +203,7 @@ from threetears.nats.subject_permissions import (
     kv_bucket_names,
     kv_key_scope_for,
     kv_key_scope_for_service,
+    kv_stream_name,
 )
 from threetears.nats.subjects import (
     DEAD_LETTER_ORIGINAL_SUBJECT_HEADER,
@@ -271,7 +273,6 @@ _LAZY_SUBMOD_ATTRS: Final[dict[str, tuple[str, ...]]] = {
         "TokenCallback",
     ),
     "cross_worker_cancel": ("CrossWorkerCanceller", "TaskCancelEnvelope"),
-    "distributed_lock": ("LockHeld", "LockHold", "LockLossReason", "LockLost", "nats_distributed_lock"),
     "forward": (
         "DEFAULT_FORWARD_TIMEOUT",
         "ForwardError",
@@ -316,6 +317,7 @@ _LAZY_SUBMOD_ATTRS: Final[dict[str, tuple[str, ...]]] = {
         "ResolvedPrincipal",
     ),
     "kv": ("NatsKvBucket",),
+    "object_store": ("NatsObjectStore", "ObjectInfo"),
     "oplog": ("AppendResult", "OpLog", "OpRecord"),
     "raw_errors": ("JS_ERR_STREAM_NOT_FOUND", "is_bucket_not_found", "is_key_not_found", "is_nats_error"),
     "user_jwt": (
@@ -460,6 +462,7 @@ __all__ = [
     "CROSS_PLATFORM_CACHE_INVALIDATE",
     "DATA_VERSIONS_BUCKET_SUFFIX",
     "KV_KEY_SCOPE_GRAMMAR",
+    "KV_STREAM_PREFIX",
     "WORKSPACE_LOCKS_BUCKET_SUFFIX",
     "AgentBucketGrant",
     "AgentTableGrant",
@@ -481,6 +484,7 @@ __all__ = [
     "kv_bucket_names",
     "kv_key_scope_for",
     "kv_key_scope_for_service",
+    "kv_stream_name",
     # NATS v2 user-JWT minting (decentralized auth)
     "account_public_key",
     "generate_account_seed",
@@ -528,16 +532,17 @@ __all__ = [
     # KV
     "NatsKvBucket",
     "PersistedCopyBucket",
+    # Object Store
+    "NatsObjectStore",
+    "ObjectInfo",
+    "CopyWriteHealth",
+    "WRITE_FAILURE_THRESHOLD",
     # op-log (durable write-path WAL)
     "AppendResult",
     "OpLog",
     "OpRecord",
     # distributed lock
-    "LockHeld",
-    "LockHold",
     "LockLossReason",
-    "LockLost",
-    "nats_distributed_lock",
     # cross-worker cancel-by-key (keyed task registry + routed cancel)
     "CrossWorkerCanceller",
     "TaskCancelEnvelope",
@@ -580,6 +585,11 @@ __all__ = [
     "KvError",
     "NamespaceNotConfiguredError",
     "NatsClientError",
+    "ObjectExistsError",
+    "ObjectNotFoundError",
+    "ObjectStoreError",
+    "ObjectStoreFullError",
+    "ObjectStoreNotFoundError",
     "OpLogError",
     "OpLogSequenceConflict",
     "PayloadTooLargeError",

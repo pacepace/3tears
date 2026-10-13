@@ -32,7 +32,7 @@ class _StubRoleCollection:
     """stand-in for :class:`RoleCollection`.
 
     parity-with: threetears.agent.acl.collections.RoleCollection
-    -- the helper only touches ``l3_pool``; the rest of the
+    -- the helper only touches ``l3_pool`` and ``invalidate_cache``; the rest of the
     Collection surface is irrelevant. Mocking only what's used
     keeps the test brittle to changes that matter and tolerant of
     everything else.
@@ -49,6 +49,7 @@ class _StubRoleCollection:
         :ptype pool: Any
         """
         self.l3_pool = pool
+        self.invalidate_cache = AsyncMock()
 
 
 class TestPublishedConstants:
@@ -84,6 +85,7 @@ class TestEnsurePlatformBuiltinToolUserRole:
         result = await ensure_platform_builtin_tool_user_role(coll)
         assert result == existing_id
         pool.execute.assert_not_awaited()
+        coll.invalidate_cache.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_inserts_when_absent_and_returns_new_id(self) -> None:
@@ -107,6 +109,8 @@ class TestEnsurePlatformBuiltinToolUserRole:
         # the JSONB-encoded permissions string round-trips to the
         # published mapping.
         assert json.loads(call_args[4]) == PLATFORM_BUILTIN_TOOL_USER_ROLE_PERMISSIONS
+        # the inserted row is announced, so its advance of the roles generation is heard
+        coll.invalidate_cache.assert_awaited_once_with(result)
 
     @pytest.mark.asyncio
     async def test_collection_without_pool_raises(self) -> None:

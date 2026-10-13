@@ -173,6 +173,35 @@ from prose. If you convert to bool here, the Python-side hash diverges
 from the warehouse-side MD5 and the change-probe breaks for this
 datasource.
 
+## Only what the connected user can SELECT
+
+`list_tables`, `list_columns` and `table_hashes` return only relations
+the connected user can SELECT -- on a Postgres-family engine,
+`has_table_privilege(current_user, <schema>.<table>, 'SELECT')`.
+`allowed_schemas` names whole schemas, and a least-privilege warehouse
+user is granted a few of their tables; the hub reads its catalog for
+every later step (the coverage probe, the schema tool), so a table
+listed but not readable becomes a `42501` permission-denied on each of
+them. All three methods must apply the same filter, or the hash probe
+and the column list disagree about which tables exist. Mind relations
+the privilege check cannot see: Redshift's `has_table_privilege` raises
+on a Spectrum external table, so the Redshift driver guards it with a
+`CASE` on `SVV_TABLES.table_type`. And mind where the check can run:
+Redshift's `has_table_privilege` is leader-node-only, so it cannot share
+a statement with compute-node work such as the hash query's `LISTAGG`
+(`0A000`). The Redshift driver runs the check as its own statement over
+`SVV_TABLES` and filters the column and hash rows in Python.
+
+Mind concurrent DDL too: given a NAME, `has_table_privilege` resolves it
+against the current catalog rather than the statement's snapshot, so a
+relation dropped or renamed mid-read raises `relation does not exist`
+and fails the catalog for every table. Ask by OID where the catalog has
+one (the Postgres driver joins `pg_class`; a vanished OID answers NULL)
+or retry the statement on that error (the Redshift driver, since
+`SVV_TABLES` has no OID). And say what you left out: answer the check as
+a column, filter in Python, and pass the ungranted pairs to
+`base.log_unselectable_relations`, so a missing grant leaves a trace.
+
 `data_type` is also the raw warehouse-reported type string. Don't
 normalize it.
 

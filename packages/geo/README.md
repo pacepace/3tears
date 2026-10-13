@@ -43,8 +43,45 @@ Imported via `from threetears.geo import …`:
 - **bands** — `feature_band`, `aggregate_band`, `FeatureSpec`,
   `AggregateSpec`, `TileFeature`, `simplification_tolerance`.
 - **mvt** — `encode_tile`, `project_to_tile`.
-- **features** — `FeatureCache` (per-pod source cache + R-Tree).
-- **collection** — `TileCollection`, `LayerDefinition`, `ViewportRequest`.
+- **features** — `FeatureCache` (per-pod source cache + R-Tree),
+  `FeatureEntity`, `FeatureLoader`.
+- **collection** — `TileCollection`, `TileEntity`, `LayerDefinition`,
+  `ViewportRequest`.
+- **scope** — `check_cache_scope`, `MAX_CACHE_SCOPE_LENGTH`.
+- **overlay** — `KeyedFeature`, `Overlay`, `cut`, `replace_features`,
+  `missing_features`, `area_km2`, `mean_width_m`, `LayerOverlayError`.
+
+`threetears.geo.__all__` is the full list.
+
+## Every tile source names a cache scope
+
+`TileCollection` and `FeatureCache` both **require** `cache_scope`, a keyword
+argument with no default. Their caches are keyed by layer name and version,
+and nothing in that key says whose layer it is: two sources serving a layer
+of the same name (two datasources, or a customer's datasource and a platform
+layer) would otherwise share the pod-local L1 table, the NATS L2 keys, the
+cross-pod build lock and the registry entry, and whichever built a tile first
+would answer for both.
+
+The scope goes into the collections' table names (`geo_tiles_<scope>`,
+`geo_features_<scope>`), which are interpolated into SQL and NATS KV keys, so
+`check_cache_scope` holds it to a grammar both accept unquoted: a lowercase
+letter, then lowercase letters, digits and underscores, at most
+`MAX_CACHE_SCOPE_LENGTH` characters. `ds_<32 hex>` for a datasource and
+`ns_<32 hex>` for a provider namespace both fit.
+
+## Building layers from other layers
+
+`threetears.geo.overlay` cuts one layer by another, replaces features, and
+checks coverage. A layer is a sequence of `KeyedFeature`: a stable id, a
+WGS84 geometry, and a key that partitions the layer (a state, a country) so
+only features sharing it are paired. Two layers from different sources
+disagree at their boundaries by a few meters, so a cut leaves thin slivers
+and small fragments; each part of a cut is judged on its own and dropped when
+it is narrower or smaller than the caller's thresholds (`mean_width_m`,
+`area_km2` are the measures). The thresholds belong to the data: measure them
+on the layers in hand and pass them in. Measurements use a local
+equirectangular projection around each shape's own latitude.
 
 ## Zoom bands: aggregate below, features above
 
@@ -90,6 +127,16 @@ immutable. So the cache tracks coverage by **chunk**: it loads the coarse
 tile containing a request and records that chunk as covered. A run of
 neighbouring tiles, which overlap almost entirely in source features, then
 pays one L3 read between them instead of one each.
+
+Once a rectangle's chunks are covered, the R-Tree answers which held features
+overlap it, and an exact rectangle test follows (the R-Tree stores 32-bit
+floats rounded outward, so it can over-answer but never under-answer). What a
+pod holds is bounded by `max_cached_rows` and evicted least recently read
+first, rows and index entries together. One read newly holds at most half the
+bound, summed over every chunk it loads; the chunks past that, or a wide
+low-zoom rectangle whose entries would pass it, are answered and not held.
+A rectangle over more than `max_chunk_reads` uncovered chunks is one loader
+call, and with no L1 bound every read is one loader call.
 
 ### Attribute coercion is fixed, not per-caller
 

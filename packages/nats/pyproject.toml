@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-nats"
-version = "0.65.0"
+version = "0.66.0"
 description = "Typed NATS client wrapper, subject builders, and JetStream KV bucket primitives for 3tears applications"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,13 +22,13 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears-observe>=0.65.0,<0.66.0",
+    "3tears-observe>=0.66.0,<0.67.0",
     "pydantic>=2.10",
 ]
 
 [project.optional-dependencies]
-# The NATS client itself. Six submodules import it (client, kv, forward, oplog,
-# cross_worker_cancel, distributed_lock) and are lazy-loaded from
+# The NATS client itself. Five submodules import it (client, kv, forward, oplog,
+# cross_worker_cancel) and are lazy-loaded from
 # `threetears.nats.__getattr__`, so error types, subject grammar, transport
 # Protocols, and the auth-callout/user-JWT codecs are usable without it.
 #

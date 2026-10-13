@@ -129,6 +129,9 @@ class _RefusingTool(TearsTool):
 
 # parity-exempt: subset stand-in for NatsClient exposing only the publish_reply the pod's handler answers on
 class _PodNats:
+    #: the broker's message cap the pod checks a reply against (16 MiB, the platform's)
+    max_payload = 16 * 1024 * 1024
+
     def __init__(self) -> None:
         self.replies: list[Any] = []
 
