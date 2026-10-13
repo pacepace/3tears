@@ -13,8 +13,9 @@ import asyncpg
 from sqlalchemy import Column, Integer, MetaData, String, Table, Text
 
 from threetears.core.backends.schema_sql import json_default
+from threetears.core.collections.generation import WriteGeneration
 from threetears.core.collections.l2_order import l2_order_of
-from threetears.core.exceptions import CorruptCacheEntry
+from threetears.core.exceptions import CorruptCacheEntry, GenerationUnavailableError
 from threetears.observe import get_logger
 
 __all__ = [
@@ -616,6 +617,7 @@ async def _flush_batch_atomic(
     sorted_pending: list[PendingWrite],
     registry: CollectionRegistry,
     backend: Any,
+    landed: list[PendingWrite],
 ) -> int:
     """Persist the whole toposorted batch inside ONE backend transaction.
 
@@ -629,12 +631,15 @@ async def _flush_batch_atomic(
     :ptype registry: CollectionRegistry
     :param backend: the shared backend exposing ``transaction()``.
     :ptype backend: Any
+    :param landed: extended, once the transaction has committed, with the writes the durable tier
+        took a row for.
+    :ptype landed: list[PendingWrite]
     :return: number of entities the durable tier took a row for. Less than the whole
         batch when a write reported 0 rows; the transaction still commits and the
         caller still acks the batch, so a declined write is reported, not replayed.
     :rtype: int
     """
-    flushed = 0
+    took: list[PendingWrite] = []
     async with backend.transaction() as conn:
         for pw in sorted_pending:
             collection = registry.get_collection(pw.table_name)
@@ -643,14 +648,17 @@ async def _flush_batch_atomic(
             assert collection is not None
             rows_affected = await collection.persist_to_store(pw.data, conn=conn)
             if _write_landed(collection, pw, rows_affected):
-                flushed += 1
-    return flushed
+                took.append(pw)
+    # only now: a transaction that raised committed none of them
+    landed.extend(took)
+    return len(took)
 
 
 async def _flush_per_entity(
     sorted_pending: list[PendingWrite],
     write_buffer: WriteBuffer,
     registry: CollectionRegistry,
+    landed: list[PendingWrite],
 ) -> int:
     """Persist each pending write independently, re-enqueuing on failure.
 
@@ -664,6 +672,8 @@ async def _flush_per_entity(
     :ptype write_buffer: WriteBuffer
     :param registry: the collection registry.
     :ptype registry: CollectionRegistry
+    :param landed: extended with each write the durable tier took a row for.
+    :ptype landed: list[PendingWrite]
     :return: number of entities successfully persisted.
     :rtype: int
     """
@@ -683,6 +693,7 @@ async def _flush_per_entity(
             rows_affected = await collection.persist_to_store(pw.data)
             if _write_landed(collection, pw, rows_affected):
                 flushed += 1
+                landed.append(pw)
             # the durable tier answered -> safe to evict from the buffer either way. A
             # declined write is not re-enqueued: the buffered payload is what the tier
             # already refused, so replaying it refuses again, and an ``ON CONFLICT DO
@@ -782,10 +793,20 @@ async def flush_pending(
     :ptype write_buffer: WriteBuffer
     :param registry: the collection registry resolving table → collection + backend.
     :ptype registry: CollectionRegistry
+    **Write generations.** Once everything above has run, each table whose collection is switched
+    on to carry a write generation (``BaseCollection.write_generation``) advances it ONCE for this
+    flush, however many of its rows landed, and announces each landed row again naming that
+    advance (``BaseCollection.announce_flushed``). Not at save time: the row is not in L3 until
+    here, and a cache derived from the table reads L3. One table's failed advance does not stop
+    the next table's; the first failure is raised after every table has been attempted, and by
+    then every write the durable tier took has been acknowledged, so nothing is replayed for it.
+
     :param parent_key_map: optional table → parent-FK-column map for toposort.
     :ptype parent_key_map: dict[str, str] | None
     :return: number of entities successfully persisted (both paths summed).
     :rtype: int
+    :raises GenerationUnavailableError: when a switched-on table's rows landed and its write
+        generation could not be advanced.
     """
     pending = await write_buffer.drain(decode=_collection_decoder(registry))
     if not pending:
@@ -800,12 +821,13 @@ async def flush_pending(
     already_failed: list[PendingWrite] = [pw for pw in sorted_pending if pw.retries > 0]
 
     flushed = 0
+    landed: list[PendingWrite] = []
 
     if fresh:
         backend = _resolve_batch_backend(fresh, registry)
         if backend is not None:
             try:
-                batch_flushed = await _flush_batch_atomic(fresh, registry, backend)
+                batch_flushed = await _flush_batch_atomic(fresh, registry, backend, landed)
                 log.debug(
                     "Flush complete (atomic batch)",
                     extra={"extra_data": {"flushed": batch_flushed, "total": len(fresh)}},
@@ -825,15 +847,48 @@ async def flush_pending(
                     "Atomic batch flush failed, falling back to per-entity flush",
                     extra={"extra_data": {"total": len(fresh), "error": str(exc)}},
                 )
-                flushed += await _flush_per_entity(fresh, write_buffer, registry)
+                flushed += await _flush_per_entity(fresh, write_buffer, registry, landed)
         else:
             # No single shared transaction-capable backend (e.g. git-backed
             # DurableStore): degrade the fresh set to the per-entity loop directly.
-            flushed += await _flush_per_entity(fresh, write_buffer, registry)
+            flushed += await _flush_per_entity(fresh, write_buffer, registry, landed)
 
     if already_failed:
         # Previously-failed writes are isolated in the per-entity loop so one
         # un-satisfiable FK orphan cannot abort the fresh batch above.
-        flushed += await _flush_per_entity(already_failed, write_buffer, registry)
+        flushed += await _flush_per_entity(already_failed, write_buffer, registry, landed)
 
+    await _announce_landed(landed, registry)
     return flushed
+
+
+async def _announce_landed(landed: list[PendingWrite], registry: CollectionRegistry) -> None:
+    """advance each switched-on table's write generation once for this flush, and announce its rows.
+
+    :param landed: the writes the durable tier took a row for, in the order they landed.
+    :ptype landed: list[PendingWrite]
+    :param registry: the collection registry.
+    :ptype registry: CollectionRegistry
+    :return: nothing.
+    :rtype: None
+    :raises GenerationUnavailableError: the first table's failure to advance, after every table
+        has been attempted.
+    """
+    by_table: dict[str, list[dict[str, Any]]] = {}
+    for pw in landed:
+        by_table.setdefault(pw.table_name, []).append(pw.data)
+    failure: GenerationUnavailableError | None = None
+    for table_name, rows in by_table.items():
+        collection = registry.get_collection(table_name)
+        # read off the declaration rather than called on whatever is registered: a collection that
+        # is not switched on has nothing to announce, and a stand-in for one has no such method.
+        if collection is None or not isinstance(getattr(collection, "write_generation", None), WriteGeneration):
+            continue
+        try:
+            await collection.announce_flushed(rows)
+        except GenerationUnavailableError as exc:
+            # logged where the advance failed; the rows were announced all the same
+            if failure is None:
+                failure = exc
+    if failure is not None:
+        raise failure

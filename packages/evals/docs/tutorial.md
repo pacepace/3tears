@@ -9,7 +9,7 @@ The running example is a support-ticket router. It reads a ticket and picks one 
 `account` or `other`.
 
 **Setup.** Install the package (Python 3.14+), or run `uv sync` in a checkout of this repo. It is not on PyPI until
-0.66.0 ships, so `pip install 3tears-evals` finds nothing yet; until then install it from the repository at the tag
+0.67.0 ships, so `pip install 3tears-evals` finds nothing yet; until then install it from the repository at the tag
 [the README names](../README.md#first-result-in-10-minutes):
 `pip install "3tears-evals @ git+https://github.com/pacepace/3tears.git@<tag>#subdirectory=packages/evals"`.
 

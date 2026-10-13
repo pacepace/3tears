@@ -37,7 +37,7 @@ from importlib.metadata import version as _distribution_version
 
 #: The installed distribution's version, as its metadata states it (``importlib.metadata``): the build a host
 #: records beside what it stores, since no stored document or analysis bundle carries it. A build from a
-#: pre-release tag (``v0.66.0-evaladopt.N``) states the version it prepares, so a host running one records the tag.
+#: pre-release tag (``v0.67.0-evaladopt.N``) states the version it prepares, so a host running one records the tag.
 #: Read on first use through the module's ``__getattr__`` rather than at import: the source tree imports without
 #: distribution metadata (the installability check and a checkout on ``sys.path`` both do), and a read that finds
 #: no metadata raises ``importlib.metadata.PackageNotFoundError`` by name rather than answering ``"unknown"``.
@@ -66,9 +66,10 @@ def __getattr__(name: str) -> str:
 #: The public roots, as absolute module names. A consumer imports from these and from no module
 #: below them, and only the names each root's ``__all__`` declares. ``kernel.host`` and
 #: ``analysis.viz`` are roots of their own inside a package: the contract a host implements, and
-#: the chart intent with the seam a renderer sits behind. Two roots need an extra: ``vega``, the
-#: optional Vega-Lite renderer, whose rasteriser needs ``[vega]``, and ``transports.fastmcp``, which
-#: needs ``[fastmcp]``.
+#: the chart intent with the seam a renderer sits behind. Three roots need an extra: ``vega``, the
+#: optional Vega-Lite renderer, whose rasteriser needs ``[vega]``; ``transports.fastmcp``, which
+#: needs ``[fastmcp]``; and ``providers``, the shipped provider adapter over 3tears-models, which
+#: needs ``[models]``.
 PUBLIC_ROOTS: tuple[str, ...] = (
     "threetears.evals.schema",
     "threetears.evals.kernel",
@@ -84,6 +85,7 @@ PUBLIC_ROOTS: tuple[str, ...] = (
     "threetears.evals.actions",
     "threetears.evals.transports.fastmcp",
     "threetears.evals.vega",
+    "threetears.evals.providers",
 )
 
 __all__ = ["PUBLIC_ROOTS", "__version__"]

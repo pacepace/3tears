@@ -26,4 +26,4 @@ htmlcov/
 .DS_Store
 docs/
 README.md
-uv.lock
+# uv.lock is NOT ignored: the base installs its wheels against it (docker/Dockerfile)

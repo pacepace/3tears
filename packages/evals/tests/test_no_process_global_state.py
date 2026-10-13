@@ -137,6 +137,11 @@ ALLOWED: dict[tuple[str, str], str] = {
         "the font directories already handed to the chart library, so none is registered twice — "
         "part of the same process-wide font cache"
     ),
+    ("threetears/evals/testing/recorded_completions.py", "_APPEND_LOCK"): (
+        "serialises appends to recording files in the process, so two recording clients on one file never "
+        "interleave a line or give two calls one index. It holds no value and nothing a host reads; a file is "
+        "process-wide, so a per-host lock would let two hosts in one process corrupt a shared recording"
+    ),
     ("threetears/evals/kernel/campaign_writes.py", "_CAMPAIGN_WRITES"): (
         "serialises every read-modify-write of a campaign in the process. Shared across hosts, which "
         "over-serialises and never leaks: it holds no value, and a per-store lock would be weaker, "

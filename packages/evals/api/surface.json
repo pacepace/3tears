@@ -159,7 +159,7 @@
     "threetears.evals.schema.ClientRequestSettings": {
       "kind": "model",
       "signature": "ClientRequestSettings(max_tokens: int, reasoning_max_tokens: int | None = None, reasoning_effort: StoredReasoningEffort | None = None, strict_output: bool = False)",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.schema.CompletenessSource": {
       "kind": "literal",
@@ -943,8 +943,8 @@
     },
     "threetears.evals.schema.StopReason": {
       "kind": "literal",
-      "signature": "'end_turn'` | `'max_tokens'` | `'content_filter'` | `'error'",
-      "tier": "closure"
+      "signature": "'end_turn'` | `'max_tokens'` | `'content_filter'` | `'truncated'` | `'error'",
+      "tier": "host-contract"
     },
     "threetears.evals.schema.StoreCalledOnEventLoop": {
       "kind": "exception",
@@ -2814,7 +2814,7 @@
     "threetears.evals.kernel.host.CompletionRole": {
       "kind": "literal",
       "signature": "'judge'` | `'simulator'` | `'analysis'` | `'variation'` | `'proposer'",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.kernel.host.ConformanceResult": {
       "kind": "dataclass",
@@ -3544,7 +3544,7 @@
     "threetears.evals.run.JUDGE_REQUEST_SETTINGS": {
       "kind": "constant (ClientRequestSettings)",
       "signature": "",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.run.JUDGE_TEMPERATURE_JOB": {
       "kind": "constant (LeasedJobKind)",
@@ -6101,6 +6101,26 @@
       "signature": "ReaderSample(profile: HostProfile, runs: Sequence[tuple[EvalRun, Sequence[EvalResult]]])",
       "tier": "closure"
     },
+    "threetears.evals.testing.RecordedCompletions": {
+      "kind": "class",
+      "signature": "RecordedCompletions(path: Path, *, inner: CompletionClient | None, settings: ClientRequestSettings | None, recorded: Mapping[str, tuple[ClientRequestSettings | None, Sequence[ReplayedCompletion]]], model: str | None = None, temperature: float | None | Literal['any'] = 'any', rerecord: str | None = None) -> None",
+      "tier": "host-contract"
+    },
+    "threetears.evals.testing.RecordedPrompt": {
+      "kind": "class",
+      "signature": "RecordedPrompt(system: str, user: str, response_format: dict[str, Any] | None = None)",
+      "tier": "host-contract"
+    },
+    "threetears.evals.testing.RecordingRefused": {
+      "kind": "exception",
+      "signature": "RecordingRefused(path: Path, problem: str, remedy: str) -> None",
+      "tier": "host-contract"
+    },
+    "threetears.evals.testing.ReplayedCompletion": {
+      "kind": "dataclass",
+      "signature": "ReplayedCompletion(content: str, input_tokens: int | None, output_tokens: int | None, cost_usd: float | None, price_source: str | None, model: str, served_model: str | None, reasoning_tokens: int | None, temperature: float | None, stop_reason: StopReason, extra: Mapping[str, Any])",
+      "tier": "closure"
+    },
     "threetears.evals.testing.STORE_CONFORMANCE_CASES": {
       "kind": "constant (tuple)",
       "signature": "",
@@ -7544,6 +7564,56 @@
     "threetears.evals.vega.write_font_metrics": {
       "kind": "function",
       "signature": "write_font_metrics(advances: dict[str, float], *, fallback_advance: float, worst_label: str, worst_ratio: float, font: str, measured_with: str, probe_size: int, weights: list[int], font_files: Mapping[str, str], path: Path = Path('<package>/src/threetears/evals/vega/font_metrics.json')) -> Path",
+      "tier": "closure"
+    },
+    "threetears.evals.providers.models_client": {
+      "kind": "function",
+      "signature": "models_client(model_id: str, *, api_key: str, provider: str | None = None, temperature: float | None = None, reasoning_effort: KnownReasoningEffort | None = None, reasoning_max_tokens: int | None = None, max_tokens: int | None = None, prices: HttpClient | None = None, **provider_kwargs: Any) -> ModelsCompletionClient",
+      "tier": "host-contract"
+    },
+    "threetears.evals.providers.models_clients": {
+      "kind": "function",
+      "signature": "models_clients(*, api_keys: Mapping[str, str] | None = None, defaults: Mapping[CompletionRole, str], prices: HttpClient | None = None, **per_role_kwargs: Mapping[str, Any]) -> ModelsClients",
+      "tier": "host-contract"
+    },
+    "threetears.evals.providers.ModelsClientRefused": {
+      "kind": "exception",
+      "signature": "ModelsClientRefused(setting: str, why: str, *, provider: str | None = None) -> None",
+      "tier": "host-contract"
+    },
+    "threetears.evals.providers.ModelsClients": {
+      "kind": "class",
+      "signature": "ModelsClients(*, api_keys: Mapping[str, str] | None, defaults: Mapping[CompletionRole, str], prices: HttpClient | None, role_settings: Mapping[str, Mapping[str, Any]]) -> None",
+      "tier": "host-contract"
+    },
+    "threetears.evals.providers.ModelsCompletion": {
+      "kind": "dataclass",
+      "signature": "ModelsCompletion(content: str, input_tokens: int | None, output_tokens: int | None, reasoning_tokens: int | None, cost_usd: float | None, price_source: str | None, model: str, served_model: str | None, temperature: float | None, stop_reason: StopReason, provider_stop_reason: str | None, served_provider: str | None, pricing_failure: str | None)",
+      "tier": "closure"
+    },
+    "threetears.evals.providers.ModelsCompletionClient": {
+      "kind": "class",
+      "signature": "ModelsCompletionClient(*, model_name: str, provider: SupportedProvider, chat_model: RunnableBinding[Any, Any], call_output_config: Mapping[str, Any], prices: HttpClient | None) -> None",
+      "tier": "closure"
+    },
+    "threetears.evals.providers.ModelsFailureDescriber": {
+      "kind": "class",
+      "signature": "",
+      "tier": "host-contract"
+    },
+    "threetears.evals.providers.PROVIDER_KEY_VARIABLES": {
+      "kind": "constant (dict)",
+      "signature": "",
+      "tier": "closure"
+    },
+    "threetears.evals.providers.SUPPORTED_PROVIDERS": {
+      "kind": "constant (tuple)",
+      "signature": "",
+      "tier": "closure"
+    },
+    "threetears.evals.providers.SupportedProvider": {
+      "kind": "literal",
+      "signature": "'anthropic'` | `'openai'` | `'openrouter'",
       "tier": "closure"
     }
   }

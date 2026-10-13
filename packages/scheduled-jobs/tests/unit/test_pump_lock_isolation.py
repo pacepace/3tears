@@ -9,7 +9,7 @@ wire it: two pumps constructed in one process hold DIFFERENT keys and
 both run, where two pumps sharing a key serialise and one is skipped.
 
 The fake lock here is a real mutex keyed by string (a held key raises
-:class:`~threetears.nats.LockHeld`), so the "no contention" assertion is
+:class:`~threetears.core.coordination.LockHeld`), so the "no contention" assertion is
 load-bearing rather than a lock that never blocks anything. The
 serialisation test is its control: it proves the fake CAN block.
 """
@@ -25,7 +25,7 @@ from uuid import UUID
 
 import pytest
 
-from threetears.nats import LockHeld
+from threetears.core.coordination import LockHeld
 
 from threetears.scheduled_jobs import tick as tick_mod
 from threetears.scheduled_jobs.config import (
@@ -210,7 +210,7 @@ async def _noop(_trigger: JobTrigger, _fire_id: UUID) -> JobFireResult:
 def _install_lock_manager(monkeypatch: pytest.MonkeyPatch) -> _KeyedLockManager:
     """Install and return the keyed-mutex lock stand-in."""
     manager = _KeyedLockManager()
-    monkeypatch.setattr("threetears.nats.nats_distributed_lock", manager.context)
+    monkeypatch.setattr("threetears.core.coordination.nats_distributed_lock", manager.context)
     return manager
 
 
@@ -292,7 +292,7 @@ class TestTwoPumpsDoNotContend:
 
     async def test_no_nats_client_skips_locking_entirely(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Single-pod dev mode: the per-row CAS is the only guard."""
-        monkeypatch.setattr("threetears.nats.nats_distributed_lock", lambda *_a, **_k: _CtxHealthy())
+        monkeypatch.setattr("threetears.core.coordination.nats_distributed_lock", lambda *_a, **_k: _CtxHealthy())
         scans: list[str] = []
         await tick_mod.scheduled_tick_job(
             _SlowScheduleStore("solo", scans),

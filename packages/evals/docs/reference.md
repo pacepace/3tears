@@ -34,6 +34,7 @@ Import only from these roots, and only the names below: a module under a root is
 - [`threetears.evals.actions`](#api-actions)
 - [`threetears.evals.transports.fastmcp`](#api-transports-fastmcp)
 - [`threetears.evals.vega`](#api-vega)
+- [`threetears.evals.providers`](#api-providers)
 
 <a id="api-threetears-evals"></a>
 ### `threetears.evals`
@@ -107,7 +108,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`CatalogRubricDim`** · model · A reusable rubric dimension in the shared catalog.
 - **`CellIdentity`** · dataclass · Which cell execution a stretch of work belongs to.
 - **`CellTrace`** · dataclass · What one cell's tracing yielded — filled by the sink, read by the engine.
-- **`ClientRequestSettings`** · model · The request parameters a host applied to one apparatus role's LLM client, for one run.
+- **`ClientRequestSettings`** · *host contract* · model · The request parameters a host applied to one apparatus role's LLM client, for one run.
 - **`CompletionClient`** · *host contract* · protocol · The completion port eval is constructed with.
 - **`CompletionGenerator`** · protocol · The one call a consumer of a completion client makes, without the client's lifecycle.
 - **`CompletionProtocolDefect`** · exception · A host's completion does not meet the `CompletionResult` protocol, found while the engine read it.
@@ -288,8 +289,8 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`Annotated[NominalScale | OrdinalScale | IntervalScale, Field(discriminator='kind')]`
 - **`SimulatorPurpose`** · type alias · What one simulator-role call was for: an actor's line, or the `llm_decided` scheduler's pick of who speaks next.
   <br>`str`
-- **`StopReason`** · literal · Why a completion stopped, in the engine's words.
-  <br>`'end_turn'` | `'max_tokens'` | `'content_filter'` | `'error'`
+- **`StopReason`** · *host contract* · literal · Why a completion stopped, in the engine's words.
+  <br>`'end_turn'` | `'max_tokens'` | `'content_filter'` | `'truncated'` | `'error'`
 - **`UsageRole`** · type alias · The roles an eval cell can spend on, five in this build.
   <br>`str`
 - **`WorldEventCause`** · literal · Who made it happen.
@@ -951,7 +952,7 @@ The host contract — what a consuming product declares, and what the engine nev
   <br>`'round_trip'` | `'perception_ab'` | `'perception_stillness'` | `'ambient_isolation'` | `'independence'` | `'vocabulary_completeness'`
 - **`Comparability`** · literal · The three outcomes of comparing one input across a set of runs.
   <br>`'same'` | `'differs'` | `'unknown'`
-- **`CompletionRole`** · literal · The apparatus roles the engine asks a host for a completion client in.
+- **`CompletionRole`** · *host contract* · literal · The apparatus roles the engine asks a host for a completion client in.
   <br>`'judge'` | `'simulator'` | `'analysis'` | `'variation'` | `'proposer'`
 - **`CoverageState`** · literal · The answer to "does eval reach this precondition", per axis.
   <br>`'covered'` | `'uncovered'` | `'inapplicable'`
@@ -1332,7 +1333,7 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`= 'judge_repeat'`
 - **`JUDGE_REPEAT_BUDGET_S`** · constant (float) · A repeat's wall-clock ceiling as a job: generous, since every call is bounded by its client and the repeat stops on an account refusal; it exists so one whose provider hangs is ended rather than held forever.
   <br>`= 21600.0`
-- **`JUDGE_REQUEST_SETTINGS`** · constant (ClientRequestSettings) · The judge role's request settings as ONE value: what the host's client builder applies to every eval judge client, and what a run launched with a judge records as `judge_request_settings`.
+- **`JUDGE_REQUEST_SETTINGS`** · *host contract* · constant (ClientRequestSettings) · The judge role's request settings as ONE value: what the host's client builder applies to every eval judge client, and what a run launched with a judge records as `judge_request_settings`.
 - **`JUDGE_TEMPERATURE_JOB`** · constant (LeasedJobKind) · A judge temperature comparison's record.
 - **`LAUNCH_CANCEL_REASON`** · constant (str) · The reason recorded on a run its launch's cancel stopped.
   <br>`= 'its launch was cancelled'`
@@ -1975,6 +1976,10 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 - **`ReaderConformanceCase`** · dataclass · One promise a reader makes, as a check over a sample.
 - **`ReaderConformanceFailure`** · exception · A host's reader broke a promise the engine relies on; the message names the case, the reader and the run.
 - **`ReaderSample`** · dataclass · What the kit checks a host's readers over: the host's profile and runs it produced.
+- **`RecordedCompletions`** · *host contract* · class · A completion client that records the calls an inner client answers, or replays a recording of them.
+- **`RecordedPrompt`** · *host contract* · class · One call a recording is expected to serve, as `RecordedCompletions.check_covers` is handed it.
+- **`RecordingRefused`** · *host contract* · exception · A recording cannot serve what was asked of it: a miss, a missing or unreadable file, a newer format.
+- **`ReplayedCompletion`** · dataclass · A completion as it was recorded, replayed: the ten `CompletionResult` members.
 - **`StoreConformanceCase`** · *host contract* · dataclass · One rule of the port, as a check over a store.
 - **`StoreConformanceFailure`** · exception · A store broke a rule of the `DocumentStore` port; the message names the case and the rule.
 
@@ -2514,6 +2519,36 @@ The Vega-Lite chart renderer — an optional adapter over eval's chart intent.
 
 - **`Theme`** · literal · The colour theme a chart is drawn for.
   <br>`'light'` | `'dark'`
+
+<a id="api-providers"></a>
+### `threetears.evals.providers`
+
+The shipped provider adapter: a chat model 3tears-models builds, as the engine's completion client.
+
+**Functions**
+
+- **`models_client`** · *host contract* · function · Build the completion client for one model: `create_chat_model` with retries off, wrapped in the port.
+  <br>`models_client(model_id: str, *, api_key: str, provider: str | None = None, temperature: float | None = None, reasoning_effort: KnownReasoningEffort | None = None, reasoning_max_tokens: int | None = None, max_tokens: int | None = None, prices: HttpClient | None = None, **provider_kwargs: Any) -> ModelsCompletionClient`
+- **`models_clients`** · *host contract* · function · The host-profile factory: every role the engine calls, on models 3tears-models builds.
+  <br>`models_clients(*, api_keys: Mapping[str, str] | None = None, defaults: Mapping[CompletionRole, str], prices: HttpClient | None = None, **per_role_kwargs: Mapping[str, Any]) -> ModelsClients`
+
+**Classes**
+
+- **`ModelsClientRefused`** · *host contract* · exception · A setting the adapter cannot carry to the provider, refused before anything is sent.
+- **`ModelsClients`** · *host contract* · class · The engine's role factory over `models_client`: `models_clients` builds one.
+- **`ModelsCompletion`** · dataclass · One completion as the adapter read it off the chat model's reply: the port's ten members and three of its own.
+- **`ModelsCompletionClient`** · class · The completion port over one chat model 3tears-models built: `models_client` returns one.
+- **`ModelsFailureDescriber`** · *host contract* · class · A `ProviderFailureDescriber` for the adapter's providers, total over `BaseException`.
+
+**Types**
+
+- **`SupportedProvider`** · literal · The providers the adapter builds a client for, as models' registry names them.
+  <br>`'anthropic'` | `'openai'` | `'openrouter'`
+
+**Constants**
+
+- **`PROVIDER_KEY_VARIABLES`** · constant (dict) · The environment variable each provider's own SDK reads its key from, which `models_clients` reads when its `api_keys` mapping names no key for a provider.
+- **`SUPPORTED_PROVIDERS`** · constant (tuple) · Every `SupportedProvider`, in the order the docs list them.
 
 <a id="configuration"></a>
 ## Configuration

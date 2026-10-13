@@ -30,7 +30,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from threetears.nats import LockHeld
+from threetears.core.coordination import LockHeld
 from threetears.nats.errors import KvError
 
 from threetears.core.collections.registry import CollectionRegistry
@@ -70,13 +70,13 @@ class _CtxRaisingOnEnter:
 
 
 def _patch_lock(monkeypatch: pytest.MonkeyPatch, ctx: Any) -> None:
-    """Replace ``threetears.nats.nats_distributed_lock`` (resolved by the local
+    """Replace ``threetears.core.coordination.nats_distributed_lock`` (resolved by the local
     import inside the generic engine) with a factory returning ``ctx``."""
 
     def _factory(_client: Any, _key: str, **_kw: Any) -> Any:
         return ctx
 
-    monkeypatch.setattr("threetears.nats.nats_distributed_lock", _factory)
+    monkeypatch.setattr("threetears.core.coordination.nats_distributed_lock", _factory)
 
 
 def _collections() -> tuple[_NoDbScheduleCollection, WakeFireCollection]:

@@ -64,6 +64,7 @@ def claude(model: str, *, max_tokens: int = 1024) -> Any:
             **({"output_config": config} if config else {}),
         )
         usage, details = response.usage, response.usage.output_tokens_details
+        # An absent or unmapped stop reason is output cut short for a cause unnamed here: `truncated`.
         stopped = {"end_turn": "end_turn", "max_tokens": "max_tokens", "refusal": "content_filter"}
         return Completion(
             content="".join(block.text for block in response.content if block.type == "text"),
@@ -75,7 +76,7 @@ def claude(model: str, *, max_tokens: int = 1024) -> Any:
             model=model,
             served_model=response.model,
             temperature=None,  # none is sent, so the model's own sampling applies
-            stop_reason=stopped.get(response.stop_reason or "", "error"),
+            stop_reason=stopped.get(response.stop_reason or "", "truncated"),
         )
 
     return SimpleNamespace(generate=generate, model=model, aclose=client.close)

@@ -61,6 +61,14 @@ _WRAPPER_MODULES: set[str] = {
     # string-matching RequestError's message) is the legitimate reason
     # it consumes nats-py, exactly as client.py does.
     "threetears.nats.forward",
+    # object_store.py is the Object Store wrapper, beside kv.py: it builds the NATS Object Store's
+    # wire shape itself (nats-py's ObjectInfo metadata, named read consumers) because nats-py's own
+    # ObjectStore reads through an unnamed consumer a pod's grant refuses, and it classifies nats-py's
+    # APIError / NotFoundError / TimeoutError by class, as client.py does.
+    "threetears.nats.object_store",
+    # _named_read.py is the one named-consumer read loop kv.py and object_store.py share; it builds
+    # nats-py's ConsumerConfig, the same reason those two consume nats-py.
+    "threetears.nats._named_read",
     # _publish.py is the wrapper's own publish path -- it exists precisely to
     # hold nats-py publish semantics the caller cannot reach from outside (an
     # ack wait that survives cancellation, an oversized-publish refusal raised

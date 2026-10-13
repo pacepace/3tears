@@ -18,11 +18,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from threetears.core.serialization import json_datetime
-from threetears.nats import Subjects
+from threetears.nats import WRITE_FAILURE_THRESHOLD, CopyWriteHealth, Subjects
 from threetears.observe import get_logger
 from threetears.registry.config import get_definition_ttl
 from threetears.registry.routing import endpoints_callable_by
@@ -44,12 +44,6 @@ __all__ = [
 
 _logger = get_logger(__name__)
 
-#: how many catalog writes in a row may fail before the catalog stops reporting itself as
-#: persisting (:attr:`ToolCatalog.persisting`). One failed write is a blip a NATS reconnect explains;
-#: three in a row, with pods re-registering on every heartbeat, is a catalog whose bucket is not
-#: taking writes -- every registration is answering ``CATALOG_UNAVAILABLE`` -- and the registry must
-#: stop reporting itself ready rather than look healthy through it.
-WRITE_FAILURE_THRESHOLD: Final[int] = 3
 
 #: the shape every catalog entry is written to KV in. an entry carrying no ``shape`` predates
 #: per-copy definitions and is translated once, by :meth:`ToolCatalog.load_from_kv`, rather than
@@ -827,9 +821,10 @@ class ToolCatalog:
     after restart, with all endpoints marked unavailable on load
     until heartbeats confirm liveness.
 
-    every write to the bucket is counted: :attr:`persisting` turns ``False`` once
-    :data:`WRITE_FAILURE_THRESHOLD` writes in a row have failed, and ``True`` again at the next one
-    that lands, so the registry's readiness says whether registrations are being recorded.
+    writes to the bucket are watched by :class:`~threetears.nats.CopyWriteHealth`:
+    :attr:`persisting` turns ``False`` once :data:`~threetears.nats.WRITE_FAILURE_THRESHOLD` write
+    operations in a row have failed (a pass over many entries counts as one), and ``True`` again at
+    the next one that lands, so the registry's readiness says whether registrations are being recorded.
     """
 
     def __init__(self) -> None:
@@ -840,22 +835,26 @@ class ToolCatalog:
         """
         self._entries: dict[str, CatalogEntry] = {}
         self._kv: KvBucketLike | None = None
-        # writes to the bucket that have failed since the last one that landed.
-        self._consecutive_write_failures = 0
+        self._write_health = CopyWriteHealth(
+            copy="tool catalog",
+            consequence=(
+                "registrations are not being recorded, and the registry reports itself not ready until a write lands"
+            ),
+        )
 
     @property
     def persisting(self) -> bool:
         """whether writes to the catalog's bucket are landing.
 
-        ``False`` once :data:`WRITE_FAILURE_THRESHOLD` writes in a row have failed -- every
-        registration is then answering ``CATALOG_UNAVAILABLE`` -- and ``True`` again from the next
-        write that lands. ``True`` while no bucket is bound: a catalog that has not been given one
-        has made no write to fail.
+        ``False`` once :data:`~threetears.nats.WRITE_FAILURE_THRESHOLD` write operations in a row have
+        failed -- every registration is then answering ``CATALOG_UNAVAILABLE`` -- and ``True`` again
+        from the next that lands. ``True`` while no bucket is bound: a catalog that has not been given
+        one has made no write to fail.
 
         :return: whether the latest writes are landing
         :rtype: bool
         """
-        return self._consecutive_write_failures < WRITE_FAILURE_THRESHOLD
+        return self._write_health.persisting
 
     async def load_from_kv(self, kv: KvBucketLike) -> None:
         """load catalog entries from NATS KV store.
@@ -914,21 +913,23 @@ class ToolCatalog:
         """
         self._kv = kv
         failed: list[str] = []
-        for full_name in list(self._entries):
-            # read at the moment of writing, not from a snapshot: a tool deregistered while an earlier
-            # write was awaited has had its key deleted, and writing it back would advertise a tool
-            # no replica holds to every registry that warm-loads the bucket.
-            entry = self._entries.get(full_name)
-            if entry is None:
-                continue
-            try:
-                await self._persist(entry)
-            except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- one entry's write must not strand the rest; each failure is logged and returned, and the caller retries
-                failed.append(full_name)
-                _logger.warning(
-                    "writing a catalog entry back into its bucket failed",
-                    extra={"extra_data": {"full_name": full_name, "error": f"{type(exc).__name__}: {exc}"}},
-                )
+        # the whole write-back is one write operation, however many entries it writes
+        async with self._write_health.operation():
+            for full_name in list(self._entries):
+                # read at the moment of writing, not from a snapshot: a tool deregistered while an earlier
+                # write was awaited has had its key deleted, and writing it back would advertise a tool
+                # no replica holds to every registry that warm-loads the bucket.
+                entry = self._entries.get(full_name)
+                if entry is None:
+                    continue
+                try:
+                    await self._persist(entry)
+                except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- one entry's write must not strand the rest; each failure is logged and returned, and the caller retries
+                    failed.append(full_name)
+                    _logger.warning(
+                        "writing a catalog entry back into its bucket failed",
+                        extra={"extra_data": {"full_name": full_name, "error": f"{type(exc).__name__}: {exc}"}},
+                    )
         _logger.info(
             "catalog written back into its bucket",
             extra={"extra_data": {"entry_count": len(self._entries), "failed": len(failed)}},
@@ -960,12 +961,7 @@ class ToolCatalog:
         :rtype: None
         :raises KvError: when the write failed; counted, then raised to the caller
         """
-        try:
-            await kv.put(key=key, value=json.dumps(entry.to_dict()).encode("utf-8"))
-        except Exception as exc:
-            self._write_failed(exc, key=key)
-            raise
-        self._write_landed()
+        await self._write_health.write(kv.put(key=key, value=json.dumps(entry.to_dict()).encode("utf-8")), key=key)
 
     async def _delete(self, kv: KvBucketLike, key: str) -> None:
         """delete ``key``, counting the outcome toward :attr:`persisting`.
@@ -978,52 +974,7 @@ class ToolCatalog:
         :rtype: None
         :raises KvError: when the delete failed; counted, then raised to the caller
         """
-        try:
-            await kv.delete(key=key)
-        except Exception as exc:
-            self._write_failed(exc, key=key)
-            raise
-        self._write_landed()
-
-    def _write_failed(self, exc: Exception, *, key: str) -> None:
-        """count one failed write, and say so at ERROR the moment the streak reaches the threshold.
-
-        :param exc: what the write raised
-        :ptype exc: Exception
-        :param key: the key it wrote
-        :ptype key: str
-        :return: nothing
-        :rtype: None
-        """
-        self._consecutive_write_failures += 1
-        if self._consecutive_write_failures == WRITE_FAILURE_THRESHOLD:
-            _logger.error(
-                "catalog writes to its bucket have failed %d times in a row: %s: %s -- registrations are "
-                "not being recorded, and the registry reports itself not ready until a write lands",
-                self._consecutive_write_failures,
-                type(exc).__name__,
-                exc,
-                extra={
-                    "extra_data": {
-                        "consecutive_write_failures": self._consecutive_write_failures,
-                        "key": key,
-                        "error": f"{type(exc).__name__}: {exc}",
-                    }
-                },
-            )
-
-    def _write_landed(self) -> None:
-        """end a streak of failed writes, saying so when it had made the catalog stop persisting.
-
-        :return: nothing
-        :rtype: None
-        """
-        if not self.persisting:
-            _logger.info(
-                "catalog writes to its bucket are landing again",
-                extra={"extra_data": {"failed_before": self._consecutive_write_failures}},
-            )
-        self._consecutive_write_failures = 0
+        await self._write_health.write(kv.delete(key=key), key=key)
 
     async def register(self, entry: CatalogEntry) -> None:
         """register tool in catalog and persist to KV, merging PER COPY.
@@ -1163,31 +1114,33 @@ class ToolCatalog:
         to_remove: list[str] = []
         #: tools whose SHARED copy still advertises this pod after the sweep.
         stale_shared: list[str] = []
-        for full_name, entry in self._entries.items():
-            removed = entry.remove_endpoint(pod_id)
-            if not removed:
-                continue
-            affected.append(full_name)
-            if not entry.endpoints:
-                to_remove.append(full_name)
-            elif self._kv is not None:
-                try:
-                    await self._put(self._kv, _sanitize_kv_key(full_name), entry)
-                except Exception as exc:  # noqa: BLE001 -- one tool's KV write must not strand the rest
-                    # The in-memory endpoint is ALREADY removed at this point. Letting this
-                    # propagate abandoned the loop mid-way with `_entries` mutated and `affected`
-                    # discarded, so the caller learned nothing about the pods that had been
-                    # processed -- the same partial-failure shape as the deregister below, in the
-                    # same method. The shared copy keeps advertising this endpoint until a later
-                    # write succeeds; that is worth a warning, not a lost sweep.
+        # one pod leaving is one write operation, however many tools it served
+        async with self._write_health.operation():
+            for full_name, entry in self._entries.items():
+                removed = entry.remove_endpoint(pod_id)
+                if not removed:
+                    continue
+                affected.append(full_name)
+                if not entry.endpoints:
+                    to_remove.append(full_name)
+                elif self._kv is not None:
+                    try:
+                        await self._put(self._kv, _sanitize_kv_key(full_name), entry)
+                    except Exception as exc:  # noqa: BLE001 -- one tool's KV write must not strand the rest
+                        # The in-memory endpoint is ALREADY removed at this point. Letting this
+                        # propagate abandoned the loop mid-way with `_entries` mutated and `affected`
+                        # discarded, so the caller learned nothing about the pods that had been
+                        # processed -- the same partial-failure shape as the deregister below, in the
+                        # same method. The shared copy keeps advertising this endpoint until a later
+                        # write succeeds; that is worth a warning, not a lost sweep.
+                        stale_shared.append(full_name)
+                        _logger.warning(
+                            "removed a pod's endpoint locally but failed to update its shared KV entry",
+                            extra={"extra_data": {"full_name": full_name, "pod_id": pod_id, "error": str(exc)}},
+                        )
+            for full_name in to_remove:
+                if not await self.deregister(full_name):
                     stale_shared.append(full_name)
-                    _logger.warning(
-                        "removed a pod's endpoint locally but failed to update its shared KV entry",
-                        extra={"extra_data": {"full_name": full_name, "pod_id": pod_id, "error": str(exc)}},
-                    )
-        for full_name in to_remove:
-            if not await self.deregister(full_name):
-                stale_shared.append(full_name)
         if stale_shared:
             _logger.warning(
                 "pod deregistration left shared KV entries stale",
@@ -1371,16 +1324,18 @@ class ToolCatalog:
 
         kv = self._kv
         if kv is not None:
-            for full_name, entry, _endpoint in targets:
-                projected_endpoints = [_replace_endpoint_status(ep, pod_id, "available") for ep in entry.endpoints]
-                projected_entry = CatalogEntry(
-                    tool_name=entry.tool_name,
-                    tool_version=entry.tool_version,
-                    full_name=entry.full_name,
-                    endpoints=projected_endpoints,
-                    date_registered=entry.date_registered,
-                )
-                await self._put(kv, _sanitize_kv_key(full_name), projected_entry)
+            # every promotion written is one write operation, however many tools it touches
+            async with self._write_health.operation():
+                for full_name, entry, _endpoint in targets:
+                    projected_endpoints = [_replace_endpoint_status(ep, pod_id, "available") for ep in entry.endpoints]
+                    projected_entry = CatalogEntry(
+                        tool_name=entry.tool_name,
+                        tool_version=entry.tool_version,
+                        full_name=entry.full_name,
+                        endpoints=projected_endpoints,
+                        date_registered=entry.date_registered,
+                    )
+                    await self._put(kv, _sanitize_kv_key(full_name), projected_entry)
 
         promoted: list[str] = []
         for full_name, _entry, endpoint in targets:

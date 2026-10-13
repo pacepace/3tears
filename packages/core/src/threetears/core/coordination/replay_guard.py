@@ -56,6 +56,11 @@ alone -- no artifact. A login surface asks it before it reads a credential and a
 request in the window with one retryable reply, rather than letting the refusal surface after the
 password verified, where the only reply that leaks nothing is a wrong password's.
 
+**A declaring guard owns its bucket.** It declares it through ``ensure_kv_bucket`` with
+``owns_bucket=True`` on memory storage, so a bucket left on file storage is recreated on memory,
+empty. That is safe for the reason a wipe is: the recreate's creation time refuses anything issued
+before it. A bind-only guard (``create_if_missing=False``) never declares and never recreates.
+
 **Bind at start, or the window is measured from the wrong moment.** The watermark is measured from
 the bucket's creation time, and the bucket is created by whichever call opens it first. A service
 that calls :meth:`ReplayGuard.bind` at startup creates it before it serves anything, so after a
@@ -87,7 +92,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast, overload
 
 from threetears.observe import get_logger
 
@@ -99,7 +104,7 @@ if TYPE_CHECKING:
     # From the submodule, not the package: these three are Protocols that
     # `threetears.nats` stopped re-exporting when its nats-py-backed surface went lazy.
     # Annotation-only, so the eager `kv` import here costs an L1 consumer nothing.
-    from threetears.nats.kv import KvBucketLike, KvCapable
+    from threetears.nats.kv import KvBucketLike, KvCapable, KvDeclaring, KvDeclaringClient
 
     from threetears.core.coordination.replay_anchor import ReplayAnchor
 
@@ -136,6 +141,35 @@ class _ReconnectHooking(Protocol):
 class ReplayGuard:
     """records single-use nonces in a shared, TTL'd KV bucket; rejects any second sighting."""
 
+    # a declaring guard (the default) owns its bucket and needs a client that can declare one; a
+    # bind-only guard needs only the open. The overloads say so to a type checker, and __init__
+    # refuses at run time what slips past one.
+    @overload
+    def __init__(
+        self,
+        nats_client: "KvDeclaringClient",
+        *,
+        bucket_name: str,
+        ttl_seconds: int,
+        verifier_future_tolerance: timedelta,
+        anchor: "ReplayAnchor | None" = None,
+        create_if_missing: Literal[True] = True,
+        key_scope: str | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        nats_client: "KvCapable",
+        *,
+        bucket_name: str,
+        ttl_seconds: int,
+        verifier_future_tolerance: timedelta,
+        anchor: "ReplayAnchor | None" = None,
+        create_if_missing: Literal[False],
+        key_scope: str | None = None,
+    ) -> None: ...
+
     def __init__(
         self,
         nats_client: "KvCapable",
@@ -149,8 +183,11 @@ class ReplayGuard:
     ) -> None:
         """configure the guard; the bucket is opened by :meth:`bind`, which a service calls at start.
 
-        :param nats_client: connected canonical :class:`threetears.nats.kv.KvCapable`; the guard
-            opens its KV bucket through :meth:`KvCapable.kv_bucket`
+        :param nats_client: a connected client. A guard that DECLARES its bucket
+            (``create_if_missing=True``) declares it as its OWNER, so it needs a
+            :class:`threetears.nats.kv.KvDeclaringClient` (:class:`threetears.nats.NatsClient` and
+            the testing fake are one); a bind-only guard opens through
+            :meth:`threetears.nats.kv.KvCapable.kv_bucket` alone
         :ptype nats_client: KvCapable
         :param bucket_name: KV bucket suffix; the wrapper prefixes it with the namespace. Pick a
             bucket dedicated to one assertion kind (e.g. ``pop_nonces``) so unrelated nonces never
@@ -195,12 +232,21 @@ class ReplayGuard:
         :ptype key_scope: str | None
         :raises ValueError: when ``ttl_seconds`` is not positive, the tolerance is negative, or
             ``key_scope`` is not one literal subject token
+        :raises TypeError: when the guard declares its bucket and the client cannot declare one
         """
         if ttl_seconds <= 0:
             raise ValueError(f"ReplayGuard ttl_seconds must be positive, got {ttl_seconds}")
         if verifier_future_tolerance < timedelta(0):
             raise ValueError(
                 f"ReplayGuard verifier_future_tolerance must not be negative, got {verifier_future_tolerance}"
+            )
+        # refused here rather than at bind, so a service whose client cannot own its nonce bucket
+        # fails at construction, not at its first artifact
+        if create_if_missing and not callable(getattr(nats_client, "ensure_kv_bucket", None)):
+            raise TypeError(
+                f"ReplayGuard declares its bucket {bucket_name!r} as its owner and needs a client with "
+                f"ensure_kv_bucket; {type(nats_client).__name__} has none. Pass a NatsClient, or "
+                f"create_if_missing=False to bind a bucket another identity declares"
             )
         self._key_scope = validated_key_scope(key_scope, primitive="ReplayGuard")
         self._client = nats_client
@@ -492,12 +538,7 @@ class ReplayGuard:
                 if self._bucket is None:
                     # memory storage: a wipe is detected by record_unique's creation-time check,
                     # not survived. see the module docstring.
-                    bucket = await self._client.kv_bucket(
-                        name=self._bucket_name,
-                        ttl=self._ttl,
-                        create_if_missing=self._create_if_missing,
-                        history=1,
-                    )
+                    bucket = await self._open_bucket()
                     # after the bucket exists, so a first run stamps a moment no earlier than its
                     # creation; before the handle is published, so no record runs ahead of it.
                     await self._read_anchor()
@@ -514,6 +555,44 @@ class ReplayGuard:
                         },
                     )
         return self._bucket
+
+    async def _open_bucket(self) -> "KvBucketLike":
+        """declare the bucket as its owner, or bind it when this guard is bind-only.
+
+        A declaring guard OWNS its bucket: the declaration reconciles the live bucket's whole
+        shape, so a bucket left on file storage -- by a release that opened it before it was
+        declared, or by hand -- is recreated on memory, empty, rather than bound as it is with a
+        warning at every boot. Emptying it is safe, and that rests on this module's own check, not
+        on hope: a recreate gives the bucket a new creation time, and :meth:`record_unique` reads
+        that time after every fresh create and refuses anything issued before it (plus the
+        refusal reach) -- the same rule that makes a broker wipe safe. A nonce lost with the old
+        bucket can therefore only be presented again inside a window the guard already refuses.
+        The declaration is remembered by the client and repeated after a reconnect, so a wiped
+        bucket also comes back on memory.
+
+        :return: the bucket handle
+        :rtype: KvBucketLike
+        :raises threetears.nats.KvError: when the bucket cannot be declared or opened
+        """
+        if self._create_if_missing:
+            declaring = cast("KvDeclaring", self._client)
+            bucket = await declaring.ensure_kv_bucket(
+                name=self._bucket_name,
+                ttl=self._ttl,
+                storage="memory",
+                history=1,
+                create_if_missing=True,
+                owns_bucket=True,
+                drop_file_storage=True,
+            )
+        else:
+            bucket = await self._client.kv_bucket(
+                name=self._bucket_name,
+                ttl=self._ttl,
+                create_if_missing=False,
+                history=1,
+            )
+        return bucket
 
     def _hook_reconnect(self) -> bool:
         """register :meth:`_rebind_after_reconnect` with the client, when the client offers hooks.

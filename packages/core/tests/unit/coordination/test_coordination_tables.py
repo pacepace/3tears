@@ -38,6 +38,7 @@ from threetears.core.coordination.tables import (
     table_def_for,
 )
 from threetears.core.data.migrations import MigrationRunner, MigrationScope
+from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.testing.kv import FakeNatsClient
 
 
@@ -94,9 +95,10 @@ class _FakeGenerations:
         del table_name
         return f"i:{self.count}"
 
-    async def advance(self, table_name: str) -> None:
+    async def advance(self, table_name: str) -> str:
         del table_name
         self.count += 1
+        return f"i:{self.count}"
 
 
 class _Nats(FakeNatsClient):
@@ -436,6 +438,68 @@ class TestTheFlusher:
         except TimeoutError:
             pytest.fail(f"the loop stopped at the first L3 failure ({len(attempts)} attempt(s) in 5s)")
         await flusher.aclose()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_advance_says_the_rows_were_written_and_the_loop_carries_on(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # flush_pending raises this only after every row landed and was acknowledged: there is
+        # nothing to retry, and the log must not say there is.
+        attempts: list[int] = []
+        again = asyncio.Event()
+
+        async def _advance_failed(buf: WriteBuffer, reg: CollectionRegistry) -> int:
+            del buf, reg
+            attempts.append(1)
+            if len(attempts) > 1:
+                again.set()
+            raise GenerationUnavailableError("epoch bucket unreachable")
+
+        monkeypatch.setattr("threetears.core.coordination.flusher.flush_pending", _advance_failed)
+        flusher = PeriodicFlusher(WriteBuffer(), _registry(), interval_seconds=0.01)
+        with caplog.at_level("ERROR", logger="threetears.core.coordination.flusher"):
+            flusher.ensure_running()
+            await asyncio.wait_for(again.wait(), timeout=5)
+
+        async def _nothing_buffered(buf: WriteBuffer, reg: CollectionRegistry) -> int:
+            del buf, reg
+            return 0
+
+        # the final flush finds nothing left, so closing is clean
+        monkeypatch.setattr("threetears.core.coordination.flusher.flush_pending", _nothing_buffered)
+        await flusher.aclose()
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("rows were written" in m and "generation did not move" in m for m in messages), messages
+        assert not any("retrying" in m for m in messages), messages
+
+    @pytest.mark.asyncio
+    async def test_a_failed_advance_in_the_final_flush_is_raised_to_whoever_closes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _advance_failed(buf: WriteBuffer, reg: CollectionRegistry) -> int:
+            del buf, reg
+            raise GenerationUnavailableError("epoch bucket unreachable")
+
+        monkeypatch.setattr("threetears.core.coordination.flusher.flush_pending", _advance_failed)
+        flusher = PeriodicFlusher(WriteBuffer(), _registry(), interval_seconds=3600.0)
+        flusher.ensure_running()
+        with pytest.raises(GenerationUnavailableError):
+            await flusher.aclose()
+        assert not flusher.running
+
+    @pytest.mark.asyncio
+    async def test_any_other_failure_in_the_final_flush_is_reported_not_raised(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _l3_down(buf: WriteBuffer, reg: CollectionRegistry) -> int:
+            del buf, reg
+            raise RuntimeError("L3 unavailable")
+
+        monkeypatch.setattr("threetears.core.coordination.flusher.flush_pending", _l3_down)
+        flusher = PeriodicFlusher(WriteBuffer(), _registry(), interval_seconds=3600.0)
+        flusher.ensure_running()
+        await flusher.aclose()
+        assert not flusher.running
 
     def test_a_non_positive_interval_is_refused(self) -> None:
         with pytest.raises(ValueError, match="must be positive"):

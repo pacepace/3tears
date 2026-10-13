@@ -12,9 +12,10 @@ public surface — evaluation:
 - :func:`evaluate_with_trail` — verbose introspection / audit path
   returning the full :class:`EvaluationResult` with every
   contributing ``(group, assignment, role)`` chain.
-- :class:`AclCache` — three-layer in-process ttl cache (membership,
-  per-namespace assignments, per-type+customer assignments) with
-  fine-grained invalidation hooks.
+- :class:`AclCache` — three-layer in-process cache (membership,
+  per-namespace assignments, per-type+customer assignments), evicted
+  row by row from the access tables' write generations
+  (:func:`~threetears.agent.acl.generation_follow.follow_access_tables`).
 - value types :class:`Group`, :class:`GroupMembership`,
   :class:`Role`, :class:`RoleAssignment`, :class:`Namespace`,
   :class:`EvaluationContext`, :class:`EvaluationResult`,
@@ -68,16 +69,12 @@ public surface — persistence:
 - loaders :class:`CollectionMembershipLoader`,
   :class:`CollectionGrantLoader` — concrete impls of the loader
   Protocols backed by the canonical Collections.
-- invalidation models :class:`MembershipInvalidatePayload`,
-  :class:`AssignmentInvalidatePayload`,
-  :class:`RoleInvalidatePayload` — typed NATS payloads for
-  cross-process cache invalidation.
 - :func:`evict_after_rbac_write` -- the rule every helper that WRITES
   a ``group_members`` / ``role_assignments`` / ``groups`` row while
-  holding an :class:`AclCache` follows: evict what it wrote locally,
-  then broadcast on the invalidation bus when it has a publisher.
-  without it the writer's own cache answers the next question from
-  the entry the write just made wrong, for up to the ttl.
+  holding an :class:`AclCache` follows: evict what it wrote from that
+  cache at once, so the writer's own next question is not answered
+  from the entry the write just made wrong. every other process hears
+  the write's row broadcast and its generation.
 - :func:`register_rbac_l1_tables` -- the L1 SQLite mirror of the five
   rbac tables, GENERATED from the Collection schemas above. every
   process that evaluates locally needs it, and the hand-written
@@ -139,6 +136,15 @@ from threetears.agent.acl.builtin_roles import (
     PLATFORM_BUILTIN_TOOL_USER_ROLE_PERMISSIONS,
     ensure_platform_builtin_tool_user_role,
 )
+from threetears.agent.acl.access_tables import ACCESS_TABLES, bind_acl_cache_to_access_tables
+from threetears.agent.acl.caller_cache import (
+    CallerAccessCache,
+    CallerKey,
+    CallerNamespaces,
+    DEFAULT_CALLER_CACHE_MAX_ENTRIES,
+    CallerNamespacesUnavailable,
+    bind_caller_cache_to_access_tables,
+)
 from threetears.agent.acl.cache import (
     AclCache,
     ActorMembershipEntry,
@@ -159,12 +165,14 @@ from threetears.agent.acl.catalog import (
     validate_permissions,
 )
 from threetears.agent.acl.collections import (
+    GroupCascade,
     GroupCollection,
     GroupMemberCollection,
     ImpersonationGateCollection,
     ImpersonationGateStatus,
     NamespaceCollection,
     NamespaceRescope,
+    NamespaceRescopeNotAdvanced,
     NamespaceRescopeRefused,
     RoleAssignmentCollection,
     RoleCollection,
@@ -195,40 +203,6 @@ from threetears.agent.acl.evaluator import (
     evaluate_with_trail,
 )
 
-# The cross-process invalidation bus needs the NATS client for its Subjects grammar, so it is an
-# EXTRA (`3tears-agent-acl[bus]`) rather than a hard dependency: the evaluator, the cache and the
-# collections are useful to a consumer with no broker at all, and making every one of them install
-# nats-py + nkeys would contradict the reason invalidation_bus takes narrow Protocols in the first
-# place. A consumer that reaches for the bus without the extra gets an ImportError naming it.
-try:
-    from threetears.agent.acl.invalidation_bus import (
-        AclInvalidationPublisher,
-        AclInvalidationSubscriber,
-        publish_assignment_invalidation,
-        publish_membership_invalidation,
-        publish_role_invalidation,
-        subscribe_acl_invalidation,
-        unsubscribe_acl_invalidation,
-    )
-except ImportError as _bus_exc:  # pragma: no cover - exercised by the packaging, not the suite
-    _BUS_IMPORT_ERROR = _bus_exc
-
-    def _bus_unavailable(*_args: object, **_kwargs: object) -> object:
-        raise ImportError(
-            "the acl invalidation bus needs the NATS client; install 3tears-agent-acl[bus]"
-        ) from _BUS_IMPORT_ERROR
-
-    AclInvalidationPublisher = AclInvalidationSubscriber = object  # type: ignore[assignment,misc]
-    publish_assignment_invalidation = _bus_unavailable  # type: ignore[assignment]
-    publish_membership_invalidation = _bus_unavailable  # type: ignore[assignment]
-    publish_role_invalidation = _bus_unavailable  # type: ignore[assignment]
-    subscribe_acl_invalidation = _bus_unavailable  # type: ignore[assignment]
-    unsubscribe_acl_invalidation = _bus_unavailable  # type: ignore[assignment]
-from threetears.agent.acl.invalidation import (
-    AssignmentInvalidatePayload,
-    MembershipInvalidatePayload,
-    RoleInvalidatePayload,
-)
 from threetears.agent.acl.loader import GrantLoader, MembershipLoader
 from threetears.agent.acl.loaders import (
     CollectionGrantLoader,
@@ -266,19 +240,19 @@ from threetears.agent.acl.write_eviction import evict_after_rbac_write
 __all__ = [
     "INTERNAL_AUDIENCE",
     "AccessDenied",
+    "ACCESS_TABLES",
     "AclCache",
     "ActorMembershipEntry",
     "ActorMembershipKey",
     "ActionDescriptor",
     "ActorType",
-    "AclInvalidationPublisher",
-    "AclInvalidationSubscriber",
-    "publish_assignment_invalidation",
-    "publish_membership_invalidation",
-    "publish_role_invalidation",
-    "subscribe_acl_invalidation",
-    "unsubscribe_acl_invalidation",
-    "AssignmentInvalidatePayload",
+    "bind_acl_cache_to_access_tables",
+    "bind_caller_cache_to_access_tables",
+    "CallerAccessCache",
+    "CallerKey",
+    "CallerNamespaces",
+    "CallerNamespacesUnavailable",
+    "DEFAULT_CALLER_CACHE_MAX_ENTRIES",
     "CatalogViolation",
     "CatalogViolationKind",
     "ClaimsForAuthorization",
@@ -290,6 +264,7 @@ __all__ = [
     "ExternalAudienceNotSupported",
     "GrantLoader",
     "Group",
+    "GroupCascade",
     "GroupCollection",
     "GroupEntity",
     "GroupMemberCollection",
@@ -307,13 +282,13 @@ __all__ = [
     "LimitingSide",
     "MAX_GROUP_MEMBERSHIP_DEPTH",
     "MemberType",
-    "MembershipInvalidatePayload",
     "MembershipLoader",
     "Namespace",
     "NamespaceCollection",
     "NamespaceEntity",
     "NamespaceNotFound",
     "NamespaceRescope",
+    "NamespaceRescopeNotAdvanced",
     "NamespaceRescopeRefused",
     "PermissionCatalog",
     "PermissionEscalation",
@@ -337,7 +312,6 @@ __all__ = [
     "RoleAssignmentEntity",
     "RoleCollection",
     "RoleEntity",
-    "RoleInvalidatePayload",
     "ScopeType",
     "Trail",
     "UndeclaredPermission",

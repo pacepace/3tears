@@ -116,6 +116,134 @@ host's, because one subject id means a live entity to one kind, a fixed prompt k
 third; `launchable_judge_kind` brings its own, which admits any non-blank label. It is asked at admission, once the
 template's kind is known, so `launch_estimate` and a launch refuse an unknown subject alike, before anything is priced.
 
+### Recording completions for CI
+
+**Record your real client once, and replay it in your suite.** `RecordedCompletions` (in
+`threetears.evals.testing`) wraps your completion client: `record` sends every call through and appends what it
+returned to a JSONL file, and `replay` serves those completions back in order with no network, so a suite that
+judges, simulates or analyses runs offline on what a real model said rather than on a stand-in's text. Build the
+recorder once per suite, a session fixture or a module-level object, and hand that one object to every unit of work:
+`replace=True` empties the file each time a recorder is built with it, so one built per test would keep only the
+last test's calls.
+
+```python
+from threetears.evals.run import JUDGE_REQUEST_SETTINGS
+from threetears.evals.testing import RecordedCompletions
+
+RECORDING = Path("tests/recordings/judge.jsonl")
+
+
+@pytest.fixture(scope="session")
+def judge_client():
+    # The settings my_judge_client() is built with: for the judge, the value its builder applies.
+    if os.environ.get("RECORD"):
+        client = RecordedCompletions.record(
+            my_judge_client(), RECORDING, settings=JUDGE_REQUEST_SETTINGS, replace=True
+        )
+    else:
+        client = RecordedCompletions.replay(
+            RECORDING, settings=JUDGE_REQUEST_SETTINGS, rerecord="RECORD=1 pytest tests/test_judge.py"
+        )
+    return client
+```
+
+**Pass the settings your client is built with.** `record` and `replay` both require `settings=`: the
+`ClientRequestSettings` your client builder applies to that client (for the judge, `threetears.evals.run`'s
+`JUDGE_REQUEST_SETTINGS`), or `None` for a client built with none. They never reach `generate`, so the recorder
+cannot read them off the client, and they change the answer: a judge given a reasoning budget thinks before it
+scores and one sent none may not. Every line carries them, and a recording made under other settings is refused,
+not served: `RecordingRefused` names each setting that differs, recorded value against asked
+(`recorded with reasoning_max_tokens=8192, reasoning_effort=None, asked with reasoning_max_tokens=None,
+reasoning_effort='high'`), so moving your judge's reasoning budget or output cap tells you to re-record rather than
+replaying answers the new configuration never asked for.
+
+A call is matched on its prompt (`system`, `user`, `response_format`), the model and temperature its completion
+reported, the settings the client was built with, and how many times that prompt was asked before, so `k` repeats
+replay as the `k` answers they were. A prompt the recording does not hold, or one asked once more than it was, is
+refused (`RecordingRefused`) with the prompt's first 80 characters and the re-record command, never sent live; it is
+an `ApparatusError`, so a candidate that meets one has its cell excluded rather than scored. To name a prompt that
+changed under its recording before a replay starts, hand
+`RecordedCompletions.check_covers(RECORDING, prompts, settings=...)` the prompts your code sends. One file can hold
+several clients' calls (two models answering one prompt, or one model under two settings): each replays its own,
+with `replay(path, settings=..., model=...)`.
+
+Recording onto a file that exists appends to it, and only `replace=True` starts afresh. A replayed price
+(`cost_usd`, `price_source`) is what the call cost when it was recorded, not a quote at today's rates. Every
+attribute your completion type declares beyond the ten is kept under the replayed completion's `extra`, and one JSON
+cannot hold is refused when it is recorded.
+
+## Bringing a provider
+
+**The engine calls models through one port, and names no provider.** A client is anything with
+`async generate(*, system, user, response_format=None)` returning a `CompletionResult`, plus `aclose`
+(`CompletionClient`, in `threetears.evals.schema`); the failure half is your `failure_describer`. You can write
+both yourself, or bind to the adapter the package ships over 3tears-models (`threetears.evals.providers`, the
+`[models]` extra), which builds Anthropic, OpenAI and OpenRouter chat models through `create_chat_model`.
+
+**The `[models]` extra installs from PyPI once 0.67.0 ships** (`pip install "3tears-evals[models]"`). Until then
+it does not install from a git tag the way the base package does
+([the README's install step](../README.md#first-result-in-10-minutes)): it needs 3tears-models and the family
+packages models depends on at 0.67.0, and none of them is on PyPI yet. Use a checkout of the repository at the tag,
+where `uv sync --extra models` at the root installs it.
+
+```python
+from threetears.evals.providers import ModelsFailureDescriber, models_clients
+
+async def build_host() -> EvalHost:
+    clients = models_clients(defaults={"judge": "claude-sonnet-4-6", "analysis": "claude-sonnet-4-6"})
+    unpriced = await clients.load_prices()  # once, at boot: {model: why} for any model left unpriced
+    return EvalHost(..., clients=clients, failure_describer=ModelsFailureDescriber())
+```
+
+`models_clients` keeps one client per role, model, temperature and reasoning setting, reads each provider's key
+from `api_keys=` or the provider's own environment variable the first time a client for it is asked for, and
+`await clients.aclose_all()` closes them at shutdown. Per-role settings go by role name
+(`simulator={"reasoning_effort": "minimal", "provider": "openrouter"}`); `models_client` builds one client on its own.
+**The judge is built from `JUDGE_REQUEST_SETTINGS`**, the request settings a judged run records as its
+`judge_request_settings` (`max_tokens=10240`, `reasoning_max_tokens=8192`, `strict_output=True`): a `judge` role
+given no `max_tokens`, `reasoning_max_tokens` or `reasoning_effort` of its own gets that output cap and that
+reasoning budget, which on Anthropic goes as the thinking budget, and `strict_output` is the strict structured
+directive the judge already sends. On OpenAI and OpenRouter the adapter cannot send a reasoning budget, so a judge
+there cannot match the settings the run records: `models_clients` refuses it by name unless you pass the judge's
+settings yourself (`judge={"max_tokens": ..., "reasoning_effort": ...}`), and then the run's recorded settings do not
+describe what was sent. The adapter sends every request once (retries off), keeps a circuit breaker of its own that
+never opens, prices Anthropic and OpenAI calls from models' price catalogue and OpenRouter calls by OpenRouter's own
+figure (unpriced is `None` with the reason, never `0`), and refuses by name a reasoning word or budget the provider
+cannot carry rather than sending its nearest neighbour. That refusal, and a role with no model or a provider with no
+key, raise `ModelsClientRefused` (a `ValueError`), naming the setting and what to pass instead.
+
+**Load prices once at boot.** `await clients.load_prices()` reads the price catalogue for every default model and
+returns, for each one left unpriced, why (`{}` when all are priced); a model the engine names beyond your defaults
+loads with `await clients(role, model).load_prices()`, and a client built alone with `await client.load_prices()`.
+Until a client's prices are loaded its `price_ceiling` is `None`, and the engine refuses every out-of-run call
+(analysis, case generation, a second judge, a rejudge) under an enforced `out_of_run_cap_usd` rather than send one
+it cannot bound. On Anthropic and OpenAI the first priced call also loads them; on OpenRouter only `load_prices`
+does, and its ceiling comes from the same catalogue while the stored cost stays OpenRouter's own figure. A failed
+fetch is logged and retried on the next call or load, never cached; an exception from a price source of your own
+propagates from `load_prices`, so a defect in it shows at boot.
+
+**A cost that read the provider's prompt cache is approximate.** Providers bill cached input at their own rates,
+cheaper to read and, on Anthropic, dearer to write, and models' price catalogue carries neither, so the adapter
+prices those tokens at the full input rate: a cache read is overstated and an Anthropic cache write understated.
+Such a call's `price_source` ends `;cache-approximate`, so a stored cost is never read as exact. What the adapter
+reads off each provider's reply is in `threetears.evals.providers`' own docstring, member by member.
+
+**Keep a client of your own** when you price from a catalogue of your own or route through a gateway, when your
+provider is one 3tears-models has no factory for, or when you call Claude through a subscription: the adapter
+refuses the Claude CLI route, whose completions read as finished whatever stopped them, until models carries the
+CLI's real stop reason. Either way, run `check_completion_conformance` on your client's completions in your suite.
+
+**A client of your own maps its provider's finish reason onto five words** (`StopReason`): `end_turn` for a
+completion that finished, `max_tokens` for one stopped at the output cap (OpenAI's `length`), `content_filter` for a
+refusal or a filtered reply, `truncated` for output that stopped early for a reason the provider did not name or
+named in words your mapping does not know (no finish reason at all, a value newer than your mapping, a pause such as
+Anthropic's `pause_turn`), and `error` only when the provider reported an error in place of a completion
+(OpenRouter's `error` finish reason) or returned no choices. Map anything you do not recognise to `truncated`, never to
+`end_turn`, which would read a cut-short reply as finished, and never to `error`, which tells the operator the call
+failed when it produced output. Every word but `end_turn` is cut short: the judge and the analysis generator never
+parse or repair such a reply, and their message says why for each; for `truncated` the provider's raw value is what
+to look at, so log it.
+
 ## Tenancy: the scope
 
 **Tenancy is one opaque `scope_id`.** Every stored document carries a non-empty `scope_id`, and the
@@ -253,7 +381,10 @@ or the other, an added optional field included:
   store, with a `schema_minor` above the build's, gets it too, so write the minor your build writes. **The roll has
   a floor:** the tolerance arrived with the minor, in `v0.66.0-evaladopt.22`. A build before it (`.21` included)
   declares no `schema_minor` and refuses every field it does not declare, so it refuses every core document `.22` or
-  a later build writes, though the major is 14 for both. Roll back no further than `.22`.
+  a later build writes, though the major is 14 for both. Roll back no further than `.22`. **And no further than
+  `.24` once any document carries `stop_reason="truncated"`:** that word joined the unreleased v14 baseline in
+  `v0.67.0-evaladopt.24` with no new version, and `.22` and `.23`, which read and write v14.0 too, know four words
+  and refuse every out-of-run spend document carrying it.
 - **A major is everything else**, and ships an upgrade step (a `CoreUpgrader` appended to `CORE_UPGRADERS`),
   tested against frozen stored documents from every core major since the baseline. Reading an older core
   document upgrades it in memory, one major at a time, before it is validated as strictly as a document written
@@ -419,7 +550,7 @@ launch (a witnessed session, a run your host assembles) is validated as strictly
 
 ## Stability tiers
 
-**Every public name has a tier, and the tier is what a release promises about it.** From 0.66.0, the first tagged
+**Every public name has a tier, and the tier is what a release promises about it.** From 0.67.0, the first tagged
 release, on:
 
 - **`host-contract`** is what a host writes against: the host and its profile, the registries, the kind seam,
@@ -446,14 +577,14 @@ promoted: promoting a name costs nothing, and demoting one is a break.
 When a release moves a public name to another root, renames it, or removes it, `packages/evals/MIGRATIONS.toml`
 records it under that release: the old name, its new home or `removed`, and why. A `closure` name has no shim at the
 old name; a `host-contract` one keeps working for a minor release first (above). The record starts
-at 0.66.0, the package's first release, which moved nothing. Pre-release tags are not releases and are not in it.
+at 0.67.0, the package's first release, which moved nothing. Pre-release tags are not releases and are not in it.
 The file is
 in the repository, not the installed package: read it at the tag you are moving to, on GitHub
 (`https://github.com/pacepace/3tears/blob/<tag>/packages/evals/MIGRATIONS.toml`) or in a checkout. In a checkout,
 the release notes are printed from it, so they hold the full old-to-new map:
 
 ```bash
-uv run python packages/evals/scripts/release_notes.py v0.66.0
+uv run python packages/evals/scripts/release_notes.py v0.67.0
 ```
 
 Each line reads `old → new`, grouped under the reason for the move. Changes that are not a public name, such as
@@ -481,7 +612,7 @@ snapshot:
 - **A section that names the tag before it (`since`).** The test reads both surfaces from git and holds the
   section to exactly the names that left a root between that tag and this version's. Before the version is
   tagged, it compares against the working tree. `since` is always a final release tag (`v<x>.<y>.<z>`). A tag
-  from before the package existed (`v0.65.0`, for 0.66.0) has an empty surface. A checkout without the tags fails
+  from before the package existed (`v0.66.0`, for 0.67.0) has an empty surface. A checkout without the tags fails
   this check rather than passing it.
 - **A name exported from two roots.** The test fails unless it is one object and `api/reexports.toml` declares
   it. Two different objects under one name always fail: rename one.

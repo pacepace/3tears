@@ -35,7 +35,15 @@ if TYPE_CHECKING:
     from threetears.core.collections.base import BaseCollection
     from threetears.core.collections.registry import CollectionRegistry
     from threetears.core.config import CoreConfig, DefaultCoreConfig
-    from threetears.core.coordination import HeldLease, KVLease, LeaseHandle, LeaseLost, LeaseTimeout, LeaseUnavailable
+    from threetears.core.coordination import (
+        HeldLease,
+        KVLease,
+        LeaseHandle,
+        LeaseLossReason,
+        LeaseLost,
+        LeaseTimeout,
+        LeaseUnavailable,
+    )
     from threetears.core.data.collection_factory import create_dynamic_collection
     from threetears.core.data.migrations import MigrationRunner
     from threetears.core.data.schema import ColumnDef, ForeignKeyDef, IndexDef, TableDef
@@ -88,6 +96,7 @@ _LAZY: dict[str, tuple[str, str]] = {
     "KeyedTaskRegistry": ("threetears.core.task_registry", "KeyedTaskRegistry"),
     "Keyset": ("threetears.core.pagination", "Keyset"),
     "LeaseHandle": ("threetears.core.coordination", "LeaseHandle"),
+    "LeaseLossReason": ("threetears.core.coordination", "LeaseLossReason"),
     "LeaseLost": ("threetears.core.coordination", "LeaseLost"),
     "LeaseTimeout": ("threetears.core.coordination", "LeaseTimeout"),
     "LeaseUnavailable": ("threetears.core.coordination", "LeaseUnavailable"),
@@ -153,6 +162,7 @@ __all__ = [
     "KeyedTaskRegistry",
     "Keyset",
     "LeaseHandle",
+    "LeaseLossReason",
     "LeaseLost",
     "LeaseTimeout",
     "LeaseUnavailable",

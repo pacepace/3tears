@@ -93,7 +93,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING, Any, Literal, get_args
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field, model_validator
 
@@ -227,10 +227,13 @@ AttributionScope = Literal["subsystem", "end_to_end"]
 #: serves is the host's declaration. Generic slot, host-declared content — the same split the
 #: sweepables registry draws over levers. "Best" is never unqualified: a memo states position
 #: along these, and a measure that names none contributes to no verdict.
-MeritAxis = Literal["quality", "cost", "latency", "reliability"]
-
-if get_args(MeritAxis) != get_args(DeclaredMeritAxis):  # pragma: no cover - import-time invariant
-    raise RuntimeError("models.DeclaredMeritAxis must restate metrics.MeritAxis exactly")
+#:
+#: The same object as :data:`~threetears.evals.schema.models.DeclaredMeritAxis`, which a stored declaration
+#: names and which is defined there because the schema cannot import this module. Bound rather than restated:
+#: two equal ``Literal`` spellings are one object only while ``typing``'s cache holds the first, so a restatement
+#: is the exported ``MeritAxis`` in one import order and an unexported twin in another, which is how the
+#: public-surface closure walk read ``MeasureDeclaration.merit_axis`` as reaching a type no root exports.
+MeritAxis = DeclaredMeritAxis
 
 #: Which observations a measure is computed over. Two surfaces reporting the same measure name
 #: over different populations produce figures that differ **by construction** over any corpus with

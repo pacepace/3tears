@@ -30,6 +30,17 @@ from threetears.geo.collection import (
 from threetears.geo.features import FeatureCache, FeatureEntity, FeatureLoader
 from threetears.geo.geometry import decode_geometry, geometry_bounds, point_geometry
 from threetears.geo.mvt import encode_tile, project_to_tile
+from threetears.geo.overlay import (
+    KeyedFeature,
+    LayerOverlayError,
+    Overlay,
+    area_km2,
+    cut,
+    mean_width_m,
+    missing_features,
+    replace_features,
+)
+from threetears.geo.scope import MAX_CACHE_SCOPE_LENGTH, check_cache_scope
 from threetears.geo.tiles import (
     MAX_MERCATOR_LATITUDE,
     TILE_EXTENT,
@@ -41,6 +52,7 @@ from threetears.geo.tiles import (
 )
 
 __all__ = [
+    "MAX_CACHE_SCOPE_LENGTH",
     "MAX_MERCATOR_LATITUDE",
     "AggregateSpec",
     "BandResult",
@@ -72,4 +84,13 @@ __all__ = [
     "tile_bounds",
     "tile_for_point",
     "validate_attribute_value",
+    "KeyedFeature",
+    "LayerOverlayError",
+    "Overlay",
+    "area_km2",
+    "cut",
+    "mean_width_m",
+    "missing_features",
+    "replace_features",
+    "check_cache_scope",
 ]

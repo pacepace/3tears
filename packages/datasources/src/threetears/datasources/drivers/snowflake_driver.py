@@ -132,6 +132,7 @@ CI-required live test
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from threetears.datasources.config import SnowflakeConnectionConfig
@@ -175,6 +176,18 @@ class SnowflakeDriver(Driver):
         still produce valid metric streams
     :ptype datasource_name: str
     """
+
+    @property
+    def concurrent_queries(self) -> int:
+        """one at a time: this driver's logins are not guarded against a refused credential.
+
+        It does not yet tell a refused login from other failures, so a connect guard cannot pause a
+        wrong credential here; queries run side by side would each send a failing login at once.
+
+        :return: 1
+        :rtype: int
+        """
+        return 1
 
     def __init__(
         self,
@@ -236,14 +249,16 @@ class SnowflakeDriver(Driver):
         """
         raise NotImplementedError(f"SnowflakeDriver.list_columns is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
 
-    async def relation_fingerprint(self, relation: str, key: list[str]) -> RelationFingerprint:
+    async def relation_fingerprint(
+        self, relation: str, key: list[str], where: Mapping[str, str] | None = None
+    ) -> RelationFingerprint:
         """count and fingerprint a relation over its key -- NOT YET IMPLEMENTED.
 
         When this driver is built, the dialect-specific half is
         ``TO_NUMBER(SUBSTR(MD5(k), 1, 8), 'XXXXXXXX')`` -- Snowflake's own
         spelling of the hash-to-number step Postgres does through ``bit(32)``
         and Redshift through ``STRTOL``. The key expression itself is shared:
-        :func:`threetears.datasources.drivers.sql_fragments.build_relation_key_expression`.
+        :func:`threetears.core.fingerprint.relation_key_expression`.
 
         :param relation: schema-qualified relation name, a TRUSTED identifier
         :ptype relation: str

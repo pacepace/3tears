@@ -2877,8 +2877,8 @@ class ClientRequestSettings(EvalDocumentModel, CoreShapeModel):
 DEFAULT_LAUNCH_K_RUNS = 3
 
 
-#: The merit axes a declaration may name: :data:`~threetears.evals.kernel.metrics.MeritAxis`, restated here
-#: because that module imports this one; ``metrics`` checks the two agree at import.
+#: The merit axes a declaration may name, defined here because ``kernel.metrics`` imports this module, which
+#: binds :data:`~threetears.evals.kernel.metrics.MeritAxis` to this same object.
 DeclaredMeritAxis = Literal["quality", "cost", "latency", "reliability"]
 
 

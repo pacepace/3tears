@@ -532,7 +532,7 @@ def surface_entry(root: str, name: str, obj: Any) -> SurfaceEntry:
 
 #: The host contract: every public name a host binds to, by ``root.name``. Each moves only with a
 #: ``MIGRATIONS.toml`` record and a deprecation cycle (the old name keeps working beside the new one for one minor
-#: release), from 0.66.0 on. Every other public name is ``closure``.
+#: release), from 0.67.0 on. Every other public name is ``closure``.
 #:
 #: The ruling is what a host author is told to write against: ``docs/adopting-a-host.md``, ``docs/tutorial.md``, the
 #: README and ``examples/`` (every name they import is here, which ``tests/test_api_tiers.py`` holds), and the
@@ -551,6 +551,10 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.schema.ProviderFailureDescriber",
         "threetears.evals.schema.CompletionClient",
         "threetears.evals.schema.CompletionResult",
+        # The five words a host's own client maps its provider's finish reason onto, and the role names that key
+        # `CompletionClients` and the shipped factory's `defaults=`.
+        "threetears.evals.schema.StopReason",
+        "threetears.evals.kernel.host.CompletionRole",
         "threetears.evals.schema.TraceSink",
         # The registries a profile holds: the host's vocabulary of levers, measures, bars and world.
         "threetears.evals.kernel.host.SHARED_CORE",
@@ -616,6 +620,15 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.testing.STORE_CONFORMANCE_CASES",
         "threetears.evals.testing.StoreConformanceCase",
         "threetears.evals.testing.check_completion_conformance",
+        # Recorded completions in CI is a pattern a host uses: record its real client once, replay it in its suite.
+        "threetears.evals.testing.RecordedCompletions",
+        "threetears.evals.testing.RecordedPrompt",
+        # What the recorder raises on a replay miss or a recording it cannot read, which a host's suite catches.
+        "threetears.evals.testing.RecordingRefused",
+        # The request settings a recording is matched on, required by `record` and `replay`, and the judge's own
+        # value a host passes for its judge client: a host cannot call the recorder without naming one.
+        "threetears.evals.schema.ClientRequestSettings",
+        "threetears.evals.run.JUDGE_REQUEST_SETTINGS",
         "threetears.evals.testing.CompletionGuard",
         "threetears.evals.testing.JobsConformanceHost",
         "threetears.evals.testing.jobs_conformance_cases",
@@ -702,6 +715,14 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.analysis.ChartBlock",
         "threetears.evals.kernel.EvalAnalysis",
         "threetears.evals.vega.VegaRenderer",
+        # The shipped provider adapter: a host that brings no client of its own binds to these.
+        "threetears.evals.providers.models_client",
+        "threetears.evals.providers.models_clients",
+        "threetears.evals.providers.ModelsFailureDescriber",
+        # The factory's own type, whose `aclose_all()` a host calls at shutdown, and the adapter's refusal of a
+        # setting it cannot carry, a role with no model or a provider with no key, which a host catches.
+        "threetears.evals.providers.ModelsClients",
+        "threetears.evals.providers.ModelsClientRefused",
     }
 )
 

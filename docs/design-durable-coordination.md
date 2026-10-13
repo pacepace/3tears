@@ -26,8 +26,11 @@ needs:
   not survive losing the node or the volume.
 - **No backups.** L3 is backed up. A JetStream volume is not.
 - **No schema, no migrations.** Long-lived state acquires a shape; KV gives it none.
-- **Storage is chosen at CREATE and never reconciled.** A wrong value is fixed by deleting
-  live state on a running cluster, not by shipping a fix.
+- **Storage is chosen at CREATE and reconciled only by the bucket's owner.** A declaration
+  with `owns_bucket=True` (memory storage only) deletes and recreates a bucket live on the
+  wrong storage, emptying it, and a file-backed one only with `drop_file_storage=True`. Any
+  other bucket keeps the storage it was created with, and a wrong value there is fixed by
+  deleting live state on a running cluster.
 
 `threetears.epoch` made the same call for its durable tile family: file storage survives
 only while its store directory survives, so it is a false guarantee against the failure it
@@ -156,6 +159,18 @@ GitHub state, SAML `InResponseTo`, passkey challenges, TOTP partial-auth -- the 
 consumed by a revision-guarded delete of its own record, as `NatsKvTicketStore` already
 does. Separate R1 streams can sit on different NATS nodes, so a separate nonce bucket can be
 wiped while the artifact survives. Consuming the artifact itself cannot split that way.
+
+### Pending run requests: memory, the schedule is the backstop
+
+`CoalescedRun` (`threetears.core.coordination.coalesced_run`) records "a run is wanted" as one key
+beside its lease, `<key>.requested`, in the memory-backed `leases` bucket. A wipe drops a request
+that no replica has taken yet, and nothing reports it: the run it asked for does not happen. That is
+accepted rather than designed out, because every consumer drives the run from something that asks
+again on its own: the ENR pod's refresh is asked for by a hub schedule on an interval (and by the
+warehouse's "ready" call), so a dropped request costs at most one interval of staleness, and the
+next ask runs it. A consumer whose request must survive a wipe keeps it in L3 instead. A request
+that was taken is not at risk: the run holding it is under the lease, and a run stopped before it
+finished records the request again.
 
 ### Durable security state: L3 through `BaseCollection`
 
@@ -414,11 +429,24 @@ The primitives keep their public surfaces apart from `ReplayGuard.record_unique`
 - **survey**: the entry-challenge guard, the panel lockout counter, and idempotency claims.
 - **scriob**: its login throttle.
 
-**The live buckets are converted, not abandoned.** The nonce buckets keep their names and a
-bucket's storage is never reconciled, so after release the new code binds the existing
-file-backed streams. Each one stays file-backed until deleted by name, and a deletion is a
-wipe: calls through that guard are refused for its reach while it is recreated
-memory-backed. The durable primitives' buckets are different: once their state lives in
+**The live buckets are converted, not abandoned.** The nonce buckets keep their names. Since
+0.66.0 a DECLARING guard (`create_if_missing=True`) owns its bucket: it declares it with
+`owns_bucket=True, drop_file_storage=True` on memory storage, so at its first boot on that
+release it deletes a file-backed nonce stream and recreates it memory-backed. That is a wipe,
+and safe for the reason a broker wipe is: the recreate's creation time refuses anything issued
+before it, so calls through the guard are refused for its reach and no replay is reopened. No
+nonce bucket is deleted by hand any more. A BIND-ONLY guard never declares and never recreates;
+it waits for its declarer. The declaring identity needs `STREAM.UPDATE` and `STREAM.DELETE` on
+its nonce stream as well as `STREAM.CREATE`, or its bind fails at startup while the bucket is
+still file-backed. The durable primitives' buckets are different: once their state lives in
 L3 they are genuinely unused, and they are deleted after the one-time copy. Both happen on
 cobalt-dev and then prod, after every consumer is released, dry run first, and a real
 sign-in verifies each.
+
+## Known residual: a pod's L2 reads can deliver its bytes to any subject
+
+A JetStream push consumer's `deliver_subject` and every request's reply subject are not checked
+against the requester's permissions, so any pod that can write a value and read it back can put
+that value on any subject in its account (probed on nats-server 2.12.6, 2026-10-07). No grant closes
+it; the defence is the receiver's. The evidence, the scope and the pinned test:
+[design-scoped-snapshot.md](design-scoped-snapshot.md#known-residual-a-pod-can-put-its-own-bytes-on-any-subject).
