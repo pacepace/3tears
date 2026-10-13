@@ -1629,8 +1629,8 @@ async def run_eval(
             sentence. A judged run's summary renders it with where it came from.
         host: Where to run and store: ``None`` builds :func:`callable_host` over the scorers and ``store``. A
             host of the caller's own must declare a measure for every scorer, and a contract for the callable
-            kind (:data:`CALLABLE_KIND_CONTRACT`, or one seating only apparatus of its own — never anything in
-            :data:`CALLABLE_UNSEATED`), and for a judged call one for the judged kind (the judged contract
+            kind (:data:`CALLABLE_KIND_CONTRACT`, or one seating only apparatus of its own — never the judge, the
+            simulator or the spend ceiling), and for a judged call one for the judged kind (the judged contract
             :func:`callable_kind_contracts` returns, or one seating the judge and nothing in
             :data:`JUDGED_CALLABLE_UNSEATED`).
         store: Where the host ``run_eval`` builds stores the run (any
@@ -1690,9 +1690,9 @@ async def run_eval(
             ``cost_usd`` or any other name in ``METRIC_DESCRIPTORS``), an ``expected`` that raises or gives a case a blank, non-string or
             :data:`UNUSABLE_ANSWER` label, a ``stratum_key`` that is blank or ``id``, or a case whose stratum
             under it is not a non-blank string, a given host that declares no callable-kind contract
-            (or one with no seats, a seat in :data:`CALLABLE_UNSEATED`, overlays or a spec), a judged call on
-            a given host whose judged-kind contract is missing or seats too much or no judge, a scorer
-            the given host declares no measure for, no ``model`` for a candidate that has no ``__name__``, an
+            (or one with no seats, a seat on the judge, the simulator or the spend ceiling, overlays or a spec), a
+            judged call on a given host whose judged-kind contract is missing or seats too much or no judge, a
+            scorer the given host declares no measure for, no ``model`` for a candidate that has no ``__name__``, an
             unusable lever name, ``tools`` that are no non-empty mapping of identifier to function, or a
             capture or replay of a candidate that declares no tools; for a world run, no ``seed=``, a
             ``seed=`` that raises or gives a case a state the world refuses or leaves a dimension
