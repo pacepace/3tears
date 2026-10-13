@@ -6,6 +6,109 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Memory tools: every result says which memories still stand, and an agent can correct, retire and restore its own
+
+A search returned a replaced memory and its replacement as two equal facts, and a retired memory
+came back unmarked. `memory_add` named the id it replaced and not the text, and said nothing of a
+permanent near-twin it left standing. Nothing listed memories without a query, corrected one,
+retired one or brought one back. A bare `date_before` left out the day it named. A cut preview read
+as the whole passage.
+
+**A consumer that reads these tools' text, or passes these arguments by position, is affected by
+the lines marked Changed.**
+
+- **Changed, every memory line** (`memory_search` by query, by `ids` and by `alias`; `memory_list`):
+  after the date it carries how it matched, `[match 0.47]` or `[word match]` (a search by query
+  only), then its state, each part in brackets and before the text: `(alias: <name>)`,
+  `(permanent)`, `(retired, no longer holds: <reason>)`,
+  `(replaced by [memory:<id>] on <date>; that one is current)`, `(corrected by [memory:<id>])`.
+  The line was `- [memory:<id>] [<type>] [<date>] <text>`.
+- **Changed, `memory_search`:** a retired (retracted) memory is no longer found by a query; a read
+  by `ids` or `alias` still opens it, marked. `type_filter` accepts `relational_context` (it was
+  described and refused). A bare date in `date_before` runs to the end of that day and in
+  `date_after` starts at its first minute, in the zone passed as `tz` (UTC without one); a time
+  with no zone is read in that zone too (it was read as UTC). The date filters now reach the files
+  and passages sections. New arguments `limit` (1-50, default the factory's `max_results`) and
+  `offset`. New first lines, each before the first `Found` header:
+  `(More memories may match than the <n> shown: call again with offset=<n>.)`,
+  `(Memories <a>-<b>; no more match.)`,
+  `(More files|passages|files and passages may match than the 5 shown: narrow the query, or use chunk_search for passages.)`,
+  `(Not ids, so not looked up: <ids>. An id is the part after the colon in a [memory:<id>], [media:<id>] or [chunk:<id>] mark.)`.
+  Past the last page: `No more memories match this query past the first <n>.` A passage line and a
+  file line read by id carry their date; a file's text cut at 500 characters says
+  `(cut: the first 500 of <n> characters; ...)` (it ended `...`). An id may be passed as its whole
+  `[memory:<id>]` mark.
+- **Added, `load_memory_search_tool(file_reader=)`:** the name of the host's tool that reads a
+  file whole by its media id, named in that cut mark.
+- **Changed, `memory_recall`:** the first line is a header,
+  `[memory:<id>] [<type>] written <date> <state marks>`; a replaced or corrected memory is followed
+  by `Replaced by [memory:<id>]: "<its text>"` or `Corrected by [memory:<id>]: "<its text>"`, and a
+  memory that replaced others by `It replaced or corrects: [memory:<id>], ... .` Then the text,
+  then the parts: `Parts 0-4 of 37. Next: chunk_id_after=<id>.` (with `Earlier: chunk_id_before=<id>.`
+  after the first page), or `<n> of <total> parts, the ones matching the text|asked for.` Each part
+  is `[chunk:<id>] (part <index>)` and a preview cut at 200 characters is marked
+  `(cut: the first 200 of <n> characters; chunk_recall reads [chunk:<id>] whole)`. It was
+  `[memory:<id>]`, the text, `Parts (<n>):` and unmarked 200-character previews labelled
+  `(position <index>)`.
+- **Added, `load_memory_recall_tool(tz=, consolidations_collection=)`**, both keyword-only.
+- **Changed, `memory_add`:** `memory_type` defaults to `fact` (it was `preference`). A replaced
+  near-duplicate is quoted: `It replaces [memory:<id>] (93% the same, written <date>), which said
+  "<text>" and stays readable by its id. ... If they are two facts and not one, store it again with
+  replace=false.` A near-duplicate left standing is named:
+  `[memory:<id>] (permanent, 93% the same) still stands beside it and says "<text>". Both are now in
+  your memory. Only your person can change or retire a permanent memory.` (for one that is not
+  permanent, without the last two sentences). It answered a plain `Stored as [memory:<id>]: ...`
+  in that case.
+- **Added, `memory_add(replace=, corrects=)`:** `replace=false` writes beside a near-duplicate.
+  `corrects` names the memories the new one replaces, each through `supersede`; a permanent one is
+  left standing with the correction written beside it and linked, unless the host's `person_asked`
+  says the person asked. Refused with nothing stored (`[NO CHANGE] memory_add: ...`): a memory that
+  is not the caller's, a retired one, an already replaced one.
+- **Added, `load_memory_add_tool(tz=, person_asked=)`**, both keyword-only.
+- **Added, `memory_list`** (`load_memory_list_tool`, `MemoryListInput`): memories newest first with
+  no query, by `date_after`, `date_before`, `memory_type`, `permanent`, `has_alias` and `show`
+  (`current`, `retired`, `replaced`, `all`), with `limit`, `offset` and the count of every match.
+- **Added, `memory_update`** (`load_memory_update_tool`, `MemoryUpdateInput`): changes a memory's
+  text, type or name by writing its replacement through `supersede`; the result shows both texts.
+- **Added, `memory_forget`** (`load_memory_forget_tool`, `MemoryForgetInput`): retires a memory
+  through `retract`, with a required reason. The row is kept and opens by id.
+- **Added, `memory_restore`** (`load_memory_restore_tool`, `MemoryRestoreInput`): the undo.
+- **Added, `PersonAsked` and `PERMANENT_IS_THE_PERSONS`** in `threetears.agent.memory.tools`.
+  `memory_update` and `memory_forget` leave a permanent memory standing and say only the person can
+  change it, unless the factory was given `person_asked` and it answers yes for that memory. A
+  resolver that raises is a no.
+- **Changed, `memory_keep`:** its description ends `It cannot be taken back here: only your person
+  can change, retire or un-keep a permanent memory.`
+- **Changed, `chunk_search`:** each hit is
+  `[chunk:<id>] (from [memory:<id>], "<title>" p.<n> "<heading>", written <date>)` and a preview cut
+  at 200 characters is marked as in `memory_recall`; more hits than `limit` puts
+  `(More passages match than the <n> shown: raise limit (up to 20), or narrow the query.)` first.
+- **Changed, `chunk_recall`:** it opens with
+  `[chunk:<id>] part <index> of <total> of [memory:<id>], written <date>, from "<title>".`, a blank
+  line, then the passage whole. It was the passage, a blank line, `From [memory:<id>].`
+- **Added, `tz=` on `load_chunk_search_tool` and `load_chunk_recall_tool`**, keyword-only.
+- **Changed, `revisions.retract`:** one `UPDATE` (`MemoriesCollection.mark_retracted`) in place of
+  an entity save and a salience write, so the check and the write have no window between them. It
+  returns `False` for a memory that is already retracted (it re-tagged it and returned `True`). The
+  memory's salience is kept as a `retracted_salience:<value>` tag. New keyword `allow_permanent`.
+  **A consumer whose collection subclass acts on `save_entity` no longer sees a retraction there:
+  override `mark_retracted`.**
+- **Added, `revisions.restore`, `revisions.correct_beside`, `revisions.marks_of`,
+  `revisions.MemoryMarks`, `supersede(allow_permanent=)`.**
+- **Changed, `MemoriesCollection.search_by_semantic` and `search_by_fts`:** a retracted memory is
+  left out unless `include_retracted=True`. Both, and `search_by_ids` and `find_by_alias`, return
+  six more keys per row: `alias`, `evergreen`, `tags`, `superseded_by`, `superseded_at`,
+  `corrected_by`.
+- **Added, `MemoriesCollection.find_for_recall`, `list_for_user`, `mark_retracted`,
+  `clear_retracted`; `MemoryChunkCollection.find_for_recall`, `count_by_memory_id`.**
+  `find_by_user` is unchanged.
+- **Changed, additive:** `MemoryChunkCollection.find_by_memory_id` and `find_by_conversation_id`
+  rows carry `chunk_index`; `search_by_ids` rows carry `chunk_index` and `date_created`;
+  `search_by_semantic` rows carry `date_created`. `MediaContentCollection.search_by_semantic`,
+  `search_by_fts` and `MemoryChunkCollection.search_by_semantic` take `date_after` and `date_before`.
+
+No migration: no column is added.
+
 ### Wake and scheduled jobs: a fire whose dispatcher is known to be gone is reaped by name
 
 A fire left `'dispatching'` by a process that died is reaped by age (15 minutes by default), because
