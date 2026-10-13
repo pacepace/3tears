@@ -11,11 +11,13 @@ Dev tooling for ``3tears-evals``: it lives beside the package, not in it, and is
     # List the public items that carry no description:
     uv run python packages/evals/scripts/generate_reference.py --gaps
 
-Everything on the page is read from code: each public root's ``__all__`` (the roots are
+Everything on the page is read from code: the package's own ``__all__`` and each public root's (the roots are
 ``threetears.evals.PUBLIC_ROOTS``), first docstring paragraphs and ``#:`` comments, signatures, Pydantic field
 descriptions, the goal-check language's module docstring and builtins, the action catalogue, the command line's
 argparse definition and ``METRIC_DESCRIPTORS``. Nothing on it is written here except headings and the intro, so a
-change to the package moves the page and ``tests/test_reference_doc.py`` fails until it is regenerated.
+change to the package moves the page and ``tests/test_reference_doc.py`` fails until it is regenerated. The one
+thing not read from the package is each name's stability tier: a name ``HOST_CONTRACT`` in ``public_surface.py``
+lists is marked *host contract*, so a reader sees what is promised without opening ``api/surface.json``.
 
 The walk over the public roots is ``public_surface.py``'s, shared with the API snapshot
 (``generate_api_snapshot.py``), so the page and the snapshot never disagree about a name's kind or signature. The
@@ -51,6 +53,8 @@ from public_surface import (
     paragraphs,
     public_names,
     stable_repr,
+    tier_of,
+    walked_modules,
 )
 from pydantic import BaseModel
 
@@ -110,23 +114,25 @@ def root_slug(root: str) -> str:
 
 
 def api_section() -> Iterator[str]:
-    from threetears.evals import PUBLIC_ROOTS
-
     yield anchor("public-api")
     yield "## Public API"
     yield ""
     yield (
         "Import only from these roots, and only the names below: a module under a root is internal and may move. "
+        "The package itself, `threetears.evals`, exports only the list of roots and the installed version. "
         "Within a root, names are grouped as functions, classes, types and constants, each sorted by name. A "
-        "class's kind says what it is: a `model` is a Pydantic model, a `protocol` is something a host implements."
+        "class's kind says what it is: a `model` is a Pydantic model, a `protocol` is something a host implements. "
+        "A name marked *host contract* is one a host writes against: it moves only with a deprecation cycle. Every "
+        "other name may move in any release, recorded in `MIGRATIONS.toml` "
+        "([stability tiers](adopting-a-host.md#stability-tiers))."
     )
     yield ""
-    for root in PUBLIC_ROOTS:
+    for root in walked_modules():
         yield f"- [`{root}`](#{root_slug(root)})"
     yield ""
     first_root: dict[int, str] = {}
     names = list(public_names())
-    for root in PUBLIC_ROOTS:
+    for root in walked_modules():
         module = importlib.import_module(root)
         yield anchor(root_slug(root))
         yield f"### `{root}`"
@@ -136,6 +142,7 @@ def api_section() -> Iterator[str]:
             yield md_text(intro[0])
             yield ""
         items: dict[str, list[Item]] = {}
+        promised: dict[str, bool] = {}
         again: list[tuple[str, str]] = []
         for name, obj in ((n, o) for r, n, o in names if r == root):
             # A class or function exported under its own name is one object however many roots export it, and is
@@ -152,6 +159,7 @@ def api_section() -> Iterator[str]:
             if not item.description:
                 GAPS.append((root, name))
             items.setdefault(item.group, []).append(item)
+            promised[item.name] = tier_of(f"{root}.{name}") == "host-contract"
         for group in ("Functions", "Classes", "Types", "Constants"):
             if group not in items:
                 continue
@@ -159,7 +167,8 @@ def api_section() -> Iterator[str]:
             yield ""
             for item in items[group]:
                 description = md_text(item.description) if item.description else NO_DESCRIPTION
-                yield f"- **`{item.name}`** · {item.kind} · {description}"
+                tier = " · *host contract*" if promised[item.name] else ""
+                yield f"- **`{item.name}`**{tier} · {item.kind} · {description}"
                 if item.detail:
                     detail = item.detail if item.detail.startswith(("`", "values")) else f"`{item.detail}`"
                     yield f"  <br>{detail}"

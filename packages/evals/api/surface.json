@@ -1,6 +1,16 @@
 {
   "format": 2,
   "names": {
+    "threetears.evals.__version__": {
+      "kind": "constant (str)",
+      "signature": "",
+      "tier": "host-contract"
+    },
+    "threetears.evals.PUBLIC_ROOTS": {
+      "kind": "constant (tuple)",
+      "signature": "",
+      "tier": "closure"
+    },
     "threetears.evals.schema.ActorPolicy": {
       "kind": "model",
       "signature": "ActorPolicy(id: str, name: str | None = None, policy: str, intent: str, initial_utterance_template: str | None = None)",
@@ -4366,6 +4376,11 @@
       "signature": "",
       "tier": "closure"
     },
+    "threetears.evals.analysis.CELL_MODEL_VERSION": {
+      "kind": "constant (int)",
+      "signature": "",
+      "tier": "host-contract"
+    },
     "threetears.evals.analysis.CELL_NOT_RUN": {
       "kind": "constant (str)",
       "signature": "",
@@ -4639,12 +4654,12 @@
     "threetears.evals.analysis.format_number": {
       "kind": "function",
       "signature": "format_number(value: float | None, *, prefix: str = '') -> str",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.analysis.format_signed": {
       "kind": "function",
       "signature": "format_signed(value: float | None) -> str",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.analysis.format_significance": {
       "kind": "function",
@@ -6253,11 +6268,6 @@
     },
     "threetears.evals.quick.JUDGED_CALLABLE_KIND": {
       "kind": "constant (str)",
-      "signature": "",
-      "tier": "closure"
-    },
-    "threetears.evals.quick.JUDGED_CALLABLE_UNSEATED": {
-      "kind": "constant (frozenset)",
       "signature": "",
       "tier": "closure"
     },

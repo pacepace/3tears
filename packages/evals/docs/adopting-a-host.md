@@ -246,12 +246,14 @@ or the other, an added optional field included:
   minor. So while a fleet is half upgraded, an older process reads what a newer one wrote as if the new fields
   were not there, and keeps them on every part of the document it carries over (a part it replaces with one it
   built afresh, such as a renewed lease, takes them with it); two builds can print different numbers from one
-  store for that window, which each analysis bundle's package version discloses. **The tolerance follows the
-  stored bytes, which are trusted:** a host that writes core documents straight into the store, with a
-  `schema_minor` above the build's, gets it too, so write the minor your build writes. **The roll has a floor:**
-  the tolerance arrived with the minor, in `v0.66.0-evaladopt.22`. A build before it (`.21` included) declares no
-  `schema_minor` and refuses every field it does not declare, so it refuses every core document `.22` or a later
-  build writes, though the major is 14 for both. Roll back no further than `.22`.
+  store for that window. A bundle does not name the build that assembled it: it carries its own shape
+  (`schema_version`), the models each role ran (`model_versions`) and the cell model (`cell_model_version`), so
+  record the package version beside what you store (`threetears.evals.__version__`) to tell the two builds apart.
+  **The tolerance follows the stored bytes, which are trusted:** a host that writes core documents straight into the
+  store, with a `schema_minor` above the build's, gets it too, so write the minor your build writes. **The roll has
+  a floor:** the tolerance arrived with the minor, in `v0.66.0-evaladopt.22`. A build before it (`.21` included)
+  declares no `schema_minor` and refuses every field it does not declare, so it refuses every core document `.22` or
+  a later build writes, though the major is 14 for both. Roll back no further than `.22`.
 - **A major is everything else**, and ships an upgrade step (a `CoreUpgrader` appended to `CORE_UPGRADERS`),
   tested against frozen stored documents from every core major since the baseline. Reading an older core
   document upgrades it in memory, one major at a time, before it is validated as strictly as a document written
@@ -433,7 +435,8 @@ release, on:
   name may move in any release, recorded in `MIGRATIONS.toml` and printed in that release's notes, never shimmed.
 
 `packages/evals/api/surface.json` records each name's tier beside its kind and signature, and `HOST_CONTRACT` in
-`packages/evals/scripts/public_surface.py` declares the first tier, with the reason for each group of names. A name
+`packages/evals/scripts/public_surface.py` declares the first tier, with the reason for each group of names. The
+[reference](reference.md#public-api) marks each host-contract name *host contract*. A name
 a topic guide imports and the list does not hold is `closure`. If your host binds to one, ask for it to be
 promoted: promoting a name costs nothing, and demoting one is a break.
 
@@ -838,7 +841,8 @@ leaving one of your own apparatus dimensions unseated, build it with
 `reporter_kind_contract(host_seats=[...])`. On a reporter template, your `refuse_undeliverable_template`
 hook calls `refuse_undeliverable_reporter_template`.
 
-Then register the kind's launch entry (from `threetears.evals.ops`):
+Then register the kind's launch entry, a `LaunchableKind` (from `threetears.evals.run`) whose arguments come from
+`threetears.evals.ops` (`REPORTER_UNHONOURED_LAUNCH_ARGUMENTS`, `plan_reporter_arm`, `price_largest_reporter_call`):
 
 ```python
 LaunchableKind(

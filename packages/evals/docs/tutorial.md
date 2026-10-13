@@ -8,8 +8,12 @@ it first appears, and [Concepts](concepts.md) is the glossary.
 The running example is a support-ticket router. It reads a ticket and picks one queue: `billing`, `bug`,
 `account` or `other`.
 
-**Setup.** Install the package (`pip install 3tears-evals`, Python 3.14+), or run `uv sync` in a checkout of this
-repo. Build one file, `triage.py`, as you go. Step 1 starts it. Each later step adds code below what is there and
+**Setup.** Install the package (Python 3.14+), or run `uv sync` in a checkout of this repo. It is not on PyPI until
+0.66.0 ships, so `pip install 3tears-evals` finds nothing yet; until then install it from the repository at the tag
+[the README names](../README.md#first-result-in-10-minutes):
+`pip install "3tears-evals @ git+https://github.com/pacepace/3tears.git@<tag>#subdirectory=packages/evals"`.
+
+Build one file, `triage.py`, as you go. Step 1 starts it. Each later step adds code below what is there and
 replaces the `main()` function and the `asyncio.run(main())` line at the bottom. Run it with
 `python triage.py` (`uv run python triage.py` in the checkout).
 
@@ -321,7 +325,11 @@ quality you care about, each scored 1 to 5 by default.
 
 Give `run_eval` a `Judge`: a completion client, the model it calls, the rubric, and the material each answer is
 judged against. The client below is an offline stand-in that looks for an apology. A real one calls your model
-provider; [`llm_judge.py`](../examples/llm_judge.py) has a small adapter for the `anthropic` SDK.
+provider; [`_live.py`](../examples/_live.py) is a small adapter for the `anthropic` SDK, which
+[`llm_judge.py`](../examples/llm_judge.py) hands to its judge. A stand-in of your own returns what a model would:
+a JSON reply with a string `reasoning` and `criteria_scores`, an object whose one key is the dimension asked
+about as `<context>.<dimension>` (`answer.acknowledges` here, the key the engine's prompt names), mapped to a score
+of 1 to 5 (`"pass"` or `"fail"` on a pass/fail dimension).
 
 ```python
 async def draft_reply(case: dict) -> str:

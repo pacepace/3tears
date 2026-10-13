@@ -20,7 +20,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from _live import Completion, claude, online
+from _live import Completion, anthropic_sdk, claude, online
 from threetears.evals.analysis import EVAL_ANALYSIS_GEN_DEFAULT, generate_analysis, inspect_campaign_bundle
 from threetears.evals.kernel import EvalAnalysis
 from threetears.evals.quick import compare
@@ -103,6 +103,7 @@ def offline_writer() -> Any:
 
 async def main(out_dir: Path = Path("eval-analysis")) -> EvalAnalysis:
     if online():
+        anthropic_sdk()  # without the SDK, exit saying how to get it before claiming a live run
         print(f"Running against Claude ({MODEL}).\n")
     else:
         print("ANTHROPIC_API_KEY is not set: running OFFLINE, with a scripted stand-in for the analysis writer.\n")

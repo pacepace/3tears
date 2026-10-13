@@ -3,6 +3,8 @@
 **For** anyone building their first eval of a classifier, or any feature whose answer code can grade.
 **Answers:** which cases to write, how many, how to feed them to the classifier, and how to read the results.
 It assumes no prior experience with evals. To learn the package itself first, do the [tutorial](tutorial.md).
+The code in [section 9](#9-wiring-it-into-3tears-evals) uses top-level `await`: run it in an async context
+(`python -m asyncio`, or inside `async def main()`).
 
 In short: build the set mostly from hard cases (boundaries between labels, lookalikes, contrast pairs and
 context), give every case a written reason, put at least ten cases behind each label, and run them through

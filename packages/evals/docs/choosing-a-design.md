@@ -6,6 +6,10 @@ answer; how to declare the design and its control; how cases and repeats trade o
 read gives the answer. Arm, lever, variant, k and campaign are as [Concepts](concepts.md) defines them.
 [Measuring soundly](measuring-soundly.md) has the evidence behind the sizing advice.
 
+The code blocks run in order, in one async context (`python -m asyncio`, or inside `async def main()`), each using
+names an earlier one defined. The frontier block also uses `ROOM`, the world declared in the first block of
+[Evaluating a tool-using agent, step 1](evaluating-agents.md#step-1-declare-the-world): run that block first.
+
 Three more terms:
 
 - **Control:** the arm every other arm is tested against. It is a variant (one configuration), not a run.
@@ -97,7 +101,9 @@ from threetears.evals.analysis import create_campaign
 
 runs = {arm: summary.run_id for arm, summary in comparison.arms.items()}
 levels = [{"content": arm, "display": arm} for arm in runs]
-campaign = create_campaign(
+campaign = await run_blocking(  # a store write, so it runs off the event loop too
+    comparison.host.blocking_executor,
+    create_campaign,
     comparison.host.storage,
     {
         "name": "triage v2", "subject_id": "triage", "behavior": "routing", "run_ids": list(runs.values()),
@@ -203,7 +209,10 @@ rooms = await compare(
     seed=lambda case: {"light": case["light"], "daylight": case["daylight"]},
     goal_checks=['(state.light == "on") == (state.daylight == "dark")'],
 )
-read = frontier(rooms.host.storage, "lights", list_runs=partial(list_runs, rooms.host), bar=0.8)
+read = await run_blocking(  # a store read
+    rooms.host.blocking_executor, frontier, rooms.host.storage, "lights",
+    list_runs=partial(list_runs, rooms.host), bar=0.8,
+)
 for point in read["subjects"][0]["points"]:
     print(point["production_replicating_cost"], point["pass_hat_k"], round(point["pass_hat_k_ci_low"], 2),
           point["bar_decision"])
