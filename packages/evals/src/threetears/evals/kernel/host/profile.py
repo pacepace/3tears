@@ -84,7 +84,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, get_args
+from typing import TYPE_CHECKING, Any, Literal
 
 from threetears.evals.kernel.host.bars import BarRegistry
 from threetears.evals.kernel.host.kinds import KindContract
@@ -619,9 +619,9 @@ class HostProfile:
                 or a value names no usage role.
         """
         # Imported here: the models module imports from this package, so a module-level import would cycle.
-        from threetears.evals.schema.models import UsageRole
+        from threetears.evals.schema.models import USAGE_ROLES
 
-        roles = get_args(UsageRole)
+        roles = USAGE_ROLES
         if misnamed := {name: role for name, role in sorted(self.observed_model_levers.items()) if role not in roles}:
             raise ProfileRegistrationError(
                 f"host {self.host_id!r} declares observed_model_levers recovering "

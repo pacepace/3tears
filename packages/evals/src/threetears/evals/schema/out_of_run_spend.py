@@ -15,10 +15,10 @@ unreadable, never a reason to drop the row of a call that was paid for.
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Literal, Protocol, Self
+from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, Self
 
 from pydantic import Field, field_validator, model_validator
-from threetears.evals.schema.base import CoreDocumentModel
+from threetears.evals.schema.base import CoreDocumentModel, known_unless_newer_minor
 from threetears.evals.schema.models import CoreSchemaVersion, utc_now_iso
 from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION
 from threetears.evals.schema.completion import StopReason
@@ -36,7 +36,18 @@ if TYPE_CHECKING:
 #: a finished run's evidence (:func:`~threetears.evals.run.second_judge_work`) — measurement cost on its own line, never
 #: the candidate's. Each but ``second_judge`` is the :data:`~threetears.evals.kernel.host.CompletionRole` the host
 #: built the client in; a second judge's client is built in the ``judge`` role.
-OutOfRunPurpose = Literal["variation", "proposer", "analysis", "judge", "second_judge"]
+#:
+#: An open vocabulary, its values this build knows registered in :data:`OUT_OF_RUN_PURPOSES`: a value a newer minor
+#: added is read from a document that minor wrote, and every reader that branches on it names it rather than folding it
+#: into a value it knows (:mod:`~threetears.evals.schema.versioning`).
+OutOfRunPurpose = str
+
+#: The values of :data:`OutOfRunPurpose` this build knows, in the order its readers list them.
+OUT_OF_RUN_PURPOSES: Final[tuple[str, ...]] = ("variation", "proposer", "analysis", "judge", "second_judge")
+
+#: The type of a stored field carrying a out-of-run purpose: one of :data:`OUT_OF_RUN_PURPOSES`, or, on the stored read
+#: of a newer minor's document, a value that minor added.
+StoredOutOfRunPurpose = Annotated[OutOfRunPurpose, known_unless_newer_minor("out-of-run purpose", OUT_OF_RUN_PURPOSES)]
 
 
 #: How an out-of-run call ended: it returned a completion, or it raised. A raised call is still a
@@ -56,7 +67,7 @@ class OutOfRunSpend(CoreDocumentModel):
     schema_version: CoreSchemaVersion = CORE_SCHEMA_VERSION
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
     scope_id: str = Field(min_length=1, description="The scope the work was for, which its ledger lives in.")
-    purpose: OutOfRunPurpose
+    purpose: StoredOutOfRunPurpose
     model: str = Field(min_length=1, description="The model the client named — what the call was priced and asked as.")
     served_model: str | None = Field(
         default=None, description="The model the provider's response named as having answered; None when it named none."
@@ -151,8 +162,10 @@ class OutOfRunSpendStore(Protocol):
 
 
 __all__ = [
+    "OUT_OF_RUN_PURPOSES",
     "OutOfRunOutcome",
     "OutOfRunPurpose",
     "OutOfRunSpend",
     "OutOfRunSpendStore",
+    "StoredOutOfRunPurpose",
 ]

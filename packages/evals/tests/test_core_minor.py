@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import typing
+from enum import Enum
 from typing import Any
 
 import pytest
@@ -30,6 +31,7 @@ from threetears.evals.run.run_document import set_run_labels
 from threetears.evals.schema.base import CoreDocumentModel, CoreShapeModel
 from threetears.evals.schema.models import (
     EvalResult,
+    RoleUsage,
     EvalRun,
     EvalTemplate,
     EvalTrace,
@@ -398,3 +400,330 @@ def test_a_caller_s_value_is_validated_strictly_at_every_depth_whatever_the_stor
 def test_each_core_model_names_its_doc_type() -> None:
     """The control for the parametrised tests above: every core model is a stored model with a doc type."""
     assert {doc_type_of(model) for model in _core_models()} == set(CORE_ADDRESSING_FIELDS)
+
+
+# --- open vocabularies: a newer minor's value is read and named, never folded ----------------------
+
+
+def _host_over(store: InMemoryDocumentStore) -> Any:
+    from dataclasses import replace
+
+    from threetears.evals.quick import callable_host
+
+    return replace(callable_host(), storage=EvalStorage(store))
+
+
+def _stored_run_and_result(
+    run_fields: dict[str, Any], usage: list[dict[str, Any]], cost_roles: list[str]
+) -> tuple[InMemoryDocumentStore, EvalRun]:
+    """A completed run and one result of it, stored as a newer build wrote them: at its minor, with ``*_fields``."""
+    store = InMemoryDocumentStore()
+    run = EvalRun.from_dict(stored_sample(EvalRun)).model_copy(update={"status": "completed"})
+    store.upsert({**run.to_dict(), "schema_minor": NEWER, **run_fields})
+    result = {
+        **stored_sample(EvalResult),
+        "eval_run_id": run.id,
+        "scope_id": run.scope_id,
+        "usage": usage,
+        "cost_roles": cost_roles,
+        "schema_minor": NEWER,
+    }
+    store.upsert(result)
+    return store, run
+
+
+def _usage_row(role: str, model: str, cost_usd: float, calls: int) -> dict[str, Any]:
+    return RoleUsage(role="judge", model=model, cost_usd=cost_usd, call_count=calls).model_dump(mode="json") | {
+        "role": role
+    }
+
+
+def test_an_unknown_usage_role_at_a_newer_minor_is_disclosed_by_name() -> None:
+    """A role a newer build added is summed on a line of its own, after the roles this build knows, and folded into
+    none of them — the one reader that, before, iterated the known roles and silently dropped the rest."""
+    from threetears.evals.analysis.summary import summarize_run
+
+    store, run = _stored_run_and_result(
+        {},
+        [_usage_row("judge", "judge-a", 0.5, 1), _usage_row("reranker", "rr-1", 0.25, 2)],
+        ["candidate", "judge", "reranker"],
+    )
+
+    summary = summarize_run(_host_over(store), run.id, run.scope_id)
+
+    roles = [spend.role for spend in summary.spend]
+    assert roles == ["judge", "reranker"]
+    reranker = summary.role_spend("reranker")
+    judge = summary.role_spend("judge")
+    assert reranker is not None and judge is not None
+    assert not reranker.known and judge.known
+    assert (reranker.cost_usd, reranker.calls, judge.cost_usd) == (0.25, 2, 0.5)
+    assert reranker.line().startswith("reranker spend (a role this build does not know): ")
+
+
+def test_an_unknown_open_vocabulary_value_at_this_build_s_minor_is_refused() -> None:
+    """Drift at this build's own minor is refused, by the vocabulary's name, as an unknown field is."""
+    document = {**stored_sample(EvalResult), "usage": [_usage_row("reranker", "rr-1", 0.25, 2)]}
+
+    with pytest.raises(ValidationError, match="'reranker' is not a usage role this build knows"):
+        EvalResult.from_dict(document)
+    with pytest.raises(ValidationError, match="is not a usage role this build knows"):
+        RoleUsage(role="reranker")
+
+
+def test_an_unknown_cost_cap_origin_is_named_and_reads_its_recorded_ceiling() -> None:
+    from threetears.evals.analysis.summary import summarize_run
+    from threetears.evals.kernel.host.sweepables import CORE_SWEEPABLES
+
+    store, run = _stored_run_and_result(
+        {"max_cost_usd": 2.0, "max_cost_usd_origin": "host_ceiling"},
+        [_usage_row("judge", "judge-a", 0.5, 1)],
+        ["judge"],
+    )
+    host = _host_over(store)
+
+    summary = summarize_run(host, run.id, run.scope_id)
+    stored_run = host.storage.load_eval_run(run.id, run.scope_id)
+    ceiling = next(sweepable for sweepable in CORE_SWEEPABLES if sweepable.name == "max_cost_usd")
+
+    assert (
+        summary.spend_cap_text
+        == "spend cap: $2.00 for this run (its origin, 'host_ceiling', is one this build does not know)"
+    )
+    assert stored_run is not None and ceiling.read(stored_run, []) == 2.0
+
+
+def test_an_unknown_candidate_origin_reads_as_cannot_say_not_as_moved() -> None:
+    """``origin != "inherited"`` used to read any origin a newer build added as a departure from production."""
+    from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER, CORE_SWEEPABLES
+
+    candidate = next(sweepable for sweepable in CORE_SWEEPABLES if sweepable.name == CANDIDATE_MODEL_LEVER)
+    assert candidate.departs_production is not None
+    sample = stored_sample(EvalRun)
+    read = {
+        origin: EvalRun.from_dict(
+            _at_newer_minor(sample, apparatus_provenance="commissioned", model_role_provenance={"candidate": origin})
+        )
+        for origin in ("chosen", "inherited", "from_a_newer_router")
+    }
+
+    assert {origin: candidate.departs_production(run, []) for origin, run in read.items()} == {
+        "chosen": True,
+        "inherited": False,
+        "from_a_newer_router": None,
+    }
+
+
+def test_an_unknown_reasoning_effort_is_read_and_a_call_that_would_send_it_is_refused() -> None:
+    """A run judged at an effort this build does not know reads; re-judging it today refuses, naming the setting."""
+    from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
+    from threetears.evals.run.rejudge import recorded_judge_pins
+
+    sample = stored_sample(EvalRun)
+    run = EvalRun.from_dict(
+        _at_newer_minor(
+            sample,
+            judge_request_settings={
+                **JUDGE_REQUEST_SETTINGS.model_dump(mode="json"),
+                "reasoning_max_tokens": None,
+                "reasoning_effort": "ultra",
+            },
+        )
+    )
+
+    assert run.judge_request_settings is not None and run.judge_request_settings.reasoning_effort == "ultra"
+    with pytest.raises(ValidationFailedError, match="ultra"):
+        recorded_judge_pins(run, request_settings="today")
+
+
+@pytest.mark.parametrize(
+    ("model", "field", "value"),
+    [
+        ("EvalRun", "max_metered_calls_origin", "from_a_newer_metering"),
+        ("EvalRun", "cell_timeout_s_origin", "from_a_newer_router"),  # beside its deadline, set below
+        ("EvalRun", "judge_config_provenance", {"conversation.tone": "from_a_newer_router"}),
+        ("OutOfRunSpend", "purpose", "rerank"),
+        ("EvalActionJob", "refusal", {"kind": "quota_exhausted", "status": 429}),
+    ],
+)
+def test_every_open_vocabulary_round_trips_an_unknown_value_at_a_newer_minor(
+    model: str, field: str, value: Any
+) -> None:
+    cls = next(candidate for candidate in _core_models() if candidate.__name__ == model)
+    document = _at_newer_minor(stored_sample(cls), **{field: value})
+    if model == "EvalActionJob":
+        document["outcome"] = "failed"
+    if field == "cell_timeout_s_origin":
+        document["cell_timeout_s"] = 30.0
+
+    read = cls.from_dict(document)
+
+    assert read.to_dict() == document
+    with pytest.raises(ValidationError, match="this build knows"):
+        cls.from_dict({**document, "schema_minor": CORE_SCHEMA_MINOR})
+
+
+def test_a_simulator_purpose_a_newer_build_added_is_read_on_its_row() -> None:
+    row = {**_usage_row("simulator", "sim-1", 0.1, 1), "actor_id": "user", "purpose": "narrate"}
+    document = _at_newer_minor(stored_sample(EvalResult), usage=[row], cost_roles=["simulator"])
+
+    assert EvalResult.from_dict(document).to_dict() == document
+
+
+def test_each_registry_holds_every_value_its_writers_produce() -> None:
+    """A writer here only ever writes a value its registry names, so this build's own documents read strictly."""
+    from threetears.evals.kernel.refusals import refusal_kind
+    from threetears.evals.kernel.errors import EvalServiceError
+    from threetears.evals.run.budget import EvalRunCostCap
+    from threetears.evals.run.metering import MeteredCallLedger
+    from threetears.evals.schema import (
+        COST_CAP_ORIGINS,
+        METERED_CALL_ORIGINS,
+        REFUSAL_KINDS,
+    )
+
+    cost = {
+        EvalRunCostCap.resolve_ceiling_origin(cap, enforcement_enabled=on)
+        for cap in (None, 1.0)
+        for on in (True, False)
+    }
+    assert cost <= set(COST_CAP_ORIGINS)
+    metered = {
+        MeteredCallLedger.resolve_ceiling_origin(cap, configured_max_metered_calls=configured, enforcement_enabled=on)
+        for cap in (None, 3)
+        for on in (True, False)
+        for configured in (None, 10)
+    }
+    assert metered <= set(METERED_CALL_ORIGINS)
+    assert refusal_kind(EvalServiceError("x", remedy="none")) in REFUSAL_KINDS
+
+
+#: Every closed vocabulary on a core shape, by the name the versioning docstring lists it under, and its values.
+def _closed_vocabularies() -> dict[str, frozenset[Any]]:
+    from threetears.evals.kernel.campaign import AttemptOutcome, SweepOutcome
+    from threetears.evals.kernel.judge_temperature import TemperatureSelection, TemperatureSetting
+    from threetears.evals.kernel.cassettes import CassetteMode
+    from threetears.evals.quick.guardrails import GuardrailDirection
+    from threetears.evals.run.judge_second import SecondJudgeAskedBy
+    from threetears.evals.run.job_work import JobOutcome
+    from threetears.evals.schema import models
+    from threetears.evals.schema.completion import StopReason
+    from threetears.evals.schema.judge_attribution import JudgeAttributionSource
+    from threetears.evals.schema.out_of_run_spend import OutOfRunOutcome
+    from threetears.evals.schema.world_events import WorldEventCause, WorldEventKind
+
+    def values(alias: Any) -> frozenset[Any]:
+        return frozenset(typing.get_args(alias))
+
+    return {
+        "EvalRunStatus": values(models.EvalRunStatus),
+        "JobOutcome": values(JobOutcome),
+        "SweepOutcome": values(SweepOutcome),
+        "AttemptOutcome": values(AttemptOutcome),
+        "CellTermination": values(models.CellTermination),
+        "GoalCheckProof": values(models.GoalCheckProof),
+        "GoalCheckIntent": values(models.GoalCheckIntent),
+        "ApparatusProvenance": values(models.ApparatusProvenance),
+        "RubricScale": values(models.RubricScale),
+        "RubricAxis": values(models.RubricAxis),
+        "nominal": frozenset({"nominal"}),
+        "ordinal": frozenset({"ordinal"}),
+        "interval": frozenset({"interval"}),
+        "model_default": frozenset({"model_default"}),
+        "WorldPlacement": values(models.WorldPlacement),
+        "WorldEventKind": values(WorldEventKind),
+        "WorldEventCause": values(WorldEventCause),
+        "AsyncDeliveryStatus": values(models.AsyncDeliveryStatus),
+        "CassetteMode": values(CassetteMode),
+        "TemperatureSelection": values(TemperatureSelection),
+        "TemperatureSetting": values(TemperatureSetting),
+        "CompletenessSource": values(models.CompletenessSource),
+        "JudgeAttributionSource": values(JudgeAttributionSource),
+        "DeclaredMeritAxis": values(models.DeclaredMeritAxis),
+        "GuardrailDirection": values(GuardrailDirection),
+        "CampaignDesign.crossing": frozenset({"full", "star"}),
+        "ControlDeclaration.stimulus": frozenset({"controlled", "uncontrolled"}),
+        "VariationAxis.generator": frozenset({"enum", "sample", "llm"}),
+        "ConversationSpec.turn_scheduler": frozenset({"round_robin", "llm_decided"}),
+        "RaterKind": values(models.RaterKind),
+        "OutOfRunOutcome": values(OutOfRunOutcome),
+        "SecondJudgeAskedBy": values(SecondJudgeAskedBy),
+        "StopReason": values(StopReason),
+    }
+
+
+def _vocabularies_on_core_shapes() -> dict[str, frozenset[Any]]:
+    """Every ``Literal`` and enum a core shape's field carries, at any depth, by ``Model.field``: its values."""
+    seen: set[type[BaseModel]] = set()
+    for model in _core_models():
+        seen.add(model)
+        _embedded_models(model, seen)
+    found: dict[str, frozenset[Any]] = {}
+    for model in seen:
+        for name, field in model.model_fields.items():
+            stack: list[Any] = [field.annotation]
+            while stack:
+                annotation = stack.pop()
+                if typing.get_origin(annotation) is typing.Literal:
+                    found[f"{model.__name__}.{name}"] = frozenset(typing.get_args(annotation))
+                elif isinstance(annotation, type) and issubclass(annotation, Enum):
+                    found[f"{model.__name__}.{name}"] = frozenset(member.value for member in annotation)
+                elif not (isinstance(annotation, type) and issubclass(annotation, BaseModel)):
+                    stack.extend(typing.get_args(annotation))
+    return found
+
+
+def test_every_vocabulary_on_a_core_shape_is_open_or_listed_closed() -> None:
+    """A vocabulary a core shape gains is classified: an open ``str`` with a registry, or closed and listed.
+
+    Every ``Literal`` and enum left on a core shape must be one the versioning docstring names as closed by design,
+    by value; a single ``doc_type`` value is a type, never a vocabulary.
+    """
+    from threetears.evals.schema import versioning
+    from threetears.evals.schema.models import ConversationStopCause, JudgedArtifact
+
+    closed = _closed_vocabularies()
+    closed["ConversationStopCause"] = frozenset(member.value for member in ConversationStopCause)
+    closed["JudgedArtifact"] = frozenset(member.value for member in JudgedArtifact)
+    doc_types = {frozenset({doc_type_of(model)}) for model in _core_models()}
+
+    unclassified = {
+        where: sorted(values)
+        for where, values in _vocabularies_on_core_shapes().items()
+        if values not in closed.values() and values not in doc_types
+    }
+    unlisted = sorted(name for name in closed if f"``{name}``" not in (versioning.__doc__ or ""))
+
+    assert not unclassified, f"a vocabulary on a core shape is neither open nor listed closed: {unclassified}"
+    assert not unlisted, f"closed here but not in the versioning docstring's closed list: {unlisted}"
+
+
+def test_every_open_vocabulary_is_a_string_on_its_stored_fields() -> None:
+    """The ten open vocabularies are not ``Literal``s anywhere on a core shape, and each is named in the policy."""
+    from threetears.evals.schema import versioning
+
+    registries = {
+        "UsageRole": "USAGE_ROLES",
+        "SimulatorPurpose": "SIMULATOR_PURPOSES",
+        "CostCapOrigin": "COST_CAP_ORIGINS",
+        "MeteredCallOrigin": "METERED_CALL_ORIGINS",
+        "CellTimeoutOrigin": "CELL_TIMEOUT_ORIGINS",
+        "ModelRoleOrigin": "MODEL_ROLE_ORIGINS",
+        "RoleModelOrigin": "ROLE_MODEL_ORIGINS",
+        "ReasoningEffort": "REASONING_EFFORTS",
+        "OutOfRunPurpose": "OUT_OF_RUN_PURPOSES",
+        "RefusalKind": "REFUSAL_KINDS",
+    }
+    import threetears.evals.schema as schema
+
+    still_closed = {
+        where
+        for where, values in _vocabularies_on_core_shapes().items()
+        for registry in registries.values()
+        if values == frozenset(getattr(schema, registry))
+    }
+    assert not still_closed
+    policy = " ".join((versioning.__doc__ or "").split())
+    for alias, registry in registries.items():
+        assert getattr(schema, alias) is str, alias
+        assert f"``{alias}`` (``{registry}``)" in policy, alias

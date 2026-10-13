@@ -199,12 +199,12 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`'action'` | `'delivery'`
 - **`CellTermination`** · literal · How a cell's execution ended — the branch the runner took, recorded because the record cannot recover it.
   <br>`'completed'` | `'factory_failed'` | `'cell_timeout'` | `'seed_failed'` | `'precondition_failed'` | `'apparatus_failed'` | `'cancelled'`
-- **`CellTimeoutOrigin`** · literal · Where a run's per-cell deadline came from (`EvalRun.cell_timeout_s_origin`): `launch` — the launch named it (`cell_timeout_s`), within the host's ceiling; `kind` — the kind's launcher wired its own (`KindWiring.cell_timeout_s`); `default` — neither did, so the engine's `DEFAULT_CELL_TIMEOUT_S` held.
-  <br>`'launch'` | `'kind'` | `'default'`
+- **`CellTimeoutOrigin`** · type alias · Where a run's per-cell deadline came from (`EvalRun.cell_timeout_s_origin`): `launch` — the launch named it (`cell_timeout_s`), within the host's ceiling; `kind` — the kind's launcher wired its own (`KindWiring.cell_timeout_s`); `default` — neither did, so the engine's `DEFAULT_CELL_TIMEOUT_S` held.
+  <br>`str`
 - **`CompletenessSource`** · literal · Where a run's completeness counts were taken: the run loop's own tally, or the results in storage (`RunCompleteness.counted_from`).
   <br>`'run_loop'` | `'stored_results'`
-- **`CostCapOrigin`** · literal · How a run arrived at the spend ceiling it ran under.
-  <br>`'chosen'` | `'inherited'` | `'uncapped'`
+- **`CostCapOrigin`** · type alias · How a run arrived at the spend ceiling it ran under.
+  <br>`str`
 - **`DimName`** · type alias · A rubric dimension's name as every model holds it: `<context>.<dim>`, or a reserved dual-score axis id.
   <br>`Annotated[str, AfterValidator(_namespaced_dim_name)]`
 - **`DocLifecycle`** · literal · Whether a later release reads a stored document: `kept` — in the core, read from the core baseline on and upgraded across core versions; `regenerable` — refused on read after a regenerable schema bump, and made again.
@@ -229,38 +229,38 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`Annotated[JobLease | None, Field(description="The lease of the process running this job's work; None on a record no process has leased (a run a launch prepared and never started), or released at a shutdown. A record that has not ended reads lost once this lapses or is None.")]`
 - **`LostField`** · type alias · How a job was lost, when it was: the record's own ending is written beside it.
   <br>`Annotated[JobLoss | None, Field(description="Set when the job was found lost — its lease lapsed, or its process shut down — by whoever found it. The record's own status says how it reads beside that; None on a job that was not lost.")]`
-- **`MeteredCallOrigin`** · literal · Which tier supplied a run's metered-call ceiling (`EvalRun.max_metered_calls_origin`): the three `CostCapOrigin` tiers, read with the currency swapped, and one more — `none_declared`, a host declaring it has no metered tools (`LaunchSettings.max_metered_calls` of `None`).
-  <br>`'chosen'` | `'inherited'` | `'uncapped'` | `'none_declared'`
-- **`ModelRoleOrigin`** · literal · How a run arrived at one of its resolved role models.
-  <br>`'chosen'` | `'inherited'`
+- **`MeteredCallOrigin`** · type alias · Which tier supplied a run's metered-call ceiling (`EvalRun.max_metered_calls_origin`): the three `CostCapOrigin` tiers, read with the currency swapped, and one more — `none_declared`, a host declaring it has no metered tools (`LaunchSettings.max_metered_calls` of `None`).
+  <br>`str`
+- **`ModelRoleOrigin`** · type alias · How a run arrived at one of its resolved role models.
+  <br>`str`
 - **`OutOfRunOutcome`** · literal · How an out-of-run call ended: it returned a completion, or it raised.
   <br>`'completed'` | `'raised'`
-- **`OutOfRunPurpose`** · literal · What an out-of-run call was for: `variation` writes a launch's generated cases (an `llm` variation axis's values), `proposer` drafts a rubric for operator review, `analysis` writes a campaign's analysis memo (its first call and the one repair round-trip a refused output buys), `judge` repeats a finished run's judge scores to measure the judge's agreement with itself (`judge_repeat_work`), or at two temperatures to measure what temperature does to it (`judge_temperature_work`), `second_judge` asks a judge other than the run's to score a finished run's evidence (`second_judge_work`) — measurement cost on its own line, never the candidate's.
-  <br>`'variation'` | `'proposer'` | `'analysis'` | `'judge'` | `'second_judge'`
+- **`OutOfRunPurpose`** · type alias · What an out-of-run call was for: `variation` writes a launch's generated cases (an `llm` variation axis's values), `proposer` drafts a rubric for operator review, `analysis` writes a campaign's analysis memo (its first call and the one repair round-trip a refused output buys), `judge` repeats a finished run's judge scores to measure the judge's agreement with itself (`judge_repeat_work`), or at two temperatures to measure what temperature does to it (`judge_temperature_work`), `second_judge` asks a judge other than the run's to score a finished run's evidence (`second_judge_work`) — measurement cost on its own line, never the candidate's.
+  <br>`str`
 - **`RaterKind`** · literal · Who wrote a calibration rating: a `person`, whose rating is the human side of judge calibration, or an `agent` (a model acting through a tool), whose rating is not.
   <br>`'person'` | `'agent'`
-- **`ReasoningEffort`** · literal · A reasoning effort level, as the router's `reasoning.effort` takes it.
-  <br>`'max'` | `'xhigh'` | `'high'` | `'medium'` | `'low'` | `'minimal'` | `'none'`
+- **`ReasoningEffort`** · type alias · A reasoning effort level, as the router's `reasoning.effort` takes it.
+  <br>`str`
 - **`RefusalField`** · type alias · A job record's `refusal` field (`JobRefusal`): declared on each record that can end on a refusal with `= None`, so a record that ended any other way reads None.
   <br>`Annotated[JobRefusal | None, Field(description="The engine refusal the job ended on, as data — its kind and status, as a refused call's are — when it ended `failed` because an engine error refused its work; None while it runs, and when it ended any other way.")]`
-- **`RefusalKind`** · literal · What refused a call or ended a job: the public engine error it was, by kind.
-  <br>`'refused'` | `'not_found'` | `'conflict'` | `'validation_failed'` | `'storage_failed'` | `'provider_refused'` | `'admission_refused'`
+- **`RefusalKind`** · type alias · What refused a call or ended a job: the public engine error it was, by kind.
+  <br>`str`
 - **`RequestCeiling`** · type alias · The longest one request capped at `max_tokens` output tokens can take on the host's client, in seconds: every provider call the client makes for that one request and every wait between them (re-sends of a severed body, SDK retries, their back-off sleeps).
   <br>`Callable[[int], float]`
-- **`RoleModelOrigin`** · literal · How a run arrived at one of its resolved role MODELS — `ModelRoleOrigin`'s two values plus `alternate`: the launch named no judge, and the host's alternate judge (`judge_alternate_model`) scored, because the judge role's default was one of the launch's candidates (`resolve_judge_pin`).
-  <br>`'chosen'` | `'inherited'` | `'alternate'`
+- **`RoleModelOrigin`** · type alias · How a run arrived at one of its resolved role MODELS — `ModelRoleOrigin`'s two values plus `alternate`: the launch named no judge, and the host's alternate judge (`judge_alternate_model`) scored, because the judge role's default was one of the launch's candidates (`resolve_judge_pin`).
+  <br>`str`
 - **`RubricAxis`** · literal · The two rubric axes a dimension sits on: what a subject should DO (`capability`) and what it should refuse or withstand (`boundary`).
   <br>`'capability'` | `'boundary'`
 - **`RubricScale`** · literal · How a criterion is answered: an integer from 1 to 5, or pass/fail.
   <br>`'ordinal'` | `'pass_fail'`
 - **`Scale`** · type alias · What kind of axis a swept value sits on.
   <br>`Annotated[NominalScale | OrdinalScale | IntervalScale, Field(discriminator='kind')]`
-- **`SimulatorPurpose`** · literal · What one simulator-role call was for: an actor's line, or the `llm_decided` scheduler's pick of who speaks next.
-  <br>`'utterance'` | `'schedule'`
+- **`SimulatorPurpose`** · type alias · What one simulator-role call was for: an actor's line, or the `llm_decided` scheduler's pick of who speaks next.
+  <br>`str`
 - **`StopReason`** · literal · Why a completion stopped, in the engine's words.
   <br>`'end_turn'` | `'max_tokens'` | `'content_filter'` | `'error'`
-- **`UsageRole`** · literal · The five roles an eval cell can spend on.
-  <br>`'candidate'` | `'judge'` | `'simulator'` | `'inner_agent'` | `'external'`
+- **`UsageRole`** · type alias · The roles an eval cell can spend on, five in this build.
+  <br>`str`
 - **`WorldEventCause`** · literal · Who made it happen.
   <br>`'rig'` | `'world'`
 - **`WorldEventKind`** · literal · What moved the world: a triggered dimension's condition, by its trigger kind, or ambient perturbation.
@@ -274,6 +274,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 'builtin:'`
 - **`CANDIDATE_SPEAKER`** · constant (str) · The speaker label the candidate's own turns carry in a simulated transcript.
   <br>`= '__candidate__'`
+- **`CELL_TIMEOUT_ORIGINS`** · constant (tuple) · The values of `CellTimeoutOrigin` this build knows, in the order its readers list them.
 - **`CORE_ADDRESSING_FIELDS`** · constant (mappingproxy) · Per core type, every field the store reads on the stored bytes, before any upgrade: what a query filters or orders on, what a projection keeps, and what a partial write merges.
 - **`CORE_BASELINE_VERSION`** · constant (int) · The first core version a public release wrote, and the oldest this and every later build reads. Below it a document is pre-release, and is refused by name.
   <br>`= 14`
@@ -283,6 +284,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`CORE_SCHEMA_VERSION`** · constant (int) · The core version this build writes. Every bump appends one line here and one `CoreUpgrader`.
   <br>`= 14`
 - **`CORE_UPGRADERS`** · constant (tuple) · The registered steps, oldest first: `[s.from_version for s in CORE_UPGRADERS]` is `range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION)`.
+- **`COST_CAP_ORIGINS`** · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.
 - **`DEFAULT_JUDGE_TEMPERATURE`** · constant (float) · The temperature every judge call is requested at unless a `JudgeConfig` for its dimension says otherwise, and that config's own default (#633).
   <br>`= 0.0`
 - **`DEFAULT_LAUNCH_K_RUNS`** · constant (int) · Repeats per (case, model) a launch uses when the caller names none: one observation per case cannot tell a setting from the model's own variance.
@@ -294,10 +296,13 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`JOB_FAULTS_MAX`** · constant (int) · How many faults a job record keeps: a record whose lease machinery kept failing says so without growing without bound.
   <br>`= 32`
 - **`JSON_OBJECT_RESPONSE_FORMAT`** · constant (dict) · `response_format` directive asking for any JSON object, with no shape.
+- **`METERED_CALL_ORIGINS`** · constant (tuple) · The values of `MeteredCallOrigin` this build knows, in the order its readers list them.
 - **`MINOR_ADDITIVITY_SENTENCE`** · constant (str) · The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When it is false for a change, the change is a major.
 - **`MODEL_DEFAULT_TEMPERATURE`** · constant (str) · A judge call SENT with no temperature, because its model refuses one (some reasoning models do): the model's own default applied.
   <br>`= 'model_default'`
+- **`MODEL_ROLE_ORIGINS`** · constant (tuple) · The values of `ModelRoleOrigin` this build knows, in the order its readers list them.
 - **`NON_TERMINAL_RUN_STATUSES`** · constant (frozenset) · Statuses a run can still leave under its own power — it is either queued or executing, and something in-process is expected to write its terminal status.
+- **`OUT_OF_RUN_PURPOSES`** · constant (tuple) · The values of `OutOfRunPurpose` this build knows, in the order its readers list them.
 - **`OUTCOME_DIM_ID`** · constant (str) · Reserved `rubric_dim_id` for the dual-score outcome axis.
   <br>`= '__outcome__'`
 - **`PASS_ACTION`** · constant (str) · The action half of the reserved deliberate-pass entry (`__engine__.pass`).
@@ -306,15 +311,19 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= '__engine__'`
 - **`PROSE_SCHEMA_KEY`** · constant (str) · The JSON Schema keyword marking a string property as model prose, for vocabularies declared as schema rather than as Pydantic models (a world dimension's value schema).
   <br>`= 'x-model-prose'`
-- **`REFUSAL_KINDS`** · constant (tuple) · Every refusal kind.
+- **`REASONING_EFFORTS`** · constant (tuple) · The values of `ReasoningEffort` this build knows, in the order its readers list them.
+- **`REFUSAL_KINDS`** · constant (tuple) · The refusal kinds this build knows, one per public engine error class, in the order its readers list them.
 - **`REGENERABLE_SCHEMA_VERSION`** · constant (int) · The version every regenerable document is written under, and the only one a read of one accepts.
   <br>`= 9`
 - **`RESERVED_DIM_IDS`** · constant (frozenset) · The reserved dim ids, which are deliberately NOT namespaced: they identify the two dual-score axes rather than a rubric dimension scored in some context, so there is no context to name. `require_namespaced_dim_name` exempts them — a judge service is built for these ids on every run.
+- **`ROLE_MODEL_ORIGINS`** · constant (tuple) · The values of `RoleModelOrigin` this build knows, in the order its readers list them.
 - **`ROUND_DONE`** · constant (str) · The scheduler's answer that the current speaker round is over and the candidate answers next.
   <br>`= 'round_done'`
 - **`SCALES`** · constant (mappingproxy) · The scales, by name.
+- **`SIMULATOR_PURPOSES`** · constant (tuple) · The values of `SimulatorPurpose` this build knows, in the order its readers list them.
 - **`TRANSCRIPT_DIM_ID`** · constant (str) · Reserved `rubric_dim_id` for the dual-score transcript axis.
   <br>`= '__transcript__'`
+- **`USAGE_ROLES`** · constant (tuple) · The values of `UsageRole` this build knows, in the order its readers list them.
 - **`WORLD_SPEAKER`** · constant (str) · The speaker label a world round's event carries in a simulated transcript, so an actor speaking after it reads that the world moved.
   <br>`= '__world__'`
 
@@ -2365,8 +2374,8 @@ The action catalogue: every eval action, declared once, for any transport to mou
   <br>`Callable[[ConformanceStage], Awaitable[Mapping[str, Any]]]`
 - **`PermissionClass`** · literal · What an action does to the world, which decides the tools that may mount it.
   <br>`'read'` | `'spend'` | `'write'` | `'destructive'`
-- **`RefusalKind`** · literal · What refused a call or ended a job: the public engine error it was, by kind.
-  <br>`'refused'` | `'not_found'` | `'conflict'` | `'validation_failed'` | `'storage_failed'` | `'provider_refused'` | `'admission_refused'`
+- **`RefusalKind`** · type alias · What refused a call or ended a job: the public engine error it was, by kind.
+  <br>`str`
 
 **Constants**
 
@@ -2377,7 +2386,7 @@ The action catalogue: every eval action, declared once, for any transport to mou
 - **`HELP_ACTION`** · constant (str) · The action every mounted tool answers, generated from the catalogue rather than declared in it.
   <br>`= 'help'`
 - **`PERMISSION_CLASSES`** · constant (tuple) · The classes, in the order help lists them.
-- **`REFUSAL_KINDS`** · constant (tuple) · Every refusal kind.
+- **`REFUSAL_KINDS`** · constant (tuple) · The refusal kinds this build knows, one per public engine error class, in the order its readers list them.
 - **`RESERVED_PARAMETERS`** · constant (frozenset) · Parameter names a tool reserves: `action` selects the action, `topic` is help's.
 - **`TOOL_NAME`** · constant (Pattern) · A tool's name: a lowercase identifier.
   <br>`= '^[a-z][a-z0-9_]*$'`
@@ -3053,7 +3062,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `overlays` | `object` or `null` | The knobs this launch turns on the template's kind, by field. |
 | `part` | `'record'` \| `'judge'` \| `'spans'` | Which part of the stored trace to return: record (the output the kind stored, its call ledger and end state, beside the result), judge (what the judge was sent) or spans (the stored spans). |
 | `predicted_cost` | `object` or `null` | A cost pivot's plan: the structured result launch_estimate returned before these runs. The cell at each priced arm's model and template then shows its predicted cost beside the cost observed. |
-| `purpose_filter` | `'variation'` \| `'proposer'` \| `'analysis'` \| `'judge'` \| `'second_judge'` or `null` | Only calls made for this purpose: variation (a launch's case generation), proposer (a rubric draft) or analysis (an analysis generation). |
+| `purpose_filter` | `string` or `null` | Only calls made for this purpose: variation (a launch's case generation), proposer (a rubric draft) or analysis (an analysis generation). |
 | `rating_reason` | `string` | Why that score, in the rater's own words. |
 | `reason` | `string` or `null` | Why, recorded on a cancelled run. |
 | `recorded_analysis_id` | `string` or `null` | A stored analysis of the campaign whose memo the case pins as the one it got, as analyses_list names it; omitted freezes the bundle alone, which only a generating candidate can run. |

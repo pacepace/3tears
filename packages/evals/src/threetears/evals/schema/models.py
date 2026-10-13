@@ -52,6 +52,7 @@ from pydantic import (
 from threetears.evals.schema.base import (
     CoreDocumentModel,
     CoreShapeModel,
+    known_unless_newer_minor,
     EvalBaseModel,
     EvalDocumentModel,
     VerbatimJsonObject,
@@ -2378,7 +2379,18 @@ ApparatusProvenance = Literal["commissioned", "witnessed"]
 #: means the role default supplied it, so the same launch arguments would pick up
 #: whatever that default has since become. Once the model is stored resolved, this is
 #: the only thing that still distinguishes the two.
-ModelRoleOrigin = Literal["chosen", "inherited"]
+#:
+#: An open vocabulary, its values this build knows registered in :data:`MODEL_ROLE_ORIGINS`: a value a newer minor added
+#: is read from a document that minor wrote, and every reader that branches on it names it rather than folding it into a
+#: value it knows (:mod:`~threetears.evals.schema.versioning`).
+ModelRoleOrigin = str
+
+#: The values of :data:`ModelRoleOrigin` this build knows, in the order its readers list them.
+MODEL_ROLE_ORIGINS: Final[tuple[str, ...]] = ("chosen", "inherited")
+
+#: The type of a stored field carrying a judge config origin: one of :data:`MODEL_ROLE_ORIGINS`, or, on the stored read
+#: of a newer minor's document, a value that minor added.
+StoredModelRoleOrigin = Annotated[ModelRoleOrigin, known_unless_newer_minor("judge config origin", MODEL_ROLE_ORIGINS)]
 
 #: How a run arrived at one of its resolved role MODELS — :data:`ModelRoleOrigin`'s two values plus
 #: ``alternate``: the launch named no judge, and the host's alternate judge
@@ -2390,7 +2402,18 @@ ModelRoleOrigin = Literal["chosen", "inherited"]
 #: candidate. Recorded from what the launch can see — no pin named, and the judge equal to the alternate
 #: setting — so a host whose alternate is set to the role default itself records ``alternate`` for that
 #: model too: the two settings named one model, and either reproduces it.
-RoleModelOrigin = Literal["chosen", "inherited", "alternate"]
+#:
+#: An open vocabulary, its values this build knows registered in :data:`ROLE_MODEL_ORIGINS`: a value a newer minor added
+#: is read from a document that minor wrote, and every reader that branches on it names it rather than folding it into a
+#: value it knows (:mod:`~threetears.evals.schema.versioning`).
+RoleModelOrigin = str
+
+#: The values of :data:`RoleModelOrigin` this build knows, in the order its readers list them.
+ROLE_MODEL_ORIGINS: Final[tuple[str, ...]] = ("chosen", "inherited", "alternate")
+
+#: The type of a stored field carrying a role model origin: one of :data:`ROLE_MODEL_ORIGINS`, or, on the stored read of
+#: a newer minor's document, a value that minor added.
+StoredRoleModelOrigin = Annotated[RoleModelOrigin, known_unless_newer_minor("role model origin", ROLE_MODEL_ORIGINS)]
 
 #: How a run arrived at the spend ceiling it ran under. Deliberately NOT
 #: :data:`ModelRoleOrigin`: that literal's two values cannot express the third state this
@@ -2418,7 +2441,18 @@ RoleModelOrigin = Literal["chosen", "inherited", "alternate"]
 #: true: the launch argument becomes ``max_metered_calls`` and the setting
 #: ``LaunchSettings.max_metered_calls``, and ``uncapped`` comes off the same enforcement flag
 #: both ceilings share. The name is cost's because cost came first.
-CostCapOrigin = Literal["chosen", "inherited", "uncapped"]
+#:
+#: An open vocabulary, its values this build knows registered in :data:`COST_CAP_ORIGINS`: a value a newer minor added
+#: is read from a document that minor wrote, and every reader that branches on it names it rather than folding it into a
+#: value it knows (:mod:`~threetears.evals.schema.versioning`).
+CostCapOrigin = str
+
+#: The values of :data:`CostCapOrigin` this build knows, in the order its readers list them.
+COST_CAP_ORIGINS: Final[tuple[str, ...]] = ("chosen", "inherited", "uncapped")
+
+#: The type of a stored field carrying a cost cap origin: one of :data:`COST_CAP_ORIGINS`, or, on the stored read of a
+#: newer minor's document, a value that minor added.
+StoredCostCapOrigin = Annotated[CostCapOrigin, known_unless_newer_minor("cost cap origin", COST_CAP_ORIGINS)]
 
 #: Which tier supplied a run's metered-call ceiling (:attr:`EvalRun.max_metered_calls_origin`): the
 #: three :data:`CostCapOrigin` tiers, read with the currency swapped, and one more —
@@ -2426,12 +2460,38 @@ CostCapOrigin = Literal["chosen", "inherited", "uncapped"]
 #: of ``None``). That run records a ceiling of ``0``: no metered call may happen, and one that does
 #: contradicts the host's declaration and is refused and counted. Distinct from ``uncapped``, which
 #: is a host with metered tools whose enforcement is off.
-MeteredCallOrigin = Literal["chosen", "inherited", "uncapped", "none_declared"]
+#:
+#: An open vocabulary, its values this build knows registered in :data:`METERED_CALL_ORIGINS`: a value a newer minor
+#: added is read from a document that minor wrote, and every reader that branches on it names it rather than folding it
+#: into a value it knows (:mod:`~threetears.evals.schema.versioning`).
+MeteredCallOrigin = str
+
+#: The values of :data:`MeteredCallOrigin` this build knows, in the order its readers list them.
+METERED_CALL_ORIGINS: Final[tuple[str, ...]] = ("chosen", "inherited", "uncapped", "none_declared")
+
+#: The type of a stored field carrying a metered call origin: one of :data:`METERED_CALL_ORIGINS`, or, on the stored
+#: read of a newer minor's document, a value that minor added.
+StoredMeteredCallOrigin = Annotated[
+    MeteredCallOrigin, known_unless_newer_minor("metered call origin", METERED_CALL_ORIGINS)
+]
 
 #: Where a run's per-cell deadline came from (:attr:`EvalRun.cell_timeout_s_origin`): ``launch`` — the launch
 #: named it (``cell_timeout_s``), within the host's ceiling; ``kind`` — the kind's launcher wired its own
 #: (``KindWiring.cell_timeout_s``); ``default`` — neither did, so the engine's ``DEFAULT_CELL_TIMEOUT_S`` held.
-CellTimeoutOrigin = Literal["launch", "kind", "default"]
+#:
+#: An open vocabulary, its values this build knows registered in :data:`CELL_TIMEOUT_ORIGINS`: a value a newer minor
+#: added is read from a document that minor wrote, and every reader that branches on it names it rather than folding it
+#: into a value it knows (:mod:`~threetears.evals.schema.versioning`).
+CellTimeoutOrigin = str
+
+#: The values of :data:`CellTimeoutOrigin` this build knows, in the order its readers list them.
+CELL_TIMEOUT_ORIGINS: Final[tuple[str, ...]] = ("launch", "kind", "default")
+
+#: The type of a stored field carrying a cell timeout origin: one of :data:`CELL_TIMEOUT_ORIGINS`, or, on the stored
+#: read of a newer minor's document, a value that minor added.
+StoredCellTimeoutOrigin = Annotated[
+    CellTimeoutOrigin, known_unless_newer_minor("cell timeout origin", CELL_TIMEOUT_ORIGINS)
+]
 
 
 def scored_dim_ids(rubric_dim_names: list[str], judged_artifact: JudgedArtifact) -> list[str]:
@@ -2646,7 +2706,18 @@ class RunCompleteness(EvalDocumentModel, CoreShapeModel):
 #: A reasoning effort level, as the router's ``reasoning.effort`` takes it. ``none`` disables
 #: reasoning, and a model whose reasoning is mandatory refuses it; which of the others a model
 #: accepts is its own (the router lists each model's ``supported_efforts``).
-ReasoningEffort = Literal["max", "xhigh", "high", "medium", "low", "minimal", "none"]
+#:
+#: An open vocabulary, its values this build knows registered in :data:`REASONING_EFFORTS`: a value a newer minor added
+#: is read from a document that minor wrote, and every reader that branches on it names it rather than folding it into a
+#: value it knows (:mod:`~threetears.evals.schema.versioning`).
+ReasoningEffort = str
+
+#: The values of :data:`ReasoningEffort` this build knows, in the order its readers list them.
+REASONING_EFFORTS: Final[tuple[str, ...]] = ("max", "xhigh", "high", "medium", "low", "minimal", "none")
+
+#: The type of a stored field carrying a reasoning effort: one of :data:`REASONING_EFFORTS`, or, on the stored read of a
+#: newer minor's document, a value that minor added.
+StoredReasoningEffort = Annotated[ReasoningEffort, known_unless_newer_minor("reasoning effort", REASONING_EFFORTS)]
 
 
 class ClientRequestSettings(EvalDocumentModel, CoreShapeModel):
@@ -2681,7 +2752,7 @@ class ClientRequestSettings(EvalDocumentModel, CoreShapeModel):
             "provider's default applied — a recorded level, not an absence. Never set beside `reasoning_effort`."
         ),
     )
-    reasoning_effort: ReasoningEffort | None = Field(
+    reasoning_effort: StoredReasoningEffort | None = Field(
         default=None,
         description=(
             "The reasoning effort level sent with every request (the provider's `reasoning.effort`): a level, not a "
@@ -2896,7 +2967,7 @@ class EvalRun(CoreDocumentModel):
             "judged run that names no judge, or an unjudged run that names one."
         ),
     )
-    model_role_provenance: dict[str, RoleModelOrigin] | None = Field(
+    model_role_provenance: dict[str, StoredRoleModelOrigin] | None = Field(
         default=None,
         description=(
             "How each pinned role model was arrived at, keyed by role (``candidate`` / ``judge`` / ``simulator``): "
@@ -2987,7 +3058,7 @@ class EvalRun(CoreDocumentModel):
             "genuinely agree stop pooling together."
         ),
     )
-    judge_config_provenance: dict[DimName, ModelRoleOrigin] | None = Field(
+    judge_config_provenance: dict[DimName, StoredModelRoleOrigin] | None = Field(
         default=None,
         description=(
             "How each entry of ``judge_config_ids`` was arrived at, keyed by the same dim ids: "
@@ -3228,7 +3299,7 @@ class EvalRun(CoreDocumentModel):
             "ceiling (origin None); a truncated run is visible either way through the budget_stopped status."
         ),
     )
-    max_cost_usd_origin: CostCapOrigin | None = Field(
+    max_cost_usd_origin: StoredCostCapOrigin | None = Field(
         default=None,
         description=(
             "Which tier of the cascade supplied max_cost_usd — see CostCapOrigin. Kept beside the ceiling for "
@@ -3255,7 +3326,7 @@ class EvalRun(CoreDocumentModel):
             "because a hard stop would discard a partly-measured matrix."
         ),
     )
-    max_metered_calls_origin: MeteredCallOrigin | None = Field(
+    max_metered_calls_origin: StoredMeteredCallOrigin | None = Field(
         default=None,
         description=(
             "Which tier of the cascade supplied max_metered_calls — see MeteredCallOrigin. Kept "
@@ -3299,7 +3370,7 @@ class EvalRun(CoreDocumentModel):
             "never read as today's default. Not hashed into any identity key, like turn_budget_s."
         ),
     )
-    cell_timeout_s_origin: CellTimeoutOrigin | None = Field(
+    cell_timeout_s_origin: StoredCellTimeoutOrigin | None = Field(
         default=None,
         description=(
             "Where cell_timeout_s came from: ``launch`` (the launch named it), ``kind`` (the kind's launcher "
@@ -3991,15 +4062,37 @@ class AsyncDelivery(EvalDocumentModel, CoreShapeModel):
 # =============================================================================
 
 
-#: The five roles an eval cell can spend on. Named once because two fields carry the
+#: The roles an eval cell can spend on, five in this build. Named once because two fields carry the
 #: vocabulary — the role a usage row observed, and the roles a blended total was summed
-#: over — and a second copy of a closed set is a copy that can go stale in one place.
-UsageRole = Literal["candidate", "judge", "simulator", "inner_agent", "external"]
+#: over — and a second copy of the set is a copy that can go stale in one place.
+#:
+#: An open vocabulary, its values this build knows registered in :data:`USAGE_ROLES`: a value a newer minor added is
+#: read from a document that minor wrote, and every reader that branches on it names it rather than folding it into a
+#: value it knows (:mod:`~threetears.evals.schema.versioning`).
+UsageRole = str
+
+#: The values of :data:`UsageRole` this build knows, in the order its readers list them.
+USAGE_ROLES: Final[tuple[str, ...]] = ("candidate", "judge", "simulator", "inner_agent", "external")
+
+#: The type of a stored field carrying a usage role: one of :data:`USAGE_ROLES`, or, on the stored read of a newer
+#: minor's document, a value that minor added.
+StoredUsageRole = Annotated[UsageRole, known_unless_newer_minor("usage role", USAGE_ROLES)]
 
 
 #: What one simulator-role call was for: an actor's line, or the ``llm_decided`` scheduler's pick of
 #: who speaks next. Carried on the ``simulator`` role's :class:`RoleUsage` rows.
-SimulatorPurpose = Literal["utterance", "schedule"]
+#:
+#: An open vocabulary, its values this build knows registered in :data:`SIMULATOR_PURPOSES`: a value a newer minor added
+#: is read from a document that minor wrote, and every reader that branches on it names it rather than folding it into a
+#: value it knows (:mod:`~threetears.evals.schema.versioning`).
+SimulatorPurpose = str
+
+#: The values of :data:`SimulatorPurpose` this build knows, in the order its readers list them.
+SIMULATOR_PURPOSES: Final[tuple[str, ...]] = ("utterance", "schedule")
+
+#: The type of a stored field carrying a simulator purpose: one of :data:`SIMULATOR_PURPOSES`, or, on the stored read of
+#: a newer minor's document, a value that minor added.
+StoredSimulatorPurpose = Annotated[SimulatorPurpose, known_unless_newer_minor("simulator purpose", SIMULATOR_PURPOSES)]
 
 
 class RoleUsage(EvalDocumentModel, CoreShapeModel):
@@ -4051,7 +4144,7 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
     the rule because it never gets the chance.
     """
 
-    role: UsageRole
+    role: StoredUsageRole
     model: str | None = Field(
         default=None,
         description=(
@@ -4120,7 +4213,7 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
             "ending, a refused reply)."
         ),
     )
-    purpose: SimulatorPurpose | None = Field(
+    purpose: StoredSimulatorPurpose | None = Field(
         default=None,
         description=(
             "Which simulator calls this row counts: an actor's 'utterance', or a 'schedule' pick by the "
@@ -4871,7 +4964,7 @@ class EvalResult(CoreDocumentModel):
     #
     # Required: every exit of a cell writes it
     # (:func:`threetears.evals.kernel.usage_capture.blended_cost_roles`).
-    cost_roles: list[UsageRole]
+    cost_roles: list[StoredUsageRole]
 
     # Per-role usage & cost. Required: every exit of a cell sets a list,
     # ``[]`` when capture ran and attributed no roles (e.g. a candidate-factory failure before
@@ -5319,6 +5412,22 @@ class EvalCassette(EvalDocumentModel):
 
 __all__ = [
     "EVAL_DOC_TYPES",
+    "MODEL_ROLE_ORIGINS",
+    "ROLE_MODEL_ORIGINS",
+    "COST_CAP_ORIGINS",
+    "METERED_CALL_ORIGINS",
+    "CELL_TIMEOUT_ORIGINS",
+    "REASONING_EFFORTS",
+    "USAGE_ROLES",
+    "SIMULATOR_PURPOSES",
+    "StoredModelRoleOrigin",
+    "StoredRoleModelOrigin",
+    "StoredCostCapOrigin",
+    "StoredMeteredCallOrigin",
+    "StoredCellTimeoutOrigin",
+    "StoredReasoningEffort",
+    "StoredUsageRole",
+    "StoredSimulatorPurpose",
     "WorldPlacement",
     "stored_variation",
     "CHECK_REFUSED_UNDER_CURRENT_GRAMMAR",

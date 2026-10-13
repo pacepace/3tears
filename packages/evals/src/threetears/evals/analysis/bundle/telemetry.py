@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from threetears.evals.analysis.reporting import ScoreRecord
 from threetears.evals.analysis.lenses.program_budget import ProgramBudget
 from threetears.evals.kernel.host.profile import HostProfile
-from threetears.evals.schema.models import EvalResult
+from threetears.evals.schema.models import EvalResult, RoleUsage
 from threetears.evals.kernel.provider import sum_optional_tokens
 from threetears.evals.kernel.result_condition import delivered_a_turn
 from threetears.evals.kernel.usage_capture import (
@@ -51,10 +51,7 @@ def _token_rollup(results: list[EvalResult]) -> TokenRollup | None:
             prompt = sum_optional_tokens(prompt, role.prompt_tokens)
             completion = sum_optional_tokens(completion, role.completion_tokens)
             reasoning = sum_optional_tokens(reasoning, role.reasoning_tokens)
-        if any(
-            row.role != "external" and (row.prompt_tokens is None or row.completion_tokens is None)
-            for row in result.usage
-        ):
+        if any(_token_count_unreported(row) for row in result.usage):
             n_unreported += 1
     if n_with_usage == 0:
         return None
@@ -65,6 +62,26 @@ def _token_rollup(results: list[EvalResult]) -> TokenRollup | None:
         n_results_with_usage=n_with_usage,
         n_results_tokens_unreported=n_unreported,
     )
+
+
+def _token_count_unreported(row: RoleUsage) -> bool:
+    """Whether a usage row is token-metered and left its prompt or completion count unreported.
+
+    Every role this build knows is token-metered but ``external``, which is metered in its provider's units. A role
+    a newer build recorded (:data:`~threetears.evals.schema.USAGE_ROLES` is an open vocabulary) is read as
+    token-metered too, explicitly: a count it left out then reads the sums as "at least this much", which is true
+    whatever the role meters, where reading it as unmetered would claim sums complete that may not be.
+
+    Args:
+        row: One usage row.
+
+    Returns:
+        ``True`` when the row's prompt or completion count is missing from the sums.
+    """
+    if row.role == "external":
+        return False
+    # Every other role is token-metered: the roles this build knows, and one a newer build recorded.
+    return row.prompt_tokens is None or row.completion_tokens is None
 
 
 def _result_has_error(result: EvalResult) -> bool:

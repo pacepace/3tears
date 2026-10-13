@@ -60,7 +60,7 @@ import math
 
 from collections import Counter
 from collections.abc import Mapping
-from typing import Any, Literal, get_args
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, JsonValue, computed_field, model_validator
 
@@ -84,7 +84,16 @@ from threetears.evals.kernel import (
     counted_goal_verdicts,
     delivered_a_turn,
 )
-from threetears.evals.schema import CostCapOrigin, EvalResult, EvalRun, GoalCheckProof, RubricScale, UsageRole
+from threetears.evals.schema import (
+    COST_CAP_ORIGINS,
+    USAGE_ROLES,
+    CostCapOrigin,
+    EvalResult,
+    EvalRun,
+    GoalCheckProof,
+    RubricScale,
+    UsageRole,
+)
 from threetears.evals.schema.base import without_computed_field_echo
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.host.sweepables import UNCAPPED_SPEND
@@ -538,6 +547,10 @@ EXTERNAL_CALL_UNPRICED = "neither a charge their provider reported nor a rate th
 #: Why an external call carries no dollars in a run that declared no external rate, whose total sums none.
 EXTERNAL_NOT_COUNTED = "the run declared no external rate, so its total sums no external dollars"
 
+#: Why a call of a role this build does not know carries no dollars: a newer build recorded the role, and only it
+#: knows how the role is priced.
+UNKNOWN_ROLE_UNPRICED = "the build that recorded this role knows how it is priced, and this one does not"
+
 
 class RoleSpend(BaseModel):
     """What one role spent over a run, summed from its results' usage rows.
@@ -547,8 +560,14 @@ class RoleSpend(BaseModel):
     of its unpriced calls, with why they are unpriced. A role read as wholly unknown the moment one call went
     unpriced dropped dollars the run's total still counted, so its lines no longer added up to it.
 
+    **A role this build does not know is its own line, under its own name.** A newer minor can add a usage role
+    (an open vocabulary); its rows are summed here like any other role's, after the roles this build knows, and its
+    line says the role is one this build does not know (:attr:`known`) — never folded into a known role, and never
+    read as ``external``, whose metering is a fact of that role alone.
+
     Attributes:
-        role: The role (:data:`~threetears.evals.schema.UsageRole`).
+        role: The role (:data:`~threetears.evals.schema.UsageRole`): one of
+            :data:`~threetears.evals.schema.USAGE_ROLES`, or one a newer build recorded.
         calls: How many calls its rows count.
         uncounted_rows: How many of its usage rows reported no call count. Their calls are not in ``calls``, and
             how many there were is unknown, never 0.
@@ -570,10 +589,17 @@ class RoleSpend(BaseModel):
     units: list[ProviderUnits] = []
 
     @property
+    def known(self) -> bool:
+        """Whether the role is one this build knows; ``False`` for a role a newer build recorded."""
+        return self.role in USAGE_ROLES
+
+    @property
     def unpriced_because(self) -> str | None:
         """Why its unpriced calls carry no dollars, as true for its run; ``None`` when every call was priced."""
         if not self.unpriced_calls and self.cost_usd is not None:
             return None
+        if not self.known:
+            return UNKNOWN_ROLE_UNPRICED
         if self.role != "external":
             return MODEL_CALL_UNPRICED
         return EXTERNAL_CALL_UNPRICED if self.counted else EXTERNAL_NOT_COUNTED
@@ -598,6 +624,8 @@ class RoleSpend(BaseModel):
     def line(self) -> str:
         """The role's spend line: its priced dollars and unpriced calls, and whether the run's total leaves it out."""
         outside = "" if self.counted or self.unpriced_because == EXTERNAL_NOT_COUNTED else "; not in the total"
+        if not self.known:
+            return f"{self.role} spend (a role this build does not know): {self.money_text()}{outside}"
         if self.role != "external":
             return f"{self.role} spend: {self.money_text()}{outside}"
         metered = ", ".join(
@@ -1091,9 +1119,17 @@ def _spend_cap_line(summary: EvalSummary) -> str | None:
     """The spend ceiling the run was held to, or that it had none; nothing for a run that recorded neither.
 
     A cap counts the spend results report, so a capped run none of whose results reported any says that its cap
-    had nothing to count.
+    had nothing to count. A ceiling whose origin a newer build recorded and this one does not know is stated with
+    that origin by name: the number is the one the run recorded (a new origin never means "nothing bound the run",
+    which would be a major), and what the origin means is the newer build's to say.
     """
-    if summary.max_cost_usd_origin == "uncapped":
+    origin = summary.max_cost_usd_origin
+    if origin is not None and origin not in COST_CAP_ORIGINS:
+        ceiling = (
+            "none recorded" if summary.max_cost_usd is None else f"{dollars_text(summary.max_cost_usd)} for this run"
+        )
+        return f"spend cap: {ceiling} (its origin, {origin!r}, is one this build does not know)"
+    if origin == "uncapped":
         return f"spend cap: {UNCAPPED_SPEND}"
     if summary.max_cost_usd is None:
         return None
@@ -1320,17 +1356,21 @@ def _strata(host: EvalHost, run: EvalRun, results: list[EvalResult]) -> list[Str
 
 
 def _role_spend(results: list[EvalResult]) -> list[RoleSpend]:
-    """What each role the results' usage rows name spent, in :data:`~threetears.evals.schema.UsageRole`'s order.
+    """What each role the results' usage rows name spent: the roles this build knows in
+    :data:`~threetears.evals.schema.USAGE_ROLES`' order, then each role a newer build recorded, by name.
 
     A role's dollars are its priced rows' costs summed, and its unpriced calls are counted beside them, so a role
     partly priced states what was priced rather than reading wholly unknown: the run's total
     (:func:`~threetears.evals.kernel.usage_capture.blended_cost`, per result) sums exactly the counted roles' priced
     rows, and the role lines add up to it. Whether a role is counted is the results' own composition
     (``cost_roles``): the ``external`` role is in it only where the run declared external rates. Its units are summed
-    per provider and unit, never across two.
+    per provider and unit, never across two. A role this build does not know is summed exactly as a known one is, on a
+    line of its own: dropping it would leave the role lines short of the run's total, which counts it wherever the
+    build that recorded it did.
     """
     spent: list[RoleSpend] = []
-    for role in get_args(UsageRole):
+    recorded = {row.role for result in results for row in result.usage}
+    for role in [*USAGE_ROLES, *sorted(recorded - set(USAGE_ROLES))]:
         carrying = [result for result in results if any(row.role == role for row in result.usage)]
         rows = [row for result in carrying for row in result.usage if row.role == role]
         if not rows:

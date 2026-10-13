@@ -48,6 +48,14 @@ from threetears.evals.schema.judge_attribution import (
     JudgeAttributionState,
 )
 from threetears.evals.schema.models import (
+    CELL_TIMEOUT_ORIGINS,
+    COST_CAP_ORIGINS,
+    METERED_CALL_ORIGINS,
+    MODEL_ROLE_ORIGINS,
+    REASONING_EFFORTS,
+    ROLE_MODEL_ORIGINS,
+    SIMULATOR_PURPOSES,
+    USAGE_ROLES,
     ApparatusSettingValue,
     CANDIDATE_SPEAKER,
     DEFAULT_LAUNCH_K_RUNS,
@@ -145,7 +153,13 @@ from threetears.evals.schema.models import (
     UsageRole,
     VariationAxis,
 )
-from threetears.evals.schema.out_of_run_spend import OutOfRunOutcome, OutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
+from threetears.evals.schema.out_of_run_spend import (
+    OUT_OF_RUN_PURPOSES,
+    OutOfRunOutcome,
+    OutOfRunPurpose,
+    OutOfRunSpend,
+    OutOfRunSpendStore,
+)
 from threetears.evals.schema.prose import PROSE_SCHEMA_KEY
 from threetears.evals.schema.schema_nesting import NestedSchema, nested_schemas
 from threetears.evals.schema.store_port import (
@@ -198,6 +212,15 @@ from threetears.evals.schema.versioning import (
 )
 
 __all__ = [
+    "CELL_TIMEOUT_ORIGINS",
+    "COST_CAP_ORIGINS",
+    "METERED_CALL_ORIGINS",
+    "MODEL_ROLE_ORIGINS",
+    "REASONING_EFFORTS",
+    "ROLE_MODEL_ORIGINS",
+    "SIMULATOR_PURPOSES",
+    "USAGE_ROLES",
+    "OUT_OF_RUN_PURPOSES",
     "StoreClock",
     "CancelRequestedAtField",
     "CancelRequestReasonField",

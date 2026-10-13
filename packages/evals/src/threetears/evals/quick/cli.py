@@ -117,7 +117,7 @@ from threetears.evals.analysis import (
     scope_out_of_run_spend,
     serialize_report,
 )
-from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, OutOfRunPurpose
+from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, OUT_OF_RUN_PURPOSES
 from threetears.evals.kernel import DEFAULT_TEMPERATURE_REPEATS, EvalServiceError, JobLeases, RefusedInput
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.analysis.summary import summarize_run
@@ -349,7 +349,7 @@ def build_parser(
     spend = command(
         "spend", "Print what the engine spent outside any run — case generations, rubric proposals, analyses."
     )
-    spend.add_argument("--purpose", choices=get_args(OutOfRunPurpose), default=None, help="only this purpose's calls")
+    spend.add_argument("--purpose", choices=OUT_OF_RUN_PURPOSES, default=None, help="only this purpose's calls")
     spend.add_argument("--launch-group", default=None, metavar="ID", help="only one launch's case generation")
     spend.add_argument("--template", default=None, metavar="ID", help="only calls made for this template")
     gate = command(

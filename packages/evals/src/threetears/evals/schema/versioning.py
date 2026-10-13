@@ -1,4 +1,4 @@
-"""Which stored documents are kept across releases, which are regenerated, and how a kept one is read when it is old or new.
+"""Which stored documents are kept across releases, which are regenerated, and how a kept one is read, old or new.
 
 **The evidence core is kept.** A document the engine cannot regenerate, and that an audit needs, is in the
 core (:data:`CORE_DOC_TYPES`, the ``kept`` entries of :data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`):
@@ -60,6 +60,44 @@ whole document, and on the digests:
 - **A field a minor adds stays out of every digest pre-image while it holds its default.** A pre-image taken
   over a whole shape's ``model_dump`` (a judged output's fingerprint, a judge case's digest) would otherwise
   split every key between the two builds, even for documents that never use the field.
+
+**A vocabulary on a core shape is open or closed, and which is decided here.** An *open* vocabulary is a ``str``
+with the values this build knows registered beside it; a new value is a minor, because every reader that branches
+on it has a branch for a value it does not know, which names that value (a role's spend on a line of its own, an
+origin stated by name, a departure read as "cannot say") rather than folding it into one it knows. A value outside
+the registry is read only from a newer minor's document, and refused anywhere else. The open vocabularies:
+``UsageRole`` (``USAGE_ROLES``), ``SimulatorPurpose`` (``SIMULATOR_PURPOSES``), ``CostCapOrigin``
+(``COST_CAP_ORIGINS``), ``MeteredCallOrigin`` (``METERED_CALL_ORIGINS``), ``CellTimeoutOrigin``
+(``CELL_TIMEOUT_ORIGINS``), ``ModelRoleOrigin`` (``MODEL_ROLE_ORIGINS``), ``RoleModelOrigin``
+(``ROLE_MODEL_ORIGINS``), ``ReasoningEffort`` (``REASONING_EFFORTS``), ``OutOfRunPurpose``
+(``OUT_OF_RUN_PURPOSES``) and ``RefusalKind`` (``REFUSAL_KINDS``).
+
+Every other vocabulary on a core shape is *closed by design*: a new value changes how an older build must read
+the document, so extending one is a major. Each, and why:
+
+- ``EvalRunStatus``, ``JobOutcome`` (and ``SweepOutcome``), ``AttemptOutcome`` — lease settling, the boot reclaim and
+  every terminal test branch on them; a state misread strands a job or resurrects one.
+- ``CellTermination`` — decides whether a cell is excluded from every figure.
+- ``ConversationStopCause`` — its members are split into a conversation ending on its own terms and a rig fault,
+  which excludes the cell.
+- ``GoalCheckProof``, ``GoalCheckIntent`` — what a goal check proves, and how it is checked.
+- ``ApparatusProvenance`` — witnessed or commissioned decides which levers read as moved; cells never pool across it.
+- ``RubricScale``, ``RubricAxis``, the scale ``kind`` tags (``nominal``, ``ordinal``, ``interval``) and the
+  ``model_default`` temperature — how a score or a level is read; a new scale tag is a new model.
+- ``JudgedArtifact`` — which axes a cell is judged on.
+- ``WorldPlacement``, ``WorldEventKind``, ``WorldEventCause`` — what a transcript or a world means to the judge.
+- ``AsyncDeliveryStatus`` — what a delivered count counts.
+- ``CassetteMode`` — replay semantics, and identity.
+- ``TemperatureSelection``, ``TemperatureSetting``, ``CompletenessSource``, ``JudgeAttributionSource`` — facts of
+  method that a reader trusts or re-derives by.
+- ``DeclaredMeritAxis``, ``GuardrailDirection``, ``CampaignDesign.crossing``, ``ControlDeclaration.stimulus`` — the
+  semantics of an analysis design.
+- ``VariationAxis.generator``, ``ConversationSpec.turn_scheduler`` — instructions an older build must carry out.
+- ``RaterKind`` — calibration reads a person as ground truth.
+- ``OutOfRunOutcome`` — binary and complete.
+- ``SecondJudgeAskedBy`` — an unknown asker's pass would be pooled into the wrong agreement.
+- ``StopReason`` — the normalized provider contract, which already has a catch-all (``error``).
+- Every ``doc_type`` — a new type is a new model, never a new value.
 
 **A minor's ledger entry asserts its additivity in words**, and review holds it there, because a schema diff
 cannot see a field that is additive in shape and breaking in meaning (a ``faults`` field meaning "exclude this

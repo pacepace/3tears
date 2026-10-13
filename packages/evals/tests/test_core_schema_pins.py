@@ -69,17 +69,17 @@ PINNED_CORE_SCHEMA_MINOR = 0
 CORE_SHAPE_DIGESTS: dict[str, str] = {
     "calibration_rating": "eb82930180e483123fedb43115bcccc25072743a75b362ca36c6405a011ab840",
     "case_set": "cd9240cfe0ba3d5bc47a5d1745e9550d5635c97dec673a07e369ecaaa0d4cd2d",
-    "eval_action_job": "34a319ad2d80e03af4230c7fd743217e5b8077612346acab5cf2046da60edf3d",
-    "eval_analysis_attempt": "bf64f0740df0680db480ec6ce27bbe06706482673c866b48a22245e17782af3e",
+    "eval_action_job": "1f0f57286049566dddc98121e1f93051c43192e9a591ff226b2bb1fd319ba001",
+    "eval_analysis_attempt": "b6818453c2c4909a9b9b8a38aa295e40b1001af589bdebf08b5e76c6b5bea436",
     "eval_campaign": "80c372f8bc21bdb3dab458044f54eafe8199d1a3291a6121187b721099c6f440",
     "eval_generation_slot": "ca9d09bbe419cfa67397aa779301656c3c55e0a8d5ce682f961fa7afa9001a02",
-    "eval_judge_temperature_check": "bb30f648778effb15139f519595277af05dc1f12cdbc84994a487a4091dc5a51",
-    "eval_launch": "068f35d01499ee970dd142663dd5fce44ef61ac2ad57f06e66d10bc0fd69115e",
-    "eval_out_of_run_spend": "f2e3cd674e1b5f8dcc7d0ef5c66cbc5f1b610ecdbcae112a3873f34712c68716",
-    "eval_result": "8128b07a619c442d91030fea873063ab124c6b005a728575f169f11e2c2e4ddd",
-    "eval_run": "e43ff83a6be08add5e725b5ac00e545b815ec19526a654d0322670ca8d05cf8a",
-    "eval_second_judge_pass": "849b1f0bae7466e15032b71f9e620c6060b0de94aed7d107aedd76ac5cae814c",
-    "eval_sweep": "36ed86de4dcd89bdc989b9bdb7542440a39cdd27f1b96d027b4b3ac4d187b3d0",
+    "eval_judge_temperature_check": "7b7329ebdc0bcc86d1ed178dceb5b27d09e87463941470a4780af3d61411a673",
+    "eval_launch": "bea6ee7730e3cb901fae51173f0b9173e0c7760bd2044f61a006c1b8285d5ba8",
+    "eval_out_of_run_spend": "f971ae2323812f6bba51e64bc21145971840414c4c55d4d4bd21a7063cd79f45",
+    "eval_result": "fcd0680de40e609fe022b711dfe654da4f4eed5d8c79d991a1f0af06cacd0fd0",
+    "eval_run": "fd706ef4ac538a9a0bf26d98a960c10d5763fbdda6ef8fa60e7bad0ecb70d1fd",
+    "eval_second_judge_pass": "0baec9aa24085cafa4d5c7956a9b81609262edc208069289d2cda7ad579c7436",
+    "eval_sweep": "c77dc40a100b1562acd662710c1aa62a430672367fe6545fabc40035f6872332",
     "eval_template": "82c4f3b331d903623cff91168c442ecabbe99c5a35224b1ef26d914f93923611",
     "eval_test_case": "8b8529be10e69772fbd20a86732730a9be3002bfe8c91e94cb0adb32f3cce414",
     "eval_trace": "9a661ba216e98bf33eedaa7b1ec0677ba0c2d6de3eaa7fe50435a03338f8ba0b",
@@ -282,7 +282,7 @@ def test_each_core_shape_matches_its_pin(doc_type: str) -> None:
 
 
 def test_an_added_optional_field_moves_a_pin() -> None:
-    """The case the pin exists for: an OPTIONAL field joining a core type is a shape change — a minor — and is seen."""
+    """The case the pin exists for: an OPTIONAL field joining a core type is a shape change (a minor), and is seen."""
     from pydantic import create_model
 
     run = _core_models()["eval_run"]
