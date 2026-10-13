@@ -152,8 +152,10 @@ Call-side facts the adapter must handle rather than inherit:
   judge's token budget cannot be sent on that route today. Every "cannot send" surfaces as a refusal by
   name, never a silent downgrade, or the recorded request settings would lie.
 - **Retries.** The Anthropic and OpenAI SDKs retry twice on 408/409/429/5xx and timeouts (OpenAI retries
-  `insufficient_quota` too); OpenRouter retries on a 300-second budget. All three are turned off with
-  `max_retries=0`. The Claude CLI retries internally up to ten times and re-asks for a schema up to five
+  `insufficient_quota` too); OpenRouter retries on a 300-second budget. Anthropic and OpenAI are turned off
+  with `max_retries=0`. OpenRouter is not: at `0` LangChain passes no retry config and the SDK falls back to
+  its own default, a backoff on 5XX bounded by one hour (a mocked 502 was sent 12 times), so the adapter also
+  passes `model_kwargs={"retries": None}`, which the SDK reads as no retry (issue #776). The Claude CLI retries internally up to ten times and re-asks for a schema up to five
   times, and models gives no way to turn either off.
 - **Breaker.** `create_chat_model` wires the process-wide (provider, key) circuit breaker; the adapter passes
   its own breaker with an unreachable threshold so an eval run neither trips nor is tripped by it.

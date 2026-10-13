@@ -42,7 +42,7 @@ Rows 1-7 are the ten `CompletionResult` members. Rows 8-12 are the call-side inp
 | 9 | reasoning effort | `effort` takes only `max/xhigh/high/medium/low` (`minimal` and `none` refused at build). Budget: `thinking={"type":"enabled","budget_tokens":N}`. Per call: `bind(thinking=…)` and `bind(output_config={"effort":…})` work; `bind(effort=…)` raises `TypeError` | `reasoning_effort` (str) per instance or per call (`bind(reasoning_effort=…)` confirmed). No token budget | `reasoning={"effort": w}` takes all 7 engine words. **`reasoning.max_tokens` and `reasoning.enabled` are silently stripped by the SDK** (sent as `reasoning: {}`) | `thinking` / `effort` per instance or per call. The defaults are pinned to thinking off and effort `high` |
 | 10 | failures | raw `anthropic.*Error` (`status_code`, `body`); `AnthropicContextOverflowError` (LangChain subclass); `CircuitOpenError` | raw `openai.*Error`; `OpenAIContextOverflowError`; a 200 carrying an in-body error raises a bare `ValueError` | `openrouter.errors.*` (`status_code`, `body`); a mid-stream error is a bare `ValueError`; `ModelCallTimeout`; a malformed chunk is a pydantic `ValidationError` | `ModelProviderError` / `ModelRateLimitError` (`status`, `reason`, `resets`); `ClaudeCliPool*`; SDK errors |
 | 11 | lifecycle | no close; the httpx client is `lru_cache`-shared process-wide, so **must not** be closed | same as anthropic | the SDK client and its httpx clients are owned **per instance** (GC finaliser). Closable via `await inner.client.__aexit__(None,None,None)` | process-wide CLI subprocess pool; the host calls `close_claude_cli_pool()` at shutdown. Nothing per model |
-| 12 | hidden retries | SDK `max_retries=2` on 408/409/429/5xx/529, timeouts and connection errors (529,529,200 = 3 hits, invisible). Off with `max_retries=0` | SDK `max_retries=2`; **retries 429 `insufficient_quota` too** (3 hits). Off with `max_retries=0` | SDK backoff on 5XX, connection and timeout errors, **bounded by time (300 s), not count**; 429 is not retried. Off with `max_retries=0` | CLI-internal API retries (`CLAUDE_CODE_MAX_RETRIES`, default 10), plus schema re-attempts. **Models gives no way to turn either off** |
+| 12 | hidden retries | SDK `max_retries=2` on 408/409/429/5xx/529, timeouts and connection errors (529,529,200 = 3 hits, invisible). Off with `max_retries=0` | SDK `max_retries=2`; **retries 429 `insufficient_quota` too** (3 hits). Off with `max_retries=0` | SDK backoff on 5XX, connection and timeout errors, **bounded by time (300 s), not count**; 429 is not retried. **Not off with `max_retries=0`**: that falls back to the SDK's one-hour default (12 hits on a 502); off with `model_kwargs={"retries": None}` | CLI-internal API retries (`CLAUDE_CODE_MAX_RETRIES`, default 10), plus schema re-attempts. **Models gives no way to turn either off** |
 
 Fully exposed, of the ten members (`content`, `input_tokens`, `output_tokens`, `cost_usd`, `price_source`,
 `model`, `served_model`, `reasoning_tokens`, `temperature`, `stop_reason`):
@@ -425,8 +425,11 @@ Every retry below is invisible on the returned `AIMessage`. The probe got the sa
   initial 500 ms, ×1.5, `max_elapsed_time = max_retries × 150 000 ms`. The SDK retries **only `5XX`** plus
   connection and timeout errors (`SP/openrouter/chat.py:597-638`, `SP/openrouter/utils/retries.py:175-260`).
   The bound is **elapsed time (300 s at the default 2), not a count**. Probe: 502,502,200 gave 3 hits in
-  2.0 s; 402, 429, 400 and 404 gave 1 hit each. **Off:** `max_retries=0` (no `retry_config`, so `retries`
-  stays UNSET and the request goes once).
+  2.0 s; 402, 429, 400 and 404 gave 1 hit each. **`max_retries=0` does not turn it off.** LangChain then
+  passes no `retry_config`, `retries` stays UNSET, and the SDK's chat call reads UNSET as its own default:
+  `BackoffStrategy(500, 60000, 1.5, 3600000)` on 5XX, a one-hour budget (`SP/openrouter/chat.py:596-606`). A
+  later probe on the adapter branch sent a mocked 502 twelve times. **Off:** `model_kwargs={"retries": None}`,
+  which the SDK reads as no retry (issue #776). This corrects the first pass of this investigation.
 - **claude_cli.** The bundled CLI (2.1.286) retries its own API calls. `CLAUDE_CODE_MAX_RETRIES` defaults to
   10 (300 in one mode), clamped at 15 (read from the minified bundle: `gMo=10`, `hMo=300`, `OIe=15`).
   Models never sets it, `_FORWARDED_KWARGS` drops `max_retries`, and `env` is not forwarded either. Separately,
@@ -441,7 +444,8 @@ Every retry below is invisible on the returned `AIMessage`. The probe got the sa
   - anthropic / openai: (1 + max_retries) × (timeout + back-off).
   - openrouter: up to 300 s of back-off on top of a 120 s-per-chunk deadline.
 
-  The design's "no hidden retries" rule is met only by `max_retries=0` on the three HTTP providers.
+  The design's "no hidden retries" rule is met only by `max_retries=0` on anthropic and openai, plus
+  `model_kwargs={"retries": None}` on openrouter.
 
 ---
 
@@ -514,7 +518,8 @@ Every retry below is invisible on the returned `AIMessage`. The probe got the sa
     `friendly_api_error` is not a substitute.
 13. **aclose.** OpenRouter: `await chat.bound.client.__aexit__(None, None, None)`. Everything else is a
     no-op; never close the shared anthropic and openai httpx clients or the CLI pool.
-14. **Retries.** `max_retries=0` on anthropic, openai and openrouter. Otherwise size `RequestCeiling` and
+14. **Retries.** `max_retries=0` on anthropic and openai; on openrouter also `model_kwargs={"retries": None}`,
+    since `max_retries=0` alone falls back to the SDK's one-hour default. Otherwise size `RequestCeiling` and
     `price_ceiling` for them.
 
 ## What it cannot do without models changes
