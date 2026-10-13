@@ -61,6 +61,7 @@ from threetears.agent.memory.authorize import (
     authorize_memory_access,
     ensure_memory_owner_assignment,
 )
+from threetears.agent.memory.revisions import RETRACTED_BECAUSE_PREFIX, RETRACTED_SALIENCE_PREFIX
 from threetears.agent.memory.retrieval_scope import (
     RetrievalScope,
     build_scope_conditions,
@@ -549,6 +550,41 @@ _MEMORIES_SELECT_COLUMNS = (
 #: id still opens it. ``?`` is the GIN-indexed key test on the tags array.
 _NOT_RETRACTED = "NOT (COALESCE(tags, '[]'::jsonb) ? 'retracted')"
 _NOT_RETRACTED_M = "NOT (COALESCE(m.tags, '[]'::jsonb) ? 'retracted')"
+
+#: What a memory line is marked from, selected beside the memory by every read
+#: that shows one to an agent: its name, whether it is permanent, its tags
+#: (retired, and why), what replaced it and when, and a correction written
+#: beside it. ``superseded_at`` is the replacement's own date and is NULL when
+#: the replacement no longer exists, which is how a reader tells a memory that
+#: is replaced from one whose replacement is gone. ``corrected_by`` is a linked
+#: memory written beside one that was not replaced (a permanent memory's
+#: correction).
+_MEMORY_MARK_COLUMNS = (
+    "alias, evergreen, tags, superseded_by, "
+    "(SELECT g.date_created FROM memories g "
+    "WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by) AS superseded_at, "
+    "(SELECT c.consolidated_memory_id FROM memory_consolidations c "
+    "WHERE c.agent_id = memories.agent_id AND c.source_memory_id = memories.memory_id "
+    "AND memories.superseded_by IS NULL ORDER BY c.date_created DESC LIMIT 1) AS corrected_by"
+)
+_MEMORY_MARK_KEYS = ("alias", "evergreen", "tags", "superseded_by", "superseded_at", "corrected_by")
+
+#: A memory a live replacement stands in for. A replacement that is gone leaves
+#: its sources current again, as every other read here treats them.
+_REPLACED = (
+    "(superseded_by IS NOT NULL AND EXISTS (SELECT 1 FROM memories g "
+    "WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))"
+)
+
+#: The tags :meth:`MemoriesCollection.mark_retracted` writes and
+#: :meth:`MemoriesCollection.clear_retracted` takes off again.
+_RETRACTED_BECAUSE = RETRACTED_BECAUSE_PREFIX
+_RETRACTED_SALIENCE = RETRACTED_SALIENCE_PREFIX
+
+
+def _marks(row: Any) -> dict[str, Any]:
+    """the mark columns of a memory row, as a dict a caller can merge into its own."""
+    return {key: row[key] for key in _MEMORY_MARK_KEYS}
 
 
 class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
@@ -1170,10 +1206,10 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         if self.l3_pool is None or not alias:
             return None
         row = await self.l3_pool.fetchrow(
-            """
+            f"""
             SELECT memory_id, agent_id, customer_id, user_id, conversation_id,
-                   message_id_source, type_memory, content, alias,
-                   date_created, date_updated
+                   message_id_source, type_memory, content,
+                   date_created, date_updated, {_MEMORY_MARK_COLUMNS}
             FROM memories
             WHERE agent_id = $1 AND user_id = $2 AND alias = $3
             """,
@@ -1483,8 +1519,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # + rbac guard; the walker tags this call as inside the
         # Collection class so enforcement test #3 stays clean.
         rows = await self.l3_pool.fetch(
-            """
-            SELECT memory_id, type_memory, content, date_created
+            f"""
+            SELECT memory_id, type_memory, content, date_created, {_MEMORY_MARK_COLUMNS}
             FROM memories
             WHERE agent_id = $1
               AND memory_id = ANY($2::uuid[])
@@ -1508,8 +1544,15 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         date_after: datetime | None = None,
         date_before: datetime | None = None,
         scope: RetrievalScope | None = None,
+        include_retracted: bool = False,
     ) -> list[dict[str, Any]]:
         """semantic (vector-only) search for the add/search memory tools.
+
+        A retracted memory is not found unless ``include_retracted`` is set:
+        it no longer holds, and only a read by its id or a listing of the
+        retired ones opens it. Each row carries what a line is marked from
+        (``alias``, ``evergreen``, ``tags``, ``superseded_by``,
+        ``superseded_at``, ``corrected_by``).
 
         absorbs the ``_search_memories`` path from :mod:`tools.py`
         (the LangChain ``memory_search`` tool's vector leg). returns
@@ -1568,6 +1611,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         conditions.extend(scope_fragments)
         params.extend(scope_extra_params)
         conditions.append("embedding IS NOT NULL")
+        if not include_retracted:
+            conditions.append(_NOT_RETRACTED)
         where_clause = " AND ".join(conditions)
         # ``embedding IS NOT NULL`` guard: ``NULL <=> vector`` is NULL,
         # which trips ``float(similarity)`` downstream.
@@ -1576,13 +1621,14 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # therefore does NOT apply the salience floor OR the supersession
         # filter that ``hybrid_search`` (the during-a-turn grounding path)
         # applies -- an explicit search surfaces dormant + superseded rows
-        # too (the source is "dormant, not gone"), leaving the gist-vs-
-        # source choice to the searching agent. Only proactive grounding
-        # hides them for a clean turn; direct id/alias recall likewise
-        # bypasses. (Contrast find_similar_for_dedup, which DOES filter,
-        # because it drives write-path UPDATE targeting, not display.)
+        # too (the source is "dormant, not gone"), and each row says what
+        # replaced it so the searching agent can tell the two apart. Only
+        # proactive grounding hides them for a clean turn; direct id/alias
+        # recall likewise bypasses. (Contrast find_similar_for_dedup, which
+        # DOES filter, because it drives write-path UPDATE targeting, not
+        # display.)
         query_sql = f"""
-            SELECT memory_id, type_memory, content, date_created,
+            SELECT memory_id, type_memory, content, date_created, {_MEMORY_MARK_COLUMNS},
                    1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memories
             WHERE {where_clause}
@@ -1600,6 +1646,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 "content": row["content"],
                 "date_created": row["date_created"],
                 "similarity": float(row["similarity"]),
+                **_marks(row),
             }
             for row in rows
             if float(row["similarity"]) > similarity_threshold
@@ -1616,8 +1663,13 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         date_after: datetime | None = None,
         date_before: datetime | None = None,
         scope: RetrievalScope | None = None,
+        include_retracted: bool = False,
     ) -> list[dict[str, Any]]:
         """FTS keyword search for the add/search memory tools.
+
+        A retracted memory is not found unless ``include_retracted`` is set,
+        and each row carries what a line is marked from, as
+        :meth:`search_by_semantic` does.
 
         complements :meth:`search_by_semantic` -- run both in parallel
         and merge on ``memory_id``. ``agent_id`` is the partition
@@ -1673,13 +1725,15 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         scope_fragments, scope_extra_params, idx = build_scope_conditions(scope, next_param=idx)
         conditions.extend(scope_fragments)
         params.extend(scope_extra_params)
+        if not include_retracted:
+            conditions.append(_NOT_RETRACTED)
         where = " AND ".join(conditions)
         # DELIBERATE-RECALL by design (§3), mirroring search_by_semantic:
         # the agent-invoked memory_search keyword leg applies NO salience
         # floor and NO supersession filter (unlike ambient hybrid_search) --
         # an explicit search surfaces dormant + superseded rows.
         query_sql = f"""
-            SELECT memory_id, type_memory, content, date_created,
+            SELECT memory_id, type_memory, content, date_created, {_MEMORY_MARK_COLUMNS},
                    ts_rank_cd(search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
             FROM memories
             WHERE {where}
@@ -1695,9 +1749,238 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 "type": row["type_memory"],
                 "content": row["content"],
                 "date_created": row["date_created"],
+                **_marks(row),
             }
             for row in rows
         ]
+
+    async def find_for_recall(
+        self,
+        *,
+        memory_id: UUID,
+        user_id: UUID,
+        agent_id: UUID,
+    ) -> dict[str, Any] | None:
+        """fetch one memory with what its header says, for a read by id.
+
+        Scoped by ``agent_id`` (partition predicate) and ``user_id`` (row
+        owner), like :meth:`fetch_content_for_recall`. A retired or replaced
+        memory is returned: a read by id opens anything that is kept.
+
+        :param memory_id: memory primary-key value
+        :ptype memory_id: UUID
+        :param user_id: owning user UUID (row filter)
+        :ptype user_id: UUID
+        :param agent_id: partition column on memories; required
+        :ptype agent_id: UUID
+        :return: ``memory_id``, ``type_memory``, ``content``, ``date_created``
+            and the mark columns, or ``None`` when there is no such memory
+        :rtype: dict[str, Any] | None
+        """
+        if self.l3_pool is None:
+            return None
+        # cache-bypass: the ``user_id`` guard is a security control the L1
+        # row cache cannot enforce, and the marks are computed columns.
+        row = await self.l3_pool.fetchrow(
+            f"SELECT memory_id, type_memory, content, date_created, {_MEMORY_MARK_COLUMNS} "
+            "FROM memories WHERE agent_id = $1 AND memory_id = $2 AND user_id = $3",
+            agent_id,
+            memory_id,
+            user_id,
+        )
+        return dict(row) if row else None
+
+    async def list_for_user(
+        self,
+        *,
+        user_id: UUID,
+        agent_id: UUID,
+        date_after: datetime | None = None,
+        date_before: datetime | None = None,
+        type_filter: str | None = None,
+        permanent: bool | None = None,
+        has_alias: bool | None = None,
+        state: str = "current",
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """list one person's memories newest first, with no query, and how many match in all.
+
+        ``state`` picks which memories: ``current`` (neither retired nor
+        replaced by a memory that exists), ``retired``, ``replaced`` or
+        ``all``. Every other filter narrows that set; ``None`` leaves a filter
+        off.
+
+        :param user_id: owning user UUID (row filter)
+        :ptype user_id: UUID
+        :param agent_id: partition column on memories; required
+        :ptype agent_id: UUID
+        :param date_after: inclusive lower bound on ``date_created``
+        :ptype date_after: datetime | None
+        :param date_before: inclusive upper bound on ``date_created``
+        :ptype date_before: datetime | None
+        :param type_filter: ``type_memory`` equality filter
+        :ptype type_filter: str | None
+        :param permanent: only permanent memories, or only those that are not
+        :ptype permanent: bool | None
+        :param has_alias: only named memories, or only unnamed ones
+        :ptype has_alias: bool | None
+        :param state: ``current``, ``retired``, ``replaced`` or ``all``
+        :ptype state: str
+        :param limit: most rows to return
+        :ptype limit: int
+        :param offset: rows to skip, newest first
+        :ptype offset: int
+        :return: the page of rows (``memory_id``, ``type_memory``, ``content``,
+            ``date_created`` and the mark columns) and the count of every match
+        :rtype: tuple[list[dict[str, Any]], int]
+        :raises ValueError: when ``state`` is not one of the four
+        """
+        if state not in {"current", "retired", "replaced", "all"}:
+            raise ValueError(f"list_for_user: unknown state {state!r}")
+        if self.l3_pool is None:
+            return [], 0
+        conditions = ["agent_id = $1", "user_id = $2"]
+        params: list[Any] = [agent_id, user_id]
+
+        def _bind(fragment: str, value: Any) -> None:
+            params.append(value)
+            conditions.append(fragment.format(n=len(params)))
+
+        if date_after is not None:
+            _bind("date_created >= ${n}", date_after)
+        if date_before is not None:
+            _bind("date_created <= ${n}", date_before)
+        if type_filter:
+            _bind("type_memory = ${n}", type_filter)
+        if permanent is not None:
+            conditions.append("evergreen" if permanent else "NOT evergreen")
+        if has_alias is not None:
+            conditions.append("alias IS NOT NULL" if has_alias else "alias IS NULL")
+        if state == "current":
+            conditions.append(_NOT_RETRACTED)
+            conditions.append(f"NOT {_REPLACED}")
+        elif state == "retired":
+            conditions.append(f"NOT ({_NOT_RETRACTED})")
+        elif state == "replaced":
+            conditions.append(_REPLACED)
+        where = " AND ".join(conditions)
+        # cache-bypass: a filtered scan of one person's rows is not primary-key
+        # addressable; ix_memories_user_date backs the order.
+        total = await self.l3_pool.fetchval(f"SELECT count(*) FROM memories WHERE {where}", *params)
+        rows = await self.l3_pool.fetch(
+            f"SELECT memory_id, type_memory, content, date_created, {_MEMORY_MARK_COLUMNS} "
+            f"FROM memories WHERE {where} "
+            f"ORDER BY date_created DESC, memory_id DESC LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}",
+            *params,
+            limit,
+            offset,
+        )
+        return [dict(row) for row in rows], int(total or 0)
+
+    async def mark_retracted(
+        self,
+        agent_id: UUID,
+        *,
+        memory_id: UUID,
+        reason: str,
+        allow_permanent: bool = False,
+    ) -> bool:
+        """tag one memory retracted, with why, and drop its salience to the bottom, in one statement.
+
+        The check and the write are one ``UPDATE``: a memory that is already
+        retracted, or permanent without ``allow_permanent``, matches no row and
+        nothing is written. What its salience was is kept as a tag, so
+        :meth:`clear_retracted` puts it back. A permanent memory's salience is
+        left alone: it never decays, and only the tag takes it out of recall.
+
+        :param agent_id: partition column; required
+        :ptype agent_id: UUID
+        :param memory_id: the memory
+        :ptype memory_id: UUID
+        :param reason: why it no longer holds; the first 200 characters are kept
+        :ptype reason: str
+        :param allow_permanent: retract a permanent memory too
+        :ptype allow_permanent: bool
+        :return: ``True`` when the memory was retracted by this call
+        :rtype: bool
+        """
+        if self.l3_pool is None:
+            return False
+        # tags and salience change together, so this raw pass is the writer and
+        # the row is evicted for a later get() to read fresh.
+        async with self.bypassing_write((agent_id, memory_id)) as write:
+            changed = await self.l3_pool.fetchval(
+                f"""
+                UPDATE memories SET
+                    tags = COALESCE(tags, '[]'::jsonb) || jsonb_build_array(
+                        'retracted', $3::text, '{_RETRACTED_SALIENCE}' || salience::text),
+                    salience = CASE WHEN evergreen THEN salience ELSE 0.0 END,
+                    date_updated = now()
+                WHERE agent_id = $1 AND memory_id = $2
+                  AND {_NOT_RETRACTED}
+                  AND ($4::boolean OR NOT evergreen)
+                RETURNING memory_id
+                """,
+                agent_id,
+                memory_id,
+                f"{_RETRACTED_BECAUSE}{reason[:200]}",
+                allow_permanent,
+            )
+            if changed is None:
+                write.unchanged()
+        return changed is not None
+
+    async def clear_retracted(
+        self,
+        agent_id: UUID,
+        *,
+        memory_id: UUID,
+        default_salience: float = 0.5,
+    ) -> bool:
+        """take the retracted tags off one memory and put its salience back, in one statement.
+
+        The undo of :meth:`mark_retracted`. Salience returns to what the
+        retraction recorded, or to ``default_salience`` for a memory retracted
+        before that was recorded. A memory that is not retracted matches no row.
+
+        :param agent_id: partition column; required
+        :ptype agent_id: UUID
+        :param memory_id: the memory
+        :ptype memory_id: UUID
+        :param default_salience: the salience to restore when none was recorded
+        :ptype default_salience: float
+        :return: ``True`` when the memory was restored by this call
+        :rtype: bool
+        """
+        if self.l3_pool is None:
+            return False
+        async with self.bypassing_write((agent_id, memory_id)) as write:
+            changed = await self.l3_pool.fetchval(
+                f"""
+                UPDATE memories SET
+                    salience = CASE WHEN evergreen THEN salience ELSE GREATEST(0.0, LEAST(1.0, COALESCE(
+                        (SELECT substring(t FROM {len(_RETRACTED_SALIENCE) + 1})::numeric
+                         FROM jsonb_array_elements_text(tags) AS t
+                         WHERE starts_with(t, '{_RETRACTED_SALIENCE}') LIMIT 1),
+                        $3))) END,
+                    tags = (SELECT COALESCE(jsonb_agg(t), '[]'::jsonb)
+                            FROM jsonb_array_elements_text(tags) AS t
+                            WHERE t <> 'retracted'
+                              AND NOT starts_with(t, '{_RETRACTED_BECAUSE}')
+                              AND NOT starts_with(t, '{_RETRACTED_SALIENCE}')),
+                    date_updated = now()
+                WHERE agent_id = $1 AND memory_id = $2
+                  AND NOT ({_NOT_RETRACTED})
+                RETURNING memory_id
+                """,
+                agent_id,
+                memory_id,
+                default_salience,
+            )
+            if changed is None:
+                write.unchanged()
+        return changed is not None
 
     async def fetch_content_for_recall(
         self,
@@ -2620,6 +2903,8 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         embedding: list[float],
         max_results: int,
         similarity_threshold: float,
+        date_after: datetime | None = None,
+        date_before: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """vector-only semantic search (memory_search tool leg).
 
@@ -2633,6 +2918,10 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         :ptype max_results: int
         :param similarity_threshold: similarity floor
         :ptype similarity_threshold: float
+        :param date_after: inclusive lower bound on the file's ``date_created``
+        :ptype date_after: datetime | None
+        :param date_before: inclusive upper bound on the file's ``date_created``
+        :ptype date_before: datetime | None
         :return: list of row dicts
         :rtype: list[dict[str, Any]]
         """
@@ -2656,6 +2945,8 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
             WHERE mc.agent_id = $2
               AND mc.user_id = $3
               AND mc.embedding IS NOT NULL
+              AND ($5::timestamptz IS NULL OR med.date_created >= $5)
+              AND ($6::timestamptz IS NULL OR med.date_created <= $6)
             ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT $4
             """,
@@ -2663,6 +2954,8 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
             agent_id,
             user_id,
             max_results,
+            date_after,
+            date_before,
         )
         result: list[dict[str, Any]] = []
         for row in rows:
@@ -2690,6 +2983,8 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         agent_id: UUID,
         fts_text: str,
         max_results: int,
+        date_after: datetime | None = None,
+        date_before: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """FTS keyword search for the memory_search tool.
 
@@ -2701,6 +2996,10 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         :ptype fts_text: str
         :param max_results: cap on returned rows
         :ptype max_results: int
+        :param date_after: inclusive lower bound on the file's ``date_created``
+        :ptype date_after: datetime | None
+        :param date_before: inclusive upper bound on the file's ``date_created``
+        :ptype date_before: datetime | None
         :return: list of row dicts
         :rtype: list[dict[str, Any]]
         """
@@ -2721,6 +3020,8 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
               AND mc.user_id = $3
               AND mc.embedding IS NOT NULL
               AND {_CHUNK_FTS_MATCH}
+              AND ($5::timestamptz IS NULL OR med.date_created >= $5)
+              AND ($6::timestamptz IS NULL OR med.date_created <= $6)
             ORDER BY fts_rank DESC
             LIMIT $4
             """,
@@ -2728,6 +3029,8 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
             agent_id,
             user_id,
             max_results,
+            date_after,
+            date_before,
         )
         return [
             {
@@ -3127,6 +3430,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
             """
             SELECT mc.chunk_id, mc.content, mc.heading_context, mc.page_number,
                    mc.memory_id, mc.message_id_start, mc.message_id_end,
+                   mc.chunk_index, mc.date_created,
                    med.metadata_json, med.media_id
             FROM memory_chunks mc
             LEFT JOIN media med
@@ -3150,6 +3454,8 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         embedding: list[float],
         max_results: int,
         similarity_threshold: float,
+        date_after: datetime | None = None,
+        date_before: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """vector-only semantic search (memory_search tool leg).
 
@@ -3163,7 +3469,11 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         :ptype max_results: int
         :param similarity_threshold: similarity floor
         :ptype similarity_threshold: float
-        :return: list of row dicts
+        :param date_after: inclusive lower bound on the passage's ``date_created``
+        :ptype date_after: datetime | None
+        :param date_before: inclusive upper bound on the passage's ``date_created``
+        :ptype date_before: datetime | None
+        :return: list of row dicts, each with the passage's ``date_created``
         :rtype: list[dict[str, Any]]
         """
         if self.l3_pool is None:
@@ -3177,7 +3487,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
             """
             SELECT mc.chunk_id, mc.content, mc.heading_context, mc.page_number,
                    mc.memory_id, mc.message_id_start, mc.message_id_end,
-                   med.metadata_json,
+                   mc.date_created, med.metadata_json,
                    1 - (mc.embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memory_chunks mc
             LEFT JOIN media med
@@ -3186,6 +3496,8 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
             WHERE mc.agent_id = $2
               AND mc.user_id = $3
               AND mc.embedding IS NOT NULL
+              AND ($5::timestamptz IS NULL OR mc.date_created >= $5)
+              AND ($6::timestamptz IS NULL OR mc.date_created <= $6)
             ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT $4
             """,
@@ -3193,6 +3505,8 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
             agent_id,
             user_id,
             max_results,
+            date_after,
+            date_before,
         )
         result: list[dict[str, Any]] = []
         for row in rows:
@@ -3209,10 +3523,90 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                     "message_id_start": (str(row["message_id_start"]) if row["message_id_start"] else None),
                     "message_id_end": (str(row["message_id_end"]) if row["message_id_end"] else None),
                     "metadata_json": row["metadata_json"],
+                    "date_created": row["date_created"],
                     "similarity": sim,
                 },
             )
         return result
+
+    async def find_for_recall(
+        self,
+        *,
+        chunk_id: UUID,
+        user_id: UUID,
+        agent_id: UUID,
+    ) -> dict[str, Any] | None:
+        """fetch one passage whole, with where it sits in its memory and when it was written.
+
+        ``total`` is how many passages its memory has, so a reader can say
+        "part 12 of 37" and page to a neighbour by ``chunk_index``.
+
+        :param chunk_id: chunk primary-key value
+        :ptype chunk_id: UUID
+        :param user_id: owning user UUID (row filter)
+        :ptype user_id: UUID
+        :param agent_id: partition column on memory_chunks; required
+        :ptype agent_id: UUID
+        :return: ``content``, ``memory_id``, ``chunk_index``, ``total``,
+            ``date_created``, ``heading_context``, ``page_number`` and the
+            source file's ``metadata_json``; ``None`` when there is no such passage
+        :rtype: dict[str, Any] | None
+        """
+        if self.l3_pool is None:
+            return None
+        # cache-bypass: by-ID fetch scoped by (agent_id, user_id) -- both are
+        # security predicates the L1 cache cannot enforce -- with a sibling count.
+        row = await self.l3_pool.fetchrow(
+            """
+            SELECT mc.content, mc.memory_id, mc.chunk_index, mc.date_created,
+                   mc.heading_context, mc.page_number,
+                   (SELECT count(*) FROM memory_chunks s
+                    WHERE s.agent_id = mc.agent_id AND s.memory_id = mc.memory_id
+                      AND s.user_id = mc.user_id) AS total,
+                   (SELECT med.metadata_json FROM media med
+                    WHERE med.agent_id = mc.agent_id AND med.memory_id = mc.memory_id LIMIT 1) AS metadata_json
+            FROM memory_chunks mc
+            WHERE mc.agent_id = $1 AND mc.chunk_id = $2 AND mc.user_id = $3
+            """,
+            agent_id,
+            chunk_id,
+            user_id,
+        )
+        return dict(row) if row else None
+
+    async def count_by_memory_id(
+        self,
+        memory_id: UUID,
+        *,
+        user_id: UUID,
+        agent_id: UUID,
+        customer_id: UUID,
+    ) -> int:
+        """how many passages ``memory_id`` has, under the same scope :meth:`find_by_memory_id` reads.
+
+        :param memory_id: parent memory UUID
+        :ptype memory_id: UUID
+        :param user_id: owning user UUID
+        :ptype user_id: UUID
+        :param agent_id: partition column on memory_chunks; required
+        :ptype agent_id: UUID
+        :param customer_id: required sub-scope
+        :ptype customer_id: UUID
+        :return: the count
+        :rtype: int
+        """
+        if self.l3_pool is None:
+            return 0
+        # cache-bypass: an aggregate over one memory's passages.
+        total = await self.l3_pool.fetchval(
+            "SELECT count(*) FROM memory_chunks mc "
+            "WHERE mc.agent_id = $1 AND mc.memory_id = $2 AND mc.user_id = $3 AND mc.customer_id = $4",
+            agent_id,
+            memory_id,
+            user_id,
+            customer_id,
+        )
+        return int(total or 0)
 
     async def fetch_content_for_recall(
         self,
@@ -3334,7 +3728,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
 
         rows = await self.l3_pool.fetch(
             f"""
-            SELECT mc.chunk_id, mc.memory_id, mc.content, mc.summary,
+            SELECT mc.chunk_id, mc.memory_id, mc.chunk_index, mc.content, mc.summary,
                    mc.heading_context, mc.page_number,
                    mc.message_id_start, mc.message_id_end,
                    mc.date_created
@@ -3490,7 +3884,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
 
         rows = await self.l3_pool.fetch(
             f"""
-            SELECT mc.chunk_id, mc.memory_id, mc.content, mc.summary,
+            SELECT mc.chunk_id, mc.memory_id, mc.chunk_index, mc.content, mc.summary,
                    mc.heading_context, mc.page_number,
                    mc.message_id_start, mc.message_id_end,
                    mc.date_created
