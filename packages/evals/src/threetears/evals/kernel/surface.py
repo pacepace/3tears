@@ -523,7 +523,8 @@ class EarlierControl(EvalDocumentModel):
     predicate, and these are the cells under the earlier one. Pooling them would put observations keyed by two
     predicates into one number; contrasting them would compare the control with itself under another digest and
     let a reader report the control "not separated" from the control. So they are named, kept out of every
-    contrast, guardrail and adoption check, and said once.
+    contrast, guardrail and adoption check, never a contestant on the frontier (its point is marked and is in no
+    dominance test, never the pick and never a cost tie), and said once.
     """
 
     variant_key: str = Field(min_length=1, description="The key the control's earlier cells carry: the stored key.")

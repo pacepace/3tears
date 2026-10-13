@@ -166,7 +166,9 @@ def _frontier_dominance(frontier: FrontierResult) -> dict[str, FrontierDominance
     placed: dict[str, list[FrontierDominance | None]] = {}
     for subject in frontier.subjects:
         for point in subject.points:
-            placed.setdefault(point.variant_key, []).append(point.dominance)
+            # The control under an earlier identity predicate is in no dominance test: it has no standing to draw.
+            if point.earlier_control is None:
+                placed.setdefault(point.variant_key, []).append(point.dominance)
     return {key: standings[0] for key, standings in placed.items() if len(standings) == 1 and standings[0] is not None}
 
 

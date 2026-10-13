@@ -577,8 +577,9 @@ class RealizedDesign(EvalDocumentModel):
         default=None,
         description=(
             "The declared control's cells under an earlier identity predicate, where the campaign's cells carry "
-            "both of its keys: the control as it ran before the predicate changed, so in no contrast, no guardrail "
-            "and no adoption check — a rival arm it is not — and not pooled into `control_arm`'s numbers, which "
+            "both of its keys: the control as it ran before the predicate changed, so in no contrast, no guardrail, "
+            "no adoption check and no frontier contest (`FrontierPoint.earlier_control` marks its point) — a rival "
+            "arm it is not — and not pooled into `control_arm`'s numbers, which "
             "are the current predicate's cells only. Its `disclosure` says so; say it as written. None otherwise."
         ),
     )
@@ -1925,8 +1926,8 @@ class AnalysisContextBundle(EvalDocumentModel):
     # HOST editing its own declarations is not a reason to bump it, and a host has no way to: that
     # move is carried by `host_declarations_digest`, derived from the declarations themselves. An
     # A/B set spanning a bump must be read as spanning it. 51 is the first public release's bundle
-    # shape (50 plus `RealizedDesign.earlier_control`, added before the release); the shapes before it
-    # were pre-release.
+    # shape (50 plus `RealizedDesign.earlier_control` and `FrontierPoint.earlier_control`, added before the
+    # release); the shapes before it were pre-release.
     schema_version: int = Field(
         default=51, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )

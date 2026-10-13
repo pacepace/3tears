@@ -78,7 +78,7 @@ notes).
   control matches its stored key, which the cells stamped under its own version keep, and, under a later
   `IDENTITY_VERSION`, also the key its map re-keys to, so it is never stale while its old cells are there. Its arm
   is the new version's cells wherever any exist; the old version's cells are named beside it as the control under
-  that version, disclosed, in no contrast and not in the control's numbers. That re-keying follows a change to how
+  that version, disclosed, in no contrast, no contestant on the frontier, and not in the control's numbers. That re-keying follows a change to how
   a lever map is digested only: a renamed lever, kind or overlay field, or a lever added to every map, gives new
   runs a different map, which no recomputation of the stored one reaches, and the control then matches only its old
   cells. A control

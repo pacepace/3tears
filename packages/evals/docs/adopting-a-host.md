@@ -292,7 +292,7 @@ the control is addressed from a run (`control_from_run_id`, `set_campaign_contro
 Under another version the control matches its stored key, which the cells stamped under its own version keep, and
 the key recomputed from that map, which the arm's new runs carry, so it never goes stale while its old cells are in
 the campaign. Its arm is one set of cells: the new runs' cells where there are any, with the old cells named beside
-it as the control under the earlier version (`RealizedDesign.earlier_control`), disclosed, and in no contrast; the
+it as the control under the earlier version (`RealizedDesign.earlier_control`), disclosed, in no contrast, and no contestant on the frontier; the
 control's numbers are the new cells only. The recomputation follows a change to how a map is digested only: a lever,
 kind or overlay field your host renames, or a lever added to every map, gives new runs a different map, and the
 control then matches only the cells from before it. A control key typed by hand
