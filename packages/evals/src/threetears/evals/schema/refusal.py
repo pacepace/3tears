@@ -16,7 +16,7 @@ the status a host's code acts on.
 
 from __future__ import annotations
 
-from typing import Annotated, Final
+from typing import Annotated, Final, Literal, get_args
 
 from pydantic import ConfigDict, Field
 
@@ -33,16 +33,15 @@ from threetears.evals.schema.base import CoreShapeModel, EvalBaseModel, known_un
 #: code acts on, rather than folded into a kind this build knows.
 RefusalKind = str
 
+#: A value of :data:`RefusalKind` this build knows, as a type: what a caller names (an action's argument, a
+#: filter) and what this build writes, refused outside the set as any ``Literal`` is. A stored field reads
+#: the open :data:`RefusalKind` instead.
+KnownRefusalKind = Literal[
+    "refused", "not_found", "conflict", "validation_failed", "storage_failed", "provider_refused", "admission_refused"
+]
+
 #: The refusal kinds this build knows, one per public engine error class, in the order its readers list them.
-REFUSAL_KINDS: Final[tuple[str, ...]] = (
-    "refused",
-    "not_found",
-    "conflict",
-    "validation_failed",
-    "storage_failed",
-    "provider_refused",
-    "admission_refused",
-)
+REFUSAL_KINDS: Final[tuple[str, ...]] = get_args(KnownRefusalKind)
 
 #: The type of a stored refusal's kind: one of :data:`REFUSAL_KINDS`, or, on the stored read of a newer minor's record,
 #: a kind that minor added.
@@ -77,4 +76,4 @@ RefusalField = Annotated[
 ]
 
 
-__all__ = ["REFUSAL_KINDS", "JobRefusal", "RefusalField", "RefusalKind", "StoredRefusalKind"]
+__all__ = ["REFUSAL_KINDS", "JobRefusal", "KnownRefusalKind", "RefusalField", "RefusalKind", "StoredRefusalKind"]

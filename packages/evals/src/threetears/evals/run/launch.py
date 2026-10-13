@@ -54,13 +54,13 @@ from threetears.evals.schema.models import (
     ApparatusSettingValue,
     CaseSet,
     CaseSetRef,
-    CellTimeoutOrigin,
+    KnownCellTimeoutOrigin,
     EvalRun,
     EvalTestCase,
     refused_goal_checks,
     JudgedArtifact,
-    ModelRoleOrigin,
-    RoleModelOrigin,
+    KnownModelRoleOrigin,
+    KnownRoleModelOrigin,
     resolve_effective_judges,
     scored_dim_ids,
 )
@@ -1229,7 +1229,7 @@ class RunJudge:
         return {dim_id: config.id for dim_id, config in self.configs.items()}
 
     @property
-    def config_provenance(self) -> dict[str, ModelRoleOrigin]:
+    def config_provenance(self) -> dict[str, KnownModelRoleOrigin]:
         """How each config was arrived at: ``chosen`` when the launch named it, ``inherited`` from the active lookup."""
         return {dim_id: "chosen" if dim_id in self.selection else "inherited" for dim_id in self.configs}
 
@@ -3470,7 +3470,7 @@ def resolve_judge_pin(request: LaunchRequest, role_default: str, *, candidate_mo
     return role_default
 
 
-def _judge_origin(request: LaunchRequest, judge_model: str) -> RoleModelOrigin:
+def _judge_origin(request: LaunchRequest, judge_model: str) -> KnownRoleModelOrigin:
     """How an arm's judge was arrived at: named by the launch, its alternate stepped in, or the role default.
 
     ``alternate`` when the launch named none and the judge is the host's alternate — the pin
@@ -3721,7 +3721,7 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
         judge = wiring.judge
         # Whether each pinned role was named by the launch or resolved from the role's default: the
         # request says which, so the run records it without the launcher restating it.
-        role_provenance: dict[str, RoleModelOrigin] = {
+        role_provenance: dict[str, KnownRoleModelOrigin] = {
             # Whether the launch named the candidate's model or ran it at the kind's own default: the one
             # record of whether its production-replicating cost was measured off the subject's model (#571).
             "candidate": "chosen" if request.candidate_model is not None else "inherited",
@@ -3752,7 +3752,7 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
             ceiling=settings.max_cell_timeout_s if settings.max_cell_timeout_s is not None else kind_cell_timeout_s,
         )
         cell_timeout_s = request.cell_timeout_s if request.cell_timeout_s is not None else kind_cell_timeout_s
-        cell_timeout_origin: CellTimeoutOrigin = (
+        cell_timeout_origin: KnownCellTimeoutOrigin = (
             "launch"
             if request.cell_timeout_s is not None
             else "kind"

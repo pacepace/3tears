@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, TypeVar
 from threetears.evals.kernel.errors import RefusedInput
 
 if TYPE_CHECKING:
-    from threetears.evals.schema.models import CostCapOrigin
+    from threetears.evals.schema.models import KnownCostCapOrigin
 
 #: The currency a ceiling is counted in: dollars for the cost cap, calls for the metered-call
 #: ledger. Constrained to those two rather than left unbound, so a resolved ceiling comes back as
@@ -146,7 +146,7 @@ def resolve_effective_ceiling(
     return ceiling if enforcement_enabled else None
 
 
-def resolve_ceiling_origin(override: float | None, *, enforcement_enabled: bool) -> CostCapOrigin:
+def resolve_ceiling_origin(override: float | None, *, enforcement_enabled: bool) -> KnownCostCapOrigin:
     """Return which tier of the cascade supplied the ceiling a run is bounded by.
 
     The companion of :func:`resolve_effective_ceiling`, deliberately answering from the same

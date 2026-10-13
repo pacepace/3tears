@@ -2419,8 +2419,13 @@ ApparatusProvenance = Literal["commissioned", "witnessed"]
 #: value it knows (:mod:`~threetears.evals.schema.versioning`).
 ModelRoleOrigin = str
 
+#: A value of :data:`ModelRoleOrigin` this build knows, as a type: what a caller names (an action's argument, a
+#: filter) and what this build writes, refused outside the set as any ``Literal`` is. A stored field reads
+#: the open :data:`ModelRoleOrigin` instead.
+KnownModelRoleOrigin = Literal["chosen", "inherited"]
+
 #: The values of :data:`ModelRoleOrigin` this build knows, in the order its readers list them.
-MODEL_ROLE_ORIGINS: Final[tuple[str, ...]] = ("chosen", "inherited")
+MODEL_ROLE_ORIGINS: Final[tuple[str, ...]] = get_args(KnownModelRoleOrigin)
 
 #: The type of a stored field carrying a judge config origin: one of :data:`MODEL_ROLE_ORIGINS`, or, on the stored read
 #: of a newer minor's document, a value that minor added.
@@ -2442,8 +2447,13 @@ StoredModelRoleOrigin = Annotated[ModelRoleOrigin, known_unless_newer_minor("jud
 #: value it knows (:mod:`~threetears.evals.schema.versioning`).
 RoleModelOrigin = str
 
+#: A value of :data:`RoleModelOrigin` this build knows, as a type: what a caller names (an action's argument, a
+#: filter) and what this build writes, refused outside the set as any ``Literal`` is. A stored field reads
+#: the open :data:`RoleModelOrigin` instead.
+KnownRoleModelOrigin = Literal["chosen", "inherited", "alternate"]
+
 #: The values of :data:`RoleModelOrigin` this build knows, in the order its readers list them.
-ROLE_MODEL_ORIGINS: Final[tuple[str, ...]] = ("chosen", "inherited", "alternate")
+ROLE_MODEL_ORIGINS: Final[tuple[str, ...]] = get_args(KnownRoleModelOrigin)
 
 #: The type of a stored field carrying a role model origin: one of :data:`ROLE_MODEL_ORIGINS`, or, on the stored read of
 #: a newer minor's document, a value that minor added.
@@ -2481,8 +2491,13 @@ StoredRoleModelOrigin = Annotated[RoleModelOrigin, known_unless_newer_minor("rol
 #: value it knows (:mod:`~threetears.evals.schema.versioning`).
 CostCapOrigin = str
 
+#: A value of :data:`CostCapOrigin` this build knows, as a type: what a caller names (an action's argument, a
+#: filter) and what this build writes, refused outside the set as any ``Literal`` is. A stored field reads
+#: the open :data:`CostCapOrigin` instead.
+KnownCostCapOrigin = Literal["chosen", "inherited", "uncapped"]
+
 #: The values of :data:`CostCapOrigin` this build knows, in the order its readers list them.
-COST_CAP_ORIGINS: Final[tuple[str, ...]] = ("chosen", "inherited", "uncapped")
+COST_CAP_ORIGINS: Final[tuple[str, ...]] = get_args(KnownCostCapOrigin)
 
 #: The type of a stored field carrying a cost cap origin: one of :data:`COST_CAP_ORIGINS`, or, on the stored read of a
 #: newer minor's document, a value that minor added.
@@ -2500,8 +2515,13 @@ StoredCostCapOrigin = Annotated[CostCapOrigin, known_unless_newer_minor("cost ca
 #: into a value it knows (:mod:`~threetears.evals.schema.versioning`).
 MeteredCallOrigin = str
 
+#: A value of :data:`MeteredCallOrigin` this build knows, as a type: what a caller names (an action's argument, a
+#: filter) and what this build writes, refused outside the set as any ``Literal`` is. A stored field reads
+#: the open :data:`MeteredCallOrigin` instead.
+KnownMeteredCallOrigin = Literal["chosen", "inherited", "uncapped", "none_declared"]
+
 #: The values of :data:`MeteredCallOrigin` this build knows, in the order its readers list them.
-METERED_CALL_ORIGINS: Final[tuple[str, ...]] = ("chosen", "inherited", "uncapped", "none_declared")
+METERED_CALL_ORIGINS: Final[tuple[str, ...]] = get_args(KnownMeteredCallOrigin)
 
 #: The type of a stored field carrying a metered call origin: one of :data:`METERED_CALL_ORIGINS`, or, on the stored
 #: read of a newer minor's document, a value that minor added.
@@ -2518,8 +2538,13 @@ StoredMeteredCallOrigin = Annotated[
 #: into a value it knows (:mod:`~threetears.evals.schema.versioning`).
 CellTimeoutOrigin = str
 
+#: A value of :data:`CellTimeoutOrigin` this build knows, as a type: what a caller names (an action's argument, a
+#: filter) and what this build writes, refused outside the set as any ``Literal`` is. A stored field reads
+#: the open :data:`CellTimeoutOrigin` instead.
+KnownCellTimeoutOrigin = Literal["launch", "kind", "default"]
+
 #: The values of :data:`CellTimeoutOrigin` this build knows, in the order its readers list them.
-CELL_TIMEOUT_ORIGINS: Final[tuple[str, ...]] = ("launch", "kind", "default")
+CELL_TIMEOUT_ORIGINS: Final[tuple[str, ...]] = get_args(KnownCellTimeoutOrigin)
 
 #: The type of a stored field carrying a cell timeout origin: one of :data:`CELL_TIMEOUT_ORIGINS`, or, on the stored
 #: read of a newer minor's document, a value that minor added.
@@ -2746,8 +2771,13 @@ class RunCompleteness(EvalDocumentModel, CoreShapeModel):
 #: value it knows (:mod:`~threetears.evals.schema.versioning`).
 ReasoningEffort = str
 
+#: A value of :data:`ReasoningEffort` this build knows, as a type: what a caller names (an action's argument, a
+#: filter) and what this build writes, refused outside the set as any ``Literal`` is. A stored field reads
+#: the open :data:`ReasoningEffort` instead.
+KnownReasoningEffort = Literal["max", "xhigh", "high", "medium", "low", "minimal", "none"]
+
 #: The values of :data:`ReasoningEffort` this build knows, in the order its readers list them.
-REASONING_EFFORTS: Final[tuple[str, ...]] = ("max", "xhigh", "high", "medium", "low", "minimal", "none")
+REASONING_EFFORTS: Final[tuple[str, ...]] = get_args(KnownReasoningEffort)
 
 #: The type of a stored field carrying a reasoning effort: one of :data:`REASONING_EFFORTS`, or, on the stored read of a
 #: newer minor's document, a value that minor added.
@@ -4105,8 +4135,13 @@ class AsyncDelivery(EvalDocumentModel, CoreShapeModel):
 #: value it knows (:mod:`~threetears.evals.schema.versioning`).
 UsageRole = str
 
+#: A value of :data:`UsageRole` this build knows, as a type: what a caller names (an action's argument, a
+#: filter) and what this build writes, refused outside the set as any ``Literal`` is. A stored field reads
+#: the open :data:`UsageRole` instead.
+KnownUsageRole = Literal["candidate", "judge", "simulator", "inner_agent", "external"]
+
 #: The values of :data:`UsageRole` this build knows, in the order its readers list them.
-USAGE_ROLES: Final[tuple[str, ...]] = ("candidate", "judge", "simulator", "inner_agent", "external")
+USAGE_ROLES: Final[tuple[str, ...]] = get_args(KnownUsageRole)
 
 #: The type of a stored field carrying a usage role: one of :data:`USAGE_ROLES`, or, on the stored read of a newer
 #: minor's document, a value that minor added.
@@ -4121,8 +4156,13 @@ StoredUsageRole = Annotated[UsageRole, known_unless_newer_minor("usage role", US
 #: value it knows (:mod:`~threetears.evals.schema.versioning`).
 SimulatorPurpose = str
 
+#: A value of :data:`SimulatorPurpose` this build knows, as a type: what a caller names (an action's argument, a
+#: filter) and what this build writes, refused outside the set as any ``Literal`` is. A stored field reads
+#: the open :data:`SimulatorPurpose` instead.
+KnownSimulatorPurpose = Literal["utterance", "schedule"]
+
 #: The values of :data:`SimulatorPurpose` this build knows, in the order its readers list them.
-SIMULATOR_PURPOSES: Final[tuple[str, ...]] = ("utterance", "schedule")
+SIMULATOR_PURPOSES: Final[tuple[str, ...]] = get_args(KnownSimulatorPurpose)
 
 #: The type of a stored field carrying a simulator purpose: one of :data:`SIMULATOR_PURPOSES`, or, on the stored read of
 #: a newer minor's document, a value that minor added.
@@ -5448,6 +5488,14 @@ class EvalCassette(EvalDocumentModel):
 
 __all__ = [
     "EVAL_DOC_TYPES",
+    "KnownModelRoleOrigin",
+    "KnownRoleModelOrigin",
+    "KnownCostCapOrigin",
+    "KnownMeteredCallOrigin",
+    "KnownCellTimeoutOrigin",
+    "KnownReasoningEffort",
+    "KnownUsageRole",
+    "KnownSimulatorPurpose",
     "MODEL_ROLE_ORIGINS",
     "ROLE_MODEL_ORIGINS",
     "COST_CAP_ORIGINS",

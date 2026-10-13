@@ -224,12 +224,47 @@ def test_the_remainder_enters_no_digest() -> None:
     assert read.to_dict() == document
 
 
-def test_the_json_pair_of_a_core_document_is_its_stored_read() -> None:
-    read = EvalResult.from_dict(_at_newer_minor(stored_sample(EvalResult), **NEWER_FIELD))
+def test_the_json_pair_is_a_strict_transport_never_the_stored_read() -> None:
+    """A wire carries caller input: ``from_json`` refuses a newer minor and an unknown field, as any payload does, and
+    ``to_json`` refuses, by name, a document holding fields a newer minor wrote rather than drop them."""
+    document = stored_sample(EvalResult)
+    read = EvalResult.from_dict(_at_newer_minor(document, **NEWER_FIELD))
 
-    assert EvalResult.from_json(read.to_json()).to_dict() == read.to_dict()
+    assert EvalResult.from_json(json.dumps(document)).to_dict() == document
+    with pytest.raises(ValidationError, match="built at core minor"):
+        EvalResult.from_json(json.dumps(_at_newer_minor(document)))
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        EvalResult.from_json(json.dumps({**document, **NEWER_FIELD}))
     with pytest.raises(ValidationError):
         EvalResult.from_json("{not json")
+    with pytest.raises(ValueError, match="holds fields a newer minor wrote"):
+        read.to_json()
+
+
+def test_a_newer_minor_read_survives_a_deep_copy_and_a_pickle() -> None:
+    """The reader conformance kit deep-copies runs and results; a kept field travels through every copy."""
+    import copy
+    import pickle
+
+    document = _at_newer_minor(stored_sample(EvalResult), **NEWER_FIELD)
+    document["rubric_scores"][0]["calibrated_by"] = "x"
+    read = EvalResult.from_dict(document)
+
+    for copied in (copy.deepcopy(read), pickle.loads(pickle.dumps(read)), read.model_copy(deep=True)):
+        assert copied.to_dict() == document
+
+
+def test_a_shape_carrying_only_an_unknown_value_carries_its_minor_into_another_document() -> None:
+    """A usage row whose role a newer build added holds no unknown FIELD, but its value is that minor's: moved into a
+    document this build built, the write is stamped at that minor, so this build's own read takes it back."""
+    newer = _at_newer_minor(stored_sample(EvalResult), usage=[_usage_row("reranker", "rr-1", 0.25, 2)])
+    row = EvalResult.from_dict(newer).usage[0]
+    fresh = EvalResult.from_dict(stored_sample(EvalResult))
+
+    written = fresh.model_copy(update={"usage": [row]}).to_dict()
+
+    assert written["schema_minor"] == NEWER
+    assert EvalResult.from_dict(written).usage[0].role == "reranker"
 
 
 # --- every write path ------------------------------------------------------------------------------
@@ -727,3 +762,84 @@ def test_every_open_vocabulary_is_a_string_on_its_stored_fields() -> None:
     for alias, registry in registries.items():
         assert getattr(schema, alias) is str, alias
         assert f"``{alias}`` (``{registry}``)" in policy, alias
+
+
+def test_a_campaign_update_keeps_what_a_newer_build_wrote_on_its_design() -> None:
+    """The design is carried over as the stored instance, re-stamped, never as a dump: a field a newer build wrote on
+    the design, on one of its axes and on an axis's value all survive a campaign update this build makes."""
+    from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+    from threetears.evals.analysis.campaigns import update_campaign
+    from threetears.evals.kernel.campaign import EvalCampaign
+
+    storage, store = memory_storage()
+    document = _at_newer_minor(stored_sample(EvalCampaign))
+    design = document["declared_design"]
+    design["review_board"] = "a newer build's"
+    design["axes"][0]["weight"] = 2
+    design["axes"][0]["values"][0]["note"] = "kept"
+    store.upsert(document)
+
+    updated = update_campaign(
+        storage,
+        document["id"],
+        document["scope_id"],
+        {"name": "renamed"},
+        updated_by="operator",
+        profile=toyhost_profile(),
+        clear_control=True,
+    )
+
+    stored = store.get(document["id"], document["scope_id"])
+    assert stored is not None and updated.name == "renamed"
+    assert stored["schema_minor"] == NEWER
+    assert stored["declared_design"]["control"] is None
+    assert stored["declared_design"]["review_board"] == "a newer build's"
+    assert stored["declared_design"]["axes"][0]["weight"] == 2
+    assert stored["declared_design"]["axes"][0]["values"][0]["note"] == "kept"
+
+
+def test_production_cost_is_withheld_when_a_row_names_a_role_this_build_does_not_know() -> None:
+    """Whether a production deployment pays for a newer build's role is that build's to say: never a partial sum."""
+    from threetears.evals.kernel.usage_capture import production_replicating_cost
+
+    known = [
+        RoleUsage(role="candidate", model="m", cost_usd=0.5, call_count=1),
+        RoleUsage(role="judge", model="j", cost_usd=0.2, call_count=1),
+    ]
+    newer = EvalResult.from_dict(
+        _at_newer_minor(
+            stored_sample(EvalResult),
+            usage=[*(row.model_dump(mode="json") for row in known), _usage_row("reranker", "rr-1", 0.25, 2)],
+        )
+    )
+
+    assert production_replicating_cost(known, substituted_deliveries=0) == 0.5
+    assert production_replicating_cost(newer.usage, substituted_deliveries=0) is None
+
+
+def test_a_caller_s_purpose_filter_takes_only_a_purpose_this_build_knows() -> None:
+    """Only a stored field is open: a misspelt filter is refused by name, and the action's schema lists the purposes."""
+    from threetears.evals.actions.engine import ScopeOutOfRunSpendParams
+    from threetears.evals.schema import OUT_OF_RUN_PURPOSES
+
+    with pytest.raises(ValidationError, match="purpose_filter"):
+        ScopeOutOfRunSpendParams(purpose_filter="varaition")
+    assert ScopeOutOfRunSpendParams(purpose_filter="variation").purpose_filter == "variation"
+    schema = json.dumps(ScopeOutOfRunSpendParams.model_json_schema())
+    assert all(f'"{purpose}"' in schema for purpose in OUT_OF_RUN_PURPOSES)
+
+
+def test_a_settings_difference_only_in_an_unknown_field_is_named_as_one() -> None:
+    """Two settings that agree on every field this build knows print alike; the refusal says what differs instead."""
+    from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
+    from threetears.evals.run.rejudge import recorded_judge_pins
+
+    run = EvalRun.from_dict(
+        _at_newer_minor(
+            stored_sample(EvalRun),
+            judge_request_settings={**JUDGE_REQUEST_SETTINGS.model_dump(mode="json"), "cache_ttl_s": 300},
+        )
+    )
+
+    with pytest.raises(ValidationFailedError, match="in every field this build knows, and carry a field it does not"):
+        recorded_judge_pins(run, request_settings="today")

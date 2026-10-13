@@ -19,7 +19,7 @@ from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.host import EvalHost
 
 
-from threetears.evals.schema.out_of_run_spend import OutOfRunPurpose, OutOfRunSpend
+from threetears.evals.schema.out_of_run_spend import KnownOutOfRunPurpose, OutOfRunSpend
 
 
 class OutOfRunSpendTotals(EvalBaseModel):
@@ -85,7 +85,7 @@ class OutOfRunSpendReport(EvalBaseModel):
     """
 
     scope_id: str
-    purpose: OutOfRunPurpose | None
+    purpose: KnownOutOfRunPurpose | None
     launch_group_id: str | None
     template_id: str | None
     rows: list[OutOfRunSpend]
@@ -98,7 +98,7 @@ def scope_out_of_run_spend(
     host: EvalHost,
     scope_id: str,
     *,
-    purpose: OutOfRunPurpose | None = None,
+    purpose: KnownOutOfRunPurpose | None = None,
     launch_group_id: str | None = None,
     template_id: str | None = None,
 ) -> OutOfRunSpendReport:

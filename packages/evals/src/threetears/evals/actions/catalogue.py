@@ -51,7 +51,7 @@ from threetears.evals.kernel.errors import (
     ValidationFailedError,
 )
 from threetears.evals.kernel.refusals import refusal_kind
-from threetears.evals.schema.refusal import REFUSAL_KINDS, RefusalKind
+from threetears.evals.schema.refusal import REFUSAL_KINDS, KnownRefusalKind, RefusalKind
 from threetears.evals.ops import JobsStarted, OpsHost
 from threetears.evals.run import start_run
 
@@ -361,7 +361,7 @@ class Refusal:
             refusal with one status without owning a table of its own.
     """
 
-    kind: RefusalKind
+    kind: KnownRefusalKind
     status: int
 
     def __post_init__(self) -> None:

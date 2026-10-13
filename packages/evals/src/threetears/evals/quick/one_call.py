@@ -92,7 +92,7 @@ from threetears.evals.schema import (
     EvalTestCase,
     JudgedArtifact,
     JudgeEvidence,
-    UsageRole,
+    KnownUsageRole,
     WorldSeed,
     canonical_digest,
 )
@@ -748,7 +748,7 @@ def callable_kind(
 
 
 #: The one role a callable candidate's own spend lands under — what its answer's cost is summed over.
-_CANDIDATE_ROLE: tuple[UsageRole, ...] = ("candidate",)
+_CANDIDATE_ROLE: tuple[KnownUsageRole, ...] = ("candidate",)
 
 
 @dataclass(frozen=True)

@@ -18,13 +18,13 @@ from threetears.evals.kernel.errors import (
     StorageError,
     ValidationFailedError,
 )
-from threetears.evals.schema.refusal import JobRefusal, RefusalKind
+from threetears.evals.schema.refusal import JobRefusal, KnownRefusalKind
 
 
 #: The kind each public error class refuses as. ``tests/test_action_refusals.py`` holds every
 #: :class:`EvalServiceError` class :mod:`threetears.evals.kernel.errors` exports to a kind of its own, together covering
 #: :data:`~threetears.evals.schema.REFUSAL_KINDS`.
-_KIND_OF_ERROR: Mapping[type[EvalServiceError], RefusalKind] = {
+_KIND_OF_ERROR: Mapping[type[EvalServiceError], KnownRefusalKind] = {
     EvalServiceError: "refused",
     NotFoundError: "not_found",
     ConflictError: "conflict",
@@ -35,7 +35,7 @@ _KIND_OF_ERROR: Mapping[type[EvalServiceError], RefusalKind] = {
 }
 
 
-def refusal_kind(error: EvalServiceError) -> RefusalKind:
+def refusal_kind(error: EvalServiceError) -> KnownRefusalKind:
     """The kind an engine error refuses as: its nearest public class's.
 
     Args:

@@ -77,7 +77,7 @@ from threetears.evals.schema.models import (
     RubricAxis,
     RubricScale,
     RubricScore,
-    UsageRole,
+    KnownUsageRole,
     builtin_judge_config_id,
     configured_judge_config_id,
     label_key_of,
@@ -189,7 +189,7 @@ class JudgeOutcome:
 
 
 #: The one role a judge call spends under — what a fold of judge calls sums its cost over.
-_JUDGE_ROLE: tuple[UsageRole, ...] = ("judge",)
+_JUDGE_ROLE: tuple[KnownUsageRole, ...] = ("judge",)
 
 
 class JudgeFold(NamedTuple):

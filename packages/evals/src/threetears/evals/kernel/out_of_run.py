@@ -55,7 +55,7 @@ if TYPE_CHECKING:
 
     from threetears.evals.schema.completion import PricedCompletion, VariationLLM
 
-from threetears.evals.schema.out_of_run_spend import OutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
+from threetears.evals.schema.out_of_run_spend import KnownOutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
 
 log = get_logger(__name__)
 
@@ -82,7 +82,7 @@ class AdmittedCall:
     """
 
     call: PlannedCall
-    purpose: OutOfRunPurpose
+    purpose: KnownOutOfRunPurpose
     model: str
     ceiling_usd: float | None
     token: str
@@ -265,7 +265,7 @@ class OutOfRunBudget:
         return tuple(self._unrecorded)
 
     def quote(
-        self, client: PricedCompletion, purpose: OutOfRunPurpose, calls: Sequence[PlannedCall]
+        self, client: PricedCompletion, purpose: KnownOutOfRunPurpose, calls: Sequence[PlannedCall]
     ) -> list[float | None]:
         """Price ``calls`` on ``client`` against what is left of the cap, refusing as :meth:`admit` would, committing nothing.
 
@@ -319,7 +319,7 @@ class OutOfRunBudget:
         return ceilings
 
     def admit(
-        self, client: PricedCompletion, purpose: OutOfRunPurpose, calls: Sequence[PlannedCall]
+        self, client: PricedCompletion, purpose: KnownOutOfRunPurpose, calls: Sequence[PlannedCall]
     ) -> list[AdmittedCall]:
         """Price ``calls`` on ``client`` and admit them together, or refuse them together before any is made.
 

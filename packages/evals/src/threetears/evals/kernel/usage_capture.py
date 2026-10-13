@@ -41,7 +41,14 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.external_spend import ExternalSpend
-from threetears.evals.schema.models import CellTermination, RoleUsage, SimulatorPurpose, UsageRole
+from threetears.evals.schema.models import (
+    USAGE_ROLES,
+    CellTermination,
+    KnownSimulatorPurpose,
+    KnownUsageRole,
+    RoleUsage,
+    UsageRole,
+)
 from threetears.evals.schema.completion import USAGE_LEDGER_ATTRIBUTES
 from threetears.evals.kernel.provider import sum_optional_tokens
 from threetears.evals.kernel.spend import ExternalRateTable, reported_price_source
@@ -56,7 +63,7 @@ log = get_logger(__name__)
 #: measurement apparatus — they cost the eval program money but would never run in
 #: production, so conflating the two views overstates what the candidate costs to operate.
 #: Derived from membership; deliberately never a stored field on ``RoleUsage``.
-PRODUCTION_REPLICATING_ROLES: frozenset[UsageRole] = frozenset({"candidate", "inner_agent", "external"})
+PRODUCTION_REPLICATING_ROLES: frozenset[KnownUsageRole] = frozenset({"candidate", "inner_agent", "external"})
 
 #: Roles whose spend the runner folds into the blended ``EvalResult.cost_usd``, in the
 #: order it is stored. Stamped onto every result it writes so the number can be placed:
@@ -72,10 +79,10 @@ PRODUCTION_REPLICATING_ROLES: frozenset[UsageRole] = frozenset({"candidate", "in
 #: A tuple rather than a frozenset: this one is persisted, so a stable order keeps two
 #: recordings of the same convention byte-identical. Its sibling above is derived at
 #: read and rightly unordered.
-BLENDED_COST_ROLES: tuple[UsageRole, ...] = ("candidate", "inner_agent", "judge", "simulator")
+BLENDED_COST_ROLES: tuple[KnownUsageRole, ...] = ("candidate", "inner_agent", "judge", "simulator")
 
 
-def blended_cost_roles(rate_table: ExternalRateTable | None) -> tuple[UsageRole, ...]:
+def blended_cost_roles(rate_table: ExternalRateTable | None) -> tuple[KnownUsageRole, ...]:
     """The roles a run's blended ``EvalResult.cost_usd`` sums, in stored order.
 
     ``external`` is in exactly when the run resolved a rate table that can put dollars on
@@ -203,7 +210,7 @@ class _ModelTotals:
 
 
 #: One ledger row's key: ``(model, served_model, provider, provider_unit, price_source, actor_id, purpose)``.
-_RowKey = tuple[str | None, str | None, str | None, str | None, str | None, str | None, SimulatorPurpose | None]
+_RowKey = tuple[str | None, str | None, str | None, str | None, str | None, str | None, KnownSimulatorPurpose | None]
 
 
 @dataclass
@@ -215,7 +222,7 @@ class RoleUsageLedger:
     an absent role means "didn't run" or "not captured".
     """
 
-    role: UsageRole
+    role: KnownUsageRole
     #: The run's rate table, one entry per ``(provider, unit)``, resolved once at launch.
     #: ``None`` on every token-metered role and on an external role whose run declared no
     #: usable rates — then the calls are counted and nothing else is claimed about them.
@@ -257,7 +264,7 @@ class RoleUsageLedger:
         provider_unit: str | None = None,
         price_source: str | None = None,
         actor_id: str | None = None,
-        purpose: SimulatorPurpose | None = None,
+        purpose: KnownSimulatorPurpose | None = None,
     ) -> None:
         """Fold one call's usage into this role's totals.
 
@@ -316,7 +323,7 @@ class RoleUsageLedger:
             totals.cost_unpriced = True
 
     def add_llm_result(
-        self, result: Any, *, actor_id: str | None = None, purpose: SimulatorPurpose | None = None
+        self, result: Any, *, actor_id: str | None = None, purpose: KnownSimulatorPurpose | None = None
     ) -> None:
         """Fold an ``LLMResult``-shaped response (judge / simulator / generator clients).
 
@@ -650,9 +657,14 @@ def production_replicating_cost(usage: list[RoleUsage], *, substituted_deliverie
     what it already held, and overstates. That is why the honest first-class counterfactual is separate
     work and this docstring is a qualified claim rather than a correction factor.
 
-    ``None`` — unknown rather than free — in two cases:
+    ``None`` — unknown rather than free — in three cases:
 
     - no production role observed a cost at all;
+    - **a row carries a usage role this build does not know** (one a newer build recorded;
+      :data:`~threetears.evals.schema.USAGE_ROLES` is an open vocabulary). Whether a production deployment would
+      pay for that role is the newer build's to say, so neither summing it in nor leaving it out is a figure this
+      build can stand behind: a partial sum would read as the production cost while omitting a role that may be
+      one. The role's own dollars are still on its own line in the run's summary;
     - **the result carries a substituted async DELIVERY.** A seeded or replayed delivery means
       the background model's dollars and the metered units were never spent, so the observed
       sum would understate production while claiming to be its subset. Failing toward
@@ -709,6 +721,8 @@ def production_replicating_cost(usage: list[RoleUsage], *, substituted_deliverie
         rather than free.
     """
     if substituted_deliveries:
+        return None
+    if any(row.role not in USAGE_ROLES for row in usage):
         return None
     return _sum_costs([row for row in usage if row.role in PRODUCTION_REPLICATING_ROLES])
 

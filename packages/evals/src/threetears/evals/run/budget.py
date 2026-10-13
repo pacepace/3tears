@@ -42,7 +42,7 @@ from threetears.evals.run import ceilings
 from threetears.evals.schema.logs import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.schema.models import CostCapOrigin
+    from threetears.evals.schema.models import KnownCostCapOrigin
 
 log = get_logger(__name__)
 
@@ -274,7 +274,7 @@ class EvalRunCostCap:
         )
 
     @staticmethod
-    def resolve_ceiling_origin(max_cost_usd: float | None, *, enforcement_enabled: bool) -> CostCapOrigin:
+    def resolve_ceiling_origin(max_cost_usd: float | None, *, enforcement_enabled: bool) -> KnownCostCapOrigin:
         """Return which tier of the cascade supplied the ceiling a run is bounded by.
 
         The companion of :meth:`resolve_effective_ceiling`, answering from the same launch and

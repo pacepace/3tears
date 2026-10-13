@@ -421,6 +421,46 @@
       "kind": "function",
       "signature": "keep_fields(document: dict[str, Any], fields: Sequence[str]) -> dict[str, Any]"
     },
+    "threetears.evals.schema.KnownCellTimeoutOrigin": {
+      "kind": "literal",
+      "signature": "'launch'` | `'kind'` | `'default'"
+    },
+    "threetears.evals.schema.KnownCostCapOrigin": {
+      "kind": "literal",
+      "signature": "'chosen'` | `'inherited'` | `'uncapped'"
+    },
+    "threetears.evals.schema.KnownMeteredCallOrigin": {
+      "kind": "literal",
+      "signature": "'chosen'` | `'inherited'` | `'uncapped'` | `'none_declared'"
+    },
+    "threetears.evals.schema.KnownModelRoleOrigin": {
+      "kind": "literal",
+      "signature": "'chosen'` | `'inherited'"
+    },
+    "threetears.evals.schema.KnownOutOfRunPurpose": {
+      "kind": "literal",
+      "signature": "'variation'` | `'proposer'` | `'analysis'` | `'judge'` | `'second_judge'"
+    },
+    "threetears.evals.schema.KnownReasoningEffort": {
+      "kind": "literal",
+      "signature": "'max'` | `'xhigh'` | `'high'` | `'medium'` | `'low'` | `'minimal'` | `'none'"
+    },
+    "threetears.evals.schema.KnownRefusalKind": {
+      "kind": "literal",
+      "signature": "'refused'` | `'not_found'` | `'conflict'` | `'validation_failed'` | `'storage_failed'` | `'provider_refused'` | `'admission_refused'"
+    },
+    "threetears.evals.schema.KnownRoleModelOrigin": {
+      "kind": "literal",
+      "signature": "'chosen'` | `'inherited'` | `'alternate'"
+    },
+    "threetears.evals.schema.KnownSimulatorPurpose": {
+      "kind": "literal",
+      "signature": "'utterance'` | `'schedule'"
+    },
+    "threetears.evals.schema.KnownUsageRole": {
+      "kind": "literal",
+      "signature": "'candidate'` | `'judge'` | `'simulator'` | `'inner_agent'` | `'external'"
+    },
     "threetears.evals.schema.label_key_of": {
       "kind": "function",
       "signature": "label_key_of(evidence: JudgeEvidence, dim: RubricDim | str) -> LabelKey"
@@ -803,7 +843,7 @@
     },
     "threetears.evals.kernel.AdmittedCall": {
       "kind": "dataclass",
-      "signature": "AdmittedCall(call: PlannedCall, purpose: OutOfRunPurpose, model: str, ceiling_usd: float | None, token: str)"
+      "signature": "AdmittedCall(call: PlannedCall, purpose: KnownOutOfRunPurpose, model: str, ceiling_usd: float | None, token: str)"
     },
     "threetears.evals.kernel.AdmittedGeneration": {
       "kind": "dataclass",
@@ -867,7 +907,7 @@
     },
     "threetears.evals.kernel.blended_cost_roles": {
       "kind": "function",
-      "signature": "blended_cost_roles(rate_table: ExternalRateTable | None) -> tuple[UsageRole, ...]"
+      "signature": "blended_cost_roles(rate_table: ExternalRateTable | None) -> tuple[KnownUsageRole, ...]"
     },
     "threetears.evals.kernel.BOUNDARY_GEN_PROMPT": {
       "kind": "constant (str)",
@@ -1839,7 +1879,7 @@
     },
     "threetears.evals.kernel.RoleUsageLedger": {
       "kind": "dataclass",
-      "signature": "RoleUsageLedger(role: UsageRole, rate_table: ExternalRateTable | None = None, _totals: dict[_RowKey, _ModelTotals] (derived))"
+      "signature": "RoleUsageLedger(role: KnownUsageRole, rate_table: ExternalRateTable | None = None, _totals: dict[_RowKey, _ModelTotals] (derived))"
     },
     "threetears.evals.kernel.RUBRIC_FAMILY": {
       "kind": "constant (str)",
@@ -3071,7 +3111,7 @@
     },
     "threetears.evals.run.resolve_ceiling_origin": {
       "kind": "function",
-      "signature": "resolve_ceiling_origin(override: float | None, *, enforcement_enabled: bool) -> CostCapOrigin"
+      "signature": "resolve_ceiling_origin(override: float | None, *, enforcement_enabled: bool) -> KnownCostCapOrigin"
     },
     "threetears.evals.run.resolve_constructor": {
       "kind": "function",
@@ -3207,7 +3247,7 @@
     },
     "threetears.evals.run.SimulatorCall": {
       "kind": "dataclass",
-      "signature": "SimulatorCall(purpose: SimulatorPurpose, actor_id: str | None, round_index: int, usage: CallUsage)"
+      "signature": "SimulatorCall(purpose: KnownSimulatorPurpose, actor_id: str | None, round_index: int, usage: CallUsage)"
     },
     "threetears.evals.run.SimulatorReplyInvalid": {
       "kind": "exception",
@@ -4071,7 +4111,7 @@
     },
     "threetears.evals.analysis.OutOfRunSpendReport": {
       "kind": "model",
-      "signature": "OutOfRunSpendReport(scope_id: str, purpose: OutOfRunPurpose | None, launch_group_id: str | None, template_id: str | None, rows: list[OutOfRunSpend], totals: OutOfRunSpendTotals, by_purpose: dict[str, OutOfRunSpendTotals], by_launch: dict[str, OutOfRunSpendTotals])"
+      "signature": "OutOfRunSpendReport(scope_id: str, purpose: KnownOutOfRunPurpose | None, launch_group_id: str | None, template_id: str | None, rows: list[OutOfRunSpend], totals: OutOfRunSpendTotals, by_purpose: dict[str, OutOfRunSpendTotals], by_launch: dict[str, OutOfRunSpendTotals])"
     },
     "threetears.evals.analysis.OutOfRunSpendTotals": {
       "kind": "model",
@@ -4323,7 +4363,7 @@
     },
     "threetears.evals.analysis.scope_out_of_run_spend": {
       "kind": "function",
-      "signature": "scope_out_of_run_spend(host: EvalHost, scope_id: str, *, purpose: OutOfRunPurpose | None = None, launch_group_id: str | None = None, template_id: str | None = None) -> OutOfRunSpendReport"
+      "signature": "scope_out_of_run_spend(host: EvalHost, scope_id: str, *, purpose: KnownOutOfRunPurpose | None = None, launch_group_id: str | None = None, template_id: str | None = None) -> OutOfRunSpendReport"
     },
     "threetears.evals.analysis.SCOPED_METRICS_HELP": {
       "kind": "constant (str)",
@@ -5431,7 +5471,7 @@
     },
     "threetears.evals.ops.OutOfRunSpendReport": {
       "kind": "model",
-      "signature": "OutOfRunSpendReport(scope_id: str, purpose: OutOfRunPurpose | None, launch_group_id: str | None, template_id: str | None, rows: list[OutOfRunSpend], totals: OutOfRunSpendTotals, by_purpose: dict[str, OutOfRunSpendTotals], by_launch: dict[str, OutOfRunSpendTotals])"
+      "signature": "OutOfRunSpendReport(scope_id: str, purpose: KnownOutOfRunPurpose | None, launch_group_id: str | None, template_id: str | None, rows: list[OutOfRunSpend], totals: OutOfRunSpendTotals, by_purpose: dict[str, OutOfRunSpendTotals], by_launch: dict[str, OutOfRunSpendTotals])"
     },
     "threetears.evals.ops.parse_job_id": {
       "kind": "function",
@@ -5647,7 +5687,7 @@
     },
     "threetears.evals.ops.scope_out_of_run_spend": {
       "kind": "function",
-      "signature": "scope_out_of_run_spend(host: EvalHost, scope_id: str, *, purpose: OutOfRunPurpose | None = None, launch_group_id: str | None = None, template_id: str | None = None) -> OutOfRunSpendReport"
+      "signature": "scope_out_of_run_spend(host: EvalHost, scope_id: str, *, purpose: KnownOutOfRunPurpose | None = None, launch_group_id: str | None = None, template_id: str | None = None) -> OutOfRunSpendReport"
     },
     "threetears.evals.ops.scope_pivot": {
       "kind": "function",
@@ -5679,7 +5719,7 @@
     },
     "threetears.evals.ops.start_paid_call": {
       "kind": "async function",
-      "signature": "start_paid_call(host: OpsHost, scope_id: str, *, action: str, role: CompletionRole, model: str | None, purpose: OutOfRunPurpose, budget: OutOfRunBudget, call: PlannedCall, make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]], label: str, budget_s: float) -> JobsStarted"
+      "signature": "start_paid_call(host: OpsHost, scope_id: str, *, action: str, role: CompletionRole, model: str | None, purpose: KnownOutOfRunPurpose, budget: OutOfRunBudget, call: PlannedCall, make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]], label: str, budget_s: float) -> JobsStarted"
     },
     "threetears.evals.ops.sweep_job_id": {
       "kind": "function",
@@ -5823,7 +5863,7 @@
     },
     "threetears.evals.actions.Refusal": {
       "kind": "dataclass",
-      "signature": "Refusal(kind: RefusalKind, status: int)"
+      "signature": "Refusal(kind: KnownRefusalKind, status: int)"
     },
     "threetears.evals.actions.REFUSAL_KINDS": {
       "kind": "constant (tuple)",
