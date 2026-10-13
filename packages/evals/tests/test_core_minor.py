@@ -843,3 +843,86 @@ def test_a_settings_difference_only_in_an_unknown_field_is_named_as_one() -> Non
 
     with pytest.raises(ValidationFailedError, match="in every field this build knows, and carry a field it does not"):
         recorded_judge_pins(run, request_settings="today")
+
+
+def test_shapes_compare_by_what_they_hold_not_by_the_minor_they_were_read_at() -> None:
+    """A shape read from a newer minor's document that kept nothing equals the same shape read at this build's minor;
+    one that kept a field equals only a shape that kept the same; a frozen shape's hash agrees."""
+    from threetears.evals.kernel.campaign import EvalCampaign
+
+    document = stored_sample(EvalResult)
+    here = EvalResult.from_dict(document).rubric_scores[0]
+    marked = EvalResult.from_dict(_at_newer_minor(document)).rubric_scores[0]
+
+    def kept(value: str) -> Any:
+        newer = _at_newer_minor(stored_sample(EvalResult))
+        newer["rubric_scores"][0]["calibrated_by"] = value
+        return EvalResult.from_dict(newer).rubric_scores[0]
+
+    assert marked == here and here == marked
+    assert kept("a") == kept("a")
+    assert kept("a") != here and kept("a") != kept("b")
+    assert marked != "not a shape"
+
+    campaign = stored_sample(EvalCampaign)
+    value_here = EvalCampaign.from_dict(campaign).declared_design.axes[0].values[0]  # type: ignore[union-attr]
+    value_marked = EvalCampaign.from_dict(_at_newer_minor(campaign)).declared_design.axes[0].values[0]  # type: ignore[union-attr]
+    assert value_marked == value_here and hash(value_marked) == hash(value_here)
+    assert {value_here: "found"}[value_marked] == "found"
+
+
+def test_a_run_a_newer_minor_wrote_elsewhere_passes_the_rejudge_settings_check() -> None:
+    """Request settings read from a newer minor's run with nothing kept on them are today's: a rejudge is not
+    refused, and the drift message would say they match, never that they carry an unknown field."""
+    from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
+    from threetears.evals.run.rejudge import recorded_judge_pins, request_settings_drift
+    from threetears.evals.schema.models import DEFAULT_JUDGE_TEMPERATURE
+
+    run = EvalRun.from_dict(
+        _at_newer_minor(
+            stored_sample(EvalRun),
+            judge_request_settings=JUDGE_REQUEST_SETTINGS.model_dump(mode="json"),
+            judge_temperature=DEFAULT_JUDGE_TEMPERATURE,
+            **NEWER_FIELD,
+        )
+    )
+
+    assert run.judge_request_settings == JUDGE_REQUEST_SETTINGS
+    assert recorded_judge_pins(run, request_settings="today") == run.judge_model
+    assert "carry a field" not in request_settings_drift(run.judge_request_settings)
+
+
+def test_a_campaign_a_newer_minor_wrote_echoed_whole_keeps_its_pre_image() -> None:
+    """A client reads a campaign a newer build wrote and sends its whole design back: the lever map it echoes is the
+    server's as this build declares it, so the update is not refused, and the stored pre-image — kept fields on its
+    lever values included — is kept."""
+    from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+    from threetears.evals.analysis.campaigns import update_campaign
+    from threetears.evals.kernel.campaign import EvalCampaign
+
+    storage, store = memory_storage()
+    document = _at_newer_minor(stored_sample(EvalCampaign), **NEWER_FIELD)
+    lever = next(iter(document["declared_design"]["control_levers"]))
+    document["declared_design"]["control_levers"][lever]["note"] = "a newer build's"
+    store.upsert(document)
+    served = EvalCampaign.from_dict(document).model_dump(mode="json")
+    assert "note" not in json.dumps(served["declared_design"]), "a client reads only what this build declares"
+
+    update_campaign(
+        storage,
+        document["id"],
+        document["scope_id"],
+        {"declared_design": served["declared_design"]},
+        updated_by="operator",
+        profile=toyhost_profile(),
+    )
+
+    stored = store.get(document["id"], document["scope_id"])
+    assert stored is not None
+    design = stored["declared_design"]
+    assert (design["control"], design["control_identity_version"]) == (
+        document["declared_design"]["control"],
+        document["declared_design"]["control_identity_version"],
+    )
+    assert design["control_levers"][lever]["note"] == "a newer build's"
+    assert stored["written_by_a_newer_build"] == NEWER_FIELD["written_by_a_newer_build"]
