@@ -1192,6 +1192,67 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.audit.anonymize", kind="point")
 
     @classmethod
+    def hub_geo_layers_reloaded(cls) -> Subject:
+        """request/reply subject for a tool pod reporting reloaded geography shapes.
+
+        A tool pod that registered platform geography layers (``geo:`` in its
+        ``tables.yaml``) loads a new generation of their shapes and then reports it
+        (``threetears.datasources.geo_reload.report_geo_layers_reloaded``). The pod
+        forwards its hub ``identity_token``; the hub verifies it, checks that the pod
+        owns the provider namespace each layer is registered under, and moves each
+        layer's tile version to the reported generation, so clients fetch new tiles.
+
+        :return: subject ``{ns}.hub.geo.layers.reloaded``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.geo.layers.reloaded", kind="point")
+
+    @classmethod
+    def hub_object_store_declare(cls) -> Subject:
+        """request/reply subject for a tool pod asking the hub to declare its own Object Store.
+
+        A pod holds no stream-management verb, so it cannot create the Object Store bucket and the
+        pointer bucket its grant names (``{ns}-{pod scope}-objects`` and ``-pointers``). It asks
+        here (``threetears.nats.object_store_requests.declare_pod_object_store``), forwarding its
+        hub ``identity_token``; the hub verifies it and declares both, composed under the VERIFIED
+        pod's scope -- the request names no bucket.
+
+        :return: subject ``{ns}.hub.object_store.declare``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.object_store.declare", kind="point")
+
+    @classmethod
+    def hub_object_store_retire(cls) -> Subject:
+        """request/reply subject for a tool pod asking the hub to delete objects it no longer serves.
+
+        Deleting an object purges stream subjects, a management verb only the hub holds. The pod
+        names the objects (``threetears.nats.object_store_requests.retire_pod_objects``) and
+        forwards its ``identity_token``; the hub deletes them from the VERIFIED pod's own bucket
+        only, and sweeps chunks a failed write left behind.
+
+        :return: subject ``{ns}.hub.object_store.retire``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.object_store.retire", kind="point")
+
+    @classmethod
+    def hub_collection_keys_purge(cls) -> Subject:
+        """request/reply subject for a tool pod asking the hub to purge keys it retired from the collections bucket.
+
+        A KV delete leaves a marker message, and on the shared ``{ns}-collections`` bucket nothing
+        else removes it; a filtered stream purge leaves nothing, but it is a management verb only the
+        hub holds. The pod names the keys RELATIVE to its own scope
+        (``threetears.nats.collection_key_requests.purge_pod_collection_keys``) and forwards its
+        ``identity_token``; the hub composes each subject under the VERIFIED pod's scope, so the
+        request buys reach and never authority.
+
+        :return: subject ``{ns}.hub.collection_keys.purge``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.collection_keys.purge", kind="point")
+
+    @classmethod
     def hub_channel_engagement_default_resolve(cls) -> Subject:
         """request/reply subject for resolving a channel's default engagement.
 
@@ -2011,9 +2072,13 @@ class Subjects:
         cls,
         kind: Literal["membership", "assignment", "role"],
     ) -> Subject:
-        """publish subject for ACL cache invalidation broadcasts.
+        """the retired ACL cache invalidation subjects; nothing publishes them.
 
-        :param kind: which ACL surface to invalidate
+        The access tables' row broadcasts and write generations replaced them (epoch-task-06,
+        contract). Kept only so an agent pod one release back, which still subscribes, is granted the
+        subscribe (``subject_permissions``); goes with that grant.
+
+        :param kind: which ACL surface it named
         :ptype kind: Literal["membership", "assignment", "role"]
         :return: subject ``{ns}.acl.{kind}.invalidate``
         :rtype: Subject

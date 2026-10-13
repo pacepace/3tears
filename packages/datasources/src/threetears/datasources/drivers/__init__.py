@@ -48,6 +48,7 @@ from threetears.datasources.drivers.errors import (
     DriverConnectError,
     DriverCredentialPausedError,
     DriverMissingCredentialError,
+    DriverPoolBusyError,
 )
 from threetears.datasources.drivers.factory import create_driver
 
@@ -61,6 +62,7 @@ __all__ = [
     "DriverConnectError",
     "DriverCredentialPausedError",
     "DriverMissingCredentialError",
+    "DriverPoolBusyError",
     "TableRow",
     "create_driver",
     "guarded_connect",

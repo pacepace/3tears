@@ -188,6 +188,15 @@ class EpochListener:
         The framework cannot schedule it for you: ``3tears-epoch`` may not own
         a task in ``3tears``, so cadence is the consumer's.
 
+        **a subscription is also what lets the client keep a cached copy.**
+        Once the subscribe succeeds the client is told
+        (:meth:`EpochClient.observe_subscription`), and
+        ``EpochClient.versions(subject, cached=True)`` then holds a copy for
+        every durable subject this subscription hears. A broadcast drops the
+        copy; a missed one is repaired by :meth:`catch_up`, so a consumer that
+        reads cached versions schedules the pass over
+        :attr:`EpochClient.cached_subjects`.
+
         WILDCARD subscriptions are supported, and differ from a
         concrete one in THREE respects, all worth knowing before using
         one. Dedupe keys on
@@ -276,7 +285,13 @@ class EpochListener:
             subject followed by a bump to 1 on another would see
             ``1 <= 5`` and drop the second silently.
             """
-            dedupe_path = message.subject_path or subject.path
+            if not message.subject_path:
+                # one key for the message everywhere below: the subscribed subject's path
+                message = message.model_copy(update={"subject_path": subject.path})
+            dedupe_path = message.subject_path
+            # before the dedupe: a cached versions read must hear of every later epoch, including
+            # one this listener's last-seen already passed by another route (a catch-up)
+            self._epoch_client.observe_broadcast(message)
             current_last_seen = self._last_seen.get(dedupe_path, 0)
             if message.epoch <= current_last_seen:
                 log.debug(
@@ -312,6 +327,9 @@ class EpochListener:
         # subjects it later matches. dedupe stays keyed on the message path,
         # because those counters are independent numbers.
         self._registrations.setdefault(subject.path, []).append((subject, on_bump, on_reset))
+        # from here every broadcast on the subject reaches the client's ``observe_broadcast``, so
+        # the client may keep a cached ``versions`` copy for what this subscription hears
+        self._epoch_client.observe_subscription(subject)
 
     async def _bucket_was_replaced(self) -> bool:
         """whether the counter bucket is a DIFFERENT one than last observed.
@@ -546,6 +564,10 @@ class EpochListener:
         epoch-echo paths. reads :meth:`EpochClient.current`; if the
         result is greater than this listener's last-seen for the
         subject, advances last-seen and invokes ``on_bump``.
+
+        for a durable subject the read also repairs the client's cached
+        :meth:`EpochClient.versions` copy: a copy the row has moved away from
+        is dropped, whether or not ``on_bump`` fires.
 
         idempotent: calling repeatedly with no intervening bump is one
         cheap counter read with no side effect. The exception is the reset

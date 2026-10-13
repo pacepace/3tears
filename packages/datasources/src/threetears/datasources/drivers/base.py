@@ -59,17 +59,24 @@ import functools
 import inspect
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 from types import TracebackType
 from typing import Any, TypeAlias, TypedDict, TypeVar
 
 from threetears.observe import BuildOnce, get_logger
 
+from threetears.core.sql_fragments import quote_identifier
+
+from threetears.datasources.export import DriverExportUnsupportedError, ExportConfig, ExportResult
+
 __all__ = [
+    "DriverFingerprintGroupsUnsupportedError",
     "CallbackTransaction",
     "ColumnCoverage",
     "ColumnRow",
     "Driver",
+    "check_max_rows",
+    "log_unselectable_relations",
     "RelationFingerprint",
     "TableRow",
     "Transaction",
@@ -80,6 +87,10 @@ __all__ = [
 log = get_logger(__name__)
 
 F = TypeVar("F", bound=Callable[..., Awaitable[Any]])
+
+
+class DriverFingerprintGroupsUnsupportedError(NotImplementedError):
+    """the engine cannot fingerprint a relation's groups in one statement here; ask group by group."""
 
 
 # ---------------------------------------------------------------------------
@@ -178,21 +189,6 @@ class ColumnCoverage(TypedDict):
     nonzero_count: int
 
 
-def _quote_ident(name: str) -> str:
-    """double-quote a SQL identifier, escaping embedded quotes by doubling.
-
-    identifiers (schema / table / column names) cannot be passed as bind
-    parameters, so the coverage probe interpolates them -- quoting defends the
-    interpolation even though the names come from the warehouse catalog.
-
-    :param name: raw identifier
-    :ptype name: str
-    :return: a safely double-quoted identifier
-    :rtype: str
-    """
-    return '"' + name.replace('"', '""') + '"'
-
-
 def _build_coverage_sql(schema: str, table: str, columns: list[str]) -> str:
     """build the single-scan coverage aggregate for ``columns`` in ``schema.table``.
 
@@ -212,9 +208,9 @@ def _build_coverage_sql(schema: str, table: str, columns: list[str]) -> str:
     :return: the coverage SELECT statement
     :rtype: str
     """
-    qualified = f"{_quote_ident(schema)}.{_quote_ident(table)}"
+    qualified = f"{quote_identifier(schema)}.{quote_identifier(table)}"
     selects = ["COUNT(*) AS total_rows"]
-    selects.extend(f"COUNT(NULLIF({_quote_ident(col)}, 0)) AS nz_{i}" for i, col in enumerate(columns))
+    selects.extend(f"COUNT(NULLIF({quote_identifier(col)}, 0)) AS nz_{i}" for i, col in enumerate(columns))
     return f"SELECT {', '.join(selects)} FROM {qualified}"
 
 
@@ -244,10 +240,10 @@ def _build_coverage_by_dimension_sql(
     :return: the grouped coverage SELECT statement
     :rtype: str
     """
-    qualified = f"{_quote_ident(schema)}.{_quote_ident(table)}"
-    dimension = _quote_ident(dimension_column)
+    qualified = f"{quote_identifier(schema)}.{quote_identifier(table)}"
+    dimension = quote_identifier(dimension_column)
     selects = [f"{dimension} AS dim_value", "COUNT(*) AS total_rows"]
-    selects.extend(f"COUNT(NULLIF({_quote_ident(col)}, 0)) AS nz_{i}" for i, col in enumerate(columns))
+    selects.extend(f"COUNT(NULLIF({quote_identifier(col)}, 0)) AS nz_{i}" for i, col in enumerate(columns))
     return f"SELECT {', '.join(selects)} FROM {qualified} GROUP BY {dimension}"
 
 
@@ -724,6 +720,55 @@ class TransactionContext:
 # ---------------------------------------------------------------------------
 
 
+#: how many left-out relations :func:`log_unselectable_relations` names; the count covers the rest
+UNSELECTABLE_EXAMPLES = 5
+
+
+def log_unselectable_relations(*, datasource_name: str, method: str, left_out: Iterable[tuple[str, str]]) -> None:
+    """say, once per catalog call, which relations were left out because the user cannot SELECT them.
+
+    the catalog methods drop a relation the connected user cannot read (see
+    ``IMPLEMENTING_DRIVERS.md``), and the drop is silent where the old failure was a loud
+    ``42501``. an operator who widened ``allowed_schemas`` and forgot a ``GRANT SELECT`` would
+    find the table missing and nothing saying why; this line is the why. nothing is logged when
+    nothing was left out. a relation dropped while the catalog was read is not "left out" -- the
+    caller excludes it from ``left_out``.
+
+    :param datasource_name: the datasource the driver serves
+    :ptype datasource_name: str
+    :param method: the catalog method that filtered (``list_tables`` / ``list_columns`` /
+        ``table_hashes``)
+    :ptype method: str
+    :param left_out: the ``(schema, table)`` pairs filtered out; duplicates are counted once
+    :ptype left_out: Iterable[tuple[str, str]]
+    """
+    names = sorted(set(left_out))
+    if names:
+        examples = ", ".join(f"{schema}.{table}" for schema, table in names[:UNSELECTABLE_EXAMPLES])
+        log.info(
+            "catalog left out %d relation(s) the datasource user cannot SELECT: datasource=%s method=%s "
+            "examples=%s%s -- GRANT SELECT on a table to catalog it",
+            len(names),
+            datasource_name,
+            method,
+            examples,
+            ", ..." if len(names) > UNSELECTABLE_EXAMPLES else "",
+        )
+
+
+def check_max_rows(max_rows: int) -> None:
+    """refuse a read bound below one row: the one check every driver's ``fetch_at_most`` makes first.
+
+    :param max_rows: the bound
+    :ptype max_rows: int
+    :return: nothing
+    :rtype: None
+    :raises ValueError: if ``max_rows`` is below 1
+    """
+    if max_rows < 1:
+        raise ValueError(f"max_rows must be at least 1, got {max_rows}")
+
+
 class Driver(ABC):
     """abstract base for all datasource drivers.
 
@@ -806,6 +851,42 @@ class Driver(ABC):
         ``wait=True`` deadlocks the asyncio event loop.
     """
 
+    @property
+    def concurrent_queries(self) -> int:
+        """the most queries a caller should run on this driver at once.
+
+        Fails closed: a driver that says nothing is asked one query at a time. A driver that caps
+        its own open connections answers that cap, so a caller running queries side by side gates
+        them there and they wait at the caller's gate (which can refuse, with a deadline) rather than
+        on the driver's own connection semaphore, which has neither. A driver whose logins are not
+        guarded against a refused credential answers 1, so a caller cannot send a burst of failing
+        logins.
+
+        A driver querying through a pool its host lends it (:attr:`borrowed_pool` is not None) is
+        bounded with every other borrower of that pool, by the host; its own answer is not the bound
+        then, and stays 1.
+
+        The hub gates every call through a datasource's driver this way (its ``DrainableDriver``
+        takes a turn for each statement, for a whole ``fetch_iter`` walk and for a transaction from
+        ``begin`` to commit or rollback).
+
+        :return: the bound, at least 1
+        :rtype: int
+        """
+        return 1
+
+    @property
+    def borrowed_pool(self) -> Any | None:
+        """the host's own pool this driver queries through, or None when it opens its own connections.
+
+        A caller running queries side by side bounds every driver borrowing one pool together, or
+        they starve the host that lent it; :attr:`concurrent_queries` is not that bound.
+
+        :return: the borrowed pool
+        :rtype: Any | None
+        """
+        return None
+
     @abstractmethod
     async def fetch(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> list[dict[str, Any]]:
         """run an arbitrary SELECT statement; materialize all rows in memory.
@@ -834,6 +915,34 @@ class Driver(ABC):
         :raises RuntimeError: if the driver was previously closed
         :raises ValueError: if ``timeout_seconds`` is not a positive int
         """
+
+    async def fetch_at_most(
+        self, sql: str, *params: Any, max_rows: int, timeout_seconds: int | None = None
+    ) -> list[dict[str, Any]]:
+        """run a SELECT and read at most ``max_rows`` rows of its result, in order.
+
+        For a caller that answers with a bounded number of rows (a responder capping its reply at a
+        thousand and saying whether there were more): ask for one row past the cap, and no result
+        larger than that is held. Every driver checks the bound first with :func:`check_max_rows`, the
+        one check; a driver that can stop reading early (a server-side cursor) overrides this, and
+        the default reads the result through :meth:`fetch` and keeps the first ``max_rows``. So the bound on what
+        is kept holds for every driver, and the bound on what is read only where the driver says so.
+
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional placeholder values
+        :ptype params: Any
+        :param max_rows: the most rows to read; at least 1
+        :ptype max_rows: int
+        :param timeout_seconds: per-statement timeout override, as :meth:`fetch` takes it
+        :ptype timeout_seconds: int | None
+        :return: at most ``max_rows`` column-name -> value dicts, in row order
+        :rtype: list[dict[str, Any]]
+        :raises ValueError: if ``max_rows`` is below 1
+        """
+        check_max_rows(max_rows)
+        rows = await self.fetch(sql, *params, timeout_seconds=timeout_seconds)
+        return rows[:max_rows]
 
     @abstractmethod
     async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> None:
@@ -923,6 +1032,12 @@ class Driver(ABC):
     async def list_tables(self, schemas: list[str]) -> list[TableRow]:
         """list tables visible to the connection within the given schemas.
 
+        only tables the connected user can SELECT, and ``list_columns`` /
+        ``table_hashes`` apply the same filter: ``allowed_schemas`` names whole
+        schemas, a least-privilege user is granted a few of their tables, and
+        a table catalogued but not readable fails every later read of it with
+        permission denied (see ``IMPLEMENTING_DRIVERS.md``).
+
         :param schemas: schema-name allow-list. empty list means "no
             tables" (callers gate against the agent.yaml schema
             whitelist before calling)
@@ -945,7 +1060,9 @@ class Driver(ABC):
         """
 
     @abstractmethod
-    async def relation_fingerprint(self, relation: str, key: list[str]) -> RelationFingerprint:
+    async def relation_fingerprint(
+        self, relation: str, key: list[str], where: Mapping[str, str] | None = None
+    ) -> RelationFingerprint:
         """count a relation and fingerprint its ordering key, in one statement.
 
         The completeness check a paged read rests on. Taken before the first page
@@ -974,6 +1091,9 @@ class Driver(ABC):
             a fingerprint over no columns would answer the same for every
             relation of the same size, which is a count wearing a digest's name
         :ptype key: list[str]
+        :param where: equality filters, column -> value, naming the rows to fingerprint;
+            columns are TRUSTED identifiers, values are bound as parameters
+        :ptype where: Mapping[str, str] | None
         :return: the relation's current row count and key digest
         :rtype: RelationFingerprint
         :raises ValueError: when ``key`` is empty
@@ -1030,6 +1150,80 @@ class Driver(ABC):
         :return: nothing
         :rtype: None
         """
+
+    # -------------------------------------------------------------------
+    # Concrete: export (a warehouse that writes a query's rows to S3 itself)
+    # -------------------------------------------------------------------
+
+    @property
+    def export_config(self) -> ExportConfig | None:
+        """where this datasource's exports go, and the grant that deletes them; None when it cannot export.
+
+        :return: the export configuration
+        :rtype: ExportConfig | None
+        """
+        return None
+
+    async def unload(
+        self,
+        select: str,
+        destination: str,
+        *,
+        timeout_seconds: int | None = None,
+        partition_by: str | None = None,
+    ) -> ExportResult:
+        """write ``select``'s rows to the datasource's export location, as parquet, and say where.
+
+        Concrete, refusing: only an engine that can write a result to object storage itself, with an
+        export configured on its datasource, overrides it (:mod:`threetears.datasources.export`).
+        Every other driver answers this, so a caller asks once and branches on the type.
+
+        :param select: a plain ``SELECT``, already admitted as a read the caller may run
+        :ptype select: str
+        :param destination: where under the configured prefix, a relative path
+        :ptype destination: str
+        :param timeout_seconds: per-statement timeout, as :meth:`fetch` takes it
+        :ptype timeout_seconds: int | None
+        :param partition_by: a column the files are divided by, one directory per value
+            (``column=value/``), the column kept in the files; None for one undivided export
+        :ptype partition_by: str | None
+        :return: the rows written and where they are
+        :rtype: ExportResult
+        :raises DriverExportUnsupportedError: always, here
+        """
+        raise DriverExportUnsupportedError(f"{type(self).__name__} cannot export a query's rows to object storage")
+
+    async def relation_fingerprint_groups(
+        self,
+        relation: str,
+        key: list[str],
+        group_by: str,
+        where: Mapping[str, str] | None = None,
+        where_in: Mapping[str, Sequence[str]] | None = None,
+    ) -> dict[str | None, RelationFingerprint]:
+        """count and fingerprint every group of a relation (each value of ``group_by``) in one statement.
+
+        The same fingerprint :meth:`relation_fingerprint` takes of the rows ``group_by = value``,
+        for every value at once: a caller comparing a relation's parts asks once, not once a part.
+        Concrete, refusing: an engine overrides it where it can; a caller that is refused asks
+        group by group.
+
+        :param relation: schema-qualified relation name, a TRUSTED identifier
+        :ptype relation: str
+        :param key: the columns the digest covers, TRUSTED identifiers
+        :ptype key: list[str]
+        :param group_by: the column the groups are values of, a TRUSTED identifier
+        :ptype group_by: str
+        :param where: equality filters, column -> value
+        :ptype where: Mapping[str, str] | None
+        :param where_in: set filters, column -> the values it may hold
+        :ptype where_in: Mapping[str, Sequence[str]] | None
+        :return: each group's value (as text; ``None`` for NULL) -> its fingerprint; a value with no
+            rows is not named
+        :rtype: dict[str | None, RelationFingerprint]
+        :raises DriverFingerprintGroupsUnsupportedError: always, here
+        """
+        raise DriverFingerprintGroupsUnsupportedError(f"{type(self).__name__} cannot fingerprint a relation's groups")
 
     # -------------------------------------------------------------------
     # Concrete: value-coverage probe (datasource honesty)

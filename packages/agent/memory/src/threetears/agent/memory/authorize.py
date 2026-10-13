@@ -51,7 +51,7 @@ evaluator can answer subsequent questions from cache.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 from uuid import NAMESPACE_DNS, UUID, uuid5
 
 from threetears.agent.acl import (
@@ -77,9 +77,6 @@ from threetears.core.namespaces import (
     build_namespace_name,
 )
 from threetears.observe import get_logger
-
-if TYPE_CHECKING:
-    from threetears.agent.acl.invalidation_bus import AclInvalidationPublisher
 
 __all__ = [
     "ACTION_MEMORY_EXTRACT",
@@ -285,7 +282,7 @@ class MemoryAuthorizerDependencies:
     caller that reached it. hub subclasses (``HubGroupCollection`` and
     friends) satisfy these annotations by inheritance.
 
-    :ivar acl_cache: shared :class:`AclCache` carrying loaders + ttl
+    :ivar acl_cache: shared :class:`AclCache` carrying loaders + its layers
         layers
     :ivar namespace_collection: three-tier ``NamespaceCollection``
         used to resolve memory namespaces by
@@ -312,11 +309,7 @@ class MemoryAuthorizerDependencies:
         process resolves memory namespaces against a Collection that reaches
         the ``namespaces`` table directly and has nobody to ask. a process that
         DOES need one and lacks it gets a denial, never a local write
-    :ivar invalidation_publisher: the rbac invalidation-bus publisher
-        :func:`ensure_memory_owner_assignment` broadcasts on after it writes
-        a membership or assignment, so every OTHER pod drops the entries the
-        write made stale. optional: ``None`` evicts only this process's
-        :attr:`acl_cache`, and other processes fall back to ttl expiry
+
     """
 
     __slots__ = (
@@ -327,7 +320,6 @@ class MemoryAuthorizerDependencies:
         "role_collection",
         "role_assignment_collection",
         "namespace_provisioner",
-        "invalidation_publisher",
     )
 
     def __init__(
@@ -340,7 +332,6 @@ class MemoryAuthorizerDependencies:
         role_collection: RoleCollection,
         role_assignment_collection: RoleAssignmentCollection,
         namespace_provisioner: MemoryNamespaceProvisioner | None = None,
-        invalidation_publisher: AclInvalidationPublisher | None = None,
     ) -> None:
         """initialize the dependency bundle.
 
@@ -361,9 +352,6 @@ class MemoryAuthorizerDependencies:
         :param namespace_provisioner: the provisioner for a missing memory namespace row (the hub's,
             or the local one for a hub-less deployment), or ``None``
         :ptype namespace_provisioner: MemoryNamespaceProvisioner | None
-        :param invalidation_publisher: rbac invalidation-bus publisher for
-            cross-pod eviction after an ensure writes, or ``None``
-        :ptype invalidation_publisher: AclInvalidationPublisher | None
         """
         self.acl_cache = acl_cache
         self.namespace_collection = namespace_collection
@@ -372,7 +360,6 @@ class MemoryAuthorizerDependencies:
         self.role_collection = role_collection
         self.role_assignment_collection = role_assignment_collection
         self.namespace_provisioner = namespace_provisioner
-        self.invalidation_publisher = invalidation_publisher
 
 
 async def _resolve_or_create_memory_namespace(
@@ -551,11 +538,10 @@ async def ensure_memory_owner_assignment(
     per-namespace contribution are already in ``deps.acl_cache`` from the
     authorization that preceded the write, and they say "no grant" -- so
     without an eviction the user's NEXT request on this pod is denied from
-    cache for up to the cache ttl, immediately after being granted. a new
+    cache, immediately after being granted. a new
     membership evicts the user's membership entry; a new assignment (or a
-    new group) evicts the group's assignment entries; both are broadcast
-    through ``deps.invalidation_publisher`` when one is wired, so every
-    other pod evicts them too. an ensure that found every row already
+    new group) evicts the group's assignment entries. every other pod hears the rows' broadcasts and their tables'
+    write generations. an ensure that found every row already
     present wrote nothing and evicts nothing, which is what keeps running
     it on every user write free.
 
@@ -644,9 +630,8 @@ async def ensure_memory_owner_assignment(
         scope_type="namespace",
         scope_id=namespace.id,
     )
-    await evict_after_rbac_write(
+    evict_after_rbac_write(
         deps.acl_cache,
-        deps.invalidation_publisher,
         member_actors=[("user", user_id)] if membership_created else [],
         group_ids=[group_id] if group_created or assignment_created else [],
     )

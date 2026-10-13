@@ -72,7 +72,7 @@ needs (corrected in scriob `docs/arch/api.md`). We **replace** this state layer 
 | Socket lifecycle + auth | `channels.WebSocketHandler` + `auth_validator` | **reuse** (reshaped as needed) |
 | Subjects / namespace prefixing | `nats.Subjects` (`{ns}.…`) + `kv_bucket` (`{ns}-…`) | **reuse** |
 | Authorization (join / broadcast / op) | `agent.acl.authorize_on_entity(ns_entity, action, user_id, agent_id, cache)` | **reuse** |
-| Cross-pod ACL coherence | `agent.acl.invalidation` + `Subjects.acl_invalidate(...)` | **reuse** |
+| Cross-pod ACL coherence | `agent.acl.generation_follow.follow_access_tables` (the access tables' write generations) | **reuse** |
 | Logging / tracing | `observe.get_logger` / `@traced` | **reuse** |
 
 Net-new: the **live room fanout** (message delivery to sockets — not cache invalidation, which the
@@ -158,8 +158,8 @@ Isolation is enforced at composed layers, none bespoke, and the tenant dimension
 - **Authorization** is per-action, every time, via `agent.acl.authorize_on_entity`: `room.join`
   (presence), `entry.read`/`entry.write` (which ops/broadcasts a user may send/receive — CO-5). Deny →
   `AccessDenied` → error frame / refused op; never a silent allow.
-- **Cross-pod coherence** — a revoked grant propagates fleet-wide via `agent.acl.invalidation` before
-  the next check.
+- **Cross-pod coherence** — a revoked grant propagates fleet-wide through the access tables' write
+  generations (`agent.acl.generation_follow.follow_access_tables`) before the next check.
 - **The roster is authorization-clean by construction** — a member is written only after `room.join`
   passes, so "who is in room X" never lists an unauthorized user.
 

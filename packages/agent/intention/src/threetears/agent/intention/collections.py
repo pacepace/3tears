@@ -438,8 +438,8 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
         concept (design §6.5), so the pass ages every want.
 
         Cache coherence: the raw L3 decay leaves L1/L2 holding the
-        pre-decay salience, so each decayed pk is invalidated (via
-        :meth:`invalidate_cache`) -- otherwise ``intention_log``'s
+        pre-decay salience, so every decayed pk is invalidated (in one
+        :meth:`invalidate_cache_many` call) -- otherwise ``intention_log``'s
         dedup-refresh, which reads the want via ``get()`` before bumping
         it, could re-persist a stale salience and undo the decay.
 

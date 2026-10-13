@@ -15,7 +15,19 @@ from threetears.core.collections.asyncpg_init import (
     init_connection,
     register_jsonb_text_codec,
 )
-from threetears.core.collections.base import BaseCollection
+from threetears.core.collections.delete_cascade import (
+    CascadedRows,
+    announce_delete_cascade,
+    read_delete_cascade,
+)
+from threetears.core.collections.base import (
+    NO_L2,
+    BaseCollection,
+    DeleteCascade,
+    NoL2,
+    ScanReadTicket,
+    tables_with_write_generation,
+)
 from threetears.core.collections.bucket import (
     COLLECTIONS_BUCKET_SUFFIX,
     bind_collections_bucket,
@@ -24,6 +36,17 @@ from threetears.core.collections.bypassing_write import BypassingWrite
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.durable_store import DurableStoreCollection
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer, flush_pending
+from threetears.core.collections.generation import (
+    WRITE_GENERATION,
+    WRITE_GENERATION_UNDECLARED,
+    GenerationMarks,
+    GenerationSource,
+    GenerationVerdict,
+    NoWriteGeneration,
+    UndeclaredWriteGeneration,
+    WriteGeneration,
+    announce_unheard_writes,
+)
 from threetears.core.collections.merge import repoint_user_rows
 from threetears.core.collections.reapply import (
     REAPPLY_BACKOFF_SECONDS,
@@ -35,6 +58,7 @@ from threetears.core.collections.reapply import (
 from threetears.core.collections.registry import (
     CacheInvalidationMessage,
     CollectionRegistry,
+    DerivedCacheRegistration,
 )
 from threetears.core.collections.salience import apply_salience_decay
 from threetears.core.collections.schema_backed import (
@@ -82,18 +106,28 @@ __all__ = [
     "BYTES_TYPE",
     "COLLECTIONS_BUCKET_SUFFIX",
     "BaseCollection",
+    "CascadedRows",
+    "DeleteCascade",
+    "ScanReadTicket",
     "BypassingWrite",
     "CacheInvalidationMessage",
     "CallerTransaction",
     "CollectionRegistry",
     "Column",
     "DATETIMETZ_TYPE",
+    "DerivedCacheRegistration",
     "DerivedCollection",
     "DurableStoreCollection",
     "ExponentialBackoff",
     "FlushStrategy",
+    "GenerationMarks",
+    "GenerationSource",
+    "GenerationVerdict",
     "INT_TYPE",
     "JSONB_TYPE",
+    "NO_L2",
+    "NoL2",
+    "NoWriteGeneration",
     "PartitionEnforcementError",
     "REAPPLY_BACKOFF_SECONDS",
     "REAPPLY_MAX_ATTEMPTS",
@@ -101,10 +135,16 @@ __all__ = [
     "SchemaBackedCollection",
     "TableSchema",
     "UUID_TYPE",
+    "UndeclaredWriteGeneration",
     "VECTOR_TYPE",
+    "WRITE_GENERATION",
+    "WRITE_GENERATION_UNDECLARED",
     "WriteBuffer",
+    "WriteGeneration",
     "apply_salience_decay",
     "bind_collections_bucket",
+    "announce_delete_cascade",
+    "announce_unheard_writes",
     "deserialize_from_json",
     "encode_jsonb",
     "flush_pending",
@@ -115,4 +155,6 @@ __all__ = [
     "repoint_user_rows",
     "serialize_to_json",
     "spans_partitions",
+    "read_delete_cascade",
+    "tables_with_write_generation",
 ]

@@ -3,7 +3,7 @@
 Drive the tick engine over a fake store + fake fire store (both
 fake-parity-declared against the production Protocols) and a recording
 dispatch callback. No DB, no NATS server -- the lock is monkeypatched at
-``threetears.nats.nats_distributed_lock`` (resolved by the local import
+``threetears.core.coordination.nats_distributed_lock`` (resolved by the local import
 inside the engine), matching agent-wake's ``test_tick_degrade_open``
 pattern.
 
@@ -30,7 +30,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from threetears.nats import LockHeld
+from threetears.core.coordination import LockHeld
 from threetears.nats.errors import KvError
 
 from threetears.scheduled_jobs import tick as tick_mod
@@ -260,13 +260,13 @@ class _CtxHealthy:
 
 
 def _patch_lock(monkeypatch: pytest.MonkeyPatch, ctx: Any) -> None:
-    """Replace ``threetears.nats.nats_distributed_lock`` (resolved by the
+    """Replace ``threetears.core.coordination.nats_distributed_lock`` (resolved by the
     local import inside the engine) with a factory returning ``ctx``."""
 
     def _factory(_client: Any, _key: str, **_kw: Any) -> Any:
         return ctx
 
-    monkeypatch.setattr("threetears.nats.nats_distributed_lock", _factory)
+    monkeypatch.setattr("threetears.core.coordination.nats_distributed_lock", _factory)
 
 
 async def _record_success(_trigger: JobTrigger, _fire_id: UUID) -> JobFireResult:

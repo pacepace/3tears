@@ -300,7 +300,7 @@ async def authorize_on_entity(
     :param agent_id: invoking agent UUID, or ``None`` for user-only
         evaluation
     :ptype agent_id: UUID | None
-    :param cache: shared :class:`AclCache` carrying loaders + ttl
+    :param cache: shared :class:`AclCache` carrying loaders + its layers
         layers
     :ptype cache: AclCache
     :param namespace_name: canonical namespace name for log + denial
@@ -404,7 +404,7 @@ async def authorize(
     :param agent_id: invoking agent UUID, or ``None`` for user-only
         evaluation
     :ptype agent_id: UUID | None
-    :param cache: shared :class:`AclCache` carrying loaders + ttl
+    :param cache: shared :class:`AclCache` carrying loaders + its layers
         layers
     :ptype cache: AclCache
     :return: full evaluation result on allow

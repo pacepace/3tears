@@ -25,6 +25,8 @@ The vocabulary is closed: `error_code` must be one of `TOOL_RESULT_ERROR_CODES`,
 | Code | Meaning | Platform face |
 |------|---------|---------------|
 | `CONFLICT` | what the call changes was changed by someone else at the same moment; nothing was written. Read it again and retry. | HTTP 409, retryable |
+| `MALFORMED_REQUEST` | the call cannot be served as asked: an argument names something the tool does not have, or a value it does not take. The message says which. | HTTP 400, not retryable |
+| `TOOL_NOT_READY` | the tool cannot answer yet (its data is still being loaded or checked). Try again shortly. | HTTP 503, retryable |
 
 A new code is a change to `TOOL_RESULT_ERROR_CODES` here and a face in the platform's error map, released together.
 
