@@ -1,8 +1,8 @@
 {
-  "deleted_at": "2026-10-13T00:54:18.705047+00:00",
+  "deleted_at": "2026-10-13T01:41:35.687555+00:00",
   "deleted_config_id": "c-1",
   "doc_type": "judge_config_tombstone",
-  "id": "01a132c0-cd51-7278-83d7-81cc0e4b020f",
+  "id": "01a132ec-1747-76eb-a8a7-81b3121a28d1",
   "name": "tone-strict",
   "rubric_dim_id": "conversation.tone",
   "schema_version": 14,

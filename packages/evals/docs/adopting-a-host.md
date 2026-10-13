@@ -340,6 +340,18 @@ job leases on one clock. If any store has none, neither has the router, and each
 
 Prove the router as you prove any store: the conformance kit runs over a `RoutedDocumentStore` of your stores.
 
+
+**A record your host writes itself is held to what the engine writes.** A run or result the engine did not
+launch (a witnessed session, a run your host assembles) is validated as strictly as one it did:
+
+- a run that names a `judge_model` names the `judge_temperature` its unconfigured dims were requested at, and a
+  run that records `goal_check_proofs` records the `goal_check_proof_rules` they were derived under;
+- every `RubricScore` states its `axis` (`capability` or `boundary`). A score your own reviewers gave, not a judge
+  call, leaves `judge_temperature` and `served_model` as `None` and records no judge identity for its dim: it reads
+  as an unknown judge, never as the same as a recorded one;
+- a judge identity in `EvalResult.judge_config_ids` is `builtin:<sha12>` or `<config id>@<sha12>`, as the judge
+  service writes it; a bare config id is refused.
+
 ## Upgrading: names that move
 
 **Every name that leaves a public root is written down, and nothing is kept for compatibility.** When a release

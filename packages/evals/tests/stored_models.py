@@ -37,6 +37,7 @@ from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfil
 from threetears.evals.run import EvalActionJob, EvalJudgeTemperatureCheck, EvalLaunch, EvalSecondJudgePass
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import (
+    builtin_judge_config_id,
     CaseSet,
     CassetteKey,
     EvalCassette,
@@ -214,6 +215,8 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
     "EvalCampaign": lambda: make_campaign(declared_design=minimal_declaration()),
     "EvalCassette": _cassette,
     "EvalInsight": make_insight,
+    # Judged as the judge service records it: the score's axis, temperature and label key, and the dim's judge
+    # identity, so the frozen corpus holds every field a judge phase writes.
     "EvalResult": lambda: make_eval_result(
         rubric_scores=[
             RubricScore(
@@ -225,11 +228,17 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
                 axis="capability",
                 judge_temperature=0.0,
             )
-        ]
+        ],
+        judge_config_ids={"conversation.tone": builtin_judge_config_id("Score the conversation's tone.")},
     ),
-    # Labelled, so the frozen core corpus from v12 holds a run carrying the labels v12 added (#648); and with a
-    # lease fault, as every job record sample is, so the corpus from v13 holds the faults v13 added.
-    "EvalRun": lambda: make_eval_run(labels=["baseline", "production-2026-10"], faults=[_LEASE_FAULT]),
+    # Judged, labelled, with goal-check proofs and a lease fault, so the frozen corpus holds each field a launch
+    # couples (the judge and its temperature, the proofs and their rules) and every job record's faults.
+    "EvalRun": lambda: make_eval_run(
+        labels=["baseline", "production-2026-10"],
+        faults=[_LEASE_FAULT],
+        judge_model="judge-a",
+        goal_check_proofs={"state.shop.cart.length >= 1": "proven"},
+    ),
     "EvalTemplate": make_template,
     "EvalTestCase": make_test_case,
     "EvalTrace": make_eval_trace,

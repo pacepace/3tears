@@ -4,8 +4,8 @@ A finding is shown at its confidence and evidence tier, and the headline — wha
 none, so a headline over a medium finding read as settled. The writer names the findings each rests on, and code
 derives the standing (:mod:`threetears.evals.analysis.standing`): the weakest confidence among them, and the weakest
 evidence tier of every reading they cite. The report serves it beside the headline and every bullet, the listing
-beside the headline, and the memo the reporter judge reads beside both. An analysis stored before the links existed
-says its standing was not recorded, and is never given a guessed one.
+beside the headline, and the memo the reporter judge reads beside both. A summary whose rendered figures would split it
+into bullets the writer never linked is refused before it is stored.
 
 Driven over the toy campaign through :func:`~threetears.evals.analysis.generator.generate_analysis`, with two findings:
 0 on latency at high confidence, 1 on cost at medium.
@@ -134,3 +134,32 @@ def test_the_memo_the_judge_reads_carries_the_standing(analysis: EvalAnalysis) -
     memo = render_memo_as_written(analysis)
     assert "The headline: Confidence: medium · Stands on: checks and measures. Rests on finding 1, 2." in memo
     assert "- It also costs more, though less surely. — Confidence: medium" in memo
+
+
+def test_a_figure_that_would_render_as_a_new_bullet_is_refused_before_the_analysis_is_stored() -> None:
+    """The links are checked on the summary as written, and the report reads it as stored, figures rendered: a
+    figure opening a line renders as a number, which reads as a numbered bullet the writer never linked."""
+    profile = toyhost_profile()
+    campaign, storage = toyhost_campaign(profile=profile)
+    bundle = assemble_context_bundle(campaign, storage=storage, profile=profile)
+    payload = memo_payload(bundle)
+    narrow = alias_at(bundle, TOYHOST_NARROW)
+    summary = (
+        "- The wide width is slower, read over\n"
+        f"{{{{{narrow}|production_replicating_cost|measure|n}}}}. documents on the narrow arm.\n"
+        "- It also costs more."
+    )
+    payload |= {"findings": payload["findings"][:1], "headline_rests_on": [0], "summary": summary}
+    payload |= {"summary_rests_on": [[0], [0]]}
+    with pytest.raises(Exception, match="reads as a numbered bullet"):
+        asyncio.run(
+            generate_analysis(
+                bundle,
+                prompt=PROMPT,
+                model=MODEL,
+                client=FixturedClient(json.dumps(payload)),
+                prompt_id=PROMPT_ID,
+                bundle_assembled_at=utc_now_iso(),
+                profile=profile,
+            )
+        )

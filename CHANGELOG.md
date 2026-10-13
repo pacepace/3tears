@@ -113,11 +113,12 @@ notes).
   judges and calibration, adopting a host, choosing a design, cost and budgets, MCP and the command line; and the
   background pages (principles, measuring soundly, the world model, design rationale, prior art, open problems).
   `docs/reference.md` is generated from the code.
-- **Pre-releases.** `v0.66.0-evaladopt.3` through `v0.66.0-evaladopt.21` were tagged on `feature/eval-adopt` for one
-  adopter and never published. Each tag's own `CHANGELOG.md` and `MIGRATIONS.toml` hold that pre-release's notes and
-  the names that moved. **A store written by a pre-release is not read:** its core documents (schema v8 to v13) are
-  refused by name as pre-release and its regenerable ones by version, so a pre-release adopter deletes its eval
-  documents before moving to this release.
+- **Pre-releases.** `v0.66.0-evaladopt.N` tags were cut on `feature/eval-adopt` for one adopter and never published.
+  Each tag's own `CHANGELOG.md` and `MIGRATIONS.toml` hold that pre-release's notes and the names that moved. **A
+  store written before `v0.66.0-evaladopt.21` is not read:** its core documents (schema v8 to v13) are refused by
+  name as pre-release and its regenerable ones by version, so such an adopter deletes its eval documents. From
+  `.21` on, the store is the v14 baseline this release reads, and every core shape change bumps the version with
+  an upgrader, as it will after release.
 
 ## v0.65.0 -- 2026-10-05
 

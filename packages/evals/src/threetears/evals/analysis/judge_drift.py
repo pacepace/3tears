@@ -73,7 +73,8 @@ class JudgeDriftDimension(EvalDocumentModel):
         ),
     )
     judge_temperature: JudgeTemperature | None = Field(
-        default=None, description="The temperature the first scores were sent at."
+        default=None,
+        description="The temperature the first scores were sent at; None = scores made outside a judge phase.",
     )
     second_model: str = Field(min_length=1, description="The model the second judge was asked as.")
     second_judge_config_id: str | None = Field(

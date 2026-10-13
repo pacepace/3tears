@@ -1689,13 +1689,20 @@ def judge_config_of(recorded: str | None) -> str | None:
     return match["config"]
 
 
+#: A built-in prompt's recorded identity, as :func:`builtin_judge_config_id` writes it.
+_BUILTIN_JUDGE_ID = re.compile(r"^builtin:[0-9a-f]{12}$")
+
+
 def _recorded_judge_identities(recorded: dict[str, str]) -> dict[str, str]:
     """Refuse a recorded judge identity that is neither a built-in prompt's nor a configured judge's.
 
     Raises:
-        ValueError: A value :func:`judge_config_of` cannot read.
+        ValueError: A value :func:`judge_config_of` cannot read, or a ``builtin:`` id that is not one
+            :func:`builtin_judge_config_id` writes.
     """
     for identity in recorded.values():
+        if is_builtin_judge_config_id(identity) and not _BUILTIN_JUDGE_ID.match(identity):
+            raise ValueError(f"{identity!r} is not a built-in prompt's identity: one is recorded as builtin:<sha12>")
         judge_config_of(identity)
     return recorded
 
@@ -3099,6 +3106,7 @@ class EvalRun(CoreDocumentModel):
     )
     goal_check_proof_rules: int | None = Field(
         default=None,
+        ge=1,
         description=(
             "The proof rules `goal_check_proofs` were derived under (`GOAL_CHECK_PROOF_RULES`): set exactly when "
             "they are. A `proven` recorded under rules older than the current ones reads as unproven "
@@ -3598,7 +3606,7 @@ def goal_check_proofs_as_read(run: EvalRun) -> dict[str, GoalCheckProof] | None:
     """
     if run.goal_check_proofs is None:
         return None
-    if run.goal_check_proof_rules == GOAL_CHECK_PROOF_RULES:
+    if run.goal_check_proof_rules is not None and run.goal_check_proof_rules >= GOAL_CHECK_PROOF_RULES:
         return dict(run.goal_check_proofs)
     return {check: "unproven" if proof == "proven" else proof for check, proof in run.goal_check_proofs.items()}
 
@@ -3612,7 +3620,7 @@ def stale_goal_check_proofs(run: EvalRun) -> list[str]:
     Returns:
         The checks, sorted; empty when the run's proofs are current or it recorded none.
     """
-    if run.goal_check_proofs is None or run.goal_check_proof_rules == GOAL_CHECK_PROOF_RULES:
+    if run.goal_check_proofs is None or (run.goal_check_proof_rules or 0) >= GOAL_CHECK_PROOF_RULES:
         return []
     return sorted(check for check, proof in run.goal_check_proofs.items() if proof == "proven")
 
@@ -5049,8 +5057,8 @@ class EvalResult(CoreDocumentModel):
             "The dims in judge_cannot_tell that are boundary (guardrail) dims, stamped from each dim's "
             "definition when it was judged, as a score's axis is. A boundary dim is in neither pass^k nor the "
             "composite, so a can't-tell on one leaves the trial in both; it is out of that guardrail's own "
-            "reading only. Empty when no can't-tell is on a boundary dim; a can't-tell not named here is read as "
-            "capability, which is how a score with no recorded axis is read."
+            "reading only. Empty when no can't-tell is on a boundary dim; a can't-tell not named here is a "
+            "capability dim's."
         ),
     )
 

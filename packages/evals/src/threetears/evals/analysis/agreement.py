@@ -113,8 +113,9 @@ class JudgeKey(NamedTuple):
     the temperature the call was sent at.
 
     The one key both agreements group by, the tiers are listed by, and a reading looks its tier up by — so a
-    measurement of one judge can never stand in for another's. A score always records its temperature; ``None``
-    is only a judge-kind trial whose call returned no completion to read it from, its own group.
+    measurement of one judge can never stand in for another's. A temperature of ``None`` — a score made outside a
+    judge phase, or a judge-kind trial whose call returned no completion to read it from — is its own group: an
+    unknown judge, never a match for a recorded temperature.
     """
 
     rubric_dim: str
@@ -181,7 +182,8 @@ class DimensionAgreement(EvalDocumentModel):
     judge_temperature: JudgeTemperature | None = Field(
         default=None,
         description=(
-            "The temperature the judge's calls were sent at ('model_default' = sent none, the model refusing one)."
+            "The temperature the judge's calls were sent at ('model_default' = sent none, the model refusing one); "
+            "None = scores made outside a judge phase, which no call sampled: an unknown judge, never a match."
         ),
     )
     n: int = Field(
@@ -727,7 +729,8 @@ class SelfAgreementDimension(EvalDocumentModel):
     judge_temperature: JudgeTemperature | None = Field(
         default=None,
         description=(
-            "The temperature the judge's calls were sent at ('model_default' = sent none, the model refusing one)."
+            "The temperature the judge's calls were sent at ('model_default' = sent none, the model refusing one); "
+            "None = scores made outside a judge phase, which no call sampled: an unknown judge, never a match."
         ),
     )
     n: int = Field(
@@ -926,7 +929,8 @@ class InterJudgeDimension(EvalDocumentModel):
         ),
     )
     judge_temperature: JudgeTemperature | None = Field(
-        default=None, description="The temperature the first scores were sent at."
+        default=None,
+        description="The temperature the first scores were sent at; None = scores made outside a judge phase.",
     )
     second_model: str = Field(min_length=1, description="The model the second judge was asked as.")
     second_judge_config_id: str | None = Field(

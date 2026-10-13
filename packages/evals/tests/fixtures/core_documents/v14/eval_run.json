@@ -18,26 +18,36 @@
   "completeness": null,
   "context_components": null,
   "context_key": null,
-  "created_at": "2026-10-13T00:54:18.698481+00:00",
+  "created_at": "2026-10-13T01:41:35.680703+00:00",
   "declared_margins": {},
   "declared_measures": {},
   "doc_type": "eval_run",
-  "effective_judges": null,
-  "effective_judges_source": null,
+  "effective_judges": {
+    "__outcome__": "judge-a",
+    "__transcript__": "judge-a"
+  },
+  "effective_judges_source": "recorded",
   "error_details": [],
   "faults": [
     "job lease: its holder, process 0199a000-0000-7000-8000-000000000001, could not renew it for 60s, its whole lease, and stopped the job \u2014 the last renewal failed: StorageError: the store refused the write"
   ],
-  "goal_check_proof_rules": null,
-  "goal_check_proofs": null,
+  "goal_check_proof_rules": 2,
+  "goal_check_proofs": {
+    "state.shop.cart.length >= 1": "proven"
+  },
   "host_payload": {},
-  "id": "01a132c0-cd4a-72bc-81da-bc1721035f35",
+  "id": "01a132ec-1740-7226-9cb6-f3e87581793d",
   "identity_version": null,
-  "judge_config_ids": null,
-  "judge_config_provenance": null,
-  "judge_model": null,
-  "judge_request_settings": null,
-  "judge_temperature": null,
+  "judge_config_ids": {},
+  "judge_config_provenance": {},
+  "judge_model": "judge-a",
+  "judge_request_settings": {
+    "max_tokens": 4096,
+    "reasoning_effort": null,
+    "reasoning_max_tokens": null,
+    "strict_output": false
+  },
+  "judge_temperature": 0.0,
   "k_runs": 1,
   "kind_spec": {},
   "labels": [
