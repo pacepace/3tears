@@ -25,7 +25,11 @@ from threetears.evals.schema.models import ClientRequestSettings, EvalRun
 
 _SUBJECT = SubjectSnapshot(subject_id="summarizer-3", subject_label="Summarizer, config 3", state=None)
 
-ROLES = [("judge_request_settings", JUDGE_INPUTS), ("simulator_request_settings", SIMULATOR_INPUTS)]
+#: Each role's apparatus dimension, the run field it reads (what the role was ASKED for), and the role's pins.
+ROLES = [
+    ("judge_request_settings", "judge_asked_settings", JUDGE_INPUTS),
+    ("simulator_request_settings", "simulator_asked_settings", SIMULATOR_INPUTS),
+]
 
 
 def _run(**fields: Any) -> EvalRun:
@@ -44,50 +48,56 @@ def _read(name: str, run: EvalRun) -> Any:
     return SHARED_CORE.read_role_pins(run)[name]
 
 
-@pytest.mark.parametrize(("name", "pins"), ROLES)
+@pytest.mark.parametrize(("name", "field", "pins"), ROLES)
 class TestHowARoleWasAskedIsAnApparatusInput:
     def test_it_is_a_core_apparatus_declaration_that_means_unrecorded_when_blank(
-        self, name: str, pins: tuple[str, ...]
+        self, name: str, field: str, pins: tuple[str, ...]
     ) -> None:
         (declared,) = [d for d in CORE_SWEEPABLES if d.name == name]
         assert declared.role == "apparatus"
         assert declared.indeterminate_when_blank is True
 
-    def test_it_is_pinned_into_its_role(self, name: str, pins: tuple[str, ...]) -> None:
+    def test_it_is_pinned_into_its_role(self, name: str, field: str, pins: tuple[str, ...]) -> None:
         assert name in pins
 
-    def test_a_recorded_setting_is_read_as_a_json_level(self, name: str, pins: tuple[str, ...]) -> None:
-        run = _run(**{name: ClientRequestSettings(max_tokens=4096, reasoning_max_tokens=1024)})
+    def test_a_recorded_setting_is_read_as_a_json_level(self, name: str, field: str, pins: tuple[str, ...]) -> None:
+        run = _run(**{field: ClientRequestSettings(max_tokens=4096, reasoning_max_tokens=1024)})
         assert _read(name, run) == {"max_tokens": 4096, "reasoning_max_tokens": 1024, "reasoning_effort": None}
 
-    def test_a_recorded_effort_is_read_as_a_json_level(self, name: str, pins: tuple[str, ...]) -> None:
-        run = _run(**{name: ClientRequestSettings(max_tokens=5120, reasoning_effort="minimal")})
+    def test_a_recorded_effort_is_read_as_a_json_level(self, name: str, field: str, pins: tuple[str, ...]) -> None:
+        run = _run(**{field: ClientRequestSettings(max_tokens=5120, reasoning_effort="minimal")})
         assert _read(name, run) == {"max_tokens": 5120, "reasoning_max_tokens": None, "reasoning_effort": "minimal"}
 
-    def test_no_reasoning_parameter_is_a_recorded_level_not_a_blank(self, name: str, pins: tuple[str, ...]) -> None:
-        run = _run(**{name: ClientRequestSettings(max_tokens=4096)})
+    def test_no_reasoning_parameter_is_a_recorded_level_not_a_blank(
+        self, name: str, field: str, pins: tuple[str, ...]
+    ) -> None:
+        run = _run(**{field: ClientRequestSettings(max_tokens=4096)})
         assert _read(name, run) == {"max_tokens": 4096, "reasoning_max_tokens": None, "reasoning_effort": None}
 
-    def test_a_budget_and_an_effort_under_one_cap_differ(self, name: str, pins: tuple[str, ...]) -> None:
+    def test_a_budget_and_an_effort_under_one_cap_differ(self, name: str, field: str, pins: tuple[str, ...]) -> None:
         """The simulator moved from a token budget to an effort level under the same 5120 cap; a campaign pooling
         runs from both sides must be told the role was asked differently."""
-        budget = _read(name, _run(**{name: ClientRequestSettings(max_tokens=5120, reasoning_max_tokens=1024)}))
-        effort = _read(name, _run(**{name: ClientRequestSettings(max_tokens=5120, reasoning_effort="minimal")}))
+        budget = _read(name, _run(**{field: ClientRequestSettings(max_tokens=5120, reasoning_max_tokens=1024)}))
+        effort = _read(name, _run(**{field: ClientRequestSettings(max_tokens=5120, reasoning_effort="minimal")}))
 
         assert SHARED_CORE.comparability(name, [budget, effort]) == "differs"
 
-    def test_an_unstamped_run_reads_as_unrecorded(self, name: str, pins: tuple[str, ...]) -> None:
+    def test_an_unstamped_run_reads_as_unrecorded(self, name: str, field: str, pins: tuple[str, ...]) -> None:
         assert _read(name, _run()) is None
 
-    def test_two_runs_asked_differently_differ_and_alike_agree(self, name: str, pins: tuple[str, ...]) -> None:
-        wide = _read(name, _run(**{name: ClientRequestSettings(max_tokens=8192, reasoning_max_tokens=4096)}))
-        narrow = _read(name, _run(**{name: ClientRequestSettings(max_tokens=2048)}))
+    def test_two_runs_asked_differently_differ_and_alike_agree(
+        self, name: str, field: str, pins: tuple[str, ...]
+    ) -> None:
+        wide = _read(name, _run(**{field: ClientRequestSettings(max_tokens=8192, reasoning_max_tokens=4096)}))
+        narrow = _read(name, _run(**{field: ClientRequestSettings(max_tokens=2048)}))
 
         assert SHARED_CORE.comparability(name, [wide, narrow]) == "differs"
         assert SHARED_CORE.comparability(name, [wide, dict(wide)]) == "same"
 
-    def test_a_run_that_never_recorded_it_cannot_be_compared_on_it(self, name: str, pins: tuple[str, ...]) -> None:
-        stamped = _read(name, _run(**{name: ClientRequestSettings(max_tokens=2048)}))
+    def test_a_run_that_never_recorded_it_cannot_be_compared_on_it(
+        self, name: str, field: str, pins: tuple[str, ...]
+    ) -> None:
+        stamped = _read(name, _run(**{field: ClientRequestSettings(max_tokens=2048)}))
 
         assert SHARED_CORE.comparability(name, [stamped, None]) == "unknown"
         assert SHARED_CORE.comparability(name, [None, None]) == "unknown"

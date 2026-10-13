@@ -193,7 +193,7 @@ def test_stamping_gives_the_run_the_template_and_the_judge_a_launch_would() -> N
     assert (stamped.template_id, stamped.judge_model) == (template.id, _JUDGE)
     assert (stamped.effective_judges, stamped.effective_judges_source) == ({_DIM: _JUDGE}, "recorded")
     assert (stamped.judge_config_ids, stamped.judge_config_provenance) == ({}, {})
-    assert stamped.judge_request_settings == JUDGE_REQUEST_SETTINGS
+    assert stamped.judge_asked_settings == JUDGE_REQUEST_SETTINGS
     assert stamped.rubric_scales == {_DIM: "ordinal"}
     assert stamped.model_role_provenance["judge"] == "chosen"
     assert (run.template_id, run.judge_model) == (None, None), "a copy; the run as built is unchanged"
@@ -344,7 +344,7 @@ class TestRecordingAJudgedCellRefuses:
         judge = _ScriptedJudge()
         host, template, run, case = off_loop(_setup, judge)
         stale = off_loop(_stamped, host, template, run).model_copy(
-            update={"judge_request_settings": JUDGE_REQUEST_SETTINGS.model_copy(update={"max_tokens": 1})}
+            update={"judge_asked_settings": JUDGE_REQUEST_SETTINGS.model_copy(update={"max_tokens": 1})}
         )
 
         with pytest.raises(ValidationFailedError, match="a new call would be asked differently"):

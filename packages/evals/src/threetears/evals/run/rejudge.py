@@ -228,7 +228,7 @@ def _refuse_another_judge_prompt(
 
 
 def request_settings_drift(recorded: ClientRequestSettings | None) -> str:
-    """How a run's recorded judge request settings differ from the ones a judge call sends now, in words.
+    """How the judge request settings a run recorded it asked for differ from the ones a judge call asks now, in words.
 
     Two settings can differ where this build cannot see: a run a newer build judged may record a field of the
     settings this build does not know, which its read keeps, so the two compare unequal while every field this
@@ -237,21 +237,23 @@ def request_settings_drift(recorded: ClientRequestSettings | None) -> str:
     kept on them, compare equal to today's and are said to match.
 
     Args:
-        recorded: The run's recorded judge request settings (``None`` when it recorded none).
+        recorded: The judge request settings the run recorded it asked for (``judge_asked_settings``; ``None`` when it
+            recorded none).
 
     Returns:
-        A clause for a refusal: "was judged with request settings ... and a judge call now sends ...".
+        A clause for a refusal: "asked its judge for request settings ... and a judge call now asks for ...".
     """
     if recorded == JUDGE_REQUEST_SETTINGS:
-        return f"was judged with the request settings a judge call now sends ({JUDGE_REQUEST_SETTINGS!r})"
+        return f"asked its judge for the request settings a judge call now asks for ({JUDGE_REQUEST_SETTINGS!r})"
     # Unequal, yet equal in every declared field: the difference is a field a newer build wrote, which equality
     # compares (the minor a shape was read at is not compared, so a run a newer minor wrote is not this case).
     if recorded is not None and recorded.model_dump() == JUDGE_REQUEST_SETTINGS.model_dump():
         return (
-            f"was judged with request settings that match the ones a judge call now sends ({JUDGE_REQUEST_SETTINGS!r}) "
+            "asked its judge for request settings that match the ones a judge call now asks for "
+            f"({JUDGE_REQUEST_SETTINGS!r}) "
             "in every field this build knows, and carry a field it does not, which a newer build recorded"
         )
-    return f"was judged with request settings {recorded!r} and a judge call now sends {JUDGE_REQUEST_SETTINGS!r}"
+    return f"asked its judge for request settings {recorded!r} and a judge call now asks for {JUDGE_REQUEST_SETTINGS!r}"
 
 
 def recorded_judge_pins(run: EvalRun, *, request_settings: RequestSettingsPolicy) -> str:
@@ -288,14 +290,14 @@ def recorded_judge_pins(run: EvalRun, *, request_settings: RequestSettingsPolicy
             f"run '{run.id}' recorded no judge config set, so which prompt scored each dim is unknown",
             remedy=RELAUNCH_TO_REJUDGE,
         )
-    if run.judge_request_settings is None:
+    if run.judge_asked_settings is None:
         raise ValidationFailedError(
             f"run '{run.id}' recorded no judge request settings, so how the judge was asked is unknown",
             remedy=RELAUNCH_TO_REJUDGE,
         )
-    if request_settings == "today" and run.judge_request_settings != JUDGE_REQUEST_SETTINGS:
+    if request_settings == "today" and run.judge_asked_settings != JUDGE_REQUEST_SETTINGS:
         raise ValidationFailedError(
-            f"run '{run.id}' {request_settings_drift(run.judge_request_settings)}; a new call would be asked "
+            f"run '{run.id}' {request_settings_drift(run.judge_asked_settings)}; a new call would be asked "
             "differently from the rest of the run",
             remedy=RELAUNCH_TO_REJUDGE,
         )

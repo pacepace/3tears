@@ -219,14 +219,14 @@ def make_eval_run(**overrides: Any) -> EvalRun:
     if defaults.get("judge_model") is not None and "judge_config_ids" not in overrides:
         defaults["judge_config_ids"] = {}
         defaults.setdefault("judge_config_provenance", {})
-    if defaults.get("judge_model") is not None and "judge_request_settings" not in overrides:
-        defaults["judge_request_settings"] = RECORDED_REQUEST_SETTINGS
+    if defaults.get("judge_model") is not None and "judge_asked_settings" not in overrides:
+        defaults["judge_asked_settings"] = RECORDED_REQUEST_SETTINGS
     if defaults.get("judge_model") is not None and "judge_temperature" not in overrides:
         defaults["judge_temperature"] = DEFAULT_JUDGE_TEMPERATURE
     if defaults.get("goal_check_proofs") is not None and "goal_check_proof_rules" not in overrides:
         defaults["goal_check_proof_rules"] = GOAL_CHECK_PROOF_RULES
-    if defaults.get("simulator_model") is not None and "simulator_request_settings" not in overrides:
-        defaults["simulator_request_settings"] = RECORDED_REQUEST_SETTINGS
+    if defaults.get("simulator_model") is not None and "simulator_asked_settings" not in overrides:
+        defaults["simulator_asked_settings"] = RECORDED_REQUEST_SETTINGS
     if defaults.get("cassette_mode") == "replay" and "cassette_corpus_id" not in overrides:
         defaults["cassette_corpus_id"] = "run-capture"
     return EvalRun(**defaults)

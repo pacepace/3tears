@@ -131,19 +131,23 @@ from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
 #: budget (``reasoning.max_tokens`` 1024 under a 5120 cap) did not fix it: gpt-5-nano is
 #: effort-only, so the router mapped the budget to an effort by its share of the cap (a fifth is
 #: ``low``), which bounds nothing in tokens, and the same utterance still reasoned to the whole
-#: cap and came back empty in two cells of 24. So the level is named directly. ``minimal`` is the
-#: lowest the model lists (the router's ``/models`` gives gpt-5-nano ``supported_efforts``
-#: high/medium/low/minimal, reasoning ``mandatory``, so ``none`` would be refused).
+#: cap and came back empty in two cells of 24. So the level is named directly.
+#:
+#: **``low``, not ``minimal``.** ``minimal`` is the lowest word gpt-5-nano lists, but few models
+#: take it: Claude's effort words start at ``low``, and OpenAI's later reasoning models dropped
+#: ``minimal``. ``low`` is the lowest word that is widely accepted, so the simulated user asks for
+#: it by name, and a client serving a model that takes another reports what it sent instead
+#: (``RoleUsage.sent_settings`` on the simulator's rows).
 #:
 #: **What it does not guarantee.** An effort level bounds nothing in tokens on any model; a model
-#: that takes reasoning as a token budget maps the level back to one by its own rule, and a model
+#: that takes reasoning as a token budget is sent the closest budget its client chooses, and a model
 #: that does not reason ignores it. The cap below is the only hard stop.
-SIMULATOR_REASONING_EFFORT: KnownReasoningEffort = "minimal"
+SIMULATOR_REASONING_EFFORT: KnownReasoningEffort = "low"
 
 #: Room the output cap leaves for the simulated user's private reasoning at
 #: :data:`SIMULATOR_REASONING_EFFORT`. Never sent — the request carries the effort, not a budget —
 #: so it bounds nothing; it is what the cap is sized from, so a turn that reasons a little more than
-#: ``minimal`` usually does still has room to answer.
+#: usual still has room to answer.
 SIMULATOR_REASONING_ALLOWANCE_TOKENS = 1024
 
 #: Output room kept for the simulated user's visible reply: the strict-schema JSON object holding one
@@ -157,14 +161,19 @@ SIMULATOR_MAX_TOKENS = SIMULATOR_REASONING_ALLOWANCE_TOKENS + SIMULATOR_ANSWER_B
 
 #: The simulator role's request settings as ONE value: what the host's client builder applies to
 #: the simulated user's client, and what a run launched with a simulated user records as
-#: ``simulator_request_settings``. Recorded on the run for the reason
+#: ``simulator_asked_settings``. Recorded on the run for the reason
 #: :data:`threetears.evals.run.judge.JUDGE_REQUEST_SETTINGS` is — moving it changes the conversation
 #: every later candidate is handed, with ``simulator_model`` unchanged. A move changes the stamp, so the
 #: ``simulator_request_settings`` apparatus dimension tells a campaign pooling runs from either side of it
 #: that its simulated user was asked differently.
+#:
+#: ``strict_output`` is set because every simulator call sends a strict reply schema (an actor's reply,
+#: a scheduling pick), which a router enforces only under ``require_parameters``: the stamp asks for
+#: the enforcement the calls already carry.
 SIMULATOR_REQUEST_SETTINGS = ClientRequestSettings(
     max_tokens=SIMULATOR_MAX_TOKENS,
     reasoning_effort=SIMULATOR_REASONING_EFFORT,
+    strict_output=True,
 )
 
 #: How many calls one ``llm_decided`` scheduling decision may make: the first, and one repair that

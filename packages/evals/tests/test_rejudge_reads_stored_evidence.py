@@ -216,7 +216,7 @@ async def _judged_and_stored(
         test_case_ids=[case.id],
         status="completed",
         judge_model=_JUDGE,
-        judge_request_settings=JUDGE_REQUEST_SETTINGS,
+        judge_asked_settings=JUDGE_REQUEST_SETTINGS,
         **run_fields,
     )
     off_loop(host.storage.save_eval_run, run)

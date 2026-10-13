@@ -28,7 +28,7 @@ from threetears.evals.testing import RecordedCompletions
 MODEL = "claude-haiku-5-5"
 #: How every answer is asked for: an output cap and low effort. No temperature: this model refuses one.
 SETTINGS = ClientRequestSettings(max_tokens=1024, reasoning_effort="low")
-#: How every judge call is asked for: as a judged run records it, its output cap and a thinking budget.
+#: How every judge call is asked for: as a judged run records it, its output cap and `high` effort.
 JUDGE_SETTINGS = JUDGE_REQUEST_SETTINGS
 RECORDING = Path(__file__).with_name("recordings") / "llm_judge.jsonl"
 RERECORD = "RECORD=1 python llm_judge.py"

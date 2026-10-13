@@ -1146,6 +1146,15 @@ class RubricScore(EvalDocumentModel, CoreShapeModel):
             "phase (a host's own reviewers), which no call sampled: compared as unknown, never as a match."
         ),
     )
+    judge_sent_settings: ClientRequestSettings | None = Field(
+        default=None,
+        description=(
+            "The request settings the call that produced this score was actually SENT with, as its completion reported "
+            "them (``sent_settings_of``): never what the run asked for, which is ``EvalRun.judge_asked_settings``. A "
+            "client may send the closest setting a model accepts, so the two can differ. None = unverified: the "
+            "client did not report what it sent, or the score was made outside a judge phase."
+        ),
+    )
     output_fingerprint: str | None = Field(
         default=None,
         pattern=_SHA256_HEX,
@@ -2803,53 +2812,60 @@ StoredReasoningEffort = Annotated[ReasoningEffort, known_unless_newer_minor("rea
 
 
 class ClientRequestSettings(EvalDocumentModel, CoreShapeModel):
-    """The request parameters a host applied to one apparatus role's LLM client, for one run.
+    """Request parameters for one apparatus role's LLM call: what the engine ASKED for, or what a request was SENT with.
 
     Recorded because the same model can be asked two different ways, and the asking is part of
-    the instrument: a reasoning judge given a private-reasoning budget thinks before it scores,
-    one sent none may not, and an output cap below what a reasoning model spends cuts its answer
-    off. Two runs carrying the same ``judge_model`` were therefore NOT judged alike if these
-    differ, and nothing else on the run can say so — the values are applied process-wide by the
-    host's client builder, and moving them regrades every later run without touching a model id.
+    the instrument: a reasoning judge asked to think hard thinks before it scores, one asked for
+    nothing may not, and an output cap below what a reasoning model spends cuts its answer off.
+    Two runs carrying the same ``judge_model`` were therefore NOT judged alike if these differ.
 
-    **Reasoning is asked for one way or the other, never both.** ``reasoning_max_tokens`` is a
-    budget in tokens, which Anthropic- and Gemini-style models take as one; ``reasoning_effort`` is
-    a level, which is all an effort-only model (OpenAI's reasoning series) understands — the router
-    maps a token budget onto one of those by its share of the cap, so a budget sent to such a model
-    bounds nothing in tokens. A request carrying both would leave the provider to pick, and the
-    record could not say which it did, so a settings value naming both is refused rather than
-    given a precedence.
+    **One shape, two facts, never confused.** The engine's own constants
+    (:data:`threetears.evals.run.judge.JUDGE_REQUEST_SETTINGS` and the simulator's) are what a run
+    ASKED its role's client for, and a run stamps them at launch on the fields named for that
+    (``EvalRun.judge_asked_settings``, ``EvalRun.simulator_asked_settings``). What a request actually
+    carried is a different fact, which only the client that built the request knows: a client may
+    send the closest setting a model accepts in place of the one asked for, or drop one the model
+    refuses. A client reports it per completion (the optional ``sent_settings`` member of
+    :class:`~threetears.evals.schema.completion.CompletionResult`, read by
+    :func:`~threetears.evals.schema.completion.sent_settings_of`), and the engine stores it on the
+    fields named for it (``RubricScore.judge_sent_settings``, ``RoleUsage.sent_settings``, …), where
+    ``None`` means the client did not say: unverified. Asked and sent are compared with ``==``.
 
-    The host builds this from the same value its client builder applies, so the stamp and the
-    request cannot disagree (see :data:`threetears.evals.run.judge.JUDGE_REQUEST_SETTINGS`).
+    **Reasoning is asked for one way or the other, never both.** ``reasoning_effort`` is a level
+    (an effort word), which is how the engine's own constants ask; ``reasoning_max_tokens`` is a
+    budget in tokens, which some models take instead of a word. Nothing in this package converts one
+    into the other: a client that sends a model one in place of the other reports what it sent. A
+    request carrying both would leave the provider to pick, and the record could not say which it
+    did, so a settings value naming both is refused rather than given a precedence.
     """
 
-    max_tokens: int = Field(gt=0, description="The output cap every request of this role was sent with.")
+    max_tokens: int = Field(gt=0, description="The output cap: asked for, or as the request carried it.")
     reasoning_max_tokens: int | None = Field(
         default=None,
         gt=0,
         description=(
-            "The private-reasoning budget sent with every request (the provider's `reasoning.max_tokens`), a share "
-            "of `max_tokens`. None, with `reasoning_effort` also None, = no reasoning parameter was sent, so the "
-            "provider's default applied — a recorded level, not an absence. Never set beside `reasoning_effort`."
+            "The private-reasoning budget in tokens (Anthropic's `thinking.budget_tokens`, a router's "
+            "`reasoning.max_tokens`), a share of `max_tokens`. None, with `reasoning_effort` also None, = no "
+            "reasoning parameter, so the provider's default applies: a recorded level, not an absence. Never set "
+            "beside `reasoning_effort`."
         ),
     )
     reasoning_effort: StoredReasoningEffort | None = Field(
         default=None,
         description=(
-            "The reasoning effort level sent with every request (the provider's `reasoning.effort`): a level, not a "
-            "token bound, so `max_tokens` stays the only hard stop. None = no effort was sent. Never set beside "
-            "`reasoning_max_tokens`."
+            "The reasoning effort word (a provider's `reasoning_effort`, `output_config.effort` or `reasoning.effort`): "
+            "a level, not a token bound, so `max_tokens` stays the only hard stop. None = no effort word. Never set "
+            "beside `reasoning_max_tokens`."
         ),
     )
 
     strict_output: bool = Field(
         default=False,
         description=(
-            "Whether every request of this role must be routed only to a provider that honours every parameter "
-            "sent (an OpenRouter-style `provider.require_parameters`), so a strict `response_format` or a reasoning "
-            "bound is enforced rather than silently dropped. The host's client builder applies it. False = no such "
-            "requirement was stated."
+            "Whether the request enforces every parameter it carries: a strict `response_format` a direct provider "
+            "refuses rather than ignores, or a router's `provider.require_parameters`, so only an endpoint honouring "
+            "every parameter may answer. Asked, it is what the engine wants enforced; sent, it is what the request "
+            "actually enforced (False for a request resent without enforcement). False = no enforcement."
         ),
     )
 
@@ -2869,6 +2885,21 @@ class ClientRequestSettings(EvalDocumentModel, CoreShapeModel):
                 "(reasoning_effort), not both: the provider would pick one and the record could not say which"
             )
         return self
+
+
+def request_settings_order(settings: ClientRequestSettings) -> str:
+    """The canonical form two request settings values are told apart and ordered by: their JSON, keys sorted.
+
+    What a set of sent settings (``RoleUsage.sent_settings``) is deduplicated and sorted on, since a settings value
+    is a model and not hashable, and its fields have no natural order of their own.
+
+    Args:
+        settings: The settings.
+
+    Returns:
+        Its canonical JSON.
+    """
+    return json.dumps(settings.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
 
 
 #: Repeats per (case, model) a launch uses when the caller names none: one observation per case cannot
@@ -3341,14 +3372,16 @@ class EvalRun(CoreDocumentModel):
             "was pinned: the kind runs none, or the run's writer recorded none."
         ),
     )
-    judge_request_settings: ClientRequestSettings | None = Field(
+    judge_asked_settings: ClientRequestSettings | None = Field(
         default=None,
         description=(
-            "The output cap and reasoning budget every judge request of this run was sent with, stamped at "
-            "launch from the value the host's client builder applies to the judge role. Part of the judge "
-            "apparatus beside ``judge_model``: the same judge model at a different reasoning budget grades "
-            "differently. None = no judge was pinned (a code-graded kind), or the run's writer recorded no "
-            "settings — then a comparison reads them as unrecorded, never as equal to today's values."
+            "The request settings this run ASKED of every judge call, stamped at launch from the engine's "
+            "``JUDGE_REQUEST_SETTINGS``: the output cap, the reasoning effort and the enforcement wanted. Part of the "
+            "judge apparatus beside ``judge_model``: the same judge model asked for another effort grades "
+            "differently. What each call was actually SENT with is on each score (``RubricScore.judge_sent_settings``), "
+            "and may differ from this where a client sent the closest setting a model accepts. None = no judge was "
+            "pinned (a code-graded kind), or the run's writer recorded no settings; then a comparison reads them as "
+            "unrecorded, never as equal to today's values."
         ),
     )
     judge_temperature: float | None = Field(
@@ -3363,13 +3396,13 @@ class EvalRun(CoreDocumentModel):
             "refuses a temperature — is on each score. Set exactly when a judge is pinned (`judge_model`)."
         ),
     )
-    simulator_request_settings: ClientRequestSettings | None = Field(
+    simulator_asked_settings: ClientRequestSettings | None = Field(
         default=None,
         description=(
-            "The output cap and reasoning parameter every simulated-user request of this run was sent with, "
-            "stamped at launch from the value the host's client builder applies to the simulator role — "
-            "recorded for the reason ``judge_request_settings`` is. None = no simulated user was pinned, or "
-            "the run's writer recorded no settings."
+            "The request settings this run ASKED of every simulated-user call, stamped at launch from the engine's "
+            "``SIMULATOR_REQUEST_SETTINGS``, recorded for the reason ``judge_asked_settings`` is. What each call was "
+            "actually SENT with is on the simulator's usage rows (``RoleUsage.sent_settings``). None = no simulated "
+            "user was pinned, or the run's writer recorded no settings."
         ),
     )
     max_cost_usd: float | None = Field(
@@ -4323,12 +4356,36 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
             "llm_decided turn scheduler. None on every other role."
         ),
     )
+    sent_settings: list[ClientRequestSettings] | None = Field(
+        default=None,
+        description=(
+            "The request settings this row's calls were actually SENT with, as their completions reported them "
+            "(``sent_settings_of``): every distinct value, in canonical order (``request_settings_order``), one "
+            "entry when every call was sent alike. Not part of the row's key, so it never splits a row: calls sent "
+            "two ways land in one row holding both. None = unverified: some call the row counts did not report what "
+            "it sent, or the row counts no completion a client reported on (background work, an external API)."
+        ),
+    )
 
     @model_validator(mode="after")
     def _simulator_attribution_is_the_simulators(self) -> RoleUsage:
-        """Refuse an actor or a purpose on a row of any role but ``simulator``, which alone has them."""
+        """Refuse an actor or a purpose on a row of any role but ``simulator``, and sent settings out of order.
+
+        Returns:
+            The row, unchanged.
+
+        Raises:
+            ValueError: ``actor_id`` or ``purpose`` is set on a row whose role is not ``simulator``, or
+                ``sent_settings`` is empty, repeats a value, or is not in canonical order.
+        """
         if (self.actor_id is not None or self.purpose is not None) and self.role != "simulator":
             raise ValueError(f"actor_id and purpose attribute simulator calls, not the {self.role!r} role's")
+        if self.sent_settings is not None:
+            forms = [request_settings_order(settings) for settings in self.sent_settings]
+            if not forms:
+                raise ValueError("sent_settings lists every distinct value the row's calls were sent with, or is None")
+            if forms != sorted(set(forms)):
+                raise ValueError("sent_settings holds each distinct value once, in canonical order")
         return self
 
 
@@ -4699,6 +4756,13 @@ class RepeatedScore(EvalDocumentModel, CoreShapeModel):
             "different (or an unknown) judge, and is not paired."
         ),
     )
+    first_judge_sent_settings: ClientRequestSettings | None = Field(
+        default=None,
+        description=(
+            "The request settings the first score's call was actually sent with, as the score recorded them "
+            "(``RubricScore.judge_sent_settings``); None = unverified, or a score made outside a judge phase."
+        ),
+    )
     repeat: RubricScore | None = Field(
         default=None, description="The repeat's score, when the judge scored the dimension again."
     )
@@ -4818,6 +4882,13 @@ class SecondJudgeScore(EvalDocumentModel, CoreShapeModel):
     first_judge_temperature: JudgeTemperature | None = Field(
         default=None,
         description="The temperature the first score was sent at; None for a score made outside a judge phase.",
+    )
+    first_judge_sent_settings: ClientRequestSettings | None = Field(
+        default=None,
+        description=(
+            "The request settings the first score's call was actually sent with, as the score recorded them "
+            "(``RubricScore.judge_sent_settings``); None = unverified, or a score made outside a judge phase."
+        ),
     )
     second: RubricScore | None = Field(
         default=None, description="The second judge's score, when it scored the dimension."

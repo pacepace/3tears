@@ -35,6 +35,7 @@ from threetears.evals.schema.models import (
     SCALES,
     ClientRequestSettings,
     JudgeTemperature,
+    KnownReasoningEffort,
 )
 from threetears.evals.schema.completion import CompletionProtocolDefect, CompletionResult, ProviderFailureDescriber
 from threetears.evals.kernel.provider import (
@@ -64,9 +65,9 @@ _JUDGE_PARSE_RETRIES = 1
 #: by this (:func:`threetears.evals.analysis.reporter_kind.judge_phase_ceiling_s`).
 JUDGE_CALL_ATTEMPTS = _JUDGE_PARSE_RETRIES + 1
 
-#: How many tokens the eval judge may spend on private reasoning before it answers.
+#: How hard the eval judge reasons before it answers: an effort word, sent natively.
 #:
-#: **Bounded, not disabled — the classifier's remedy is the wrong one here.** The
+#: **Asked for, not disabled — the classifier's remedy is the wrong one here.** The
 #: classifier asks for two words, reasoning buys it nothing, so it sends
 #: ``reasoning: {enabled: false}``. A judge's reply is short too (the JSON contract in
 #: ``judge_service`` asks for one paragraph and one integer), but the work behind the
@@ -74,8 +75,19 @@ JUDGE_CALL_ATTEMPTS = _JUDGE_PARSE_RETRIES + 1
 #: evidence bundle, and that is what reasoning is for, so taking reasoning away would
 #: change the instrument, not just its cost. Disabling is also refused permanently by
 #: models whose reasoning is mandatory (``openai/gpt-5-mini`` answers HTTP 400), which
-#: would bar that whole class of models from judging. So reasoning stays on, with an
-#: explicit budget, and the cap is derived from that budget below.
+#: would bar that whole class of models from judging.
+#:
+#: **A word, not a token budget.** Current models take reasoning as an effort word: Claude's
+#: newest models take no thinking budget at all, only adaptive thinking and an effort, and
+#: OpenAI's reasoning series and OpenRouter take a word. So the judge asks ``high`` by name.
+#: A client serving a model that takes only a budget sends the closest budget it accepts, and
+#: reports what it sent (``RubricScore.judge_sent_settings``); nothing here converts one into
+#: the other.
+JUDGE_REASONING_EFFORT: KnownReasoningEffort = "high"
+
+#: Room the judge's output cap leaves for its private reasoning at :data:`JUDGE_REASONING_EFFORT`.
+#: Never sent — the request carries the effort, not a budget — so it bounds nothing; it is what the
+#: cap is sized from.
 #:
 #: **The value is a judgement, not a measurement.** A calibration run lost
 #: ``reporter.groundedness`` and ``reporter.calibration`` on every case at the old flat
@@ -84,49 +96,45 @@ JUDGE_CALL_ATTEMPTS = _JUDGE_PARSE_RETRIES + 1
 #: more, because every one of those calls was stopped. Twice the cap they overran is a
 #: bound, not a prediction. Re-derive it from a run's reported ``reasoning_tokens``
 #: (a cut judge call now reports its reasoning share in its error) before moving it.
-JUDGE_REASONING_BUDGET_TOKENS = 8192
+JUDGE_REASONING_HEADROOM_TOKENS = 8192
 
 #: Output room kept for the judge's visible answer: the JSON object with its one
 #: reasoning paragraph and one integer score. That is a few hundred tokens, so this is
 #: headroom, and unused output tokens are not billed.
 JUDGE_ANSWER_BUDGET_TOKENS = 2048
 
-#: The eval judge's output cap: the reasoning budget plus the answer budget, DERIVED
-#: rather than chosen, so it always sits above the ceiling it wraps. The old flat 4096
+#: The eval judge's output cap: the reasoning headroom plus the answer budget, DERIVED
+#: rather than chosen, so it always leaves room to think and then answer. The old flat 4096
 #: sat below what a reasoning judge spent. The cap is the sum by construction, so moving either
 #: part moves the cap with it.
 #:
-#: **What the reasoning bound does NOT guarantee.** It goes out as the router's
-#: ``reasoning.max_tokens``, and each provider honours it in its own way.
-#: Anthropic- and Gemini-style models take it as a budget. Effort-only models (OpenAI's
-#: reasoning series) have it mapped to an effort level, which bounds nothing in tokens.
-#: Models that do not reason ignore it. A router's default routing may also drop a parameter
-#: its chosen provider does not support, so the judge's settings ask for strict routing
-#: (``ClientRequestSettings.strict_output``), which a host's client builder applies as its
-#: router's ``require_parameters``; a host that cannot apply it leaves the bound advisory. The
-#: cap is therefore the only hard stop the engine can count on. When a judge still reaches it, :func:`run_judge_llm` reports the cut
-#: with its token counts and does not re-buy it.
+#: **The cap is the only hard stop.** An effort word bounds nothing in tokens on any model,
+#: and a model that does not reason ignores it. A router's default routing may also drop a
+#: parameter its chosen provider does not support, so the judge's settings ask for strict
+#: routing (``ClientRequestSettings.strict_output``), which a host's client applies as its
+#: router's ``require_parameters``; a client that resends a strict call without enforcement
+#: reports ``strict_output=False`` in what it sent. When a judge still reaches the cap,
+#: :func:`run_judge_llm` reports the cut with its token counts and does not re-buy it.
 #:
-#: **What the bound changes.** Naming a budget turns reasoning ON for a model that
-#: reasons only when asked. Such a judge now thinks before scoring, where it previously
-#: did not. The rule is the same for every eval judge (subject runs, reporter runs, and
-#: the per-dim ``JudgeConfig`` models alike), which is why these numbers live here and
-#: not at any one call site. A host's client builder applies them to its
-#: judge role.
-JUDGE_MAX_TOKENS = JUDGE_REASONING_BUDGET_TOKENS + JUDGE_ANSWER_BUDGET_TOKENS
+#: **What the effort changes.** Naming an effort turns reasoning ON for a model that
+#: reasons only when asked. The rule is the same for every eval judge (subject runs, reporter
+#: runs, and the per-dim ``JudgeConfig`` models alike), which is why these numbers live here and
+#: not at any one call site. A host's client builder applies them to its judge role.
+JUDGE_MAX_TOKENS = JUDGE_REASONING_HEADROOM_TOKENS + JUDGE_ANSWER_BUDGET_TOKENS
 
 #: The judge role's request settings as ONE value: what the host's client builder applies to every
-#: eval judge client, and what a run launched with a judge records as ``judge_request_settings``.
-#: One object read by both, so the stamp cannot say something the requests did not do.
+#: eval judge client, and what a run launched with a judge records as ``judge_asked_settings``.
+#: One object read by both, so the stamp cannot say something the engine did not ask.
 #:
-#: **Why it is recorded at all.** Moving either number regrades every later run without changing
+#: **Why it is recorded at all.** Moving any of it regrades every later run without changing
 #: ``judge_model``, so the stamp differs on either side of the move, and the ``judge_request_settings``
 #: apparatus dimension tells a campaign pooling runs from both sides that its judge may have moved. A run
-#: that carries no stamp reads as unrecorded.
+#: that carries no stamp reads as unrecorded. What each call was SENT with is the client's to report, on
+#: each score: a client may send the closest setting a model accepts.
 JUDGE_REQUEST_SETTINGS = ClientRequestSettings(
     max_tokens=JUDGE_MAX_TOKENS,
-    reasoning_max_tokens=JUDGE_REASONING_BUDGET_TOKENS,
-    # The reasoning bound must bind, so only a provider honouring it may answer (#686).
+    reasoning_effort=JUDGE_REASONING_EFFORT,
+    # The effort must bind, so only a provider honouring it may answer (#686).
     strict_output=True,
 )
 

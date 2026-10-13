@@ -39,7 +39,7 @@ from threetears.evals.analysis.errors import GenerationError
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.analysis.generator import (
     DEFAULT_ANALYSIS_GEN_ANSWER_BUDGET_TOKENS,
-    DEFAULT_ANALYSIS_GEN_REASONING_BUDGET_TOKENS,
+    DEFAULT_ANALYSIS_GEN_REASONING_HEADROOM_TOKENS,
     GenerationTally,
     generate_analysis,
 )
@@ -61,8 +61,8 @@ PRICES = {
 #: The most the whole lane may be priced at, worst case, before a call is refused unsent.
 SPEND_CEILING_USD = 5.00
 
-#: Each call's output cap: the generator's own default reasoning and answer budgets.
-MAX_TOKENS = DEFAULT_ANALYSIS_GEN_REASONING_BUDGET_TOKENS + DEFAULT_ANALYSIS_GEN_ANSWER_BUDGET_TOKENS
+#: Each call's output cap: the generator's own default reasoning headroom and answer budget.
+MAX_TOKENS = DEFAULT_ANALYSIS_GEN_REASONING_HEADROOM_TOKENS + DEFAULT_ANALYSIS_GEN_ANSWER_BUDGET_TOKENS
 
 #: Characters per token assumed when pricing a prompt before it is sent; low, so the price is high.
 CHARS_PER_TOKEN = 3

@@ -105,7 +105,7 @@ def stamp_witnessed_judge(
     The fields a launch stamps for a judged run, resolved the way a launch resolves them
     (:func:`~threetears.evals.run.launch.build_judge_service`: one config load per scored dim, the
     run-level pin, each dim's effective judge): ``template_id``, ``judge_model`` and its provenance,
-    ``effective_judges`` (recorded), ``judge_config_ids`` and their provenance, ``judge_request_settings``
+    ``effective_judges`` (recorded), ``judge_config_ids`` and their provenance, ``judge_asked_settings``
     and ``rubric_scales``. Call it on the run as built and BEFORE stamping its identity — the judge is
     part of the context it hashes — then record its cells with :func:`record_witnessed_cell`, which
     scores them from exactly these.
@@ -179,7 +179,7 @@ def stamp_witnessed_judge(
             "effective_judges_source": "recorded",
             "judge_config_ids": judge.config_ids,
             "judge_config_provenance": judge.config_provenance,
-            "judge_request_settings": JUDGE_REQUEST_SETTINGS,
+            "judge_asked_settings": JUDGE_REQUEST_SETTINGS,
             "judge_temperature": DEFAULT_JUDGE_TEMPERATURE,
             "rubric_scales": {dim.name: dim.scale for dim in template.rubric},
             "max_cost_usd": EvalRunCostCap.resolve_effective_ceiling(

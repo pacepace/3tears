@@ -1,24 +1,25 @@
 {
-  "answers": null,
+  "action": "rubric_propose",
   "cancel_request_reason": null,
   "cancel_requested_at": null,
-  "created_at": "2026-10-13T05:04:01.458381+00:00",
+  "created_at": "2026-10-13T23:01:57.725988+00:00",
   "detail": null,
-  "doc_type": "eval_judge_temperature_check",
-  "ended_at": null,
+  "doc_type": "eval_action_job",
+  "ended_at": "2026-10-11T00:00:00+00:00",
   "faults": [
     "job lease: its holder, process 0199a000-0000-7000-8000-000000000001, could not renew it for 60s, its whole lease, and stopped the job \u2014 the last renewal failed: StorageError: the store refused the write"
   ],
-  "id": "01a133a5-6bb2-7583-b0fc-11f00c58b0e9",
+  "id": "01a13780-4d5d-7398-8359-e300a7aa6ea1",
+  "label": "",
   "lease": null,
   "lost": null,
-  "outcome": "running",
+  "outcome": "completed",
   "refusal": null,
-  "repeats": 2,
-  "result_ids": null,
-  "run_id": "run-1",
+  "result": {
+    "draft": "tone"
+  },
+  "result_model": "Draft",
   "schema_minor": 0,
-  "schema_version": 14,
-  "scope_id": "uni-1",
-  "selection": "borderline"
+  "schema_version": 15,
+  "scope_id": "uni-1"
 }

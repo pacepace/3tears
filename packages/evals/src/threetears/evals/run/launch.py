@@ -3831,11 +3831,11 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 # How each apparatus role was ASKED, stamped from the one value the host's client
                 # builder applies to it, and only for a role this kind ran: a resolved model is
                 # recorded exactly when the role ran, so it is the predicate here too.
-                judge_request_settings=JUDGE_REQUEST_SETTINGS if judge is not None else None,
+                judge_asked_settings=JUDGE_REQUEST_SETTINGS if judge is not None else None,
                 # What a dim with no JudgeConfig is requested at — the judge service's own default, so the
                 # stamp and the requests cannot disagree. Part of the measurement context (#633).
                 judge_temperature=DEFAULT_JUDGE_TEMPERATURE if judge is not None else None,
-                simulator_request_settings=SIMULATOR_REQUEST_SETTINGS if wiring.simulator_model is not None else None,
+                simulator_asked_settings=SIMULATOR_REQUEST_SETTINGS if wiring.simulator_model is not None else None,
                 max_cost_usd=EvalRunCostCap.resolve_effective_ceiling(
                     max_cost_usd,
                     configured_max_cost_usd=configured_max_cost_usd,

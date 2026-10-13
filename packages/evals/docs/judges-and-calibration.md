@@ -492,8 +492,8 @@ parameter refuses the call rather than dropping it. A probe confirmed that it do
 temperature 0 was refused with "No endpoints found that can handle the requested parameters", where the void run
 had been silently served. The client reported the temperature on the wire: 0 on every pinned call, and none on
 every default call, whose requests carried no `temperature` field at all. All 500 calls were served by the pinned
-endpoint and named `openai/gpt-oss-120b` in the response. Each kept the judge's usual request settings (the 8192-token
-reasoning budget, JSON replies).
+endpoint and named `openai/gpt-oss-120b` in the response. Each kept the judge's request settings of the time (the
+8192-token reasoning budget, JSON replies).
 
 **The provider's default is the endpoint's, so check that it samples.** The first sweep was pinned to DeepInfra.
 Its default turned out to be effectively greedy: an open-ended prompt answered identically 12 times out of 12 with

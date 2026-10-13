@@ -63,7 +63,7 @@ per arm); without it, `RecordedCompletions.replay(recording, settings=..., model
 `threetears.evals.testing`, given the same settings, since a recording serves only a client built the way it was.
 No temperature is sent: `claude-haiku-5-5` refuses one, so the model's own sampling applies. The candidates ask for
 `low` effort; `compare_two_efforts.py` and `prompt_x_effort.py` compare `low` with `medium`, and `llm_judge.py`'s
-judge is asked as a judged run records it (`JUDGE_REQUEST_SETTINGS`: an output cap and a thinking budget).
+judge is asked as a judged run records it (`JUDGE_REQUEST_SETTINGS`: an output cap and `high` effort).
 
 **Your own client.** A client of your own, for another provider or a gateway, is anything with an async
 `generate(*, system, user, response_format=None)` that returns an object carrying ten attributes: `content`,

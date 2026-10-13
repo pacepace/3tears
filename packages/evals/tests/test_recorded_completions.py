@@ -215,6 +215,7 @@ async def test_a_replayed_completion_is_the_recorded_ten_members_and_conforms(tm
         reasoning_tokens=None,
         temperature=None,
         stop_reason="end_turn",
+        sent_settings=None,
         extra={"served_provider": "Acme Cloud"},
     )
     with pytest.raises(TypeError):
@@ -358,6 +359,7 @@ def _good_line(**overrides: Any) -> dict[str, Any]:
         "index": 0,
         "user_head": "Hello.",
         "settings": None,
+        "sent_settings": None,
         "result": {
             "content": "ok",
             "input_tokens": 1,
@@ -403,6 +405,12 @@ def _good_line(**overrides: Any) -> dict[str, Any]:
             "not both",
         ),
         (json.dumps(_good_line(settings={"max_tokens": 16000, "seed": 7})), "seed"),
+        (json.dumps({k: v for k, v in _good_line().items() if k != "sent_settings"}), "it lacks sent_settings"),
+        (json.dumps(_good_line(sent_settings="high")), "its sent_settings are a JSON str, not an object or null"),
+        (
+            json.dumps(_good_line(sent_settings={"max_tokens": 0})),
+            "its sent_settings are not request settings this build reads",
+        ),
     ],
 )
 async def test_a_malformed_line_refuses_the_recording_by_its_number(tmp_path: Path, third: str, problem: str) -> None:
@@ -430,6 +438,66 @@ async def test_a_line_from_a_newer_recording_format_is_refused_with_the_remedy(t
     assert refused.value.remedy.startswith("upgrade 3tears-evals to the build that recorded it, or re-record")
     with pytest.raises(RecordingRefused, match=newer):
         RecordedCompletions.record(_FakeInner(), path, settings=BUDGETED)
+
+
+async def test_a_line_from_an_older_recording_format_is_refused_by_name(tmp_path: Path) -> None:
+    """Format 1 kept no sent settings, so its calls cannot say what they were sent with: re-recorded, never guessed."""
+    path = tmp_path / "rec.jsonl"
+    older = {k: v for k, v in _good_line(recorder_version=1).items() if k != "sent_settings"}
+    path.write_text(json.dumps(older) + "\n", encoding="utf-8")
+
+    with pytest.raises(
+        RecordingRefused, match="line 1 was written in recording format 1, older than this build's 2"
+    ) as refused:
+        RecordedCompletions.replay(path, settings=BUDGETED)
+    assert "kept no sent_settings" in str(refused.value)
+    assert refused.value.remedy.startswith("re-record")
+    with pytest.raises(RecordingRefused, match="older than this build's"):
+        RecordedCompletions.record(_FakeInner(), path, settings=BUDGETED)
+
+
+@dataclass(frozen=True, kw_only=True)
+class _ReportingReply(_Reply):
+    """A completion whose client reports what its request carried: the optional ``sent_settings`` member."""
+
+    sent_settings: ClientRequestSettings | None = None
+
+
+async def test_what_a_call_was_sent_with_is_recorded_and_replayed_never_the_settings_asked(tmp_path: Path) -> None:
+    """The client was built with a budget and sent an effort word: the line keeps both, the key only what was asked."""
+    path = tmp_path / "rec.jsonl"
+    reply = _ReportingReply(content="Refund it.", sent_settings=BY_EFFORT)
+    await _record(path, ("My order never came.", reply))
+
+    (line,) = _lines(path)
+    assert line["settings"] == BUDGETED.model_dump(mode="json")
+    assert line["sent_settings"] == BY_EFFORT.model_dump(mode="json")
+    assert "sent_settings" not in line["extra"], "an optional member is first-class, never an extra"
+
+    replayed = await RecordedCompletions.replay(path, settings=BUDGETED).generate(
+        system=SYSTEM, user="My order never came."
+    )
+    assert isinstance(replayed, ReplayedCompletion) and replayed.sent_settings == BY_EFFORT
+    check_completion_conformance(replayed, require_sent_settings=True)
+
+
+async def test_a_call_whose_client_does_not_report_what_it_sent_replays_unverified(tmp_path: Path) -> None:
+    path = tmp_path / "rec.jsonl"
+    await _record(path, ("Hello.", _Reply(content="ok")))
+
+    assert _lines(path)[0]["sent_settings"] is None
+    replayed = await RecordedCompletions.replay(path, settings=BUDGETED).generate(system=SYSTEM, user="Hello.")
+    assert isinstance(replayed, ReplayedCompletion) and replayed.sent_settings is None
+
+
+async def test_a_completion_whose_sent_settings_are_not_request_settings_is_refused_when_recorded(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "rec.jsonl"
+    reply = _ReportingReply(content="ok", sent_settings={"max_tokens": 10240})  # type: ignore[arg-type]
+    with pytest.raises(CompletionConformanceFailure, match="sent_settings holds a dict"):
+        await _record(path, ("Hello.", reply))
+    assert not path.exists() or not path.read_text(encoding="utf-8"), "nothing is written for a refused completion"
 
 
 async def test_a_completion_the_recording_could_not_replay_is_refused_when_recorded(tmp_path: Path) -> None:

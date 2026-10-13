@@ -1735,22 +1735,22 @@ CORE_SWEEPABLES: tuple[Sweepable, ...] = (
         indeterminate_when_blank=True,
         result_level=True,
     ),
-    # How the judge was ASKED, beside which judge it was: the host's client builder applies one
-    # output cap and one reasoning budget to every judge client, process-wide, and moving them
+    # How the judge was ASKED (the run's `judge_asked_settings`), beside which judge it was: the host's client
+    # builder applies one output cap and one reasoning parameter to every judge client, process-wide, and moving them
     # regrades every later run without touching `judge_model`. Indeterminate when blank because a
     # run with no stamp recorded none, and reading two of those as equal — or one as equal to
     # today's values — asserts a shared instrument across the change the stamp exists to expose.
     Sweepable(
         name="judge_request_settings",
         role="apparatus",
-        read=lambda run, _results: _request_settings(run.judge_request_settings),
+        read=lambda run, _results: _request_settings(run.judge_asked_settings),
         reader_prose=(
-            "the output cap and private-reasoning budget every judge request was sent with, and whether it could "
-            "be routed only to a provider honouring both"
+            "the output cap and reasoning parameter (an effort level or a private-reasoning budget) the run asked "
+            "of every judge request, and whether it asked for routing only to a provider honouring them"
         ),
         confounds=(
-            "the judge was asked with a different output cap or reasoning budget, so the same judge model may have "
-            "reasoned differently — or not at all — before scoring"
+            "the judge was asked for a different output cap or reasoning effort or budget, so the same judge model "
+            "may have reasoned differently — or not at all — before scoring"
         ),
         indeterminate_when_blank=True,
     ),
@@ -1808,10 +1808,10 @@ CORE_SWEEPABLES: tuple[Sweepable, ...] = (
     Sweepable(
         name="simulator_request_settings",
         role="apparatus",
-        read=lambda run, _results: _request_settings(run.simulator_request_settings),
+        read=lambda run, _results: _request_settings(run.simulator_asked_settings),
         reader_prose=(
-            "the output cap and reasoning parameter (a private-reasoning budget or an effort level) every "
-            "simulated-user request was sent with"
+            "the output cap and reasoning parameter (an effort level or a private-reasoning budget) the run asked "
+            "of every simulated-user request"
         ),
         confounds=(
             "the simulated user was asked with a different output cap or reasoning budget or effort, so the same "
