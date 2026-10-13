@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-evals"
-version = "0.66.0"
+version = "0.67.0"
 description = "Evaluate LLM-backed products: campaigns over levers, judged and code-graded trials, cost and latency accounting, and analysis reports"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -47,7 +47,7 @@ fastmcp = ["fastmcp>=3.4.2,<4"]
 # completion client, priced through models' price-source registry. Optional, so the engine stays provider-neutral
 # and pydantic-only; a host that brings its own client installs without it. The lockstep bound, as every
 # intra-family dependency carries (tests/enforcement/test_intra_family_version_bounds.py).
-models = ["3tears-models>=0.66.0,<0.67.0"]
+models = ["3tears-models>=0.67.0,<0.68.0"]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"

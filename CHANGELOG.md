@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.67.0 -- 2026-10-13
+
 ### 3tears-evals joins the family: measuring what a change to an LLM-backed feature does
 
 A new package (`pip install 3tears-evals`, import root `threetears.evals`). Run each version of a feature, from a
