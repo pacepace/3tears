@@ -33,6 +33,8 @@ from packages.evals.tests.factories import (
     minimal_declaration,
 )
 from threetears.evals.kernel.campaign import EvalGenerationSlot, EvalSweep, SweepArmRecord, generation_slot_id
+from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER
+from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileAgreement
 from threetears.evals.run import EvalActionJob, EvalJudgeTemperatureCheck, EvalLaunch, EvalSecondJudgePass
 from threetears.evals.schema.base import EvalBaseModel
@@ -50,6 +52,7 @@ from threetears.evals.schema.models import (
     label_key_of,
 )
 from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
+from threetears.evals.schema.values import SweepableValue
 
 __all__ = ["doc_type_of", "sampled_model_names", "stored_models", "stored_sample"]
 
@@ -139,6 +142,9 @@ _LEASE_FAULT = (
     "lease, and stopped the job — the last renewal failed: StorageError: the store refused the write"
 )
 
+#: The lever map the sampled campaign's control was addressed from: the candidate model it declares, at GLM.
+_CONTROL_LEVERS = {CANDIDATE_MODEL_LEVER: SweepableValue.of("glm", display="GLM")}
+
 #: A valid instance of every stored model, by name. Keyed by the derived population below, so a
 #: stored model added without a row here fails :func:`test_every_stored_model_has_a_sample` rather
 #: than slipping past both refusals and the core's frozen fixtures.
@@ -212,7 +218,14 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
     "CatalogRubricDim": make_rubric_dim,
     "EvalAnalysis": make_analysis,
     "EvalAnalysisAttempt": lambda: make_analysis_attempt(faults=[_LEASE_FAULT]),
-    "EvalCampaign": lambda: make_campaign(declared_design=minimal_declaration()),
+    # Its control addressed from a run, so the frozen corpus holds the key beside its pre-image and the predicate.
+    "EvalCampaign": lambda: make_campaign(
+        declared_design=minimal_declaration(
+            control=compute_variant_key(_CONTROL_LEVERS),
+            control_levers=_CONTROL_LEVERS,
+            control_identity_version=IDENTITY_VERSION,
+        )
+    ),
     "EvalCassette": _cassette,
     "EvalInsight": make_insight,
     # Judged as the judge service records it: the score's axis, temperature and label key, and the dim's judge

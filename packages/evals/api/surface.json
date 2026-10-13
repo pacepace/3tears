@@ -847,7 +847,7 @@
     },
     "threetears.evals.kernel.CampaignDesign": {
       "kind": "model",
-      "signature": "CampaignDesign(axes: list[SweptAxis], questions: list[Question] = list(), bars: list[BarOverride] = list(), guardrail_margins: list[GuardrailMargin] = list(), control: str | None = None, intended_repetitions: int | None = None, held_fixed: ControlDeclaration, merit_priority: list[MeritAxis] = list(), crossing: Literal['full', 'star'] | None = None, skipped_cells: list[dict[str, str]] = list(), measure_latency: bool = False, declared_at: str = utc_now_iso(), declared_by: str = '')"
+      "signature": "CampaignDesign(axes: list[SweptAxis], questions: list[Question] = list(), bars: list[BarOverride] = list(), guardrail_margins: list[GuardrailMargin] = list(), control: str | None = None, control_levers: dict[str, SweepableValue] | None = None, control_identity_version: int | None = None, intended_repetitions: int | None = None, held_fixed: ControlDeclaration, merit_priority: list[MeritAxis] = list(), crossing: Literal['full', 'star'] | None = None, skipped_cells: list[dict[str, str]] = list(), measure_latency: bool = False, declared_at: str = utc_now_iso(), declared_by: str = '')"
     },
     "threetears.evals.kernel.CampaignView": {
       "kind": "model",
@@ -1028,6 +1028,10 @@
     "threetears.evals.kernel.ControlDeclaration": {
       "kind": "model",
       "signature": "ControlDeclaration(stimulus: Literal['controlled', 'uncontrolled'], stimulus_reason: str = '', apparatus: ApparatusProvenance)"
+    },
+    "threetears.evals.kernel.ControlSource": {
+      "kind": "literal",
+      "signature": "'undeclared'` | `'stored'` | `'rekeyed'` | `'stale'"
     },
     "threetears.evals.kernel.CostCapReached": {
       "kind": "exception",
@@ -1749,6 +1753,10 @@
       "kind": "function",
       "signature": "resolve_context_identity(run: EvalRun, profile: HostProfile) -> DerivedContextIdentity"
     },
+    "threetears.evals.kernel.resolve_declared_control": {
+      "kind": "function",
+      "signature": "resolve_declared_control(design: CampaignDesign | None) -> ResolvedControl"
+    },
     "threetears.evals.kernel.resolve_result_condition": {
       "kind": "function",
       "signature": "resolve_result_condition(result: EvalResult) -> ResultCondition"
@@ -1760,6 +1768,10 @@
     "threetears.evals.kernel.resolve_variant_identity": {
       "kind": "function",
       "signature": "resolve_variant_identity(*, run: EvalRun, profile: HostProfile) -> DerivedVariantIdentity"
+    },
+    "threetears.evals.kernel.ResolvedControl": {
+      "kind": "model",
+      "signature": "ResolvedControl(variant_key: str | None, identity_version: int | None, source: ControlSource, disclosure: str | None = None)"
     },
     "threetears.evals.kernel.ResolvedUsage": {
       "kind": "model",
@@ -4111,7 +4123,7 @@
     },
     "threetears.evals.analysis.RealizedDesign": {
       "kind": "model",
-      "signature": "RealizedDesign(control_arm: DesignArm | None = None, control_excluded: Literal['archived', 'unresolved', 'unobserved'] | None = None, contrasts: list[DesignArm] = list(), unplaced_run_ids: list[str] = list(), shape: Literal['one_factor_at_a_time', 'multi_factor', 'undesignated'] = 'undesignated')"
+      "signature": "RealizedDesign(control_arm: DesignArm | None = None, control_excluded: Literal['stale', 'archived', 'unresolved', 'unobserved'] | None = None, stale_control_disclosure: str | None = None, contrasts: list[DesignArm] = list(), unplaced_run_ids: list[str] = list(), shape: Literal['one_factor_at_a_time', 'multi_factor', 'undesignated'] = 'undesignated')"
     },
     "threetears.evals.analysis.refuse_undeliverable_reporter_template": {
       "kind": "function",

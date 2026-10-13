@@ -58,8 +58,12 @@ notes).
   only a change to the cassette itself does, and the corpus is then re-captured. A store is upgraded with no job
   running.
 - **Identity.** A configuration is keyed by the content that ran (`IDENTITY_VERSION` 24), so an edited prompt is
-  never averaged in with its old version, and a run's kind is part of its variant. Unpriced spend is unknown, never
-  $0. A run that cannot confirm which model answered (no `served_model`) says so on every surface. That is
+  never averaged in with its old version, and a run's kind is part of its variant. A key is stored beside the lever
+  map it was computed from: a run's `variant_levers`, and a campaign control's `control_levers` and
+  `control_identity_version`, recorded when the control is named from a run. A later `IDENTITY_VERSION` re-keys the
+  control from that map, so it still names its arm. A control key typed by hand has no map: under a later version
+  the analysis says it cannot be resolved and how to name it again, rather than reading it as no control. Unpriced
+  spend is unknown, never $0. A run that cannot confirm which model answered (no `served_model`) says so on every surface. That is
   disclosed, never refused, never guessed.
 - **Cost before spend.** The engine prices every arm of every launch by one rule, using the judges and simulator
   that arm will actually use, before any launcher runs. An arm that cannot be priced under an enforced cap is

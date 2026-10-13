@@ -255,7 +255,14 @@ corpus); a replay that asks for a refused recording stops its cell with a `Casse
 (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 50), the cell model
 (`CELL_MODEL_VERSION`, 12), the report (`REPORT_VERSION`, 9) and the identity keys (`IDENTITY_VERSION`, 24) carry
 separate versions, each at its first public release's value.
-An upgrade never recomputes an identity key, so keys from different predicates never silently pool.
+An upgrade never recomputes an identity key, so keys from different predicates never silently pool. A kept
+key is stored beside its pre-image and the identity version that computed it, so a read under a later
+`IDENTITY_VERSION` needs no upgrader: a run keeps `variant_levers` beside the keys its results carry, and a
+campaign's declared control keeps `control_levers` and `control_identity_version` beside `control`, recorded when
+the control is addressed from a run (`control_from_run_id`, `set_campaign_control`). A read under another version
+recomputes the control's key from that map, so it still names its arm's new runs. A control key typed by hand
+records no map; under another version it reads as `stale` (`RealizedDesign.control_excluded`), and the remedy is
+to address it again from a run.
 
 **Reads stay strict.** Every stored model refuses an unknown field and a missing required one. A core
 document written by a newer release is refused, never guessed at, so when two builds share one store,

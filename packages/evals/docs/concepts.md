@@ -342,7 +342,8 @@ agreement, never its point estimate, and an undecided one says how many more res
 #### Campaign
 A curated set of runs under one subject and behaviour, the hub an analysis attaches to (`EvalCampaign`).
 Membership is chosen, not queried; a run may sit in several campaigns. Its declared design names a
-**control**, which is a variant key, not a run, and what it **held fixed** (`held_fixed`: the stimulus,
+**control**, which is a variant key, not a run, kept beside the lever map and identity version it was computed
+from (`control_levers`, `control_identity_version`), and what it **held fixed** (`held_fixed`: the stimulus,
 controlled or not, and the apparatus, commissioned or witnessed). A campaign with no declared design is
 **exploratory**, and its creator says so (`exploratory=True`); that is read off the missing design, never stored,
 so declaring one later (`update_campaign`, the `campaign_update` action) ends it. *Example:* "triage v1 vs v2",
@@ -351,7 +352,13 @@ control = the v1 variant, held fixed = one case battery on a commissioned rig. W
 
 #### Control
 The arm every other arm in a campaign is tested against: usually what runs today. It is a variant, not a run,
-so any run of that configuration counts toward it. `compare` sets it from `control=`. *Example:* the v1 arm.
+so any run of that configuration counts toward it. `compare` sets it from `control=`; elsewhere it is addressed
+from a run (`control_from_run_id`), which records the run's lever map and identity version beside the key, as a
+run records its own. Every read keys it through `resolve_declared_control`: under the identity version it was
+declared under, the key as stored; under a later one, the key recomputed from that lever map, so the control still
+names its arm's new runs. A key typed by hand records no lever map, and read under a later identity version it is
+**stale**: the bundle says it cannot be resolved (`control_excluded`), and the remedy is to address it again
+from a run. *Example:* the v1 arm.
 
 #### Delta, interval and adjusted p
 What a comparison reports for each arm against the control, per reading. The **delta** is the arm's mean minus
