@@ -6,6 +6,31 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Models: a refusal by the model's safeguards is its own error, says what ran it, and can be tried again on a CLI of its own
+
+On one deployment a subscription model's safeguards refused ten ordinary requests in fourteen days
+(`[reasoning_extraction]`), all on calls that hand a model's own output back to it. Each reached the
+caller as a plain `ModelProviderError`, indistinguishable from a provider that is down, and nothing
+recorded which CLI process had made the call or the provider's id for the request.
+
+**Nothing changes for a caller that reads none of this.** A refusal is still a `ModelProviderError`.
+
+- **Added, `ModelRefusalError(ModelProviderError)`** (`threetears.models`): raised by the Claude CLI
+  provider when a message or result has the stop reason `refusal`, or carries the CLI's notice
+  ("...'s safeguards flagged this message"). It carries `category` (`"reasoning_extraction"`),
+  `request_id` and `message_id`, each read from the notice's own `Details:`, `Request ID:` and
+  `Message ID:` lines and `None` when the CLI did not give one. A caller that matches on
+  `type(exc) is ModelProviderError` (not `isinstance`) no longer matches a refusal.
+- **Added, `ModelProviderError.ran_on`:** for a call the Claude CLI ran, a dict of `pid`,
+  `session_id`, `pooled`, `calls_served` (before this call) and `uptime_s`; `None` for any other
+  provider. Set on every CLI failure, not only a refusal.
+- **Added, `claude_cli_pool.on_own_cli()`** and `own_cli_asked()`: inside the block a subscription
+  call runs on a CLI started for it and stopped after it, never a pooled one. For a retry after a
+  refusal, which can follow a session around.
+- **Added, `LentClient(pid=, calls_served=, started_at=)`** and `PooledCliSession.started_at` /
+  `.calls_served`: what the pool tells a call about the CLI it was lent. A stand-in for
+  `PooledCliSession` in a consumer's tests needs both attributes.
+
 ### Memory: what ambient recall hands an agent, one event stored once, and a dream that makes nothing permanent
 
 On one deployment eight of the ten memories an agent was handed on a turn were from the last five
