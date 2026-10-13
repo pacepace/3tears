@@ -1185,6 +1185,12 @@ def package_at(tag: str) -> bool:
     return _git("cat-file", "-e", f"{tag}:{_PACKAGE_INIT}").returncode == 0
 
 
+def path_at(tag: str, path: str) -> bool:
+    """Whether the tree at ``tag`` holds ``path`` (a file or a directory, as a path inside the repository): what a
+    release shipped, read from git rather than from the working tree."""
+    return _git("cat-file", "-e", f"{tag}:{path}").returncode == 0
+
+
 def source_at(ref: str | None, path: str) -> str | None:
     """A file under the repository at ``ref``, or in the working tree when ``ref`` is ``None``; ``None`` when that
     tree holds no such file. The one way the dev tools read a released tree without installing it: the surface here,

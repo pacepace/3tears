@@ -41,8 +41,8 @@ and re-pins ``CORE_SHAPE_DIGESTS`` and ``FIXTURE_DIGESTS`` below (it leaves ``PI
 
     uv run python packages/evals/scripts/regenerate_core_fixtures.py
 
-It refuses when a ``v<N>`` directory newer than the current version exists, and on an unchanged tree it changes
-nothing.
+It refuses when a ``v<N>`` directory newer than the current version exists, or when the newest final release's tree
+already holds the current version's directory (that corpus shipped), and on an unchanged tree it changes nothing.
 """
 
 from __future__ import annotations
