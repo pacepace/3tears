@@ -1425,19 +1425,79 @@ def _settle(
         raise _cli_failure(said, reason=reason, status=result.api_error_status, attempts=attempts)
     if answer is not None and (schema := _schema_of(output_format)) is not None:
         answer = _without_call_syntax(answer, schema)
-    return answer, _generation_info(result, tool_calls, unwrapped=unwrapped)
+    return answer, _generation_info(result, tool_calls, answered=answer is not None, unwrapped=unwrapped)
 
 
-def _generation_info(result: Any, tool_calls: list[dict[str, Any]], *, unwrapped: bool = False) -> dict[str, Any]:
-    """What a call that did not fail says, as generation info.
+#: The CLI's ``stop_reason`` -- the Messages API's, for the call's last model turn -- for a turn that
+#: ended where the model meant it to. ``None`` is a CLI that reported none.
+_NORMAL_STOPS = frozenset({None, "end_turn", "stop_sequence"})
 
-    Only :func:`_settle` builds it, after deciding the call did not fail, so ``is_error`` is always
-    false here -- a result the CLI flagged is reported by the error :func:`_settle` raises instead.
+#: The CLI's ``stop_reason`` for a reply cut short by the output cap or the context window.
+_TRUNCATED_STOPS = frozenset({"max_tokens", "model_context_window_exceeded"})
+
+#: The CLI's ``stop_reason`` for a reply the model refused to give.
+_REFUSED_STOPS = frozenset({"refusal"})
+
+#: The CLI's ``terminal_reason`` for a query loop that ran to its end. ``None`` is a CLI that
+#: reported none (one older than the field, or a result that bypassed the loop).
+_COMPLETED_LOOPS = frozenset({None, "completed"})
+
+
+def _finish_reason(result: Any, tool_calls: list[dict[str, Any]], *, answered: bool) -> str:
+    """How a call that did not fail ended, in the ``finish_reason`` words LangChain's chat models use.
+
+    Read from the CLI's own ``stop_reason`` and ``terminal_reason``. It used to be ``stop`` for every
+    call that handed no tool calls back, so a reply the output cap cut short read as finished.
+
+    - ``tool_calls``: the call stopped to hand tool calls back.
+    - ``length``: the output cap or the context window cut the reply short.
+    - ``content_filter``: the model refused.
+    - ``stop``: the model's turn ended normally and the CLI's loop completed, or the call delivered
+      the structured answer it asked for (its last turn is the ``StructuredOutput`` call, which the
+      API reports as ``tool_use``).
+    - Anything else is the CLI's own word, never ``stop``: the ``terminal_reason`` when the loop did
+      not complete (``aborted_streaming``, ``hook_stopped``, ...), else the ``stop_reason``
+      (``pause_turn``, ...). A reason this module does not know is not read as a finished reply.
 
     :param result: the CLI's ``ResultMessage``
     :ptype result: Any
     :param tool_calls: the tool calls the call handed back
     :ptype tool_calls: list[dict[str, Any]]
+    :param answered: whether the call delivered a structured answer
+    :ptype answered: bool
+    :return: the finish reason
+    :rtype: str
+    """
+    stop = result.stop_reason
+    loop = result.terminal_reason
+    if tool_calls:
+        return "tool_calls"
+    if stop in _TRUNCATED_STOPS:
+        return "length"
+    if stop in _REFUSED_STOPS:
+        return "content_filter"
+    if answered or (stop in _NORMAL_STOPS and loop in _COMPLETED_LOOPS):
+        return "stop"
+    return str(stop if loop in _COMPLETED_LOOPS else loop)
+
+
+def _generation_info(
+    result: Any, tool_calls: list[dict[str, Any]], *, answered: bool = False, unwrapped: bool = False
+) -> dict[str, Any]:
+    """What a call that did not fail says, as generation info.
+
+    Only :func:`_settle` builds it, after deciding the call did not fail, so ``is_error`` is always
+    false here -- a result the CLI flagged is reported by the error :func:`_settle` raises instead.
+    The CLI's own ``stop_reason`` and ``terminal_reason`` ride along as it sent them (``None`` when
+    it sent none), beside the ``finish_reason`` derived from them (:func:`_finish_reason`), so a
+    reader can tell a CLI that said ``end_turn`` from one that said nothing.
+
+    :param result: the CLI's ``ResultMessage``
+    :ptype result: Any
+    :param tool_calls: the tool calls the call handed back
+    :ptype tool_calls: list[dict[str, Any]]
+    :param answered: whether the call delivered a structured answer
+    :ptype answered: bool
     :param unwrapped: whether the answer was recovered from a placeholder (:func:`_unwrapped_answer`)
     :ptype unwrapped: bool
     :return: generation info
@@ -1450,7 +1510,9 @@ def _generation_info(result: Any, tool_calls: list[dict[str, Any]], *, unwrapped
         "num_turns": result.num_turns,
         "session_id": result.session_id,
         "is_error": False,
-        "finish_reason": "tool_calls" if tool_calls else "stop",
+        "stop_reason": result.stop_reason,
+        "terminal_reason": result.terminal_reason,
+        "finish_reason": _finish_reason(result, tool_calls, answered=answered),
     }
     if unwrapped:
         info["structured_output_unwrapped"] = 1
