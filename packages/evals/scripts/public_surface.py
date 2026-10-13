@@ -619,6 +619,10 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # Recorded completions in CI is a pattern a host uses: record its real client once, replay it in its suite.
         "threetears.evals.testing.RecordedCompletions",
         "threetears.evals.testing.RecordedPrompt",
+        # The request settings a recording is matched on, required by `record` and `replay`, and the judge's own
+        # value a host passes for its judge client: a host cannot call the recorder without naming one.
+        "threetears.evals.schema.ClientRequestSettings",
+        "threetears.evals.run.JUDGE_REQUEST_SETTINGS",
         "threetears.evals.testing.CompletionGuard",
         "threetears.evals.testing.JobsConformanceHost",
         "threetears.evals.testing.jobs_conformance_cases",
