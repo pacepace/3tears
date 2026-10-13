@@ -94,6 +94,12 @@ async def _stored(nats: FakeNatsClient, suffix: str = "") -> Any:
     return None if value is None else json.loads(value)
 
 
+async def _progress(nats: FakeNatsClient) -> Any:
+    """the progress entry beside the lease, without the holding it names; None when there is none."""
+    entry = await _stored(nats, ".progress")
+    return None if entry is None else {name: item for name, item in entry.items() if name != "holding"}
+
+
 # -- one replica -----------------------------------------------------------------------------------
 
 
@@ -390,25 +396,165 @@ async def test_one_unit_runs_at_a_time_across_replicas_and_a_request_on_the_othe
     await waiting.stop()
 
 
-async def test_replicas_that_start_together_needing_a_first_run_never_run_at_once() -> None:
-    nats, unit = FakeNatsClient(), _Unit()
-    replicas = [_operation(nats, f"replica-{name}", unit, lease_retry_seconds=0.05) for name in "abc"]
+class _FirstLoad:
+    """a first load: needed until one has ended well, as a table is empty until it is loaded."""
 
-    async def needed() -> bool:
+    def __init__(self) -> None:
+        self.loaded = False
+        self.calls = 0
+        self.running = 0
+        self.most_running = 0
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.failures = 0
+
+    async def needed(self) -> bool:
         await asyncio.sleep(0)
-        return unit.calls == 0
+        return not self.loaded
 
+    async def __call__(self) -> dict[str, int]:
+        self.calls += 1
+        number = self.calls
+        self.running += 1
+        self.most_running = max(self.most_running, self.running)
+        self.entered.set()
+        try:
+            await self.release.wait()
+        finally:
+            self.running -= 1
+        if self.failures:
+            self.failures -= 1
+            raise ConnectionError("datasource unreachable")
+        self.loaded = True
+        return {"unit": number}
+
+
+@pytest.mark.parametrize("together", [True, False])
+async def test_replicas_that_start_needing_a_first_run_run_exactly_one_unit_and_never_two_at_once(
+    together: bool,
+) -> None:
+    nats, load = FakeNatsClient(), _FirstLoad()
+    replicas = [_operation(nats, f"replica-{name}", load, lease_retry_seconds=0.05) for name in "abc"]
+
+    replicas[0].start_when_needed(load.needed, retry_on=(_NotReachable,), retry_seconds=0)
+    if not together:
+        # the others start while the first load runs: their tables are still empty
+        await asyncio.wait_for(load.entered.wait(), timeout=5)
+    for replica in replicas[1:]:
+        replica.start_when_needed(load.needed, retry_on=(_NotReachable,), retry_seconds=0)
+    await asyncio.wait_for(load.entered.wait(), timeout=5)
+    await asyncio.sleep(0.15)
+    load.release.set()
     for replica in replicas:
-        replica.start_when_needed(needed, retry_on=(_NotReachable,), retry_seconds=0)
-    for replica in replicas:
-        await replica.operation.wait_until_settled()
+        await asyncio.wait_for(replica.operation.wait_until_settled(), timeout=5)
     await asyncio.sleep(0.2)
 
-    assert unit.most_running == 1
-    assert unit.calls >= 1
+    assert load.calls == 1, "a replica that started beside the first load asked for another"
+    assert load.most_running == 1
     assert not await replicas[0].requested()
     for replica in replicas:
+        assert not replica.operation.running
         await replica.stop()
+
+
+async def test_a_replica_that_waited_on_anothers_first_run_runs_it_itself_when_that_run_failed() -> None:
+    nats, load = FakeNatsClient(), _FirstLoad()
+    load.failures = 1
+    first = _operation(nats, "replica-a", load, lease_retry_seconds=0.05)
+    waiting = _operation(nats, "replica-b", load, lease_retry_seconds=0.05)
+
+    first.start_when_needed(load.needed, retry_on=(_NotReachable,), retry_seconds=0)
+    await asyncio.wait_for(load.entered.wait(), timeout=5)
+    waiting.start_when_needed(load.needed, retry_on=(_NotReachable,), retry_seconds=0)
+    await asyncio.sleep(0.15)
+    # it recorded nothing and ran nothing while the first run was in progress
+    assert load.calls == 1 and not await waiting.requested() and not waiting.operation.running
+
+    load.release.set()
+    await first.operation.wait_until_settled()
+    assert first.operation.state == "failed"
+    # no live holder remains and the tables are still empty: the first run is still needed, and is run
+    await asyncio.wait_for(waiting.operation.wait_until_settled(), timeout=5)
+
+    assert load.calls == 2 and load.loaded
+    last = waiting.operation.last
+    assert last is not None and last.result == Drained(results=({"unit": 2},))
+    await first.stop()
+    await waiting.stop()
+
+
+async def test_a_bucket_that_cannot_be_reached_while_the_first_run_is_decided_does_not_end_the_wait(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    nats, load = FakeNatsClient(), _FirstLoad()
+    load.release.set()
+    operation = _operation(nats, "replica-a", load)
+    bucket = await _bucket(nats)
+    real_put = bucket.put
+    refused = 0
+
+    async def refusing_once(**kwargs: Any) -> int:
+        nonlocal refused
+        if kwargs["key"].endswith(".requested") and not refused:
+            refused += 1
+            raise TimeoutError("the put was not answered")
+        return await real_put(**kwargs)
+
+    bucket.put = refusing_once  # type: ignore[method-assign]
+
+    # the pod names the errors of its own check; it does not know the bucket's
+    operation.start_when_needed(load.needed, retry_on=(_NotReachable,), retry_seconds=0.01)
+    await asyncio.wait_for(operation.operation.wait_until_settled(), timeout=5)
+
+    assert refused == 1 and load.calls == 1
+    assert operation.operation.state == "succeeded"
+    assert any("the put was not answered" in str(getattr(record, "extra_data", "")) for record in caplog.records)
+
+    # an error of the pod's own check that it did not name still ends the wait, and is reported
+    async def broken() -> bool:
+        raise ValueError("the check itself is broken")
+
+    other = _operation(FakeNatsClient(), "replica-a", _Unit())
+    other.start_when_needed(broken, retry_on=(_NotReachable,), retry_seconds=0.01)
+    with pytest.raises(ValueError, match="the check itself is broken"):
+        await other.operation.wait_until_settled()
+
+
+async def test_a_unit_whose_lease_is_lost_is_run_again_by_the_replica_that_lost_it_with_nobody_asking() -> None:
+    nats, unit = FakeNatsClient(), _Unit(held=True)
+    load: CoalescedOperation[dict[str, int]] = CoalescedOperation(
+        "enr-load",
+        _lease(nats, "replica-a"),
+        KEY,
+        unit,
+        ttl=timedelta(seconds=1),
+        renew_every=timedelta(seconds=0.05),
+        lease_retry_seconds=0.2,
+    )
+    await load.request()
+    await _entered(unit)
+    bucket = await _bucket(nats)
+    entry = await bucket.get_entry(key=f"{SCOPE}.{KEY}")
+    assert entry is not None
+    # the lease is taken from under the unit (its renewals did not arrive in time): the next finds it gone
+    stolen = entry[0].replace(b"replica-a", b"replica-z")
+    assert await bucket.update(key=f"{SCOPE}.{KEY}", value=stolen, revision=entry[1]) is not None
+    await asyncio.wait_for(load.operation.wait(), timeout=5)
+
+    lost = load.operation.last
+    assert lost is not None and lost.error is not None and lost.error.startswith("LeaseLost")
+    assert unit.cancelled == 1 and await load.requested()
+
+    # no replica is draining and nobody asks again: once the lease that took it has lapsed, this one runs it
+    unit.entered.clear()
+    unit.release.set()
+    await asyncio.wait_for(unit.entered.wait(), timeout=5)
+    await load.operation.wait()
+    assert unit.calls == 2
+    last = load.operation.last
+    assert last is not None and last.result == Drained(results=({"unit": 2},))
+    assert not await load.requested()
+    await load.stop()
 
 
 async def test_every_replica_reports_the_newest_finished_run_and_says_whose_it_was() -> None:
@@ -467,6 +613,8 @@ async def test_runs_that_ran_nothing_while_a_holder_runs_are_never_recorded_and_
 
     # three runs on the waiting replica ran nothing: the record is the failed run still, on every replica
     assert waiting_unit.calls == 0
+    # and it waits once to look again, not once for each
+    assert len([task for task in asyncio.all_tasks() if task.get_name() == "enr-load-retry"]) == 1
     assert await _stored(nats, ".outcome") == failed
     answer = await _status_tool(waiting).run()
     assert answer.metadata is not None
@@ -652,7 +800,7 @@ async def test_a_run_in_progress_is_shown_by_the_other_replica_with_its_progress
     assert after.metadata is not None
     assert after.metadata["state"] == "succeeded" and after.metadata["running"] is False
     assert after.metadata["elsewhere"] is None
-    assert await _stored(nats, ".progress") is None
+    assert await _progress(nats) is None
     assert "running" not in after.content
 
 
@@ -665,7 +813,7 @@ async def test_only_the_latest_progress_is_written_and_none_outside_a_unit_runni
 
     async def counted(**kwargs: Any) -> int:
         if kwargs["key"].endswith(".progress"):
-            puts.append(json.loads(kwargs["value"]))
+            puts.append({name: item for name, item in json.loads(kwargs["value"]).items() if name != "holding"})
         return await real_put(**kwargs)
 
     bucket.put = counted  # type: ignore[method-assign]
@@ -699,7 +847,7 @@ async def test_only_the_latest_progress_is_written_and_none_outside_a_unit_runni
     bucket.put = reporting  # type: ignore[method-assign]
     load.report_progress({"summary": "a write in flight"})
     await asyncio.sleep(0.05)
-    assert (await _stored(nats, ".progress"))["summary"] == "reported during a write"
+    assert (await _progress(nats))["summary"] == "reported during a write"
 
     unit.release.set()
     await load.operation.wait()
@@ -707,7 +855,7 @@ async def test_only_the_latest_progress_is_written_and_none_outside_a_unit_runni
     load.report_progress({"summary": "after the unit"})
     await asyncio.sleep(0.01)
     assert len(puts) == written
-    assert await _stored(nats, ".progress") is None
+    assert await _progress(nats) is None
 
 
 async def test_a_unit_whose_progress_cannot_be_shared_says_so_and_finishes(caplog: pytest.LogCaptureFixture) -> None:
@@ -757,7 +905,7 @@ async def test_stopping_starts_no_progress_write_after_it() -> None:
     await asyncio.sleep(0.01)
     load.report_progress({"summary": "Loading"})
     await asyncio.sleep(0.01)
-    assert (await _stored(nats, ".progress"))["summary"] == "Loading"
+    assert (await _progress(nats))["summary"] == "Loading"
     bucket = await _bucket(nats)
     written: list[bytes] = []
     real_put = bucket.put
@@ -772,10 +920,10 @@ async def test_stopping_starts_no_progress_write_after_it() -> None:
 
     # the unit reported as it was stopped: nothing of it was written
     assert not [value for value in written if b"stopping" in value]
-    assert await _stored(nats, ".progress") is None
+    assert await _progress(nats) is None
     load.report_progress({"summary": "after the stop"})
     await asyncio.sleep(0.01)
-    assert await _stored(nats, ".progress") is None
+    assert await _progress(nats) is None
 
 
 async def test_a_dead_holders_progress_is_shown_while_its_lease_names_it_and_never_after() -> None:
@@ -914,7 +1062,7 @@ async def test_progress_that_cannot_be_removed_when_the_unit_ends_changes_nothin
     assert last is not None and last.result == Drained(results=({"unit": 1},))
     assert any("progress could not be removed" in record.message for record in caplog.records)
     # the entry it left counts for nothing: the lease is let go
-    assert await _stored(nats, ".progress") == {"holder": "replica-a"}
+    assert await _progress(nats) == {"holder": "replica-a"}
     assert await _operation(nats, "replica-b", _Unit()).running_elsewhere() is None
 
 
@@ -1075,7 +1223,7 @@ async def test_a_unit_that_says_its_work_is_over_is_no_run_in_progress_to_the_ot
     await asyncio.wait_for(over.wait(), timeout=5)
     await asyncio.sleep(0.01)
     assert await observer.holder(KEY) == "replica-a"
-    assert await _stored(nats, ".progress") == {"holder": "replica-a", "work_over": True}
+    assert await _progress(nats) == {"holder": "replica-a", "work_over": True}
     assert await idle.running_elsewhere() is None
     ended = await idle_status.run()
     assert ended.metadata is not None
@@ -1095,7 +1243,7 @@ async def test_a_unit_that_says_its_work_is_over_is_no_run_in_progress_to_the_ot
 
     async def watched(**kwargs: Any) -> tuple[bytes, int] | None:
         if kwargs["key"].endswith(".requested") and await observer.holder(KEY) == "replica-a":
-            under_the_lease.append(await _stored(nats, ".progress"))
+            under_the_lease.append(await _progress(nats))
         return await real_get_entry(**kwargs)
 
     bucket.get_entry = watched  # type: ignore[method-assign]
@@ -1105,7 +1253,7 @@ async def test_a_unit_that_says_its_work_is_over_is_no_run_in_progress_to_the_ot
     await holder.operation.wait()
     assert under_the_lease and all(entry == {"holder": "replica-a", "work_over": True} for entry in under_the_lease)
     assert await observer.holder(KEY) is None
-    assert await _stored(nats, ".progress") is None
+    assert await _progress(nats) is None
     released = await idle_status.run()
     assert released.metadata is not None
     assert released.metadata["state"] == "succeeded" and released.metadata["elsewhere"] is None
@@ -1145,7 +1293,7 @@ async def test_a_unit_run_after_one_whose_work_was_over_is_a_run_in_progress_aga
 
     gates[1].set()
     await holder.operation.wait()
-    assert await _stored(nats, ".progress") is None
+    assert await _progress(nats) is None
     await idle.stop()
 
 
@@ -1197,7 +1345,7 @@ async def test_a_unit_that_cannot_say_its_work_is_over_goes_on_and_ends_as_it_en
     assert last is not None and last.result == Drained(results=({"unit": 1},))
     assert any("the over write was refused" in str(getattr(record, "extra_data", "")) for record in caplog.records)
     # the entry it could not replace is removed once the lease is let go
-    assert await _stored(nats, ".progress") is None
+    assert await _progress(nats) is None
 
 
 # -- progress given as what answers it -------------------------------------------------------------
@@ -1229,7 +1377,7 @@ async def test_progress_given_as_a_callable_is_asked_only_when_it_is_written_or_
 
     # thirty reports are a write or two, each rendered as it is written: the latest state, not the first
     assert 1 <= state["asked"] <= 2
-    assert await _stored(nats, ".progress") == {"summary": "30 done", "holder": "replica-a"}
+    assert await _progress(nats) == {"summary": "30 done", "holder": "replica-a"}
     there = await idle.running_elsewhere()
     assert there is not None and there.progress == {"summary": "30 done"}
 
@@ -1308,3 +1456,187 @@ async def test_between_a_units_end_and_the_runs_the_replica_that_ran_it_shows_no
 
     recorded.set()
     await load.operation.wait()
+
+
+# -- an entry is one holding's ---------------------------------------------------------------------
+
+
+async def test_an_entry_names_the_holding_of_the_lease_it_was_written_under() -> None:
+    nats, unit = FakeNatsClient(), _Unit(held=True)
+    load = _operation(nats, "replica-a", unit)
+    await load.request()
+    await _entered(unit)
+    holding = await _lease(nats, "observer").held(KEY)
+    assert holding is not None
+
+    stamp = holding.acquired_at.isoformat(timespec="microseconds")
+    assert await _stored(nats, ".progress") == {"holder": "replica-a", "holding": stamp}
+    load.report_progress({"summary": "Loading", "holding": "the pod's own"})
+    await asyncio.sleep(0.01)
+    assert await _stored(nats, ".progress") == {"summary": "Loading", "holder": "replica-a", "holding": stamp}
+
+    unit.release.set()
+    await load.operation.wait()
+
+
+async def test_a_run_that_has_just_taken_the_lease_is_in_progress_whatever_entry_its_replica_left_before() -> None:
+    nats = FakeNatsClient()
+    reader = _operation(nats, "replica-b", _Unit())
+    bucket = await _bucket(nats)
+    for left in (
+        {"holder": "replica-a", "holding": "2026-10-12T12:00:00.000000+00:00", "work_over": True},
+        {"holder": "replica-a", "holding": "2026-10-12T12:00:00.000000+00:00", "summary": "Publishing"},
+    ):
+        await bucket.put(key=f"{SCOPE}.{KEY}.progress", value=json.dumps(left).encode())
+        handle = await _lease(nats, "replica-a").acquire(KEY, ttl_seconds=30)
+
+        # the lease is this replica's again, under another holding: the entry is not this run's
+        running = await reader.running_elsewhere()
+        assert running is not None and running.replica == "replica-a" and running.progress is None
+        await handle.release()
+
+
+async def test_a_work_over_entry_that_could_not_be_removed_does_not_hide_the_same_replicas_next_run() -> None:
+    nats = FakeNatsClient()
+    waiting, entered = asyncio.Event(), asyncio.Event()
+    holder: CoalescedOperation[dict[str, int]]
+    quiet = {"writes": True}
+
+    async def unit() -> dict[str, int]:
+        await holder.work_over()
+        entered.set()
+        await waiting.wait()
+        return {"unit": 1}
+
+    holder = _operation(nats, "replica-a", unit)
+    reader = _operation(nats, "replica-b", _Unit())
+    bucket = await _bucket(nats)
+    real_delete, real_put = bucket.delete, bucket.put
+
+    async def refusing_delete(**kwargs: Any) -> bool:
+        if kwargs["key"].endswith(".progress"):
+            raise ConnectionError("the delete was refused")
+        return await real_delete(**kwargs)
+
+    async def refusing_put(**kwargs: Any) -> int:
+        if kwargs["key"].endswith(".progress") and not quiet["writes"]:
+            raise ConnectionError("the write was refused")
+        return await real_put(**kwargs)
+
+    bucket.delete = refusing_delete  # type: ignore[method-assign]
+    bucket.put = refusing_put  # type: ignore[method-assign]
+
+    waiting.set()
+    await holder.request()
+    await holder.operation.wait()
+    left = await _progress(nats)
+    assert left == {"holder": "replica-a", "work_over": True}
+    assert await reader.running_elsewhere() is None
+
+    # its next run writes nothing at all (every progress write is refused), and never says its work is over
+    quiet["writes"] = False
+    waiting.clear()
+    entered.clear()
+
+    async def silent() -> dict[str, int]:
+        entered.set()
+        await waiting.wait()
+        return {"unit": 2}
+
+    again = _operation(nats, "replica-a", silent)
+    await again.request()
+    await asyncio.wait_for(entered.wait(), timeout=5)
+
+    assert await _progress(nats) == left
+    running = await reader.running_elsewhere()
+    assert running is not None and running.replica == "replica-a" and running.progress is None
+    answer = await _status_tool(reader).run()
+    assert answer.content.startswith("running on another replica (replica-a)")
+    waiting.set()
+    await again.operation.wait()
+
+
+async def test_a_unit_that_follows_one_whose_work_was_over_ends_as_any_unit_does() -> None:
+    nats = FakeNatsClient()
+    gates = [asyncio.Event(), asyncio.Event()]
+    begun = [asyncio.Event(), asyncio.Event()]
+    calls = 0
+    holder: CoalescedOperation[dict[str, int]]
+
+    async def unit() -> dict[str, int]:
+        nonlocal calls
+        number = calls
+        calls += 1
+        if number == 0:
+            await holder.work_over()
+        else:
+            holder.report_progress({"summary": "the second unit"})
+            await asyncio.sleep(0.01)
+        begun[number].set()
+        await gates[number].wait()
+        return {"unit": number + 1}
+
+    holder = _operation(nats, "replica-a", unit)
+    observer = _lease(nats, "observer")
+    await holder.request()
+    await asyncio.wait_for(begun[0].wait(), timeout=5)
+    await holder.request()
+    gates[0].set()
+    await asyncio.wait_for(begun[1].wait(), timeout=5)
+    assert await _progress(nats) == {"summary": "the second unit", "holder": "replica-a"}
+
+    bucket = await _bucket(nats)
+    under_the_lease: list[Any] = []
+    real_get_entry = bucket.get_entry
+
+    async def watched(**kwargs: Any) -> tuple[bytes, int] | None:
+        if kwargs["key"].endswith(".requested") and await observer.holder(KEY) == "replica-a":
+            under_the_lease.append(await _progress(nats))
+        return await real_get_entry(**kwargs)
+
+    bucket.get_entry = watched  # type: ignore[method-assign]
+    gates[1].set()
+    await holder.operation.wait()
+
+    # the second unit's progress is removed when it ends, under the lease, as any unit's is
+    assert under_the_lease and all(entry is None for entry in under_the_lease)
+
+
+async def test_a_unit_that_cannot_read_its_lease_runs_and_its_progress_names_no_holding(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    nats, unit = FakeNatsClient(), _Unit()
+    load = _operation(nats, "replica-a", unit)
+    reader = _operation(nats, "replica-b", _Unit())
+    # a unit before it ran under a holding it could read: that one is not this unit's
+    await load.request()
+    await load.operation.wait()
+    unit.release.clear()
+    unit.entered.clear()
+    bucket = await _bucket(nats)
+    real_get = bucket.get
+    refused = 0
+
+    async def refusing_once(**kwargs: Any) -> bytes | None:
+        nonlocal refused
+        if kwargs["key"] == f"{SCOPE}.{KEY}" and not refused:
+            refused += 1
+            raise TimeoutError("the lease read was not answered")
+        return await real_get(**kwargs)
+
+    bucket.get = refusing_once  # type: ignore[method-assign]
+    await load.request()
+    await _entered(unit)
+    load.report_progress({"summary": "Loading"})
+    await asyncio.sleep(0.01)
+
+    assert refused == 1
+    assert await _stored(nats, ".progress") == {"summary": "Loading", "holder": "replica-a"}
+    # an entry naming no holding is its holder's present run's
+    running = await reader.running_elsewhere()
+    assert running is not None and running.progress == {"summary": "Loading"}
+    unit.release.set()
+    await load.operation.wait()
+    last = load.operation.last
+    assert last is not None and last.result == Drained(results=({"unit": 2},))
+    assert any("names no holding" in record.message for record in caplog.records)

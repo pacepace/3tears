@@ -71,6 +71,7 @@ __all__ = [
     "HeldLease",
     "KVLease",
     "LeaseHandle",
+    "LeaseHolding",
     "LeaseLossReason",
     "LeaseLost",
     "LeaseTimeout",
@@ -131,6 +132,19 @@ class LeaseLost(RuntimeError):
         """
         super().__init__(*args)
         self.reason = reason
+
+
+@dataclass(frozen=True)
+class LeaseHolding:
+    """who holds a lease now, and since when: what :meth:`KVLease.held` answers.
+
+    :ivar holder: the holder's ``pod_id``
+    :ivar acquired_at: when this holder took the lease. Renewals keep it, so it names one holding:
+        a holder that lets go and takes the lease again has another
+    """
+
+    holder: str
+    acquired_at: datetime
 
 
 @dataclass
@@ -900,22 +914,39 @@ class KVLease:
     async def holder(self, key: str) -> str | None:
         """who holds the lease named ``key`` now, without contending for it.
 
+        :param key: the lease's name, as given to :meth:`acquire` or :meth:`hold`
+        :ptype key: str
+        :return: the holder's ``pod_id``; ``None`` when :meth:`held` answers ``None``
+        :rtype: str | None
+        """
+        holding = await self.held(key)
+        return None if holding is None else holding.holder
+
+    async def held(self, key: str) -> LeaseHolding | None:
+        """who holds the lease named ``key`` now and since when, without contending for it.
+
         For a reader that reports on work another replica does under a lease (whether a run is
         in progress, and whose): the lease is the one statement of that which is true or false
         rather than old or new. A holder that died without letting go is still named until its
-        entry's own expiry, exactly as it still keeps an acquire out until then.
+        entry's own expiry, exactly as it still keeps an acquire out until then. ``acquired_at``
+        tells one holding from the same holder's next, for what is kept beside the lease and must
+        not outlive the holding it was written under.
 
         :param key: the lease's name, as given to :meth:`acquire` or :meth:`hold`
         :ptype key: str
-        :return: the holder's ``pod_id``; ``None`` when the key is free, its entry has expired, or
-            it is not an entry this lease wrote
-        :rtype: str | None
+        :return: the holding; ``None`` when the key is free, its entry has expired, or it is not an
+            entry this lease wrote
+        :rtype: LeaseHolding | None
         """
         bucket = await self._ensure_bucket()
         value = await bucket.get(key=self.stored_key(key))
         envelope = None if value is None else _decoded_envelope(value)
         live = envelope is not None and envelope.date_expires > datetime.now(UTC)
-        return envelope.holder if envelope is not None and live else None
+        return (
+            LeaseHolding(holder=envelope.holder, acquired_at=envelope.date_acquired)
+            if envelope is not None and live
+            else None
+        )
 
     async def _ensure_bucket(self) -> "KvBucketLike":
         """open the bucket with history=1 on first call: declare it, or bind only when so configured.
@@ -1253,7 +1284,11 @@ class KVLease:
         effective_ttl = ttl_seconds if ttl_seconds is not None else handle.ttl_seconds
         now = datetime.now(UTC)
         date_expires = now + timedelta(seconds=effective_ttl)
-        payload = _encode_envelope(holder=handle.holder, date_expires=date_expires, date_acquired=now)
+        # a renewal moves the expiry and keeps when the lease was taken: that instant names this
+        # holding to a reader (:meth:`held`), which a renewal must not turn into another
+        payload = _encode_envelope(
+            holder=handle.holder, date_expires=date_expires, date_acquired=envelope.date_acquired
+        )
         # KvBucketLike.update returns ``None`` on revision mismatch,
         # mapping the previous KeyWrongLastSequenceError raise into a
         # typed conflict signal we surface as LeaseLost.
