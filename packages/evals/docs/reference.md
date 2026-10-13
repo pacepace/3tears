@@ -537,6 +537,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`DerivedContextIdentity`** · model · A run's context key as a value, never written back onto the run.
 - **`DerivedVariantIdentity`** · model · A computed variant key plus what it was computable from.
 - **`DesignRefused`** · exception · A declaration this host cannot honour, as what is wrong with it and what to declare instead.
+- **`EarlierControl`** · model · The declared control's cells under an earlier identity predicate — the control as it ran, never a rival arm.
 - **`EvalAnalysis`** · model · A generated, stored analysis of one campaign — the productized "Analysis" lens.
 - **`EvalAnalysisAttempt`** · model · One run of the analysis generator for a campaign, whatever it came to.
 - **`EvalCampaign`** · model · A curated set of eval runs under one subject×behavior — the analysis hub.
@@ -2655,7 +2656,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schema_version` | `int` | `50` | Bundle-shape version, for future evolution + fingerprint clarity. |
+| `schema_version` | `int` | `51` | Bundle-shape version, for future evolution + fingerprint clarity. |
 | `campaign_id` | `str` | required | The campaign this bundle summarises. |
 | `subject_id` | `str` | required | The analysed subject's stable id. |
 | `subject_kind` | `str` | `''` | Discriminator; data, never a code branch. |
@@ -2679,7 +2680,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `divergences_tested` | `int` | `0` | Whole-and-part pairs across every lever whose divergence test carried a p, published or not. |
 | `divergences_untested` | `int` | `0` | Whole-and-part pairs whose divergence could not be tested: fewer than two cases carrying both measures on a side, or a remainder (whole minus part) that moved by the same amount on every case where the two measures do not both declare value_range, so no test of the mean can call it; declare value_range on both for the bounded test to read it. |
 | `declared_design` | `CampaignDesign \| None` | `None` | What the campaign SET OUT to do, carried whole rather than reduced to its control. |
-| `design` | `RealizedDesign` | `RealizedDesign(control_arm=None, control_excluded=None, stale_control_disclosure=None, contrasts=[], unplaced_run_ids=[], shape='undesignated')` | What kind of experiment this is, inferred from the runs — never a declaration, and never to be called declared: the run carrying the declared control, each cell's moved levers, and whether the design is one-factor-at-a-time. |
+| `design` | `RealizedDesign` | `RealizedDesign(control_arm=None, earlier_control=None, control_excluded=None, stale_control_disclosure=None, contrasts=[], unplaced_run_ids=[], shape='undesignated')` | What kind of experiment this is, inferred from the runs — never a declaration, and never to be called declared: the run carrying the declared control, each cell's moved levers, and whether the design is one-factor-at-a-time. |
 | `incomplete_runs` | `dict[str, str]` | `{}` | Run id → status, for every resolved member run that did not reach 'completed'. |
 | `short_runs` | `dict[str, str]` | `{}` | Run id → the disclosure sentence for every resolved member run that delivered fewer cells than it promised, whatever status it ended on. |
 | `completeness_unknown_run_ids` | `list[str]` | `[]` | Resolved member runs carrying no completeness record, so whether they came up short is unknown rather than answered. |

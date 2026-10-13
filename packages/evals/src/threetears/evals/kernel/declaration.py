@@ -486,8 +486,10 @@ class CampaignDesign(EvalDocumentModel, CoreShapeModel):
             "`control_from_run_id` named — that run's own `variant_levers`, kept here for the reason the run keeps "
             "them beside its key. A key says which contestant stack and refuses to say what that stack WAS, and "
             "the predicate computing it is designed to move. So when this build keys variants under a predicate "
-            "other than `control_identity_version`, the control names its arm by the key this map re-keys to as "
-            "well as by the stored one, so the arm's runs on either side of the change are both its cells; and "
+            "other than `control_identity_version`, the control matches the key this map re-keys to as well as the "
+            "stored one: its arm is the cells under this build's predicate wherever any carry the re-keyed key, "
+            "and its cells under the earlier predicate are named beside it (`RealizedDesign.earlier_control`), "
+            "never contrasted and never stale while they are here; and "
             "whatever happens to the key, the map still says which levels the control ran. Server-owned: "
             "recorded from the run, carried while a typed declaration keeps the key, never taken from a caller. "
             "None = the key was TYPED, not addressed from a run (or addressed from one whose observations carry a "
@@ -829,7 +831,7 @@ class CampaignDesign(EvalDocumentModel, CoreShapeModel):
 
 #: How a declared control's keys were arrived at. ``undeclared`` — the design names no control. ``current`` — the
 #: key was computed under this build's predicate, and it is the one key. ``rekeyed`` — it was computed under another
-#: predicate and the stored lever map re-keys it, so the stored key and the recomputed one both name the arm.
+#: predicate and the stored lever map re-keys it, so the control matches the recomputed key and the stored one.
 #: ``unrekeyable`` — it was computed under another predicate with no lever map beside it, so the stored key is the
 #: only one, and no run this build stamps can carry it.
 ControlSource = Literal["undeclared", "current", "rekeyed", "unrekeyable"]
@@ -839,12 +841,16 @@ class ResolvedControl(EvalBaseModel):
     """A declared control as the SET of keys that name its arm under this build — a value, never written back.
 
     A set, not one key, because stamped keys are never re-derived: a cell keeps the key it was stamped with
-    under the predicate it ran under. A control declared under an older predicate therefore names its arm by
-    TWO keys once the predicate moves — the stored key, which the cells stamped under the older predicate
-    still carry, and the key its lever map re-keys to, which the cells stamped under this one carry — and
-    matching only one of them reads the other's cells as some other arm. Which of them names the control in
-    a given campaign is a question about its cells, so it is answered where the cells are
-    (:meth:`matched`), never here.
+    under the predicate it ran under. A control declared under an older predicate therefore matches TWO keys
+    once the predicate moves — the stored key, which the cells stamped under the older predicate still carry,
+    and the key its lever map re-keys to, which the cells stamped under this one carry. Matching only the
+    re-keyed one would read a campaign holding only old cells as stale. Which of them is the control ARM in a
+    given campaign is a question about its cells, so it is answered where the cells are (:meth:`matched`,
+    from ``_campaign_design``): the first one any cell carries, in :attr:`variant_keys` order. A campaign
+    carrying both keeps ONE control arm, the re-keyed cells, and names the others as the control under the
+    earlier predicate (``RealizedDesign.earlier_control``) — never pooled into the control's numbers, which
+    would mix two predicates' keys, and never contrasted with it, which would read the control against
+    itself.
 
     Returned rather than assigned for the reason every identity read in
     :mod:`~threetears.evals.kernel.identity` is: a key recomputed at read and saved onto the campaign
@@ -901,7 +907,8 @@ def resolve_declared_control(design: CampaignDesign | None) -> ResolvedControl:
     - **Another predicate, with a map:** the key recomputed from the map
       (:func:`~threetears.evals.kernel.identity.compute_variant_key`) — the key a run of the same arm
       launched on this build carries — AND the stored key, which the arm's cells stamped under the older
-      predicate still carry. A predicate change orphans neither set of cells.
+      predicate still carry. A campaign holding only old cells matches the stored key and is never stale;
+      one holding new cells has them as its control arm, with any old cells disclosed beside it.
     - **Another predicate, without one:** the stored key, alone (``unrekeyable``). It still names every cell
       stamped under its own predicate, which is the control as it ran; what it cannot name is a run this
       build stamps. When no cell of the campaign carries it, the bundle says so with the remedy

@@ -1215,9 +1215,11 @@ def _boundary_scales(results: Iterable[EvalResult]) -> dict[str, RubricScale]:
     return {score.dim: score.scale for result in results for score in result.rubric_scores if score.axis == "boundary"}
 
 
-def _boundary_eligible(point: FrontierPoint, control_variant_key: str | None) -> bool:
+def _boundary_eligible(
+    point: FrontierPoint, control_variant_key: str | None, earlier_control_variant_key: str | None = None
+) -> bool:
     """Whether a point may be the pick on the boundary pillar: the control, unchecked, or every dimension held."""
-    if control_variant_key is None or point.variant_key == control_variant_key:
+    if control_variant_key is None or point.variant_key in (control_variant_key, earlier_control_variant_key):
         return True
     return not point.disqualified_by and all(check.decision == "held" for check in point.boundary_checks)
 
@@ -1227,8 +1229,12 @@ def _decide_boundary_pillar(
     members: Sequence[Sequence[EvalResult]],
     control_variant_key: str | None,
     margins: Mapping[str, float],
+    earlier_control_variant_key: str | None = None,
 ) -> tuple[list[str], str | None]:
     """Hold every contestant's boundary dimensions against the control, in place, and say how the pillar was read.
+
+    The control's cells under an earlier identity predicate are the control, so they are held against nothing:
+    holding them against the control would read the control against itself under another digest.
 
     Returns:
         The subject's boundary dimensions, sorted, and the sentence for :attr:`SubjectFrontier.boundary_pillar`.
@@ -1251,7 +1257,7 @@ def _decide_boundary_pillar(
         )
     reference = _boundary_values(members[control[0]])
     for index, point in enumerate(points):
-        if index in control:
+        if index in control or point.variant_key == earlier_control_variant_key:
             continue
         values = _boundary_values(members[index])
         checks = []
@@ -1300,6 +1306,7 @@ def compute_frontier(
     archived_run_ids: set[str] | None,
     profile: HostProfile | None = None,
     control_variant_key: str | None = None,
+    earlier_control_variant_key: str | None = None,
     guardrail_margins: Mapping[str, float] | None = None,
     tiers: Sequence[JudgeEvidenceTier] = (),
 ) -> FrontierResult:
@@ -1396,6 +1403,9 @@ def compute_frontier(
             host payload elided reads as unchecked. ``None`` leaves that field ``None`` — nobody checked.
         control_variant_key: The variant every contestant's boundary dimensions are held against — the campaign's
             control arm. ``None`` checks none, and says so.
+        earlier_control_variant_key: The key the control's cells under an earlier identity predicate carry
+            (``RealizedDesign.earlier_control``), or None. Those points are the control too: held against nothing,
+            and never refused the pick for a boundary they were not checked on.
         guardrail_margins: The margin each boundary dimension is held to, by dimension name
             (``CampaignDesign.guardrail_margins``); a dimension absent is held at zero change.
         tiers: The evidence tiers of the judges behind the results' scores
@@ -1525,7 +1535,11 @@ def compute_frontier(
         point_cases = [cases for _, cases, _ in built]
         _decide_dominance(points, point_cases)
         boundary_dimensions, boundary_pillar = _decide_boundary_pillar(
-            points, [members for _, _, members in built], control_variant_key, guardrail_margins or {}
+            points,
+            [members for _, _, members in built],
+            control_variant_key,
+            guardrail_margins or {},
+            earlier_control_variant_key,
         )
 
         verdict: FrontierVerdict | None = None
@@ -1550,7 +1564,7 @@ def compute_frontier(
                     index
                     for index, p in enumerate(points)
                     if p.bar_decision == "cleared"
-                    and _boundary_eligible(p, control_variant_key)
+                    and _boundary_eligible(p, control_variant_key, earlier_control_variant_key)
                     and p.production_replicating_cost is not None
                     and p.pass_hat_k is not None
                 ),

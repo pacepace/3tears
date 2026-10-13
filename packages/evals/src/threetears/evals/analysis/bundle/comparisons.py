@@ -614,6 +614,9 @@ def _multiple_comparisons(
         [(question.id, list(question.merit_axes)) for question in questions] if questions else [(None, [])]
     )
     control_variant = realized.control_arm.variant_key
+    # The control's cells under an earlier identity predicate are the control, not a rival arm: compared with the
+    # control they would read the control against itself under another digest, so they are in no pair.
+    not_contrasts = {control_variant} | ({realized.earlier_control.variant_key} if realized.earlier_control else set())
 
     judged_rows: dict[str, list[ScoreRecord]] = {}
     for record in records:
@@ -624,7 +627,7 @@ def _multiple_comparisons(
         for control_key in sorted(values)
         if control_key[0] == control_variant
         for contrast_key in sorted(values)
-        if contrast_key[1] == control_key[1] and contrast_key[0] != control_variant
+        if contrast_key[1] == control_key[1] and contrast_key[0] not in not_contrasts
     ]
 
     # One answer per pair, stated on every reading the pair is compared on: which pair diverged is a fact

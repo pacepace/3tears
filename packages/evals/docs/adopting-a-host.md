@@ -281,7 +281,7 @@ written under another cassette version is refused, by name, and you re-capture i
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
 **Each version space moves on its own.** Core documents (v14.0), regenerable documents (v9), cassettes
-(`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 50), the cell model
+(`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 51), the cell model
 (`CELL_MODEL_VERSION`, 12), the report (`REPORT_VERSION`, 9) and the identity keys (`IDENTITY_VERSION`, 24) carry
 separate versions, each at its first public release's value.
 An upgrade never recomputes an identity key, so keys from different predicates never silently pool. A kept
@@ -289,10 +289,13 @@ key is stored beside its pre-image and the identity version that computed it, so
 `IDENTITY_VERSION` needs no upgrader: a run keeps `variant_levers` beside the keys its results carry, and a
 campaign's declared control keeps `control_levers` and `control_identity_version` beside `control`, recorded when
 the control is addressed from a run (`control_from_run_id`, `set_campaign_control`) and never taken from a caller.
-Under another version the control names its arm by its stored key, which the cells stamped under its own version
-keep, and by the key recomputed from that map, which the arm's new runs carry. The recomputation follows a change to
-how a map is digested only: a lever, kind or overlay field your host renames, or a lever added to every map, gives
-new runs a different map, and the control then names only the cells from before it. A control key typed by hand
+Under another version the control matches its stored key, which the cells stamped under its own version keep, and
+the key recomputed from that map, which the arm's new runs carry, so it never goes stale while its old cells are in
+the campaign. Its arm is one set of cells: the new runs' cells where there are any, with the old cells named beside
+it as the control under the earlier version (`RealizedDesign.earlier_control`), disclosed, and in no contrast; the
+control's numbers are the new cells only. The recomputation follows a change to how a map is digested only: a lever,
+kind or overlay field your host renames, or a lever added to every map, gives new runs a different map, and the
+control then matches only the cells from before it. A control key typed by hand
 records no map; when no cell carries it under another version it reads as `stale`
 (`RealizedDesign.control_excluded`), and the remedy is to address it again from a run.
 

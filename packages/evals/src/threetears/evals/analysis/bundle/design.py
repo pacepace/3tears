@@ -8,14 +8,17 @@ answers whether a resolved surface moved on its own. :func:`_name_arms` names th
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from threetears.evals.analysis.cells import Observation
 from threetears.evals.analysis.reporting import lever_level
 from threetears.evals.kernel.campaign import VariantIndexEntry
+from threetears.evals.analysis.arms import short_digest
 from threetears.evals.kernel.declaration import CampaignDesign, ResolvedControl
+from threetears.evals.kernel.identity import IDENTITY_VERSION
+from threetears.evals.kernel.surface import EarlierControl
 from threetears.evals.schema.hashing import canonical_json
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.values import SweepableValue
@@ -454,10 +457,16 @@ def _campaign_design(
     (``control_arm``). The declared control names its arm by a SET of keys
     (:class:`~threetears.evals.kernel.declaration.ResolvedControl`): the key as stored, which the cells
     stamped under its predicate carry for good, and the key its lever map re-keys to under this build's.
-    The control arm is the arm carrying the first of them, in that resolution's order of preference, so
-    a control declared under an older predicate keeps naming its old cells and names its new ones too. A
-    lens that matched ``declared_design.control`` itself would disagree with this one the moment the
-    predicate moved — the defect this signature exists to make unexpressible.
+    The control arm is the arm carrying the first of them, in that resolution's order of preference — the
+    re-keyed one wherever any cell carries it. So a control declared under an older predicate is never
+    stale while its old cells are here (they carry the stored key, and it matches them), and once its new
+    runs land it is the new cells. **A campaign whose cells carry BOTH keys keeps one control arm**: the
+    cells under this build's predicate, with the cells under the earlier one named beside it
+    (``earlier_control``) — kept out of every contrast, never pooled into the control's numbers, and
+    disclosed. Pooling them would put two predicates' keys into one number; contrasting them would compare
+    the control with itself under another digest. A lens that matched ``declared_design.control`` itself
+    would disagree with this one the moment the predicate moved — the defect this signature exists to make
+    unexpressible.
 
     An arm's moved levers are the keys where its EFFECTIVE configuration differs from the control
     arm's, plus ``model`` when the candidate differs — the same notion of "lever" the rest of this
@@ -528,6 +537,7 @@ def _campaign_design(
                 excluded = "unobserved"
         return RealizedDesign(control_excluded=excluded, stale_control_disclosure=stale, unplaced_run_ids=unplaced)
 
+    earlier = _earlier_control(declared_control, control_variant, arms_by_key)
     folds = folds if folds is not None else _SurfaceFolds(runs, results_by_run, profile=profile)
     control = arms_by_key[control_variant][0]
     control_overlays = _effective_values(control, results_by_run.get(control.id, []), profile=profile)
@@ -549,7 +559,7 @@ def _campaign_design(
     # inherited default.
     departures: dict[str, dict[str, str]] = {}
     for key, members in arms_by_key.items():
-        if key == control_variant:
+        if key == control_variant or (earlier is not None and key == earlier.variant_key):
             continue
         first = members[0]
         overlays = _effective_values(first, results_by_run.get(first.id, []), profile=profile)
@@ -600,7 +610,51 @@ def _campaign_design(
     shape: Literal["one_factor_at_a_time", "multi_factor"] = (
         "one_factor_at_a_time" if all(len(c.moved) <= 1 for c in contrasts) else "multi_factor"
     )
-    return RealizedDesign(control_arm=arm(control_variant), contrasts=contrasts, unplaced_run_ids=unplaced, shape=shape)
+    return RealizedDesign(
+        control_arm=arm(control_variant),
+        earlier_control=earlier,
+        contrasts=contrasts,
+        unplaced_run_ids=unplaced,
+        shape=shape,
+    )
+
+
+def _earlier_control(
+    declared_control: ResolvedControl, control_variant: str, arms_by_key: Mapping[str, list[EvalRun]]
+) -> EarlierControl | None:
+    """The declared control's cells under an earlier identity predicate, when the campaign carries both its keys.
+
+    Only the stored key can be earlier: :class:`~threetears.evals.kernel.declaration.ResolvedControl` prefers the
+    re-keyed one, so a matched control that is not the stored key is the re-keyed one, and the stored key's cells
+    — when any member carries them — are the control as it ran before the predicate changed.
+
+    Args:
+        declared_control: The declared control's keys.
+        control_variant: The key the control arm was matched by.
+        arms_by_key: The campaign's arms.
+
+    Returns:
+        The earlier cells, named and disclosed, or None when the campaign carries one of the control's keys.
+    """
+    stored = declared_control.variant_keys[-1]
+    version = declared_control.identity_version
+    if stored == control_variant or stored not in arms_by_key or version is None:
+        return None
+    earlier_runs = sorted(run.id for run in arms_by_key[stored])
+    current_runs = arms_by_key[control_variant]
+    return EarlierControl(
+        variant_key=stored,
+        identity_version=version,
+        run_ids=earlier_runs,
+        disclosure=(
+            f"The declared control's runs carry two keys, because the identity predicate changed how a lever map "
+            f"is digested between them: {len(earlier_runs)} run(s) were stamped under v{version} "
+            f"({short_digest(stored)}) and {len(current_runs)} under v{IDENTITY_VERSION} "
+            f"({short_digest(control_variant)}). The control's numbers are the v{IDENTITY_VERSION} cells only, and "
+            f"every contrast, guardrail and adoption is read against them; the v{version} cells are the control "
+            f"under identity predicate v{version}, shown beside it and compared with nothing."
+        ),
+    )
 
 
 def _is_control_referenced(lever: str, design: RealizedDesign) -> bool:

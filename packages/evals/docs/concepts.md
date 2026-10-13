@@ -357,12 +357,16 @@ The arm every other arm in a campaign is tested against: usually what runs today
 so any run of that configuration counts toward it. `compare` sets it from `control=`; elsewhere it is addressed
 from a run (`control_from_run_id`), which records the run's lever map and identity version beside the key, as a
 run records its own; nobody sets those by hand. Every read resolves it through `resolve_declared_control` to the
-keys that name its arm: the stored key, which the cells stamped under its identity version keep, and, under a later
+keys it matches: the stored key, which the cells stamped under its identity version keep, and, under a later
 version, also the key recomputed from that lever map, which new runs of the arm carry. That recomputation follows a
-change to how a lever map is digested, not a renamed lever, kind or overlay field. The arm carrying one of those keys
-is the control (`design.control_arm` in the bundle), and every reading names that arm. A key typed by hand records
-no lever map; when no cell carries it under a later identity version it is **stale**: the bundle says it cannot be
-resolved (`control_excluded`), and the remedy is to address it again from a run. *Example:* the v1 arm.
+change to how a lever map is digested, not a renamed lever, kind or overlay field. So a control keeps matching its
+old cells and is never stale while they are in the campaign. The control ARM (`design.control_arm` in the bundle),
+which every reading names and every contrast is read against, is the cells under the current identity version
+wherever any run carries the recomputed key; the cells under the earlier version are then the control under that
+version (`design.earlier_control`), named on every surface, disclosed once, in no contrast and in no adoption check,
+and not in the control's numbers. A key typed by hand records no lever map; when no cell carries it under a later
+identity version it is **stale**: the bundle says it cannot be resolved (`control_excluded`), and the remedy is to
+address it again from a run. *Example:* the v1 arm.
 
 #### Delta, interval and adjusted p
 What a comparison reports for each arm against the control, per reading. The **delta** is the arm's mean minus
