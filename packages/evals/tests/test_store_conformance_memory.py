@@ -537,16 +537,32 @@ class _MergeReplaces(InMemoryDocumentStore):
         return True
 
 
-class _MergeSetsLocatingFields(InMemoryDocumentStore):
-    """``merge_fields`` writes whatever it is handed, the locating fields included."""
+class _MergeSetsLocatingFields(_EtagScheme):
+    """``merge_fields`` writes whatever it is handed, the locating fields included.
+
+    The merge skips every check the reference store's ``merge_fields`` makes, so it cannot go through it: it
+    updates the stored document in place, under the key the merge named, through the inner store's public
+    ``documents`` table, as an unchecked ``UPDATE`` would. A write there mints no inner etag, so the scheme's
+    token counts the merges on top of the inner etag, and a merge still moves the token a caller holds.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        #: How many merges each key has had; part of its token, since a merge here leaves the inner etag alone.
+        self.merges: dict[tuple[str, str], int] = {}
+
+    def token(self, doc_id: str, scope_id: str, document: dict[str, Any], inner_etag: str) -> str:
+        return f"{inner_etag}+{self.merges.get((scope_id, doc_id), 0)}"
 
     def merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool:
-        document = self.documents.get((scope_id, doc_id))
-        if document is None or not fields:
-            return False
-        document.update(fields)
-        self._mint_etag((scope_id, doc_id))
-        return True
+        key = (scope_id, doc_id)
+        with self.lock:
+            document = self.inner.documents.get(key)
+            if document is None or not fields:
+                return False
+            document.update(fields)
+            self.merges[key] = self.merges.get(key, 0) + 1
+            return True
 
 
 class _DeleteAlwaysReportsTrue(InMemoryDocumentStore):
