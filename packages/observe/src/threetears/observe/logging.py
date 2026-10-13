@@ -153,6 +153,11 @@ def _color_enabled() -> bool:
     return sys.stderr.isatty()
 
 
+#: Whether :func:`configure_logging` was asked for the process id on every line;
+#: read by :func:`configure_third_party_logging` so a logger attached later matches.
+_process_id_on_lines = False
+
+
 class ContextFormatter(logging.Formatter):
     """Formats log records with context tags, call-site info, and optional color.
 
@@ -163,11 +168,18 @@ class ContextFormatter(logging.Formatter):
     Format::
 
         LEVEL TIMESTAMP [key1:val1] [key2:val2] path/Class.func.line: message {extra}
+
+    With ``process_id`` the line also says which process wrote it, before the
+    context tags: ``LEVEL TIMESTAMP [pid:1234] [key1:val1] ...``. Several
+    processes that write one log (workers under one supervisor) are otherwise
+    indistinguishable in it. The id is read when the line is formatted, so a
+    forked child reports its own.
     """
 
-    def __init__(self, use_color: bool = False) -> None:
+    def __init__(self, use_color: bool = False, *, process_id: bool = False) -> None:
         super().__init__()
         self._use_color = use_color
+        self._process_id = process_id
 
     def format(self, record: logging.LogRecord) -> str:
         """Format a log record with context tags and call-site info."""
@@ -190,6 +202,8 @@ class ContextFormatter(logging.Formatter):
             location = f"{call_file}/{call_func}.{call_line}"
 
         parts = [f"{level} {ts}"]
+        if self._process_id:
+            parts.append(f"[pid:{os.getpid()}]")
 
         # Render all context tags in insertion order
         ctx = _log_context.get()
@@ -341,6 +355,7 @@ def configure_logging(
     color: bool | None = None,
     strip_prefixes: list[str] | None = None,
     quiet_noisy_libraries: bool = True,
+    process_id: bool = False,
 ) -> None:
     """Configure the ``threetears`` logger hierarchy with structured output.
 
@@ -359,7 +374,13 @@ def configure_logging(
         :data:`NOISY_LIBRARY_LOGGERS` at INFO instead of letting them follow a
         DEBUG root level.  Default ``True``.  Pass ``False`` when you are
         debugging one of those libraries and genuinely want its trace.
+    :param process_id: put ``[pid:<id>]`` on every line, for a deployment where
+        several processes write one log.  Default ``False``.  It also applies to
+        loggers attached afterwards with :func:`configure_third_party_logging`.
     """
+    global _process_id_on_lines
+    _process_id_on_lines = process_id
+
     if strip_prefixes:
         for p in strip_prefixes:
             if p not in path_strip_prefixes:
@@ -378,7 +399,7 @@ def configure_logging(
         isinstance(h, logging.StreamHandler) and getattr(h, "threetears_owned", False) for h in py_root.handlers
     ):
         handler = logging.StreamHandler(sys.stderr)
-        handler.setFormatter(ContextFormatter(use_color=use_color))
+        handler.setFormatter(ContextFormatter(use_color=use_color, process_id=process_id))
         handler.threetears_owned = True  # type: ignore[attr-defined]
         py_root.addHandler(handler)
     py_root.setLevel(level_val)
@@ -410,7 +431,7 @@ def configure_third_party_logging(name: str, level: str | None = None) -> None:
         level_val = getattr(logging, level_str, logging.INFO)
 
         handler = logging.StreamHandler(sys.stderr)
-        handler.setFormatter(ContextFormatter(use_color=_color_enabled()))
+        handler.setFormatter(ContextFormatter(use_color=_color_enabled(), process_id=_process_id_on_lines))
         logger.addHandler(handler)
         logger.setLevel(level_val)
         logger.propagate = False

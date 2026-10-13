@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Observe: a log line can say which process wrote it
+
+Several worker processes under one supervisor write one log, and no line said which worker wrote
+it, so a worker that hung or died could not be told from its siblings.
+
+- **Added, `configure_logging(process_id=True)` and `ContextFormatter(process_id=True)`:** every
+  line carries `[pid:<id>]` after the timestamp, before the context tags. Off by default: a
+  consumer that parses the line sees no change until it asks. Loggers attached afterwards with
+  `configure_third_party_logging` follow the same choice.
+
 ### Tools: a new plan says what it replaced, and a specialist that is not there names the ones that are
 
 - **Changed, `workflow_declare`:** the result opens `Workflow declared. No plan was there before.`
