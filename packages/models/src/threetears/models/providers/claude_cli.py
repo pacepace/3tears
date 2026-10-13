@@ -1593,6 +1593,13 @@ def _usage_metadata(usage: Any) -> UsageMetadata | None:
     ``langchain_anthropic`` uses, so a caller reads a subscription call's usage the way it reads
     an API call's.
 
+    ``output_token_details.reasoning`` is the CLI's ``output_tokens_details.thinking_tokens`` (the
+    Messages API's name for the thinking share of ``output_tokens``, which it already includes), under
+    LangChain's standard key for reasoning tokens. It is set only when the CLI sends that count,
+    and absent otherwise -- never ``0`` standing in for a count nobody reported. The CLI (read from
+    2.1.286) sums the count over the call's requests, and adds a request whose reply carried none as
+    ``0``; that is its figure, passed on as it is.
+
     :param usage: ``ResultMessage.usage``
     :ptype usage: Any
     :return: usage metadata, or ``None`` when the CLI reported none
@@ -1605,12 +1612,17 @@ def _usage_metadata(usage: Any) -> UsageMetadata | None:
     cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
     output = int(usage.get("output_tokens") or 0)
     prompt = uncached + cache_read + cache_creation
-    return UsageMetadata(
+    metadata = UsageMetadata(
         input_tokens=prompt,
         output_tokens=output,
         total_tokens=prompt + output,
         input_token_details={"cache_read": cache_read, "cache_creation": cache_creation},
     )
+    details = usage.get("output_tokens_details")
+    thinking = details.get("thinking_tokens") if isinstance(details, dict) else None
+    if isinstance(thinking, int) and not isinstance(thinking, bool):
+        metadata["output_token_details"] = {"reasoning": thinking}
+    return metadata
 
 
 def create_subscription_chat(model_name: str, token: str, **extra_kwargs: Any) -> BaseChatModel:

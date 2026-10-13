@@ -6,7 +6,9 @@ for every call that handed no tool calls back, so a reply the output cap cut sho
 finished. Each ``AssistantMessage`` names the model that wrote it, and the result's ``model_usage``
 is keyed by model; the model dropped both, so a ``fallback_model`` switch was invisible. The CLI's
 answer is scripted at its door (:mod:`.claude_cli_recorder`); everything after it is the model's
-own code.
+own code. The result's ``usage`` carries the thinking share of the output as
+``output_tokens_details.thinking_tokens``; the model dropped it, so a subscription reply reported no
+reasoning tokens even when the model thought.
 """
 
 from __future__ import annotations
@@ -200,3 +202,36 @@ class TestWhichModelServedTheReply:
         reply = await _ask(answer, how)
 
         assert "model_name" not in reply.response_metadata
+
+
+_USAGE = {"input_tokens": 10, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "output_tokens": 300}
+
+
+@pytest.mark.parametrize("how", _PATHS)
+class TestTheReasoningShareOfTheOutput:
+    async def test_the_clis_thinking_tokens_are_the_reasoning_tokens(self, how: str) -> None:
+        usage = {**_USAGE, "output_tokens_details": {"thinking_tokens": 120}}
+        reply = await _ask([_reply(), _result(usage=usage)], how)
+
+        assert reply.usage_metadata["output_token_details"] == {"reasoning": 120}
+        assert reply.usage_metadata["output_tokens"] == 300, "thinking is a share of the output, not added to it"
+
+    async def test_a_count_of_zero_the_cli_sent_is_passed_on(self, how: str) -> None:
+        usage = {**_USAGE, "output_tokens_details": {"thinking_tokens": 0}}
+        reply = await _ask([_reply(), _result(usage=usage)], how)
+
+        assert reply.usage_metadata["output_token_details"] == {"reasoning": 0}
+
+    @pytest.mark.parametrize(
+        "details",
+        [None, {}, {"thinking_tokens": None}],
+        ids=["no-details", "empty-details", "null-count"],
+    )
+    async def test_a_cli_that_sends_no_count_reports_none_never_zero(
+        self, how: str, details: dict[str, Any] | None
+    ) -> None:
+        usage = dict(_USAGE) if details is None else {**_USAGE, "output_tokens_details": details}
+        reply = await _ask([_reply(), _result(usage=usage)], how)
+
+        assert "output_token_details" not in reply.usage_metadata
+        assert reply.usage_metadata["output_tokens"] == 300
