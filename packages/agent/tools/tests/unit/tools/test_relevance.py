@@ -11,16 +11,24 @@ surfacing a tool absent from the initial top-K.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
+from typing import Annotated, Any
 
 from langchain_core.embeddings import Embeddings
-from langchain_core.tools import BaseTool, StructuredTool
+from langchain_core.tools import BaseTool, InjectedToolArg, StructuredTool
+from pydantic import BaseModel, Field
 
 from threetears.agent.tools.relevance import (
     ToolRelevanceIndex,
     ToolSearchResult,
+    also_in_family,
     create_tool_search_tool,
     match_words,
+    tool_arguments,
+    tool_families,
+    tool_hit_line,
 )
+from threetears.agent.tools.utils import tool_result_status
 
 
 def _make_tool(name: str, description: str) -> BaseTool:
@@ -712,3 +720,321 @@ async def test_tool_search_hands_over_word_matches_when_the_ranking_fails() -> N
 
     assert [[t.name for t in h] for h in hits] == [["web_search"]]
     assert "web_search" in result_text and "Tool search failed" not in result_text
+    first, _, body = result_text.partition("\n")
+    assert first == (
+        "Found these tools by matching words only: the ranked search did not run, so a closer tool may exist. "
+        "Call them after this search returns, not alongside it:"
+    ), "word matches are said to be word matches, in the line the model reads first"
+    assert body.startswith("- web_search(")
+
+
+# ---------------------------------------------------------------------------
+# What a hit says: the arguments, and the rest of its family
+# ---------------------------------------------------------------------------
+
+
+class _SendInput(BaseModel):
+    to: str = Field(description="who")
+    body: str = Field(description="what")
+    urgent: bool = Field(default=False, description="whether")
+    tags: list[str] | None = Field(default=None, description="labels")
+    when: int | str = Field(default=0, description="a time or a count")
+    kept_out: Annotated[dict[str, Any] | None, InjectedToolArg] = None
+
+
+def _send_tool(name: str = "session_send") -> BaseTool:
+    async def _send(**kwargs: Any) -> str:
+        return "sent"
+
+    return StructuredTool.from_function(
+        coroutine=_send, name=name, description="send a message to a dev agent session", args_schema=_SendInput
+    )
+
+
+def test_a_tools_arguments_are_named_with_their_types_and_which_may_be_left_out() -> None:
+    assert tool_arguments(_send_tool()) == "(to: string, body: string, urgent?: boolean, tags?: array, when?)"
+
+
+def test_an_argument_the_host_injects_is_not_shown_to_the_model() -> None:
+    assert "kept_out" not in tool_arguments(_send_tool())
+
+
+def test_a_tool_that_takes_nothing_has_an_empty_bracket() -> None:
+    assert tool_arguments(_make_tool("ping", "check it is up")) == "()"
+
+
+def test_a_tool_described_by_a_json_schema_is_read_the_same_way() -> None:
+    async def _call(**kwargs: Any) -> str:
+        return "ok"
+
+    remote = StructuredTool.from_function(
+        coroutine=_call,
+        name="lights",
+        description="turn lights on or off",
+        args_schema={
+            "type": "object",
+            "properties": {"room": {"type": "string"}, "on": {"type": "boolean"}, "level": {"type": "integer"}},
+            "required": ["room", "on"],
+        },
+    )
+    assert tool_arguments(remote) == "(room: string, on: boolean, level?: integer)"
+
+
+def test_a_hit_line_is_the_name_the_arguments_and_what_it_does() -> None:
+    assert tool_hit_line(_send_tool()) == (
+        "- session_send(to: string, body: string, urgent?: boolean, tags?: array, when?): "
+        "send a message to a dev agent session"
+    )
+
+
+def _family_catalog() -> list[BaseTool]:
+    calendar = [_make_tool(f"calendar_{verb}", f"{verb} a calendar event") for verb in ("list", "create", "move")]
+    mail = [_make_tool(f"email_{verb}", f"{verb} mail") for verb in ("search", "read")]
+    return [*calendar, *mail, _make_tool("ping", "check it is up")]
+
+
+def _family_of(tool: BaseTool) -> str | None:
+    head = tool.name.split("_")[0]
+    return {"calendar": "calendar", "email": "mail"}.get(head)
+
+
+def _family_index(catalog: list[BaseTool], near: dict[str, float], query: str) -> ToolRelevanceIndex:
+    """An index whose ranking for ``query`` is the order of ``near``: tool name -> closeness, 1.0 nearest."""
+    vectors = {_tool_text(t): [near.get(t.name, 0.0), 1.0 - near.get(t.name, 0.0)] for t in catalog}
+    vectors[query] = [1.0, 0.0]
+    return ToolRelevanceIndex(embedder=_FakeEmbeddings(vectors), top_k=2)
+
+
+def test_the_catalog_by_family_keeps_catalog_order_and_leaves_out_a_tool_with_no_family() -> None:
+    families = tool_families(_family_catalog(), _family_of)
+    assert {name: [t.name for t in tools] for name, tools in families.items()} == {
+        "calendar": ["calendar_list", "calendar_create", "calendar_move"],
+        "mail": ["email_search", "email_read"],
+    }
+
+
+def test_a_hits_family_is_named_with_its_other_tools_once_per_family() -> None:
+    catalog = _family_catalog()
+    by_name = {t.name: t for t in catalog}
+    hits = [by_name["calendar_list"], by_name["ping"], by_name["calendar_move"], by_name["email_read"]]
+    assert also_in_family(hits, catalog, _family_of) == [
+        "Also in the calendar family: calendar_create.",
+        "Also in the mail family: email_search.",
+    ]
+
+
+def test_a_family_with_nothing_else_in_it_adds_no_line() -> None:
+    catalog = _family_catalog()
+    mail = [t for t in catalog if t.name.startswith("email_")]
+    assert also_in_family(mail, catalog, _family_of) == []
+
+
+def test_a_big_family_names_its_first_tools_and_counts_the_rest() -> None:
+    catalog = [_make_tool(f"house_{n:02d}", "a device") for n in range(12)]
+    lines = also_in_family(catalog[:1], catalog, lambda _tool: "house")
+    assert lines == [
+        "Also in the house family: house_01, house_02, house_03, house_04, house_05, house_06, house_07, "
+        "house_08, and 3 more."
+    ]
+
+
+async def test_tool_search_shows_each_hits_arguments_and_the_rest_of_its_family() -> None:
+    catalog = [*_family_catalog(), _send_tool()]
+    index = _family_index(catalog, {"calendar_move": 1.0, "session_send": 0.9}, "move my meeting")
+    hits: list[list[BaseTool]] = []
+    search_tool = create_tool_search_tool(
+        index=index, full_catalog_provider=lambda: catalog, on_hit=hits.append, limit=2, group_of=_family_of
+    )
+
+    result_text = await search_tool.ainvoke({"query": "move my meeting"})
+
+    assert result_text.splitlines() == [
+        "Found these tools. Call them after this search returns, not alongside it:",
+        "- calendar_move(): move a calendar event",
+        "- session_send(to: string, body: string, urgent?: boolean, tags?: array, when?): "
+        "send a message to a dev agent session",
+        "Also in the calendar family: calendar_list, calendar_create.",
+    ]
+    assert [[t.name for t in h] for h in hits] == [["calendar_move", "session_send"]], "siblings are named, not bound"
+
+
+async def test_tool_search_returns_as_many_as_the_model_asks_for_up_to_the_most_allowed() -> None:
+    catalog = _family_catalog()
+    near = {t.name: 1.0 - n / 10 for n, t in enumerate(catalog)}
+    index = _family_index(catalog, near, "anything")
+    hits: list[list[BaseTool]] = []
+    search_tool = create_tool_search_tool(
+        index=index, full_catalog_provider=lambda: catalog, on_hit=hits.append, limit=2, max_limit=4
+    )
+
+    await search_tool.ainvoke({"query": "anything"})
+    await search_tool.ainvoke({"query": "anything", "limit": 3})
+    await search_tool.ainvoke({"query": "anything", "limit": 50})
+    await search_tool.ainvoke({"query": "anything", "limit": 0})
+
+    assert [len(h) for h in hits] == [2, 3, 4, 1]
+    assert [t.name for t in hits[1]] == ["calendar_list", "calendar_create", "calendar_move"]
+
+
+async def test_tool_search_in_one_family_ranks_only_that_family() -> None:
+    catalog = _family_catalog()
+    index = _family_index(catalog, {"ping": 1.0, "email_read": 0.6, "calendar_list": 0.5}, "read it")
+    hits: list[list[BaseTool]] = []
+    search_tool = create_tool_search_tool(
+        index=index, full_catalog_provider=lambda: catalog, on_hit=hits.append, limit=1, group_of=_family_of
+    )
+
+    everywhere = await search_tool.ainvoke({"query": "read it"})
+    in_mail = await search_tool.ainvoke({"query": "read it", "family": "MAIL"})
+
+    assert "- ping()" in everywhere
+    assert in_mail.splitlines() == [
+        "Found these tools. Call them after this search returns, not alongside it:",
+        "- email_read(): read mail",
+        "Also in the mail family: email_search.",
+    ]
+    assert [[t.name for t in h] for h in hits] == [["ping"], ["email_read"]]
+
+
+async def test_tool_search_with_a_family_and_no_query_lists_the_family() -> None:
+    catalog = _family_catalog()
+    index = ToolRelevanceIndex(embedder=_FakeEmbeddings({}), top_k=2)
+    hits: list[list[BaseTool]] = []
+    search_tool = create_tool_search_tool(
+        index=index, full_catalog_provider=lambda: catalog, on_hit=hits.append, limit=2, group_of=_family_of
+    )
+
+    part = await search_tool.ainvoke({"family": "calendar"})
+    whole = await search_tool.ainvoke({"family": "calendar", "limit": 5})
+
+    assert part.splitlines() == [
+        "The calendar family has 3 tools, the first 2. Call them after this search returns, not alongside it:",
+        "The rest: calendar_move.",
+        "- calendar_list(): list a calendar event",
+        "- calendar_create(): create a calendar event",
+    ]
+    assert whole.splitlines()[0] == (
+        "The calendar family has 3 tools. Call them after this search returns, not alongside it:"
+    )
+    assert "The rest" not in whole and whole.count("\n- ") == 3
+    assert [[t.name for t in h] for h in hits] == [
+        ["calendar_list", "calendar_create"],
+        ["calendar_list", "calendar_create", "calendar_move"],
+    ]
+
+
+async def test_tool_search_for_a_family_that_is_not_there_names_the_families_that_are() -> None:
+    catalog = _family_catalog()
+    index = ToolRelevanceIndex(embedder=_FakeEmbeddings({}), top_k=2)
+    hits: list[list[BaseTool]] = []
+    search_tool = create_tool_search_tool(
+        index=index, full_catalog_provider=lambda: catalog, on_hit=hits.append, group_of=_family_of
+    )
+
+    result_text = await search_tool.ainvoke({"query": "anything", "family": "weather"})
+
+    assert (
+        result_text == "[NO CHANGE] tool_search: there is no tool family named 'weather'. The families: calendar, mail."
+    )
+    assert tool_result_status(result_text) == "no_change" and hits == []
+
+
+async def test_tool_search_with_neither_a_query_nor_a_family_is_an_error() -> None:
+    index = ToolRelevanceIndex(embedder=_FakeEmbeddings({}), top_k=2)
+    search_tool = create_tool_search_tool(
+        index=index, full_catalog_provider=_family_catalog, on_hit=lambda _m: None, group_of=_family_of
+    )
+    assert (await search_tool.ainvoke({})).startswith("[TOOL ERROR] tool_search: say what you need")
+
+
+def test_tool_search_offers_a_family_only_when_the_catalog_has_families() -> None:
+    index = ToolRelevanceIndex(embedder=_FakeEmbeddings({}), top_k=2)
+    plain = create_tool_search_tool(index=index, full_catalog_provider=list, on_hit=lambda _m: None)
+    grouped = create_tool_search_tool(
+        index=index, full_catalog_provider=list, on_hit=lambda _m: None, group_of=_family_of
+    )
+
+    assert set(plain.args) == {"query", "limit"} and set(grouped.args) == {"query", "limit", "family"}
+    assert "family" not in plain.description
+    assert grouped.description == (
+        plain.description + " Pass family to search one family of tools, or family alone to list it."
+    )
+    assert plain.tool_call_schema.model_json_schema()["required"] == ["query"]
+
+
+# ---------------------------------------------------------------------------
+# Whether anything fits is the caller's to judge, by the scores
+# ---------------------------------------------------------------------------
+
+
+async def test_a_search_outcome_carries_the_whole_scored_ranking_past_the_limit() -> None:
+    catalog = _family_catalog()
+    index = _family_index(catalog, {"calendar_move": 1.0, "calendar_list": 0.8, "email_read": 0.3}, "move it")
+
+    outcome = await index.search_outcome(catalog, "move it", limit=2)
+
+    assert [t.name for t in outcome.hits] == ["calendar_move", "calendar_list"]
+    assert [t.name for t, _ in outcome.ranked[:3]] == ["calendar_move", "calendar_list", "email_read"]
+    assert len(outcome.ranked) == len(catalog), "the ranking is whole, so a margin can reach past the hits"
+    scores = [score for _, score in outcome.ranked]
+    assert scores == sorted(scores, reverse=True) and scores[0] > scores[2] > scores[-1]
+
+
+async def test_a_ranking_that_did_not_run_has_no_scores() -> None:
+    broken = ToolRelevanceIndex(embedder=_FakeEmbeddings({}, raise_on_documents=True), top_k=2)
+    outcome = await broken.search_outcome(_house_catalog(), "search the web")
+    assert [t.name for t in outcome.hits] == ["web_search"] and outcome.ranked == []
+
+
+async def test_tool_search_offers_nothing_when_the_caller_says_nothing_fits() -> None:
+    catalog = _family_catalog()
+    index = _family_index(catalog, {"calendar_move": 0.52, "calendar_list": 0.5, "email_read": 0.49}, "morning, you")
+    hits: list[list[BaseTool]] = []
+    asked: list[tuple[str, list[tuple[str, float]]]] = []
+
+    def _flat(query: str, ranked: Sequence[tuple[BaseTool, float]]) -> bool:
+        asked.append((query, [(tool.name, score) for tool, score in ranked]))
+        return ranked[0][1] - ranked[2][1] < 0.1  # a margin, the caller's own; never one fixed score
+
+    search_tool = create_tool_search_tool(
+        index=index, full_catalog_provider=lambda: catalog, on_hit=hits.append, limit=2, nothing_fits=_flat
+    )
+
+    result_text = await search_tool.ainvoke({"query": "morning, you"})
+
+    assert result_text == "No tool fits that. The nearest, none of them handed to you: calendar_move, calendar_list."
+    assert hits == [], "nothing is bound when nothing fits"
+    assert asked[0][0] == "morning, you" and len(asked[0][1]) == len(catalog), "the judge sees the whole ranking"
+
+
+async def test_tool_search_offers_its_hits_when_the_caller_says_one_fits() -> None:
+    catalog = _family_catalog()
+    index = _family_index(catalog, {"calendar_move": 1.0}, "move my meeting")
+    hits: list[list[BaseTool]] = []
+    search_tool = create_tool_search_tool(
+        index=index,
+        full_catalog_provider=lambda: catalog,
+        on_hit=hits.append,
+        limit=1,
+        nothing_fits=lambda _query, ranked: ranked[0][1] - ranked[4][1] < 0.1,
+    )
+
+    result_text = await search_tool.ainvoke({"query": "move my meeting"})
+
+    assert result_text.startswith("Found these tools.") and [[t.name for t in h] for h in hits] == [["calendar_move"]]
+
+
+async def test_word_matches_are_not_judged_for_they_have_no_score() -> None:
+    tools = _house_catalog()
+    index = ToolRelevanceIndex(embedder=_FakeEmbeddings({}, raise_on_documents=True), top_k=2)
+    hits: list[list[BaseTool]] = []
+
+    def _never_asked(query: str, ranked: Sequence[tuple[BaseTool, float]]) -> bool:
+        raise AssertionError("a word match has no score to judge")
+
+    search_tool = create_tool_search_tool(
+        index=index, full_catalog_provider=lambda: tools, on_hit=hits.append, nothing_fits=_never_asked
+    )
+
+    assert "by matching words only" in await search_tool.ainvoke({"query": "search the web"})
+    assert [[t.name for t in h] for h in hits] == [["web_search"]]

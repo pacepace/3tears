@@ -44,20 +44,28 @@ import functools
 import hashlib
 import json
 from collections import OrderedDict
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from langchain_core.embeddings import Embeddings
 from langchain_core.tools import BaseTool, StructuredTool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 from threetears.observe import get_logger
+from threetears.tool_schema.self_contained import declared_type
+
+from threetears.agent.tools.utils import tool_no_change
 
 __all__ = [
     "ToolRelevanceIndex",
     "ToolSearchResult",
     "ToolSelectionResult",
+    "also_in_family",
     "create_tool_search_tool",
+    "tool_arguments",
+    "tool_families",
+    "tool_hit_line",
 ]
 
 _log = get_logger(__name__)
@@ -144,10 +152,18 @@ class ToolSearchResult:
         the query's words (:func:`match_words`), which may be none
     :ivar fallback_reason: ``"embedder_error"``, ``"latency_ceiling"``, or
         ``None`` when the search ran to completion
+    :ivar ranked: the whole ranking, most relevant first, each tool beside its
+        similarity to the query; ``hits`` is its first ``limit`` tools. Empty
+        when the ranking did not run, and the hits are then word matches with
+        no score. A caller that must decide whether anything fits reads the
+        scores here and judges by a margin -- the gap between the first hit and
+        a later one, or against a baseline of its own -- never by one fixed
+        number: two embedders score in different ranges
     """
 
     hits: list[BaseTool]
     fallback_reason: str | None = None
+    ranked: list[tuple[BaseTool, float]] = field(default_factory=list)
 
 
 class ToolRelevanceIndex:
@@ -433,7 +449,7 @@ class ToolRelevanceIndex:
             # tool_search has no other way to reach anything while the embedder
             # is down.
             return ToolSearchResult(hits=match_words(tools, query)[:limit], fallback_reason=fallback_reason)
-        return ToolSearchResult(hits=[tool for tool, _ in ranked][:limit])
+        return ToolSearchResult(hits=[tool for tool, _ in ranked][:limit], ranked=ranked)
 
 
 #: Words too common to say anything about which tool is wanted.
@@ -473,12 +489,136 @@ def _words(text: str) -> list[str]:
     return "".join(ch.lower() if ch.isalnum() else " " for ch in text).split()
 
 
-class _ToolSearchInput(BaseModel):
-    """Input schema for the ``tool_search`` meta-tool."""
+#: The sentence every list of found tools ends its first line with: found is not bound until the next round.
+_CALL_AFTER = "Call them after this search returns, not alongside it:"
 
-    query: str = Field(
-        description="What you need the tool to do, in plain words.",
-    )
+#: How many of a family's other tools a hit list names before it counts the rest.
+_SIBLINGS_NAMED = 8
+
+
+def _input_schema(tool: BaseTool) -> Mapping[str, Any]:
+    """The JSON schema of what a model passes ``tool``, without the arguments a host injects."""
+    schema = tool.tool_call_schema
+    if isinstance(schema, Mapping):
+        return schema
+    return schema.model_json_schema()
+
+
+def tool_arguments(tool: BaseTool) -> str:
+    """A tool's arguments as one bracket: ``(title: string, list_name?: string)``.
+
+    A ``?`` marks an argument that may be left out. The type is the one the
+    schema declares; an argument that may be several types is named without
+    one. A tool that takes nothing is ``()``.
+
+    :param tool: the tool
+    :ptype tool: BaseTool
+    :return: the bracket
+    :rtype: str
+    """
+    schema = _input_schema(tool)
+    properties = schema.get("properties") or {}
+    required = set(schema.get("required") or [])
+    parts = []
+    for name, prop in properties.items():
+        kind = declared_type(prop, schema)
+        parts.append(f"{name}{'' if name in required else '?'}" + (f": {kind}" if kind else ""))
+    return f"({', '.join(parts)})"
+
+
+def tool_hit_line(tool: BaseTool) -> str:
+    """One found tool as the line a model reads: its name, its arguments, what it does.
+
+    :param tool: the tool
+    :ptype tool: BaseTool
+    :return: ``- name(arguments): description``
+    :rtype: str
+    """
+    return f"- {tool.name}{tool_arguments(tool)}: {tool.description or ''}"
+
+
+def tool_families(catalog: Sequence[BaseTool], group_of: Callable[[BaseTool], str | None]) -> dict[str, list[BaseTool]]:
+    """The catalog by family, each family's tools in catalog order; a tool with no family is left out.
+
+    :param catalog: the tools
+    :ptype catalog: Sequence[BaseTool]
+    :param group_of: a tool's family, or ``None`` when it has none
+    :ptype group_of: Callable[[BaseTool], str | None]
+    :return: family name to its tools, families in the order they first appear
+    :rtype: dict[str, list[BaseTool]]
+    """
+    families: dict[str, list[BaseTool]] = {}
+    for tool in catalog:
+        family = group_of(tool)
+        if family:
+            families.setdefault(family, []).append(tool)
+    return families
+
+
+def also_in_family(
+    hits: Sequence[BaseTool], catalog: Sequence[BaseTool], group_of: Callable[[BaseTool], str | None]
+) -> list[str]:
+    """For each family a hit belongs to, a line naming that family's other tools.
+
+    A search answers with a few tools, and the one wanted is often the hit's
+    neighbour: found ``calendar_list``, wanted ``calendar_move``. Names only,
+    so the line stays short; the tools named are not handed over.
+
+    :param hits: the tools the search answers with
+    :ptype hits: Sequence[BaseTool]
+    :param catalog: the tools a family's other members are taken from
+    :ptype catalog: Sequence[BaseTool]
+    :param group_of: a tool's family, or ``None`` when it has none
+    :ptype group_of: Callable[[BaseTool], str | None]
+    :return: one ``Also in the <family> family: ...`` line per family that has other tools
+    :rtype: list[str]
+    """
+    families = tool_families(catalog, group_of)
+    shown = {hit.name for hit in hits}
+    lines: list[str] = []
+    seen: set[str] = set()
+    for hit in hits:
+        family = group_of(hit)
+        if not family or family in seen:
+            continue
+        seen.add(family)
+        others = [tool.name for tool in families.get(family, []) if tool.name not in shown]
+        if not others:
+            continue
+        named = ", ".join(others[:_SIBLINGS_NAMED])
+        more = f", and {len(others) - _SIBLINGS_NAMED} more" if len(others) > _SIBLINGS_NAMED else ""
+        lines.append(f"Also in the {family} family: {named}{more}.")
+    return lines
+
+
+def _search_input(*, limit: int, max_limit: int, with_family: bool) -> type[BaseModel]:
+    """The ``tool_search`` argument schema: the query, how many, and a family when the catalog has them."""
+    fields: dict[str, Any] = {
+        "query": (
+            str,
+            Field(
+                default="" if with_family else ...,
+                description=(
+                    "What you need the tool to do, in plain words. Leave it out to list a whole family."
+                    if with_family
+                    else "What you need the tool to do, in plain words."
+                ),
+            ),
+        ),
+        "limit": (
+            int | None,
+            Field(
+                default=None,
+                description=f"The most tools to return: {limit} when left out, {max_limit} at most.",
+            ),
+        ),
+    }
+    if with_family:
+        fields["family"] = (
+            str | None,
+            Field(default=None, description="Search only this family of tools, by the family's name."),
+        )
+    return create_model("_ToolSearchInput", __doc__="Input schema for the ``tool_search`` meta-tool.", **fields)
 
 
 def create_tool_search_tool(
@@ -486,6 +626,10 @@ def create_tool_search_tool(
     full_catalog_provider: Callable[[], list[BaseTool]],
     on_hit: Callable[[list[BaseTool]], None],
     limit: int = 5,
+    *,
+    max_limit: int = 20,
+    group_of: Callable[[BaseTool], str | None] | None = None,
+    nothing_fits: Callable[[str, Sequence[tuple[BaseTool, float]]], bool] | None = None,
 ) -> BaseTool:
     """Build the ``tool_search`` meta-tool.
 
@@ -501,6 +645,24 @@ def create_tool_search_tool(
     admin-edited catalog is always searched as of THIS call, not as of
     whenever the tool was bound.
 
+    Each tool found is shown with its arguments (:func:`tool_hit_line`), so
+    the call that follows the search needs no second look at the tool.
+
+    With ``group_of`` the catalog has families. The model may then pass
+    ``family`` to search one family, or ``family`` with no query to list it;
+    a family that does not exist is answered with the families that do; and
+    a hit list ends by naming each hit's family's other tools
+    (:func:`also_in_family`).
+
+    ``nothing_fits`` is how the caller says a ranking found nothing worth
+    offering. It is handed the query and the whole scored ranking
+    (:attr:`ToolSearchResult.ranked`) and answers ``True`` for "offer none of
+    these": the search then says no tool fits, names the nearest, and hands
+    nothing to ``on_hit``. This factory holds no threshold of its own. A fixed
+    similarity floor is wrong across embedders, whose scores sit in different
+    ranges; a caller judges by a margin it has measured. It is not asked when
+    the ranking did not run: word matches carry no score to judge.
+
     :param index: the shared relevance index (embeds + ranks)
     :ptype index: ToolRelevanceIndex
     :param full_catalog_provider: zero-arg callable returning the current
@@ -509,15 +671,64 @@ def create_tool_search_tool(
     :param on_hit: called with the matched tools when the search finds at
         least one; the caller uses this to widen its bound tool set
     :ptype on_hit: Callable[[list[BaseTool]], None]
-    :param limit: maximum number of hits to return per call
+    :param limit: how many hits a call returns when the model names no number
     :ptype limit: int
+    :param max_limit: the most hits one call returns, whatever the model asks for
+    :ptype max_limit: int
+    :param group_of: a tool's family, or ``None`` when it has none
+    :ptype group_of: Callable[[BaseTool], str | None] | None
+    :param nothing_fits: given the query and the scored ranking, whether to offer none of it
+    :ptype nothing_fits: Callable[[str, Sequence[tuple[BaseTool, float]]], bool] | None
     :return: the ``tool_search`` ``BaseTool``
     :rtype: BaseTool
     """
+    default_limit = max(1, min(limit, max_limit))
 
-    async def _search(query: str) -> str:
-        catalog = full_catalog_provider()
-        outcome = await index.search_outcome(catalog, query, limit=limit)
+    def _found(matches: list[BaseTool], catalog: list[BaseTool], header: str) -> str:
+        on_hit(matches)
+        lines = [tool_hit_line(t) for t in matches]
+        if group_of is not None:
+            lines += also_in_family(matches, catalog, group_of)
+        return header + "\n" + "\n".join(lines)
+
+    async def _search(query: str = "", limit: int | None = None, family: str | None = None) -> str:
+        whole_catalog = full_catalog_provider()
+        catalog = whole_catalog
+        wanted = default_limit if limit is None else max(1, min(limit, max_limit))
+        query = query.strip()
+        family = (family or "").strip() or None
+        if family is not None and group_of is not None:
+            families = tool_families(whole_catalog, group_of)
+            by_folded_name = {name.casefold(): name for name in families}
+            family_name = by_folded_name.get(family.casefold())
+            if family_name is None:
+                known = ", ".join(sorted(families)) or "none"
+                return tool_no_change(
+                    "tool_search", f"there is no tool family named {family!r}. The families: {known}."
+                )
+            catalog = families[family_name]
+            if not query:
+                shown = catalog[:wanted]
+                count = (
+                    f"{len(catalog)} tools, the first {len(shown)}"
+                    if len(shown) < len(catalog)
+                    else f"{len(catalog)} tools"
+                )
+                _log.info(
+                    "tool_search: family listed",
+                    extra={"extra_data": {"family": family_name, "family_size": len(catalog), "shown": len(shown)}},
+                )
+                on_hit(shown)
+                rest = (
+                    [f"The rest: {', '.join(t.name for t in catalog[wanted:])}."] if len(shown) < len(catalog) else []
+                )
+                return "\n".join(
+                    [f"The {family_name} family has {count}. {_CALL_AFTER}", *rest, *(tool_hit_line(t) for t in shown)]
+                )
+        if not query:
+            return "[TOOL ERROR] tool_search: say what you need the tool to do."
+
+        outcome = await index.search_outcome(catalog, query, limit=wanted)
         matches = outcome.hits
         if outcome.fallback_reason is not None and not matches:
             # The search did not run, so nothing was found and nothing was
@@ -548,7 +759,39 @@ def create_tool_search_tool(
             )
             return "No matching tools found."
 
-        on_hit(matches)
+        if outcome.fallback_reason is not None:
+            # Word matches, and said so: a tool whose name shares a word with the query is
+            # not the tool ranked nearest to it, and read as that it is called for the wrong job.
+            _log.info(
+                "tool_search: word matches",
+                extra={
+                    "extra_data": {
+                        "query": query[:200],
+                        "reason": outcome.fallback_reason,
+                        "hit_names": [t.name for t in matches],
+                    }
+                },
+            )
+            return _found(
+                matches,
+                whole_catalog,
+                "Found these tools by matching words only: the ranked search did not run, so a closer tool may "
+                f"exist. {_CALL_AFTER}",
+            )
+
+        if nothing_fits is not None and nothing_fits(query, outcome.ranked):
+            _log.info(
+                "tool_search: nothing fits",
+                extra={
+                    "extra_data": {
+                        "query": query[:200],
+                        "nearest": [(t.name, round(score, 4)) for t, score in outcome.ranked[:wanted]],
+                    }
+                },
+            )
+            nearest = ", ".join(t.name for t in matches)
+            return f"No tool fits that. The nearest, none of them handed to you: {nearest}."
+
         _log.info(
             "tool_search: hits",
             extra={
@@ -559,7 +802,6 @@ def create_tool_search_tool(
                 }
             },
         )
-        lines = [f"- {t.name}: {t.description or ''}" for t in matches]
         # Live prod evidence (metallm conv 019f6cf5-073a-7b50-bd44-721efb0c7b90):
         # this tool's own DESCRIPTION correctly says hits become callable
         # "starting your NEXT reply", but this return string used to say "now
@@ -572,15 +814,18 @@ def create_tool_search_tool(
         # sooner -- no caller can make a tool available mid-round. Wording
         # here must match the description's honest framing, not promise
         # immediacy the caller cannot deliver.
-        return "Found these tools. Call them after this search returns, not alongside it:\n" + "\n".join(lines)
+        return _found(matches, whole_catalog, f"Found these tools. {_CALL_AFTER}")
 
+    description = (
+        "Find a tool you do not have yet. Describe what you need in plain words, e.g. "
+        "'send a message to a dev agent session'. Call what it finds after this search "
+        "returns, not alongside it."
+    )
+    if group_of is not None:
+        description += " Pass family to search one family of tools, or family alone to list it."
     return StructuredTool.from_function(
         coroutine=_search,
         name="tool_search",
-        description=(
-            "Find a tool you do not have yet. Describe what you need in plain words, e.g. "
-            "'send a message to a dev agent session'. Call what it finds after this search "
-            "returns, not alongside it."
-        ),
-        args_schema=_ToolSearchInput,
+        description=description,
+        args_schema=_search_input(limit=default_limit, max_limit=max_limit, with_family=group_of is not None),
     )

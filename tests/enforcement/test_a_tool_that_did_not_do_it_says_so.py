@@ -31,6 +31,7 @@ ANSWERS: dict[str, str] = {
     "packages/agent/memory/src/threetears/agent/memory/tools.py:No passages matched.": "a search that ran",
     "packages/agent/skills/src/threetears/agent/skills/tools.py:No skills available.": "a listing that is empty",
     "packages/agent/tools/src/threetears/agent/tools/relevance.py:No matching tools found.": "a search that ran",
+    "packages/agent/tools/src/threetears/agent/tools/relevance.py:No tool fits that.": "a search that ran, and whose caller judged the nearest tools too far to offer",
     "packages/agent/tools/src/threetears/agent/tools/todo.py:No todos in this conversation.": "a listing that is empty",
 }
 
