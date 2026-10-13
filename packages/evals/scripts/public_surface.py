@@ -532,7 +532,7 @@ def surface_entry(root: str, name: str, obj: Any) -> SurfaceEntry:
 
 #: The host contract: every public name a host binds to, by ``root.name``. Each moves only with a
 #: ``MIGRATIONS.toml`` record and a deprecation cycle (the old name keeps working beside the new one for one minor
-#: release), from 0.66.0 on. Every other public name is ``closure``.
+#: release), from 0.67.0 on. Every other public name is ``closure``.
 #:
 #: The ruling is what a host author is told to write against: ``docs/adopting-a-host.md``, ``docs/tutorial.md``, the
 #: README and ``examples/`` (every name they import is here, which ``tests/test_api_tiers.py`` holds), and the
