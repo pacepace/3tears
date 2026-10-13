@@ -307,7 +307,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= '__candidate__'`
 - **`CASSETTE_SCHEMA_VERSION`** · *host contract* · constant (int) · The version every cassette is written under, and the only one a read of one accepts.
   <br>`= 1`
-- **`CELL_TIMEOUT_ORIGINS`** · constant (tuple) · The values of `CellTimeoutOrigin` this build knows, in the order its readers list them.
+- **`CELL_TIMEOUT_ORIGINS`** · *host contract* · constant (tuple) · The values of `CellTimeoutOrigin` this build knows, in the order its readers list them.
 - **`CORE_ADDRESSING_FIELDS`** · constant (mappingproxy) · Per core type, every field the store reads on the stored bytes, before any upgrade: what a query filters or orders on, what a projection keeps, and what a partial write merges.
 - **`CORE_BASELINE_VERSION`** · *host contract* · constant (int) · The first core version a public release wrote, and the oldest this and every later build reads. Below it a document is pre-release, and is refused by name.
   <br>`= 14`
@@ -317,7 +317,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump appends one line here and one `CoreUpgrader`.
   <br>`= 14`
 - **`CORE_UPGRADERS`** · constant (tuple) · The registered steps, oldest first: `[s.from_version for s in CORE_UPGRADERS]` is `range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION)`.
-- **`COST_CAP_ORIGINS`** · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.
+- **`COST_CAP_ORIGINS`** · *host contract* · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.
 - **`DEFAULT_JUDGE_TEMPERATURE`** · constant (float) · The temperature every judge call is requested at unless a `JudgeConfig` for its dimension says otherwise, and that config's own default (#633).
   <br>`= 0.0`
 - **`DEFAULT_LAUNCH_K_RUNS`** · constant (int) · Repeats per (case, model) a launch uses when the caller names none: one observation per case cannot tell a setting from the model's own variance.
@@ -330,13 +330,13 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 32`
 - **`JSON_OBJECT_RESPONSE_FORMAT`** · constant (dict) · `response_format` directive asking for any JSON object, with no shape.
 - **`JUDGE_WORDING_CHANGE_SENTENCE`** · constant (str) · The sentence a release's `MIGRATIONS.toml` notes carry, verbatim, when it changes the wording of a built-in judge prompt (`builtin_judge_config_id`) or of the reply-format suffix a configured judge is sent (`configured_judge_config_id`).
-- **`METERED_CALL_ORIGINS`** · constant (tuple) · The values of `MeteredCallOrigin` this build knows, in the order its readers list them.
+- **`METERED_CALL_ORIGINS`** · *host contract* · constant (tuple) · The values of `MeteredCallOrigin` this build knows, in the order its readers list them.
 - **`MINOR_ADDITIVITY_SENTENCE`** · constant (str) · The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When it is false for a change, the change is a major.
 - **`MODEL_DEFAULT_TEMPERATURE`** · constant (str) · A judge call SENT with no temperature, because its model refuses one (some reasoning models do): the model's own default applied.
   <br>`= 'model_default'`
-- **`MODEL_ROLE_ORIGINS`** · constant (tuple) · The values of `ModelRoleOrigin` this build knows, in the order its readers list them.
+- **`MODEL_ROLE_ORIGINS`** · *host contract* · constant (tuple) · The values of `ModelRoleOrigin` this build knows, in the order its readers list them.
 - **`NON_TERMINAL_RUN_STATUSES`** · constant (frozenset) · Statuses a run can still leave under its own power — it is either queued or executing, and something in-process is expected to write its terminal status.
-- **`OUT_OF_RUN_PURPOSES`** · constant (tuple) · The values of `OutOfRunPurpose` this build knows, in the order its readers list them.
+- **`OUT_OF_RUN_PURPOSES`** · *host contract* · constant (tuple) · The values of `OutOfRunPurpose` this build knows, in the order its readers list them.
 - **`OUTCOME_DIM_ID`** · constant (str) · Reserved `rubric_dim_id` for the dual-score outcome axis.
   <br>`= '__outcome__'`
 - **`PASS_ACTION`** · constant (str) · The action half of the reserved deliberate-pass entry (`__engine__.pass`).
@@ -345,19 +345,19 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= '__engine__'`
 - **`PROSE_SCHEMA_KEY`** · constant (str) · The JSON Schema keyword marking a string property as model prose, for vocabularies declared as schema rather than as Pydantic models (a world dimension's value schema).
   <br>`= 'x-model-prose'`
-- **`REASONING_EFFORTS`** · constant (tuple) · The values of `ReasoningEffort` this build knows, in the order its readers list them.
-- **`REFUSAL_KINDS`** · constant (tuple) · The refusal kinds this build knows, one per public engine error class, in the order its readers list them.
+- **`REASONING_EFFORTS`** · *host contract* · constant (tuple) · The values of `ReasoningEffort` this build knows, in the order its readers list them.
+- **`REFUSAL_KINDS`** · *host contract* · constant (tuple) · The refusal kinds this build knows, one per public engine error class, in the order its readers list them.
 - **`REGENERABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The version every regenerable document is written under, the cassette apart (`CASSETTE_SCHEMA_VERSION`), and the only one a read of one accepts.
   <br>`= 9`
 - **`RESERVED_DIM_IDS`** · constant (frozenset) · The reserved dim ids, which are deliberately NOT namespaced: they identify the two dual-score axes rather than a rubric dimension scored in some context, so there is no context to name. `require_namespaced_dim_name` exempts them — a judge service is built for these ids on every run.
-- **`ROLE_MODEL_ORIGINS`** · constant (tuple) · The values of `RoleModelOrigin` this build knows, in the order its readers list them.
+- **`ROLE_MODEL_ORIGINS`** · *host contract* · constant (tuple) · The values of `RoleModelOrigin` this build knows, in the order its readers list them.
 - **`ROUND_DONE`** · constant (str) · The scheduler's answer that the current speaker round is over and the candidate answers next.
   <br>`= 'round_done'`
 - **`SCALES`** · constant (mappingproxy) · The scales, by name.
-- **`SIMULATOR_PURPOSES`** · constant (tuple) · The values of `SimulatorPurpose` this build knows, in the order its readers list them.
+- **`SIMULATOR_PURPOSES`** · *host contract* · constant (tuple) · The values of `SimulatorPurpose` this build knows, in the order its readers list them.
 - **`TRANSCRIPT_DIM_ID`** · constant (str) · Reserved `rubric_dim_id` for the dual-score transcript axis.
   <br>`= '__transcript__'`
-- **`USAGE_ROLES`** · constant (tuple) · The values of `UsageRole` this build knows, in the order its readers list them.
+- **`USAGE_ROLES`** · *host contract* · constant (tuple) · The values of `UsageRole` this build knows, in the order its readers list them.
 - **`WORLD_SPEAKER`** · constant (str) · The speaker label a world round's event carries in a simulated transcript, so an actor speaking after it reads that the world moved.
   <br>`= '__world__'`
 
