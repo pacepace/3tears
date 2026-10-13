@@ -720,11 +720,17 @@ def arm_table(analysis: EvalAnalysis) -> ArmTable:
 
     Returns:
         The table, as :func:`arm_table_of` derives it from the analysis's frozen variant index, its
-        declared control, and its decisions and resolutions.
+        control, and its decisions and resolutions. The control is the arm the bundle matched the declared
+        control to, as the decision surface froze it — never the design snapshot's key where the surface
+        names one: a control declared under an older identity predicate names its arm by more keys than
+        the one it stores, and the snapshot's key need not be the one the index's cells carry. Where no cell
+        carried the declared control (the surface names none), the snapshot's key still gets its row, with no
+        levels, so the incumbent the campaign declared is not lost from the table.
     """
+    declared = analysis.design_snapshot.control if analysis.design_snapshot else None
     return arm_table_of(
         analysis.variant_index,
-        control=analysis.design_snapshot.control if analysis.design_snapshot else None,
+        control=analysis.decision_surface.control_variant_key or declared,
         decisions=analysis.document.decisions,
         resolutions=analysis.resolutions,
         source=f"eval.analysis {analysis.id}",

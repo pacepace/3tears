@@ -165,8 +165,8 @@ class EvalCampaign(CoreDocumentModel):
     resolves through whichever observation carries it — and nothing on this model is
     a pointer at a run whose deletion could dangle it. The key is kept beside its
     pre-image (``control_levers``, ``control_identity_version``), as a run keeps its
-    lever map beside its own, so a change of identity predicate re-keys the control
-    instead of orphaning it.
+    lever map beside its own, so a change to how the identity predicate digests a map
+    re-keys the control instead of orphaning it.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))

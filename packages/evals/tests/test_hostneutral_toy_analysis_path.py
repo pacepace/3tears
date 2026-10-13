@@ -395,10 +395,16 @@ class TestAGenerationFreezesTheBundlesSurface:
         assert len(surface.bars) == 3, "the toy campaign holds three bars; an empty list would match an empty bundle"
 
     async def test_the_surface_names_the_declared_control(self) -> None:
-        bundle = _bundle()
-        narrow_key = cell_at(bundle, TOYHOST_NARROW).split(":")[0]
-        controlled = bundle.model_copy(
-            update={"declared_design": bundle.declared_design.model_copy(update={"control": narrow_key})}
+        # Declared on the campaign and assembled, as a control is: the bundle matches it to its arm once
+        # (`design.control_arm`), and the surface reads that match, so patching the declaration onto an
+        # already-assembled bundle would reach no reader.
+        profile = toyhost_profile()
+        campaign, storage = toyhost_campaign(profile=profile)
+        narrow_key = cell_at(_bundle(), TOYHOST_NARROW).split(":")[0]
+        assert campaign.declared_design is not None
+        declared = campaign.declared_design.model_copy(update={"control": narrow_key})
+        controlled = assemble_context_bundle(
+            campaign.model_copy(update={"declared_design": declared}), storage=storage, profile=profile
         )
 
         analysis, _client = await _generate(controlled)

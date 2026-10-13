@@ -1119,7 +1119,7 @@
     },
     "threetears.evals.kernel.ControlSource": {
       "kind": "literal",
-      "signature": "'undeclared'` | `'stored'` | `'rekeyed'` | `'stale'"
+      "signature": "'undeclared'` | `'current'` | `'rekeyed'` | `'unrekeyable'"
     },
     "threetears.evals.kernel.CostCapReached": {
       "kind": "exception",
@@ -1859,7 +1859,7 @@
     },
     "threetears.evals.kernel.ResolvedControl": {
       "kind": "model",
-      "signature": "ResolvedControl(variant_key: str | None, identity_version: int | None, source: ControlSource, disclosure: str | None = None)"
+      "signature": "ResolvedControl(variant_keys: list[str], identity_version: int | None, source: ControlSource, stale_disclosure: str | None = None)"
     },
     "threetears.evals.kernel.ResolvedUsage": {
       "kind": "model",

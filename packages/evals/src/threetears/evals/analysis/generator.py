@@ -1053,7 +1053,9 @@ def _reject_unseparated_adoptions(document: AuthoredAnalysis, bundle: AnalysisCo
         SoundnessRefusal: An adopted decision names a non-control arm with a breached guardrail, or with no
             ``improved`` reading.
     """
-    control = bundle.declared_design.control if bundle.declared_design else None
+    # The control as the realized design matched it, as every lens reads it: the declaration's own key can name
+    # the arm by a key its cells do not carry, and exempting that one would exempt nothing — or another arm.
+    control = bundle.design.control_arm.variant_key if bundle.design.control_arm is not None else None
     comparisons = bundle.multiple_comparisons
     names = arm_names(bundle.variant_index)
     remedy = "mark it `deferred` with what would settle it in `revisit_when`" + (

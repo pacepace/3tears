@@ -448,7 +448,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`resolve_bar_name(name: str, *, rubric_dimensions: Mapping[str, RubricScale], goal_state_checks: Collection[str], measures: MeasureRegistry) -> BarName | UnreadableBarName`
 - **`resolve_context_identity`** · function · Return the identity a read surface should show for `run`.
   <br>`resolve_context_identity(run: EvalRun, profile: HostProfile) -> DerivedContextIdentity`
-- **`resolve_declared_control`** · function · Key a campaign's declared control under this build's identity predicate — the one place that is decided.
+- **`resolve_declared_control`** · function · The keys that name a campaign's declared control under this build — the one place that is decided.
   <br>`resolve_declared_control(design: CampaignDesign | None) -> ResolvedControl`
 - **`resolve_result_condition`** · function · Return the condition `result` is in, on every per-result axis.
   <br>`resolve_result_condition(result: EvalResult) -> ResultCondition`
@@ -606,7 +606,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`RefusedInput`** · exception · A lower layer's refusal of what a caller asked for, held as its fault and its remedy apart.
 - **`RefusedRow`** · class · One stored row the current model refused to reconstruct: what the row itself says it is, and why.
 - **`ReplayedDelivery`** · dataclass · One recorded piece of background work, served in place of running it.
-- **`ResolvedControl`** · model · A declared control as this build keys it — a value, never written back onto the declaration.
+- **`ResolvedControl`** · model · A declared control as the SET of keys that name its arm under this build — a value, never written back.
 - **`ResolvedUsage`** · model · The per-role usage a read surface should show for one result, and how it got there.
 - **`ResultCondition`** · model · The condition one result is in, on every axis that is a property of the result.
 - **`ResultOutcome`** · enum · How a result participates in scoring, by its error category.
@@ -673,8 +673,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`'very_high'` | `'high'` | `'medium'` | `'low'`
 - **`ContractState`** · literal · How a stored copy reads against the output contract the engine reads its reply by: written for it, written for an earlier one, declaring none, or a prompt with no contract to be written for.
   <br>`'current'` | `'outdated'` | `'undeclared'` | `'unbound'`
-- **`ControlSource`** · literal · Where a resolved control's key came from, which is what a reader must not skip.
-  <br>`'undeclared'` | `'stored'` | `'rekeyed'` | `'stale'`
+- **`ControlSource`** · literal · How a declared control's keys were arrived at.
+  <br>`'undeclared'` | `'current'` | `'rekeyed'` | `'unrekeyable'`
 - **`CriterionState`** · literal · How one criterion read: its interval wholly at or above the threshold over enough results (`met`), wholly below it (`not_met`), across it (`undecided`), or too little evidence to say (fewer distinct results than its floor, or a kappa or interval that is undefined).
   <br>`'met'` | `'not_met'` | `'undecided'` | `'insufficient'`
 - **`DeliveryOutcome`** · literal · How a recorded piece of background work ended when its capture cell did: it delivered a payload, it failed, or the cell ended with it still in flight.

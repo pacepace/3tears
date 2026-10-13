@@ -1,26 +1,30 @@
-"""A campaign's control keeps its pre-image, so a change of identity predicate re-keys it instead of orphaning it.
+"""A campaign's control keeps its pre-image, and names its arm by every key that names it under this build.
 
 A run survives an ``IDENTITY_VERSION`` bump because it stores ``variant_levers`` beside ``variant_key``. The control
-is a variant key on a document kept forever, and it stored the key alone: after a bump every stored campaign's
-control matched no new run of its own arm, and nothing could recover it. Pinned here:
+is a variant key on a document kept forever, and it stored the key alone. Stamped keys are never re-derived, so once
+the predicate moves a control's arm carries two keys — the stored one on the cells stamped before, the re-keyed one
+on the cells stamped after — and the control must name both. Pinned here:
 
 - **Addressing a control from a run records its pre-image**: ``campaign_create`` and ``campaign_update`` with
   ``control_from_run_id``, and ``set_campaign_control``, store the run's lever map and the predicate beside the key;
   clearing the control clears all three.
-- **A control addressed under another predicate names the same arm**: stored under ``IDENTITY_VERSION - 1`` with a
-  key that predicate computed, it is re-keyed from its lever map, and the bundle's control arm, its declaration and
-  its decision surface all name the arm this build's runs carry. The campaign keeps the key as declared.
-- **A typed key under another predicate is disclosed, never silent**: it reads as ``stale`` with the remedy
-  (``control_from_run_id`` on ``campaign_update``), in the bundle and in the code-only report, rather than as a
-  campaign that declared no control.
-- **The declaration holds the three fields together**: a typed key is dated by the build accepting it, a lever map
-  stands only beside a key, and a map that does not digest to the key under this build's predicate is refused.
+- **A control names its arm on either side of a predicate change**: re-keyed from its map, it names the cells this
+  build stamps; by its stored key, it names the cells its own predicate stamped — a typed key included, and a control
+  addressed from a run whose map does not reproduce its stamped key. The campaign keeps the key as declared.
+- **Every reading agrees on which arm is the control**: the realized design decides it once, and the decision
+  surface, the surface's row order, the time axis, the adoption check and the arm table read that.
+- **A key nothing can carry is disclosed, never silent**: a typed key from another predicate that no cell carries
+  reads as ``stale`` with the remedy, in the bundle and in the code-only report.
+- **The pre-image is the server's**: a typed key is dated by the build accepting it; an update echoing a typed key
+  keeps the stored date; a lever map or version sent with a value the server would not store is refused; and the
+  declaration refuses a map without a key, or one that does not digest to it under this build's predicate.
 
-A predicate change is exercised as the identity tests exercise one: a document stamped ``IDENTITY_VERSION - 1``.
+A predicate change is exercised as the identity tests exercise one: documents stamped ``IDENTITY_VERSION - 1``.
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -29,7 +33,11 @@ from pydantic import ValidationError
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools
 from threetears.evals.analysis import assemble_context_bundle, variant_key_of_run
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
-from threetears.evals.analysis.campaigns import set_campaign_control
+from threetears.evals.analysis.arms import arm_table
+from threetears.evals.analysis.campaigns import set_campaign_control, update_campaign
+from threetears.evals.analysis.cells import variant_of_cell_ref
+from threetears.evals.analysis.generator import generate_analysis
+from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.analysis.report.build import build_code_only_report
 from threetears.evals.kernel import EvalCampaign, IDENTITY_VERSION
 from threetears.evals.kernel.declaration import CampaignDesign, resolve_declared_control
@@ -38,9 +46,11 @@ from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.schema.values import SweepableValue
 from packages.evals.tests.factories import minimal_declaration
-from packages.evals.tests.fixtures.toyhost.campaign import toyhost_design
+from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, toyhost_design
+from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, TOYHOST_SUBJECT, OpsFixture, ops_fixture
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, alias_at, cell_at, memo_payload
 
 #: The predicate before this build's, which every "declared under another predicate" document here is stamped with.
 _EARLIER = IDENTITY_VERSION - 1
@@ -114,6 +124,20 @@ def _declared_under_an_earlier_predicate(fixture: OpsFixture, run_id: str, *, wi
     )
     fixture.host.eval_host.storage.save_campaign(campaign)
     return campaign
+
+
+def _stamped_under_the_earlier_predicate(fixture: OpsFixture, run_id: str) -> str:
+    """Re-store ``run_id``'s results as the earlier predicate stamped them, and return the key they now carry."""
+    storage = fixture.host.eval_host.storage
+    key = _older_predicates_key(_levers_of(fixture, run_id))
+    for result in storage.query_eval_results_by_run(run_id, TOYHOST_SCOPE):
+        storage.save_eval_result(result.model_copy(update={"variant_key": key, "identity_version": _EARLIER}))
+    return key
+
+
+def _assemble(fixture: OpsFixture, campaign: EvalCampaign) -> Any:
+    eval_host = fixture.host.eval_host
+    return assemble_context_bundle(campaign, storage=eval_host.storage, profile=eval_host.profile)
 
 
 # --- Addressing a control from a run records its pre-image ---------------------------------------------------------
@@ -216,81 +240,217 @@ def test_a_run_s_recorded_lever_map_is_what_the_control_keeps() -> None:
     assert designated.declared_design.control == _key_of(fixture, run_id)
 
 
-# --- A control addressed under another predicate names the same arm ------------------------------------------------
+# --- A control names its arm on either side of a predicate change -------------------------------------------------
 
 
-def test_a_control_addressed_under_an_earlier_predicate_resolves_to_the_same_arm() -> None:
+def test_a_control_addressed_under_an_earlier_predicate_names_the_cells_this_build_stamps() -> None:
     fixture = ops_fixture()
-    eval_host = fixture.host.eval_host
     run_id = fixture.campaign.run_ids[0]
     campaign = _declared_under_an_earlier_predicate(fixture, run_id, with_levers=True)
     assert campaign.declared_design is not None
     declared_key = campaign.declared_design.control
 
-    bundle = assemble_context_bundle(campaign, storage=eval_host.storage, profile=eval_host.profile)
+    bundle = _assemble(fixture, campaign)
 
     arm = _key_of(fixture, run_id)
-    assert resolve_declared_control(campaign.declared_design).source == "rekeyed"
+    resolved = resolve_declared_control(campaign.declared_design)
+    assert (resolved.source, resolved.variant_keys) == ("rekeyed", [arm, declared_key])
     assert bundle.design.control_arm is not None and bundle.design.control_arm.variant_key == arm
     assert run_id in bundle.design.control_arm.run_ids
     assert bundle.design.control_excluded is None
-    assert bundle.declared_design is not None
-    assert bundle.declared_design.control == arm, "the bundle carries the control as its cells are keyed"
-    assert bundle.declared_design.control_identity_version == IDENTITY_VERSION
+    assert bundle.declared_design == campaign.declared_design, "the bundle carries the declaration as declared"
     assert bundle_decision_surface(bundle).control_variant_key == arm
     stored = _stored(fixture, campaign.id).declared_design
     assert stored is not None and stored.control == declared_key, "a read writes nothing back onto the campaign"
     assert stored.control_identity_version == _EARLIER
 
 
-def test_a_control_declared_under_this_predicate_is_read_as_stored() -> None:
+@pytest.mark.parametrize("with_levers", [False, True], ids=["typed", "addressed"])
+def test_a_control_from_an_earlier_predicate_still_names_the_cells_that_predicate_stamped(with_levers: bool) -> None:
+    fixture = ops_fixture()
+    run_id = fixture.campaign.run_ids[0]
+    old_key = _stamped_under_the_earlier_predicate(fixture, run_id)
+    campaign = _declared_under_an_earlier_predicate(fixture, run_id, with_levers=with_levers)
+    assert campaign.declared_design is not None and campaign.declared_design.control == old_key
+
+    bundle = _assemble(fixture, campaign)
+
+    assert bundle.design.control_excluded is None, "a key its own cells carry is the control, never stale"
+    assert bundle.design.stale_control_disclosure is None
+    assert bundle.design.control_arm is not None and bundle.design.control_arm.variant_key == old_key
+    assert run_id in bundle.design.control_arm.run_ids
+    assert bundle_decision_surface(bundle).control_variant_key == old_key
+
+
+def test_a_control_addressed_from_a_run_whose_map_does_not_reproduce_its_key_names_that_runs_cells() -> None:
+    fixture = ops_fixture()
+    eval_host = fixture.host.eval_host
+    run_id = fixture.campaign.run_ids[0]
+    run = eval_host.storage.load_eval_run(run_id, TOYHOST_SCOPE)
+    assert run is not None
+    levers = _levers_of(fixture, run_id)
+    # Launched under the earlier predicate: the map recorded with its date, the cells stamped with the key that
+    # predicate digested it to — which this build's arithmetic does not reproduce.
+    eval_host.storage.save_eval_run(run.model_copy(update={"variant_levers": levers, "identity_version": _EARLIER}))
+    old_key = _stamped_under_the_earlier_predicate(fixture, run_id)
+    eval_host.storage.save_campaign(fixture.campaign.model_copy(update={"declared_design": toyhost_design()}))
+
+    designated = set_campaign_control(
+        eval_host.storage, fixture.campaign.id, TOYHOST_SCOPE, run_id, set_by="op", profile=eval_host.profile
+    )
+    bundle = _assemble(fixture, designated)
+
+    assert designated.declared_design is not None
+    assert (designated.declared_design.control, designated.declared_design.control_levers) == (old_key, levers)
+    assert designated.declared_design.control_identity_version == _EARLIER
+    assert bundle.design.control_excluded is None, "the run named as the control is the control"
+    assert bundle.design.control_arm is not None and bundle.design.control_arm.variant_key == old_key
+    assert run_id in bundle.design.control_arm.run_ids
+
+
+def test_a_control_declared_under_this_predicate_is_its_one_key() -> None:
     levers = {"model": SweepableValue.of("glm", display="GLM")}
     design = minimal_declaration(control=compute_variant_key(levers), control_levers=levers)
 
     resolved = resolve_declared_control(design)
 
-    assert (resolved.variant_key, resolved.identity_version, resolved.source) == (
-        design.control,
+    assert (resolved.variant_keys, resolved.identity_version, resolved.source) == (
+        [design.control],
         IDENTITY_VERSION,
-        "stored",
+        "current",
     )
-    assert design.as_keyed_by_this_build() is design
-    assert (
-        resolve_declared_control(None).source == resolve_declared_control(minimal_declaration()).source == "undeclared"
+    assert resolved.stale_disclosure is None
+    undeclared = resolve_declared_control(None)
+    assert undeclared == resolve_declared_control(minimal_declaration())
+    assert (undeclared.variant_keys, undeclared.source) == ([], "undeclared")
+
+
+# --- Every reading agrees on which arm is the control --------------------------------------------------------------
+
+
+def _toy_campaign_with_an_earlier_control(*, cells_stamped_earlier: bool) -> tuple[Any, str]:
+    """The toy campaign, its narrow arm declared the control under the earlier predicate; its bundle and that arm's key.
+
+    With ``cells_stamped_earlier`` the narrow arm's cells carry the earlier predicate's key, and the control is the
+    typed key they carry; otherwise they carry this build's, and the control is addressed with its lever map, so the
+    declaration's own key is one no cell carries.
+    """
+    fixture = ops_fixture()
+    narrow = variant_of_cell_ref(cell_at(_assemble(fixture, fixture.campaign), TOYHOST_NARROW))
+    assert narrow is not None
+    narrow_runs = [run_id for run_id in fixture.campaign.run_ids if _key_of(fixture, run_id) == narrow]
+    levers = _levers_of(fixture, narrow_runs[0])
+    old_key = _older_predicates_key(levers)
+    if cells_stamped_earlier:
+        for run_id in narrow_runs:
+            assert _stamped_under_the_earlier_predicate(fixture, run_id) == old_key
+    assert fixture.campaign.declared_design is not None
+    declared = CampaignDesign.model_validate(
+        {
+            **fixture.campaign.declared_design.model_dump(mode="json"),
+            "control": old_key,
+            "control_levers": None
+            if cells_stamped_earlier
+            else {name: level.model_dump(mode="json") for name, level in levers.items()},
+            "control_identity_version": _EARLIER,
+        }
+    )
+    bundle = _assemble(fixture, fixture.campaign.model_copy(update={"declared_design": declared}))
+    return bundle, (old_key if cells_stamped_earlier else narrow)
+
+
+@pytest.mark.parametrize("cells_stamped_earlier", [False, True], ids=["rekeyed", "stamped-earlier"])
+def test_every_bundle_reading_names_the_arm_the_realized_design_matched(cells_stamped_earlier: bool) -> None:
+    bundle, expected = _toy_campaign_with_an_earlier_control(cells_stamped_earlier=cells_stamped_earlier)
+
+    assert bundle.design.control_arm is not None and bundle.design.control_arm.variant_key == expected
+    surface = bundle_decision_surface(bundle)
+    assert surface.control_variant_key == expected
+    assert bundle.cell_measures[0].variant_key == expected, "the surface's rows lead with the control's cells"
+    for position in bundle.time_axis.positions if bundle.time_axis is not None else []:
+        if any(cell.variant_key == expected for cell in position.cells):
+            assert position.cells[0].variant_key == expected, "each time position leads with the control too"
+
+
+async def test_the_adoption_check_and_the_arm_table_name_the_arm_the_realized_design_matched() -> None:
+    bundle, expected = off_loop(_toy_campaign_with_an_earlier_control, cells_stamped_earlier=False)
+    assert bundle.declared_design is not None and bundle.declared_design.control != expected
+    payload = memo_payload(bundle)
+    payload["decisions"] = [
+        {
+            "proposal": "Keep the chunk width the pipeline runs today.",
+            "disposition": "adopted",
+            "cells": [alias_at(bundle, TOYHOST_NARROW)],
+            "confidence": "medium",
+            "rests_on": [0],
+            "revisit_when": "",
+        }
+    ]
+    # Every reading unseparated: adopting any arm but the control is refused, so acceptance proves the check exempted
+    # the arm the realized design matched — not the declaration's own key, which no cell here carries.
+    families = [
+        family.model_copy(
+            update={"comparisons": [c.model_copy(update={"verdict": "not_separated"}) for c in family.comparisons]}
+        )
+        for family in bundle.multiple_comparisons.families
+    ]
+    bundle = bundle.model_copy(
+        update={"multiple_comparisons": bundle.multiple_comparisons.model_copy(update={"families": families})}
+    )
+    client = FixturedClient(json.dumps(payload))
+
+    analysis, _insights = await generate_analysis(
+        bundle,
+        prompt=PROMPT,
+        model=MODEL,
+        client=client,
+        prompt_id=PROMPT_ID,
+        bundle_assembled_at=utc_now_iso(),
+        profile=toyhost_profile(),
     )
 
+    assert len(client.calls) == 1, "adopting the control needs no separation"
+    assert analysis.decision_surface.control_variant_key == expected
+    (control_row,) = [row for row in arm_table(analysis).rows if row.is_control]
+    assert control_row.variant_key == expected
 
-# --- A typed key under another predicate is disclosed, never silent ------------------------------------------------
+
+# --- A key nothing can carry is disclosed, never silent ------------------------------------------------------------
 
 
-def test_a_typed_control_under_an_earlier_predicate_is_disclosed_with_its_remedy() -> None:
+def test_a_typed_control_no_cell_carries_under_an_earlier_predicate_is_disclosed_with_its_remedy() -> None:
     fixture = ops_fixture()
     eval_host = fixture.host.eval_host
     campaign = _declared_under_an_earlier_predicate(fixture, fixture.campaign.run_ids[0], with_levers=False)
 
-    bundle = assemble_context_bundle(campaign, storage=eval_host.storage, profile=eval_host.profile)
+    bundle = _assemble(fixture, campaign)
     report = build_code_only_report(bundle, measures=eval_host.profile.measures, assembled_at=utc_now_iso())
 
     resolved = resolve_declared_control(campaign.declared_design)
-    assert (resolved.variant_key, resolved.identity_version, resolved.source) == (None, _EARLIER, "stale")
+    assert campaign.declared_design is not None
+    assert (resolved.variant_keys, resolved.identity_version, resolved.source) == (
+        [campaign.declared_design.control],
+        _EARLIER,
+        "unrekeyable",
+    )
     assert bundle.design.control_arm is None
     assert bundle.design.control_excluded == "stale", "a stale control is not a campaign that declared none"
+    assert bundle_decision_surface(bundle).control_variant_key is None, "no reading names a control nothing carries"
     disclosure = bundle.design.stale_control_disclosure
-    assert disclosure is not None and disclosure == resolved.disclosure
+    assert disclosure is not None and disclosure == resolved.stale_disclosure
     assert f"v{_EARLIER}" in disclosure and f"v{IDENTITY_VERSION}" in disclosure
     assert "control_from_run_id on campaign_update" in disclosure
     assert disclosure in [getattr(block, "text", None) for block in report.blocks]
 
 
-def test_a_control_nothing_stale_carries_no_stale_disclosure() -> None:
+def test_a_control_that_re_keys_carries_no_stale_disclosure() -> None:
     fixture = ops_fixture()
-    eval_host = fixture.host.eval_host
     campaign = _declared_under_an_earlier_predicate(fixture, fixture.campaign.run_ids[0], with_levers=True)
 
-    bundle = assemble_context_bundle(campaign, storage=eval_host.storage, profile=eval_host.profile)
+    bundle = _assemble(fixture, campaign)
 
     assert bundle.design.stale_control_disclosure is None
-    assert resolve_declared_control(campaign.declared_design).disclosure is None
+    assert resolve_declared_control(campaign.declared_design).stale_disclosure is None
 
 
 # --- The declaration holds the three fields together ---------------------------------------------------------------
@@ -338,5 +498,128 @@ def test_a_map_recorded_under_an_earlier_predicate_is_not_held_to_this_ones_arit
         control=_older_predicates_key(levers), control_levers=levers, control_identity_version=_EARLIER
     )
 
-    assert resolve_declared_control(design).variant_key == compute_variant_key(levers)
-    assert design.as_keyed_by_this_build().control == compute_variant_key(levers)
+    assert resolve_declared_control(design).variant_keys == [compute_variant_key(levers), design.control]
+
+
+# --- The pre-image is the server's ---------------------------------------------------------------------------------
+
+
+def _echoed(design: CampaignDesign | None, **changes: Any) -> dict[str, Any]:
+    """``design`` as a caller echoes it back from a read, without the stamps the surface writes."""
+    assert design is not None
+    echoed = design.model_dump(mode="json", exclude={"declared_at", "declared_by"})
+    echoed.update(changes)
+    return echoed
+
+
+async def _refused(tool: MountedTool, fixture: OpsFixture, action: str, **arguments: Any) -> str:
+    outcome = await tool.call({"action": action, **arguments}, host=fixture.host, caller=CALLER)
+    assert outcome.is_error, outcome.text
+    return str(outcome.text)
+
+
+async def test_an_echoed_typed_control_keeps_its_stored_date_so_it_stays_stale(evals: MountedTool) -> None:
+    fixture = off_loop(ops_fixture)
+    campaign = off_loop(_declared_under_an_earlier_predicate, fixture, fixture.campaign.run_ids[0], with_levers=False)
+    echoed = _echoed(campaign.declared_design)
+    del echoed["control_levers"], echoed["control_identity_version"]
+
+    await _call(evals, fixture, "campaign_update", campaign_id=campaign.id, declared_design=echoed)
+
+    stored = off_loop(_stored, fixture, campaign.id)
+    assert stored.declared_design is not None and campaign.declared_design is not None
+    assert stored.declared_design.control == campaign.declared_design.control
+    assert stored.declared_design.control_identity_version == _EARLIER, "an echo is not re-dated as current"
+    assert off_loop(_assemble, fixture, stored).design.control_excluded == "stale"
+
+
+async def test_a_declaration_echoed_whole_keeps_its_pre_image(evals: MountedTool) -> None:
+    fixture = off_loop(ops_fixture)
+    campaign = off_loop(_declared_under_an_earlier_predicate, fixture, fixture.campaign.run_ids[0], with_levers=True)
+
+    await _call(
+        evals, fixture, "campaign_update", campaign_id=campaign.id, declared_design=_echoed(campaign.declared_design)
+    )
+
+    stored = off_loop(_stored, fixture, campaign.id).declared_design
+    assert stored is not None and campaign.declared_design is not None
+    assert (stored.control, stored.control_levers, stored.control_identity_version) == (
+        campaign.declared_design.control,
+        campaign.declared_design.control_levers,
+        _EARLIER,
+    )
+
+
+async def test_a_hand_changed_key_sent_with_the_old_pre_image_is_refused(evals: MountedTool) -> None:
+    fixture = off_loop(ops_fixture)
+    campaign = off_loop(_declared_under_an_earlier_predicate, fixture, fixture.campaign.run_ids[0], with_levers=True)
+
+    message = await _refused(
+        evals,
+        fixture,
+        "campaign_update",
+        campaign_id=campaign.id,
+        declared_design=_echoed(campaign.declared_design, control="c" * 64),
+    )
+
+    assert "`control_identity_version` and `control_levers`" in message
+    assert "control_from_run_id" in message, "the refusal names the way to record a lever map"
+    stored = off_loop(_stored, fixture, campaign.id).declared_design
+    assert stored == campaign.declared_design, "a refused update writes nothing"
+
+
+async def test_a_hand_changed_key_alone_has_no_map_and_is_dated_current(evals: MountedTool) -> None:
+    fixture = off_loop(ops_fixture)
+    campaign = off_loop(_declared_under_an_earlier_predicate, fixture, fixture.campaign.run_ids[0], with_levers=True)
+    echoed = _echoed(campaign.declared_design, control="c" * 64)
+    del echoed["control_levers"], echoed["control_identity_version"]
+
+    await _call(evals, fixture, "campaign_update", campaign_id=campaign.id, declared_design=echoed)
+
+    stored = off_loop(_stored, fixture, campaign.id).declared_design
+    assert stored is not None
+    assert (stored.control, stored.control_levers, stored.control_identity_version) == (
+        "c" * 64,
+        None,
+        IDENTITY_VERSION,
+    )
+
+
+async def test_a_pre_image_sent_on_create_is_refused(evals: MountedTool) -> None:
+    fixture = off_loop(ops_fixture)
+    run_id = fixture.campaign.run_ids[0]
+    levers = off_loop(_levers_of, fixture, run_id)
+
+    message = await _refused(
+        evals,
+        fixture,
+        "campaign_create",
+        name="a typed pre-image",
+        subject_id=TOYHOST_SUBJECT.subject_id,
+        behavior=fixture.campaign.behavior,
+        run_ids=list(fixture.campaign.run_ids),
+        declared_design=_design(
+            control=compute_variant_key(levers),
+            control_levers={name: level.model_dump(mode="json") for name, level in levers.items()},
+        ),
+    )
+
+    assert "`control_levers`" in message
+
+
+def test_a_model_whose_key_was_changed_beside_its_stored_map_is_refused() -> None:
+    fixture = ops_fixture()
+    eval_host = fixture.host.eval_host
+    campaign = _declared_under_an_earlier_predicate(fixture, fixture.campaign.run_ids[0], with_levers=True)
+    assert campaign.declared_design is not None
+    hand_edited = campaign.declared_design.model_copy(update={"control": "c" * 64})
+
+    with pytest.raises(ValidationFailedError, match="`control_levers`"):
+        update_campaign(
+            eval_host.storage,
+            campaign.id,
+            TOYHOST_SCOPE,
+            {"declared_design": hand_edited},
+            updated_by="op",
+            profile=eval_host.profile,
+        )

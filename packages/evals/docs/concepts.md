@@ -356,11 +356,13 @@ control = the v1 variant, held fixed = one case battery on a commissioned rig. W
 The arm every other arm in a campaign is tested against: usually what runs today. It is a variant, not a run,
 so any run of that configuration counts toward it. `compare` sets it from `control=`; elsewhere it is addressed
 from a run (`control_from_run_id`), which records the run's lever map and identity version beside the key, as a
-run records its own. Every read keys it through `resolve_declared_control`: under the identity version it was
-declared under, the key as stored; under a later one, the key recomputed from that lever map, so the control still
-names its arm's new runs. A key typed by hand records no lever map, and read under a later identity version it is
-**stale**: the bundle says it cannot be resolved (`control_excluded`), and the remedy is to address it again
-from a run. *Example:* the v1 arm.
+run records its own; nobody sets those by hand. Every read resolves it through `resolve_declared_control` to the
+keys that name its arm: the stored key, which the cells stamped under its identity version keep, and, under a later
+version, also the key recomputed from that lever map, which new runs of the arm carry. That recomputation follows a
+change to how a lever map is digested, not a renamed lever, kind or overlay field. The arm carrying one of those keys
+is the control (`design.control_arm` in the bundle), and every reading names that arm. A key typed by hand records
+no lever map; when no cell carries it under a later identity version it is **stale**: the bundle says it cannot be
+resolved (`control_excluded`), and the remedy is to address it again from a run. *Example:* the v1 arm.
 
 #### Delta, interval and adjusted p
 What a comparison reports for each arm against the control, per reading. The **delta** is the arm's mean minus
