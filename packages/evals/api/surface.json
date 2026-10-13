@@ -6101,6 +6101,26 @@
       "signature": "ReaderSample(profile: HostProfile, runs: Sequence[tuple[EvalRun, Sequence[EvalResult]]])",
       "tier": "closure"
     },
+    "threetears.evals.testing.RecordedCompletions": {
+      "kind": "class",
+      "signature": "RecordedCompletions(path: Path, *, inner: CompletionClient | None, recorded: Mapping[str, Sequence[ReplayedCompletion]], model: str | None = None, temperature: float | None | Literal['any'] = 'any', rerecord: str | None = None) -> None",
+      "tier": "host-contract"
+    },
+    "threetears.evals.testing.RecordedPrompt": {
+      "kind": "class",
+      "signature": "RecordedPrompt(system: str, user: str, response_format: dict[str, Any] | None = None)",
+      "tier": "host-contract"
+    },
+    "threetears.evals.testing.RecordingRefused": {
+      "kind": "exception",
+      "signature": "RecordingRefused(path: Path, problem: str, remedy: str) -> None",
+      "tier": "closure"
+    },
+    "threetears.evals.testing.ReplayedCompletion": {
+      "kind": "dataclass",
+      "signature": "ReplayedCompletion(content: str, input_tokens: int | None, output_tokens: int | None, cost_usd: float | None, price_source: str | None, model: str, served_model: str | None, reasoning_tokens: int | None, temperature: float | None, stop_reason: StopReason, extra: Mapping[str, Any])",
+      "tier": "closure"
+    },
     "threetears.evals.testing.STORE_CONFORMANCE_CASES": {
       "kind": "constant (tuple)",
       "signature": "",

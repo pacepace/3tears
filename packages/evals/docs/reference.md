@@ -1975,6 +1975,10 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 - **`ReaderConformanceCase`** · dataclass · One promise a reader makes, as a check over a sample.
 - **`ReaderConformanceFailure`** · exception · A host's reader broke a promise the engine relies on; the message names the case, the reader and the run.
 - **`ReaderSample`** · dataclass · What the kit checks a host's readers over: the host's profile and runs it produced.
+- **`RecordedCompletions`** · *host contract* · class · A completion client that records the calls an inner client answers, or replays a recording of them.
+- **`RecordedPrompt`** · *host contract* · class · One call a recording is expected to serve, as `RecordedCompletions.check_covers` is handed it.
+- **`RecordingRefused`** · exception · A recording cannot serve what was asked of it: a miss, a missing or unreadable file, a newer format.
+- **`ReplayedCompletion`** · dataclass · A completion as it was recorded, replayed: the ten `CompletionResult` members.
 - **`StoreConformanceCase`** · *host contract* · dataclass · One rule of the port, as a check over a store.
 - **`StoreConformanceFailure`** · exception · A store broke a rule of the `DocumentStore` port; the message names the case and the rule.
 
