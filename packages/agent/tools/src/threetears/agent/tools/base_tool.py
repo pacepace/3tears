@@ -16,6 +16,10 @@ from threetears.observe import get_logger
 
 __all__ = [
     "CONFLICT",
+    "MALFORMED_REQUEST",
+    "PERMISSION_DENIED",
+    "TOOL_AUTHORIZATION_UNAVAILABLE",
+    "TOOL_NOT_READY",
     "TOOL_RESULT_ERROR_CODES",
     "MCPToolDefinition",
     "TearsTool",
@@ -29,13 +33,34 @@ _log = get_logger(__name__)
 #: reads the thing again and retries. the platform renders it as HTTP 409 with a retryable sentence.
 CONFLICT = "CONFLICT"
 
+#: the call itself cannot be served as asked -- an argument names something the tool does not
+#: have, or a value it does not take -- and the message says which. the platform renders it as
+#: HTTP 400; the same call meets the same refusal.
+MALFORMED_REQUEST = "MALFORMED_REQUEST"
+
+#: the tool cannot answer yet (its data is still being loaded or checked); the same call can succeed
+#: shortly. the platform renders it as HTTP 503.
+TOOL_NOT_READY = "TOOL_NOT_READY"
+
+#: the caller may call the tool but not have what it asked for -- a part of the tool's data its
+#: grants do not reach (a state a reader may not read) -- and the message says what. the platform
+#: renders it as HTTP 403; the same call meets the same refusal until the caller's grants change.
+PERMISSION_DENIED = "PERMISSION_DENIED"
+
+#: the tool could not confirm what the caller may have (the platform's answer about the caller could
+#: not be had), so it answered nothing rather than guess. the platform renders it as HTTP 503; the same
+#: call can succeed shortly.
+TOOL_AUTHORIZATION_UNAVAILABLE = "TOOL_AUTHORIZATION_UNAVAILABLE"
+
 #: every code a tool may name on :attr:`ToolResult.error_code`. a closed vocabulary on purpose: the
 #: code is what every caller branches on and what the platform maps to an HTTP status, an agent
 #: summary and a channel sentence, so a code the platform has no face for would reach every one of
 #: them as the generic fallback. growing it is a release of this package plus a face in the
 #: platform's error map, never a string a single tool invents. upper case, like every platform code,
 #: so one condition never travels under two spellings.
-TOOL_RESULT_ERROR_CODES: frozenset[str] = frozenset({CONFLICT})
+TOOL_RESULT_ERROR_CODES: frozenset[str] = frozenset(
+    {CONFLICT, MALFORMED_REQUEST, PERMISSION_DENIED, TOOL_AUTHORIZATION_UNAVAILABLE, TOOL_NOT_READY}
+)
 
 
 @dataclass

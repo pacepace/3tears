@@ -10,6 +10,7 @@ __all__ = [
     "DataLayerUnavailableError",
     "DataVersionNotReadyError",
     "DataVersionSupersededError",
+    "GenerationNotCommittedError",
     "GenerationUnavailableError",
     "InvalidL2ScopeError",
     "L2EpochRegressedError",
@@ -24,6 +25,16 @@ class GenerationUnavailableError(Exception):
     A reader treats it as "cannot trust a cached absence": it neither serves a negative-cache
     marker nor records one, and asks L3. A writer surfaces it, because a generation it failed to
     advance leaves older markers valid over the write it just committed.
+    """
+
+
+class GenerationNotCommittedError(GenerationUnavailableError):
+    """Raised when a generation is asked for a commit that did not land.
+
+    The transaction rolled back, its commit was refused, or the commit's outcome never came back,
+    so nothing was written and there is no advance to name. A collection settling such a
+    transaction meets this, which is an ordinary outcome rather than a fault in the generation
+    store, and logs it as one.
     """
 
 

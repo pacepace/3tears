@@ -83,6 +83,12 @@ close concurrency (DS-09-12 / DS-11-10):
   return; subsequent in-flight method calls raise :class:`RuntimeError`.
 - every cached connection is closed in a worker thread (NOT on the
   asyncio event loop) via the bridge.
+- every close, on whatever thread, goes through
+  :func:`_close_connection_sync`, which empties the thread's OpenSSL
+  error queue afterwards. closing a connection that is already dead
+  is a failed TLS write, and the record it leaves in that per-thread
+  queue is read as a broken pipe by every other TLS connection the
+  thread serves -- on the event loop, the whole process's.
 - :meth:`AsyncSyncBridge.close` uses ``shutdown(wait=False)``;
   ``wait=True`` would deadlock the event loop.
 
@@ -135,8 +141,9 @@ import contextlib
 import dataclasses
 import functools
 import socket
+import ssl
 import weakref
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 try:
@@ -159,12 +166,13 @@ if TYPE_CHECKING:
     RedshiftConnection = Any
     RedshiftCursor = Any
 
+from threetears.core.fingerprint import fingerprint_sql, relation_key_expression
 from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.drivers._redshift_connector_internals import connection_socket
 from threetears.datasources.drivers.sync_bridge import AsyncSyncBridge
 from threetears.datasources.drivers.sql_fragments import (
     translate_placeholders,
-    build_relation_key_expression,
+    build_filter,
     build_set_local_statement_timeout_sql,
     build_set_search_path_sql,
     build_set_statement_timeout_sql,
@@ -178,9 +186,17 @@ from threetears.datasources.drivers.base import (
     Transaction,
     _check_otel_metrics,
     _instrument_cache,
+    check_max_rows,
+    log_unselectable_relations,
     observed,
 )
 from threetears.datasources.drivers.connect_guard import ConnectGuard, guarded_connect
+from threetears.datasources.export import (
+    DriverExportUnsupportedError,
+    ExportConfig,
+    ExportResult,
+    redshift_unload_statement,
+)
 from threetears.datasources.drivers.errors import (
     DriverConnectError,
     DriverCredentialPausedError,
@@ -201,6 +217,26 @@ log = get_logger(__name__)
 # ---------------------------------------------------------------------------
 # SQL constants (DS-11-07)
 # ---------------------------------------------------------------------------
+
+
+#: the privilege test every catalog query applies: the datasource's own user can SELECT the
+#: relation. a least-privilege warehouse user is granted a few tables of a schema it can see
+#: whole, and ``SVV_TABLES`` / ``SVV_COLUMNS`` list them all; without this the catalog carried
+#: tables every later read of which -- the coverage probe, the schema tool -- raised 42501
+#: permission denied. the name is schema-qualified and quoted so a keyword or case-sensitive
+#: name resolves to itself. the catalog therefore follows the grants by construction: a revoked
+#: table drops out at the next introspection, a new grant comes in.
+#:
+#: ``has_table_privilege`` RAISES on a relation outside ``pg_class`` -- a Spectrum external table,
+#: whose access is the external schema's USAGE, not a per-table grant -- and one such row would fail
+#: the query for every table in scope. so each use sits behind a ``CASE`` on ``table_type``: SQL
+#: takes a ``CASE`` branch only when it applies, where the operands of an ``AND`` have no order.
+#:
+#: the name is resolved against the CURRENT catalog, not the statement's snapshot, so a relation
+#: dropped or renamed mid-read raises ``42P01``; :func:`_privilege_rows` runs the statement again.
+#: the answer is a column (``selectable``), not a WHERE filter, so the driver can say what it left
+#: out for want of a grant (:func:`~threetears.datasources.drivers.base.log_unselectable_relations`).
+_SELECTABLE = "has_table_privilege(current_user, quote_ident(table_schema) || '.' || quote_ident(table_name), 'SELECT')"
 
 
 #: list tables visible inside the schema allow-list.
@@ -225,13 +261,70 @@ log = get_logger(__name__)
 #: execute in seconds and support arbitrary aggregates (which
 #: ``information_schema.columns`` does NOT -- LISTAGG over it raises
 #: ``Specified types or functions not supported on Redshift tables``).
-_REDSHIFT_TABLES_SQL_TEMPLATE = """
-SELECT table_schema, table_name
+_REDSHIFT_TABLES_SQL_TEMPLATE = (
+    """
+SELECT table_schema, table_name,
+       CASE WHEN table_type = 'BASE TABLE' THEN """
+    + _SELECTABLE
+    + """ ELSE FALSE END AS selectable
 FROM SVV_TABLES
 WHERE table_schema IN ({placeholders})
 AND table_type = 'BASE TABLE'
 ORDER BY table_schema, table_name
-""".strip()
+"""
+).strip()
+
+
+#: the relations in the allow-list the user can read, as their OWN statement.
+#:
+#: ``has_table_privilege`` is a leader-node-only function and the column-hash query's ``LISTAGG``
+#: runs on the compute nodes; Redshift refuses one statement mixing the two (``0A000 Specified
+#: types or functions (one per INFO message) not supported on Redshift tables`` -- seen on the
+#: warehouse when the check was joined into the hash query, 2026-10-07). so the check runs
+#: here, over ``SVV_TABLES`` alone (the shape :data:`_REDSHIFT_TABLES_SQL_TEMPLATE` proves
+#: runs), and ``list_columns`` / ``table_hashes`` keep their unchanged queries and drop, in
+#: python, every row outside the set this returns -- on the same connection, one statement
+#: after the other. ``SVV_COLUMNS`` carries no ``table_type`` to guard the check with, which
+#: is the other reason it cannot ride the column queries. a local table or view is kept only
+#: with its SELECT grant; an external table passes, its access being the external schema's
+#: USAGE (see :data:`_SELECTABLE`).
+_REDSHIFT_SELECTABLE_RELATIONS_SQL_TEMPLATE = (
+    """
+SELECT table_schema, table_name,
+       CASE WHEN table_type IN ('BASE TABLE', 'VIEW') THEN """
+    + _SELECTABLE
+    + """ ELSE TRUE END AS selectable
+FROM SVV_TABLES
+WHERE table_schema IN ({placeholders})
+"""
+).strip()
+
+#: how many times a privilege statement is run when a relation vanished under it (see
+#: :func:`_privilege_rows`); past this the warehouse is mid-churn and the sweep fails loudly
+NAME_RACE_ATTEMPTS = 3
+
+#: SQLSTATE ``undefined_table``: what ``has_table_privilege`` raises for a name that no longer resolves
+_UNDEFINED_TABLE = "42P01"
+
+
+#: the boolean columns of one relation, for the fingerprint: Redshift refuses to cast a boolean to
+#: text, so those columns render through a ``CASE`` instead (``relation_key_expression``). bound
+#: lower-cased: SVV_COLUMNS holds an unquoted name as Redshift folds it (checked on the warehouse,
+#: 2026-10-07: ``Reporting_Prod`` matches nothing, ``reporting_prod`` matches)
+_REDSHIFT_BOOLEAN_COLUMNS_SQL = (
+    "SELECT column_name FROM SVV_COLUMNS WHERE table_schema = %s AND table_name = %s AND data_type = 'boolean'"
+)
+
+#: the same, for a relation named without its schema: the search path decides which table it is
+_REDSHIFT_UNQUALIFIED_BOOLEAN_COLUMNS_SQL = (
+    "SELECT column_name FROM SVV_COLUMNS WHERE table_schema = ANY(current_schemas(false)) "
+    "AND table_name = %s AND data_type = 'boolean'"
+)
+
+#: Redshift's per-row fingerprint number (:func:`~threetears.core.fingerprint.fingerprint_sql`): it
+#: has ``STRTOL`` where Postgres casts through ``bit(32)``, and the cast to ``DECIMAL(38,0)`` keeps
+#: the sum from wrapping (``SUM`` over ``BIGINT`` stays ``BIGINT`` here)
+_REDSHIFT_ROW_NUMBER = "CAST(STRTOL(SUBSTRING(MD5(k), 1, 8), 16) AS DECIMAL(38,0))"
 
 
 #: list columns for every table in the schema allow-list. ``is_nullable``
@@ -285,6 +378,84 @@ WHERE table_schema IN ({placeholders})
 GROUP BY table_schema, table_name
 ORDER BY table_schema, table_name
 """.strip()
+
+
+def _is_undefined_table(exc: BaseException) -> bool:
+    """report whether ``exc`` is Redshift saying a relation named in the statement does not exist.
+
+    :param exc: the error a statement raised
+    :ptype exc: BaseException
+    :return: True for SQLSTATE 42P01
+    :rtype: bool
+    """
+    detail = exc.args[0] if exc.args else None
+    return isinstance(detail, dict) and detail.get("C") == _UNDEFINED_TABLE
+
+
+def _privilege_rows(conn: RedshiftConnection, cursor: Any, sql: str, params: tuple[str, ...]) -> list[tuple[Any, ...]]:
+    """run a statement that answers ``has_table_privilege``, outlasting a relation dropped under it.
+
+    the check takes a NAME, and Redshift resolves it against the CURRENT catalog rather than the
+    statement's: a relation a promote drops or renames between ``SVV_TABLES``' listing and the
+    check raises ``42P01`` and fails the statement for every relation in scope. ``SVV_TABLES``
+    exposes no OID to ask by instead (as the Postgres driver does), so the statement is run again
+    -- after a rollback, in a fresh transaction whose snapshot no longer lists the relation -- at
+    most :data:`NAME_RACE_ATTEMPTS` times. any other error is raised at once.
+
+    :param conn: the connection ``cursor`` belongs to (rolled back between attempts)
+    :ptype conn: RedshiftConnection
+    :param cursor: open cursor
+    :ptype cursor: Any
+    :param sql: the rendered privilege statement
+    :ptype sql: str
+    :param params: the schema allow-list, bound once per placeholder
+    :ptype params: tuple[str, ...]
+    :return: the statement's rows
+    :rtype: list[tuple[Any, ...]]
+    :raises Exception: the statement's error, when it is not 42P01 or the attempts are spent
+    """
+    attempt = 1
+    while True:
+        try:
+            cursor.execute(sql, params)
+            rows: list[tuple[Any, ...]] = cursor.fetchall()
+            return rows
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- classified, then re-raised unless it is the one retryable race
+            if attempt >= NAME_RACE_ATTEMPTS or not _is_undefined_table(exc):
+                raise
+            log.info(
+                "a relation vanished under the catalog's privilege check; reading again (attempt %d of %d): %s",
+                attempt + 1,
+                NAME_RACE_ATTEMPTS,
+                exc,
+            )
+            conn.rollback()
+            attempt += 1
+
+
+def _selectable_relations(
+    conn: RedshiftConnection, cursor: Any, selectable_sql: str, params: tuple[str, ...]
+) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+    """the ``(schema, table)`` pairs in the allow-list the connected user can and cannot read.
+
+    run as a statement of its own: see :data:`_REDSHIFT_SELECTABLE_RELATIONS_SQL_TEMPLATE`.
+
+    :param conn: the connection ``cursor`` belongs to
+    :ptype conn: RedshiftConnection
+    :param cursor: open cursor on the connection the column query will use next
+    :ptype cursor: Any
+    :param selectable_sql: the rendered selectable-relations statement
+    :ptype selectable_sql: str
+    :param params: the schema allow-list, bound once per placeholder
+    :ptype params: tuple[str, ...]
+    :return: ``(readable, unreadable)``
+    :rtype: tuple[set[tuple[str, str]], set[tuple[str, str]]]
+    """
+    readable: set[tuple[str, str]] = set()
+    unreadable: set[tuple[str, str]] = set()
+    for row in _privilege_rows(conn, cursor, selectable_sql, params):
+        (readable if row[2] else unreadable).add((row[0], row[1]))
+    return readable, unreadable
 
 
 def _build_in_clause(n: int) -> str:
@@ -357,6 +528,46 @@ def _report_late_terminate(unit: asyncio.Future[None]) -> None:
         )
 
 
+#: Linux's ceiling on ``TCP_KEEPCNT`` (``MAX_TCP_KEEPCNT``); a larger value is refused.
+_MAX_KEEPALIVE_PROBES = 127
+
+
+def _keepalive_probe_plan(cfg: RedshiftConnectionConfig) -> tuple[int, int, int]:
+    """the keepalive (idle, interval, count) to set: the configured one, widened to the ceiling.
+
+    keepalive cannot tell a dead socket from a path that swallows its probes, and such
+    paths exist: Docker Desktop's VM network (the whole local devx stack on macOS)
+    answers none, so a socket from a container dies with ``ETIMEDOUT`` exactly
+    idle + count x interval after the warehouse last spoke, however alive the
+    warehouse is. on such a path the window IS a statement timeout, and the 60s
+    default silently undercut the 300s ``query_timeout_seconds`` ceiling: the hub's
+    table-hash probe died there on every sweep with ``[Errno 110]``. the warehouse
+    ends any statement by the ceiling itself (Redshift's ``statement_timeout``
+    counts WLM queue time too), so a window that reaches the ceiling never kills a
+    statement the warehouse may still answer, and a really dead socket still frees
+    its worker, by the ceiling instead of "forever" -- the hang keepalive exists to
+    end. widening raises the probe COUNT, keeping idle and interval, so the probe
+    cadence that holds NAT state warm does not change; past Linux's 127-probe
+    limit the interval widens instead. a configured window already past the
+    ceiling is kept exactly.
+
+    :param cfg: datasource config carrying the keepalive knobs and the statement ceiling
+    :ptype cfg: RedshiftConnectionConfig
+    :return: ``(idle_seconds, interval_seconds, probe_count)``
+    :rtype: tuple[int, int, int]
+    """
+    idle = cfg.tcp_keepalive_idle_seconds
+    interval = cfg.tcp_keepalive_interval_seconds
+    count = cfg.tcp_keepalive_count
+    probing = cfg.query_timeout_seconds - idle
+    if idle + count * interval < cfg.query_timeout_seconds:
+        count = -(-probing // interval)
+        if count > _MAX_KEEPALIVE_PROBES:
+            count = _MAX_KEEPALIVE_PROBES
+            interval = -(-probing // count)
+    return idle, interval, count
+
+
 def _apply_socket_keepalive(conn: RedshiftConnection, cfg: RedshiftConnectionConfig) -> None:
     """apply aggressive OS-level TCP keepalive on a redshift_connector connection.
 
@@ -367,7 +578,8 @@ def _apply_socket_keepalive(conn: RedshiftConnection, cfg: RedshiftConnectionCon
     Linux socket options (the hub + tool pods run Linux); one absent on the host
     platform is skipped, and a ``setsockopt`` failure is logged, not raised -- the
     connection is usable, only half-dead-socket detection falls back to the system
-    default. detection window ~= idle + count * interval.
+    default. detection window ~= idle + count * interval, never shorter than the
+    statement ceiling (see :func:`_keepalive_probe_plan`).
 
     :param conn: live redshift_connector connection to tune
     :ptype conn: RedshiftConnection
@@ -382,12 +594,13 @@ def _apply_socket_keepalive(conn: RedshiftConnection, cfg: RedshiftConnectionCon
     if sock is None:
         log.warning("redshift keepalive: connection exposes no socket; leaving keepalive at the system default")
         return
+    idle, interval, count = _keepalive_probe_plan(cfg)
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         for opt_name, value in (
-            ("TCP_KEEPIDLE", cfg.tcp_keepalive_idle_seconds),
-            ("TCP_KEEPINTVL", cfg.tcp_keepalive_interval_seconds),
-            ("TCP_KEEPCNT", cfg.tcp_keepalive_count),
+            ("TCP_KEEPIDLE", idle),
+            ("TCP_KEEPINTVL", interval),
+            ("TCP_KEEPCNT", count),
         ):
             opt = getattr(socket, opt_name, None)
             if opt is not None:
@@ -632,6 +845,71 @@ def _get_executor_saturation_gauge() -> Any:
 # ---------------------------------------------------------------------------
 
 
+#: a cipher name no OpenSSL build has, so selecting it always fails.
+_NO_SUCH_CIPHER = "threetears-no-such-cipher"
+
+
+def _clear_thread_tls_errors() -> None:
+    """empty the calling thread's OpenSSL error queue.
+
+    OpenSSL keeps one error queue per thread, shared by every TLS connection the thread
+    touches, and reads it to classify the next TLS call that returns no data. a write to a
+    dead TLS socket records its system error (``EPIPE`` / ``ECONNRESET``) there, and CPython
+    (seen on 3.14 with OpenSSL 3.5) raises the ``OSError`` and leaves the record behind. from
+    then on every TLS connection the thread serves reports that broken pipe in place of
+    "nothing to read yet" -- on an event loop thread, every asyncpg / NATS / HTTPS connection
+    in the process -- until something empties the queue.
+
+    ``ssl`` exposes no call that empties it, so this makes one whose failure path does:
+    selecting a cipher that does not exist, on a context made for the purpose and dropped.
+    it touches no connection. that the refusal empties the queue is CPython's behaviour, not
+    its promise; ``tests/unit/test_redshift_driver_tls_thread_state.py`` fails on an
+    interpreter where a dead connection's close still poisons the thread.
+
+    :return: nothing
+    :rtype: None
+    """
+    try:
+        ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).set_ciphers(_NO_SUCH_CIPHER)
+    except ssl.SSLError:
+        # NOSILENT: the refusal is the point -- raising it is what empties the queue.
+        pass
+
+
+def _close_connection_sync(conn: "RedshiftConnection") -> None:
+    """close ``conn``, leaving the calling thread's TLS state as it found it (sync).
+
+    THE one way this module closes a connection. ``redshift_connector.Connection.close``
+    writes a Terminate message and swallows the socket error when the connection is already
+    dead -- exactly the write that leaves the thread's OpenSSL error queue poisoned (see
+    :func:`_clear_thread_tls_errors`). whichever thread ends up here -- a bridge worker, the
+    default executor, the event loop running a cancel callback, the thread a finalizer
+    happens to fire on -- is clean again before it runs anything else.
+
+    :param conn: the connection to close
+    :ptype conn: RedshiftConnection
+    :return: nothing
+    :rtype: None
+    :raises Exception: whatever ``conn.close()`` raises (a second close raises
+        ``InterfaceError``); the thread is cleaned first
+    """
+    try:
+        conn.close()
+    finally:
+        _clear_thread_tls_errors()
+
+
+def _closer(conn: "RedshiftConnection") -> Callable[[], None]:
+    """:func:`_close_connection_sync` bound to ``conn``, for a bridge call or a cancel callback.
+
+    :param conn: the connection to close when called
+    :ptype conn: RedshiftConnection
+    :return: a zero-argument callable that closes ``conn``
+    :rtype: Callable[[], None]
+    """
+    return functools.partial(_close_connection_sync, conn)
+
+
 def _drain_cache_static(
     connections: Iterable["RedshiftConnection"],
 ) -> None:
@@ -662,7 +940,7 @@ def _drain_cache_static(
     # view of "what was in the cache at the moment we started".
     for conn in list(connections):
         try:
-            conn.close()
+            _close_connection_sync(conn)
         except Exception as exc:  # noqa: BLE001 -- defensive at finalize
             # finalize must not raise; log + continue so other cached
             # connections still get the close attempt.
@@ -672,6 +950,26 @@ def _drain_cache_static(
 # ---------------------------------------------------------------------------
 # RedshiftDriver
 # ---------------------------------------------------------------------------
+
+
+def _read_boolean_columns(cursor: Any, relation: str) -> frozenset[str]:
+    """the boolean columns of ``relation``, read from ``SVV_COLUMNS`` on an open cursor.
+
+    :param cursor: a cursor on a live connection
+    :ptype cursor: Any
+    :param relation: ``schema.table`` or ``table``, a TRUSTED identifier (bound here, not inlined)
+    :ptype relation: str
+    :return: the names of its boolean columns
+    :rtype: frozenset[str]
+    """
+    # only unquoted identifiers reach here (the request's grammar), and Redshift folds those to
+    # lower case: SVV_COLUMNS holds ``Reporting_Prod`` as ``reporting_prod``
+    schema, _, table = relation.lower().rpartition(".")
+    if schema:
+        cursor.execute(_REDSHIFT_BOOLEAN_COLUMNS_SQL, (schema, table))
+    else:
+        cursor.execute(_REDSHIFT_UNQUALIFIED_BOOLEAN_COLUMNS_SQL, (table,))
+    return frozenset(str(row[0]) for row in cursor.fetchall())
 
 
 class RedshiftDriver(Driver):
@@ -780,6 +1078,9 @@ class RedshiftDriver(Driver):
         # manual cleanup pass.
         self._backend_pids: weakref.WeakKeyDictionary[RedshiftConnection, int] = weakref.WeakKeyDictionary()
         self._closed = False
+        # each fingerprinted relation's boolean columns, kept once a fingerprint has used them and
+        # forgotten when one fails, so a relation rebuilt with a column turned boolean is read again
+        self._boolean_columns: dict[str, frozenset[str]] = {}
         # read by :func:`observed` as the ``datasource_name`` attribute
         # on every metric emission. matches the AsyncpgDriver contract.
         self._datasource_name = datasource_name
@@ -868,7 +1169,7 @@ class RedshiftDriver(Driver):
         sock = connection_socket(conn)
         if sock is None:
             with self._suppress_close():
-                conn.close()
+                _close_connection_sync(conn)
             raise DriverConnectError(
                 f"connected to {cfg.host}:{cfg.port}/{cfg.database} but redshift_connector exposes no socket "
                 f"to lift the {cfg.connect_timeout_seconds}s login timeout from, so every statement longer "
@@ -921,7 +1222,7 @@ class RedshiftDriver(Driver):
             # we still wrap with from None so the original error
             # can't leak the password.
             with self._suppress_close():
-                conn.close()
+                _close_connection_sync(conn)
             raise DriverConnectError(
                 f"failed to set statement_timeout on {cfg.host}:{cfg.port}/{cfg.database}"
             ) from None
@@ -948,7 +1249,7 @@ class RedshiftDriver(Driver):
             # still don't want to surface it to the agent because
             # the wrapper's message is the only thing callers see.
             with self._suppress_close():
-                conn.close()
+                _close_connection_sync(conn)
             raise DriverConnectError(f"failed to set search_path on {cfg.host}:{cfg.port}/{cfg.database}") from None
         # capture the server-side backend pid (best-effort) so the
         # cancel path can issue ``pg_terminate_backend(<pid>)`` from a
@@ -1081,8 +1382,13 @@ class RedshiftDriver(Driver):
                     cancel_cb=lambda: None,
                 )
             except Exception:
+                # off the loop, like every other close: it writes to a socket that is
+                # most likely dead (an idle cached connection the network dropped).
                 with self._suppress_close():
-                    conn.close()
+                    await self._bridge.to_thread_with_cancel(
+                        _closer(conn),
+                        cancel_cb=lambda: None,
+                    )
                 conn = None
         if conn is not None:
             hit_counter = _get_cache_hit_counter()
@@ -1246,7 +1552,7 @@ class RedshiftDriver(Driver):
             await self._terminate_backend(pid)
         try:
             await asyncio.wait_for(
-                asyncio.to_thread(checkout.conn.close),
+                asyncio.to_thread(_close_connection_sync, checkout.conn),
                 timeout=self._cancel_timeout_seconds,
             )
         except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001
@@ -1276,7 +1582,7 @@ class RedshiftDriver(Driver):
         if self._closed:
             # driver is shutting down; just close the connection.
             await self._bridge.to_thread_with_cancel(
-                conn.close,
+                _closer(conn),
                 cancel_cb=lambda: None,
             )
             return
@@ -1290,7 +1596,7 @@ class RedshiftDriver(Driver):
         if evicted is not None:
             with self._suppress_close():
                 await self._bridge.to_thread_with_cancel(
-                    evicted.close,
+                    _closer(evicted),
                     cancel_cb=lambda: None,
                 )
 
@@ -1315,7 +1621,7 @@ class RedshiftDriver(Driver):
                 self._cache.remove(conn)
         with self._suppress_close():
             await self._bridge.to_thread_with_cancel(
-                conn.close,
+                _closer(conn),
                 cancel_cb=lambda: None,
             )
 
@@ -1351,7 +1657,7 @@ class RedshiftDriver(Driver):
                 cursor.close()
         finally:
             with self._suppress_close():
-                conn.close()
+                _close_connection_sync(conn)
 
     async def _terminate_backend_unit(self, pid: int) -> None:
         """log in under the guard, then terminate and close -- the whole cancel, as one task.
@@ -1574,8 +1880,9 @@ class RedshiftDriver(Driver):
         sql: str,
         params: tuple[Any, ...],
         timeout_seconds: int | None,
+        max_rows: int | None = None,
     ) -> list[dict[str, Any]]:
-        """run one SELECT on ``conn`` and materialize its rows (sync).
+        """run one SELECT on ``conn`` and materialize its rows (sync), at most ``max_rows`` of them.
 
         shared by :meth:`fetch` and the transaction handle so both
         apply the per-statement timeout the same way.
@@ -1588,6 +1895,8 @@ class RedshiftDriver(Driver):
         :ptype params: tuple[Any, ...]
         :param timeout_seconds: per-statement override, or None
         :ptype timeout_seconds: int | None
+        :param max_rows: the most rows to take off the cursor; every row when None
+        :ptype max_rows: int | None
         :return: list of column-name -> value dicts in row order
         :rtype: list[dict[str, Any]]
         """
@@ -1601,7 +1910,7 @@ class RedshiftDriver(Driver):
                 cursor.execute(sql, params)
             else:
                 cursor.execute(sql)
-            rows = cursor.fetchall()
+            rows = cursor.fetchall() if max_rows is None else cursor.fetchmany(max_rows)
             cols = [c[0] for c in cursor.description]
             result = [dict(zip(cols, row)) for row in rows]
         finally:
@@ -1684,7 +1993,60 @@ class RedshiftDriver(Driver):
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(
                 functools.partial(self._fetch_sync, conn, translated, params, timeout_seconds),
-                cancel_cb=conn.close,
+                cancel_cb=_closer(conn),
+            )
+
+        result: list[dict[str, Any]] = await self._acquire_and_run(
+            _op,
+            timeout_overridden=timeout_seconds is not None,
+        )
+        return result
+
+    @property
+    def concurrent_queries(self) -> int:
+        """the driver's own cap on open connections (``connection_cache_size``).
+
+        :return: the cap
+        :rtype: int
+        """
+        return self._config.connection_cache_size
+
+    @traced
+    @observed(driver_type="redshift")
+    async def fetch_at_most(
+        self, sql: str, *params: Any, max_rows: int, timeout_seconds: int | None = None
+    ) -> list[dict[str, Any]]:
+        """run a SELECT and take at most ``max_rows`` rows off its cursor .
+
+        ``redshift_connector`` receives a statement's whole result inside ``execute`` (it has no
+        streaming read), so this bounds the rows turned into the answer, not what crossed the wire:
+        a caller that must bound that too asks the warehouse for no more (a ``LIMIT``), as the hub's
+        responder does wherever the statement takes one.
+
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional placeholder values
+        :ptype params: Any
+        :param max_rows: the most rows to keep, at least 1
+        :ptype max_rows: int
+        :param timeout_seconds: per-statement timeout override, as :meth:`fetch` takes it
+        :ptype timeout_seconds: int | None
+        :return: at most ``max_rows`` column-name -> value dicts, in row order
+        :rtype: list[dict[str, Any]]
+        :raises ValueError: if ``max_rows`` is below 1, or ``timeout_seconds`` is not a positive int
+        :raises RuntimeError: if the driver was previously closed
+        """
+        check_max_rows(max_rows)
+        if self._closed:
+            raise RuntimeError("RedshiftDriver is closed")
+        if timeout_seconds is not None:
+            build_set_local_statement_timeout_sql(timeout_seconds)
+        translated = translate_placeholders(sql, "pyformat")
+
+        async def _op(conn: RedshiftConnection) -> Any:
+            return await self._bridge.to_thread_with_cancel(
+                functools.partial(self._fetch_sync, conn, translated, params, timeout_seconds, max_rows),
+                cancel_cb=_closer(conn),
             )
 
         result: list[dict[str, Any]] = await self._acquire_and_run(
@@ -1720,7 +2082,7 @@ class RedshiftDriver(Driver):
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(
                 functools.partial(self._execute_sync, conn, translated, params, timeout_seconds, commit=True),
-                cancel_cb=conn.close,
+                cancel_cb=_closer(conn),
             )
 
         await self._acquire_and_run(_op, timeout_overridden=timeout_seconds is not None)
@@ -1797,7 +2159,7 @@ class RedshiftDriver(Driver):
         result: list[dict[str, Any]] = await self._with_cancellation(
             lambda: self._bridge.to_thread_with_cancel(
                 functools.partial(self._fetch_sync, checkout.conn, translated, params, timeout_seconds),
-                cancel_cb=checkout.conn.close,
+                cancel_cb=_closer(checkout.conn),
             ),
             cancel_callback=lambda: self._cancel_checkout(checkout),
         )
@@ -1842,7 +2204,7 @@ class RedshiftDriver(Driver):
                     timeout_seconds,
                     commit=False,
                 ),
-                cancel_cb=checkout.conn.close,
+                cancel_cb=_closer(checkout.conn),
             ),
             cancel_callback=lambda: self._cancel_checkout(checkout),
         )
@@ -1947,7 +2309,7 @@ class RedshiftDriver(Driver):
         try:
             cursor, col_names = await self._bridge.to_thread_with_cancel(
                 _open_cursor,
-                cancel_cb=conn.close,
+                cancel_cb=_closer(conn),
             )
             # bind cursor into a non-Optional local so the inner
             # lambda's mypy inference doesn't trip on the | None type
@@ -1960,7 +2322,7 @@ class RedshiftDriver(Driver):
             while True:
                 chunk = await self._bridge.to_thread_with_cancel(
                     _pull_next,
-                    cancel_cb=conn.close,
+                    cancel_cb=_closer(conn),
                 )
                 if not chunk:
                     break
@@ -2022,24 +2384,20 @@ class RedshiftDriver(Driver):
                 # guard at the python level.
                 if not params:
                     return []
-                cursor.execute(sql, params)
-                rows = cursor.fetchall()
-                cols = [c[0] for c in cursor.description]
-                dicts = [dict(zip(cols, row)) for row in rows]
-                return [
-                    TableRow(
-                        table_schema=r["table_schema"],
-                        table_name=r["table_name"],
-                    )
-                    for r in dicts
-                ]
+                rows = _privilege_rows(conn, cursor, sql, params)
+                log_unselectable_relations(
+                    datasource_name=self._datasource_name,
+                    method="list_tables",
+                    left_out=((row[0], row[1]) for row in rows if not row[2]),
+                )
+                return [TableRow(table_schema=row[0], table_name=row[1]) for row in rows if row[2]]
             finally:
                 cursor.close()
 
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(
                 lambda: _do_sync(conn),
-                cancel_cb=conn.close,
+                cancel_cb=_closer(conn),
             )
 
         result: list[TableRow] = await self._acquire_and_run(_op)
@@ -2070,6 +2428,7 @@ class RedshiftDriver(Driver):
             raise RuntimeError("RedshiftDriver is closed")
 
         sql = _REDSHIFT_COLUMNS_SQL_TEMPLATE.format(placeholders=_build_in_clause(len(schemas)))
+        selectable_sql = _REDSHIFT_SELECTABLE_RELATIONS_SQL_TEMPLATE.format(placeholders=_build_in_clause(len(schemas)))
         params = tuple(schemas)
 
         def _do_sync(
@@ -2079,6 +2438,10 @@ class RedshiftDriver(Driver):
             try:
                 if not params:
                     return []
+                selectable, unselectable = _selectable_relations(conn, cursor, selectable_sql, params)
+                log_unselectable_relations(
+                    datasource_name=self._datasource_name, method="list_columns", left_out=unselectable
+                )
                 cursor.execute(sql, params)
                 rows = cursor.fetchall()
                 cols = [c[0] for c in cursor.description]
@@ -2093,6 +2456,7 @@ class RedshiftDriver(Driver):
                         ordinal_position=r["ordinal_position"],
                     )
                     for r in dicts
+                    if (r["table_schema"], r["table_name"]) in selectable
                 ]
             finally:
                 cursor.close()
@@ -2100,7 +2464,7 @@ class RedshiftDriver(Driver):
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(
                 lambda: _do_sync(conn),
-                cancel_cb=conn.close,
+                cancel_cb=_closer(conn),
             )
 
         result: list[ColumnRow] = await self._acquire_and_run(_op)
@@ -2108,7 +2472,9 @@ class RedshiftDriver(Driver):
 
     @traced
     @observed(driver_type="redshift")
-    async def relation_fingerprint(self, relation: str, key: list[str]) -> RelationFingerprint:
+    async def relation_fingerprint(
+        self, relation: str, key: list[str], where: Mapping[str, str] | None = None
+    ) -> RelationFingerprint:
         """count and fingerprint ``relation`` over ``key``, in one statement.
 
         Redshift turns a hash into a summable number with ``STRTOL``, which
@@ -2122,41 +2488,197 @@ class RedshiftDriver(Driver):
         relation -- and a wrapped sum fingerprints two different relations
         identically, which is the one failure a change-probe must not have.
 
+        Redshift refuses to cast a boolean to text, so the relation's boolean columns are read from
+        ``SVV_COLUMNS`` (on the same connection; kept once a fingerprint has used them, read again
+        after one fails) and rendered through a ``CASE`` as the text Postgres's cast gives; a key may
+        then name any column the relation has.
+
         :param relation: schema-qualified relation name, a TRUSTED identifier
         :ptype relation: str
-        :param key: the ordering columns, TRUSTED identifiers
+        :param key: the columns the digest covers, TRUSTED identifiers
         :ptype key: list[str]
+        :param where: equality filters, column -> value, naming the rows to fingerprint
+        :ptype where: Mapping[str, str] | None
         :return: the relation's current row count and key digest
         :rtype: RelationFingerprint
         :raises ValueError: when ``key`` is empty
         :raises RuntimeError: if the driver was previously closed
         """
+        filters, values = build_filter(where)
+        [row] = await self._fingerprint_rows(relation, key, filters, values, group_by=None)
+        return RelationFingerprint(row_count=int(row[0]), digest=str(row[1]))
+
+    @traced
+    @observed(driver_type="redshift")
+    async def relation_fingerprint_groups(
+        self,
+        relation: str,
+        key: list[str],
+        group_by: str,
+        where: Mapping[str, str] | None = None,
+        where_in: Mapping[str, Sequence[str]] | None = None,
+    ) -> dict[str | None, RelationFingerprint]:
+        """count and fingerprint every value of ``group_by`` in ``relation``, in one statement.
+
+        Each group's digest is exactly what :meth:`relation_fingerprint` answers for the rows
+        ``group_by = value``: the same per-row hash, summed per group.
+
+        :param relation: schema-qualified relation name, a TRUSTED identifier
+        :ptype relation: str
+        :param key: the columns the digest covers, TRUSTED identifiers
+        :ptype key: list[str]
+        :param group_by: the grouping column, a TRUSTED identifier
+        :ptype group_by: str
+        :param where: equality filters
+        :ptype where: Mapping[str, str] | None
+        :param where_in: set filters
+        :ptype where_in: Mapping[str, Sequence[str]] | None
+        :return: each group's value as text (``None`` for NULL) -> its fingerprint
+        :rtype: dict[str | None, RelationFingerprint]
+        :raises ValueError: when ``key`` is empty
+        :raises RuntimeError: if the driver was previously closed
+        """
+        filters, values = build_filter(where, where_in)
+        rows = await self._fingerprint_rows(relation, key, filters, values, group_by=group_by)
+        return {
+            (None if row[0] is None else str(row[0])): RelationFingerprint(row_count=int(row[1]), digest=str(row[2]))
+            for row in rows
+        }
+
+    async def _fingerprint_rows(
+        self, relation: str, key: list[str], filters: str, values: list[str], *, group_by: str | None
+    ) -> list[tuple[Any, ...]]:
+        """the rows of one fingerprint statement, whole or grouped: the one Redshift body both answer from.
+
+        The relation's boolean columns are read from ``SVV_COLUMNS`` on the same connection, kept
+        once a fingerprint has carried them through, and forgotten when one fails (the answer may
+        be why it failed: a column turned boolean), so the next call reads them again.
+
+        :param relation: schema-qualified relation name, a TRUSTED identifier
+        :ptype relation: str
+        :param key: the columns the digest covers, TRUSTED identifiers
+        :ptype key: list[str]
+        :param filters: the `` WHERE`` fragment, ``$n`` placeholders
+        :ptype filters: str
+        :param values: its bound values, in order
+        :ptype values: list[str]
+        :param group_by: the grouping column, a TRUSTED identifier; the whole relation when None
+        :ptype group_by: str | None
+        :return: ``(row_count, digest)`` once when whole; ``(g, row_count, digest)`` per group
+        :rtype: list[tuple[Any, ...]]
+        :raises ValueError: when ``key`` is empty
+        :raises RuntimeError: if the driver was previously closed
+        """
         if self._closed:
             raise RuntimeError("RedshiftDriver is closed")
-        key_expression = build_relation_key_expression(key)
-        sql = (
-            "SELECT COUNT(*) AS row_count, "  # noqa: S608 - relation and key are trusted identifiers
-            "COALESCE(SUM(CAST(STRTOL(SUBSTRING(MD5(k), 1, 8), 16) AS DECIMAL(38,0))), 0) AS digest "
-            f"FROM (SELECT {key_expression} AS k FROM {relation}) AS fingerprint_source"
-        )
+        # refuses an empty key here, before a connection is taken
+        relation_key_expression(key)
+        known = self._boolean_columns.get(relation)
 
-        def _do_sync(conn: RedshiftConnection) -> RelationFingerprint:
+        def _do_sync(conn: RedshiftConnection) -> list[tuple[Any, ...]]:
             cursor = conn.cursor()
             try:
-                cursor.execute(sql)
-                row = cursor.fetchone()
-                return RelationFingerprint(row_count=int(row[0]), digest=str(row[1]))
+                booleans = known if known is not None else _read_boolean_columns(cursor, relation)
+                sql = translate_placeholders(
+                    fingerprint_sql(
+                        relation,
+                        key,
+                        filters,
+                        row_number=_REDSHIFT_ROW_NUMBER,
+                        group_by=group_by,
+                        boolean_columns=booleans,
+                    ),
+                    "pyformat",
+                )
+                try:
+                    if values:
+                        cursor.execute(sql, values)
+                    else:
+                        cursor.execute(sql)
+                    rows = [tuple(row) for row in cursor.fetchall()] if group_by else [tuple(cursor.fetchone())]
+                except (
+                    Exception
+                ):  # prawduct:allow prawduct/broad-except -- forgets the column answer, then re-raises unchanged
+                    self._boolean_columns.pop(relation, None)
+                    raise
+                # kept only once it has carried a fingerprint through
+                self._boolean_columns[relation] = booleans
+                return rows
             finally:
                 cursor.close()
 
         async def _op(conn: RedshiftConnection) -> Any:
-            return await self._bridge.to_thread_with_cancel(
-                lambda: _do_sync(conn),
-                cancel_cb=conn.close,
-            )
+            return await self._bridge.to_thread_with_cancel(lambda: _do_sync(conn), cancel_cb=_closer(conn))
 
-        result: RelationFingerprint = await self._acquire_and_run(_op)
+        result: list[tuple[Any, ...]] = await self._acquire_and_run(_op)
         return result
+
+    @property
+    def export_config(self) -> ExportConfig | None:
+        """the datasource's export configuration, as its connection config carries it.
+
+        :return: the export configuration, or None when it has none
+        :rtype: ExportConfig | None
+        """
+        return self._config.export
+
+    @traced
+    @observed(driver_type="redshift")
+    async def unload(
+        self,
+        select: str,
+        destination: str,
+        *,
+        timeout_seconds: int | None = None,
+        partition_by: str | None = None,
+    ) -> ExportResult:
+        """``UNLOAD`` ``select``'s rows as parquet under the datasource's export prefix, and count them.
+
+        The statement is :func:`~threetears.datasources.export.redshift_unload_statement`'s, its
+        options fixed there; the count is ``pg_last_unload_count()`` read on the same session, so it
+        is this statement's and nobody else's.
+
+        :param select: a plain ``SELECT``, already admitted as a read the caller may run
+        :ptype select: str
+        :param destination: where under the configured prefix, a relative path
+        :ptype destination: str
+        :param timeout_seconds: per-statement timeout, as :meth:`fetch` takes it
+        :ptype timeout_seconds: int | None
+        :param partition_by: a column to divide the files by, one directory per value; None for none
+        :ptype partition_by: str | None
+        :return: the rows written and where they are
+        :rtype: ExportResult
+        :raises DriverExportUnsupportedError: when the datasource has no export configured
+        :raises ExportRefusedError: when the ``SELECT`` cannot be quoted or the destination is refused
+        :raises RuntimeError: if the driver was previously closed
+        """
+        if self._closed:
+            raise RuntimeError("RedshiftDriver is closed")
+        export = self._config.export
+        if export is None:
+            raise DriverExportUnsupportedError("this datasource has no export configured (connection_config.export)")
+        # refused here, before a connection is taken: a bad SELECT or destination is the caller's
+        statement, location = redshift_unload_statement(select, export, destination, partition_by=partition_by)
+        if timeout_seconds is not None:
+            build_set_local_statement_timeout_sql(timeout_seconds)
+
+        def _do_sync(conn: RedshiftConnection) -> int:
+            cursor = conn.cursor()
+            try:
+                self._apply_statement_timeout_sync(cursor, timeout_seconds)
+                cursor.execute(statement)
+                cursor.execute("SELECT pg_last_unload_count()")
+                row = cursor.fetchone()
+                conn.commit()
+            finally:
+                cursor.close()
+            return int(row[0]) if row is not None else 0
+
+        async def _op(conn: RedshiftConnection) -> Any:
+            return await self._bridge.to_thread_with_cancel(lambda: _do_sync(conn), cancel_cb=_closer(conn))
+
+        rows: int = await self._acquire_and_run(_op, timeout_overridden=timeout_seconds is not None)
+        return ExportResult(row_count=rows, **location.model_dump())
 
     async def table_hashes(self, schemas: list[str]) -> dict[tuple[str, str], str]:
         """per-table MD5 over the column shape (Tier-2 change-probe).
@@ -2181,6 +2703,7 @@ class RedshiftDriver(Driver):
             raise RuntimeError("RedshiftDriver is closed")
 
         sql = _REDSHIFT_TABLE_HASHES_SQL_TEMPLATE.format(placeholders=_build_in_clause(len(schemas)))
+        selectable_sql = _REDSHIFT_SELECTABLE_RELATIONS_SQL_TEMPLATE.format(placeholders=_build_in_clause(len(schemas)))
         params = tuple(schemas)
 
         def _do_sync(
@@ -2190,18 +2713,26 @@ class RedshiftDriver(Driver):
             try:
                 if not params:
                     return {}
+                selectable, unselectable = _selectable_relations(conn, cursor, selectable_sql, params)
+                log_unselectable_relations(
+                    datasource_name=self._datasource_name, method="table_hashes", left_out=unselectable
+                )
                 cursor.execute(sql, params)
                 rows = cursor.fetchall()
                 cols = [c[0] for c in cursor.description]
                 dicts = [dict(zip(cols, row)) for row in rows]
-                return {(r["table_schema"], r["table_name"]): r["column_hash"] for r in dicts}
+                return {
+                    (r["table_schema"], r["table_name"]): r["column_hash"]
+                    for r in dicts
+                    if (r["table_schema"], r["table_name"]) in selectable
+                }
             finally:
                 cursor.close()
 
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(
                 lambda: _do_sync(conn),
-                cancel_cb=conn.close,
+                cancel_cb=_closer(conn),
             )
 
         result: dict[tuple[str, str], str] = await self._acquire_and_run(_op)
@@ -2244,7 +2775,7 @@ class RedshiftDriver(Driver):
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(
                 lambda: _do_sync(conn),
-                cancel_cb=conn.close,
+                cancel_cb=_closer(conn),
             )
 
         try:
@@ -2284,7 +2815,7 @@ class RedshiftDriver(Driver):
         for conn in to_close:
             with self._suppress_close():
                 await self._bridge.to_thread_with_cancel(
-                    conn.close,
+                    _closer(conn),
                     cancel_cb=lambda: None,
                 )
         # bridge close uses shutdown(wait=False) -- contract.

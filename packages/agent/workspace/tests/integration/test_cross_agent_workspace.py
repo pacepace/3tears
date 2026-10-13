@@ -541,7 +541,6 @@ def _build_sql_backed_acl_cache(pool: asyncpg.Pool) -> AclCache:
     return AclCache(
         membership_loader=_SqlMembershipLoader(pool),
         grant_loader=_SqlGrantLoader(pool),
-        ttl_seconds=60,
     )
 
 

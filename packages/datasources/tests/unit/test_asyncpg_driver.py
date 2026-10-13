@@ -20,7 +20,7 @@ import asyncpg
 import pytest
 
 from threetears.datasources.config import (
-    AgentInternalConnectionConfig,
+    BorrowedPoolConnectionConfig,
     PostgresConnectionConfig,
     YugabyteConnectionConfig,
 )
@@ -29,7 +29,8 @@ from threetears.datasources.drivers import (
     DriverConnectError,
     DriverMissingCredentialError,
 )
-from threetears.datasources.drivers.asyncpg_driver import AsyncpgDriver
+from threetears.datasources.drivers.asyncpg_driver import BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS, AsyncpgDriver
+from threetears.datasources.drivers.errors import DriverPoolBusyError
 from threetears.datasources.entities import DataSourceType
 
 
@@ -96,8 +97,11 @@ def _build_mock_pool(
     conn.fetchval = AsyncMock(return_value=fetchval_value)
 
     # async-context-manager shape for ``pool.acquire()``
+    pool.acquire_options = []
+
     @asynccontextmanager
-    async def _acquire() -> Any:
+    async def _acquire(**options: Any) -> Any:
+        pool.acquire_options.append(options)
         yield conn
 
     pool.acquire = _acquire
@@ -186,9 +190,9 @@ def yugabyte_config() -> YugabyteConnectionConfig:
 
 
 @pytest.fixture
-def agent_internal_config() -> AgentInternalConnectionConfig:
-    """default :class:`AgentInternalConnectionConfig`."""
-    return AgentInternalConnectionConfig(
+def agent_internal_config() -> BorrowedPoolConnectionConfig:
+    """default :class:`BorrowedPoolConnectionConfig`."""
+    return BorrowedPoolConnectionConfig(
         datasource_type=DataSourceType.AGENT_INTERNAL,
         schema_name="agent_abc123",
     )
@@ -223,7 +227,7 @@ class TestConstruction:
 
     @pytest.mark.asyncio
     async def test_init_agent_internal_with_external_pool(
-        self, agent_internal_config: AgentInternalConnectionConfig, monkeypatch: pytest.MonkeyPatch
+        self, agent_internal_config: BorrowedPoolConnectionConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """agent-internal driver borrows the passed-in pool: queries run on it, none is created, close leaves it."""
         create_pool = AsyncMock()
@@ -234,6 +238,19 @@ class TestConstruction:
         create_pool.assert_not_awaited()
         await driver.close()
         external.close.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_borrowed_pool_is_waited_on_for_a_bounded_time(
+        self, agent_internal_config: BorrowedPoolConnectionConfig
+    ) -> None:
+        """the host's pool may be busy with its own work; a query does not wait on it past its caller."""
+        external = _build_mock_pool(fetch_records=[{"x": 1}])
+        driver = AsyncpgDriver(agent_internal_config, external_pool=external)
+
+        await driver.fetch("SELECT 1")
+
+        assert external.acquire_options == [{"timeout": BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS}]
+        assert BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS <= 30
 
     @pytest.mark.asyncio
     async def test_init_datasource_name_default_is_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -283,7 +300,7 @@ class TestClose:
 
     @pytest.mark.asyncio
     async def test_close_borrowed_pool_does_not_call_pool_close(
-        self, agent_internal_config: AgentInternalConnectionConfig
+        self, agent_internal_config: BorrowedPoolConnectionConfig
     ) -> None:
         """borrowed-pool path: :meth:`close` MUST NOT close the pool."""
         pool = _build_mock_pool()
@@ -359,7 +376,7 @@ class TestIntrospectionRouting:
         self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """:meth:`list_tables` reads base tables from ``information_schema`` with the allow-list bound."""
-        pool = _build_mock_pool(fetch_records=[{"table_schema": "s1", "table_name": "t1"}])
+        pool = _build_mock_pool(fetch_records=[{"table_schema": "s1", "table_name": "t1", "selectable": True}])
         driver = _driver_owning(pool, postgres_config, monkeypatch)
         rows = await driver.list_tables(["s1"])
         assert rows == [{"table_schema": "s1", "table_name": "t1"}]
@@ -381,6 +398,7 @@ class TestIntrospectionRouting:
                     "data_type": "integer",
                     "is_nullable": "NO",
                     "ordinal_position": 1,
+                    "selectable": True,
                 }
             ]
         )
@@ -403,6 +421,7 @@ class TestIntrospectionRouting:
                     "table_schema": "s1",
                     "table_name": "t1",
                     "column_hash": "abc123",
+                    "selectable": True,
                 }
             ]
         )
@@ -412,6 +431,152 @@ class TestIntrospectionRouting:
         sql = _single_catalog_query(pool, ["s1"])
         assert "FROM information_schema.columns" in sql
         assert "AS column_hash" in sql
+
+
+#: the privilege test every catalog query applies: the datasource's own user can SELECT the relation,
+#: asked by the relation's OID -- a name would be resolved against the CURRENT catalog, and a table
+#: dropped or renamed while the catalog query runs would fail the whole query
+_SELECTABLE = "has_table_privilege(current_user, rel.oid, 'SELECT')"
+
+_LOGGER = "threetears.datasources.drivers.base"
+
+
+def _column(table: str, selectable: bool | None, column: str = "c1") -> dict[str, Any]:
+    """one ``list_columns`` record as the catalog query returns it, its privilege answer included."""
+    return {
+        "table_schema": "s1",
+        "table_name": table,
+        "column_name": column,
+        "data_type": "integer",
+        "is_nullable": "NO",
+        "ordinal_position": 1,
+        "selectable": selectable,
+    }
+
+
+def _left_out(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """the messages saying the catalog left relations out for want of a grant."""
+    return [r.getMessage() for r in caplog.records if r.name == _LOGGER and "cannot SELECT" in r.getMessage()]
+
+
+class TestIntrospectionCatalogsOnlySelectableTables:
+    """a table the datasource user cannot SELECT is never catalogued, hashed or listed.
+
+    the warehouse users are least-privilege by design: ``allowed_schemas`` names a whole
+    schema, the grants name a few of its tables. a catalog that listed the rest sent every
+    later read of them (the coverage probe, the schema tool) into ``42501`` permission denied.
+    the live proof against a real engine is ``test_asyncpg_driver_live.py``'s.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["list_tables", "list_columns", "table_hashes"])
+    async def test_every_catalog_query_asks_the_select_grant_by_oid(
+        self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch, method: str
+    ) -> None:
+        pool = _build_mock_pool(fetch_records=[])
+        driver = _driver_owning(pool, postgres_config, monkeypatch)
+        await getattr(driver, method)(["s1"])
+        sql = _single_catalog_query(pool, ["s1"])
+        assert _SELECTABLE in sql
+        # never by name: a name is resolved against the current catalog, not the query's snapshot
+        assert "quote_ident" not in sql
+
+    @pytest.mark.asyncio
+    async def test_list_tables_keeps_only_the_selectable_and_says_what_it_left_out(
+        self,
+        postgres_config: PostgresConnectionConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        records = [
+            {"table_schema": "s1", "table_name": "granted", "selectable": True},
+            # a relation dropped while the query ran: its OID answers NULL, and it is simply gone
+            {"table_schema": "s1", "table_name": "vanished", "selectable": None},
+        ] + [{"table_schema": "s1", "table_name": f"ungranted_{i}", "selectable": False} for i in range(7)]
+        pool = _build_mock_pool(fetch_records=records)
+        driver = _driver_owning(pool, postgres_config, monkeypatch)
+        with caplog.at_level("INFO", logger=_LOGGER):
+            rows = await driver.list_tables(["s1"])
+        assert rows == [{"table_schema": "s1", "table_name": "granted"}]
+        (message,) = _left_out(caplog)
+        assert "7 relation" in message
+        assert "list_tables" in message
+        # at most five examples, and never the vanished one
+        assert message.count("s1.ungranted_") == 5
+        assert "vanished" not in message
+
+    @pytest.mark.asyncio
+    async def test_list_columns_counts_relations_not_columns(
+        self,
+        postgres_config: PostgresConnectionConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        records = [
+            _column("granted", True),
+            _column("ungranted", False, "a"),
+            _column("ungranted", False, "b"),
+            _column("vanished", None),
+        ]
+        pool = _build_mock_pool(fetch_records=records)
+        driver = _driver_owning(pool, postgres_config, monkeypatch)
+        with caplog.at_level("INFO", logger=_LOGGER):
+            rows = await driver.list_columns(["s1"])
+        assert [(r["table_name"], r["column_name"]) for r in rows] == [("granted", "c1")]
+        assert "selectable" not in rows[0]
+        (message,) = _left_out(caplog)
+        assert "1 relation" in message
+        assert "s1.ungranted" in message
+
+    @pytest.mark.asyncio
+    async def test_table_hashes_keeps_only_the_selectable(
+        self,
+        postgres_config: PostgresConnectionConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        records = [
+            {"table_schema": "s1", "table_name": "granted", "column_hash": "h1", "selectable": True},
+            {"table_schema": "s1", "table_name": "ungranted", "column_hash": "h2", "selectable": False},
+            {"table_schema": "s1", "table_name": "vanished", "column_hash": "h3", "selectable": None},
+        ]
+        pool = _build_mock_pool(fetch_records=records)
+        driver = _driver_owning(pool, postgres_config, monkeypatch)
+        with caplog.at_level("INFO", logger=_LOGGER):
+            hashes = await driver.table_hashes(["s1"])
+        assert hashes == {("s1", "granted"): "h1"}
+        (message,) = _left_out(caplog)
+        assert "table_hashes" in message
+
+    @pytest.mark.asyncio
+    async def test_the_hash_probe_hashes_once_over_selectable_tables_only(
+        self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """the privilege check wraps the column-hash formula once; it adds no second hash.
+
+        That the formula is ``column_hash_payload``'s, unaltered, is proven where it can be, against
+        a live Postgres (``test_python_and_sql_hashes_agree``); restating it here would be a third
+        copy that stops agreeing the next time it changes.
+        """
+        pool = _build_mock_pool(fetch_records=[])
+        driver = _driver_owning(pool, postgres_config, monkeypatch)
+        await driver.table_hashes(["s1"])
+        sent = _single_catalog_query(pool, ["s1"])
+        assert sent.count("STRING_AGG(") == 1 and sent.count(" AS column_hash") == 1, sent
+        assert _SELECTABLE in sent, sent
+
+    @pytest.mark.asyncio
+    async def test_nothing_left_out_logs_nothing(
+        self,
+        postgres_config: PostgresConnectionConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        pool = _build_mock_pool(fetch_records=[{"table_schema": "s1", "table_name": "t1", "selectable": True}])
+        driver = _driver_owning(pool, postgres_config, monkeypatch)
+        with caplog.at_level("INFO", logger=_LOGGER):
+            await driver.list_tables(["s1"])
+        assert _left_out(caplog) == []
 
 
 # ---------------------------------------------------------------------------
@@ -461,7 +626,7 @@ class TestBorrowedPool:
     """AGENT_INTERNAL config branch uses the external pool, doesn't close it."""
 
     @pytest.mark.asyncio
-    async def test_external_pool_used_for_fetch(self, agent_internal_config: AgentInternalConnectionConfig) -> None:
+    async def test_external_pool_used_for_fetch(self, agent_internal_config: BorrowedPoolConnectionConfig) -> None:
         """fetch routes through the borrowed pool's acquired connection."""
         pool = _build_mock_pool(fetch_records=[{"x": 1}])
         driver = AsyncpgDriver(agent_internal_config, external_pool=pool)
@@ -470,7 +635,7 @@ class TestBorrowedPool:
 
     @pytest.mark.asyncio
     async def test_owns_pool_false_for_borrowed(
-        self, agent_internal_config: AgentInternalConnectionConfig, monkeypatch: pytest.MonkeyPatch
+        self, agent_internal_config: BorrowedPoolConnectionConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """the borrowed path never creates a pool of its own, even after use."""
         create_pool = AsyncMock()
@@ -485,7 +650,7 @@ class TestBorrowedPool:
 
     @pytest.mark.asyncio
     async def test_close_does_not_close_borrowed_pool(
-        self, agent_internal_config: AgentInternalConnectionConfig
+        self, agent_internal_config: BorrowedPoolConnectionConfig
     ) -> None:
         """borrowed pool is NOT closed by the driver's :meth:`close`."""
         pool = _build_mock_pool()
@@ -844,7 +1009,7 @@ class TestABorrowedConnectionIsScopedToItsSchema:
     @pytest.mark.asyncio
     async def test_fetch_sets_search_path_on_the_borrowed_connection(
         self,
-        agent_internal_config: AgentInternalConnectionConfig,
+        agent_internal_config: BorrowedPoolConnectionConfig,
     ) -> None:
         """
         :return: nothing
@@ -873,7 +1038,7 @@ class TestABorrowedConnectionIsScopedToItsSchema:
         :return: nothing
         :rtype: None
         """
-        cfg = AgentInternalConnectionConfig(
+        cfg = BorrowedPoolConnectionConfig(
             datasource_type=DataSourceType.AGENT_INTERNAL,
             schema_name='weird"name',
         )
@@ -914,3 +1079,93 @@ class TestABorrowedConnectionIsScopedToItsSchema:
         conn = fake_pool.recorded_conn
         executed = [call.args[0] for call in conn.execute.await_args_list]
         assert not any("search_path" in statement for statement in executed)
+
+
+class TestFetchAtMost:
+    """a read that stops after ``max_rows`` rows: the rest are never fetched from the server."""
+
+    @pytest.mark.asyncio
+    async def test_rows_are_read_through_a_cursor_that_fetches_no_more_than_asked(
+        self, agent_internal_config: BorrowedPoolConnectionConfig
+    ) -> None:
+        external = _build_mock_pool()
+        conn = external.recorded_conn
+        cursor = MagicMock(name="MockCursor")
+        cursor.fetch = AsyncMock(return_value=[{"n": 0}, {"n": 1}, {"n": 2}])
+        opened: list[tuple[Any, ...]] = []
+
+        async def open_cursor(*args: Any) -> Any:
+            opened.append(args)
+            return cursor
+
+        conn.cursor = MagicMock(side_effect=lambda *args: open_cursor(*args))
+
+        @asynccontextmanager
+        async def transaction() -> Any:
+            yield None
+
+        conn.transaction = MagicMock(side_effect=transaction)
+        driver = AsyncpgDriver(agent_internal_config, external_pool=external)
+
+        rows = await driver.fetch_at_most("SELECT n FROM big WHERE a = $1", 7, max_rows=3)
+
+        assert rows == [{"n": 0}, {"n": 1}, {"n": 2}]
+        assert opened == [("SELECT n FROM big WHERE a = $1", 7)]
+        cursor.fetch.assert_awaited_once_with(3)
+        conn.fetch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_bound_below_one_is_refused(self, agent_internal_config: BorrowedPoolConnectionConfig) -> None:
+        driver = AsyncpgDriver(agent_internal_config, external_pool=_build_mock_pool())
+        with pytest.raises(ValueError, match="max_rows"):
+            await driver.fetch_at_most("SELECT 1", max_rows=0)
+
+
+class TestABorrowedPoolThatHasNoConnectionToSpare:
+    @pytest.mark.asyncio
+    async def test_a_timed_out_wait_for_a_connection_says_the_pool_is_busy_not_that_a_statement_timed_out(
+        self, agent_internal_config: BorrowedPoolConnectionConfig
+    ) -> None:
+        external = _build_mock_pool()
+
+        @asynccontextmanager
+        async def exhausted(**options: Any) -> Any:
+            raise TimeoutError
+            yield  # pragma: no cover - never reached
+
+        external.acquire = exhausted
+        driver = AsyncpgDriver(agent_internal_config, external_pool=external)
+
+        with pytest.raises(DriverPoolBusyError):
+            await driver.fetch("SELECT 1")
+        with pytest.raises(DriverPoolBusyError):
+            await driver.fetch_at_most("SELECT 1", max_rows=2)
+
+    @pytest.mark.asyncio
+    async def test_every_way_into_a_borrowed_pool_says_busy_when_it_has_no_connection(
+        self, agent_internal_config: BorrowedPoolConnectionConfig
+    ) -> None:
+        """a transaction and a streamed read take their connection by other routes than fetch; each must say busy."""
+
+        class _Exhausted:
+            """a pool's acquire that runs out of time whether it is awaited or entered."""
+
+            def __await__(self) -> Any:
+                raise TimeoutError
+                yield  # pragma: no cover - never reached
+
+            async def __aenter__(self) -> Any:
+                raise TimeoutError
+
+            async def __aexit__(self, *exc_info: Any) -> bool:
+                return False
+
+        external = _build_mock_pool()
+        external.acquire = lambda **options: _Exhausted()
+        driver = AsyncpgDriver(agent_internal_config, external_pool=external)
+
+        with pytest.raises(DriverPoolBusyError):
+            await driver.begin()
+        with pytest.raises(DriverPoolBusyError):
+            async for _row in driver.fetch_iter("SELECT 1"):
+                pass  # pragma: no cover - the acquire fails before any row

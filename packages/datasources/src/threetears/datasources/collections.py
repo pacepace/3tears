@@ -35,9 +35,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID
 
+from threetears.core.collections import WRITE_GENERATION, DeleteCascade
 from threetears.core.backends import L3Backend, parse_rowcount
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.schema_backed import (
@@ -459,6 +460,10 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
     admin endpoints via the L3 pool with cache-bypass rationales).
     """
 
+    #: switched on (epoch-task-06): its writes advance the table's write generation, so a cache
+    #: derived from it (a visibility scan) is evicted when a broadcast is missed, not timed out
+    write_generation = WRITE_GENERATION
+
     primary_key_column: str = "id"
     schema = TableSchema(
         name="datasources",
@@ -695,6 +700,7 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
         :return: capability-source entity or ``None`` when no row exists
         :rtype: CapabilitySourceEntity | None
         """
+        read_ticket = self.scan_ticket()  # before the first await
         result: CapabilitySourceEntity | None = None
         if self.l3_pool is not None:
             row = await self.l3_pool.fetchrow(
@@ -703,7 +709,7 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data, from_lower_tier=True)
+                self.write_to_cache_sync(data, read_since=read_ticket)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
@@ -748,6 +754,10 @@ class DataSourceTableCollection(BaseCollection[DataSourceTableEntity]):
     provides CRUD operations with L1 -> L2 -> L3 caching.
     data source tables are hard-deleted (no soft-delete pattern).
     """
+
+    #: switched on (epoch-task-06): its writes advance the table's write generation, so a cache
+    #: derived from it (a visibility scan) is evicted when a broadcast is missed, not timed out
+    write_generation = WRITE_GENERATION
 
     @property
     def table_name(self) -> str:
@@ -1422,6 +1432,12 @@ class TableTemplateCollection(BaseCollection[TableTemplateEntity]):
     from ``table_template_columns.template_id`` is ``ON DELETE
     CASCADE`` so the per-template column list goes with it.
     """
+
+    # datasource_tables.template_id is ON DELETE SET NULL: a bound table's cached row would keep
+    # naming the deleted template, so every delete announces the tables it unbinds
+    delete_cascades: ClassVar[tuple[DeleteCascade, ...]] = (
+        DeleteCascade("datasource_tables", "template_id", "SET NULL"),
+    )
 
     @property
     def table_name(self) -> str:

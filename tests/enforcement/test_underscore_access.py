@@ -31,12 +31,15 @@ _CONFIG = UnderscoreAccessConfig(
 
 
 class TestUnderscoreAccess:
-    """aggregate test: six shapes, one assertion, exemptions applied.
+    """aggregate test: every shape, one assertion, exemptions applied.
 
     shape F -- a private name reached through ``setattr`` / ``getattr`` / ``delattr`` /
     ``hasattr`` -- also scans every ``tests/`` tree. the other shapes stay src-only, and SLF001
     reaches tests through ``./scripts/lint.sh``; the reflective spelling had nothing reaching it
     anywhere, and every instance that surfaced it was a test fixture.
+
+    shape I scans ONLY the ``tests/`` trees: a test subclass reaching its production base's
+    private state through ``self`` (a lock, a cache), which SLF001 exempts as the owner's access.
     """
 
     def test_no_underscore_violations(self) -> None:

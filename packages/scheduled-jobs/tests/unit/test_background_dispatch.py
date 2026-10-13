@@ -13,7 +13,7 @@ a task of its own, and finalizes the row with the real outcome. These cases pin 
 - ``aclose`` cancels what is still running and records each fire as failed, saying why.
 
 No DB and no NATS server: the fire store is a recording fake, and the cross-pod lock is
-monkeypatched at ``threetears.nats.nats_distributed_lock`` exactly as the tick tests do.
+monkeypatched at ``threetears.core.coordination.nats_distributed_lock`` exactly as the tick tests do.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from threetears.nats import LockHeld
+from threetears.core.coordination import LockHeld
 from threetears.nats.errors import KvError
 
 from threetears.scheduled_jobs.background import IN_FLIGHT_SKIP_OUTPUT_KEY, BackgroundDispatch, in_flight_lock_key
@@ -152,7 +152,7 @@ def _patch_lock(monkeypatch: pytest.MonkeyPatch, ctx: Any, keys: list[str] | Non
             keys.append(key)
         return ctx
 
-    monkeypatch.setattr("threetears.nats.nats_distributed_lock", _factory)
+    monkeypatch.setattr("threetears.core.coordination.nats_distributed_lock", _factory)
 
 
 # ---------------------------------------------------------------------------

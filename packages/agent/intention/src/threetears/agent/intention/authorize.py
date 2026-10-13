@@ -150,7 +150,7 @@ class IntentionAuthorizerDependencies:
     signatures mirror memory's :class:`MemoryAuthorizerDependencies` and
     a later user-grant slice can widen it additively.
 
-    :ivar acl_cache: shared :class:`AclCache` carrying loaders + ttl layers
+    :ivar acl_cache: shared :class:`AclCache` carrying loaders + its layers
     """
 
     acl_cache: AclCache

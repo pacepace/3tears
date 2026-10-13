@@ -63,6 +63,10 @@ class RecordingNatsClient:
     there -- and each ``(subject, message)`` sent by plain publish, such as a registration manifest.
     """
 
+    #: the broker's advertised limit, as ``NatsClient.max_payload`` reports it; ``None`` (unknown) leaves the
+    #: tool server's size guard off, as on a client that has not connected
+    max_payload: int | None = None
+
     def __init__(self) -> None:
         self.replies: list[tuple[str, Any]] = []
         self.published: list[tuple[Any, Any]] = []

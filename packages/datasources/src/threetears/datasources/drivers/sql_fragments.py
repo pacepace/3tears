@@ -19,11 +19,16 @@ target styles:
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Literal
+
+from threetears.core.fingerprint import relation_key_expression
+from threetears.core.sql_fragments import as_written, equality_conditions, quote_identifier
 
 __all__ = [
     "PlaceholderStyle",
+    "build_equality_filter",
+    "build_filter",
     "build_relation_key_expression",
     "build_reset_statement_timeout_sql",
     "build_search_path_value",
@@ -134,25 +139,6 @@ def build_reset_statement_timeout_sql() -> str:
     return _RESET_STATEMENT_TIMEOUT_SQL
 
 
-def _quote_pg_identifier(name: str) -> str:
-    """quote a single Postgres / Redshift identifier safely.
-
-    wraps the name in double quotes and escapes any internal double
-    quote by doubling it, matching the SQL standard identifier-quoting
-    rules accepted by Postgres, Yugabyte, and Redshift. callers MUST
-    use this when interpolating user-controllable identifiers into a
-    SQL fragment (e.g. schema names threaded from an agent's
-    ``allowed_schemas`` config); parameter placeholders are not
-    accepted for identifiers in any of these backends.
-
-    :param name: identifier to quote
-    :ptype name: str
-    :return: quoted identifier (with the wrapping double quotes)
-    :rtype: str
-    """
-    return '"' + name.replace('"', '""') + '"'
-
-
 def build_search_path_value(schemas: list[str]) -> str | None:
     """build the VALUE portion of a ``search_path`` setting for ``schemas``.
 
@@ -171,7 +157,7 @@ def build_search_path_value(schemas: list[str]) -> str | None:
     - any caller that wants to interpolate the value clause without
       the ``SET search_path TO`` SQL prefix
 
-    each schema name is identifier-quoted via :func:`_quote_pg_identifier`
+    each schema name is identifier-quoted via :func:`threetears.core.sql_fragments.quote_identifier`
     so callers can pass arbitrary names without SQL-injection risk.
     order is preserved: leftmost-wins semantics for unqualified-name
     resolution, which matches both Postgres' documented behaviour and
@@ -186,7 +172,7 @@ def build_search_path_value(schemas: list[str]) -> str | None:
     """
     if not schemas:
         return None
-    return ", ".join(_quote_pg_identifier(s) for s in schemas)
+    return ", ".join(quote_identifier(s) for s in schemas)
 
 
 def build_set_search_path_sql(schemas: list[str]) -> str | None:
@@ -336,30 +322,53 @@ def translate_placeholders(sql: str, target_style: PlaceholderStyle) -> str:
     return "".join(out)
 
 
-def build_relation_key_expression(key: Sequence[str]) -> str:
-    """render the ordering key of one row as a single text value, NULLs distinguished.
+def build_equality_filter(where: Mapping[str, str] | None) -> tuple[str, list[str]]:
+    """a `` WHERE`` fragment keeping only the rows whose columns equal ``where``'s values.
 
-    The dialect-independent half of a relation fingerprint. Every admitted engine
-    spells ``CAST(... AS VARCHAR)``, ``CHR`` and ``||`` the same way, so the part
-    that differs between them is only the hash-to-number step around this.
+    Placeholders are ``$1..$n``, the canonical style; a driver translates them for its engine
+    with :func:`translate_placeholders`. Values are bound, never interpolated; the column
+    names are interpolated and must be TRUSTED identifiers, as the request model enforces.
 
-    **A NULL is not an empty string here.** Coalescing both to ``''`` would make a
-    row with a NULL key indistinguishable from one with an empty one, so a swap
-    between them would leave the fingerprint unchanged -- exactly the blindness a
-    fingerprint replaces a count to remove. ``CHR(30)``, the ASCII record
-    separator, stands in for NULL; ``CHR(31)``, the unit separator, joins the
-    columns. Neither occurs in warehouse key data in practice, and a value that
-    did contain one would still be separated from its neighbours by the other.
-
-    :param key: the ordering columns, TRUSTED identifiers
-    :ptype key: Sequence[str]
-    :return: a SQL expression producing one text value per row
-    :rtype: str
-    :raises ValueError: when ``key`` is empty, which would render a constant and
-        fingerprint every relation of the same size identically
+    :param where: column -> value; empty or ``None`` filters nothing
+    :ptype where: Mapping[str, str] | None
+    :return: the fragment (empty when there are no filters) and its values in order
+    :rtype: tuple[str, list[str]]
     """
-    columns = list(key)
-    if not columns:
-        raise ValueError("a relation fingerprint needs at least one ordering column")
-    rendered = [f"CASE WHEN {column} IS NULL THEN CHR(30) ELSE CAST({column} AS VARCHAR) END" for column in columns]
-    return " || CHR(31) || ".join(rendered)
+    # unquoted, as the statement's relation and key columns are: every name in it folds case alike
+    clause, values = equality_conditions(where, quote=as_written)
+    return (f" WHERE {clause}" if clause else ""), values
+
+
+def build_filter(
+    where: Mapping[str, str] | None, where_in: Mapping[str, Sequence[str]] | None = None
+) -> tuple[str, list[str]]:
+    """a `` WHERE`` fragment keeping the rows whose columns equal ``where``'s values and are among ``where_in``'s.
+
+    As :func:`build_equality_filter`, with set membership too: ``column IN ($n, ...)``, each value
+    bound. An empty set keeps no row.
+
+    :param where: column -> value
+    :ptype where: Mapping[str, str] | None
+    :param where_in: column -> the values it may hold
+    :ptype where_in: Mapping[str, Sequence[str]] | None
+    :return: the fragment (empty when there are no filters) and its values in order
+    :rtype: tuple[str, list[str]]
+    """
+    clause, values = equality_conditions(where, quote=as_written)
+    conditions = [clause] if clause else []
+    for column, members in (where_in or {}).items():
+        members = list(members)
+        if not members:
+            conditions.append("1 = 0")
+            continue
+        first = len(values) + 1
+        placeholders = ", ".join(f"${first + index}" for index in range(len(members)))
+        conditions.append(f"{as_written(column)} IN ({placeholders})")
+        values.extend(members)
+    return (f" WHERE {' AND '.join(conditions)}" if conditions else ""), values
+
+
+#: render the ordering key of one row as a single text value, NULLs distinguished: the
+#: dialect-independent half of a relation fingerprint. One rule for every engine and for the
+#: L1 copies proven against them, so it lives in :mod:`threetears.core.fingerprint`.
+build_relation_key_expression = relation_key_expression

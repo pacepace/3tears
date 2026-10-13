@@ -149,11 +149,13 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import functools
-from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import Any
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import AsyncExitStack, asynccontextmanager
+from typing import Any, Final
 
 import asyncpg
 
+from threetears.core.fingerprint import postgres_fingerprint_sql
 from threetears.core.config import DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS, DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS
 from threetears.core.utils.pg_pool_kwargs import (
     PoolStartupTimeoutError,
@@ -161,13 +163,14 @@ from threetears.core.utils.pg_pool_kwargs import (
     get_pg_pool_kwargs,
 )
 from threetears.datasources.config import (
-    AgentInternalConnectionConfig,
+    BorrowedPoolConnectionConfig,
     PostgresConnectionConfig,
     YugabyteConnectionConfig,
 )
 from threetears.datasources.drivers.sql_fragments import (
     translate_placeholders,
-    build_relation_key_expression,
+    build_equality_filter,
+    build_filter,
     build_reset_statement_timeout_sql,
     build_search_path_value,
     build_set_local_statement_timeout_sql,
@@ -181,6 +184,8 @@ from threetears.datasources.drivers.base import (
     Transaction,
     _check_otel_metrics,
     _instrument_cache,
+    check_max_rows,
+    log_unselectable_relations,
     observed,
 )
 from pydantic import SecretStr
@@ -188,12 +193,14 @@ from pydantic import SecretStr
 from threetears.datasources.drivers.connect_guard import ConnectGuard, guarded_connect
 from threetears.datasources.drivers.errors import (
     DriverConnectError,
+    DriverPoolBusyError,
     connect_error_from,
     optional_password,
 )
 from threetears.observe import get_logger, traced
 
 __all__ = [
+    "BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS",
     "AsyncpgDriver",
     "DriverCancellationError",
     "DriverQueryError",
@@ -227,18 +234,46 @@ def _pool_start_budget_seconds(pool_min_size: int) -> float:
 # ---------------------------------------------------------------------------
 
 
-#: list tables visible inside the schema allow-list.
+#: the privilege test every catalog query answers: can the datasource's own user SELECT the
+#: relation. ``information_schema`` lists a table its user holds ANY privilege on (an INSERT, a
+#: REFERENCES), and a least-privilege warehouse user is granted a few tables of a schema it can
+#: see whole; without this the catalog carried tables every later read of which -- the coverage
+#: probe, the schema tool -- raised 42501 permission denied. the catalog therefore follows the
+#: grants by construction: a revoked table drops out at the next introspection, a new grant
+#: comes in.
+#:
+#: ASKED BY OID, NEVER BY NAME. ``information_schema`` answers from the query's snapshot, but a
+#: name handed to ``has_table_privilege`` is resolved against the CURRENT catalog: a relation
+#: dropped or renamed while the query runs (a promote's DROP / ALTER) raised ``relation does not
+#: exist`` and failed the query for every table in scope. the snapshot's ``pg_class`` row
+#: carries the OID, and for an OID that no longer exists the check answers NULL -- that relation
+#: is simply left out (``tests/integration/test_asyncpg_driver_live.py`` drops one mid-read).
+#:
+#: the answer is a column (``selectable``: true, false, or NULL for vanished), not a WHERE
+#: filter, so the driver can say which relations it left out for want of a grant
+#: (:func:`~threetears.datasources.drivers.base.log_unselectable_relations`).
+_SELECTABLE = "has_table_privilege(current_user, rel.oid, 'SELECT')"
+
+#: the snapshot's ``pg_class`` row behind an ``information_schema`` row aliased ``src``
+_RELATION_JOIN = (
+    "JOIN pg_catalog.pg_namespace AS nsp ON nsp.nspname = src.table_schema\n"
+    "JOIN pg_catalog.pg_class AS rel ON rel.relnamespace = nsp.oid AND rel.relname = src.table_name"
+)
+
+
+#: list tables visible inside the schema allow-list, each with whether the user can SELECT it.
 #:
 #: originally migrated verbatim from Hub's
 #: ``aibots.hub.datasources.schema_introspector``; the shard-13 rewire has
 #: since landed and the introspector calls this driver directly instead of
 #: embedding its own copy of the SQL.
-_POSTGRES_TABLES_SQL = """
-SELECT table_schema, table_name
-FROM information_schema.tables
-WHERE table_schema = ANY($1)
-AND table_type = 'BASE TABLE'
-ORDER BY table_schema, table_name
+_POSTGRES_TABLES_SQL = f"""
+SELECT src.table_schema, src.table_name, {_SELECTABLE} AS selectable
+FROM information_schema.tables AS src
+{_RELATION_JOIN}
+WHERE src.table_schema = ANY($1)
+AND src.table_type = 'BASE TABLE'
+ORDER BY src.table_schema, src.table_name
 """.strip()
 
 
@@ -248,11 +283,13 @@ ORDER BY table_schema, table_name
 #: the :class:`ColumnRow` TypedDict pins it that way so the Tier-2 hash
 #: stays byte-equivalent with the warehouse-side MD5 (see
 #: :data:`_POSTGRES_TABLE_HASHES_SQL`).
-_POSTGRES_COLUMNS_SQL = """
-SELECT table_schema, table_name, column_name, data_type, is_nullable, ordinal_position
-FROM information_schema.columns
-WHERE table_schema = ANY($1)
-ORDER BY table_schema, table_name, ordinal_position
+_POSTGRES_COLUMNS_SQL = f"""
+SELECT src.table_schema, src.table_name, src.column_name, src.data_type, src.is_nullable, src.ordinal_position,
+       {_SELECTABLE} AS selectable
+FROM information_schema.columns AS src
+{_RELATION_JOIN}
+WHERE src.table_schema = ANY($1)
+ORDER BY src.table_schema, src.table_name, src.ordinal_position
 """.strip()
 
 
@@ -278,6 +315,22 @@ FROM information_schema.columns
 WHERE table_schema = ANY($1)
 GROUP BY table_schema, table_name
 ORDER BY table_schema, table_name
+""".strip()
+
+
+#: what :meth:`AsyncpgDriver.table_hashes` runs: :data:`_POSTGRES_TABLE_HASHES_SQL`, unchanged, as a
+#: subquery, each hashed table joined to its snapshot ``pg_class`` row and answered with
+#: :data:`_SELECTABLE`. the privilege check composes AROUND the formula's one owner rather than
+#: restating it (``tests/enforcement/test_hash_formula_has_two_owners.py``), so the hash stays
+#: whatever that constant says, over the same rows. one statement, so the formula and the check
+#: read one snapshot.
+_POSTGRES_SELECTABLE_TABLE_HASHES_SQL = f"""
+SELECT src.table_schema, src.table_name, src.column_hash, {_SELECTABLE} AS selectable
+FROM (
+{_POSTGRES_TABLE_HASHES_SQL}
+) AS src
+{_RELATION_JOIN}
+ORDER BY src.table_schema, src.table_name
 """.strip()
 
 
@@ -317,7 +370,7 @@ class DriverCancellationError(asyncio.CancelledError):
 # the driver accepts either. agent-internal uses a different shape
 # entirely (no host/port/credentials) and is handled separately.
 _PgConfig = PostgresConnectionConfig | YugabyteConnectionConfig
-_AnyConfig = _PgConfig | AgentInternalConnectionConfig
+_AnyConfig = _PgConfig | BorrowedPoolConnectionConfig
 
 
 @dataclasses.dataclass
@@ -391,6 +444,12 @@ def _get_cancellation_fired_counter() -> Any:
 # ---------------------------------------------------------------------------
 
 
+#: how long a query waits for a connection of a pool it borrows from its host (the hub's L3 pool, for
+#: an ``agent_internal`` datasource) before it gives up with a timeout: well under a datasource
+#: client's deadline, so nothing runs after its caller stopped waiting
+BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS: Final = 5.0
+
+
 class AsyncpgDriver(Driver):
     """concrete :class:`Driver` backed by ``asyncpg.Pool``.
 
@@ -414,7 +473,7 @@ class AsyncpgDriver(Driver):
     :param config: per-driver connection config; postgres / yugabyte
         carry connection identity + pool sizing; agent-internal
         carries only the schema name (the pool is borrowed)
-    :ptype config: PostgresConnectionConfig | YugabyteConnectionConfig | AgentInternalConnectionConfig
+    :ptype config: PostgresConnectionConfig | YugabyteConnectionConfig | BorrowedPoolConnectionConfig
     :param external_pool: pre-existing :class:`asyncpg.Pool` to borrow.
         ONLY supplied for the AGENT_INTERNAL branch by the factory;
         external (postgres / yugabyte) callers pass None and the
@@ -441,7 +500,7 @@ class AsyncpgDriver(Driver):
         """capture config + optional borrowed pool. no I/O.
 
         :param config: per-driver connection config
-        :ptype config: PostgresConnectionConfig | YugabyteConnectionConfig | AgentInternalConnectionConfig
+        :ptype config: PostgresConnectionConfig | YugabyteConnectionConfig | BorrowedPoolConnectionConfig
         :param external_pool: pre-existing pool to borrow (agent-internal)
         :ptype external_pool: asyncpg.Pool | None
         :param datasource_name: name of the datasource this driver serves;
@@ -454,9 +513,18 @@ class AsyncpgDriver(Driver):
         :return: nothing
         :rtype: None
         """
+        if isinstance(config, BorrowedPoolConnectionConfig) and external_pool is None:
+            raise ValueError(
+                "a BorrowedPoolConnectionConfig names a pool lent by the host; pass that pool as external_pool"
+            )
         self._config = config
         self._connect_guard = connect_guard
+        # the one attribute that says borrowed (lent by the host) or owned; everything else derives from it
         self._external_pool = external_pool
+        # a borrowed pool is the host's own, busy with its work too: wait on it a bounded time
+        self._acquire_options: dict[str, Any] = (
+            {} if external_pool is None else {"timeout": BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS}
+        )
         # the pool is None until first use OR a borrowed pool is
         # supplied; ``_owns_pool`` distinguishes the lifecycle paths
         # so :meth:`close` knows whether to call ``pool.close()``.
@@ -476,6 +544,64 @@ class AsyncpgDriver(Driver):
     # -------------------------------------------------------------------
     # pool lifecycle helpers
     # -------------------------------------------------------------------
+
+    @property
+    def concurrent_queries(self) -> int:
+        """its own pool's ceiling; 1 for a lent pool, which the host bounds with its other borrowers.
+
+        :return: the cap
+        :rtype: int
+        """
+        config = self._config
+        result = 1
+        if self._external_pool is None and not isinstance(config, BorrowedPoolConnectionConfig):
+            result = config.pool_max_size
+        return result
+
+    @property
+    def borrowed_pool(self) -> Any | None:
+        """the host's pool this driver borrows (agent_internal), or None when it owns its pool.
+
+        :return: the borrowed pool
+        :rtype: Any | None
+        """
+        return self._external_pool
+
+    @asynccontextmanager
+    async def _pool_connection(self, pool: Any) -> AsyncIterator[Any]:
+        """a connection of ``pool`` for one call; a borrowed pool with none to spare is busy, not timed out.
+
+        :param pool: the pool
+        :ptype pool: asyncpg.Pool
+        :return: an async context manager yielding the connection
+        :rtype: AsyncIterator[Any]
+        :raises DriverPoolBusyError: when a borrowed pool had no connection within the bound
+        """
+        async with AsyncExitStack() as stack:
+            try:
+                conn = await stack.enter_async_context(pool.acquire(**self._acquire_options))
+            except TimeoutError as exc:
+                busy = self._busy(exc)
+                if busy is exc:
+                    raise
+                raise busy from exc
+            yield conn
+
+    def _busy(self, exc: TimeoutError) -> BaseException:
+        """what a wait for a pool connection that ran out of time raises.
+
+        :param exc: the timeout
+        :ptype exc: TimeoutError
+        :return: :class:`DriverPoolBusyError` for a borrowed pool (nothing ran); the timeout itself otherwise
+        :rtype: BaseException
+        """
+        result: BaseException = exc
+        if self._external_pool is not None:
+            result = DriverPoolBusyError(
+                f"the host's pool had no connection to spare within {BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS} s; "
+                "nothing ran"
+            )
+        return result
 
     async def _ensure_pool(self) -> asyncpg.Pool[Any]:
         """lazily create the asyncpg pool on first use; reject calls after close.
@@ -548,7 +674,7 @@ class AsyncpgDriver(Driver):
         # external_pool= for that case. defending against a future
         # caller that constructs the driver directly with mismatched
         # args.
-        if isinstance(self._config, AgentInternalConnectionConfig):
+        if isinstance(self._config, BorrowedPoolConnectionConfig):
             raise DriverConnectError(
                 "AsyncpgDriver: AGENT_INTERNAL config requires external_pool="
                 " (Hub's L3 pool); cannot open a fresh pool from agent_internal"
@@ -789,7 +915,7 @@ class AsyncpgDriver(Driver):
         # borrowed-pool search_path is applied at this one point rather than at
         # each call site.
         pool = await self._ensure_pool()
-        async with pool.acquire() as conn:
+        async with self._pool_connection(pool) as conn:
             await self._scope_borrowed_connection(conn)
             if timeout_seconds is None:
                 result = await self._with_cancellation(
@@ -879,6 +1005,46 @@ class AsyncpgDriver(Driver):
 
     @traced
     @observed(driver_type="asyncpg")
+    async def fetch_at_most(
+        self, sql: str, *params: Any, max_rows: int, timeout_seconds: int | None = None
+    ) -> list[dict[str, Any]]:
+        """run a SELECT through a server-side cursor and fetch at most ``max_rows`` rows .
+
+        The rows past the bound are never sent: the cursor (a portal, in its own transaction) is
+        asked for ``max_rows`` and closed with the transaction.
+
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional placeholder values
+        :ptype params: Any
+        :param max_rows: the most rows to fetch, at least 1
+        :ptype max_rows: int
+        :param timeout_seconds: per-statement timeout override, as :meth:`fetch` takes it
+        :ptype timeout_seconds: int | None
+        :return: at most ``max_rows`` column-name -> value dicts, in row order
+        :rtype: list[dict[str, Any]]
+        :raises ValueError: if ``max_rows`` is below 1, or ``timeout_seconds`` is not a positive int
+        :raises RuntimeError: if the driver was previously closed
+        """
+        check_max_rows(max_rows)
+        if self._closed:
+            raise RuntimeError("AsyncpgDriver is closed")
+        if timeout_seconds is not None:
+            build_set_local_statement_timeout_sql(timeout_seconds)
+        translated = translate_placeholders(sql, "asyncpg")
+
+        async def _bounded(conn: Any) -> Any:
+            # a cursor lives in a transaction; nested in the timeout's own one, this is a savepoint
+            async with conn.transaction():
+                cursor = await conn.cursor(translated, *params)
+                return await cursor.fetch(max_rows)
+
+        records = await self._acquire_and_run(_bounded, timeout_seconds=timeout_seconds)
+        result: list[dict[str, Any]] = [dict(r) for r in records]
+        return result
+
+    @traced
+    @observed(driver_type="asyncpg")
     async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> None:
         """run a DML / DDL statement; discard any returned rows.
 
@@ -928,7 +1094,13 @@ class AsyncpgDriver(Driver):
         if self._closed:
             raise RuntimeError("AsyncpgDriver is closed")
         pool = await self._ensure_pool()
-        conn = await pool.acquire()
+        try:
+            conn = await pool.acquire(**self._acquire_options)
+        except TimeoutError as exc:
+            busy = self._busy(exc)
+            if busy is exc:
+                raise
+            raise busy from exc
         try:
             # before the transaction opens: a borrowed connection carries the
             # pool owner's search_path until scoped, and SET inside the
@@ -1088,7 +1260,7 @@ class AsyncpgDriver(Driver):
             raise RuntimeError("AsyncpgDriver is closed")
         translated = translate_placeholders(sql, "asyncpg")
         pool = await self._ensure_pool()
-        async with pool.acquire() as conn:
+        async with self._pool_connection(pool) as conn:
             await self._scope_borrowed_connection(conn)
             async with conn.transaction():
                 # ``Connection.cursor`` returns a server-side cursor;
@@ -1122,8 +1294,26 @@ class AsyncpgDriver(Driver):
                 table_name=r["table_name"],
             )
             for r in records
+            if r["selectable"]
         ]
+        self._log_left_out("list_tables", records)
         return result
+
+    def _log_left_out(self, method: str, records: Any) -> None:
+        """report the relations a catalog query answered ``selectable = false`` for.
+
+        ``NULL`` is a relation dropped while the query ran, which is gone rather than ungranted.
+
+        :param method: the catalog method that read ``records``
+        :ptype method: str
+        :param records: the catalog rows, each carrying ``selectable``
+        :ptype records: Any
+        """
+        log_unselectable_relations(
+            datasource_name=self._datasource_name,
+            method=method,
+            left_out=((r["table_schema"], r["table_name"]) for r in records if r["selectable"] is False),
+        )
 
     @traced
     @observed(driver_type="asyncpg")
@@ -1156,12 +1346,16 @@ class AsyncpgDriver(Driver):
                 ordinal_position=r["ordinal_position"],
             )
             for r in records
+            if r["selectable"]
         ]
+        self._log_left_out("list_columns", records)
         return result
 
     @traced
     @observed(driver_type="asyncpg")
-    async def relation_fingerprint(self, relation: str, key: list[str]) -> RelationFingerprint:
+    async def relation_fingerprint(
+        self, relation: str, key: list[str], where: Mapping[str, str] | None = None
+    ) -> RelationFingerprint:
         """count and fingerprint ``relation`` over ``key``, in one statement.
 
         Postgres turns a hash into a summable number by casting the leading hex
@@ -1185,14 +1379,51 @@ class AsyncpgDriver(Driver):
         """
         if self._closed:
             raise RuntimeError("AsyncpgDriver is closed")
-        key_expression = build_relation_key_expression(key)
-        sql = (
-            "SELECT COUNT(*) AS row_count, "  # noqa: S608 - relation and key are trusted identifiers
-            "COALESCE(SUM(('x' || SUBSTR(MD5(k), 1, 8))::bit(32)::bigint), 0) AS digest "
-            f"FROM (SELECT {key_expression} AS k FROM {relation}) AS fingerprint_source"
-        )
-        record = await self._acquire_and_run(lambda conn: conn.fetchrow(sql))
+        filters, values = build_equality_filter(where)
+        sql = translate_placeholders(postgres_fingerprint_sql(relation, key, filters), "asyncpg")
+        record = await self._acquire_and_run(lambda conn: conn.fetchrow(sql, *values))
         return RelationFingerprint(row_count=int(record["row_count"]), digest=str(record["digest"]))
+
+    @traced
+    @observed(driver_type="asyncpg")
+    async def relation_fingerprint_groups(
+        self,
+        relation: str,
+        key: list[str],
+        group_by: str,
+        where: Mapping[str, str] | None = None,
+        where_in: Mapping[str, Sequence[str]] | None = None,
+    ) -> dict[str | None, RelationFingerprint]:
+        """count and fingerprint every value of ``group_by`` in ``relation``, in one statement.
+
+        Each group's digest is exactly what :meth:`relation_fingerprint` answers for its rows.
+
+        :param relation: schema-qualified relation name, a TRUSTED identifier
+        :ptype relation: str
+        :param key: the columns the digest covers, TRUSTED identifiers
+        :ptype key: list[str]
+        :param group_by: the grouping column, a TRUSTED identifier
+        :ptype group_by: str
+        :param where: equality filters
+        :ptype where: Mapping[str, str] | None
+        :param where_in: set filters
+        :ptype where_in: Mapping[str, Sequence[str]] | None
+        :return: each group's value as text (``None`` for NULL) -> its fingerprint
+        :rtype: dict[str | None, RelationFingerprint]
+        :raises ValueError: when ``key`` is empty
+        :raises RuntimeError: if the driver was previously closed
+        """
+        if self._closed:
+            raise RuntimeError("AsyncpgDriver is closed")
+        filters, values = build_filter(where, where_in)
+        sql = translate_placeholders(postgres_fingerprint_sql(relation, key, filters, group_by=group_by), "asyncpg")
+        records = await self._acquire_and_run(lambda conn: conn.fetch(sql, *values))
+        return {
+            (None if r["g"] is None else str(r["g"])): RelationFingerprint(
+                row_count=int(r["row_count"]), digest=str(r["digest"])
+            )
+            for r in records
+        }
 
     @traced
     @observed(driver_type="asyncpg")
@@ -1216,9 +1447,12 @@ class AsyncpgDriver(Driver):
         if self._closed:
             raise RuntimeError("AsyncpgDriver is closed")
         records = await self._acquire_and_run(
-            lambda conn: conn.fetch(_POSTGRES_TABLE_HASHES_SQL, schemas),
+            lambda conn: conn.fetch(_POSTGRES_SELECTABLE_TABLE_HASHES_SQL, schemas),
         )
-        result: dict[tuple[str, str], str] = {(r["table_schema"], r["table_name"]): r["column_hash"] for r in records}
+        result: dict[tuple[str, str], str] = {
+            (r["table_schema"], r["table_name"]): r["column_hash"] for r in records if r["selectable"]
+        }
+        self._log_left_out("table_hashes", records)
         return result
 
     # -------------------------------------------------------------------
@@ -1301,7 +1535,7 @@ class AsyncpgDriver(Driver):
         :return: safe-to-log identity string
         :rtype: str
         """
-        if isinstance(self._config, AgentInternalConnectionConfig):
+        if isinstance(self._config, BorrowedPoolConnectionConfig):
             return f"agent_internal://{self._config.schema_name}"
         cfg: _PgConfig = self._config
         return f"{cfg.host}:{cfg.port}/{cfg.database}"

@@ -25,15 +25,46 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Final, Protocol, runtime_checkable
 from uuid import UUID
 
 __all__ = [
+    "L3_RAIL_ROW_CAP",
+    "BulkDeletingStore",
+    "BulkDurableStore",
     "DurableStore",
+    "KeyLedReadingStore",
     "L3Backend",
+    "L3Reader",
     "OrderedDurableStore",
     "parse_rowcount",
 ]
+
+
+class L3Reader(Protocol):
+    """the read half of :class:`L3Backend` a whole-table copy needs: parameterized SELECTs.
+
+    Every :class:`L3Backend` is one. The copies (:mod:`threetears.core.collections.complete_copy`,
+    the scoped snapshot) take this narrower seam so a test double need answer only the reads they
+    make, while mypy still refuses an object that cannot run SQL at all (a :class:`DurableStore`).
+    """
+
+    async def fetch(self, query: str, /, *params: Any) -> list[dict[str, Any]]:
+        """Run a SELECT and return all rows as dicts (empty list on no rows)."""
+        ...
+
+    async def fetchrow(self, query: str, /, *params: Any) -> Any:
+        """Run a SELECT and return the first row dict, or ``None``."""
+        ...
+
+
+#: the most rows the L3 rail (the hub's broker, behind ``NatsProxyL3Backend``) answers one
+#: statement. It cuts there and does not say so, so every reader that might pass it pages or reads
+#: in halves against this number: the one owner of it. A transport states its own cap as
+#: ``rows_per_statement``, ``None`` for one that never cuts. One that states nothing -- a direct
+#: asyncpg pool, which cuts nothing but does not say so -- is taken to be the rail, which costs a
+#: needless split at worst and never a row.
+L3_RAIL_ROW_CAP: Final = 1000
 
 
 @runtime_checkable
@@ -162,6 +193,116 @@ class DurableStore(Protocol):
 
     async def scan(self, table: str, filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
         """Return every row matching the equality ``filters`` (all rows when ``None``/empty)."""
+        ...
+
+
+@runtime_checkable
+class BulkDurableStore(Protocol):
+    """A durable store that saves many rows of one table at once.
+
+    The seam :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.save_rows`
+    writes through. A store without it is written a row at a time through
+    :meth:`DurableStore.upsert`; a SQL store issues multi-row upserts. No method takes SQL.
+    """
+
+    async def upsert_many(
+        self,
+        table: str,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        max_rows: int,
+        max_bytes: int,
+        conn: Any = None,
+    ) -> int:
+        """Insert-or-update every row of ``rows`` in ``table``; return how many were written.
+
+        :param rows: the rows, each keyed by column, every row supplying the same columns
+        :ptype rows: Sequence[Mapping[str, Any]]
+        :param max_rows: the most rows one write may carry (a statement's share of a timeout)
+        :ptype max_rows: int
+        :param max_bytes: the most bytes of values one write may carry (a message's share of a bus)
+        :ptype max_bytes: int
+        :param conn: the caller's transaction handle the writes bind to; ``None`` uses the
+            backend's own. A failing write fails that transaction whole
+        :ptype conn: Any
+        :return: rows written
+        :rtype: int
+        """
+        ...
+
+
+@runtime_checkable
+class BulkDeletingStore(Protocol):
+    """A durable store that deletes many rows of one table at once.
+
+    The seam :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.delete_rows`
+    deletes through. A store without it is asked a key at a time through :meth:`DurableStore.delete`;
+    a SQL store issues multi-row deletes. No method takes SQL.
+    """
+
+    async def delete_many(
+        self,
+        table: str,
+        keys: Sequence[Sequence[Any]],
+        *,
+        max_rows: int,
+        conn: Any = None,
+    ) -> int:
+        """Delete every row of ``table`` whose primary key is one of ``keys``; return how many keys were named.
+
+        :param table: the table
+        :ptype table: str
+        :param keys: each row's key values, in the schema's key order
+        :ptype keys: Sequence[Sequence[Any]]
+        :param max_rows: the most keys one write may name
+        :ptype max_rows: int
+        :param conn: the caller's transaction handle the deletes bind to; ``None`` uses the
+            backend's own. A failing delete fails that transaction whole
+        :ptype conn: Any
+        :return: keys named (a key no row holds is not an error)
+        :rtype: int
+        """
+        ...
+
+
+@runtime_checkable
+class KeyLedReadingStore(Protocol):
+    """A durable store that reads the rows many leading-key values hold, every statement led by the key.
+
+    The seam :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.read_rows_led_by`
+    reads through. A store without it is scanned a value at a time through :meth:`DurableStore.scan`.
+    No method takes SQL.
+    """
+
+    async def fetch_led_by(
+        self,
+        table: str,
+        values: Sequence[Any],
+        *,
+        columns: Sequence[str],
+        max_values: int,
+        conn: Any = None,
+    ) -> list[dict[str, Any]]:
+        """Read ``columns`` of every row of ``table`` whose leading key column is one of ``values``.
+
+        Each statement is led by the key and names at most ``max_values`` values. The store knows
+        how many rows its transport answers a statement (:data:`L3_RAIL_ROW_CAP` on the rail) and
+        reads so that a cut loses no row: an answer that reaches the cap is read again in halves,
+        and one value holding that many rows is paged by the rest of its key.
+
+        :param table: the table
+        :ptype table: str
+        :param values: the leading key column's values, each named once
+        :ptype values: Sequence[Any]
+        :param columns: the columns to read, the key's among them
+        :ptype columns: Sequence[str]
+        :param max_values: the most values one statement names; at least one
+        :ptype max_values: int
+        :param conn: the caller's connection the reads run on; ``None`` uses the backend's own
+        :ptype conn: Any
+        :return: the rows
+        :rtype: list[dict[str, Any]]
+        """
         ...
 
 

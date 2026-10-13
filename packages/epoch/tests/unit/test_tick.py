@@ -50,7 +50,6 @@ class _ScriptedListener(EpochListener):
         outcome = self._results[subject.path]
         if isinstance(outcome, Exception):
             raise outcome
-        self._last_seen[subject.path] = outcome
         if outcome:
             await on_bump(outcome, None)
         return outcome

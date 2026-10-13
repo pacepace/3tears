@@ -360,7 +360,7 @@ class TestAScanOvertakenByAWriteIsNotCached:
     """
 
     async def test_concept_scan(self) -> None:
-        cache = ScanCache(SQLiteBackend())
+        cache = ScanCache(SQLiteBackend(), trusted=lambda _tables: True)
         before = [_concept_row()]
         after = [_concept_row(), _concept_row()]
         pool = _WriteLandsDuringReadPool(cache, "concepts", before, after)
@@ -376,7 +376,7 @@ class TestAScanOvertakenByAWriteIsNotCached:
         assert pool.fetches == 2
 
     async def test_entry_scan(self) -> None:
-        cache = ScanCache(SQLiteBackend())
+        cache = ScanCache(SQLiteBackend(), trusted=lambda _tables: True)
         before = [_entry_row()]
         after = [_entry_row(), _entry_row()]
         pool = _WriteLandsDuringReadPool(cache, "role_assignments", before, after)
@@ -393,7 +393,7 @@ class TestAScanOvertakenByAWriteIsNotCached:
 
     async def test_an_undisturbed_scan_is_still_cached(self) -> None:
         """the guard refuses only overtaken reads; an ordinary read still caches."""
-        cache = ScanCache(SQLiteBackend())
+        cache = ScanCache(SQLiteBackend(), trusted=lambda _tables: True)
         pool = _StubPool([_concept_row()])
         registry = _registry_with_scan_cache(cache, pool)
         coll = ConceptCollection(registry=registry, config=_config(), nats_client=None)
@@ -441,7 +441,7 @@ class TestAnOriginLinkChangeEvictsTheDatasourceScan:
         ids=["concepts", "playbook_entries"],
     )
     async def test_a_datasources_invalidation_drops_the_cached_scan(self, collection_class: Any, row: Any) -> None:
-        cache = ScanCache(SQLiteBackend())
+        cache = ScanCache(SQLiteBackend(), trusted=lambda _tables: True)
         pool = _StubPool([row()])
         registry = _registry_with_scan_cache(cache, pool)
         coll = collection_class(registry=registry, config=_config(), nats_client=None)
@@ -453,3 +453,34 @@ class TestAnOriginLinkChangeEvictsTheDatasourceScan:
         await coll.list_visible_to_user(user_id, datasource_id=datasource_id, customer_scope=customer_scope)
 
         assert pool.sql is not None, "a changed origin link must re-read the scan, not serve the cached one"
+
+
+class TestTheScannedTablesAreSwitchedOn:
+    """a cached scan is trusted only while its tables are followed, and only a switched-on table is announced."""
+
+    async def test_every_knowledge_scan_table_advances_its_write_generation(self) -> None:
+        import threetears.datasources.collections  # noqa: F401  -- the datasource classes declare theirs
+        from threetears.agent.knowledge.collections import KNOWLEDGE_SCAN_TABLES
+        from threetears.core.collections import tables_with_write_generation
+
+        assert set(KNOWLEDGE_SCAN_TABLES) == {"concepts", "playbook_entries", "datasources", "datasource_tables"}
+        assert set(KNOWLEDGE_SCAN_TABLES) <= tables_with_write_generation()
+
+
+class TestAScanIsDroppedWhenAnAccessTableItDependsOnChanges:
+    """the broker narrows a knowledge read through the roles a grant holds, so a role change must reach the scan."""
+
+    @pytest.mark.parametrize("table", ["roles", "groups", "group_members", "role_assignments", "namespaces"])
+    @pytest.mark.parametrize("kind", ["concepts", "entries"])
+    async def test_a_change_to_the_table_drops_the_cached_scan(self, table: str, kind: str) -> None:
+        cache = ScanCache(SQLiteBackend(db_name=f"scan-{uuid7().hex}"), trusted=lambda _tables: True)
+        rows = [_concept_row()] if kind == "concepts" else [_entry_row()]
+        pool = _StubPool(rows)
+        registry = _registry_with_scan_cache(cache, pool)
+        cls = ConceptCollection if kind == "concepts" else PlaybookEntryCollection
+        coll = cls(registry=registry, config=_config(), nats_client=None)
+        user_id, customer_scope = uuid7(), uuid7()
+
+        await coll.list_visible_to_user(user_id, customer_scope=customer_scope)
+
+        assert cache.drop_for_table(table) == 1, f"a change to {table} left the cached scan in place"

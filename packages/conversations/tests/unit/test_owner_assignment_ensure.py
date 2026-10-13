@@ -118,6 +118,8 @@ def _collection(cls: type, pool: AsyncMock) -> Any:
     :rtype: Any
     """
     registry = MagicMock()
+    # a mock registry carries no write-generation source (a MagicMock attribute would be one)
+    registry.generation_source = None
     registry.get_l1_backend.return_value = None
     registry.get_l3_pool.return_value = pool
     registry.register.return_value = None

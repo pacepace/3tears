@@ -17,6 +17,10 @@ public surface:
 - :class:`LeaseUnavailable` — raised by fail-fast acquire when key is held
 - :class:`LeaseTimeout` — raised when acquire deadline elapses
 - :class:`LeaseLost` — raised when ownership changes mid-operation
+- :class:`LeaseLossReason` — why a held lease was lost (the one vocabulary the lock reports too)
+- :func:`nats_distributed_lock` — a cross-pod job lock as a context manager, held through
+  :meth:`KVLease.hold` (:class:`LockHeld`, :class:`LockHold`, :class:`LockLost`,
+  :class:`LockLossReason`)
 - :class:`ReplayGuard` -- single-use nonce guard (shared, fail-closed) for replay protection, for
   the seconds an artifact is acceptable; memory-backed, and a wipe fails closed
 - :class:`ReplayAnchor` / :class:`CollectionReplayAnchor` -- the durable record of when a
@@ -37,6 +41,10 @@ public surface:
 - :class:`TokenBucket` — distributed token-bucket rate limiter
 - :class:`TokenClaimResult` — outcome of :meth:`TokenBucket.claim`
 - :class:`TokenBucketConflict` — raised when a claim()'s CAS retry budget is exhausted
+- :mod:`threetears.core.coordination.source_token` -- a fence on a producer's "my data is ready"
+  signal (``SourceTokenFence``): one row per signal in the owner's L3, advanced only to a newer
+  token (a later run, its data not older), by one statement, with the work it starts in the same
+  transaction
 - :class:`DistributedCounter` — atomic increment/decrement counter, for fixed-window
   rate limiting and concurrent-in-flight tracking
 - :class:`DistributedCounterConflict` — raised when an increment()/decrement()'s CAS
@@ -54,10 +62,18 @@ from threetears.core.coordination.idempotency import (
     IdempotencyKeyStore,
     IdempotencyRecord,
 )
+from threetears.core.coordination.distributed_lock import (
+    LockHeld,
+    LockHold,
+    LockLossReason,
+    LockLost,
+    nats_distributed_lock,
+)
 from threetears.core.coordination.lease import (
     HeldLease,
     KVLease,
     LeaseHandle,
+    LeaseLossReason,
     LeaseLost,
     LeaseTimeout,
     LeaseUnavailable,
@@ -83,9 +99,15 @@ __all__ = [
     "HeldLease",
     "KVLease",
     "LeaseHandle",
+    "LeaseLossReason",
     "LeaseLost",
     "LeaseTimeout",
     "LeaseUnavailable",
+    "LockHeld",
+    "LockHold",
+    "LockLossReason",
+    "LockLost",
+    "nats_distributed_lock",
     "CollectionReplayAnchor",
     "RedemptionLedger",
     "ReplayAnchor",

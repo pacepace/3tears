@@ -107,7 +107,7 @@ class TestReplayGuard:
         bucket = AsyncMock()
         bucket.create = AsyncMock(side_effect=KvError("kv down"))
         failing_client = AsyncMock()
-        failing_client.kv_bucket = AsyncMock(return_value=bucket)
+        failing_client.ensure_kv_bucket = AsyncMock(return_value=bucket)
         guard = _guard(failing_client, bucket_name="b")
         with pytest.raises(KvError):
             await guard.record_unique("x", issued_at=_later())
@@ -120,7 +120,7 @@ class TestReplayGuard:
         bucket.create = AsyncMock(return_value=1)
         bucket.date_created = AsyncMock(side_effect=KvError("no creation time"))
         failing_client = AsyncMock()
-        failing_client.kv_bucket = AsyncMock(return_value=bucket)
+        failing_client.ensure_kv_bucket = AsyncMock(return_value=bucket)
         guard = _guard(failing_client, bucket_name="b")
         with pytest.raises(KvError):
             await guard.record_unique("x", issued_at=_later())
@@ -131,13 +131,14 @@ class TestReplayGuard:
         bucket.create = AsyncMock(return_value=1)
         bucket.date_created = AsyncMock(return_value=datetime.now(UTC))
         spy_client = AsyncMock()
-        spy_client.kv_bucket = AsyncMock(return_value=bucket)
+        spy_client.ensure_kv_bucket = AsyncMock(return_value=bucket)
         guard = _guard(spy_client, bucket_name="b", ttl_seconds=90)
         await guard.record_unique("x", issued_at=_later())
-        kwargs = spy_client.kv_bucket.call_args.kwargs
+        kwargs = spy_client.ensure_kv_bucket.call_args.kwargs
         assert kwargs["ttl"] == timedelta(seconds=90)
         # NATS is L2 and memory-only; a wipe is detected by the creation-time check, not survived.
-        assert kwargs.get("storage", "memory") == "memory"
+        # Declared as its OWNER, so a bucket left on file storage is recreated on memory.
+        assert (kwargs["storage"], kwargs["owns_bucket"], kwargs["drop_file_storage"]) == ("memory", True, True)
 
     @pytest.mark.asyncio
     async def test_bucket_bound_once_across_calls(self) -> None:
@@ -145,11 +146,11 @@ class TestReplayGuard:
         bucket.create = AsyncMock(return_value=1)
         bucket.date_created = AsyncMock(return_value=datetime.now(UTC))
         spy_client = AsyncMock()
-        spy_client.kv_bucket = AsyncMock(return_value=bucket)
+        spy_client.ensure_kv_bucket = AsyncMock(return_value=bucket)
         guard = _guard(spy_client, bucket_name="b")
         await guard.record_unique("a", issued_at=_later())
         await guard.record_unique("b", issued_at=_later())
-        spy_client.kv_bucket.assert_awaited_once()
+        spy_client.ensure_kv_bucket.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_replay_is_refused_without_reading_the_creation_time(self) -> None:
@@ -158,7 +159,7 @@ class TestReplayGuard:
         bucket.create = AsyncMock(return_value=None)
         bucket.date_created = AsyncMock(return_value=datetime.now(UTC))
         spy_client = AsyncMock()
-        spy_client.kv_bucket = AsyncMock(return_value=bucket)
+        spy_client.ensure_kv_bucket = AsyncMock(return_value=bucket)
         guard = _guard(spy_client, bucket_name="b")
         assert await guard.record_unique("x", issued_at=_later()) is False
         bucket.date_created.assert_not_awaited()
@@ -448,7 +449,7 @@ class TestRefusingUntil:
         bucket = MagicMock()
         bucket.date_created = AsyncMock(side_effect=KvError("stream info unavailable"))
         nats_client = MagicMock()
-        nats_client.kv_bucket = AsyncMock(return_value=bucket)
+        nats_client.ensure_kv_bucket = AsyncMock(return_value=bucket)
         with pytest.raises(KvError):
             await _guard(nats_client).refusing_until()
 
@@ -646,12 +647,12 @@ class TestBind:
     async def test_bind_opens_the_bucket_once_however_often_it_is_called(self) -> None:
         bucket = AsyncMock()
         spy_client = AsyncMock()
-        spy_client.kv_bucket = AsyncMock(return_value=bucket)
+        spy_client.ensure_kv_bucket = AsyncMock(return_value=bucket)
         guard = _guard(spy_client, bucket_name="b", ttl_seconds=90)
         await guard.bind()
         await guard.bind()
-        spy_client.kv_bucket.assert_awaited_once()
-        kwargs = spy_client.kv_bucket.call_args.kwargs
+        spy_client.ensure_kv_bucket.assert_awaited_once()
+        kwargs = spy_client.ensure_kv_bucket.call_args.kwargs
         assert kwargs["name"] == "b"
         assert kwargs["ttl"] == timedelta(seconds=90)
         assert kwargs["create_if_missing"] is True
@@ -669,13 +670,13 @@ class TestBind:
             return bucket
 
         spy_client = AsyncMock()
-        spy_client.kv_bucket = AsyncMock(side_effect=_open)
+        spy_client.ensure_kv_bucket = AsyncMock(side_effect=_open)
         guard = _guard(spy_client, bucket_name="b")
         binds = [asyncio.create_task(guard.bind()) for _ in range(8)]
         await asyncio.sleep(0)
         gate.set()
         await asyncio.gather(*binds)
-        spy_client.kv_bucket.assert_awaited_once()
+        spy_client.ensure_kv_bucket.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_record_unique_binds_an_unbound_guard(self) -> None:
@@ -683,13 +684,13 @@ class TestBind:
         bucket.create = AsyncMock(return_value=1)
         bucket.date_created = AsyncMock(return_value=datetime.now(UTC))
         spy_client = AsyncMock()
-        spy_client.kv_bucket = AsyncMock(return_value=bucket)
+        spy_client.ensure_kv_bucket = AsyncMock(return_value=bucket)
         guard = _guard(spy_client, bucket_name="b")
         assert await guard.record_unique("x", issued_at=_later()) is True
         bucket.create.assert_awaited_once()
         # the record bound it, so a later bind opens nothing more.
         await guard.bind()
-        spy_client.kv_bucket.assert_awaited_once()
+        spy_client.ensure_kv_bucket.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_after_a_wipe_an_artifact_issued_after_a_bind_at_start_is_accepted(
@@ -978,10 +979,10 @@ class TestRebindOnReconnect:
         # consumer's own -- binds exactly as before; only the availability improvement is absent.
         bucket = AsyncMock()
         spy_client = AsyncMock()
-        spy_client.kv_bucket = AsyncMock(return_value=bucket)
+        spy_client.ensure_kv_bucket = AsyncMock(return_value=bucket)
         guard = _guard(spy_client, bucket_name="b")
         await guard.bind()
-        spy_client.kv_bucket.assert_awaited_once()
+        spy_client.ensure_kv_bucket.assert_awaited_once()
         spy_client.add_reconnect_callback.assert_not_called()
 
 
@@ -1014,7 +1015,7 @@ class TestReconnectHookIsObservable:
     @pytest.mark.asyncio
     async def test_bind_logs_that_a_client_without_hooks_got_none(self, caplog: pytest.LogCaptureFixture) -> None:
         spy_client = AsyncMock()
-        spy_client.kv_bucket = AsyncMock(return_value=AsyncMock())
+        spy_client.ensure_kv_bucket = AsyncMock(return_value=AsyncMock())
         with caplog.at_level("INFO", logger="threetears.core.coordination.replay_guard"):
             await _guard(spy_client, bucket_name="b").bind()
         bound = [_extra(r) for r in caplog.records if r.getMessage() == "ReplayGuard bound its bucket"]
@@ -1139,3 +1140,61 @@ class TestABindOnlyGuardLeavesTheReconnectPathAlone:
         recorded = _RecordingHooks(client, monkeypatch)
         await _guard(client, bucket_name="pop_nonces").bind()
         assert len(recorded.hooks) == 1
+
+
+class TestTheGuardOwnsItsBucket:
+    """a declaring guard owns its nonce bucket: one left on file storage is recreated on memory."""
+
+    @pytest.mark.asyncio
+    async def test_a_live_file_bucket_is_recreated_on_memory(self, client: FakeNatsClient) -> None:
+        left = await client.kv_bucket(name="pop_nonces", storage="file")
+        await left.put(key="old", value=b"1")
+        guard = _guard(client)
+        await guard.bind()
+        bucket = await client.kv_bucket(name="pop_nonces")
+        assert (bucket.storage, bucket.keys()) == ("memory", ())
+
+    @pytest.mark.asyncio
+    async def test_a_bind_only_guard_never_recreates_the_bucket(self, client: FakeNatsClient) -> None:
+        left = await client.kv_bucket(name="pop_nonces", storage="file")
+        await left.put(key="old", value=b"1")
+        guard = ReplayGuard(
+            client, bucket_name="pop_nonces", ttl_seconds=120, verifier_future_tolerance=_SKEW, create_if_missing=False
+        )
+        await guard.bind()
+        bucket = await client.kv_bucket(name="pop_nonces")
+        assert (bucket.storage, bucket.keys()) == ("file", ("old",))
+
+    @pytest.mark.asyncio
+    async def test_a_proof_issued_before_the_recreate_is_refused_after_it(self, client: FakeNatsClient) -> None:
+        # a proof recorded in the old file bucket, which has stood for an hour
+        left = await client.kv_bucket(name="pop_nonces", storage="file")
+        left.wipe(date_created=datetime.now(UTC) - timedelta(hours=1))
+        issued = datetime.now(UTC) - timedelta(minutes=10)
+        binder = ReplayGuard(
+            client, bucket_name="pop_nonces", ttl_seconds=120, verifier_future_tolerance=_SKEW, create_if_missing=False
+        )
+        assert await binder.record_unique("captured", issued_at=issued) is True
+        # the owner recreates the bucket on memory, and the recorded nonce is lost with it
+        guard = _guard(client)
+        await guard.bind()
+        assert (await client.kv_bucket(name="pop_nonces")).keys() == ()
+        # the recreate's creation time still refuses the replay, so emptying the bucket reopens none
+        assert await guard.record_unique("captured", issued_at=issued) is False
+        assert await guard.record_unique("fresh", issued_at=_later()) is True
+
+    def test_a_declaring_guard_needs_a_client_that_can_declare(self) -> None:
+        class _OpensOnly:
+            async def kv_bucket(self, **_: object) -> object:
+                return object()
+
+        with pytest.raises(TypeError, match="ensure_kv_bucket"):
+            _guard(_OpensOnly())
+        # a bind-only guard needs only the open
+        ReplayGuard(
+            _OpensOnly(),  # type: ignore[arg-type]
+            bucket_name="b",
+            ttl_seconds=60,
+            verifier_future_tolerance=_SKEW,
+            create_if_missing=False,
+        )

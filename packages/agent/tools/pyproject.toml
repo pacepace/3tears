@@ -25,6 +25,8 @@ dependencies = [
     "3tears>=0.66.0,<0.67.0",
     "3tears-agent-audit>=0.66.0,<0.67.0",
     "3tears-agent-memory>=0.66.0,<0.67.0",
+    # a tool pod reads the epoch bucket: its generation source's reader, and following a table
+    "3tears-epoch>=0.66.0,<0.67.0",
     "3tears-langgraph>=0.66.0,<0.67.0",
     "3tears-media-contracts>=0.66.0,<0.67.0",
     # [client]: this package uses the NATS client at runtime, and nats-py is an
@@ -65,6 +67,7 @@ packages = ["src/threetears"]
 3tears = { workspace = true }
 3tears-agent-audit = { workspace = true }
 3tears-agent-memory = { workspace = true }
+3tears-epoch = { workspace = true }
 3tears-langgraph = { workspace = true }
 3tears-media-contracts = { workspace = true }
 3tears-nats = { workspace = true }
