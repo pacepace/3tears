@@ -62,7 +62,12 @@ v<version>` prints a release's notes).
   Claude CLI route (whose completions read as finished whatever stopped them), are refused by name. The engine
   never imports it. A stop the provider did not name (no finish reason, an unknown one, Anthropic's `pause_turn`)
   reads as `truncated`, output cut short for an unnamed cause, and only a provider-reported failure as `error`; a
-  host mapping its own client onto `StopReason` follows the same split.
+  host mapping its own client onto `StopReason` follows the same split. The adapter logs each `truncated` reply's
+  raw stop reason at WARNING. A host awaits `await clients.load_prices()` once at boot, so every client's
+  synchronous `price_ceiling` can price an out-of-run call under an enforced cap. A pricing failure never costs a
+  paid answer (it is logged and the completion returned unpriced), and a cached prompt's cost is marked approximate
+  (`;cache-approximate`). The `judge` role is built from `JUDGE_REQUEST_SETTINGS`, what a judged run records, and
+  refused where the provider cannot carry its reasoning budget unless the host passes the judge's settings itself.
 - **Storage.** `EvalStorage` runs over a `DocumentStore` port, and `storage` ships an in-memory store, a SQLite
   store, a routed store that sends each doc type to its own backend, and `bridge_async_store` for an async
   backend. A store call made on an event-loop thread is refused (`StoreCalledOnEventLoop`), and the refusal names
@@ -163,7 +168,8 @@ v<version>` prints a release's notes).
   offline on what a model actually said. A call is matched on its prompt and on the model, temperature and request
   settings (`ClientRequestSettings`, a required `settings=` on `record` and `replay`) it was made with; a prompt the
   recording does not hold, or holds only under other settings, is refused by name with the command that re-records
-  it, never sent live.
+  it, never sent live. A recorder stands in for an analysis or out-of-run client too: it names its model and prices
+  a call (a replay at $0).
 - **Docs.** The package README; a tutorial; guides to classifier eval sets, reading reports, evaluating agents,
   judges and calibration, adopting a host, choosing a design, cost and budgets, MCP and the command line; and the
   background pages (principles, measuring soundly, the world model, design rationale, prior art, open problems).
