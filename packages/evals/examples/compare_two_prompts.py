@@ -14,22 +14,30 @@ history, store it as a case set with ``mint_case_set`` or the ``case_set_mint`` 
 "Case set").
 
 Run it with ``python compare_two_prompts.py`` (``README.md`` beside it says how). With ``ANTHROPIC_API_KEY`` set it
-calls Claude 48 times (12 tickets x 2 repeats x 2 prompts) for well under a cent; without it, keyword stand-ins
-play the prompts and say nothing about Claude. The stand-ins are built to differ. Live, a current model may get
-every ticket right under both prompts, and then "not separated" is the right answer: these tickets cannot tell the
+calls Claude 48 times (12 tickets x 2 repeats x 2 prompts) for well under a cent; without it, it replays
+``recordings/compare_two_prompts.jsonl``, what Claude answered when the run was recorded, and calls nothing.
+``RECORD=1 python compare_two_prompts.py``, with the key set, records it again. A current model may get every
+ticket right under both prompts, and then "not separated" is the right answer: these tickets cannot tell the
 prompts apart, and harder ones are needed. It never means the prompts are equally good.
 """
 
 import asyncio
 import json
+import os
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from _live import anthropic_sdk, claude, online
+from threetears.evals.providers import models_client
 from threetears.evals.quick import Comparison, compare
+from threetears.evals.schema import ClientRequestSettings
+from threetears.evals.testing import RecordedCompletions
 
 MODEL = "claude-haiku-5-5"
+#: How every call is asked for: an output cap and low effort. No temperature: this model refuses one.
+SETTINGS = ClientRequestSettings(max_tokens=1024, reasoning_effort="low")
+RECORDING = Path(__file__).with_name("recordings") / "compare_two_prompts.jsonl"
+RERECORD = "RECORD=1 python compare_two_prompts.py"
 
 # -----------------------------------------------------------------------------
 # 1. The cases: each ticket, and the queue a person filed it under, kept in a file beside this script.
@@ -67,52 +75,52 @@ without the service delivered is billing; a login that fails because the product
 Answer with the label only."""
 
 # -----------------------------------------------------------------------------
-# 3. The live candidate: an async function from a case to a label.
+# 3. The candidate: an async function from a case to a label, one per prompt, both asking the same client.
 # -----------------------------------------------------------------------------
 
 Candidate = Callable[[Mapping[str, Any]], Awaitable[str]]
 
 
-def claude_classifier(prompt: str) -> Candidate:
-    """A candidate that asks Claude to classify each ticket under ``prompt``."""
-    client = claude(MODEL)
+def classifier(llm: Any, prompt: str) -> Candidate:
+    """A candidate that asks ``llm`` to classify each ticket under ``prompt``."""
 
     async def classify(case: Mapping[str, Any]) -> str:
-        return (await client.generate(system=prompt, user=case["ticket"])).content.strip().lower()
+        return (await llm.generate(system=prompt, user=case["ticket"])).content.strip().lower()
 
     return classify
 
 
 # -----------------------------------------------------------------------------
-# 4. The OFFLINE stand-in: keyword rules, not a model.
-#
-# The baseline takes the first queue whose words appear; the candidate first applies its prompt's tie-break.
+# 4. The client: Claude when a key is set, else the recording of a run that called it.
 # -----------------------------------------------------------------------------
 
-WORDS = {
-    "account": ("log in", "login", "password", "email address", "account"),
-    "bug": ("error", "crash", "does nothing", "loops", "broken"),
-    "billing": ("charged", "refund", "invoice", "plan", "card"),
-    "feature_request": ("would be great", "plan to add", "could you add", "could be"),
-}
+
+def client(model: str, settings: ClientRequestSettings) -> Any:
+    """``model``, asked as ``settings`` say: live with ``ANTHROPIC_API_KEY`` (recorded with ``RECORD=1``), else replayed."""
+    key, recording = os.environ.get("ANTHROPIC_API_KEY"), os.environ.get("RECORD") == "1"
+    if not key:
+        if recording:
+            raise SystemExit("RECORD=1 records a live run, which needs ANTHROPIC_API_KEY")
+        return RecordedCompletions.replay(RECORDING, settings=settings, model=model, rerecord=RERECORD)
+    live = models_client(
+        model,
+        api_key=key,
+        provider="anthropic",  # models' registry does not place this id on its own
+        max_tokens=settings.max_tokens,
+        reasoning_effort=settings.reasoning_effort,
+    )  # and no temperature, so the model's own sampling applies
+    return RecordedCompletions.record(live, RECORDING, settings=settings, replace=True) if recording else live
 
 
-def offline_classifier(prompt: str) -> Candidate:
-    """A keyword stand-in for one of the two prompts, so the example runs with no API key."""
-
-    async def classify(case: Mapping[str, Any]) -> str:
-        text = case["ticket"].lower()
-        found = [queue for queue, words in WORDS.items() if any(word in text for word in words)]
-        if prompt is CANDIDATE_PROMPT:
-            if "feature_request" in found:
-                return "feature_request"
-            if "charged" in text:
-                return "billing"  # money taken without the service delivered
-            if "bug" in found:
-                return "bug"  # a failure outranks the account words around it
-        return found[0] if found else "bug"
-
-    return classify
+def how_it_runs(what: str) -> str:
+    """The first line printed: running live, recording, or replaying a recording made on its date."""
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        recording = f", recording it into recordings/{RECORDING.name}" if os.environ.get("RECORD") == "1" else ""
+        return f"Running live against Claude ({what}){recording}."
+    made = json.loads(RECORDING.read_text(encoding="utf-8").splitlines()[0])["recorded_at"][:10]
+    return (
+        f"ANTHROPIC_API_KEY is not set: replaying recordings/{RECORDING.name}, Claude ({what}) as recorded on {made}."
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -121,22 +129,21 @@ def offline_classifier(prompt: str) -> Candidate:
 
 
 async def main() -> Comparison:
-    make = claude_classifier if online() else offline_classifier
-    if online():
-        anthropic_sdk()  # without the SDK, exit saying how to get it before claiming a live run
-        print(f"Running against Claude ({MODEL}).\n")
-    else:
-        print("ANTHROPIC_API_KEY is not set: running OFFLINE, with a keyword stand-in for each prompt.\n")
+    llm = client(MODEL, SETTINGS)
+    print(how_it_runs(MODEL) + "\n")
 
-    comparison = await compare(
-        CASES,
-        {"baseline": make(BASELINE_PROMPT), "candidate": make(CANDIDATE_PROMPT)},  # each arm by the name you give it
-        expected=lambda case: case["queue"],  # a classifier eval: accuracy and a confusion matrix per arm
-        stratum_key="kind",  # each case's kind: the report's By stratum table reads every arm per kind of case
-        control="baseline",  # the arm every other arm is tested against
-        name="ticket triage: baseline vs candidate prompt" + ("" if online() else " (offline)"),  # titles the report
-        k=2,  # repeats per case: a model's answer can change between calls
-    )
+    try:
+        comparison = await compare(
+            CASES,
+            {"baseline": classifier(llm, BASELINE_PROMPT), "candidate": classifier(llm, CANDIDATE_PROMPT)},  # by name
+            expected=lambda case: case["queue"],  # a classifier eval: accuracy and a confusion matrix per arm
+            stratum_key="kind",  # each case's kind: the report's By stratum table reads every arm per kind of case
+            control="baseline",  # the arm every other arm is tested against
+            name="ticket triage: baseline vs candidate prompt",  # titles the report
+            k=2,  # repeats per case: a model's answer can change between calls
+        )
+    finally:
+        await llm.aclose()
 
     # The verdict: each arm against the control on each reading, row["arm"] being the name you gave it.
     for row in comparison.contrasts():

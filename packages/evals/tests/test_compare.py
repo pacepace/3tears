@@ -6,7 +6,7 @@ declares one axis at the two arm names, its control resolves to the variant key 
 carries, and the code-only report tests ``careful`` against it and finds it improved — under the
 campaign's name, with its id in the byline.
 
-``examples/compare_two_prompts.py`` is run here with no API key, so it takes its offline path.
+``examples/compare_two_prompts.py`` is run here with no API key, so it replays its recording.
 """
 
 from __future__ import annotations
@@ -21,7 +21,8 @@ import pytest
 from threetears.evals.analysis import DisclosureBlock, TableBlock, report_markdown, variant_key_of_run
 from threetears.evals.quick import ARM_LEVER, Comparison, callable_host, compare
 from threetears.evals.quick.one_call import SHARED_ARM_MODEL
-from packages.evals.tests.example_loader import load_example
+from threetears.evals.testing import RecordedPrompt
+from packages.evals.tests.example_loader import check_covers, load_example, replaying
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 from packages.evals.tests.off_loop import off_loop
 
@@ -215,28 +216,40 @@ async def test_unusable_arms_are_refused_before_anything_runs(
     assert off_loop(host.storage.list_campaigns, SCOPE) == []
 
 
-async def test_the_example_runs_offline_and_prints_the_verdict(
+async def test_the_example_replays_its_recording_and_prints_the_verdict(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """With no API key the example takes its keyword stand-ins, says so, and ends on the contrast's verdict."""
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    comparison = await load_example(EXAMPLE.name).main()
+    """With no API key the example replays what Claude answered, says so, and ends on the contrast's verdict."""
+    module = load_example(EXAMPLE.name)
+    asked = [
+        RecordedPrompt(prompt, case["ticket"])
+        for prompt in (module.BASELINE_PROMPT, module.CANDIDATE_PROMPT)
+        for case in module.CASES
+        for _ in range(2)
+    ]
+    check_covers(module, asked, settings=module.SETTINGS, model=module.MODEL)
+    replay = replaying(module, monkeypatch)
+
+    comparison = await module.main()
+
+    assert replay.served() == 48, "12 tickets x 2 repeats x 2 prompts, as the docstring says"
     assert isinstance(comparison, Comparison)
-    assert comparison.control == "baseline"
-    assert all(summary.status == "completed" for summary in comparison.arms.values())
+    assert comparison.control == "baseline" and list(comparison.arms) == ["baseline", "candidate"]
+    assert all(summary.status == "completed" and summary.n_scored == 24 for summary in comparison.arms.values())
     out = capsys.readouterr().out
-    assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE")
-    assert "(offline)" in comparison.name
+    assert out.startswith("ANTHROPIC_API_KEY is not set: replaying recordings/compare_two_prompts.jsonl, Claude (")
     accuracy = {row["reading"]: row for row in _comparisons(comparison).values()}["Accuracy"]
-    assert (accuracy["contrast"], accuracy["verdict"]) == ("candidate=candidate", "improved on the control")
+    assert accuracy["contrast"] == "candidate=candidate"
     assert re.search(
-        r"\ncandidate vs baseline on Accuracy: 0\.58 -> 1\.00, delta \+0\.42, interval \[[\d.]+, [\d.]+\] at 95%, "
-        r"Holm-adjusted p [\d.e-]+: improved on the control\n",
+        r"\ncandidate vs baseline on Accuracy: [\d.]+ -> [\d.]+, delta [+-][\d.]+, interval (\[[-\d.e]+, [-\d.e]+\] at "
+        r"[\d.]+%|None)(, Holm-adjusted p [\d.e-]+)?: " + re.escape(accuracy["verdict"]) + r"\n",
         out,
     )
-    # Where the arms disagree: the tickets the baseline misfiled, each arm's answer on every repeat.
-    assert "  'Do you plan to add a dark mode?', filed under feature_request (plain):\n" in out
-    assert "    baseline said billing, billing; candidate said feature_request, feature_request\n" in out
+    # Where the arms disagree: each ticket the two prompts answered differently, each arm's answer on every repeat.
+    for index, case in enumerate(module.CASES):
+        said = {arm: [r.answer for r in comparison.results(arm) if r.case == str(index)] for arm in comparison.arms}
+        printed = f"  {case['ticket']!r}, filed under {case['queue']} ({case['kind']}):\n" in out
+        assert printed == (said["baseline"] != said["candidate"])
     assert comparison.render() not in out
 
 

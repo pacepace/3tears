@@ -172,6 +172,11 @@ Recording onto a file that exists appends to it, and only `replace=True` starts 
 attribute your completion type declares beyond the ten is kept under the replayed completion's `extra`, and one JSON
 cannot hold is refused when it is recorded.
 
+The package's own examples run this way: each that calls a model calls Claude through `models_client` when
+`ANTHROPIC_API_KEY` is set, records the run when `RECORD=1` is set too, and otherwise replays the recording kept
+beside it, so it runs offline on what Claude said rather than on a stand-in's text, and its test checks the
+recording still covers its prompts ([the examples' README](../examples/README.md#recording)).
+
 ## Bringing a provider
 
 **The engine calls models through one port, and names no provider.** A client is anything with

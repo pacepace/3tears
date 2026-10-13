@@ -1,111 +1,127 @@
-"""``examples/world.py`` runs as a newcomer would run it, with no API key, and its Claude loop reads real SDK replies.
+"""``examples/world.py`` runs as a newcomer would run it, with no API key, and its tool loop drives the world.
 
-Offline, the candidate is the example's scripted stand-in, so the run is deterministic: each case's room
-is seeded, the stand-in switches the light through the tool, the engine reads each room back and the goal
-checks grade it — passing everywhere but the one mistake the stand-in is written to make. The Claude
-candidate is exercised against replies built from the SDK's own types, so a field the SDK renames turns
-this red rather than the first live run.
+With no key the example replays its recording: each case's room is seeded, Claude's recorded turns switch the light
+through the tool, the engine reads each room back, and the goal checks grade it. Nothing here assumes what Claude
+did: each cell is read back from the store and held to the checks, and the line the example prints for it. The loop
+itself is driven by a scripted client below, so a refused call and the model being told why are covered whatever
+the recording holds.
 """
 
 from __future__ import annotations
 
-import importlib.util
+import json
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
 
-from threetears.evals.schema import RecordedCall
-from threetears.evals.quick import callable_host
 from threetears.evals.analysis import EvalSummary
+from threetears.evals.quick import callable_host
 from threetears.evals.run import get_result_trace, list_results
-from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
+from threetears.evals.schema import RecordedCall
+from threetears.evals.testing import RecordedPrompt
+from packages.evals.tests.example_loader import check_covers, load_example, replaying
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 
 #: The example under test.
 WORLD_EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "world.py"
 
 
 def _load() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("world_example", WORLD_EXAMPLE)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_example(WORLD_EXAMPLE.name)
 
 
-async def test_with_no_api_key_the_example_runs_offline_and_says_so(
+async def test_with_no_api_key_the_example_replays_its_recording_and_says_so(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     module = _load()
+    first_turns = [
+        RecordedPrompt(module.SYSTEM, f"Sensors: {_room(case)}\n\n{case['ask']}", module.TURN)
+        for case in module.CASES
+        for _ in range(2)
+    ]
+    check_covers(module, first_turns, settings=module.SETTINGS, model=module.MODEL)
+    replay = replaying(module, monkeypatch)
+    host = _host_of(module, monkeypatch)
+
     summary = await module.main()
+
+    assert 8 <= replay.served() <= 32, "each of 8 cells takes one to four turns"
     assert isinstance(summary, EvalSummary)
-    assert (summary.status, summary.candidate_model) == ("completed", "offline")
+    assert (summary.status, summary.candidate_model) == ("completed", module.MODEL)
     assert (summary.n_cases, summary.k_runs, summary.n_results, summary.n_scored) == (4, 2, 8, 8)
-    lit_iff_dark, never_needless = module.LIGHT_ENDS_ON_IFF_DARK, module.NEVER_SWITCHED_NEEDLESSLY
-    # The stand-in lights the bright room it is asked to read in: that case's two cells fail the first check.
-    assert [(goal.check, goal.passed, goal.n) for goal in summary.goal_checks] == [
-        (lit_iff_dark, 6, 8),
-        (never_needless, 8, 8),
-    ]
+    assert summary.errors == []
+    assert [(goal.check, goal.n) for goal in summary.goal_checks] == [(check, 8) for check in module.GOAL_CHECKS]
     # Neither check is proven (a quick run names no control), and a candidate that did nothing passes the second in
-    # every case: its 8/8 is printed as no measurement, never as an unqualified pass.
-    assert [(goal.proof, goal.did_nothing_passed, goal.did_nothing_cases) for goal in summary.goal_checks] == [
-        ("unproven", 2, 4),
-        ("unproven", 4, 4),
-    ]
+    # every case: its pass count is printed as no measurement, never as an unqualified pass.
+    assert [(goal.proof, goal.did_nothing_cases) for goal in summary.goal_checks] == [("unproven", 4), ("unproven", 4)]
     goal_lines = [line for line in summary.render().splitlines() if "goal check" in line]
     assert all(" — " in line for line in goal_lines), "an unproven check's pass count is never printed bare"
-    assert "passed 8/8 — NOT A MEASUREMENT" in goal_lines[1]
-    assert summary.errors == []
+    assert "NOT A MEASUREMENT" in goal_lines[1]
+
     out = capsys.readouterr().out
-    assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE")
+    assert out.startswith("ANTHROPIC_API_KEY is not set: replaying recordings/world.jsonl, Claude (")
     assert summary.render() in out
-    # Then each cell, in case order: where the room started, what was called, where it ended, what failed.
-    cells = [line.split() for line in out.split(summary.render())[1].strip().splitlines()]
-    assert [" ".join(cell) for cell in cells[::2]] == [
-        "dark, light off -> switch_light(to=on) -> light on ok",
-        "dark, light on -> no call -> light on ok",
-        "bright, light off -> switch_light(to=on) -> light on wrong light",
-        "bright, light on -> switch_light(to=off) -> light off ok",
-    ]
-    assert cells[::2] == cells[1::2]  # the stand-in does the same thing on both repeats
-
-
-async def test_each_room_is_seeded_from_its_case_and_read_back_as_the_stand_in_left_it(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = _load()
-    host = _host_of(module, monkeypatch)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    summary = await module.main()
+    # Each cell, read back: the checks graded the room it left and the calls it made, and its line says so.
     cases = {case.id: case for case in off_loop(host.storage.query_test_cases, summary.scope_id)}
-    seen = []
     for result in off_loop(list_results, host.storage, summary.run_id, summary.scope_id):
         trace = off_loop(get_result_trace, host.storage, result)
         assert trace is not None and trace.call_ledger is not None and trace.end_state is not None
-        case = cases[result.test_case_id].host_payload
-        seen.append(
-            (
-                case["seed"],
-                trace.end_state,
-                trace.call_ledger.calls,
-                [outcome.passed for outcome in result.goal_state_outcomes],
-            )
-        )
-    on = [RecordedCall(tool="room", action="switch_light", params={"to": "on"})]
-    off = [RecordedCall(tool="room", action="switch_light", params={"to": "off"})]
-    dark_off, dark_on = {"light": "off", "daylight": "dark"}, {"light": "on", "daylight": "dark"}
-    bright_off, bright_on = {"light": "off", "daylight": "bright"}, {"light": "on", "daylight": "bright"}
-    expected = [
-        (dark_off, dark_on, on, [True, True]),  # dark, about to read: switched on
-        (dark_on, dark_on, [], [True, True]),  # already right: left alone, no call
-        (bright_off, bright_on, on, [False, True]),  # the deliberate mistake: lit a bright room for reading
-        (bright_on, bright_off, off, [True, True]),  # bright: switched off
+        seed = cases[result.test_case_id].host_payload["seed"]
+        lit_iff_dark, never_needless = (outcome.passed for outcome in result.goal_state_outcomes)
+        assert lit_iff_dark == ((trace.end_state["light"] == "on") == (seed["daylight"] == "dark"))
+        assert never_needless == all(call.params["to"] != seed["light"] for call in trace.call_ledger.calls)
+        assert trace.end_state["daylight"] == seed["daylight"], "no tool changes the daylight"
+        calls = ", ".join(f"{call.action}(to={call.params['to']})" for call in trace.call_ledger.calls) or "no call"
+        assert f"{seed['daylight']}, light {seed['light']}" in out and calls in out
+
+
+def _room(case: dict[str, str]) -> dict[str, str]:
+    """What the room's sensors show at the start of ``case``: its seed, as the example seeds it."""
+    return {"light": case["light"], "daylight": case["daylight"]}
+
+
+async def test_the_loop_tells_the_model_a_refused_call_and_acts_on_the_next(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load()
+    turns = [
+        {"tool": "switch_light", "arguments": json.dumps({"to": "dim"}), "reply": ""},  # the world refuses it
+        {"tool": "switch_light", "arguments": json.dumps({"to": "on"}), "reply": ""},
+        {"tool": "none", "arguments": "{}", "reply": "Lamp on for reading."},
     ]
-    assert sorted(seen, key=str) == sorted(expected * 2, key=str)
+    sent: list[dict[str, Any]] = []
+
+    async def generate(*, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
+        sent.append({"system": system, "user": user, "response_format": response_format})
+        return SimpleNamespace(content=json.dumps(turns[(len(sent) - 1) % len(turns)]))
+
+    async def aclose() -> None:
+        return None
+
+    monkeypatch.setattr(module, "client", lambda model, settings: SimpleNamespace(generate=generate, aclose=aclose))
+    monkeypatch.setattr(module, "how_it_runs", lambda what: f"scripted ({what})")
+    host = _host_of(module, monkeypatch)
+    monkeypatch.setattr(module, "CASES", module.CASES[:1])  # dark, light off, about to read
+    summary = await module.main()
+
+    assert len(sent) == 3 * summary.k_runs
+    first = sent[0]
+    assert first["system"] == module.SYSTEM and first["response_format"] == module.TURN
+    assert "switch_light: Turn the room's light on or off." in first["system"]
+    assert first["user"] == f"Sensors: {_room(module.CASES[0])}\n\n{module.CASES[0]['ask']}"
+    refused = sent[1]["user"].rsplit("\n\n", 1)[1]
+    assert refused.startswith('You called switch_light with {"to": "dim"}: refused: ')
+    assert "dim" in refused.split(": refused: ", 1)[1], "the model is told why the world refused it"
+    accepted = sent[2]["user"].rsplit("\n\n", 1)[1]
+    assert accepted == 'You called switch_light with {"to": "on"}: The light is now on.'
+    # Only the call the world made is recorded, and the room ends lit: both checks pass.
+    for result in off_loop(list_results, host.storage, summary.run_id, summary.scope_id):
+        trace = off_loop(get_result_trace, host.storage, result)
+        assert trace is not None and trace.call_ledger is not None
+        assert trace.call_ledger.calls == [RecordedCall(tool="room", action="switch_light", params={"to": "on"})]
+        assert trace.end_state == {"light": "on", "daylight": "dark"}
+    assert [(goal.passed, goal.n) for goal in summary.goal_checks] == [(2, 2), (2, 2)]
 
 
 def _host_of(module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -117,69 +133,3 @@ def _host_of(module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> Any:
 
 def test_the_example_reaches_the_engine_only_through_public_roots() -> None:
     assert public_root_violations(SOURCE_ROOT, [("world.py", WORLD_EXAMPLE)], consumer_root=REPO_ROOT) == []
-
-
-async def test_the_claude_candidate_runs_the_tool_loop_against_sdk_replies(monkeypatch: pytest.MonkeyPatch) -> None:
-    anthropic = pytest.importorskip("anthropic")
-    module = _load()
-    # The id is the example's own, read from it, so a model rev in the example is the only edit.
-    model = module.MODEL
-    usage = {"input_tokens": 300, "output_tokens": 40}
-
-    def reply(stop_reason: str, content: list[dict[str, Any]]) -> Any:
-        return anthropic.types.Message.model_validate(
-            {
-                "id": "msg",
-                "type": "message",
-                "role": "assistant",
-                "model": model,
-                "content": content,
-                "stop_reason": stop_reason,
-                "stop_sequence": None,
-                "usage": usage,
-            }
-        )
-
-    replies = [
-        # First a call the world refuses, then the right one, then the answer.
-        reply("tool_use", [{"type": "tool_use", "id": "t1", "name": "switch_light", "input": {"to": "dim"}}]),
-        reply("tool_use", [{"type": "tool_use", "id": "t2", "name": "switch_light", "input": {"to": "on"}}]),
-        reply("end_turn", [{"type": "text", "text": "Lamp on for reading."}]),
-    ]
-    sent: list[dict[str, Any]] = []
-
-    async def create(**request: Any) -> Any:
-        sent.append({**request, "messages": list(request["messages"])})
-        return replies[(len(sent) - 1) % len(replies)]
-
-    class Client:
-        messages = SimpleNamespace(create=create)
-
-        async def __aenter__(self) -> Client:
-            return self
-
-        async def __aexit__(self, *exc: object) -> None:
-            return None
-
-    monkeypatch.setattr(anthropic, "AsyncAnthropic", Client)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    host = _host_of(module, monkeypatch)
-    monkeypatch.setattr(module, "CASES", module.CASES[:1])  # dark, light off, about to read
-    summary = await module.main()
-
-    assert len(sent) == 3 * summary.k_runs
-    first = sent[0]
-    assert first["model"] == model and first["tools"][0]["name"] == "switch_light"
-    assert first["tools"][0]["input_schema"]["properties"] == {"to": {"enum": ["on", "off"]}}
-    assert "'daylight': 'dark'" in first["messages"][0]["content"]
-    refused = sent[1]["messages"][-1]["content"][0]
-    assert refused["tool_use_id"] == "t1" and refused["is_error"] is True and "dim" in refused["content"]
-    accepted = sent[2]["messages"][-1]["content"][0]
-    assert (accepted["tool_use_id"], accepted["is_error"], accepted["content"]) == ("t2", False, "The light is now on.")
-    # Only the call the world made is recorded, and the room ends lit: both checks pass.
-    for result in off_loop(list_results, host.storage, summary.run_id, summary.scope_id):
-        trace = off_loop(get_result_trace, host.storage, result)
-        assert trace is not None and trace.call_ledger is not None
-        assert trace.call_ledger.calls == [RecordedCall(tool="room", action="switch_light", params={"to": "on"})]
-        assert trace.end_state == {"light": "on", "daylight": "dark"}
-    assert [(goal.passed, goal.n) for goal in summary.goal_checks] == [(2, 2), (2, 2)]

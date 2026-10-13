@@ -1,0 +1,46 @@
+{
+  "headline": "How the two rule sets compare",
+  "summary": "- One finding, below.",
+  "headline_rests_on": [
+    0
+  ],
+  "summary_rests_on": [
+    [
+      0
+    ]
+  ],
+  "findings": [
+    {
+      "title": "Precision by arm",
+      "body": "The tested arm reads {{c2|precision|measure|mean}}, the control {{c1|precision|measure|mean}}.",
+      "evidence": [
+        {
+          "cell": "c2",
+          "measure_id": "precision",
+          "reading": "measure"
+        },
+        {
+          "cell": "c1",
+          "measure_id": "precision",
+          "reading": "measure"
+        }
+      ],
+      "chart": {
+        "type": "none",
+        "cells": [],
+        "measures": [],
+        "axis": "",
+        "note": "",
+        "caption": ""
+      },
+      "confidence": "low",
+      "axes": [],
+      "caveats": [],
+      "invalidates": [],
+      "durable": ""
+    }
+  ],
+  "decisions": [],
+  "questions": [],
+  "next": []
+}
