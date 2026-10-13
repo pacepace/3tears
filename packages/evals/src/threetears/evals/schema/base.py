@@ -412,6 +412,50 @@ class CoreShapeModel(BaseModel):
         shape._newer_minor_fields = _NewerMinorFields(minor=minor, fields=copy.deepcopy(undeclared))
         return shape
 
+    def __eq__(self, other: object) -> bool:
+        """Equal when of one type, with equal declared fields and equal kept fields; the minor marker is not compared.
+
+        Pydantic's own equality compares every private attribute, and every shape a newer minor's read validates
+        carries the minor it was read at. So under it a shape read from a document a newer build wrote — even one
+        that kept no field at all, because the newer minor changed some other type — would be unequal to the same
+        shape built here, and every check that compares a stored shape with one this build holds (a run's request
+        settings against today's, a control's lever map echoed back) would refuse every document a newer minor
+        wrote. Two shapes are equal when they hold the same thing: the same declared field values, compared as
+        pydantic compares them (a nested shape by this same rule), the same fields a newer build wrote and this
+        build kept, and the same value for every other private attribute a subclass declares. Where the marker
+        came from is not what a shape holds.
+
+        Defining equality here sets this class's ``__hash__`` to ``None``, which is what pydantic's own mutable
+        models have; a frozen subclass is still given pydantic's field-only hash at class creation (its metaclass
+        generates one when the inherited ``__hash__`` is ``None``), and that hash agrees with this equality: two
+        equal shapes have equal declared fields, so equal hashes.
+
+        Args:
+            other: What this shape is compared with.
+
+        Returns:
+            Whether the two hold the same thing; ``NotImplemented`` for an object that is not a model.
+        """
+        if not isinstance(other, BaseModel):
+            return NotImplemented
+        if not isinstance(other, CoreShapeModel) or type(self) is not type(other):
+            return False
+        return self._same_contents(other)
+
+    def _same_contents(self, other: CoreShapeModel) -> bool:
+        """:meth:`__eq__` for two shapes of one type: their declared fields, kept fields and other private state."""
+        names = type(self).model_fields.keys()
+        if any(self.__dict__.get(name) != other.__dict__.get(name) for name in names):
+            return False
+        return self._compared_private(self) == self._compared_private(other)
+
+    def _compared_private(self, shape: CoreShapeModel) -> dict[str, Any]:
+        """``shape``'s private state as equality reads it: its kept fields in place of the marker that carries them."""
+        private = dict(shape.__pydantic_private__ or {})
+        kept = private.pop("_newer_minor_fields", None)
+        private["_newer_minor_fields"] = {} if kept is None else kept.fields
+        return private
+
     @classmethod
     def _declared_keys(cls) -> frozenset[str]:
         """Every key a mapping of this class may hold: its fields, their aliases, and its computed fields."""

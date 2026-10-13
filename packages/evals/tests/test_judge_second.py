@@ -43,6 +43,7 @@ from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.identity import resolve_variant_identity
 from threetears.evals.schema.models import (
     EvalResult,
+    EvalRun,
     EvalTemplate,
     EvalTestCase,
     JudgedArtifact,
@@ -438,3 +439,26 @@ class TestDriftAcrossAJudgeChange:
         moved = {row.rubric_dim: row.verdict for row in link.drift.dimensions}
         assert moved == {_SHIFTED: "separated", _STEADY: "not_separated"}
         assert linked.sentence is not None and "drift reading" in linked.sentence
+
+
+class TestARunANewerMinorWrote:
+    """A run a newer build rewrote at its minor, with a field on the run and none on its request settings, is the
+    same judge apparatus: the settings check compares what the settings hold, not the minor they were read at."""
+
+    async def test_a_second_judge_is_asked_of_it(self) -> None:
+        from threetears.evals.schema.versioning import CORE_SCHEMA_MINOR
+
+        judges = _Judges(first=_ScriptedJudge(_FIRST), second=_ScriptedJudge(_SECOND))
+        host, run_id = await _judged_run(judges)
+        run = off_loop(host.storage.load_eval_run, run_id, _SCOPE)
+        assert run is not None
+        newer = EvalRun.from_dict(
+            {**run.to_dict(), "schema_minor": CORE_SCHEMA_MINOR + 1, "written_by_a_newer_build": {"kept": True}}
+        )
+        off_loop(host.storage.save_eval_run, newer)
+        stored = off_loop(host.storage.load_eval_run, run_id, _SCOPE)
+        assert stored is not None and stored.judge_request_settings == JUDGE_REQUEST_SETTINGS
+
+        report = await _asked(host, run_id, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=10.0)
+
+        assert report.judged, "the pass asked about the run's results"

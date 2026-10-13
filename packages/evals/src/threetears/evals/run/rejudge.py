@@ -232,7 +232,9 @@ def request_settings_drift(recorded: ClientRequestSettings | None) -> str:
 
     Two settings can differ where this build cannot see: a run a newer build judged may record a field of the
     settings this build does not know, which its read keeps, so the two compare unequal while every field this
-    build declares agrees — and printing both would show two identical values. That case is named as what it is.
+    build declares agrees — and printing both would show two identical values. That case, and only that case, is
+    named as a field this build does not know: settings that are merely read from a newer minor's run, with nothing
+    kept on them, compare equal to today's and are said to match.
 
     Args:
         recorded: The run's recorded judge request settings (``None`` when it recorded none).
@@ -240,6 +242,10 @@ def request_settings_drift(recorded: ClientRequestSettings | None) -> str:
     Returns:
         A clause for a refusal: "was judged with request settings ... and a judge call now sends ...".
     """
+    if recorded == JUDGE_REQUEST_SETTINGS:
+        return f"was judged with the request settings a judge call now sends ({JUDGE_REQUEST_SETTINGS!r})"
+    # Unequal, yet equal in every declared field: the difference is a field a newer build wrote, which equality
+    # compares (the minor a shape was read at is not compared, so a run a newer minor wrote is not this case).
     if recorded is not None and recorded.model_dump() == JUDGE_REQUEST_SETTINGS.model_dump():
         return (
             f"was judged with request settings that match the ones a judge call now sends ({JUDGE_REQUEST_SETTINGS!r}) "

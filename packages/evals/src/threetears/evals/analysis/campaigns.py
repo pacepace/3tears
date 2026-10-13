@@ -27,7 +27,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from threetears.evals.analysis.bundle.observations import variant_key_of_run
 from threetears.evals.kernel.authoring_fields import edited_core_document, reject_unknown_authoring_fields
@@ -1164,7 +1164,10 @@ def _with_server_owned_pre_image(
         }
     else:
         sent = {} if supplied.control_levers is None else {"control_levers": supplied.control_levers}
-    if refused := sorted(field for field, value in sent.items() if value != server[field]):
+    # Compared as a caller can send them: by the fields this build declares. A lever value a newer build wrote a
+    # field on keeps it on the stored side, and a caller echoing the declaration back cannot send what this build
+    # does not know, so comparing whole shapes would refuse every echo of such a campaign.
+    if refused := sorted(field for field, value in sent.items() if _as_declared(value) != _as_declared(server[field])):
         raise ValidationFailedError(
             f"the design sends {' and '.join(f'`{field}`' for field in refused)}, which the server records beside "
             "the control's key and never takes from a caller: a lever map is recorded from the run the control "
@@ -1175,6 +1178,15 @@ def _with_server_owned_pre_image(
             ),
         )
     return design.model_copy(update=server)
+
+
+def _as_declared(value: Any) -> Any:
+    """``value`` as this build declares it: a model as its dump, a mapping of models as a mapping of dumps."""
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, Mapping):
+        return {key: _as_declared(item) for key, item in value.items()}
+    return value
 
 
 if TYPE_CHECKING:
