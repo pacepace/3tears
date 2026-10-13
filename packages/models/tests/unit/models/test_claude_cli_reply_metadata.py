@@ -1,10 +1,12 @@
-"""What a subscription reply says about itself: how it ended, invoked or streamed.
+"""What a subscription reply says about itself, invoked or streamed: how it ended, and which model served it.
 
 The CLI's ``ResultMessage`` carries the last model turn's ``stop_reason`` (the Messages API's) and
 the query loop's ``terminal_reason``. The model used to drop both and say ``finish_reason="stop"``
 for every call that handed no tool calls back, so a reply the output cap cut short read as
-finished. The CLI's answer is scripted at its door (:mod:`.claude_cli_recorder`); everything after
-it is the model's own code.
+finished. Each ``AssistantMessage`` names the model that wrote it, and the result's ``model_usage``
+is keyed by model; the model dropped both, so a ``fallback_model`` switch was invisible. The CLI's
+answer is scripted at its door (:mod:`.claude_cli_recorder`); everything after it is the model's
+own code.
 """
 
 from __future__ import annotations
@@ -127,3 +129,74 @@ class TestHowTheReplyEnded:
         assert reply.content == '{"ok": true}'
         assert reply.response_metadata["finish_reason"] == "stop"
         assert reply.response_metadata["stop_reason"] == "tool_use"
+
+
+_FALLBACK = "claude-haiku-4-5"
+
+
+def _usage_of(*models: str) -> dict[str, Any]:
+    """a result's ``model_usage``, one entry per model, as the CLI sends it.
+
+    :param models: the models the call used
+    :ptype models: str
+    :return: the per-model usage
+    :rtype: dict[str, Any]
+    """
+    entry = {
+        "inputTokens": 1,
+        "outputTokens": 1,
+        "cacheReadInputTokens": 0,
+        "cacheCreationInputTokens": 0,
+        "webSearchRequests": 0,
+        "costUSD": 0.0,
+        "contextWindow": 200000,
+        "maxOutputTokens": 32000,
+    }
+    return {model: dict(entry) for model in models}
+
+
+@pytest.mark.parametrize("how", _PATHS)
+class TestWhichModelServedTheReply:
+    async def test_the_model_the_cli_named_on_the_turn_is_the_model_name(self, how: str) -> None:
+        reply = await _ask([_reply(model=DEFAULT_CHAT_MODEL), _result()], how)
+
+        assert reply.response_metadata["model_name"] == DEFAULT_CHAT_MODEL
+
+    async def test_a_fallback_switch_is_visible(self, how: str) -> None:
+        """asked for the default model, answered by the fallback: the reply names the fallback."""
+        answer = [_reply(model=_FALLBACK), _result(model_usage=_usage_of(_FALLBACK))]
+        with recording_cli(answer=answer):
+            model: Any = subscription_model(fallback_model=_FALLBACK)
+            if how == "ainvoke":
+                reply = await model.ainvoke("where is tea from?")
+            else:
+                reply = None
+                async for chunk in model.astream("where is tea from?"):
+                    reply = chunk if reply is None else reply + chunk
+
+        assert reply.response_metadata["model_name"] == _FALLBACK
+        assert reply.response_metadata["model_name"] != DEFAULT_CHAT_MODEL
+
+    async def test_the_last_turn_names_it_when_turns_differ(self, how: str) -> None:
+        answer = [_reply("first", model=DEFAULT_CHAT_MODEL), _reply("second", model=_FALLBACK), _result()]
+        reply = await _ask(answer, how)
+
+        assert reply.response_metadata["model_name"] == _FALLBACK
+
+    async def test_a_message_the_cli_wrote_itself_names_no_model(self, how: str) -> None:
+        answer = [_reply(model=DEFAULT_CHAT_MODEL), _reply("(no content)", model="<synthetic>"), _result()]
+        reply = await _ask(answer, how)
+
+        assert reply.response_metadata["model_name"] == DEFAULT_CHAT_MODEL
+
+    async def test_with_no_turn_naming_one_the_results_only_usage_key_names_it(self, how: str) -> None:
+        answer = [_reply(model="<synthetic>"), _result(model_usage=_usage_of(_FALLBACK))]
+        reply = await _ask(answer, how)
+
+        assert reply.response_metadata["model_name"] == _FALLBACK
+
+    async def test_several_usage_keys_and_no_turn_name_none_never_the_model_asked_for(self, how: str) -> None:
+        answer = [_reply(model="<synthetic>"), _result(model_usage=_usage_of(DEFAULT_CHAT_MODEL, _FALLBACK))]
+        reply = await _ask(answer, how)
+
+        assert "model_name" not in reply.response_metadata

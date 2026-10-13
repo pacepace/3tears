@@ -870,6 +870,7 @@ def _subscription_model_cls() -> type:
             tool_calls: list[dict[str, Any]] = []
             generation_info: dict[str, Any] = {}
             attempts = _StructuredAttempts()
+            served: str | None = None
             async with self._cli_client(options, pooled=not session_id) as client:
                 await client.query(prompt)
                 async for msg in client.receive_response():
@@ -885,12 +886,13 @@ def _subscription_model_cls() -> type:
                                 await run_manager.on_llm_new_token(text)
                         tool_calls.extend(self._caller_tool_calls(msg.content))
                         attempts.saw(msg.content)
+                        served = _turn_model(msg) or served
                     elif isinstance(msg, UserMessage):
                         attempts.answered(msg)
                     elif isinstance(msg, ResultMessage):
                         self._last_result = msg
                         answer, generation_info = _settle(
-                            msg, options.output_format, tool_calls, "\n".join(all_text), attempts
+                            msg, options.output_format, tool_calls, "\n".join(all_text), attempts, served=served
                         )
                         if options.output_format is not None and answer is not None:
                             # The answer is the structured one. The model's prose before it is
@@ -966,6 +968,7 @@ def _subscription_model_cls() -> type:
             # Every message's text, streamed or held, for a failed result that says nothing itself.
             produced: list[str] = []
             attempts = _StructuredAttempts()
+            served: str | None = None
 
             async with self._cli_client(options, pooled=not session_id) as client:
                 await client.query(prompt)
@@ -999,6 +1002,7 @@ def _subscription_model_cls() -> type:
                         text = "\n".join(b.text for b in msg.content if isinstance(b, TextBlock))
                         produced.append(text)
                         attempts.saw(msg.content)
+                        served = _turn_model(msg) or served
                         if structured:
                             if text:
                                 held.append(text)
@@ -1020,7 +1024,7 @@ def _subscription_model_cls() -> type:
                     elif isinstance(msg, ResultMessage):
                         self._last_result = msg
                         answer, generation_info = _settle(
-                            msg, options.output_format, tool_calls, "\n".join(produced), attempts
+                            msg, options.output_format, tool_calls, "\n".join(produced), attempts, served=served
                         )
                         usage = _usage_metadata(msg.usage)
                         content = ""
@@ -1389,7 +1393,13 @@ def _assistant_failure(message: Any) -> ModelProviderError | None:
 
 
 def _settle(
-    result: Any, output_format: Any, tool_calls: list[dict[str, Any]], text: str, attempts: _StructuredAttempts
+    result: Any,
+    output_format: Any,
+    tool_calls: list[dict[str, Any]],
+    text: str,
+    attempts: _StructuredAttempts,
+    *,
+    served: str | None = None,
 ) -> tuple[Any | None, dict[str, Any]]:
     """Decide how a call ended: its structured answer and generation info, or the error it raises.
 
@@ -1410,6 +1420,8 @@ def _settle(
     :ptype text: str
     :param attempts: the call's ``StructuredOutput`` attempts
     :ptype attempts: _StructuredAttempts
+    :param served: the model the CLI named on the call's last model turn (:func:`_turn_model`)
+    :ptype served: str | None
     :return: ``(structured answer or None, generation info)``
     :rtype: tuple[Any | None, dict[str, Any]]
     :raises ModelProviderError: when the call failed
@@ -1425,7 +1437,7 @@ def _settle(
         raise _cli_failure(said, reason=reason, status=result.api_error_status, attempts=attempts)
     if answer is not None and (schema := _schema_of(output_format)) is not None:
         answer = _without_call_syntax(answer, schema)
-    return answer, _generation_info(result, tool_calls, answered=answer is not None, unwrapped=unwrapped)
+    return answer, _generation_info(result, tool_calls, answered=answer is not None, unwrapped=unwrapped, served=served)
 
 
 #: The CLI's ``stop_reason`` -- the Messages API's, for the call's last model turn -- for a turn that
@@ -1481,8 +1493,55 @@ def _finish_reason(result: Any, tool_calls: list[dict[str, Any]], *, answered: b
     return str(stop if loop in _COMPLETED_LOOPS else loop)
 
 
+#: The model the CLI names on an assistant message it wrote itself -- a failure notice, a placeholder
+#: -- rather than one a model turn produced.
+_SYNTHETIC_MODEL = "<synthetic>"
+
+
+def _turn_model(message: Any) -> str | None:
+    """The model that wrote an assistant message, as the CLI names it.
+
+    The CLI names the model that actually answered, so a turn served by ``fallback_model`` (or a
+    server-side fallback) names the fallback, not the model asked for.
+
+    :param message: the CLI's ``AssistantMessage``
+    :ptype message: Any
+    :return: the model id, or ``None`` for a message the CLI wrote itself or one naming no model
+    :rtype: str | None
+    """
+    model = message.model
+    return model if isinstance(model, str) and model and model != _SYNTHETIC_MODEL else None
+
+
+def _served_model(result: Any, served: str | None) -> str | None:
+    """The model that served a call: the last model turn's, else the result's only per-model usage key.
+
+    ``ResultMessage.model_usage`` is keyed by every model the call used. More than one key names no
+    single model, so it decides nothing.
+
+    :param result: the CLI's ``ResultMessage``
+    :ptype result: Any
+    :param served: the model the CLI named on the call's last model turn
+    :ptype served: str | None
+    :return: the model id, or ``None`` when the CLI named none
+    :rtype: str | None
+    """
+    if served is not None:
+        return served
+    usage = result.model_usage
+    if isinstance(usage, dict) and len(usage) == 1:
+        [model] = usage
+        return str(model)
+    return None
+
+
 def _generation_info(
-    result: Any, tool_calls: list[dict[str, Any]], *, answered: bool = False, unwrapped: bool = False
+    result: Any,
+    tool_calls: list[dict[str, Any]],
+    *,
+    answered: bool = False,
+    unwrapped: bool = False,
+    served: str | None = None,
 ) -> dict[str, Any]:
     """What a call that did not fail says, as generation info.
 
@@ -1490,7 +1549,9 @@ def _generation_info(
     false here -- a result the CLI flagged is reported by the error :func:`_settle` raises instead.
     The CLI's own ``stop_reason`` and ``terminal_reason`` ride along as it sent them (``None`` when
     it sent none), beside the ``finish_reason`` derived from them (:func:`_finish_reason`), so a
-    reader can tell a CLI that said ``end_turn`` from one that said nothing.
+    reader can tell a CLI that said ``end_turn`` from one that said nothing. ``model_name`` is the
+    model that served the call (:func:`_served_model`), the key LangChain's chat models put the
+    response's model under; it is absent when the CLI named none, never the model asked for.
 
     :param result: the CLI's ``ResultMessage``
     :ptype result: Any
@@ -1500,6 +1561,8 @@ def _generation_info(
     :ptype answered: bool
     :param unwrapped: whether the answer was recovered from a placeholder (:func:`_unwrapped_answer`)
     :ptype unwrapped: bool
+    :param served: the model the CLI named on the call's last model turn
+    :ptype served: str | None
     :return: generation info
     :rtype: dict[str, Any]
     """
@@ -1514,6 +1577,8 @@ def _generation_info(
         "terminal_reason": result.terminal_reason,
         "finish_reason": _finish_reason(result, tool_calls, answered=answered),
     }
+    if (model_name := _served_model(result, served)) is not None:
+        info["model_name"] = model_name
     if unwrapped:
         info["structured_output_unwrapped"] = 1
     if result.usage:
