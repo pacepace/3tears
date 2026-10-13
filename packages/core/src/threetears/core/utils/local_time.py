@@ -1,0 +1,64 @@
+"""A moment, written for a reader in one zone.
+
+A tool that shows a time shows it to someone who lives somewhere. Printed as a
+bare UTC instant -- ``2026-10-10T04:11:20.123456+00:00`` -- the reader converts
+it in their head, or does not, and tells a person the wrong hour. A tool takes
+the zone of the person the turn is with and hands every time it prints to
+:func:`render_local_time`, which says the zone in the text.
+
+Only what is read as a time goes through here. An id that happens to hold a
+time (a cursor, a version stamp) stays exactly as stored: its reader is the next
+call, not a person.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, tzinfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+__all__ = ["render_local_time", "resolve_zone"]
+
+
+def resolve_zone(tz: tzinfo | str | None) -> tzinfo | None:
+    """The zone a caller named, as a ``tzinfo``.
+
+    ``None`` stays ``None``: the caller named no zone. A name that is not an
+    IANA zone is refused rather than read as UTC, because a time shown in a zone
+    nobody asked for is a wrong time that reads as a right one.
+
+    :param tz: a ``tzinfo``, an IANA name such as ``America/Los_Angeles``, or ``None``
+    :ptype tz: tzinfo | str | None
+    :return: the zone, or ``None`` when none was named
+    :rtype: tzinfo | None
+    :raises ValueError: when the name is not a zone this system knows
+    """
+    if tz is None or isinstance(tz, tzinfo):
+        return tz
+    try:
+        return ZoneInfo(tz)
+    except (ZoneInfoNotFoundError, ValueError, OSError) as exc:
+        raise ValueError(f"{tz!r} is not a time zone this system knows") from exc
+
+
+def render_local_time(value: datetime, tz: tzinfo | str | None = None) -> str:
+    """``value`` as a reader in ``tz`` says it, with the zone named: ``Oct 9, 2026 at 3:00 PM PDT``.
+
+    A ``value`` with no zone of its own is taken as UTC, which is how every
+    timestamp this platform stores is meant. With no ``tz`` the time is shown in
+    UTC and says so.
+
+    :param value: the moment
+    :ptype value: datetime
+    :param tz: the reader's zone: a ``tzinfo``, an IANA name, or ``None`` for UTC
+    :ptype tz: tzinfo | str | None
+    :return: the time in that zone, ending with the zone's short name
+    :rtype: str
+    :raises ValueError: when ``tz`` is a name that is not a zone this system knows
+    """
+    zone = resolve_zone(tz) or UTC
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    local = aware.astimezone(zone)
+    hour = local.hour % 12 or 12
+    half = "AM" if local.hour < 12 else "PM"
+    name = local.tzname() or local.strftime("%z")
+    return f"{local:%b} {local.day}, {local.year} at {hour}:{local.minute:02d} {half} {name}"

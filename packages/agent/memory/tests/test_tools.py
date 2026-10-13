@@ -139,7 +139,9 @@ class _FakeAliasMemories:
         return self.row
 
 
-async def _search_by_alias(authorizer: MemoryAuthorizerDependencies, memories: _FakeAliasMemories) -> str:
+async def _search_by_alias(
+    authorizer: MemoryAuthorizerDependencies, memories: _FakeAliasMemories, **loader_kwargs: Any
+) -> str:
     (tool,) = await load_memory_search_tool(
         uuid4(),
         None,  # type: ignore[arg-type]  # the alias lookup embeds nothing
@@ -149,6 +151,7 @@ async def _search_by_alias(authorizer: MemoryAuthorizerDependencies, memories: _
         memories,  # type: ignore[arg-type]
         None,  # type: ignore[arg-type]
         None,  # type: ignore[arg-type]
+        **loader_kwargs,
     )
     result = await tool.ainvoke({"alias": "home", "query": "home"})
     assert isinstance(result, str)
@@ -195,6 +198,51 @@ class TestFmtDt:
         assert "[fact] [some string] lives in Leeds" in result
         result = await _search_by_alias(permissive_memory_authorizer, _FakeAliasMemories(_alias_row(42)))
         assert "[fact] [42] lives in Leeds" in result
+
+
+class TestDatesAreInTheZoneTheCallerNames:
+    """a date is read to a person who lives somewhere; an id is read by the next call."""
+
+    async def test_an_alias_hit_is_dated_in_the_zone_and_names_it(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies
+    ) -> None:
+        row = _alias_row(datetime(2026, 3, 12, 14, 30, tzinfo=timezone.utc))
+        result = await _search_by_alias(permissive_memory_authorizer, _FakeAliasMemories(row), tz="America/Los_Angeles")
+        assert f"[memory:{row['memory_id']}] [fact] [Mar 12, 2026 at 7:30 AM PDT] lives in Leeds" in result
+
+    async def test_a_search_dates_memories_and_files_in_the_zone_and_leaves_ids_as_stored(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies
+    ) -> None:
+        late = datetime(2026, 10, 10, 4, 11, tzinfo=timezone.utc)
+        memory, media = _memory_row("lives in Leeds", late), _media_row("a photo of the house", late)
+        result = await _search(
+            permissive_memory_authorizer,
+            memories=_FakeSearchRows(semantic=[memory]),
+            media=_FakeSearchRows(semantic=[media]),
+            chunks=_FakeSearchRows(),
+            tz="America/Los_Angeles",
+        )
+        assert f"- [memory:{memory['memory_id']}] [fact] [Oct 9, 2026 at 9:11 PM PDT] lives in Leeds" in result
+        assert f"- [media:{media['content_id']}] a photo of the house (created: Oct 9, 2026 at 9:11 PM PDT)" in result
+        assert "Oct 10" not in result, "no date is left in UTC beside the zoned ones"
+
+    async def test_with_no_zone_named_a_date_reads_as_it_did(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies
+    ) -> None:
+        late = datetime(2026, 10, 10, 4, 11, tzinfo=timezone.utc)
+        result = await _search(
+            permissive_memory_authorizer,
+            memories=_FakeSearchRows(semantic=[_memory_row("lives in Leeds", late)]),
+            media=_FakeSearchRows(),
+            chunks=_FakeSearchRows(),
+        )
+        assert "[fact] [Oct 10, 2026 at 4:11 AM] lives in Leeds" in result
+
+    async def test_a_zone_that_does_not_exist_is_refused_when_the_tool_is_built(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies
+    ) -> None:
+        with pytest.raises(ValueError, match="is not a time zone"):
+            await _search_by_alias(permissive_memory_authorizer, _FakeAliasMemories(), tz="Mars/Olympus")
 
 
 # -- A search that lost a branch says so before anything it found ---------------

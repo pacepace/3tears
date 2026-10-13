@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from typing import Any, Final
 from uuid import UUID
 
@@ -37,10 +37,12 @@ from threetears.agent.wake.tools.resolve import parse_conversation_id, parse_sub
 from threetears.agent.wake.types import WakeConversations
 from threetears.core.collections import CallerTransaction
 from threetears.core.exceptions import ConcurrentModificationError
+from threetears.core.utils.local_time import resolve_zone
 from threetears.agent.wake.tools.schedule_tools import (
     WakeRegistryClient,
     _tool_error,
     _validate_name,
+    format_wake_time,
 )
 from threetears.observe import get_logger
 
@@ -226,11 +228,12 @@ def _format_subscription_line(
     entity: Any,
     *,
     skill_name: str | None,
+    zone: tzinfo | None = None,
 ) -> str:
     """Render a one-line catalog entry for a subscription row."""
     name = entity.name or "untitled"
     skill_segment = f" · skill: {skill_name}" if skill_name else ""
-    last = entity.last_fired_at.isoformat() if entity.last_fired_at is not None else "never"
+    last = format_wake_time(entity.last_fired_at, zone, unset="never")
     return (
         f"[webhook:{entity.subscription_id}] · {name} · "
         f"{entity.status} · in [conversation:{entity.conversation_id}] · last_fired: {last}{skill_segment}"
@@ -278,6 +281,7 @@ def load_webhook_subscription_create_tool(
     registry: WakeRegistryClient,
     endpoint_base_url: str | None = None,
     wake_conversations: WakeConversations | None = None,
+    tz: tzinfo | str | None = None,
 ) -> list[BaseTool]:
     """Build a ``webhook_subscription_create`` tool.
 
@@ -310,9 +314,14 @@ def load_webhook_subscription_create_tool(
     :ptype endpoint_base_url: str | None
     :param wake_conversations: the consumer's wake-conversation hooks
     :ptype wake_conversations: WakeConversations | None
+    :param tz: the zone of the person the result is read to: a ``tzinfo`` or an IANA
+        name. Every time in the result is shown in it and names it. ``None`` keeps
+        times as stored (UTC ISO)
+    :ptype tz: tzinfo | str | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
+    zone = resolve_zone(tz)
 
     @tool("webhook_subscription_create", args_schema=WebhookSubscriptionCreateInput)
     async def webhook_subscription_create(
@@ -454,7 +463,7 @@ def load_webhook_subscription_create_tool(
             base = endpoint_base_url.rstrip("/")
             endpoint_segment = f"\nendpoint: {base}/{new_id}"
 
-        catalog = _format_subscription_line(entity, skill_name=skill_name)
+        catalog = _format_subscription_line(entity, skill_name=skill_name, zone=zone)
         return f"{catalog}\nsecret (copy now; shown only once): {plaintext_secret}{endpoint_segment}"
 
     webhook_subscription_create.description = (
@@ -525,6 +534,7 @@ def load_webhook_subscription_update_tool(
     agent_id: UUID,
     subscriptions_collection: WebhookSubscriptionCollection,
     registry: WakeRegistryClient,
+    tz: tzinfo | str | None = None,
 ) -> list[BaseTool]:
     """Build a ``webhook_subscription_update`` tool with partial-update semantics.
 
@@ -539,9 +549,14 @@ def load_webhook_subscription_update_tool(
     :ptype subscriptions_collection: WebhookSubscriptionCollection
     :param registry: consumer-supplied registry for skill ACL
     :ptype registry: WakeRegistryClient
+    :param tz: the zone of the person the result is read to: a ``tzinfo`` or an IANA
+        name. Every time in the result is shown in it and names it. ``None`` keeps
+        times as stored (UTC ISO)
+    :ptype tz: tzinfo | str | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
+    zone = resolve_zone(tz)
 
     @tool("webhook_subscription_update", args_schema=WebhookSubscriptionUpdateInput)
     async def webhook_subscription_update(
@@ -668,7 +683,7 @@ def load_webhook_subscription_update_tool(
                 )
             except Exception:  # noqa: BLE001 - best-effort
                 skill_name = None
-        return _format_subscription_line(entity, skill_name=skill_name)
+        return _format_subscription_line(entity, skill_name=skill_name, zone=zone)
 
     webhook_subscription_update.description = (
         "Change a webhook subscription. Pass only what changes. To remove a skill, name or "
@@ -689,8 +704,10 @@ def load_webhook_subscription_list_tool(
     agent_id: UUID,
     subscriptions_collection: WebhookSubscriptionCollection,
     registry: WakeRegistryClient,
+    tz: tzinfo | str | None = None,
 ) -> list[BaseTool]:
     """Build a ``webhook_subscription_list`` tool listing the agent's subscriptions in every conversation."""
+    zone = resolve_zone(tz)
 
     class _ListInput(BaseModel):
         """No-arg list."""
@@ -718,7 +735,7 @@ def load_webhook_subscription_list_tool(
                     )
                 except Exception:  # noqa: BLE001 - best-effort
                     skill_name = None
-            lines.append("- " + _format_subscription_line(entity, skill_name=skill_name))
+            lines.append("- " + _format_subscription_line(entity, skill_name=skill_name, zone=zone))
         return "\n".join(lines)
 
     webhook_subscription_list.description = (

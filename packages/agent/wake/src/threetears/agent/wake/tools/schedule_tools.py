@@ -37,7 +37,7 @@ Spec ref: ``docs/agent-wake/shard-04-agent-tools-and-webhook-adapter.md``
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
@@ -57,6 +57,7 @@ from threetears.agent.wake.rate_limit import (
 )
 from threetears.agent.wake.types import WakeConversations
 from threetears.core.exceptions import ConcurrentModificationError
+from threetears.core.utils.local_time import render_local_time, resolve_zone
 from threetears.scheduled_jobs import compute_next_fire_at
 from threetears.agent.wake.tools.resolve import parse_conversation_id, parse_schedule_id
 from threetears.agent.wake.tools.validators import (
@@ -79,6 +80,7 @@ __all__ = [
     "WakeRegistryClient",
     "WakeYieldProbe",
     "WakeYieldSetter",
+    "format_wake_time",
     "load_wake_schedule_create_tool",
     "load_wake_schedule_delete_tool",
     "load_wake_schedule_list_tool",
@@ -352,17 +354,30 @@ def _validate_task_prompt(prompt: str | None) -> str | None:
     return None
 
 
-def _format_next_fire(value: datetime | None) -> str:
-    """Render ``next_fire_at`` for the catalog row; ``-`` when unset."""
+def format_wake_time(value: datetime | None, zone: tzinfo | None = None, *, unset: str = "-") -> str:
+    """A wake's time as its reader says it: in ``zone`` and naming it, or as stored when no zone was named.
+
+    :param value: the moment, or ``None`` when there is none
+    :ptype value: datetime | None
+    :param zone: the reader's zone, when the caller named one
+    :ptype zone: tzinfo | None
+    :param unset: what to say when there is no moment
+    :ptype unset: str
+    :return: the time, or ``unset``
+    :rtype: str
+    """
     if value is None:
-        return "-"
-    return value.isoformat()
+        return unset
+    if zone is None:
+        return value.isoformat()
+    return render_local_time(value, zone)
 
 
 def _format_schedule_line(
     entity: Any,
     *,
     skill_name: str | None,
+    zone: tzinfo | None = None,
 ) -> str:
     """Render a one-line catalog entry for a schedule row."""
     name = entity.name or "untitled"
@@ -373,7 +388,7 @@ def _format_schedule_line(
     protected_segment = " · protected" if entity.protected else ""
     return (
         f"[schedule:{entity.schedule_id}] · {name} · {entity.schedule_type}"
-        f" · next: {_format_next_fire(entity.next_fire_at)}"
+        f" · next: {format_wake_time(entity.next_fire_at, zone)}"
         f" · {entity.status} · in [conversation:{entity.conversation_id}]"
         f"{skill_segment}{history_segment}{protected_segment}"
     )
@@ -442,6 +457,7 @@ def load_wake_schedule_create_tool(
     registry: WakeRegistryClient,
     max_active_schedules_per_agent: int = DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT,
     wake_conversations: WakeConversations | None = None,
+    tz: tzinfo | str | None = None,
 ) -> list[BaseTool]:
     """Build a ``wake_schedule_create`` tool bound to the actor triple.
 
@@ -470,9 +486,14 @@ def load_wake_schedule_create_tool(
     :ptype max_active_schedules_per_agent: int
     :param wake_conversations: the consumer's wake-conversation hooks
     :ptype wake_conversations: WakeConversations | None
+    :param tz: the zone of the person the result is read to: a ``tzinfo`` or an IANA
+        name. Every time in the result is shown in it and names it. ``None`` keeps
+        times as stored (UTC ISO)
+    :ptype tz: tzinfo | str | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
+    zone = resolve_zone(tz)
 
     @tool("wake_schedule_create", args_schema=ScheduleCreateInput)
     async def wake_schedule_create(
@@ -717,7 +738,7 @@ def load_wake_schedule_create_tool(
                 }
             },
         )
-        return _format_schedule_line(entity, skill_name=skill_name)
+        return _format_schedule_line(entity, skill_name=skill_name, zone=zone)
 
     wake_schedule_create.description = (
         (
@@ -747,6 +768,7 @@ def load_wake_schedule_update_tool(
     agent_id: UUID,
     schedules_collection: WakeScheduleCollection,
     registry: WakeRegistryClient,
+    tz: tzinfo | str | None = None,
 ) -> list[BaseTool]:
     """Build a ``wake_schedule_update`` tool with partial-update semantics.
 
@@ -767,9 +789,14 @@ def load_wake_schedule_update_tool(
     :ptype schedules_collection: WakeScheduleCollection
     :param registry: consumer-supplied registry client
     :ptype registry: WakeRegistryClient
+    :param tz: the zone of the person the result is read to: a ``tzinfo`` or an IANA
+        name. Every time in the result is shown in it and names it. ``None`` keeps
+        times as stored (UTC ISO)
+    :ptype tz: tzinfo | str | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
+    zone = resolve_zone(tz)
 
     @tool("wake_schedule_update", args_schema=ScheduleUpdateInput)
     async def wake_schedule_update(
@@ -985,7 +1012,7 @@ def load_wake_schedule_update_tool(
                 )
             except Exception:  # noqa: BLE001 - name lookup is best-effort
                 skill_name = None
-        return _format_schedule_line(entity, skill_name=skill_name)
+        return _format_schedule_line(entity, skill_name=skill_name, zone=zone)
 
     wake_schedule_update.description = (
         "Change a wake schedule. Pass only what changes. To remove a skill, name or "
@@ -1007,6 +1034,7 @@ def load_wake_schedule_list_tool(
     agent_id: UUID,
     schedules_collection: WakeScheduleCollection,
     registry: WakeRegistryClient,
+    tz: tzinfo | str | None = None,
 ) -> list[BaseTool]:
     """Build a ``wake_schedule_list`` tool listing the agent's wakes in every conversation.
 
@@ -1018,9 +1046,14 @@ def load_wake_schedule_list_tool(
     :ptype schedules_collection: WakeScheduleCollection
     :param registry: consumer-supplied registry for skill_name lookups
     :ptype registry: WakeRegistryClient
+    :param tz: the zone of the person the result is read to: a ``tzinfo`` or an IANA
+        name. Every time in the result is shown in it and names it. ``None`` keeps
+        times as stored (UTC ISO)
+    :ptype tz: tzinfo | str | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
+    zone = resolve_zone(tz)
 
     @tool("wake_schedule_list", args_schema=ScheduleListInput)
     async def wake_schedule_list(include_paused: bool = True) -> str:
@@ -1045,7 +1078,7 @@ def load_wake_schedule_list_tool(
                     )
                 except Exception:  # noqa: BLE001 - best-effort
                     skill_name = None
-            lines.append("- " + _format_schedule_line(entity, skill_name=skill_name))
+            lines.append("- " + _format_schedule_line(entity, skill_name=skill_name, zone=zone))
         return "\n".join(lines)
 
     wake_schedule_list.description = (
@@ -1117,6 +1150,7 @@ def load_wake_schedule_resume_tool(
     agent_id: UUID,
     schedules_collection: WakeScheduleCollection,
     max_active_schedules_per_agent: int = DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT,
+    tz: tzinfo | str | None = None,
 ) -> list[BaseTool]:
     """Build a ``wake_schedule_resume`` tool (status -> 'active'; recompute next_fire_at).
 
@@ -1135,9 +1169,14 @@ def load_wake_schedule_resume_tool(
     :param max_active_schedules_per_agent: cap on the agent's unprotected
         active schedules
     :ptype max_active_schedules_per_agent: int
+    :param tz: the zone of the person the result is read to: a ``tzinfo`` or an IANA
+        name. Every time in the result is shown in it and names it. ``None`` keeps
+        times as stored (UTC ISO)
+    :ptype tz: tzinfo | str | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
+    zone = resolve_zone(tz)
 
     @tool("wake_schedule_resume", args_schema=ScheduleIdInput)
     async def wake_schedule_resume(schedule_id: str) -> str:
@@ -1212,7 +1251,7 @@ def load_wake_schedule_resume_tool(
             )
         except Exception as exc:  # noqa: BLE001
             return _tool_error("wake_schedule_resume", f"persist failed: {exc}")
-        return f"Resumed [schedule:{parsed}]. Next fires at {next_fire_at.isoformat()}."
+        return f"Resumed [schedule:{parsed}]. Next fires at {format_wake_time(next_fire_at, zone)}."
 
     wake_schedule_resume.description = "Resume a paused wake schedule. Its next time is counted from now."
     return [wake_schedule_resume]

@@ -28,7 +28,7 @@ import asyncio
 import json
 import re
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from typing import Any
 from uuid import UUID
 
@@ -59,6 +59,7 @@ from langchain_core.embeddings import Embeddings
 from threetears.agent.memory.embedding_utils import _safe_aembed_query
 from threetears.agent.memory.entities import MemoryEntity
 from threetears.agent.memory.types import MemoryType
+from threetears.core.utils.local_time import render_local_time, resolve_zone
 from threetears.observe import get_logger
 
 __all__ = [
@@ -215,16 +216,23 @@ def _tool_error(tool_name: str, action: str, error: str) -> str:
     return f"[TOOL ERROR] {tool_name}: {action} failed — {error}"
 
 
-def _fmt_dt(dt: Any) -> str:
+def _fmt_dt(dt: Any, zone: tzinfo | None = None) -> str:
     """Format a datetime or None into a short timestamp string.
+
+    With a zone the time is shown in it and names it (``Oct 9, 2026 at 8:00 AM PDT``).
+    Without one the text is what it was before a caller could name a zone.
 
     :param dt: datetime or None
     :ptype dt: Any
+    :param zone: the reader's zone, when the caller named one
+    :ptype zone: tzinfo | None
     :return: formatted string or empty
     :rtype: str
     """
     if dt is None:
         return ""
+    if zone is not None and isinstance(dt, datetime):
+        return render_local_time(dt, zone)
     if hasattr(dt, "strftime"):
         return dt.strftime("%b %-d, %Y at %-I:%M %p")  # type: ignore[no-any-return]
     return str(dt)
@@ -425,6 +433,7 @@ async def load_memory_search_tool(
     similarity_threshold: float = _DEFAULT_SIMILARITY_THRESHOLD,
     max_results: int = _MAX_RESULTS,
     ledger_callback: LedgerCallback | None = None,
+    tz: tzinfo | str | None = None,
 ) -> list[BaseTool]:
     """create a memory_search tool bound to the given user and Collections.
 
@@ -452,10 +461,16 @@ async def load_memory_search_tool(
     :param ledger_callback: optional coroutine invoked per surfaced
         item with ``(item_id, item_type, description)``
     :ptype ledger_callback: LedgerCallback | None
+    :param tz: the zone of the person the results are read to: a ``tzinfo``
+        or an IANA name. Every date in a result is shown in it and names it.
+        ``None`` keeps the dates as stored, with no zone named
+    :ptype tz: tzinfo | str | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
+    :raises ValueError: when ``tz`` is a name that is not a known zone
     """
     sim_threshold = similarity_threshold
+    zone = resolve_zone(tz)
 
     @tool("memory_search", args_schema=MemorySearchInput)
     async def memory_search(
@@ -494,7 +509,7 @@ async def load_memory_search_tool(
             if row is None:
                 return f"[TOOL ERROR] No memory found with alias '{alias}'."
             mid = str(row["memory_id"])
-            ts = _fmt_dt(row.get("date_created"))
+            ts = _fmt_dt(row.get("date_created"), zone)
             preview = f"[memory:{mid}] [{row['type_memory']}]"
             if ts:
                 preview += f" [{ts}]"
@@ -721,7 +736,7 @@ async def load_memory_search_tool(
         if memories:
             parts.append(f"Found {len(memories)} relevant memories:")
             for m in memories:
-                ts = _fmt_dt(m.get("date_created"))
+                ts = _fmt_dt(m.get("date_created"), zone)
                 tag = f"[memory:{m['memory_id']}]"
                 if ts:
                     parts.append(f"- {tag} [{m['type']}] [{ts}] {m['content']}")
@@ -732,7 +747,7 @@ async def load_memory_search_tool(
         if media_results:
             parts = [f"Found {len(media_results)} files:"]
             for mr in media_results:
-                ts = _fmt_dt(mr.get("date_created"))
+                ts = _fmt_dt(mr.get("date_created"), zone)
                 ts_suffix = f" (created: {ts})" if ts else ""
                 tag = f"[media:{mr['content_id']}]"
                 if mr.get("media_category") == "image":
