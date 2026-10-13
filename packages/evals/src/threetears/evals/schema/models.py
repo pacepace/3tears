@@ -1655,6 +1655,10 @@ def builtin_judge_config_id(wording: str) -> str:
     wording's sha256 — a handful of built-in wordings will ever exist, so 48 bits leaves no collision to fear,
     and the id stays short enough to read in a report.
 
+    So a release that rewords a built-in prompt changes the judge every stored result names, and says so: its
+    ``MIGRATIONS.toml`` notes carry :data:`JUDGE_WORDING_CHANGE_SENTENCE` (the policy in
+    :mod:`~threetears.evals.schema.versioning`).
+
     Args:
         wording: The built-in prompt's fixed text, as the judge service renders it for the dimension's family.
 
@@ -1662,6 +1666,20 @@ def builtin_judge_config_id(wording: str) -> str:
         ``builtin:<sha12>``.
     """
     return BUILTIN_JUDGE_CONFIG_PREFIX + bytes_digest(wording.encode("utf-8"))[:12]
+
+
+#: The sentence a release's ``MIGRATIONS.toml`` notes carry, verbatim, when it changes the wording of a built-in judge
+#: prompt (:func:`builtin_judge_config_id`) or of the reply-format suffix a configured judge is sent
+#: (:func:`configured_judge_config_id`). Either is a judge's identity, a fingerprint rather than a counter, so the
+#: change is invisible to every version number and would otherwise ship unannounced: no stored document is refused,
+#: while every result judged before the release stops pooling with every result judged after it, and a scope's
+#: ``calibrated`` evidence tier reads ``undetermined`` until the new judge is calibrated.
+#: ``tests/test_judge_identity_pins.py`` pins each fingerprint by value and holds the release's notes to this sentence
+#: when one moves.
+JUDGE_WORDING_CHANGE_SENTENCE: Final[str] = (
+    "The built-in judge wording (or the reply-format suffix a configured judge is sent) changed, so every result "
+    "judged before this release is another judge for agreement, judge profiles, drift and evidence tiers."
+)
 
 
 def is_builtin_judge_config_id(config_id: str | None) -> bool:
@@ -5573,6 +5591,7 @@ __all__ = [
     "BUILTIN_JUDGE_CONFIG_PREFIX",
     "JudgeConfig",
     "builtin_judge_config_id",
+    "JUDGE_WORDING_CHANGE_SENTENCE",
     "configured_judge_config_id",
     "is_builtin_judge_config_id",
     "judge_config_of",

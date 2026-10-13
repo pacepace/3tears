@@ -112,7 +112,11 @@ notes).
   A judge completion that breaks the protocol fails the run. Judged readings carry an evidence tier decided by code.
   People and agents rate results (`rate_result`), and `judge_agreement` reports exact agreement and Cohen's kappa,
   quadratic-weighted on 1–5 scales. The package also measures a judge's agreement with itself (repeat judging),
-  a second judge, and the judge's temperature.
+  a second judge, and the judge's temperature. A judge's recorded identity is a fingerprint of its wording (the
+  built-in prompt's, or a config's and the reply-format suffix's), so a release that rewords either makes earlier
+  results another judge for agreement, profiles, drift and evidence tiers. The release policy covers that: such a
+  release's `MIGRATIONS.toml` notes carry `JUDGE_WORDING_CHANGE_SENTENCE`, and a pin test holds them to it. A run's
+  own `judge_config_ids` holds bare config ids, so a wording change never re-keys a run's context.
 - **Campaigns and analysis.** A campaign is created declared or exploratory, and can be declared, populated and
   given a control later (`campaign_update`, `campaign_runs_add`, `campaign_runs_remove`). Its fingerprinted
   context bundle (shape 51) holds the decision surface, comparisons with Holm correction for multiple comparisons
@@ -145,9 +149,11 @@ notes).
   store written before `v0.66.0-evaladopt.21` is not read:** its core documents (schema v8 to v13) are refused by
   name as pre-release and its regenerable ones by version, so such an adopter deletes its eval documents. From
   `.21` on, the store is the v14 baseline this release reads, and every core shape change is a version, as it will
-  be after release: a minor for an additive change, a major with an upgrader for any other. Every pre-release,
-  `.21` included, stamped its cassettes with the regenerable version; this release reads them at cassette v1 and
-  refuses them, so their corpora are re-captured.
+  be after release: a minor for an additive change, a major with an upgrader for any other. Reading a newer minor
+  arrived in `.22`: a `.21` build does not know `schema_minor` and refuses every core document `.22` or this release
+  writes, though both are v14, so roll back no further than `.22`. Every pre-release, `.21` included, stamped its
+  cassettes with the regenerable version; this release reads them at cassette v1 and refuses them, so their corpora
+  are re-captured.
 
 ## v0.65.0 -- 2026-10-05
 

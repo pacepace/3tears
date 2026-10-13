@@ -248,7 +248,10 @@ or the other, an added optional field included:
   built afresh, such as a renewed lease, takes them with it); two builds can print different numbers from one
   store for that window, which each analysis bundle's package version discloses. **The tolerance follows the
   stored bytes, which are trusted:** a host that writes core documents straight into the store, with a
-  `schema_minor` above the build's, gets it too, so write the minor your build writes.
+  `schema_minor` above the build's, gets it too, so write the minor your build writes. **The roll has a floor:**
+  the tolerance arrived with the minor, in `v0.66.0-evaladopt.22`. A build before it (`.21` included) declares no
+  `schema_minor` and refuses every field it does not declare, so it refuses every core document `.22` or a later
+  build writes, though the major is 14 for both. Roll back no further than `.22`.
 - **A major is everything else**, and ships an upgrade step (a `CoreUpgrader` appended to `CORE_UPGRADERS`),
   tested against frozen stored documents from every core major since the baseline. Reading an older core
   document upgrades it in memory, one major at a time, before it is validated as strictly as a document written
@@ -284,6 +287,16 @@ corpus); a replay that asks for a refused recording stops its cell with a `Casse
 (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 51), the cell model
 (`CELL_MODEL_VERSION`, 12), the report (`REPORT_VERSION`, 9) and the identity keys (`IDENTITY_VERSION`, 24) carry
 separate versions, each at its first public release's value.
+**A judge's identity moves with its wording, and no version number moves with it.** Each result records what asked
+each dim (`EvalResult.judge_config_ids`): `builtin:<sha12>`, a fingerprint of the engine's own judge prompt, or
+`<config id>@<sha12>`, your `JudgeConfig` and a fingerprint of the reply-format suffix the engine appends to its
+prompt. A release that rewords either changes the fingerprint, so every result judged before it is another judge
+for agreement, judge profiles, drift and evidence tiers, and a `calibrated` tier reads `undetermined` until you
+calibrate the new judge. Nothing stored is refused or rewritten. Such a release's notes (`MIGRATIONS.toml`, printed
+by `scripts/release_notes.py`) carry `JUDGE_WORDING_CHANGE_SENTENCE` (in `threetears.evals.schema.models`) and name
+the wording that moved, so read them before you upgrade a scope whose readings rest on calibration. A run's own `judge_config_ids` (the
+config set it launched with, part of its context key) holds bare config ids and no built-in dim, so a wording change
+does not split runs' context: only the results' recorded judges tell the two judges apart.
 An upgrade never recomputes an identity key, so keys from different predicates never silently pool. A kept
 key is stored beside its pre-image and the identity version that computed it, so a read under a later
 `IDENTITY_VERSION` needs no upgrader: a run keeps `variant_levers` beside the keys its results carry, and a
