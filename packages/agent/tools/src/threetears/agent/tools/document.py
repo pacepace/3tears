@@ -1232,22 +1232,20 @@ def create_parse_document_tool(
             return _tool_error("parse_document", "parse", str(exc))
 
         # Windowed, not cut: a document past the bound is read in parts, and
-        # the note names the call for the next one (``text_window``).
-        text = window_text(result.text, offset=offset, max_chars=_PARSE_DOCUMENT_MAX_CHARS).rendered(
-            tool="parse_document"
-        )
-
-        # Build response with metadata
-        parts = []
+        # the note names the call for the next one (``text_window``). The notes
+        # lead the result, the window line first; the document's facts and its
+        # text follow.
+        window = window_text(result.text, offset=offset, max_chars=_PARSE_DOCUMENT_MAX_CHARS)
+        parts = [note for note in (window.note(tool="parse_document"),) if note]
+        if result.was_ocr:
+            parts.append("**Note:** OCR was used for some pages")
         if result.title:
             parts.append(f"**Title:** {result.title}")
         if result.page_count:
             parts.append(f"**Pages:** {result.page_count}")
         parts.append(f"**Words:** {result.word_count}")
-        if result.was_ocr:
-            parts.append("**Note:** OCR was used for some pages")
         parts.append("")
-        parts.append(text)
+        parts.append(window.text)
 
         return "\n".join(parts)
 

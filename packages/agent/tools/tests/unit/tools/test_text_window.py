@@ -60,6 +60,43 @@ class TestTheWindow:
         assert first.text + second.text == "abcdefgh"
 
 
+class TestTheNoteGoesFirst:
+    """A reader that keeps only the head of a result still reads that it is a part."""
+
+    def test_the_window_line_is_the_first_line_and_the_text_follows_a_blank_line(self) -> None:
+        window = window_text("x" * 250, max_chars=100)
+        rendered = window.rendered(tool="web_fetch", note_first=True)
+        note, blank, text = rendered.partition("\n\n")
+        assert note == window.note(tool="web_fetch") and note.startswith("[characters 0-100 of 250")
+        assert blank and text == "x" * 100
+
+    def test_a_tools_own_notes_follow_the_window_line_and_come_before_the_text(self) -> None:
+        window = window_text("body " * 50, max_chars=100)
+        rendered = window.rendered(tool="parse_document", note_first=True, notes=["OCR was used.", ""])
+        head, _, text = rendered.partition("\n\n")
+        assert head.splitlines() == [window.note(tool="parse_document"), "OCR was used."]
+        assert text == window.text
+
+    def test_a_whole_text_with_a_note_still_states_the_note_first(self) -> None:
+        rendered = window_text("short", max_chars=100).rendered(tool="t", note_first=True, notes=["Read by OCR."])
+        assert rendered == "Read by OCR.\n\nshort"
+
+    def test_a_whole_text_with_no_note_is_only_the_text(self) -> None:
+        assert window_text("short", max_chars=100).rendered(tool="t", note_first=True) == "short"
+
+    def test_a_window_past_the_end_is_its_note_and_nothing_after(self) -> None:
+        rendered = window_text("x" * 50, offset=9999, max_chars=100).rendered(tool="t", note_first=True)
+        assert rendered.startswith("[characters 50-50 of 50") and rendered.endswith("the end of it]")
+
+    def test_the_trailing_form_is_unchanged_for_a_caller_that_has_not_moved(self) -> None:
+        window = window_text("x" * 250, max_chars=100)
+        assert window.rendered(tool="web_fetch") == "x" * 100 + "\n\n" + window.note(tool="web_fetch")
+
+    def test_notes_are_refused_in_the_trailing_form(self) -> None:
+        with pytest.raises(ValueError, match="note_first=True"):
+            window_text("short", max_chars=100).rendered(tool="t", notes=["a note"])
+
+
 class TestTheSharedArgument:
     def test_the_offset_argument_defaults_to_the_beginning_and_refuses_a_negative(self) -> None:
         assert WindowedInput().offset == 0

@@ -739,6 +739,23 @@ class TestAudioVideoRouting:
         assert len(transcription.calls) == 1
 
     @pytest.mark.asyncio
+    async def test_a_transcript_past_the_bound_says_so_before_the_transcript(self):
+        """The window line leads: a description after the transcript left the note mid-text."""
+        storage = FakeMediaStorage()
+        transcription = FakeTranscriptionProvider("spoken " * 3000)
+        mid = uuid4()
+        storage.add_media(
+            mid, MediaInfo(mid, "audio", "audio/mpeg", extraction_status=None), b"fake-audio-data", "audio/mpeg"
+        )
+        tool = _make_tool(storage, transcription=transcription, categories={"audio", "video"}, user_id=uuid4())
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "What is said?", "analyzer": "TestVision"})
+
+        note_at = result.index("[characters 0-10,000 of 21,000")
+        assert note_at < result.index("**Transcript**") < result.index("spoken spoken")
+        assert "the whole transcript is stored with the media" in result
+        assert result.count("[characters ") == 1 and not result.rstrip().endswith("]"), "no note after the body"
+
+    @pytest.mark.asyncio
     async def test_a_plain_host_gets_a_plain_label(self):
         storage = FakeMediaStorage()
         transcription = FakeTranscriptionProvider("Hello from audio.")

@@ -294,8 +294,8 @@ class WebFetchTool(TearsTool):
                 error=None,
             )
 
-        # A page longer than the bound is windowed, not cut: the note names the
-        # call that returns the next part, and nothing is discarded. Before this,
+        # A page longer than the bound is windowed, not cut: the note, which comes
+        # first, names the call that returns the next part, and nothing is discarded. Before this,
         # a whitepaper came back cut at exactly 15,000 characters and was
         # discussed as if whole (metallm conv 01a097bc, 2026-09-16).
         window = window_text(fetched.content.text, offset=int(kwargs.get("offset") or 0), max_chars=self._max_chars)
@@ -307,7 +307,7 @@ class WebFetchTool(TearsTool):
         }
         return ToolResult(
             success=True,
-            content=window.rendered(tool="web_fetch"),
+            content=window.rendered(tool="web_fetch", note_first=True),
             metadata=metadata,
             error=None,
         )

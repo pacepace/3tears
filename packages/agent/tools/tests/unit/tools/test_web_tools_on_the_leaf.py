@@ -156,6 +156,13 @@ class _StubFetchTransport:
         )
 
 
+def _page(content: str) -> str:
+    """The page text of a fetch result: what follows the window line, when there is one."""
+    if not content.startswith("[characters "):
+        return content
+    return content.partition("\n\n")[2]
+
+
 def _projection(result: Any) -> SearchResultsMetadata:
     """read the structured projection back off a tool result, as a consumer does."""
     assert result.metadata is not None
@@ -352,9 +359,9 @@ class TestWebFetchCarriesStructure:
 
         result = await tool.execute(url=_PAGE_URL)
 
-        body, _, note = result.content.partition("\n\n[characters ")
-        assert len(body) <= 60
-        assert note, "a part must say it is a part"
+        note, _, body = result.content.partition("\n\n")
+        assert 0 < len(body) <= 60
+        assert note.startswith("[characters "), "a part says it is a part before the page, not after it"
         assert "call web_fetch again with offset=60" in note
         assert result.metadata["window"]["offset"] == 0
         assert result.metadata["window"]["next_offset"] == 60
@@ -366,7 +373,7 @@ class TestWebFetchCarriesStructure:
         read, offset = "", 0
         while True:
             result = await tool.execute(url=_PAGE_URL, offset=offset)
-            read += result.content.split("\n\n[characters ")[0]
+            read += _page(result.content)
             next_offset = result.metadata["window"]["next_offset"]
             if next_offset is None:
                 break
@@ -512,8 +519,8 @@ class TestTheCharacterBoundHoldsAtItsEdges:
 
         result = await tool.execute(url=_PAGE_URL)
 
-        body = result.content.split("\n\n[characters ")[0]
-        assert len(body) <= max_chars, f"max_chars={max_chars} returned {len(body)} chars of page"
+        body = _page(result.content)
+        assert 0 < len(body) <= max_chars, f"max_chars={max_chars} returned {len(body)} chars of page"
         assert len(result.content) <= max_chars + NOTE_ALLOWANCE, "the note outgrew its allowance"
 
     @pytest.mark.asyncio
@@ -523,7 +530,7 @@ class TestTheCharacterBoundHoldsAtItsEdges:
 
         result = await tool.execute(url=_PAGE_URL)
 
-        assert "social animals" not in result.content.split("\n\n[characters ")[0]
+        assert "social animals" not in _page(result.content)
 
 
 class TestTheDefaultWiringMeetsARealServer:

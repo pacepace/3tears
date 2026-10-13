@@ -867,15 +867,12 @@ class AnalyzeMediaTool(TearsTool):
         # Fetch any existing description
         description = await self._storage.get_content(mid, "description")
 
+        # The window line leads the whole result: with a description after the
+        # transcript, a note under the transcript sat in the middle of the text.
         spoken = window_text(transcript, max_chars=self._transcript_max_chars)
-        parts = [
-            (
-                f"**Transcript** ({info.media_category}):\n"
-                if self._markdown
-                else f"Transcript ({info.media_category}):\n"
-            )
-            + spoken.rendered(how="the whole transcript is stored with the media"),
-        ]
+        heading = f"**Transcript** ({info.media_category}):" if self._markdown else f"Transcript ({info.media_category}):"
+        window_note = spoken.note(how="the whole transcript is stored with the media")
+        parts = [f"{window_note}\n{heading}\n{spoken.text}" if window_note else f"{heading}\n{spoken.text}"]
         if description:
             parts.append(f"\n\n**Analysis:**\n{description}" if self._markdown else f"\n\nDescription:\n{description}")
 
