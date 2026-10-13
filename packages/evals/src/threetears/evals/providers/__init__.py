@@ -61,6 +61,7 @@ it, and only the names in ``__all__``.
 from __future__ import annotations
 
 from threetears.evals.providers.adapter import (
+    PROVIDER_KEY_VARIABLES,
     SUPPORTED_PROVIDERS,
     ModelsClientRefused,
     ModelsCompletion,
@@ -68,14 +69,18 @@ from threetears.evals.providers.adapter import (
     SupportedProvider,
     models_client,
 )
+from threetears.evals.providers.factory import ModelsClients, models_clients
 from threetears.evals.providers.failures import ModelsFailureDescriber
 
 __all__ = [
+    "PROVIDER_KEY_VARIABLES",
     "SUPPORTED_PROVIDERS",
     "ModelsClientRefused",
+    "ModelsClients",
     "ModelsCompletion",
     "ModelsCompletionClient",
     "ModelsFailureDescriber",
     "SupportedProvider",
     "models_client",
+    "models_clients",
 ]

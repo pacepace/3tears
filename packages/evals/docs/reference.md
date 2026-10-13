@@ -2525,10 +2525,13 @@ The shipped provider adapter: a chat model 3tears-models builds, as the engine's
 
 - **`models_client`** · *host contract* · function · Build the completion client for one model: `create_chat_model` with retries off, wrapped in the port.
   <br>`models_client(model_id: str, *, api_key: str, provider: str | None = None, temperature: float | None = None, reasoning_effort: KnownReasoningEffort | None = None, reasoning_max_tokens: int | None = None, max_tokens: int | None = None, prices: HttpClient | None = None, **provider_kwargs: Any) -> ModelsCompletionClient`
+- **`models_clients`** · *host contract* · function · The host-profile factory: every role the engine calls, on models 3tears-models builds.
+  <br>`models_clients(*, api_keys: Mapping[str, str] | None = None, defaults: Mapping[CompletionRole, str], prices: HttpClient | None = None, **per_role_kwargs: Mapping[str, Any]) -> ModelsClients`
 
 **Classes**
 
 - **`ModelsClientRefused`** · exception · A setting the adapter cannot carry to the provider, refused before anything is sent.
+- **`ModelsClients`** · class · The engine's role factory over `models_client`: `models_clients` builds one.
 - **`ModelsCompletion`** · dataclass · One completion as the adapter read it off the chat model's reply: the port's ten members and two of its own.
 - **`ModelsCompletionClient`** · class · The completion port over one chat model 3tears-models built: `models_client` returns one.
 - **`ModelsFailureDescriber`** · *host contract* · class · A `ProviderFailureDescriber` for the adapter's providers, total over `BaseException`.
@@ -2540,6 +2543,7 @@ The shipped provider adapter: a chat model 3tears-models builds, as the engine's
 
 **Constants**
 
+- **`PROVIDER_KEY_VARIABLES`** · constant (dict) · The environment variable each provider's own SDK reads its key from, which `models_clients` reads when its `api_keys` mapping names no key for a provider.
 - **`SUPPORTED_PROVIDERS`** · constant (tuple) · Every `SupportedProvider`, in the order the docs list them.
 
 <a id="configuration"></a>

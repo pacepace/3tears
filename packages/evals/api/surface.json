@@ -7551,9 +7551,19 @@
       "signature": "models_client(model_id: str, *, api_key: str, provider: str | None = None, temperature: float | None = None, reasoning_effort: KnownReasoningEffort | None = None, reasoning_max_tokens: int | None = None, max_tokens: int | None = None, prices: HttpClient | None = None, **provider_kwargs: Any) -> ModelsCompletionClient",
       "tier": "host-contract"
     },
+    "threetears.evals.providers.models_clients": {
+      "kind": "function",
+      "signature": "models_clients(*, api_keys: Mapping[str, str] | None = None, defaults: Mapping[CompletionRole, str], prices: HttpClient | None = None, **per_role_kwargs: Mapping[str, Any]) -> ModelsClients",
+      "tier": "host-contract"
+    },
     "threetears.evals.providers.ModelsClientRefused": {
       "kind": "exception",
       "signature": "ModelsClientRefused(setting: str, why: str, *, provider: str | None = None) -> None",
+      "tier": "closure"
+    },
+    "threetears.evals.providers.ModelsClients": {
+      "kind": "class",
+      "signature": "ModelsClients(*, api_keys: Mapping[str, str] | None, defaults: Mapping[CompletionRole, str], prices: HttpClient | None, role_settings: Mapping[str, Mapping[str, Any]]) -> None",
       "tier": "closure"
     },
     "threetears.evals.providers.ModelsCompletion": {
@@ -7570,6 +7580,11 @@
       "kind": "class",
       "signature": "",
       "tier": "host-contract"
+    },
+    "threetears.evals.providers.PROVIDER_KEY_VARIABLES": {
+      "kind": "constant (dict)",
+      "signature": "",
+      "tier": "closure"
     },
     "threetears.evals.providers.SUPPORTED_PROVIDERS": {
       "kind": "constant (tuple)",
