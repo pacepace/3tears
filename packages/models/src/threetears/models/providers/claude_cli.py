@@ -176,6 +176,7 @@ import hashlib
 import html
 import json
 import re
+import time
 from collections.abc import AsyncIterator, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any, Callable
@@ -192,12 +193,15 @@ from pydantic import BaseModel, Field
 
 from threetears.models.claude_cli_isolation import claude_cli_isolation
 from threetears.models.claude_cli_pool import (
-    TOOL_SERVER_NAME,
+    claude_cli_pool,
     ClaudeCliPoolExhausted,
     ClaudeCliSessionError,
-    claude_cli_pool,
+    LentClient,
+    own_cli_asked,
+    TOOL_SERVER_NAME,
 )
-from threetears.models.errors import ModelProviderError, ModelRateLimitError
+from threetears.models._claude_sdk_internals import cli_process_pid
+from threetears.models.errors import ModelProviderError, ModelRateLimitError, ModelRefusalError
 from threetears.models.providers._junk_tool_calls import drop_junk_tool_calls
 from threetears.models.tool_name_translation import NameMangledToolProxy, build_name_translation
 from threetears.tool_schema import self_contained_input_schema
@@ -768,7 +772,8 @@ def _subscription_model_cls() -> type:
             the host turned pooling off, when the call resumes a stored CLI session (which isolation
             disables, so it cannot share), when every session stays busy past the checkout timeout,
             or when a pooled session cannot be started or prepared. A call is never refused for
-            want of a pooled session.
+            want of a pooled session. A call made inside
+            :func:`~threetears.models.claude_cli_pool.on_own_cli` asked for a CLI of its own.
 
             :param options: the call's ``ClaudeAgentOptions``
             :ptype options: Any
@@ -777,7 +782,7 @@ def _subscription_model_cls() -> type:
             :return: the connected ``ClaudeSDKClient``
             :rtype: AsyncIterator[Any]
             """
-            pool = claude_cli_pool() if pooled else None
+            pool = claude_cli_pool() if pooled and not own_cli_asked() else None
             # The borrower's context, captured now -- inside its own run, with its interrupt list,
             # tool-result list, callbacks and runnable config set. Tool calls on a pooled CLI run in
             # a copy of it; without that they ran in whatever context started the CLI.
@@ -805,9 +810,16 @@ def _subscription_model_cls() -> type:
                             "No pooled Claude CLI for this call; running it on its own CLI",
                             extra={"extra_data": {"reason": str(exc)}},
                         )
+                opened = time.monotonic()
                 if client is None:
                     client = await stack.enter_async_context(ClaudeSDKClient(options=options))
-                yield client
+                try:
+                    yield client
+                except ModelProviderError as failure:
+                    # What ran the failed call rides the error: a caller that keeps a record of a
+                    # refusal needs the process, how long it had been up and what it had served.
+                    failure.ran_on = {**(failure.ran_on or {}), **_ran_on(client, opened)}
+                    raise
 
         def _caller_tool_calls(self, blocks: list[Any]) -> list[dict[str, Any]]:
             """The model's tool-use blocks as ``tool_calls`` under the names the caller bound.
@@ -1308,14 +1320,64 @@ def _without_call_syntax(answer: Any, schema: dict[str, Any]) -> Any:
     return cleaned
 
 
+#: How the CLI words a refusal by the model's safeguards ("Sonnet 5.5's safeguards flagged this
+#: message"), read from the bundled CLI (2.1.285). The stop reason is the first test; this is for a
+#: result that carries the notice and no stop reason.
+_SAFEGUARD_REFUSAL = re.compile(r"safeguards flagged this message", re.IGNORECASE)
+#: The lines the CLI ends such a notice with, each present only when it knows the value.
+_REFUSAL_CATEGORY = re.compile(r"Details:\s*`?\[([^\]`\s]+)\]`?")
+_REFUSAL_REQUEST = re.compile(r"Request ID:\s*(\S+)")
+_REFUSAL_MESSAGE = re.compile(r"Message ID:\s*(\S+)")
+
+
+def _found(pattern: re.Pattern[str], text: str) -> str | None:
+    match = pattern.search(text)
+    return match.group(1) if match else None
+
+
+def _ran_on(client: Any, opened: float) -> dict[str, Any]:
+    """What ran a call, for the error a failed one raises (``ModelProviderError.ran_on``).
+
+    :param client: the call's client: a pooled CLI's :class:`LentClient`, or an SDK client of the call's own
+    :ptype client: Any
+    :param opened: when the call got its client, on the monotonic clock
+    :ptype opened: float
+    :return: ``pid``, ``pooled``, ``calls_served`` before this call, and ``uptime_s``
+    :rtype: dict[str, Any]
+    """
+    if isinstance(client, LentClient):
+        started = client.started_at
+        return {
+            "pid": client.pid,
+            "pooled": True,
+            "calls_served": client.calls_served,
+            "uptime_s": round(time.monotonic() - started, 1) if started is not None else None,
+        }
+    pid = cli_process_pid(client)
+    return {
+        "pid": pid if isinstance(pid, int) else None,
+        "pooled": False,
+        "calls_served": 0,
+        "uptime_s": round(time.monotonic() - opened, 1),
+    }
+
+
 def _cli_failure(
-    detail: str, *, reason: str | None, status: int | None, attempts: _StructuredAttempts | None = None
+    detail: str,
+    *,
+    reason: str | None,
+    status: int | None,
+    attempts: _StructuredAttempts | None = None,
+    stop_reason: str | None = None,
+    session_id: str | None = None,
 ) -> ModelProviderError:
     """The typed error for a failure the CLI reported.
 
     A limit -- the CLI's own ``rate_limit`` code, which it sends with a subscription's session-limit
     notice, or an HTTP 429 on the result -- is a :class:`ModelRateLimitError` carrying when it resets,
-    when the notice says. Anything else is a :class:`ModelProviderError`. Either carries the last
+    when the notice says. A refusal by the model's safeguards -- a ``refusal`` stop reason, or the
+    CLI's notice of one -- is a :class:`ModelRefusalError` carrying the safeguard's name and the
+    request's ids when the notice gives them. Anything else is a :class:`ModelProviderError`. Either carries the last
     structured answer the CLI rejected, and why, when there was one. The log line names the rejection
     and the rejected answer's top-level keys, not its values: they are the model's words about the
     caller's material.
@@ -1328,6 +1390,10 @@ def _cli_failure(
     :ptype status: int | None
     :param attempts: the call's ``StructuredOutput`` attempts, when it asked for a schema
     :ptype attempts: _StructuredAttempts | None
+    :param stop_reason: the stop reason on the message or result that reported it
+    :ptype stop_reason: str | None
+    :param session_id: the CLI session the failure came from, when the message names it
+    :ptype session_id: str | None
     :return: the error to raise
     :rtype: ModelProviderError
     """
@@ -1346,6 +1412,16 @@ def _cli_failure(
             rejected_output=rejected_output,
             rejection=rejection,
         )
+    elif stop_reason == "refusal" or _SAFEGUARD_REFUSAL.search(said):
+        failure = ModelRefusalError(
+            said,
+            provider=_CLI_PROVIDER,
+            reason=reason,
+            status=status,
+            category=_found(_REFUSAL_CATEGORY, said),
+            request_id=_found(_REFUSAL_REQUEST, said),
+            message_id=_found(_REFUSAL_MESSAGE, said),
+        )
     else:
         failure = ModelProviderError(
             said,
@@ -1355,6 +1431,9 @@ def _cli_failure(
             rejected_output=rejected_output,
             rejection=rejection,
         )
+    # What ran the call is filled in where the client is held (``_cli_client``); the session is
+    # known here, from the message that reported the failure.
+    failure.ran_on = {"session_id": session_id}
     _logger.warning(
         "A subscription model call failed",
         extra={
@@ -1385,7 +1464,13 @@ def _assistant_failure(message: Any) -> ModelProviderError | None:
     if message.error is None:
         return None
     text = "\n".join(block.text for block in message.content if hasattr(block, "text"))
-    return _cli_failure(text, reason=str(message.error), status=None)
+    return _cli_failure(
+        text,
+        reason=str(message.error),
+        status=None,
+        stop_reason=getattr(message, "stop_reason", None),
+        session_id=getattr(message, "session_id", None),
+    )
 
 
 def _settle(
@@ -1422,7 +1507,14 @@ def _settle(
     if result.is_error and answer is None and not _ended_for_tools(result, tool_calls):
         said = result.result or "; ".join(result.errors or []) or text
         reason = None if result.subtype == "success" else result.subtype
-        raise _cli_failure(said, reason=reason, status=result.api_error_status, attempts=attempts)
+        raise _cli_failure(
+            said,
+            reason=reason,
+            status=result.api_error_status,
+            attempts=attempts,
+            stop_reason=getattr(result, "stop_reason", None),
+            session_id=getattr(result, "session_id", None),
+        )
     if answer is not None and (schema := _schema_of(output_format)) is not None:
         answer = _without_call_syntax(answer, schema)
     return answer, _generation_info(result, tool_calls, unwrapped=unwrapped)

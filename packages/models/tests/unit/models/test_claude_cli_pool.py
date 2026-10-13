@@ -108,6 +108,8 @@ class FakeSession:
         self.dispose_delay = 0.0
         self.released = 0
         self.start_ticks: int | None = None
+        self.started_at = time.monotonic()
+        self.calls_served = 0
         self.contexts: list[Any] = []
         #: The context each dispose ran in, so a test can tell which task stopped the session.
         self.dispose_contexts: list[contextvars.Context] = []
@@ -328,6 +330,20 @@ class TestTheCliIsReused:
             pass
         assert first.client is second.client, "the pool started a second CLI for an identical launch"
         assert len(FakeSession.instances) == 1
+        await pool.aclose()
+
+    async def test_each_call_is_told_what_its_cli_had_served_and_when_it_started(self) -> None:
+        """what a failed call's error says ran it (``ModelProviderError.ran_on``)."""
+        pool = _pool()
+        async with pool.checkout(Options(), token=TOKEN, tool_server=None) as first:
+            pass
+        async with pool.checkout(Options(), token=TOKEN, tool_server=None) as second:
+            pass
+        [session] = FakeSession.instances
+        assert (first.calls_served, second.calls_served) == (0, 1)
+        assert first.pid == second.pid == session.pid
+        assert first.started_at == second.started_at == session.started_at
+        assert session.calls_served == 2
         await pool.aclose()
 
     async def test_the_conversation_is_rewound_to_the_calls_own_first_message(self) -> None:

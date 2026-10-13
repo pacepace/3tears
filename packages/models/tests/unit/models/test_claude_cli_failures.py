@@ -32,7 +32,8 @@ from langchain_core.tools import BaseTool  # noqa: E402
 
 from threetears.models import DEFAULT_CHAT_MODEL, claude_cli_pool  # noqa: E402
 from threetears.models.circuit_breaker import CircuitBreaker, CircuitState  # noqa: E402
-from threetears.models.errors import ModelProviderError, ModelRateLimitError  # noqa: E402
+from threetears.models.claude_cli_pool import on_own_cli, own_cli_asked  # noqa: E402
+from threetears.models.errors import ModelProviderError, ModelRateLimitError, ModelRefusalError  # noqa: E402
 from threetears.models.factory import create_chat_model  # noqa: E402
 from threetears.models.providers.claude_cli import create_subscription_chat  # noqa: E402
 
@@ -95,11 +96,20 @@ def _fake_cli(*messages: Any) -> Iterator[None]:
     _FakeSDKClient.script = None
 
 
-def _assistant(text: str, *, error: Any = None, blocks: list[Any] | None = None) -> AssistantMessage:
+def _assistant(
+    text: str,
+    *,
+    error: Any = None,
+    blocks: list[Any] | None = None,
+    stop_reason: str | None = None,
+    session_id: str | None = None,
+) -> AssistantMessage:
     return AssistantMessage(
         content=[TextBlock(text=text), *(blocks or [])] if text else list(blocks or []),
         model=DEFAULT_CHAT_MODEL,
         error=error,
+        stop_reason=stop_reason,
+        session_id=session_id,
     )
 
 
@@ -216,6 +226,129 @@ class TestOtherFailures:
                 await model.ainvoke([HumanMessage(content="hi")])
             with pytest.raises(ModelProviderError):
                 await _streamed(model, [])
+
+
+#: What the bundled CLI (2.1.285) sends when the model's safeguards refuse a request: the notice,
+#: then the lines it adds when it knows the safeguard, the request and the message.
+_REFUSAL = (
+    "API Error: Sonnet 5.5's safeguards flagged this message (https://www.anthropic.com/legal/aup). "
+    "This sometimes happens with safe, normal conversations. Claude Code can't respond to this message "
+    "with Sonnet 5.5.\nLearn more: https://www.anthropic.com/legal/aup\n"
+    "Details: `[reasoning_extraction]`\nRequest ID: req_011CabcDEF\nMessage ID: msg_01XyZ"
+)
+
+
+def _refused() -> tuple[Any, ...]:
+    """what the CLI sends for a request the model's safeguards refused.
+
+    :return: the synthetic assistant message, then the error result
+    :rtype: tuple[Any, ...]
+    """
+    return (
+        _assistant(_REFUSAL, error="invalid_request", stop_reason="refusal", session_id="sess-9"),
+        _result(is_error=True, result=_REFUSAL),
+    )
+
+
+class TestARefusalByTheModelsSafeguards:
+    """A refusal is its own error, and says what a caller needs to report it and to try again."""
+
+    async def test_it_raises_a_refusal_naming_the_safeguard_and_the_request(self) -> None:
+        received: list[Any] = []
+        with _fake_cli(*_refused()):
+            model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+            with pytest.raises(ModelRefusalError) as invoked:
+                await model.ainvoke([HumanMessage(content="hi")])
+            with pytest.raises(ModelRefusalError) as streamed:
+                await _streamed(model, received)
+
+        for raised in (invoked.value, streamed.value):
+            assert raised.category == "reasoning_extraction"
+            assert raised.request_id == "req_011CabcDEF"
+            assert raised.message_id == "msg_01XyZ"
+            assert raised.reason == "invalid_request"
+            assert raised.detail == _REFUSAL
+            assert not isinstance(raised, ModelRateLimitError)
+        assert received == [], "a chunk of the notice was yielded as the model's words"
+
+    async def test_it_says_what_ran_the_call(self) -> None:
+        with _fake_cli(*_refused()):
+            model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+            with pytest.raises(ModelRefusalError) as raised:
+                await model.ainvoke([HumanMessage(content="hi")])
+
+        ran_on = raised.value.ran_on
+        assert ran_on is not None
+        # a CLI of the call's own: it had served nothing, and the fake has no process to name
+        assert {k: ran_on.get(k) for k in ("session_id", "pooled", "calls_served", "pid")} == {
+            "session_id": "sess-9",
+            "pooled": False,
+            "calls_served": 0,
+            "pid": None,
+        }
+        uptime = ran_on.get("uptime_s")
+        assert isinstance(uptime, float) and uptime >= 0
+
+    async def test_a_notice_with_no_stop_reason_and_no_ids_is_still_a_refusal(self) -> None:
+        """an older CLI, or a result that carries the notice alone."""
+        notice = "API Error: This model's safeguards flagged this message. This sometimes happens."
+        with _fake_cli(_assistant("partial"), _result(is_error=True, result=notice)):
+            model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+            with pytest.raises(ModelRefusalError) as raised:
+                await model.ainvoke([HumanMessage(content="hi")])
+
+        assert (raised.value.category, raised.value.request_id, raised.value.message_id) == (None, None, None)
+        assert raised.value.ran_on is not None and raised.value.ran_on["session_id"] == "fake-session"
+
+    async def test_a_refusal_stop_reason_alone_is_a_refusal(self) -> None:
+        messages = (_assistant("Claude can't help with this.", error="invalid_request", stop_reason="refusal"),)
+        with _fake_cli(*messages, _result(is_error=True, result="x")):
+            model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+            with pytest.raises(ModelRefusalError):
+                await model.ainvoke([HumanMessage(content="hi")])
+
+    async def test_another_invalid_request_is_not_a_refusal(self) -> None:
+        """good traffic: a malformed request is a provider failure, and is not retried as a refusal."""
+        messages = (_assistant("API Error: 400 messages: too long", error="invalid_request"),)
+        with _fake_cli(*messages, _result(is_error=True, result="API Error: 400")):
+            model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+            with pytest.raises(ModelProviderError) as raised:
+                await model.ainvoke([HumanMessage(content="hi")])
+
+        assert not isinstance(raised.value, ModelRefusalError)
+        # what ran it is on every failure, not only a refusal
+        assert raised.value.ran_on is not None and raised.value.ran_on["pooled"] is False
+
+
+class _PoolThatMustNotBeAsked:
+    """Stands in for the process's pool: a checkout is the failure the test is looking for."""
+
+    checkouts = 0
+
+    def checkout(self, *_args: Any, **_kwargs: Any) -> Any:
+        type(self).checkouts += 1
+        raise AssertionError("the call checked a CLI out of the pool")
+
+
+class TestACallOnACliOfItsOwn:
+    async def test_inside_the_block_a_call_never_asks_the_pool(self) -> None:
+        _PoolThatMustNotBeAsked.checkouts = 0
+        claude_cli_pool.configure_claude_cli_pool(enabled=True)
+        answer = (_assistant("fine"), _result())
+        with (
+            patch("threetears.models.providers.claude_cli.claude_cli_pool", lambda: _PoolThatMustNotBeAsked()),
+            _fake_cli(*answer),
+        ):
+            model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+            with on_own_cli():
+                assert own_cli_asked()
+                said = await model.ainvoke([HumanMessage(content="hi")])
+            assert not own_cli_asked(), "the block left the switch on"
+            assert said.content == "fine" and _PoolThatMustNotBeAsked.checkouts == 0
+            # and outside it the same call goes to the pool, so the switch is what kept it away
+            with pytest.raises(AssertionError, match="checked a CLI out of the pool"):
+                await model.ainvoke([HumanMessage(content="hi")])
+        assert _PoolThatMustNotBeAsked.checkouts == 1
 
 
 class _Write(BaseTool):
