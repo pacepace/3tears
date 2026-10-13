@@ -204,7 +204,7 @@ async def _judged_run(
         judge_model=judge_model,
         status="completed",
         effective_judges=built.effective_judges,
-        judge_request_settings=JUDGE_REQUEST_SETTINGS,
+        judge_asked_settings=JUDGE_REQUEST_SETTINGS,
     )
     off_loop(host.storage.save_eval_run, run)
     scorer = judges.second if judge_model == _SECOND else judges.first
@@ -457,7 +457,7 @@ class TestARunANewerMinorWrote:
         )
         off_loop(host.storage.save_eval_run, newer)
         stored = off_loop(host.storage.load_eval_run, run_id, _SCOPE)
-        assert stored is not None and stored.judge_request_settings == JUDGE_REQUEST_SETTINGS
+        assert stored is not None and stored.judge_asked_settings == JUDGE_REQUEST_SETTINGS
 
         report = await _asked(host, run_id, _SCOPE, judge=SecondJudge(model=_SECOND), out_of_run_cap_usd=10.0)
 

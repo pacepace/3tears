@@ -58,21 +58,21 @@ class TestTheRunRecordsHowItsApparatusWasAsked:
     def test_both_roles_settings_survive_the_read_and_a_round_trip(self) -> None:
         judge = {"max_tokens": 10240, "reasoning_max_tokens": 8192}
         simulator = {"max_tokens": 5120, "reasoning_effort": "minimal"}
-        run = EvalRun.model_validate(_run_document(judge_request_settings=judge, simulator_request_settings=simulator))
-        assert run.judge_request_settings == ClientRequestSettings(max_tokens=10240, reasoning_max_tokens=8192)
-        assert run.simulator_request_settings == ClientRequestSettings(max_tokens=5120, reasoning_effort="minimal")
+        run = EvalRun.model_validate(_run_document(judge_asked_settings=judge, simulator_asked_settings=simulator))
+        assert run.judge_asked_settings == ClientRequestSettings(max_tokens=10240, reasoning_max_tokens=8192)
+        assert run.simulator_asked_settings == ClientRequestSettings(max_tokens=5120, reasoning_effort="minimal")
         for again in (EvalRun.model_validate(run.model_dump(mode="json")), EvalRun.from_dict(run.to_dict())):
-            assert (again.judge_request_settings, again.simulator_request_settings) == (
-                run.judge_request_settings,
-                run.simulator_request_settings,
+            assert (again.judge_asked_settings, again.simulator_asked_settings) == (
+                run.judge_asked_settings,
+                run.simulator_asked_settings,
             )
 
     def test_a_run_stored_before_the_stamp_reads_as_unrecorded(self) -> None:
         document = _run_document()
-        document.pop("judge_request_settings", None)
-        document.pop("simulator_request_settings", None)
+        document.pop("judge_asked_settings", None)
+        document.pop("simulator_asked_settings", None)
         run = EvalRun.model_validate(document)
-        assert run.judge_request_settings is None and run.simulator_request_settings is None
+        assert run.judge_asked_settings is None and run.simulator_asked_settings is None
 
     def test_no_reasoning_parameter_is_a_recorded_level(self) -> None:
         settings = ClientRequestSettings(max_tokens=4096)
@@ -104,7 +104,7 @@ class TestTheRunRecordsHowItsApparatusWasAsked:
             if build == "construct":
                 ClientRequestSettings(**fields)
             else:
-                EvalRun.model_validate(_run_document(simulator_request_settings=fields))
+                EvalRun.model_validate(_run_document(simulator_asked_settings=fields))
 
     @pytest.mark.parametrize(
         "fields",

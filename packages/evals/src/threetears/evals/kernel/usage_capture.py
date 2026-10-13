@@ -25,6 +25,14 @@ Cost views sum by role membership and are indifferent to how many rows a role oc
 Token-metered roles report no provider, so their key degenerates to the model and its price
 source.
 
+**What each call was sent with rides on the row, not in its key.** A completion may report the request
+settings its request actually carried (``sent_settings``, read by
+:func:`~threetears.evals.schema.completion.sent_settings_of`). A row keeps every distinct value its calls
+reported (``RoleUsage.sent_settings``), or ``None`` once any of them reported none: one unverified call makes
+the row's record unverified, as one unpriced call makes its dollars unknown. The value is not part of the key,
+so a client that sends two calls of one row differently never splits a spend row; the row says it was sent
+both ways.
+
 **The engine names no price source of its own.** Where dollars came from is the caller's to say
 — a completion client reports it (``CompletionResult.price_source``), a piece of background work
 carries it on its :class:`~threetears.evals.schema.models.AsyncDelivery`, a rate table names the
@@ -44,12 +52,14 @@ from threetears.evals.schema.external_spend import ExternalSpend
 from threetears.evals.schema.models import (
     USAGE_ROLES,
     CellTermination,
+    ClientRequestSettings,
     KnownSimulatorPurpose,
     KnownUsageRole,
     RoleUsage,
     UsageRole,
+    request_settings_order,
 )
-from threetears.evals.schema.completion import USAGE_LEDGER_ATTRIBUTES
+from threetears.evals.schema.completion import USAGE_LEDGER_ATTRIBUTES, sent_settings_of
 from threetears.evals.kernel.provider import sum_optional_tokens
 from threetears.evals.kernel.spend import ExternalRateTable, reported_price_source
 from threetears.evals.schema.logs import get_logger
@@ -146,6 +156,11 @@ class CallUsage:
     #: (:data:`CALL_USAGE_ONLY_ATTRIBUTES`): a completion is one call by definition, so the
     #: protocol has nothing to say here, and the ledger reads an absent one as 1.
     calls: int = 1
+    #: What the request was actually sent with, as the completion reported it (its optional
+    #: ``sent_settings`` member, read by :func:`~threetears.evals.schema.completion.sent_settings_of`);
+    #: ``None`` when it reported none, or when the folded attempts were not all sent alike and
+    #: reported — one record cannot name two, so a fold of unlike sends reads as unverified.
+    sent_settings: ClientRequestSettings | None = None
 
     @classmethod
     def of(cls, completion: Any) -> CallUsage:
@@ -161,11 +176,15 @@ class CallUsage:
 
         Returns:
             One call's usage.
+
+        Raises:
+            CompletionProtocolDefect: The completion's ``sent_settings`` is neither ``None`` nor a
+                :class:`~threetears.evals.schema.ClientRequestSettings`.
         """
         read: dict[str, Any] = {name: getattr(completion, name, None) for name in USAGE_LEDGER_ATTRIBUTES}
         read["model"] = read["model"] or None
         read["served_model"] = read["served_model"] or None
-        return cls(**read)
+        return cls(**read, sent_settings=sent_settings_of(completion))
 
 
 #: The attributes :meth:`RoleUsageLedger.add_llm_result` reads beyond
@@ -207,6 +226,13 @@ class _ModelTotals:
     #: missing-is-not-zero rule as the token fields: a paid provider that publishes no
     #: per-call unit contributes calls and no units.
     provider_units: int | None = None
+    #: Every distinct request settings value a contribution reported it was sent with, by canonical form
+    #: (:func:`~threetears.evals.schema.models.request_settings_order`). Read only while
+    #: ``sent_unverified`` is False.
+    sent: dict[str, ClientRequestSettings] = field(default_factory=dict)
+    #: A contribution reported no sent settings, so the row cannot say what all its calls were sent with:
+    #: like an unpriced call's dollars, one unverified call makes the row's record unverified.
+    sent_unverified: bool = False
 
 
 #: One ledger row's key: ``(model, served_model, provider, provider_unit, price_source, actor_id, purpose)``.
@@ -265,6 +291,7 @@ class RoleUsageLedger:
         price_source: str | None = None,
         actor_id: str | None = None,
         purpose: KnownSimulatorPurpose | None = None,
+        sent_settings: ClientRequestSettings | None = None,
     ) -> None:
         """Fold one call's usage into this role's totals.
 
@@ -302,6 +329,11 @@ class RoleUsageLedger:
         so what each actor and the scheduler spent is a stored row of its own. Every other role passes
         neither.
 
+        ``sent_settings`` is what the contribution's request actually carried, as its completion reported it, and
+        ``None`` when it did not say (every contribution that is not a completion: background work, an external
+        API). It is not part of the key: the row keeps every distinct value, and one ``None`` makes the row's
+        record unverified.
+
         Raises:
             ValueError: ``actor_id`` or ``purpose`` was given to a role other than ``simulator``.
         """
@@ -321,6 +353,10 @@ class RoleUsageLedger:
             totals.cost_observed = True
         else:
             totals.cost_unpriced = True
+        if sent_settings is None:
+            totals.sent_unverified = True
+        else:
+            totals.sent.setdefault(request_settings_order(sent_settings), sent_settings)
 
     def add_llm_result(
         self, result: Any, *, actor_id: str | None = None, purpose: KnownSimulatorPurpose | None = None
@@ -338,13 +374,19 @@ class RoleUsageLedger:
 
         ``served_model`` is read off the completion and never off ``model``: a client may fill
         ``model`` from the request, which for a floating alias names the pointer rather than the model
-        that answered.
+        that answered. ``sent_settings``, the optional member, is read through
+        :func:`~threetears.evals.schema.completion.sent_settings_of`: absent reads as unverified, and a value of
+        the wrong type is refused.
 
         Args:
             result: The response, or a :class:`CallUsage` standing for one.
             actor_id: The simulated actor the call spoke for or chose; simulator role only.
             purpose: Whether the simulator call was an ``utterance`` or a ``schedule`` pick; simulator
                 role only.
+
+        Raises:
+            CompletionProtocolDefect: The result's ``sent_settings`` is neither ``None`` nor a
+                :class:`~threetears.evals.schema.ClientRequestSettings`.
         """
         read = CallUsage.of(result)
         self.add(
@@ -360,6 +402,7 @@ class RoleUsageLedger:
             price_source=read.price_source,
             actor_id=actor_id,
             purpose=purpose,
+            sent_settings=read.sent_settings,
         )
 
     def add_external(self, spend: ExternalSpend) -> None:
@@ -485,6 +528,11 @@ class RoleUsageLedger:
                     provider_units=totals.provider_units,
                     actor_id=actor_id,
                     purpose=purpose,
+                    sent_settings=(
+                        None
+                        if totals.sent_unverified or not totals.sent
+                        else [totals.sent[form] for form in sorted(totals.sent)]
+                    ),
                 )
             )
         return rows

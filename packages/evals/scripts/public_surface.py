@@ -620,6 +620,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.testing.STORE_CONFORMANCE_CASES",
         "threetears.evals.testing.StoreConformanceCase",
         "threetears.evals.testing.check_completion_conformance",
+        # The reader of a completion's optional `sent_settings`: what a host whose client reports what each request
+        # carried tests its completion type against, beside the conformance check.
+        "threetears.evals.schema.sent_settings_of",
         # Recorded completions in CI is a pattern a host uses: record its real client once, replay it in its suite.
         "threetears.evals.testing.RecordedCompletions",
         "threetears.evals.testing.RecordedPrompt",

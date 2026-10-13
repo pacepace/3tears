@@ -16,10 +16,21 @@ host's own suite has to. Under pytest::
 **Hand it an instance, not the class**: a dataclass field with no default and a Pydantic field are not
 class attributes, so a class can lack an attribute every one of its instances has.
 
+**The optional member.** ``sent_settings`` (what the request actually carried, a
+:class:`~threetears.evals.schema.ClientRequestSettings`) is not required: a completion without it conforms,
+and the engine records its calls as unverified. When the completion carries it, its type is checked, since a
+wrong one is refused on every call the engine reads. A host that opts in passes
+``require_sent_settings=True``, so its suite fails the day the member is dropped or renamed rather than
+every later run quietly reading as unverified::
+
+    check_completion_conformance(my_client_result_for_a_canned_response(), require_sent_settings=True)
+
 **What it cannot see.** That an attribute holds the RIGHT thing — a ``served_model`` copied from the
-request passes here and makes two models served under one alias compare equal. And a value outside the
-declared types beyond the one checked below: the stop reason, which a raw provider string (OpenAI's
-``length``) would make read as a finished completion.
+request passes here and makes two models served under one alias compare equal, and a ``sent_settings``
+that echoes what the client was asked rather than what its request carried passes here too and records a
+setting nobody checked as sent. And a value outside the declared types beyond the ones checked below: the
+stop reason, which a raw provider string (OpenAI's ``length``) would make read as a finished completion,
+and ``sent_settings``.
 """
 
 from __future__ import annotations
@@ -27,31 +38,38 @@ from __future__ import annotations
 from typing import get_args
 
 from threetears.evals.schema.completion import COMPLETION_RESULT_ATTRIBUTES, USAGE_LEDGER_ATTRIBUTES, StopReason
+from threetears.evals.schema.models import ClientRequestSettings
 
 __all__ = ["CompletionConformanceFailure", "check_completion_conformance"]
 
 
 class CompletionConformanceFailure(AssertionError):
-    """A host's completion lacks an attribute eval reads, or reports a stop reason outside eval's vocabulary.
+    """A host's completion lacks an attribute eval reads, or holds a stop reason or sent settings eval cannot read.
 
     An :class:`AssertionError`, so a test runner reports it as a failed assertion rather than an error in
     the test. The message names every offending attribute.
     """
 
 
-def check_completion_conformance(completion: object) -> None:
+def check_completion_conformance(completion: object, *, require_sent_settings: bool = False) -> None:
     """Fail, naming the attribute, when a host's completion does not carry what eval reads off it.
 
     Every :class:`~threetears.evals.schema.completion.CompletionResult` member is checked, the usage
     ledger's own (:data:`~threetears.evals.schema.completion.USAGE_LEDGER_ATTRIBUTES`) among them: those
-    are the ones whose absence nothing else would report, so the message says which they are.
+    are the ones whose absence nothing else would report, so the message says which they are. The
+    optional ``sent_settings`` (:data:`~threetears.evals.schema.completion.OPTIONAL_COMPLETION_ATTRIBUTES`)
+    is checked for its type when present, and required only when asked.
 
     Args:
         completion: An instance of the host's completion type, as its client returns one.
+        require_sent_settings: Fail when the completion carries no ``sent_settings`` attribute: for a host
+            whose client reports what each request carried, so dropping the member is caught here.
 
     Raises:
-        CompletionConformanceFailure: An attribute is missing, or ``stop_reason`` is not a
-            :data:`~threetears.evals.schema.completion.StopReason`.
+        CompletionConformanceFailure: An attribute is missing, ``stop_reason`` is not a
+            :data:`~threetears.evals.schema.completion.StopReason`, ``sent_settings`` is present and is neither
+            ``None`` nor a :class:`~threetears.evals.schema.ClientRequestSettings`, or it is absent and
+            ``require_sent_settings`` is set.
     """
     missing = [name for name in COMPLETION_RESULT_ATTRIBUTES if not hasattr(completion, name)]
     problems: list[str] = []
@@ -66,6 +84,17 @@ def check_completion_conformance(completion: object) -> None:
         problems.append(
             f"stop_reason {reason!r} is not one of {', '.join(get_args(StopReason))}: a provider's own finish reason "
             "must be mapped first (an absent or unknown one to 'truncated'), or a completion cut short reads as finished"
+        )
+    if not hasattr(completion, "sent_settings"):
+        if require_sent_settings:
+            problems.append(
+                "missing sent_settings, which this check was asked to require: the optional member saying what each "
+                "request actually carried (a ClientRequestSettings, or None when the client cannot say)"
+            )
+    elif (sent := getattr(completion, "sent_settings")) is not None and not isinstance(sent, ClientRequestSettings):
+        problems.append(
+            f"sent_settings holds a {type(sent).__name__}, not a ClientRequestSettings or None: the engine refuses "
+            "every completion carrying it (CompletionProtocolDefect)"
         )
     if problems:
         raise CompletionConformanceFailure(f"{type(completion).__name__}: " + "; ".join(problems))

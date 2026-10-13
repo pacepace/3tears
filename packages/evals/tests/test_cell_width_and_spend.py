@@ -575,7 +575,7 @@ async def _judged_run(judge: _PricedJudge, *, cap_usd: float) -> tuple[list[Eval
             "judge_model": TOY_JUDGE_MODEL,
             "effective_judges": run_judge.effective_judges,
             "judge_config_ids": {dim: config.id for dim, config in run_judge.configs.items()},
-            "judge_request_settings": JUDGE_REQUEST_SETTINGS,
+            "judge_asked_settings": JUDGE_REQUEST_SETTINGS,
             "judge_temperature": DEFAULT_JUDGE_TEMPERATURE,
         }
     )

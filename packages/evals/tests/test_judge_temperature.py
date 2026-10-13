@@ -212,7 +212,7 @@ class TestADifferentTemperatureIsADifferentJudge:
 def _judged(**overrides: Any) -> EvalRun:
     """A judged run as today's launch records it: its judge, simulator and request settings all stamped."""
     return make_eval_run(
-        judge_model="judge-a", simulator_model="sim-a", judge_request_settings=JUDGE_REQUEST_SETTINGS, **overrides
+        judge_model="judge-a", simulator_model="sim-a", judge_asked_settings=JUDGE_REQUEST_SETTINGS, **overrides
     )
 
 

@@ -246,9 +246,9 @@ def _collect(
     # The run's judge is the FIRST judge, so its apparatus must be recorded; a second judge may be sampled at another
     # temperature (that is part of its identity), but not asked with other request settings, which it does not name.
     recorded_judge_pins(run, request_settings="as_recorded")
-    if run.judge_request_settings != JUDGE_REQUEST_SETTINGS:
+    if run.judge_asked_settings != JUDGE_REQUEST_SETTINGS:
         raise ValidationFailedError(
-            f"run '{run_id}' {request_settings_drift(run.judge_request_settings)}; the second judge would differ "
+            f"run '{run_id}' {request_settings_drift(run.judge_asked_settings)}; the second judge would differ "
             "from the first by more than it names",
             remedy=RELAUNCH_TO_REJUDGE,
         )

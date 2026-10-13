@@ -150,12 +150,16 @@ def judge_client():
 **Pass the settings your client is built with.** `record` and `replay` both require `settings=`: the
 `ClientRequestSettings` your client builder applies to that client (for the judge, `threetears.evals.run`'s
 `JUDGE_REQUEST_SETTINGS`), or `None` for a client built with none. They never reach `generate`, so the recorder
-cannot read them off the client, and they change the answer: a judge given a reasoning budget thinks before it
-scores and one sent none may not. Every line carries them, and a recording made under other settings is refused,
+cannot read them off the client, and they change the answer: a judge asked to reason hard thinks before it
+scores and one asked for nothing may not. Every line carries them, and a recording made under other settings is refused,
 not served: `RecordingRefused` names each setting that differs, recorded value against asked
 (`recorded with reasoning_max_tokens=8192, reasoning_effort=None, asked with reasoning_max_tokens=None,
-reasoning_effort='high'`), so moving your judge's reasoning budget or output cap tells you to re-record rather than
-replaying answers the new configuration never asked for.
+reasoning_effort='high'`), so moving your judge's reasoning effort or output cap tells you to re-record rather than
+replaying answers the new configuration never asked for. Each line also keeps what the call's request was actually
+SENT with, when your completion reports it (`sent_settings`, below), and a replayed completion reports the same, so
+a replay records what the recorded call was sent with, never the settings it was asked under. A recording made by a
+build before `.25` (recording format 1, `RecordedCompletions.FORMAT_VERSION` is 2) kept none, and is refused by name:
+re-record it.
 
 A call is matched on its prompt (`system`, `user`, `response_format`), the model and temperature its completion
 reported, the settings the client was built with, and how many times that prompt was asked before, so `k` repeats
@@ -203,15 +207,17 @@ async def build_host() -> EvalHost:
 `models_clients` keeps one client per role, model, temperature and reasoning setting, reads each provider's key
 from `api_keys=` or the provider's own environment variable the first time a client for it is asked for, and
 `await clients.aclose_all()` closes them at shutdown. Per-role settings go by role name
-(`simulator={"reasoning_effort": "minimal", "provider": "openrouter"}`); `models_client` builds one client on its own.
-**The judge is built from `JUDGE_REQUEST_SETTINGS`**, the request settings a judged run records as its
-`judge_request_settings` (`max_tokens=10240`, `reasoning_max_tokens=8192`, `strict_output=True`): a `judge` role
-given no `max_tokens`, `reasoning_max_tokens` or `reasoning_effort` of its own gets that output cap and that
-reasoning budget, which on Anthropic goes as the thinking budget, and `strict_output` is the strict structured
-directive the judge already sends. On OpenAI and OpenRouter the adapter cannot send a reasoning budget, so a judge
-there cannot match the settings the run records: `models_clients` refuses it by name unless you pass the judge's
-settings yourself (`judge={"max_tokens": ..., "reasoning_effort": ...}`), and then the run's recorded settings do not
-describe what was sent. The adapter sends every request once (retries off; the one resend, after a refused
+(`simulator={"reasoning_effort": "low", "provider": "openrouter"}`); `models_client` builds one client on its own.
+**The judge is built from `JUDGE_REQUEST_SETTINGS`**, the request settings a judged run records it asked for, as its
+`judge_asked_settings` (`max_tokens=10240`, `reasoning_effort="high"`, `strict_output=True`): a `judge` role given no
+`max_tokens`, `reasoning_max_tokens` or `reasoning_effort` of its own gets that output cap and that effort word, which
+Anthropic, OpenAI and OpenRouter all take, and `strict_output` is the strict structured directive the judge already
+sends. Pass the judge's settings yourself (`judge={"max_tokens": ..., "reasoning_effort": ...}`) and the client asks
+for those instead, which the run's asked settings do not describe. The engine's other roles ask in effort words too:
+the simulated user `low` (`SIMULATOR_REQUEST_SETTINGS`, strict, since every simulator call sends a strict reply
+schema) and the analysis generator `medium` (`analysis_gen_request_settings_for`, whose output cap is the answer
+budget plus a reasoning headroom of at least 1024 tokens, 8192 unless you set one; the headroom sizes the cap and is
+never sent, so a `*_reasoning_budget_tokens` setting your configuration kept is that headroom now). The adapter sends every request once (retries off; the one resend, after a refused
 temperature, is below), keeps a circuit breaker of its own that never opens, prices Anthropic and OpenAI calls from
 models' price catalogue and OpenRouter calls by OpenRouter's own figure (unpriced is `None` with the reason, never
 `0`), and refuses by name a reasoning word or budget the provider cannot carry rather than sending its nearest
@@ -258,6 +264,38 @@ Anthropic's `pause_turn`), and `error` only when the provider reported an error 
 failed when it produced output. Every word but `end_turn` is cut short: the judge and the analysis generator never
 parse or repair such a reply, and their message says why for each; for `truncated` the provider's raw value is what
 to look at, so log it.
+
+### Reporting what each request was sent with
+
+**A completion may say what its request actually carried: `sent_settings`.** The run records what the engine ASKED
+each role for (`EvalRun.judge_asked_settings`, `simulator_asked_settings`); what a request was SENT with is a
+different fact, and only your client knows it: it may send a model the closest setting it accepts in place of the one
+asked for, drop one the model refuses, or resend a strict call without enforcement. Give your completion type a
+`sent_settings` attribute holding a `ClientRequestSettings` built from what your client builder actually put on that
+request, after every per-call change, and the engine records it per call: on each judge score
+(`RubricScore.judge_sent_settings`), on each usage row (`RoleUsage.sent_settings`, every distinct value the row's
+calls were sent with, the simulator's included) and on each out-of-run spend row (`OutOfRunSpend.sent_settings`).
+
+- **One value per completion**, the request that produced it. A completion your client resent is reported as the
+  resend went out.
+- **What the request carried, never what was asked.** Echoing the settings the client was built with records a
+  setting nobody checked as sent, and makes a judge sent one thing compare equal to a judge sent another. Report an
+  effort word as `reasoning_effort`, a token budget as `reasoning_max_tokens`, and neither when no reasoning parameter
+  went out.
+- **`strict_output` is the enforcement actually sent**: `True` when the request enforced every parameter it carried
+  (a strict `response_format` a direct provider refuses rather than ignores, a router's `require_parameters`),
+  `False` for a request sent, or resent, without it.
+- **`None`, or no attribute at all, is "my client does not say".** Nothing fails: the engine records the call as
+  unverified and says so, and never refuses a call, a score or a run for it. It is not a `CompletionResult` property,
+  so a completion without it still passes `check_completion_conformance`; a value of any other type is refused
+  (`CompletionProtocolDefect`, from `sent_settings_of` in `threetears.evals.schema`, the engine's one reader of it).
+  A client built with no output cap cannot report one, since `max_tokens` is required, and reports `None`.
+
+Once your completion reports it, hold your suite to it:
+`check_completion_conformance(completion, require_sent_settings=True)` fails the day the member is dropped or
+renamed, rather than every later run quietly recording unverified calls. **Ship it in the same deploy that adopts
+`.25`:** a run whose calls report what they were sent with and one whose calls do not are not the same record, and
+reporting from the first `.25` deploy keeps your campaigns from splitting at a later one.
 
 ## Tenancy: the scope
 
@@ -361,7 +399,7 @@ types the engine stores, and says three things about each:
 
 `EVAL_DOC_TYPES` (what the operator wipe sweeps) and `CORE_DOC_TYPES` (what is kept) are derived from it.
 
-**The evidence core is kept.** Every release reads it, from core v14 (the first public release's baseline) on. The core is
+**The evidence core is kept.** Every release reads it, from core v15 (the first public release's baseline) on. The core is
 what the engine cannot regenerate and an audit needs: test cases, runs, results, traces, calibration ratings,
 the out-of-run spend ledger, case sets, and the templates, judge configs and rubric dims (with their
 tombstones) those documents name by id; and the campaigns people declared and gathered runs into, and the
@@ -371,7 +409,7 @@ a live one), and the records of every other job: a launch (the runs it started),
 a judge temperature comparison (every answer, stored nowhere else) and a host action's job (its result).
 `CORE_DOC_TYPES` lists them.
 
-**The first public release is the baseline.** It writes core v14.0 (major `CORE_BASELINE_VERSION`, equal to
+**The first public release is the baseline.** It writes core v15.0 (major `CORE_BASELINE_VERSION`, equal to
 `CORE_SCHEMA_VERSION`, and minor `CORE_SCHEMA_MINOR`, 0), regenerable v9 (`REGENERABLE_SCHEMA_VERSION`) and
 cassette v1 (`CASSETTE_SCHEMA_VERSION`), and registers no upgrade steps (`CORE_UPGRADERS` is empty): there is
 nothing older for it to read.
@@ -394,12 +432,8 @@ or the other, an added optional field included:
   record the package version beside what you store (`threetears.evals.__version__`) to tell the two builds apart.
   **The tolerance follows the stored bytes, which are trusted:** a host that writes core documents straight into the
   store, with a `schema_minor` above the build's, gets it too, so write the minor your build writes. **The roll has
-  a floor:** the tolerance arrived with the minor, in `v0.66.0-evaladopt.22`. A build before it (`.21` included)
-  declares no `schema_minor` and refuses every field it does not declare, so it refuses every core document `.22` or
-  a later build writes, though the major is 14 for both. Roll back no further than `.22`. **And no further than
-  `.24` once any document carries `stop_reason="truncated"`:** that word joined the unreleased v14 baseline in
-  `v0.67.0-evaladopt.24` with no new version, and `.22` and `.23`, which read and write v14.0 too, know four words
-  and refuse every out-of-run spend document carrying it.
+  a floor, `.25` (`v0.67.0-evaladopt.25`):** it wrote the v15 baseline, and every build before it reads and writes
+  core v14 or older, so it refuses every document `.25` or a later build writes. Roll back no further than `.25`.
 - **A major is everything else**, and ships an upgrade step (a `CoreUpgrader` appended to `CORE_UPGRADERS`),
   tested against frozen stored documents from every core major since the baseline. Reading an older core
   document upgrades it in memory, one major at a time, before it is validated as strictly as a document written
@@ -431,7 +465,7 @@ when the cassette itself changes, because re-capturing a corpus calls your third
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
-**Each version space moves on its own.** Core documents (v14.0), regenerable documents (v9), cassettes
+**Each version space moves on its own.** Core documents (v15.0), regenerable documents (v9), cassettes
 (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 52), the cell model
 (`CELL_MODEL_VERSION`, 12), the report (`REPORT_VERSION`, 9) and the identity keys (`IDENTITY_VERSION`, 24) carry
 separate versions, each at its first public release's value.
@@ -465,7 +499,7 @@ unknown field and a missing required one, at any depth, with one exception: a co
 at a newer minor, read as above. A core document written by a newer major is refused, never guessed at, so when
 two builds share one store across a major, upgrade the older one. Only the stored read is tolerant: a document a
 caller hands an authoring surface is validated strictly, and `schema_minor` is a server field it ignores. A core
-document written before the first public release (below core v14) is refused
+document written before the first public release (below core v15) is refused
 too: its read fails validation on `schema_version`, with a message that names it a pre-release document and
 the baseline it is below. Pre-release documents are never read, so delete them (the operator wipe) rather than
 keep them beside released ones.

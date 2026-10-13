@@ -88,6 +88,8 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`referenced_actions(expression: str) -> tuple[tuple[str, str], ...]`
 - **`refuse_on_event_loop`** · function · Raise `StoreCalledOnEventLoop` when the calling thread is running an event loop.
   <br>`refuse_on_event_loop() -> None`
+- **`sent_settings_of`** · *host contract* · function · What the request that produced `completion` actually carried, as its client reports it, or `None`.
+  <br>`sent_settings_of(completion: object) -> ClientRequestSettings | None`
 - **`utc_now_iso`** · function · Return the current UTC time in ISO-8601 format.
   <br>`utc_now_iso() -> str`
 - **`with_fault`** · function · `faults` with `entry` appended, kept inside `FaultsField`'s caps.
@@ -109,7 +111,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`CatalogRubricDim`** · model · A reusable rubric dimension in the shared catalog.
 - **`CellIdentity`** · dataclass · Which cell execution a stretch of work belongs to.
 - **`CellTrace`** · dataclass · What one cell's tracing yielded — filled by the sink, read by the engine.
-- **`ClientRequestSettings`** · *host contract* · model · The request parameters a host applied to one apparatus role's LLM client, for one run.
+- **`ClientRequestSettings`** · *host contract* · model · Request parameters for one apparatus role's LLM call: what the engine ASKED for, or what a request was SENT with.
 - **`CompletionClient`** · *host contract* · protocol · The completion port eval is constructed with.
 - **`CompletionGenerator`** · protocol · The one call a consumer of a completion client makes, without the client's lifecycle.
 - **`CompletionProtocolDefect`** · exception · A host's completion does not meet the `CompletionResult` protocol, found while the engine read it.
@@ -312,12 +314,12 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`CELL_TIMEOUT_ORIGINS`** · *host contract* · constant (tuple) · The values of `CellTimeoutOrigin` this build knows, in the order its readers list them.
 - **`CORE_ADDRESSING_FIELDS`** · constant (mappingproxy) · Per core type, every field the store reads on the stored bytes, before any upgrade: what a query filters or orders on, what a projection keeps, and what a partial write merges.
 - **`CORE_BASELINE_VERSION`** · *host contract* · constant (int) · The first core version a public release wrote, and the oldest this and every later build reads. Below it a document is pre-release, and is refused by name.
-  <br>`= 14`
+  <br>`= 15`
 - **`CORE_DOC_TYPES`** · constant (frozenset) · The kept documents, by `doc_type`: the `kept` entries of `DOC_TYPE_FACTS`, derived so the registry is the one place a type's lifecycle is decided.
 - **`CORE_SCHEMA_MINOR`** · *host contract* · constant (int) · The core minor this build writes within `CORE_SCHEMA_VERSION`.
   <br>`= 0`
 - **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump appends one line here and one `CoreUpgrader`.
-  <br>`= 14`
+  <br>`= 15`
 - **`CORE_UPGRADERS`** · constant (tuple) · The registered steps, oldest first: `[s.from_version for s in CORE_UPGRADERS]` is `range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION)`.
 - **`COST_CAP_ORIGINS`** · *host contract* · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.
 - **`DEFAULT_JUDGE_TEMPERATURE`** · constant (float) · The temperature every judge call is requested at unless a `JudgeConfig` for its dimension says otherwise, and that config's own default (#633).
@@ -1328,13 +1330,13 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`= 4`
 - **`JUDGE_CALL_ATTEMPTS`** · constant (int) · Calls one judge dimension can make: the first, plus its parse retries.
   <br>`= 2`
-- **`JUDGE_MAX_TOKENS`** · constant (int) · The eval judge's output cap: the reasoning budget plus the answer budget, DERIVED rather than chosen, so it always sits above the ceiling it wraps.
+- **`JUDGE_MAX_TOKENS`** · constant (int) · The eval judge's output cap: the reasoning headroom plus the answer budget, DERIVED rather than chosen, so it always leaves room to think and then answer.
   <br>`= 10240`
 - **`JUDGE_REPEAT_ACTION`** · constant (str) · The name a repeat's job record (`EvalActionJob`) carries as its `action`.
   <br>`= 'judge_repeat'`
 - **`JUDGE_REPEAT_BUDGET_S`** · constant (float) · A repeat's wall-clock ceiling as a job: generous, since every call is bounded by its client and the repeat stops on an account refusal; it exists so one whose provider hangs is ended rather than held forever.
   <br>`= 21600.0`
-- **`JUDGE_REQUEST_SETTINGS`** · *host contract* · constant (ClientRequestSettings) · The judge role's request settings as ONE value: what the host's client builder applies to every eval judge client, and what a run launched with a judge records as `judge_request_settings`.
+- **`JUDGE_REQUEST_SETTINGS`** · *host contract* · constant (ClientRequestSettings) · The judge role's request settings as ONE value: what the host's client builder applies to every eval judge client, and what a run launched with a judge records as `judge_asked_settings`.
 - **`JUDGE_TEMPERATURE_JOB`** · constant (LeasedJobKind) · A judge temperature comparison's record.
 - **`LAUNCH_CANCEL_REASON`** · constant (str) · The reason recorded on a run its launch's cancel stopped.
   <br>`= 'its launch was cancelled'`
@@ -1352,8 +1354,8 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`SIMULATOR_REASONING_ALLOWANCE_TOKENS`** · constant (int) · Room the output cap leaves for the simulated user's private reasoning at `SIMULATOR_REASONING_EFFORT`.
   <br>`= 1024`
 - **`SIMULATOR_REASONING_EFFORT`** · constant (str) · How hard the simulated user reasons: the router's `reasoning.effort`, at its lowest level that still reasons.
-  <br>`= 'minimal'`
-- **`SIMULATOR_REQUEST_SETTINGS`** · constant (ClientRequestSettings) · The simulator role's request settings as ONE value: what the host's client builder applies to the simulated user's client, and what a run launched with a simulated user records as `simulator_request_settings`.
+  <br>`= 'low'`
+- **`SIMULATOR_REQUEST_SETTINGS`** · constant (ClientRequestSettings) · The simulator role's request settings as ONE value: what the host's client builder applies to the simulated user's client, and what a run launched with a simulated user records as `simulator_asked_settings`.
 - **`TEMPLATE_FIELDS`** · constant (tuple) · Every `TemplateField`, in the template's order.
 - **`TEMPLATE_SERVER_FIELDS`** · constant (tuple) · Identity/lifecycle fields the template family owns — never taken from caller input.
 
@@ -1366,8 +1368,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 
 - **`add_runs_to_campaign`** · function · Attach runs to a campaign (de-duplicated, order-preserving) and persist.
   <br>`add_runs_to_campaign(storage: CampaignStore, campaign_id: str, scope_id: str, run_ids: list[str]) -> EvalCampaign`
-- **`analysis_gen_request_settings_for`** · function · The generator role's request settings as ONE value, from the host's two budgets.
-  <br>`analysis_gen_request_settings_for(*, answer_budget_tokens: int, reasoning_budget_tokens: int) -> ClientRequestSettings`
+- **`analysis_gen_request_settings_for`** · function · The generator role's request settings as ONE value, from the host's answer budget, effort and headroom.
+  <br>`analysis_gen_request_settings_for(*, answer_budget_tokens: int, reasoning_effort: KnownReasoningEffort = 'medium', reasoning_headroom_tokens: int = 8192) -> ClientRequestSettings`
 - **`analysis_report`** · function · Read one stored analysis as its report — the one document every surface renders.
   <br>`analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> Report`
 - **`assemble_context_bundle`** · function · Assemble the closed context bundle for a campaign's runs.
@@ -1958,7 +1960,7 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 **Functions**
 
 - **`check_completion_conformance`** · *host contract* · function · Fail, naming the attribute, when a host's completion does not carry what eval reads off it.
-  <br>`check_completion_conformance(completion: object) -> None`
+  <br>`check_completion_conformance(completion: object, *, require_sent_settings: bool = False) -> None`
 - **`jobs_conformance_cases`** · *host contract* · function · Every case the catalogue's actions are held to: each action's call, and each spend action's happy path.
   <br>`jobs_conformance_cases(catalogue: ActionCatalogue, *, job_timeout_s: float = 60.0, call_return_timeout_s: float = 10.0) -> tuple[JobsConformanceCase, ...]`
 - **`nonpublic_evals_imports`** · function · Every reach into `threetears.evals` under `sources` that goes below a public root's declared names.
@@ -1967,7 +1969,7 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 **Classes**
 
 - **`BoundaryFinding`** · dataclass · One reach into `threetears.evals` that does not go through a public root's declared names.
-- **`CompletionConformanceFailure`** · exception · A host's completion lacks an attribute eval reads, or reports a stop reason outside eval's vocabulary.
+- **`CompletionConformanceFailure`** · exception · A host's completion lacks an attribute eval reads, or holds a stop reason or sent settings eval cannot read.
 - **`CompletionGuard`** · *host contract* · dataclass · The kit's watch on a host's completion clients: what was asked outside a job, and how often inside one.
 - **`CompletionOutsideJob`** · exception · A completion request made outside any job's work, refused by the kit's guarded client before it was sent.
 - **`JobAwaitedByItsCall`** · exception · A job's completion request that waited for the call that started the job, and found it still waiting on it.

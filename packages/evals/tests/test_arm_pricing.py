@@ -581,8 +581,8 @@ async def test_a_run_launched_with_a_simulated_user_records_how_it_was_asked():
 
     stored = off_loop(judged.storage.load_eval_run, run.id, TOYHOST_SCOPE)
     assert stored is not None and stored.simulator_model == "sim-a"
-    assert stored.simulator_request_settings == SIMULATOR_REQUEST_SETTINGS
-    assert stored.simulator_request_settings.reasoning_effort == "minimal"
+    assert stored.simulator_asked_settings == SIMULATOR_REQUEST_SETTINGS
+    assert stored.simulator_asked_settings.reasoning_effort == "low"
 
 
 async def test_a_plan_contradicting_the_launchs_judge_pin_is_refused_before_any_arm_is_priced():

@@ -1,10 +1,10 @@
 {
-  "created_at": "2026-10-13T05:04:01.440019+00:00",
+  "created_at": "2026-10-13T23:01:57.722686+00:00",
   "doc_type": "case_set",
   "id": "case_set:smoke:v1",
   "name": "smoke",
   "schema_minor": 0,
-  "schema_version": 14,
+  "schema_version": 15,
   "scope_id": "uni-1",
   "template_id": "t-1",
   "test_case_ids": [

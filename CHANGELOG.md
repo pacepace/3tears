@@ -69,8 +69,8 @@ v<version>` prints a release's notes).
   raw stop reason at WARNING. A host awaits `await clients.load_prices()` once at boot, so every client's
   synchronous `price_ceiling` can price an out-of-run call under an enforced cap. A pricing failure never costs a
   paid answer (it is logged and the completion returned unpriced), and a cached prompt's cost is marked approximate
-  (`;cache-approximate`). The `judge` role is built from `JUDGE_REQUEST_SETTINGS`, what a judged run records, and
-  refused where the provider cannot carry its reasoning budget unless the host passes the judge's settings itself.
+  (`;cache-approximate`). The `judge` role is built from `JUDGE_REQUEST_SETTINGS`, what a judged run records it asked:
+  an output cap and the effort word `high`, which every provider the adapter supports takes.
 - **Storage.** `EvalStorage` runs over a `DocumentStore` port, and `storage` ships an in-memory store, a SQLite
   store, a routed store that sends each doc type to its own backend, and `bridge_async_store` for an async
   backend. A store call made on an event-loop thread is refused (`StoreCalledOnEventLoop`), and the refusal names
@@ -79,13 +79,13 @@ v<version>` prints a release's notes).
   minor of the evidence core, below.
 - **History is kept across releases.** The evidence core (cases, runs, results, traces, calibration ratings, the
   out-of-run spend ledger, templates, judge configs, rubric dims, campaigns and job records) is read forever from
-  this release's **core schema v14**, the baseline. A later release upgrades an older core document in memory, one
+  this release's **core schema v15**, the baseline. A later release upgrades an older core document in memory, one
   version at a time, and the stored bytes change only on the next write. Analyses, insights and judge profiles can
   be regenerated: one written by another build is refused, and the operator regenerates it. A cassette's format has
   a version of its own (`CASSETTE_SCHEMA_VERSION` 1), so a change to the analyses never refuses a recorded corpus;
   only a change to the cassette itself does, and the corpus is then re-captured. A major is deployed with no job
   running.
-- **An additive core change rolls with no stop.** The core version is a major (`schema_version`, 14) and a minor
+- **An additive core change rolls with no stop.** The core version is a major (`schema_version`, 15) and a minor
   (`schema_minor`, 0). A minor is additive only (a new optional field, a new optional sub-object, a new value of an
   open vocabulary, a new doc type) and carries a ledger sentence asserting that an older build that ignores it
   reads the document correctly and writes it true. This release reads any newer minor of its own major, keeps
@@ -165,14 +165,24 @@ v<version>` prints a release's notes).
   `stopped`, `failed`, `cancelled`, `timed_out` or `lost`, and each record keeps the refusal it ended on and its
   lease's faults. Every refusal names a remedy the caller can reach, and a stored run this build cannot read is
   named (`runs_unreadable`), never raised raw.
+- **Asked and sent are two facts.** A run records what the engine asked each role for (`judge_asked_settings`,
+  `simulator_asked_settings`), and the engine's own roles ask in effort words: the judge `high` (`max_tokens`
+  10240, strict), the simulated user `low` (strict) and the analysis generator `medium` (its cap the answer budget
+  plus a reasoning headroom of at least 1024 tokens, never sent). What a request actually carried is the client's to
+  say: a completion may carry an optional `sent_settings` member (not a protocol property, so every completion that
+  conformed still does), read by `sent_settings_of`, and stored per judge score, per usage row (every distinct value
+  the row's calls were sent with) and per out-of-run call; `None` is unverified, recorded and never refused. A host
+  whose client reports it ships that in the same deploy that adopts the release.
 - **Conformance kits** (`testing`): the store, reader, jobs and completion kits, and the import-boundary check
-  (`nonpublic_evals_imports`) a host runs over its own code. Beside them, `RecordedCompletions` records the calls a
-  host's real completion client answers into a JSONL file once and replays them with no network, so a suite runs
-  offline on what a model actually said. A call is matched on its prompt and on the model, temperature and request
-  settings (`ClientRequestSettings`, a required `settings=` on `record`, `replay` and `check_covers`) it was made
-  with; a prompt the recording does not hold, or holds only under other settings, is refused by name with the
-  command that re-records it, never sent live. A recorder stands in for an analysis or out-of-run client too: it
-  names its model and prices a call (a replay at $0).
+  (`nonpublic_evals_imports`) a host runs over its own code. The completion kit checks the optional `sent_settings`
+  member's type when present, and requires it with `require_sent_settings=True`. Beside them, `RecordedCompletions`
+  records the calls a host's real completion client answers into a JSONL file once and replays them with no network,
+  so a suite runs offline on what a model actually said. A call is matched on its prompt and on the model,
+  temperature and request settings (`ClientRequestSettings`, a required `settings=` on `record`, `replay` and
+  `check_covers`) it was made with, and what each call was sent with is recorded and replayed beside them; a prompt
+  the recording does not hold, or holds only under other settings, is refused by name with the command that
+  re-records it, never sent live. A recorder stands in for an analysis or out-of-run client too: it names its model
+  and prices a call (a replay at $0).
 - **Docs.** The package README; a tutorial; guides to classifier eval sets, reading reports, evaluating agents,
   judges and calibration, adopting a host, choosing a design, cost and budgets, MCP and the command line; and the
   background pages (principles, measuring soundly, the world model, design rationale, prior art, open problems).
@@ -184,13 +194,12 @@ v<version>` prints a release's notes).
   `feature/eval-adopt` for one adopter and never published. Each tag's own `CHANGELOG.md` and `MIGRATIONS.toml` hold
   that pre-release's notes and the names that moved. **A store written before `v0.66.0-evaladopt.21` is not read:**
   its core documents (schema v8 to v13) are refused by name as pre-release and its regenerable ones by version, so
-  such an adopter deletes its eval documents. From `.21` on, the store is the v14 baseline this release reads, and
-  every core shape change is a version, as it will be after release: a minor for an additive change, a major with an
-  upgrader for any other. Reading a newer minor arrived in `.22`: a `.21` build does not know `schema_minor` and
-  refuses every core document `.22` or this release writes, though both are v14, so roll back no further than `.22`.
-  **Once any document carries `stop_reason="truncated"`, roll back no further than `.24`:** that word joined the
-  unreleased v14 baseline in `.24` with no new version, and `.22` and `.23`, which read and write v14.0 too, know four
-  stop reasons and refuse every out-of-run spend document carrying it. Every pre-release, `.21` included, stamped its
+  such an adopter deletes its eval documents. **Nor is a store written before `v0.67.0-evaladopt.25`:** `.21` to
+  `.24` wrote a pre-release v14 baseline, and `.25` reset the baseline to v15 with no upgrader, so a v14 document is
+  refused by name as pre-release and such an adopter deletes its eval documents again. From `.25` on, the store is
+  the v15 baseline this release reads, and every core shape change is a version, as it will be after release: a minor
+  for an additive change, a major with an upgrader for any other. Every build before `.25` refuses every document
+  `.25` or this release writes, so roll back no further than `.25`. Every pre-release, `.21` included, stamped its
   cassettes with the regenerable version; this release reads them at cassette v1 and refuses them, so their corpora
   are re-captured.
 
