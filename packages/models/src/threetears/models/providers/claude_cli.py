@@ -212,8 +212,8 @@ _logger = get_logger(__name__)
 OAUTH_TOKEN_PREFIX = "sk-ant-oat"
 
 #: The ``ClaudeCodeChatModel`` constructor params we forward. The anthropic factory's other kwargs
-#: (``timeout`` / ``max_retries`` / ``max_tokens`` / ``base_url`` …) are HTTP-API concepts the CLI
-#: backend does not accept — dropped rather than passed through to a constructor error.
+#: (``timeout`` / ``max_tokens`` / ``base_url`` …) are HTTP-API concepts the CLI backend does not
+#: accept — dropped rather than passed through to a constructor error.
 _FORWARDED_KWARGS = frozenset(
     {
         "system_prompt",
@@ -230,6 +230,11 @@ _FORWARDED_KWARGS = frozenset(
         # either credential (see _SubscriptionChatModel.thinking / .effort).
         "thinking",
         "effort",
+        # The CLI's own API retries and output cap, set through its environment (see
+        # _SubscriptionChatModel.max_retries / .max_output_tokens). The anthropic factory forwards
+        # max_retries only when a caller set it, so the CLI's default stands otherwise.
+        "max_retries",
+        "max_output_tokens",
     }
 )
 
@@ -281,6 +286,15 @@ _API_DEFAULT_EFFORT = "high"
 #: pins in the bundled CLI's effort resolution, so the effort sent is pinned here as well as in the flag.
 _EFFORT_ENV = "CLAUDE_CODE_EFFORT_LEVEL"
 
+#: The CLI's variable for how many times it retries a failed API call itself. Unset, the CLI retries
+#: up to ten times, invisibly to the caller, and it lowers a larger value to its own ceiling (10 and 15,
+#: read from the bundled 2.1.286).
+_MAX_RETRIES_ENV = "CLAUDE_CODE_MAX_RETRIES"
+
+#: The CLI's variable for the most output tokens one reply may have. Unset, the CLI applies each
+#: model's own default.
+_MAX_OUTPUT_TOKENS_ENV = "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
+
 #: What starts the caller's system prompt. The CLI sends its own identity line as a system block of
 #: its own ahead of the caller's, and the two reached the model with no separator between them.
 _AFTER_CLI_IDENTITY = "\n\n"
@@ -309,6 +323,27 @@ def _output_format(output_config: Any) -> dict[str, Any]:
     if not isinstance(fmt, dict) or fmt.get("type") != "json_schema" or not isinstance(fmt.get("schema"), dict):
         raise ValueError(f"a subscription model can only honour a json_schema output_config, not {output_config!r}")
     return {"type": "json_schema", "schema": fmt["schema"]}
+
+
+def _cli_count(name: str, value: Any, *, least: int) -> str | None:
+    """A whole-number setting as the CLI's environment takes it, or ``None`` when it is unset.
+
+    :param name: the setting's keyword, named when it is refused
+    :ptype name: str
+    :param value: the setting, ``None`` when unset
+    :ptype value: Any
+    :param least: the smallest value the setting takes
+    :ptype least: int
+    :return: the value as text, or ``None``
+    :rtype: str | None
+    :raises ValueError: when the value is not a whole number of at least ``least`` -- a setting the
+        CLI cannot honour is refused, never dropped
+    """
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value < least:
+        raise ValueError(f"a subscription model's {name} must be a whole number of at least {least}, not {value!r}")
+    return str(value)
 
 
 def is_subscription_token(credential: str) -> bool:
@@ -615,6 +650,13 @@ def _subscription_model_cls() -> type:
         thinking: dict[str, Any] | None = None
         effort: str | None = None
 
+        # The CLI's own retries of a failed API call, and the most output tokens one reply may
+        # have, sent as CLAUDE_CODE_MAX_RETRIES / CLAUDE_CODE_MAX_OUTPUT_TOKENS (see
+        # :data:`_MAX_RETRIES_ENV`, :data:`_MAX_OUTPUT_TOKENS_ENV`). ``None`` leaves the CLI's own
+        # default. Declared here for the same reason as :attr:`tools`.
+        max_retries: int | None = Field(default=None, strict=True, ge=0)
+        max_output_tokens: int | None = Field(default=None, strict=True, gt=0)
+
         def _build_options(self, **overrides: Any) -> Any:
             """Force ``tools`` from :attr:`tools`, and cut the CLI off from the host's Claude config.
 
@@ -626,6 +668,15 @@ def _subscription_model_cls() -> type:
             overrides.setdefault("tools", self.tools)
             overrides.setdefault("thinking", self.thinking or _NO_THINKING)
             overrides.setdefault("effort", self.effort or _API_DEFAULT_EFFORT)
+            # Not options of the SDK's: the CLI reads both from its environment. A per-call value
+            # outranks the model's.
+            cli_env: dict[str, str] = {}
+            retries = _cli_count("max_retries", overrides.pop("max_retries", self.max_retries), least=0)
+            if retries is not None:
+                cli_env[_MAX_RETRIES_ENV] = retries
+            cap = _cli_count("max_output_tokens", overrides.pop("max_output_tokens", self.max_output_tokens), least=1)
+            if cap is not None:
+                cli_env[_MAX_OUTPUT_TOKENS_ENV] = cap
             if "output_config" in overrides:
                 overrides["output_format"] = _output_format(overrides.pop("output_config"))
             from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415
@@ -645,7 +696,7 @@ def _subscription_model_cls() -> type:
             isolation = claude_cli_isolation(self.oauth_token)
             # A caller that deliberately points the CLI at a configuration or directory of its
             # own has made that choice; only an unset one falls back to the isolated default.
-            options.env = {**isolation.env, **(options.env or {}), _EFFORT_ENV: str(options.effort)}
+            options.env = {**isolation.env, **(options.env or {}), _EFFORT_ENV: str(options.effort), **cli_env}
             if isinstance(options.system_prompt, str) and options.system_prompt.strip():
                 options.system_prompt = _AFTER_CLI_IDENTITY + options.system_prompt.lstrip("\n")
             if not options.cwd:
@@ -1640,6 +1691,14 @@ def create_subscription_chat(model_name: str, token: str, **extra_kwargs: Any) -
     model turns a structured call gets: with no built-in and no bound tool it may take the CLI's
     schema retries (:data:`_STRUCTURED_OUTPUT_TURNS`); with any, one turn, so a rejected
     ``StructuredOutput`` attempt fails the call (see :func:`_answers_only_in_schema`).
+
+    The CLI retries a failed API call itself, up to ten times when nobody says otherwise, and caps a
+    reply at each model's own default. ``max_retries`` (a whole number, ``0`` for none) and
+    ``max_output_tokens`` (a positive whole number) set those, on the model or bound per call; they
+    reach the CLI as ``CLAUDE_CODE_MAX_RETRIES`` / ``CLAUDE_CODE_MAX_OUTPUT_TOKENS``, and a value the
+    CLI cannot take raises ``ValueError``. Unset, the CLI's defaults stand. The CLI's own re-asks for
+    a structured answer (:data:`_STRUCTURED_OUTPUT_ATTEMPTS`) are separate, and not retries of a
+    failed call.
 
     :param model_name: the Anthropic model id
     :ptype model_name: str

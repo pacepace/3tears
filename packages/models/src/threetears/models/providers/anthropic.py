@@ -228,13 +228,17 @@ def _build_translating_chat_class() -> type[ChatAnthropic]:
     return _NameTranslatingChatAnthropic
 
 
+#: Retries of a failed request on the HTTP route when a caller sets none: the Anthropic SDK's own default.
+_DEFAULT_MAX_RETRIES = 2
+
+
 def create_anthropic_chat(
     model_name: str,
     api_key: str,
     *,
     base_url: str | None = None,
     timeout: int = 120,
-    max_retries: int = 2,
+    max_retries: int | None = None,
     **extra_kwargs: Any,
 ) -> BaseChatModel:
     """creates a configured ``ChatAnthropic`` for Anthropic models.
@@ -254,8 +258,10 @@ def create_anthropic_chat(
     :ptype base_url: str | None
     :param timeout: request timeout in seconds
     :ptype timeout: int
-    :param max_retries: maximum retry attempts for failed requests
-    :ptype max_retries: int
+    :param max_retries: maximum retry attempts for failed requests; ``None`` is the SDK's default of
+        :data:`_DEFAULT_MAX_RETRIES`. On a subscription token it is forwarded only when set, as the
+        Claude CLI's own retry count, so the CLI's default stands otherwise
+    :ptype max_retries: int | None
     :param extra_kwargs: additional keyword arguments forwarded to ``ChatAnthropic``
     :ptype extra_kwargs: Any
     :return: configured ``ChatAnthropic`` (the name-translating subclass), or a Claude
@@ -269,6 +275,8 @@ def create_anthropic_chat(
     from threetears.models.providers.claude_cli import create_subscription_chat, is_subscription_token
 
     if is_subscription_token(api_key):
+        if max_retries is not None:
+            extra_kwargs["max_retries"] = max_retries
         return create_subscription_chat(model_name, api_key, **extra_kwargs)
 
     chat_cls = _build_translating_chat_class()
@@ -279,7 +287,7 @@ def create_anthropic_chat(
         "model_name": model_name,
         "api_key": api_key,
         "timeout": timeout,
-        "max_retries": max_retries,
+        "max_retries": _DEFAULT_MAX_RETRIES if max_retries is None else max_retries,
     }
     if cleaned_base_url is not None:
         kwargs["base_url"] = cleaned_base_url
