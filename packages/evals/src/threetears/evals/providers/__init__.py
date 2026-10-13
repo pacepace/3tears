@@ -40,9 +40,11 @@ member fails there, and the commit that moves the pin says so):
   provider-reported failure, is ``error``. The raw value is ``provider_stop_reason`` (on OpenRouter its
   ``native_finish_reason`` when LangChain carries it), and every ``truncated`` reply is logged at WARNING with it,
   since the engine stores only its own word.
-* ``temperature`` is what the built model sends, read back from it: LangChain drops a temperature OpenAI's
+* ``temperature`` is what the request carried, read back from the built model: LangChain drops a temperature OpenAI's
   ``gpt-5`` family refuses (at build, and again from a Responses-API request), and a thinking budget on Anthropic
-  is built with none.
+  is built with none. A model that refuses a temperature is not a failed call: the provider's refusal (unbilled) is
+  answered by sending the same request once more without it, the completion reports ``None``, and that client sends
+  none from then on, logged once at WARNING (``models_client``'s module has the detail).
 * ``cost_usd`` and ``price_source``: OpenRouter's own reported figure (``openrouter:reported``; under
   bring-your-own-key that is OpenRouter's fee alone, since LangChain drops the flag that would tell the upstream's
   charge apart, so a BYOK call is understated); on Anthropic and OpenAI the
@@ -63,8 +65,8 @@ ceiling alone; the stored cost stays OpenRouter's reported figure.
 
 What the request carries: retries off on every provider (the Anthropic and OpenAI SDKs retry twice by default,
 OpenAI an exhausted quota too, and the OpenRouter SDK, given no retry setting of LangChain's, backs off on a 5XX for
-up to an hour), streaming off, a breaker that never opens, the output cap and the reasoning
-setting as asked or a refusal by name (:func:`models_client` lists them per provider), and a ``response_format``
+up to an hour; the adapter's one resend is a request refused for its temperature), streaming off, a breaker that
+never opens, the output cap and the reasoning setting as asked or a refusal by name (:func:`models_client` lists them per provider), and a ``response_format``
 through models' structured-output translation.
 
 **The Claude CLI route is refused, for now.** models routes an Anthropic subscription token to the Claude CLI,

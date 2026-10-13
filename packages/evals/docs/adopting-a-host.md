@@ -211,11 +211,21 @@ reasoning budget, which on Anthropic goes as the thinking budget, and `strict_ou
 directive the judge already sends. On OpenAI and OpenRouter the adapter cannot send a reasoning budget, so a judge
 there cannot match the settings the run records: `models_clients` refuses it by name unless you pass the judge's
 settings yourself (`judge={"max_tokens": ..., "reasoning_effort": ...}`), and then the run's recorded settings do not
-describe what was sent. The adapter sends every request once (retries off), keeps a circuit breaker of its own that
-never opens, prices Anthropic and OpenAI calls from models' price catalogue and OpenRouter calls by OpenRouter's own
-figure (unpriced is `None` with the reason, never `0`), and refuses by name a reasoning word or budget the provider
-cannot carry rather than sending its nearest neighbour. That refusal, and a role with no model or a provider with no
+describe what was sent. The adapter sends every request once (retries off; the one resend, after a refused
+temperature, is below), keeps a circuit breaker of its own that never opens, prices Anthropic and OpenAI calls from
+models' price catalogue and OpenRouter calls by OpenRouter's own figure (unpriced is `None` with the reason, never
+`0`), and refuses by name a reasoning word or budget the provider cannot carry rather than sending its nearest
+neighbour. That refusal, and a role with no model or a provider with no
 key, raise `ModelsClientRefused` (a `ValueError`), naming the setting and what to pass instead.
+
+**A model that refuses a temperature still answers.** The engine asks every judge call for a temperature, and some
+models refuse one outright (an Anthropic model on which `temperature` is deprecated, an OpenAI model that takes only
+its default). 3tears-models does not say which, so the adapter learns it from the provider's own refusal: the refused
+request, which generated nothing and is not billed, is sent once more without the temperature, the completion
+reports `temperature=None` (recorded as the model's default), and that client sends none for the rest of its life,
+logging it once at WARNING. On OpenRouter, which drops a parameter an upstream does not take, the same happens for
+a structured call whose `require_parameters` left no upstream that takes the temperature. Any other refusal, and a
+failure of that one resend, is raised as before.
 
 **Load prices once at boot.** `await clients.load_prices()` reads the price catalogue for every default model and
 returns, for each one left unpriced, why (`{}` when all are priced); a model the engine names beyond your defaults
