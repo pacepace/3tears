@@ -111,7 +111,6 @@ class TestTheIntervalDecides:
         verdict = _verdict_on(_bundle(), cell.mean)
 
         assert (verdict.ci_low, verdict.ci_high) == (cell.ci_low, cell.ci_high)
-        assert not verdict.decided_on_the_mean
         assert verdict.model_dump(mode="json")["decision"] == verdict.decision
         assert BarVerdict.model_validate(verdict.model_dump(mode="json")) == verdict, "the echo is re-derived"
 
@@ -155,4 +154,3 @@ class TestTooFewObservations:
             assert verdict.n == 1 and verdict.value is not None
             assert (verdict.ci_low, verdict.ci_high, verdict.cleared) == (None, None, None)
             assert verdict.decision == "no_interval"
-            assert not verdict.decided_on_the_mean

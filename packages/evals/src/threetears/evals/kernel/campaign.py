@@ -27,7 +27,7 @@ from typing import Any, Literal, Self, get_args
 
 from pydantic import Field, computed_field, field_validator, model_validator
 
-from threetears.evals.kernel.authored import AuthoredAnalysis, Confidence, summary_bullets
+from threetears.evals.kernel.authored import AuthoredAnalysis, Confidence
 from threetears.evals.kernel.declaration import CampaignDesign
 from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier, JudgedTierRule, weakest_judged_tier
 from threetears.evals.schema.values import SweepableValue
@@ -802,6 +802,7 @@ class EvalAnalysis(EvalDocumentModel):
         description="What the generator authored, as written, with each figure reference in its prose rendered by code."
     )
     judged_tier_rule: JudgedTierRule = Field(
+        default="interval_lower_bound",
         description=(
             "The rule the judged evidence tiers in `resolutions` and `decision_surface` were decided by. "
             "`interval_lower_bound`: each criterion on confidence bounds for its agreement against the bar."
@@ -896,17 +897,6 @@ class EvalAnalysis(EvalDocumentModel):
                     f"{where} names finding position(s) {bad}, and there are {count} findings (0-{count - 1})"
                 )
 
-        if count:
-            # Code shows the headline and each bullet at the weakest of the findings under it, so over findings
-            # each names the ones it rests on, one link per bullet.
-            if not self.document.headline_rests_on:
-                raise ValueError("headline_rests_on is empty over findings; the headline names what it rests on")
-            bullets = summary_bullets(self.document.summary)
-            if len(self.document.summary_rests_on) != len(bullets) or not all(self.document.summary_rests_on):
-                raise ValueError(
-                    f"summary_rests_on holds {len(self.document.summary_rests_on)} link(s) for {len(bullets)} summary "
-                    "bullet(s); one non-empty link per bullet over findings"
-                )
         in_range("headline_rests_on", self.document.headline_rests_on)
         for index, bullet in enumerate(self.document.summary_rests_on):
             in_range(f"summary_rests_on[{index}]", bullet)

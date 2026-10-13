@@ -34,6 +34,7 @@ from pydantic import Field, field_validator, model_validator
 
 from threetears.evals.kernel.analysis_measures import BarAdjudication, MeasureCollection
 from threetears.evals.kernel.metrics import (
+    METRIC_DESCRIPTORS,
     MeasurePopulation,
     MeasureScale,
     MeritAxis,
@@ -826,8 +827,9 @@ class DecisionSurface(EvalDocumentModel):
     def measure_heading(self, measure_id: str, reading: str = "measure") -> str:
         """What a reader calls a reading on this surface — the one spelling every header, title and label prints.
 
-        A measure by its frozen reader-facing name (:attr:`MeasureFacts.reader_name`), or the key itself for a measure
-        nothing describes. A measuring-spend
+        A measure by its frozen reader-facing name (:attr:`MeasureFacts.reader_name`); an engine core measure the
+        surface carries no name for, by the core's name, whose meaning the key fixes; and only then the key itself,
+        for a host measure nothing describes. A measuring-spend
         measure says it is one (:func:`~threetears.evals.kernel.metrics.measure_title`). A judged dimension is
         its rubric's own name, marked judged. The key is never lost: every surface carrying a heading carries the
         key beside it for a reader who needs to cite it.
@@ -842,7 +844,10 @@ class DecisionSurface(EvalDocumentModel):
         if reading == "judged":
             return f"{measure_id} (judged)"
         facts = self.measures.get(measure_id)
-        return measure_title(measure_id, facts.reader_name if facts is not None else None)
+        named = facts.reader_name if facts is not None else None
+        if named is None and (core := METRIC_DESCRIPTORS.get(measure_id)) is not None:
+            named = core.reader_name
+        return measure_title(measure_id, named)
 
 
 __all__ = [

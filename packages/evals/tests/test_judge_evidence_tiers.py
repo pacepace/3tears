@@ -335,6 +335,7 @@ def _repeat(
                 first_score=first,
                 first_served_model=judge,
                 first_judge_config_id=first_config,
+                first_judge_temperature=0.0,
                 repeat=None
                 if again is None
                 else RubricScore(
@@ -806,6 +807,7 @@ def _repeated(result: EvalResult, *, agree: bool) -> EvalResult:
                 first_score=score.score,
                 first_served_model=score.served_model,
                 first_judge_config_id=config,
+                first_judge_temperature=score.judge_temperature,
                 repeat=RubricScore(
                     dim=TOYHOST_JUDGED_DIMENSION,
                     scale=score.scale,

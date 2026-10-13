@@ -1,14 +1,13 @@
-"""A job record's ``faults`` (core v13): what went wrong at its lease's boundary, kept beside its ending.
+"""A job record's ``faults``: what went wrong at its lease's boundary, kept beside its ending.
 
 The field is the same on every job record kind. These hold its shape (capped in count and length, and an entry
-added past the caps kept inside them), that a record stored at v12 reads with none, and that a holder's own write of
+added past the caps kept inside them), that a stored record reads them back, and that a holder's own write of
 its record keeps the faults written on the stored one. That a holder whose renewals fail writes one, and that a loss
 keeps it, is in ``test_boundary_errors_are_recorded.py``.
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -16,7 +15,6 @@ import pytest
 from threetears.evals.kernel import SWEEP_JOB, EvalStorage, EvalSweep, SweepArmRecord
 from threetears.evals.kernel.job_leases import write_held_record
 from threetears.evals.schema import JOB_FAULT_MAX_CHARS, JOB_FAULTS_MAX, with_fault
-from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.stored_models import doc_type_of, stored_models
 
@@ -40,25 +38,12 @@ def test_every_job_record_kind_keeps_faults() -> None:
     assert all("faults" in model.model_fields for model in _JOB_RECORDS.values())
 
 
-@pytest.mark.parametrize("doc_type", sorted(_JOB_RECORDS))
-def test_a_job_record_stored_at_v12_reads_with_no_faults(doc_type: str) -> None:
-    """The v12 step is the identity: a record stored before faults existed reads with none recorded."""
-    document = json.loads((FIXTURES / "v12" / f"{doc_type}.json").read_text(encoding="utf-8"))
-    assert document["schema_version"] == 12 and "faults" not in document
+def test_a_stored_job_record_reads_its_faults_back() -> None:
+    sweep = _sweep(faults=["the lease could not be renewed: the store timed out"])
 
-    read = _JOB_RECORDS[doc_type].from_dict(document)
+    read = EvalSweep.from_dict(sweep.to_dict())
 
-    assert read.schema_version == CORE_SCHEMA_VERSION  # type: ignore[attr-defined]
-    assert read.faults == []  # type: ignore[attr-defined]
-
-
-@pytest.mark.parametrize("doc_type", sorted(_JOB_RECORDS))
-def test_a_job_record_stored_at_v13_reads_its_faults_back(doc_type: str) -> None:
-    document = json.loads((FIXTURES / "v13" / f"{doc_type}.json").read_text(encoding="utf-8"))
-
-    read = _JOB_RECORDS[doc_type].from_dict(document)
-
-    assert read.faults == document["faults"] and len(read.faults) == 1  # type: ignore[attr-defined]
+    assert read.faults == sweep.faults
 
 
 def _sweep(**updates: object) -> EvalSweep:

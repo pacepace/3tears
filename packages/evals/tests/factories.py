@@ -36,6 +36,7 @@ from threetears.evals.schema.values import SweepableValue
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.schema.models import (
+    GOAL_CHECK_PROOF_RULES,
     DEFAULT_JUDGE_TEMPERATURE,
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
@@ -215,6 +216,8 @@ def make_eval_run(**overrides: Any) -> EvalRun:
         defaults["judge_request_settings"] = RECORDED_REQUEST_SETTINGS
     if defaults.get("judge_model") is not None and "judge_temperature" not in overrides:
         defaults["judge_temperature"] = DEFAULT_JUDGE_TEMPERATURE
+    if defaults.get("goal_check_proofs") is not None and "goal_check_proof_rules" not in overrides:
+        defaults["goal_check_proof_rules"] = GOAL_CHECK_PROOF_RULES
     if defaults.get("simulator_model") is not None and "simulator_request_settings" not in overrides:
         defaults["simulator_request_settings"] = RECORDED_REQUEST_SETTINGS
     if defaults.get("cassette_mode") == "replay" and "cassette_corpus_id" not in overrides:
@@ -499,7 +502,12 @@ def make_calibration_rating(**overrides: Any) -> CalibrationRating:
 def make_insight(**overrides: Any) -> EvalInsight:
     """Create an ``EvalInsight`` in the default scope."""
     fields: dict[str, Any] = dict(
-        scope_id="uni-1", subject_id="subject-1", subject_kind="", statement="observed", confidence="medium"
+        scope_id="uni-1",
+        subject_id="subject-1",
+        subject_kind="",
+        statement="observed",
+        confidence="medium",
+        invalidation_trigger="retired when its analysis is archived, or replaced by a later analysis restating it",
     )
     fields.update(overrides)
     return EvalInsight(**fields)

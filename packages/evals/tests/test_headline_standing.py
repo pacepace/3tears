@@ -17,7 +17,6 @@ import asyncio
 import json
 
 import pytest
-from pydantic import ValidationError
 
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, TOYHOST_WIDE, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
@@ -76,14 +75,6 @@ def _generated() -> EvalAnalysis:
 @pytest.fixture(scope="module")
 def analysis() -> EvalAnalysis:
     return _generated()
-
-
-def test_an_analysis_over_findings_that_names_no_link_is_refused(analysis: EvalAnalysis) -> None:
-    """Over findings, the headline and each bullet name what they rest on, or the analysis is not a document."""
-    document = analysis.model_dump(mode="json")
-    del document["document"]["headline_rests_on"], document["document"]["summary_rests_on"]
-    with pytest.raises(ValidationError, match="headline_rests_on is empty over findings"):
-        EvalAnalysis.model_validate(document)
 
 
 class TestTheStandingIsTheWeakestOfTheFindingsUnderIt:

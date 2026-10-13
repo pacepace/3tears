@@ -121,7 +121,7 @@ class JudgeKey(NamedTuple):
     scale: RubricScale
     judge_model: str | None
     judge_config_id: str | None
-    judge_temperature: JudgeTemperature | None
+    judge_temperature: JudgeTemperature | None = None
 
 
 def judge_key(result: EvalResult, dim: str) -> JudgeKey | None:

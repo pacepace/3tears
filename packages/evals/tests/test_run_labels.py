@@ -14,6 +14,8 @@ from typing import Any
 
 import pytest
 
+from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION
+
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.kernel import resolve_variant_identity
@@ -134,14 +136,7 @@ class TestALabelIsAShortName:
 
     @pytest.mark.parametrize("labels", [["b", "a"], ["a", "a"], [""], ["x" * 65]])
     def test_a_stored_run_holds_short_labels_sorted_and_once_each(self, labels: list[str]) -> None:
-        document = json.loads((FIXTURES / "v12" / "eval_run.json").read_text())
+        document = json.loads((FIXTURES / f"v{CORE_SCHEMA_VERSION}" / "eval_run.json").read_text())
         document["labels"] = labels
         with pytest.raises(ValueError, match="run label"):
             EvalRun.from_dict(document)
-
-
-def test_a_run_stored_before_labels_reads_with_none() -> None:
-    """The v11 step is the identity: a run no one could have labelled reads with no labels."""
-    document = json.loads((FIXTURES / "v11" / "eval_run.json").read_text())
-    assert "labels" not in document
-    assert EvalRun.from_dict(document).labels == []

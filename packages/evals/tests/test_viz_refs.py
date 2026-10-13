@@ -195,6 +195,9 @@ def _bar(cells: list[CellFacts]) -> BarAdjudication:
                 value=value,
                 n=8,
                 n_independent=8,
+                # A decided verdict is decided on an interval; a tight one on the value's own side of the bar.
+                ci_low=value - 0.01,
+                ci_high=value + 0.01,
                 cleared=value >= 0.8,
             )
         )

@@ -12,6 +12,8 @@ from typing import Any
 
 import pytest
 
+from threetears.evals.schema.models import builtin_judge_config_id
+
 from threetears.evals.actions import engine_actions
 from threetears.evals.analysis import (
     JudgeKey,
@@ -70,6 +72,10 @@ def _template(criterion: RubricDim = _CRITERION, *, updated_at: str = _TEMPLATE_
     )
 
 
+#: The built-in prompt every trial here was asked by.
+_BUILTIN = builtin_judge_config_id("the toy judge's built-in wording")
+
+
 def _trial(case: int, *, model: str | None = _JUDGE, agree: bool = True) -> dict[str, Any]:
     """One judge trial of case ``case``: the judge scores the label's score (or one off it) at the default temperature."""
     label = 2 + case % 4
@@ -78,6 +84,7 @@ def _trial(case: int, *, model: str | None = _JUDGE, agree: bool = True) -> dict
         test_case_id=f"jc-{case}",
         dim=TOYHOST_JUDGED_DIMENSION,
         scale="ordinal",
+        axis="capability",
         criterion_digest=judge_criterion_digest(TOYHOST_JUDGED_DIMENSION, "ordinal", _CRITERION),
         case_digest=f"digest-{case}",
         source_result_id=f"src-{case}",
@@ -86,6 +93,7 @@ def _trial(case: int, *, model: str | None = _JUDGE, agree: bool = True) -> dict
         score=score,
         reasoning="read against the invoice",
         served_model=model,
+        judge_config_id=_BUILTIN,
         judge_temperature=DEFAULT_JUDGE_TEMPERATURE,
     ).model_dump(mode="json")
 

@@ -89,6 +89,11 @@ def summary_standings(analysis: EvalAnalysis) -> list[tuple[str, Standing]]:
     document = analysis.document
     bullets = summary_bullets(document.summary)
     links = document.summary_rests_on if document.findings else [[] for _ in bullets]
+    if len(links) != len(bullets):
+        raise ValueError(
+            f"analysis {analysis.id!r} links {len(links)} summary bullet(s) and its summary has {len(bullets)}; the "
+            "generator refuses that before it is stored, so this analysis was not written by it"
+        )
     return [(bullet, standing_of(analysis, list(positions))) for bullet, positions in zip(bullets, links, strict=True)]
 
 
