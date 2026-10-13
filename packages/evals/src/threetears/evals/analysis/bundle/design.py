@@ -652,7 +652,9 @@ def _earlier_control(
             f"({short_digest(stored)}) and {len(current_runs)} under v{IDENTITY_VERSION} "
             f"({short_digest(control_variant)}). The control's numbers are the v{IDENTITY_VERSION} cells only, and "
             f"every contrast, guardrail and adoption is read against them; the v{version} cells are the control "
-            f"under identity predicate v{version}, shown beside it and compared with nothing."
+            f"under identity predicate v{version}, shown beside it: no contrast, family, guardrail, frontier or "
+            f"adoption check reads them, while a marginal row, read over every run rather than against the control, "
+            f"counts them at the control's level as it counts any cell there."
         ),
     )
 

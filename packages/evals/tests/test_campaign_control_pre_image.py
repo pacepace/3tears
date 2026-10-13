@@ -794,6 +794,9 @@ def test_a_marginal_row_pools_the_earlier_control_cells_at_the_controls_level() 
     assert bundle.design.earlier_control is not None and bundle.design.earlier_control.run_ids == [earlier_run], (
         "the pool includes them, so the bundle still names them"
     )
+    assert "a marginal row" in bundle.design.earlier_control.disclosure and "control's level" in (
+        bundle.design.earlier_control.disclosure
+    ), "the disclosure says what the row counts, not that the earlier cells are compared with nothing"
 
 
 def test_a_time_position_before_the_change_names_its_control_rather_than_reading_as_having_none() -> None:

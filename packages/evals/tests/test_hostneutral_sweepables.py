@@ -102,11 +102,15 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # earlier cells joined the bundle; no release shipped it, and the row stays as the earlier end the 51 row is
     # checked against.
     ((50, 12), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
-    # 51/12: the first public release's shape — the bundle gains `RealizedDesign.earlier_control` and
-    # `FrontierPoint.earlier_control`. The row repeats the 50 set on purpose: the apparatus set and the cell model
-    # hold, and `test_a_set_change_moves_both_versions` reads that as a shape-only bump (the bundle version moved,
-    # the cell model stayed). It is the last row, so it is also the one the current versions are checked against.
+    # 51/12: the bundle gains `RealizedDesign.earlier_control` and `FrontierPoint.earlier_control`. The row repeats
+    # the 50 set on purpose: the apparatus set and the cell model hold, and `test_a_set_change_moves_both_versions`
+    # reads that as a shape-only bump (the bundle version moved, the cell model stayed). No release shipped it.
     ((51, 12), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
+    # 52/12: the first public release's shape — the earlier control's disclosure says a marginal row counts its
+    # cells at the control's level, a fingerprinted value moved over unchanged evidence. Another shape-only bump:
+    # the set and the cell model hold. It is the last row, so it is also the one the current versions are checked
+    # against.
+    ((52, 12), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
 )
 
 

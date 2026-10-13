@@ -121,7 +121,7 @@ v<version>` prints a release's notes).
   own `judge_config_ids` holds bare config ids, so a wording change never re-keys a run's context.
 - **Campaigns and analysis.** A campaign is created declared or exploratory, and can be declared, populated and
   given a control later (`campaign_update`, `campaign_runs_add`, `campaign_runs_remove`). Its fingerprinted
-  context bundle (shape 51) holds the decision surface, comparisons with Holm correction for multiple comparisons
+  context bundle (shape 52) holds the decision surface, comparisons with Holm correction for multiple comparisons
   per declared question, materiality, bars and proposed bars, mechanism checks on swept levers (a setting that
   never took effect does not read as one that changed nothing), strata, a time axis by build or by day, judge
   agreement, and every confound and disclosure. `generate_analysis` has a model write the analysis over the frozen
