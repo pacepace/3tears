@@ -6,6 +6,133 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.66.0 -- 2026-10-13
+
+### Core: a replay guard owns its nonce bucket, on memory
+
+- **Changed, `threetears.core.coordination.ReplayGuard`:** a guard that declares its bucket
+  (`create_if_missing=True`, the default) declares it through `ensure_kv_bucket` as its owner, on
+  memory storage, with `drop_file_storage=True`. A nonce bucket left live on file storage (opened
+  before it was declared, or by hand) is recreated on memory, empty, where before the guard bound it
+  as it was and NATS logged the storage mismatch at every boot. Emptying it reopens no replay: the
+  recreate's creation time refuses anything issued before it, the same rule that makes a broker
+  wipe safe. A bind-only guard (`create_if_missing=False`) still only binds and never recreates.
+  **Breaking for a client double with `kv_bucket` alone:** a declaring guard now refuses, at
+  construction with a `TypeError`, a client without `ensure_kv_bucket`; `NatsClient` and
+  `threetears.core.testing.FakeNatsClient` have it. Its constructor's overloads say the same to a
+  type checker: a declaring guard takes a `KvDeclaringClient`, a bind-only one a `KvCapable`.
+  **Breaking for a declaring consumer's NATS grants:** the identity a declaring guard runs as needs
+  `STREAM.UPDATE` and `STREAM.DELETE` on its nonce stream as well as `STREAM.CREATE`, or its bind
+  fails at startup while the bucket is still file-backed. The registry's `pop_nonces` grant already
+  carries them; the hub (proxy nonces), identity (DPoP nonces), survey and scriob check theirs before
+  relocking. `docs/design-durable-coordination.md` drops the by-hand nonce-bucket deletion.
+- **Added, `threetears.nats.kv.KvDeclaringClient`:** a client that both opens and declares KV
+  buckets (`KvCapable` and `KvDeclaring` together), for a consumer that owns its bucket.
+
+### NATS: one write-health watch for a persisted copy
+
+- **Added, `threetears.nats.CopyWriteHealth` and `WRITE_FAILURE_THRESHOLD`:** whether writes to a
+  persisted-copy bucket are landing, for a READINESS check (never liveness: a closed connection is
+  already the `nats` liveness check's to report). It counts write operations, not keys: a single
+  put or delete is one, and a pass of many writes run inside `operation()` (a sync, a write-back) is
+  one, failed if any of its writes failed and counting as nothing if it wrote nothing. `persisting`
+  turns `False` after `WRITE_FAILURE_THRESHOLD` (3) failed operations in a row, logged once at
+  ERROR, and back on the next that lands, logged at INFO. A pass belongs to the task that opened it,
+  so concurrent passes and writes (a heartbeat sweep beside a registration) are each counted alone.
+- **Changed, `threetears.registry.ToolCatalog`:** uses it instead of its own copy. A write-back, a
+  pod's deregistration sweep and a promotion each count as one operation, where before every entry
+  they wrote counted, so one failed pass over a large catalog no longer takes the registry out of
+  rotation by itself. `threetears.registry.catalog.WRITE_FAILURE_THRESHOLD` is the shared value.
+
+### Geo: a tile source's caches are its own
+
+- **Changed, breaking, `threetears.geo.TileCollection` and `FeatureCache`:** each takes a required
+  `cache_scope`, the tile source's identity, and its table name carries it
+  (`geo_tiles_<scope>`, `geo_features_<scope>`). Every tier the collection framework keys by
+  table -- the pod-local L1 table, the NATS L2 keys, the cross-pod build lock and the registry
+  entry -- was shared by every source under one name, and tiles are keyed by
+  `(layer, version, z, x, y)` alone: two sources serving a layer of the same name (two
+  datasources, or a customer's datasource and a platform layer, both starting at version 1)
+  answered for each other from whichever built a tile first, across tenants. Only the object
+  store was scoped (by `datasource_name`, unchanged). `check_cache_scope` refuses anything but
+  a lowercase identifier of at most `MAX_CACHE_SCOPE_LENGTH` (48) characters, since the scope
+  names SQL tables and NATS KV keys unquoted: `ds_<32 hex>` and `ns_<32 hex>` fit. A caller
+  whose L1 backend declares the tables by name declares the scoped names.
+
+### Geo: building layers from other layers
+
+- **Added, `threetears.geo`:** `cut` cuts one layer by another within a shared key (a state,
+  say), naming each piece `<coarse id>-<fine id>`. Each part of a cut is judged on its own and
+  dropped when narrower or smaller than the caller's thresholds (`min_width_m`, `min_area_km2`),
+  since two sources' boundaries disagree by a few meters; features no piece covers are reported.
+  `replace_features` swaps a layer's features for a set of keys, refusing replacements that cover
+  other keys. `missing_features` names the ids a consumer needs that a layer lacks. `mean_width_m`
+  and `area_km2` measure in a local projection around each shape's latitude. Measured on US
+  counties cut by congressional districts: slivers 4 to 10 m wide, coastline fragments up to
+  0.6 km², the smallest real piece 5.3 km².
+
+### Datasources: geo blocks beside their tables, and the borrowed-pool config named for what it is
+
+- **Added, `GeoConfig.check_against_tables`:** refuses a geo layer that names a table, or a column
+  of it, the declaring tables lack, with `GeoLayerConfig.columns_read` listing every column a layer
+  reads (feature id, geometry, version, bounding box, and its bands' attributes, rank and rollup).
+  The one copy the SDK and the Hub both run for a tool pod's `geo:` block.
+- **Added, `threetears.datasources.geo_reload`:** the contract a tool pod uses to report that it
+  has written a new generation of its geography layers' shapes: `report_geo_layers_reloaded`, its
+  request and reply models, and the hub's obligations. The hub moves each layer's tile version to
+  the reported generation, forward only (a generation below the version is refused
+  `GENERATION_BEHIND` with the version in the reply). A layer never reported has no version, and
+  nothing of it is served until its first report sets one. New subject
+  `Subjects.hub_geo_layers_reloaded` (`{ns}.hub.geo.layers.reloaded`), granted to tool pods to
+  publish and to the hub to answer. The hub serves a layer's tiles at exactly two versions: its
+  current one and the PREVIOUS one, the version the current one replaced, which is recorded when
+  the version moves and never inferred as one below (generations skip: a failed, unreported load
+  leaves rows stamped with a generation nobody reported). The success reply carries each layer's
+  previous version (`previous_versions`), `report_geo_layers_reloaded` returns each layer's
+  `LayerVersions` (`version`, `previous`), and `generations_to_delete` names every stamped
+  generation a pod deletes after it: all but those two, failed loads' included. A report whose
+  generations break the request's bounds is refused `INVALID_REQUEST` without asking the hub.
+- **Added, `EpochClient.advance_to`:** moves a durable epoch forward to a target in one statement and
+  never back, so concurrent writers meeting one target leave it there (where `bump` would carry it
+  past). Durable subjects only. It, and a durable `bump`, record the epoch each move replaced;
+  it returns a `DurableEpoch` (`epoch`, `previous`); `EpochClient.versions` reads both in one query. New
+  migration epoch v002 adds the nullable `config_epochs.previous_epoch` column; existing rows read
+  `None` until their next move.
+- **Changed, breaking:** `AgentInternalConnectionConfig` is now `BorrowedPoolConnectionConfig`, as
+  its docstring asked once a second use appeared: a tool pod's platform geography layers are read
+  for tiles through Hub's pool, scoped to the pod's `ns_<hex>` schema, with no datasource row. The
+  discriminator is unchanged (`agent_internal`). No alias: rename at the call site. The Hub's
+  OpenAPI schema component carries the new name too, so the TypeScript clients generated from it
+  (the SDK's `web-api-client`) and any hand-written interface naming the old one follow on their
+  next regeneration.
+
+### Core: L1 bulk writes, and imports without the NATS client
+
+- **Added, L1 backends:** `upsert_many` writes many rows as `upsert` would one by one (SQLite in
+  one transaction; DuckDB in one columnar statement, about twenty times faster than
+  `executemany`), and `upsert` is now `upsert_many` of one row, so the two cannot drift. A batch
+  repeating a key keeps its last row. `column_types` exposes the type codes a table's columns are
+  read and written by. `DuckDBBackend.load_parquet` loads a Parquet file into a table in one
+  statement. First consumer: the reports product's Tableau evaluator, which loads an extract
+  snapshot into DuckDB L1 (its backlog item RPT-T3B1) and today bulk-inserts on the backend's
+  connection and reads its private schema. **Breaking for out-of-repo implementers:** `upsert_many`
+  and `column_types` are now part of the `L1Backend` protocol, so an L1 backend written outside
+  3tears must add both to keep satisfying it.
+- **Fixed, `SQLiteBackend`:** a write that fails for any reason rolls its transaction back. It
+  rolled back only on `OperationalError`, so a constraint or binding error left `BEGIN IMMEDIATE`
+  open, holding the write lock against the thread's next write. A table whose every column is its
+  key takes an upsert (`DO NOTHING`, where it built an empty `DO UPDATE SET`). A write SQLite rolled
+  back by itself (a full disk, an I/O error, an interrupt) raises its own error, not a failed
+  `ROLLBACK`'s "no transaction is active".
+- **Fixed, L1 backends:** every table and column name either backend interpolates is quoted through
+  one helper, `threetears.core.cache.base.quote_identifier`, so a table or key column named with a
+  space or capitals (a converted extract's `% of Exp. In`) is created, written, read and deleted
+  alike. Only the bulk writes quoted before, so such a table could be filled but not read by id.
+- **Fixed:** `DerivedCollection`, and with it `threetears.geo`, no longer needs the optional NATS
+  client (core's `nats` extra) to import or to derive on a single pod. With no NATS client there is
+  no peer to coordinate with, so a derivation runs under the in-process gate alone and never
+  imports the cross-pod lock; with a client it takes the lock, which needs the extra.
+
 ### Agent tools: a coalesced operation runs a request its lost lease left, and one first run for replicas that start together
 
 - **Fixed, a unit whose lease was lost left its request with nobody to run it.** `CoalescedRun`
@@ -501,6 +628,7 @@ refused later, by the hub.
 - **Added, `RestAffordance.scope_node`**: the namespace node whose child tool nodes name the scopes a
   reader may read at the edge; the hub issues edge tokens naming those scopes. An older hub ignores
   the field.
+
 ### Datasources: a warehouse export, read from S3 and proven whole
 
 A relation too large to page over the bus quickly can be exported by the warehouse itself and read
@@ -1438,133 +1566,6 @@ copies swapped in whole.
   A wait of `start_when_needed` that ends on an error it does not retry is kept as the last outcome,
   so the status reports `failed` with the reason rather than `idle`; it and a failed run are logged
   with their traceback.
-
-## v0.66.0 -- 2026-10-05
-
-### Core: a replay guard owns its nonce bucket, on memory
-
-- **Changed, `threetears.core.coordination.ReplayGuard`:** a guard that declares its bucket
-  (`create_if_missing=True`, the default) declares it through `ensure_kv_bucket` as its owner, on
-  memory storage, with `drop_file_storage=True`. A nonce bucket left live on file storage (opened
-  before it was declared, or by hand) is recreated on memory, empty, where before the guard bound it
-  as it was and NATS logged the storage mismatch at every boot. Emptying it reopens no replay: the
-  recreate's creation time refuses anything issued before it, the same rule that makes a broker
-  wipe safe. A bind-only guard (`create_if_missing=False`) still only binds and never recreates.
-  **Breaking for a client double with `kv_bucket` alone:** a declaring guard now refuses, at
-  construction with a `TypeError`, a client without `ensure_kv_bucket`; `NatsClient` and
-  `threetears.core.testing.FakeNatsClient` have it. Its constructor's overloads say the same to a
-  type checker: a declaring guard takes a `KvDeclaringClient`, a bind-only one a `KvCapable`.
-  **Breaking for a declaring consumer's NATS grants:** the identity a declaring guard runs as needs
-  `STREAM.UPDATE` and `STREAM.DELETE` on its nonce stream as well as `STREAM.CREATE`, or its bind
-  fails at startup while the bucket is still file-backed. The registry's `pop_nonces` grant already
-  carries them; the hub (proxy nonces), identity (DPoP nonces), survey and scriob check theirs before
-  relocking. `docs/design-durable-coordination.md` drops the by-hand nonce-bucket deletion.
-- **Added, `threetears.nats.kv.KvDeclaringClient`:** a client that both opens and declares KV
-  buckets (`KvCapable` and `KvDeclaring` together), for a consumer that owns its bucket.
-
-### NATS: one write-health watch for a persisted copy
-
-- **Added, `threetears.nats.CopyWriteHealth` and `WRITE_FAILURE_THRESHOLD`:** whether writes to a
-  persisted-copy bucket are landing, for a READINESS check (never liveness: a closed connection is
-  already the `nats` liveness check's to report). It counts write operations, not keys: a single
-  put or delete is one, and a pass of many writes run inside `operation()` (a sync, a write-back) is
-  one, failed if any of its writes failed and counting as nothing if it wrote nothing. `persisting`
-  turns `False` after `WRITE_FAILURE_THRESHOLD` (3) failed operations in a row, logged once at
-  ERROR, and back on the next that lands, logged at INFO. A pass belongs to the task that opened it,
-  so concurrent passes and writes (a heartbeat sweep beside a registration) are each counted alone.
-- **Changed, `threetears.registry.ToolCatalog`:** uses it instead of its own copy. A write-back, a
-  pod's deregistration sweep and a promotion each count as one operation, where before every entry
-  they wrote counted, so one failed pass over a large catalog no longer takes the registry out of
-  rotation by itself. `threetears.registry.catalog.WRITE_FAILURE_THRESHOLD` is the shared value.
-
-### Geo: a tile source's caches are its own
-
-- **Changed, breaking, `threetears.geo.TileCollection` and `FeatureCache`:** each takes a required
-  `cache_scope`, the tile source's identity, and its table name carries it
-  (`geo_tiles_<scope>`, `geo_features_<scope>`). Every tier the collection framework keys by
-  table -- the pod-local L1 table, the NATS L2 keys, the cross-pod build lock and the registry
-  entry -- was shared by every source under one name, and tiles are keyed by
-  `(layer, version, z, x, y)` alone: two sources serving a layer of the same name (two
-  datasources, or a customer's datasource and a platform layer, both starting at version 1)
-  answered for each other from whichever built a tile first, across tenants. Only the object
-  store was scoped (by `datasource_name`, unchanged). `check_cache_scope` refuses anything but
-  a lowercase identifier of at most `MAX_CACHE_SCOPE_LENGTH` (48) characters, since the scope
-  names SQL tables and NATS KV keys unquoted: `ds_<32 hex>` and `ns_<32 hex>` fit. A caller
-  whose L1 backend declares the tables by name declares the scoped names.
-
-### Geo: building layers from other layers
-
-- **Added, `threetears.geo`:** `cut` cuts one layer by another within a shared key (a state,
-  say), naming each piece `<coarse id>-<fine id>`. Each part of a cut is judged on its own and
-  dropped when narrower or smaller than the caller's thresholds (`min_width_m`, `min_area_km2`),
-  since two sources' boundaries disagree by a few meters; features no piece covers are reported.
-  `replace_features` swaps a layer's features for a set of keys, refusing replacements that cover
-  other keys. `missing_features` names the ids a consumer needs that a layer lacks. `mean_width_m`
-  and `area_km2` measure in a local projection around each shape's latitude. Measured on US
-  counties cut by congressional districts: slivers 4 to 10 m wide, coastline fragments up to
-  0.6 km², the smallest real piece 5.3 km².
-
-### Datasources: geo blocks beside their tables, and the borrowed-pool config named for what it is
-
-- **Added, `GeoConfig.check_against_tables`:** refuses a geo layer that names a table, or a column
-  of it, the declaring tables lack, with `GeoLayerConfig.columns_read` listing every column a layer
-  reads (feature id, geometry, version, bounding box, and its bands' attributes, rank and rollup).
-  The one copy the SDK and the Hub both run for a tool pod's `geo:` block.
-- **Added, `threetears.datasources.geo_reload`:** the contract a tool pod uses to report that it
-  has written a new generation of its geography layers' shapes: `report_geo_layers_reloaded`, its
-  request and reply models, and the hub's obligations. The hub moves each layer's tile version to
-  the reported generation, forward only (a generation below the version is refused
-  `GENERATION_BEHIND` with the version in the reply). A layer never reported has no version, and
-  nothing of it is served until its first report sets one. New subject
-  `Subjects.hub_geo_layers_reloaded` (`{ns}.hub.geo.layers.reloaded`), granted to tool pods to
-  publish and to the hub to answer. The hub serves a layer's tiles at exactly two versions: its
-  current one and the PREVIOUS one, the version the current one replaced, which is recorded when
-  the version moves and never inferred as one below (generations skip: a failed, unreported load
-  leaves rows stamped with a generation nobody reported). The success reply carries each layer's
-  previous version (`previous_versions`), `report_geo_layers_reloaded` returns each layer's
-  `LayerVersions` (`version`, `previous`), and `generations_to_delete` names every stamped
-  generation a pod deletes after it: all but those two, failed loads' included. A report whose
-  generations break the request's bounds is refused `INVALID_REQUEST` without asking the hub.
-- **Added, `EpochClient.advance_to`:** moves a durable epoch forward to a target in one statement and
-  never back, so concurrent writers meeting one target leave it there (where `bump` would carry it
-  past). Durable subjects only. It, and a durable `bump`, record the epoch each move replaced;
-  it returns a `DurableEpoch` (`epoch`, `previous`); `EpochClient.versions` reads both in one query. New
-  migration epoch v002 adds the nullable `config_epochs.previous_epoch` column; existing rows read
-  `None` until their next move.
-- **Changed, breaking:** `AgentInternalConnectionConfig` is now `BorrowedPoolConnectionConfig`, as
-  its docstring asked once a second use appeared: a tool pod's platform geography layers are read
-  for tiles through Hub's pool, scoped to the pod's `ns_<hex>` schema, with no datasource row. The
-  discriminator is unchanged (`agent_internal`). No alias: rename at the call site. The Hub's
-  OpenAPI schema component carries the new name too, so the TypeScript clients generated from it
-  (the SDK's `web-api-client`) and any hand-written interface naming the old one follow on their
-  next regeneration.
-
-### Core: L1 bulk writes, and imports without the NATS client
-
-- **Added, L1 backends:** `upsert_many` writes many rows as `upsert` would one by one (SQLite in
-  one transaction; DuckDB in one columnar statement, about twenty times faster than
-  `executemany`), and `upsert` is now `upsert_many` of one row, so the two cannot drift. A batch
-  repeating a key keeps its last row. `column_types` exposes the type codes a table's columns are
-  read and written by. `DuckDBBackend.load_parquet` loads a Parquet file into a table in one
-  statement. First consumer: the reports product's Tableau evaluator, which loads an extract
-  snapshot into DuckDB L1 (its backlog item RPT-T3B1) and today bulk-inserts on the backend's
-  connection and reads its private schema. **Breaking for out-of-repo implementers:** `upsert_many`
-  and `column_types` are now part of the `L1Backend` protocol, so an L1 backend written outside
-  3tears must add both to keep satisfying it.
-- **Fixed, `SQLiteBackend`:** a write that fails for any reason rolls its transaction back. It
-  rolled back only on `OperationalError`, so a constraint or binding error left `BEGIN IMMEDIATE`
-  open, holding the write lock against the thread's next write. A table whose every column is its
-  key takes an upsert (`DO NOTHING`, where it built an empty `DO UPDATE SET`). A write SQLite rolled
-  back by itself (a full disk, an I/O error, an interrupt) raises its own error, not a failed
-  `ROLLBACK`'s "no transaction is active".
-- **Fixed, L1 backends:** every table and column name either backend interpolates is quoted through
-  one helper, `threetears.core.cache.base.quote_identifier`, so a table or key column named with a
-  space or capitals (a converted extract's `% of Exp. In`) is created, written, read and deleted
-  alike. Only the bulk writes quoted before, so such a table could be filled but not read by id.
-- **Fixed:** `DerivedCollection`, and with it `threetears.geo`, no longer needs the optional NATS
-  client (core's `nats` extra) to import or to derive on a single pod. With no NATS client there is
-  no peer to coordinate with, so a derivation runs under the in-process gate alone and never
-  imports the cross-pod lock; with a client it takes the lock, which needs the extra.
 
 ## v0.65.0 -- 2026-10-05
 
