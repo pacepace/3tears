@@ -240,6 +240,9 @@ class ChartFont:
     Numeric ticks are set in this face too, and line up only if its figures are tabular — every digit one
     advance — since a renderer cannot ask a face for tabular figures it does not draw by default.
 
+    Provisional: shaped by the first host that adopted the engine, and kept or removed by whether a second host's
+    adoption uses it (``docs/adopting-a-host.md``, "Provisional mechanisms").
+
     Attributes:
         family: The CSS font-family list a renderer emits, e.g. ``"Inter, Arial, sans-serif"``. The
             FIRST family is the face :attr:`advances` was measured in; the rest are fallbacks for a

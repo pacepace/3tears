@@ -42,6 +42,10 @@ class SeedSection:
     Field names and value vocabulary match the payload a host template model
     validates, so :meth:`SeedTemplate.to_dict` needs no translation table.
 
+    Provisional: the zones (``primacy``, ``reference``, ``recency``) and the section's shape were taken from the
+    first host that adopted the engine, and are kept or removed by whether a second host's adoption uses them
+    (``docs/adopting-a-host.md``, "Provisional mechanisms").
+
     Attributes:
         section_name: Stable identifier for the section within its template.
         zone: Ordering zone — ``primacy``, ``reference`` or ``recency``.

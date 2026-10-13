@@ -206,6 +206,9 @@ class MeteredCallLedger:
     ``none_declared=True`` is a host that declared it has no metered tools: the ceiling is ``0``,
     so every metered call is refused and counted, and each one is logged as the contradiction of
     the host's declaration it is rather than as a run reaching its limit.
+
+    Provisional: shaped by the first host that adopted the engine, and kept or removed by whether a second host's
+    adoption uses it (``docs/adopting-a-host.md``, "Provisional mechanisms").
     """
 
     def __init__(self, run_id: str, ceiling: int | None, *, none_declared: bool = False):

@@ -143,7 +143,10 @@ notes).
 - **Docs.** The package README; a tutorial; guides to classifier eval sets, reading reports, evaluating agents,
   judges and calibration, adopting a host, choosing a design, cost and budgets, MCP and the command line; and the
   background pages (principles, measuring soundly, the world model, design rationale, prior art, open problems).
-  `docs/reference.md` is generated from the code.
+  `docs/reference.md` is generated from the code. The adopter's guide marks six mechanisms the first adopter shaped
+  as provisional (`AsyncDelivery` and `AsyncExternalSpend`, the `inner_agent` and `external` usage roles,
+  `MeteredCallLedger`, triggered world dimensions, `ChartFont`, and `SeedSection`'s zones): a second adopter's use
+  decides whether each stays, and one removed later is announced in that release's `MIGRATIONS.toml` notes.
 - **Pre-releases.** `v0.66.0-evaladopt.N` tags were cut on `feature/eval-adopt` for one adopter and never published.
   Each tag's own `CHANGELOG.md` and `MIGRATIONS.toml` hold that pre-release's notes and the names that moved. **A
   store written before `v0.66.0-evaladopt.21` is not read:** its core documents (schema v8 to v13) are refused by
