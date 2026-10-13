@@ -286,6 +286,7 @@ class TestARefusalByTheModelsSafeguards:
             "calls_served": 0,
             "pid": None,
         }
+        assert ran_on.get("agents") == []
         uptime = ran_on.get("uptime_s")
         assert isinstance(uptime, float) and uptime >= 0
 

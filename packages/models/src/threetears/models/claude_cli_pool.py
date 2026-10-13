@@ -760,10 +760,18 @@ class LentClient:
     :ptype calls_served: int
     :param started_at: when the CLI started, on the monotonic clock
     :ptype started_at: float | None
+    :param agents: the names of the system prompts the CLI was launched with (:func:`agent_name`)
+    :ptype agents: frozenset[str]
     """
 
     def __init__(
-        self, client: Any, *, pid: int | None = None, calls_served: int = 0, started_at: float | None = None
+        self,
+        client: Any,
+        *,
+        pid: int | None = None,
+        calls_served: int = 0,
+        started_at: float | None = None,
+        agents: frozenset[str] = frozenset(),
     ) -> None:
         self.client = client
         #: The uuid the call's first message was sent with; ``None`` until the call sends one.
@@ -772,6 +780,7 @@ class LentClient:
         self.pid = pid
         self.calls_served = calls_served
         self.started_at = started_at
+        self.agents = agents
 
     async def query(self, prompt: Any, session_id: str = "default") -> None:
         """Send the call's message, recording the uuid of the first one sent.
@@ -1238,7 +1247,11 @@ class ClaudeCliPool:
             await asyncio.shield(self._forget_prompts_if_unheld(key))
             raise
         lent = LentClient(
-            session.client, pid=session.pid, calls_served=session.calls_served, started_at=session.started_at
+            session.client,
+            pid=session.pid,
+            calls_served=session.calls_served,
+            started_at=session.started_at,
+            agents=session.agents,
         )
         session.calls_served += 1
         clean = False

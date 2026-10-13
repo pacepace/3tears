@@ -1342,7 +1342,8 @@ def _ran_on(client: Any, opened: float) -> dict[str, Any]:
     :ptype client: Any
     :param opened: when the call got its client, on the monotonic clock
     :ptype opened: float
-    :return: ``pid``, ``pooled``, ``calls_served`` before this call, and ``uptime_s``
+    :return: ``pid``, ``pooled``, ``calls_served`` before this call, ``uptime_s``, and ``agents``: the
+        names of the system prompts a pooled CLI was launched with (hashes, never the prompts)
     :rtype: dict[str, Any]
     """
     if isinstance(client, LentClient):
@@ -1352,6 +1353,7 @@ def _ran_on(client: Any, opened: float) -> dict[str, Any]:
             "pooled": True,
             "calls_served": client.calls_served,
             "uptime_s": round(time.monotonic() - started, 1) if started is not None else None,
+            "agents": sorted(client.agents),
         }
     pid = cli_process_pid(client)
     return {
@@ -1359,6 +1361,7 @@ def _ran_on(client: Any, opened: float) -> dict[str, Any]:
         "pooled": False,
         "calls_served": 0,
         "uptime_s": round(time.monotonic() - opened, 1),
+        "agents": [],
     }
 
 

@@ -22,12 +22,14 @@ recorded which CLI process had made the call or the provider's id for the reques
   `Message ID:` lines and `None` when the CLI did not give one. A caller that matches on
   `type(exc) is ModelProviderError` (not `isinstance`) no longer matches a refusal.
 - **Added, `ModelProviderError.ran_on`:** for a call the Claude CLI ran, a dict of `pid`,
-  `session_id`, `pooled`, `calls_served` (before this call) and `uptime_s`; `None` for any other
-  provider. Set on every CLI failure, not only a refusal.
+  `session_id`, `pooled`, `calls_served` (before this call), `uptime_s` and `agents`; `None` for any
+  other provider. `agents` is the names of the system prompts a pooled CLI was launched with:
+  hashes (`agent_name`), never the prompts, which may be other callers'. Set on every CLI failure,
+  not only a refusal.
 - **Added, `claude_cli_pool.on_own_cli()`** and `own_cli_asked()`: inside the block a subscription
   call runs on a CLI started for it and stopped after it, never a pooled one. For a retry after a
   refusal, which can follow a session around.
-- **Added, `LentClient(pid=, calls_served=, started_at=)`** and `PooledCliSession.started_at` /
+- **Added, `LentClient(pid=, calls_served=, started_at=, agents=)`** and `PooledCliSession.started_at` /
   `.calls_served`: what the pool tells a call about the CLI it was lent. A stand-in for
   `PooledCliSession` in a consumer's tests needs both attributes.
 

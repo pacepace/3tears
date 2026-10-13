@@ -70,8 +70,9 @@ class ModelProviderError(RuntimeError):
         self.rejected_output = rejected_output
         self.rejection = rejection
         #: What ran the call, when the provider drives a local process: for the Claude CLI its
-        #: ``pid``, ``session_id``, ``calls_served`` before this one, ``uptime_s`` and whether it
-        #: was ``pooled``. ``None`` for a provider with nothing of the kind to say.
+        #: ``pid``, ``session_id``, ``calls_served`` before this one, ``uptime_s``, whether it was
+        #: ``pooled``, and ``agents``, the names of the system prompts it was launched with.
+        #: ``None`` for a provider with nothing of the kind to say.
         self.ran_on: dict[str, Any] | None = None
         said = f"{detail} (last rejected answer: {rejection})" if rejection else detail
         super().__init__(f"{provider} call failed ({reason or status or 'error'}): {said}")

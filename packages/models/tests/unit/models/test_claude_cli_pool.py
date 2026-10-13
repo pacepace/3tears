@@ -346,6 +346,15 @@ class TestTheCliIsReused:
         assert session.calls_served == 2
         await pool.aclose()
 
+    async def test_a_call_is_told_which_system_prompts_its_cli_was_launched_with(self) -> None:
+        pool = _pool()
+        options = Options(system_prompt="You are terse.")
+        async with pool.checkout(options, token=TOKEN, tool_server=None) as lent:
+            pass
+        [session] = FakeSession.instances
+        assert lent.agents == session.agents == frozenset({agent_name("You are terse.")})
+        await pool.aclose()
+
     async def test_the_conversation_is_rewound_to_the_calls_own_first_message(self) -> None:
         pool = _pool()
         session = await _call(pool)
