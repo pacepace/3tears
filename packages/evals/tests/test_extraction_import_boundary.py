@@ -224,6 +224,14 @@ def test_the_extras_map_is_the_manifests():
         assert path.is_dir(), f"an extra serves {subpackage}, which does not exist"
 
 
+def test_root_extras_names_each_extra_s_root():
+    """``threetears.evals.ROOT_EXTRAS`` is the extras map a consumer reads: every root an extra serves, and no other."""
+    from threetears.evals import PUBLIC_ROOTS, ROOT_EXTRAS
+
+    assert dict(ROOT_EXTRAS) == {subpackage: extra for extra, (subpackage, _) in IMPORT_ROOTS_BY_EXTRA.items()}
+    assert set(ROOT_EXTRAS) <= set(PUBLIC_ROOTS), "an extra's root that is not public belongs in no consumer's list"
+
+
 def test_no_engine_module_names_the_first_host():
     """No module under ``threetears/evals`` names any module of the host it was cut from."""
     offenders = [

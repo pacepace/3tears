@@ -9,7 +9,12 @@
     "threetears.evals.PUBLIC_ROOTS": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "closure"
+      "tier": "host-contract"
+    },
+    "threetears.evals.ROOT_EXTRAS": {
+      "kind": "constant (mappingproxy)",
+      "signature": "",
+      "tier": "host-contract"
     },
     "threetears.evals.schema.ActorPolicy": {
       "kind": "model",
