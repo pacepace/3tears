@@ -32,10 +32,13 @@ from threetears.evals.providers.adapter import ModelsClientRefused
 
 __all__ = ["ModelsFailureDescriber"]
 
-#: The bare ``ValueError`` LangChain's OpenRouter model raises for an error the stream carried in a chunk, whose
-#: text is the provider's message and its code and nothing else.
-_OPENROUTER_STREAM_ERROR: Final = re.compile(
-    r"OpenRouter API returned an error during streaming: (?P<message>.*) \(code: (?P<code>[^)]*)\)", re.DOTALL
+#: The bare ``ValueError`` LangChain's OpenRouter model raises for an error OpenRouter carried in a reply's body
+#: rather than as a status: in a streamed chunk (``…returned an error during streaming: <msg> (code: N)``) or in a
+#: non-streamed reply (``…returned an error: <msg> (code: N)``, from ``_create_chat_result``). Either text is the
+#: provider's message and its code and nothing else.
+_OPENROUTER_BODY_ERROR: Final = re.compile(
+    r"OpenRouter API returned an error(?P<streamed> during streaming)?: (?P<message>.*) \(code: (?P<code>[^)]*)\)",
+    re.DOTALL,
 )
 
 #: Anthropic's notice when an account's prepaid credit is spent, which arrives as a 400 rather than a 402.
@@ -112,7 +115,7 @@ class ModelsFailureDescriber:
     * a pydantic ``ValidationError`` (a reply chunk the SDK's schema refused), whose text carries the input:
       withheld;
     * a bare ``ValueError`` (OpenAI's 200 that carries an error, which LangChain raises with the error dict as its
-      text): withheld, except OpenRouter's mid-stream error, whose text is the message and the code;
+      text): withheld, except OpenRouter's in-body error, streamed or not, whose text is the message and the code;
     * an exception of no type named here: withheld, since its text is unknown, as
       :func:`~threetears.evals.kernel.withhold_failure_detail` does.
 
@@ -123,7 +126,7 @@ class ModelsFailureDescriber:
     ``account_refused`` is set where the provider refused the calling ACCOUNT, so every model behind the key would
     get the same answer: a 401 or 403 from Anthropic or OpenAI; Anthropic's 402 and its 400 credit-balance notice;
     OpenAI's 429 ``insufficient_quota``, which looks like a rate limit and is not; OpenRouter's 401 and 402 (not
-    its 403, which it also uses for moderation); a CLI ``authentication_failed`` or ``billing_error``, or a rate
+    its 403, which it also uses for moderation), as a status or as the code of an in-body error; a CLI ``authentication_failed`` or ``billing_error``, or a rate
     limit that names when a subscription resets; and a circuit breaker scoped to one credential. Anything it cannot
     tell is ``False``, and the failure is charged as any other.
     """
@@ -250,14 +253,14 @@ class ModelsFailureDescriber:
         )
 
     def _bare_value_error(self, exc: ValueError) -> ProviderFailure:
-        streamed = _OPENROUTER_STREAM_ERROR.fullmatch(str(exc))
-        if streamed is not None:
-            code = streamed.group("code")
-            account = code in {"401", "402"}
+        in_body = _OPENROUTER_BODY_ERROR.fullmatch(str(exc))
+        if in_body is not None:
+            code = in_body.group("code")
+            where = " (mid-stream)" if in_body.group("streamed") else ""
             return ProviderFailure(
-                f"openrouter {code} (mid-stream): {_clip(streamed.group('message'))}",
+                f"openrouter {code}{where}: {_clip(in_body.group('message'))}",
                 payload_withheld=False,
-                account_refused=account,
+                account_refused=code in {"401", "402"},
             )
         return ProviderFailure(
             "ValueError (its text is withheld: an SDK raises a bare ValueError carrying the response's error body)",

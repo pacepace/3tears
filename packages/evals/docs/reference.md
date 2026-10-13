@@ -2536,7 +2536,7 @@ The shipped provider adapter: a chat model 3tears-models builds, as the engine's
 
 - **`ModelsClientRefused`** · *host contract* · exception · A setting the adapter cannot carry to the provider, refused before anything is sent.
 - **`ModelsClients`** · *host contract* · class · The engine's role factory over `models_client`: `models_clients` builds one.
-- **`ModelsCompletion`** · dataclass · One completion as the adapter read it off the chat model's reply: the port's ten members and two of its own.
+- **`ModelsCompletion`** · dataclass · One completion as the adapter read it off the chat model's reply: the port's ten members and three of its own.
 - **`ModelsCompletionClient`** · class · The completion port over one chat model 3tears-models built: `models_client` returns one.
 - **`ModelsFailureDescriber`** · *host contract* · class · A `ProviderFailureDescriber` for the adapter's providers, total over `BaseException`.
 

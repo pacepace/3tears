@@ -5,8 +5,7 @@ never the same answer twice), stand a scripted double in for it (free, but what 
 a model's), or call it once and keep what it said. :class:`RecordedCompletions` is the third.
 :meth:`RecordedCompletions.record` wraps the host's real client and appends every completion it returns to a JSONL
 file; :meth:`RecordedCompletions.replay` reads that file and hands the same completions back, in the order they were
-made, with no network. The examples run this way: live when the provider's key is set, from their committed
-recording when it is not, and ``RECORD=1`` re-records one.
+made, with no network.
 
 **What a call is matched on.** Each recorded line is keyed by the sha256 of the canonical JSON of the call's
 ``system``, ``user`` and ``response_format``, of the ``model`` and ``temperature`` the completion reported, and of the
@@ -22,6 +21,14 @@ that differs. A replaying client knows the prompt it is asked but not the model 
 the models and temperatures the recording holds; one file can hold several clients' calls (two models answering one
 prompt, or one model under two settings), and a client replaying one of them names it (``replay(path, model=...)``).
 
+**It stands in for any client the engine is handed.** A role factory's client is a
+:class:`~threetears.evals.schema.BoundCompletionClient`, which names its model (``model_name``) and prices a call
+before it is made (``price_ceiling``): an analysis writer and every out-of-run call need both. Recording, both are
+the inner client's, read through, so the recorder is a bound client exactly when its inner one is (a plain
+:class:`~threetears.evals.schema.CompletionClient` has neither, and reading one off its recorder raises
+``AttributeError`` naming it). Replaying, ``model_name`` is the ``model=`` the replay names, or the one model the
+recording holds, and ``price_ceiling`` is ``0.0``: a replay sends nothing and costs nothing.
+
 **A miss is refused, never served live.** A prompt the recording does not hold, one it holds only under other request
 settings, or one asked more times than it was recorded, raises :class:`RecordingRefused` naming the prompt (its first
 80 characters), the call's index or the settings that differ, and the command that re-records it. It is an
@@ -33,7 +40,8 @@ how a test says by name that a prompt changed under its recording.
 **What is kept.** All ten :class:`~threetears.evals.schema.CompletionResult` members as the inner client returned
 them, and every other attribute its completion type declares (a dataclass field, a Pydantic field, an instance
 attribute: a ``served_provider``, say) under ``extra``. A computed property is not a declared attribute and is not
-kept. A value JSON cannot hold is refused when it is recorded, not rendered as text. A replayed completion is a
+kept. A value JSON cannot hold (a non-finite ``cost_usd`` or ``temperature`` included) is refused when it is recorded,
+as a :class:`~threetears.evals.testing.CompletionConformanceFailure`, not rendered as text. A replayed completion is a
 :class:`ReplayedCompletion`; ``cost_usd`` and ``price_source`` are replayed as recorded, so a replayed price is the
 historical fact of what that call cost when it was made, not a quote at today's rates.
 
@@ -48,6 +56,7 @@ whole file by its line number. One process records a file at a time.
 from __future__ import annotations
 
 import json
+import math
 import threading
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
@@ -181,6 +190,9 @@ class RecordedCompletions:
     Build one with :meth:`record` (every call goes to the inner client and is appended to the recording) or
     :meth:`replay` (every call is served from the recording, with no network). Either satisfies
     :class:`~threetears.evals.schema.CompletionClient`, and ``generate`` is safe to call concurrently on one instance.
+    A replaying client, and a recording one whose inner client is bound, also satisfies
+    :class:`~threetears.evals.schema.BoundCompletionClient` (:attr:`model_name`, :meth:`price_ceiling`), so either
+    stands in for an analysis or out-of-run client.
     See the module docstring for what a call is matched on and what is kept.
 
     One replaying client per recorded client: two clients replaying the same model's calls from one file each serve
@@ -219,7 +231,8 @@ class RecordedCompletions:
                 and its calls in index order.
             model: While replaying, the model whose calls this client serves; ``None`` serves any.
             temperature: While replaying, the temperature whose calls this client serves; ``"any"`` serves any.
-            rerecord: The command that re-records ``path``, quoted in every refusal; ``None`` names the convention.
+            rerecord: The command that re-records ``path``, quoted in every refusal; ``None`` says to re-record it
+                with the client it stands in for.
         """
         self.path = path
         self.mode: Literal["record", "replay"] = "replay" if inner is None else "record"
@@ -302,8 +315,8 @@ class RecordedCompletions:
                 more than one; ``None`` serves whichever the recording holds, and refuses a prompt it holds under two.
             temperature: The same, for a prompt recorded at more than one temperature (``None`` is a call sent with
                 none); ``"any"`` serves whichever it holds.
-            rerecord: The command that re-records ``path`` (``"RECORD=1 python llm_judge.py"``), quoted in every
-                refusal; ``None`` names the ``RECORD=1`` convention.
+            rerecord: The command that re-records ``path`` (``"RECORD=1 pytest tests/test_judge.py"``), quoted in
+                every refusal; ``None`` says to re-record it with the client it stands in for.
 
         Returns:
             The replaying client.
@@ -375,6 +388,70 @@ class RecordedCompletions:
             raise RecordingRefused(
                 path, f"the recording no longer covers {len(uncovered)} prompt(s): " + "; ".join(uncovered), remedy
             )
+
+    @property
+    def model_name(self) -> str:
+        """The model this client calls (:attr:`~threetears.evals.schema.BoundCompletionClient.model_name`).
+
+        Recording, the inner client's. Replaying, the ``model=`` :meth:`replay` was given, or else the one model the
+        recording holds.
+
+        Raises:
+            AttributeError: Recording, the inner client names no model: it is a plain ``CompletionClient``, so this
+                recorder cannot stand in for a bound one.
+            RecordingRefused: Replaying, no ``model=`` was given and the recording holds calls of more than one
+                model, so which one this client stands in for is ambiguous.
+        """
+        if self._inner is not None:
+            named = getattr(self._inner, "model_name", None)
+            if not isinstance(named, str):
+                raise AttributeError(
+                    f"model_name: the recorded client {type(self._inner).__name__} names no model (it is a "
+                    "CompletionClient, not a BoundCompletionClient), so its recorder cannot stand in for an analysis "
+                    "or out-of-run client; record a client that names its model"
+                )
+            return named
+        if self._model is not None:
+            return self._model
+        models = sorted({call.model for _, calls in self._recorded.values() for call in calls})
+        if len(models) != 1:
+            raise RecordingRefused(
+                self.path,
+                f"it holds calls of {len(models)} models ({', '.join(map(repr, models))}), and this client was told "
+                "none, so the model it stands in for is ambiguous",
+                "name it: RecordedCompletions.replay(path, settings=..., model=...)",
+            )
+        return models[0]
+
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
+        """The most one :meth:`generate` can cost (:meth:`~threetears.evals.schema.BoundCompletionClient.price_ceiling`).
+
+        Recording, the inner client's ceiling, since every call goes to it. Replaying, ``0.0``: a replay sends
+        nothing to a provider and costs nothing (the recorded ``cost_usd`` it hands back is a historical fact, not a
+        charge).
+
+        Args:
+            system: The system message the call would send.
+            user: The user message the call would send.
+            response_format: The directive the call would send, or ``None``.
+
+        Returns:
+            The ceiling in dollars, or ``None`` when the inner client cannot say.
+
+        Raises:
+            AttributeError: Recording, the inner client prices nothing: it is a plain ``CompletionClient``.
+        """
+        if self._inner is None:
+            return 0.0
+        ceiling = getattr(self._inner, "price_ceiling", None)
+        if ceiling is None:
+            raise AttributeError(
+                f"price_ceiling: the recorded client {type(self._inner).__name__} prices no call (it is a "
+                "CompletionClient, not a BoundCompletionClient), so its recorder cannot stand in for an out-of-run "
+                "client; record a client that prices its calls"
+            )
+        result: float | None = ceiling(system=system, user=user, response_format=response_format)
+        return result
 
     async def generate(
         self,
@@ -495,12 +572,9 @@ class RecordedCompletions:
 
 
 def _rerecord_remedy(path: Path, rerecord: str | None) -> str:
-    command = (
-        f"`{rerecord}`"
-        if rerecord
-        else "`RECORD=1 …` set on the command that made it (an example re-records with `RECORD=1 python <example>.py`)"
-    )
-    return f"re-record {path} with {command}, the provider's key set"
+    if rerecord:
+        return f"re-record {path} with `{rerecord}`, the provider's key set"
+    return f"re-record {path} with the client it stands in for (RecordedCompletions.record(..., replace=True))"
 
 
 def _head(user: str) -> str:
@@ -626,14 +700,18 @@ def _member_problem(name: str, value: Any) -> str | None:
         case "input_tokens" | "output_tokens" | "reasoning_tokens":
             ok = value is None or count
         case "cost_usd" | "temperature":
-            ok = value is None or number
+            ok = value is None or (number and math.isfinite(value))
         case "price_source" | "served_model":
             ok = value is None or isinstance(value, str)
         case "stop_reason":
             ok = value in get_args(StopReason)
         case _:  # pragma: no cover — every protocol member is matched above
             ok = False
-    return None if ok else f"`{name}` holds {value!r} ({type(value).__name__})"
+    if ok:
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return f"`{name}` holds {value!r}, a number JSON cannot hold"
+    return f"`{name}` holds {value!r} ({type(value).__name__})"
 
 
 def _normalised(name: str, value: Any) -> Any:

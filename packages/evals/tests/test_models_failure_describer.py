@@ -113,6 +113,24 @@ describe = ModelsFailureDescriber()
             False,
             False,
         ),
+        (
+            ValueError("OpenRouter API returned an error during streaming: Insufficient credits (code: 402)"),
+            "openrouter 402 (mid-stream): Insufficient credits",
+            False,
+            True,
+        ),
+        (
+            ValueError("OpenRouter API returned an error: User not found. (code: 401)"),
+            "openrouter 401: User not found.",
+            False,
+            True,
+        ),
+        (
+            ValueError("OpenRouter API returned an error: Provider returned error (code: 502)"),
+            "openrouter 502: Provider returned error",
+            False,
+            False,
+        ),
         (ValueError({"message": "in-body error", "account_id": "acct_SECRET"}), "ValueError", True, False),
         (anthropic.APIConnectionError(request=_REQUEST), "anthropic: the request could not connect", False, False),
         (openai.APITimeoutError(request=_REQUEST), "openai: the request timed out", False, False),
@@ -165,3 +183,10 @@ def test_openrouter_s_default_error_withholds_the_body_its_text_appends() -> Non
     assert "SECRET" in str(exc)
     failure = describe(exc)
     assert failure.payload_withheld and failure.description == "openrouter 418: teapot"
+
+
+def test_openrouter_s_non_streamed_in_body_error_is_not_read_as_mid_stream() -> None:
+    """``_create_chat_result`` raises the same bare ``ValueError`` without "during streaming": it is no stream's error."""
+    failure = describe(ValueError("OpenRouter API returned an error: Insufficient credits (code: 402)"))
+    assert failure.description == "openrouter 402: Insufficient credits"
+    assert failure.account_refused and not failure.payload_withheld

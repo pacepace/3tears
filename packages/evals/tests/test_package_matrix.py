@@ -41,8 +41,10 @@ report it serializes and the spend it totals live in ``analysis``, below both. N
 imports ``vega``.
 
 ``providers`` is the shipped provider adapter (the ``[models]`` extra): it turns a chat model 3tears-models builds
-into the completion port, so it may import schema, kernel and itself, and past the stdlib ``threetears.models`` and
-the provider layer under it (``langchain_core``, ``anthropic``, ``openai``, ``openrouter``, ``httpx``) and pydantic.
+into the completion port, so it may import schema, kernel and itself, and ``run`` for the judge's request settings
+(``JUDGE_REQUEST_SETTINGS``, the one value a judged run records and the role factory builds its judge from, so the
+two cannot disagree), and past the stdlib ``threetears.models`` and the provider layer under it (``langchain_core``,
+``anthropic``, ``openai``, ``openrouter``, ``httpx``) and pydantic.
 Like ``vega``, its column is empty but its own row: nothing in the engine, and nothing above it, imports it, which
 is what keeps the engine provider-neutral (``tests/test_providers_boundary.py`` holds the same from the adapter's
 side, name by name).
@@ -127,7 +129,7 @@ ALLOWED_PACKAGES: dict[str, frozenset[str]] = {
     "ops": frozenset({"schema", "kernel", "run", "analysis", "ops"}),
     "actions": frozenset({"schema", "kernel", "run", "ops", "actions"}),
     "transports": frozenset({"schema", "kernel", "ops", "actions", "transports"}),
-    "providers": frozenset({"schema", "kernel", "providers"}),
+    "providers": frozenset({"schema", "kernel", "run", "providers"}),
 }
 
 #: The matrix's third-party column, by import root (a ``threetears`` namespace package by its two

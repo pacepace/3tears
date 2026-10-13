@@ -189,22 +189,44 @@ where `uv sync --extra models` at the root installs it.
 ```python
 from threetears.evals.providers import ModelsFailureDescriber, models_clients
 
-clients = models_clients(defaults={"judge": "claude-sonnet-4-6", "analysis": "claude-sonnet-4-6"})
-host = EvalHost(..., clients=clients, failure_describer=ModelsFailureDescriber())
+async def build_host() -> EvalHost:
+    clients = models_clients(defaults={"judge": "claude-sonnet-4-6", "analysis": "claude-sonnet-4-6"})
+    unpriced = await clients.load_prices()  # once, at boot: {model: why} for any model left unpriced
+    return EvalHost(..., clients=clients, failure_describer=ModelsFailureDescriber())
 ```
 
 `models_clients` keeps one client per role, model, temperature and reasoning setting, reads each provider's key
 from `api_keys=` or the provider's own environment variable the first time a client for it is asked for, and
 `await clients.aclose_all()` closes them at shutdown. Per-role settings go by role name
-(`judge={"reasoning_max_tokens": 8192, "max_tokens": 16384}`); `models_client` builds one client on its own. The
-adapter sends every request once (retries off), keeps a circuit breaker of its own that never opens, prices
-Anthropic and OpenAI calls from models' price catalogue and OpenRouter calls by OpenRouter's own figure (unpriced
-is `None` with the reason, never `0`), and refuses by name a reasoning word or budget the provider cannot carry
-rather than sending its nearest neighbour. That refusal, and a role with no model or a provider with no key, raise
-`ModelsClientRefused` (a `ValueError`), naming the setting and what to pass instead. On Anthropic and OpenAI, a call whose
-prompt hit the provider's prompt cache has its `cost_usd` overstated: the provider bills cached input tokens at a
-discount, but models' price catalogue carries no cache rate, so the adapter prices them at the full input rate.
-What it reads off each provider's reply is in `threetears.evals.providers`' own docstring, member by member.
+(`simulator={"reasoning_effort": "minimal", "provider": "openrouter"}`); `models_client` builds one client on its own.
+**The judge is built from `JUDGE_REQUEST_SETTINGS`**, the request settings a judged run records as its
+`judge_request_settings` (`max_tokens=10240`, `reasoning_max_tokens=8192`, `strict_output=True`): a `judge` role
+given no `max_tokens`, `reasoning_max_tokens` or `reasoning_effort` of its own gets that output cap and that
+reasoning budget, which on Anthropic goes as the thinking budget, and `strict_output` is the strict structured
+directive the judge already sends. On OpenAI and OpenRouter the adapter cannot send a reasoning budget, so a judge
+there cannot match the settings the run records: `models_clients` refuses it by name unless you pass the judge's
+settings yourself (`judge={"max_tokens": ..., "reasoning_effort": ...}`), and then the run's recorded settings do not
+describe what was sent. The adapter sends every request once (retries off), keeps a circuit breaker of its own that
+never opens, prices Anthropic and OpenAI calls from models' price catalogue and OpenRouter calls by OpenRouter's own
+figure (unpriced is `None` with the reason, never `0`), and refuses by name a reasoning word or budget the provider
+cannot carry rather than sending its nearest neighbour. That refusal, and a role with no model or a provider with no
+key, raise `ModelsClientRefused` (a `ValueError`), naming the setting and what to pass instead.
+
+**Load prices once at boot.** `await clients.load_prices()` reads the price catalogue for every default model and
+returns, for each one left unpriced, why (`{}` when all are priced); a model the engine names beyond your defaults
+loads with `await clients(role, model).load_prices()`, and a client built alone with `await client.load_prices()`.
+Until a client's prices are loaded its `price_ceiling` is `None`, and the engine refuses every out-of-run call
+(analysis, case generation, a second judge, a rejudge) under an enforced `out_of_run_cap_usd` rather than send one
+it cannot bound. On Anthropic and OpenAI the first priced call also loads them; on OpenRouter only `load_prices`
+does, and its ceiling comes from the same catalogue while the stored cost stays OpenRouter's own figure. A failed
+fetch is logged and retried on the next call or load, never cached; an exception from a price source of your own
+propagates from `load_prices`, so a defect in it shows at boot.
+
+**A cost that read the provider's prompt cache is approximate.** Providers bill cached input at their own rates,
+cheaper to read and, on Anthropic, dearer to write, and models' price catalogue carries neither, so the adapter
+prices those tokens at the full input rate: a cache read is overstated and an Anthropic cache write understated.
+Such a call's `price_source` ends `;cache-approximate`, so a stored cost is never read as exact. What the adapter
+reads off each provider's reply is in `threetears.evals.providers`' own docstring, member by member.
 
 **Keep a client of your own** when you price from a catalogue of your own or route through a gateway, when your
 provider is one 3tears-models has no factory for, or when you call Claude through a subscription: the adapter

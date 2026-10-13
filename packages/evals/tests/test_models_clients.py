@@ -5,7 +5,9 @@ per role, model, temperature and reasoning setting, built on first use and kept,
 ``aclose`` releases nothing; every client of one factory reading the price catalogue once; a provider's key read
 from ``api_keys`` or its SDK's environment variable and refused by name at first use, never at construction; a
 role with no model, a role the engine does not have, and a role keyword the factory supplies itself refused by
-name; and ``aclose_all`` closing what the factory built.
+name; a judge built as a judged run records it (``JUDGE_REQUEST_SETTINGS``) or refused where it cannot be; the
+boot-time price load that lets every client's ceiling answer; and ``aclose_all`` closing everything the factory
+built even when one close fails.
 """
 
 from __future__ import annotations
@@ -16,11 +18,13 @@ from typing import Any
 import pytest
 
 from threetears.evals.providers import PROVIDER_KEY_VARIABLES, ModelsClientRefused, ModelsCompletion, models_clients
+from threetears.evals.run import JUDGE_REQUEST_SETTINGS
 from threetears.models import DEFAULT_CHAT_MODEL
 
 from packages.evals.tests.models_adapter_support import (
     ANTHROPIC_HOST,
     KEYS,
+    OPENAI_HOST,
     FakeCatalogue,
     ProviderTransport,
     mocked_providers,
@@ -126,3 +130,123 @@ async def test_aclose_all_closes_what_the_factory_built(net: ProviderTransport) 
     assert not owned.is_closed, "a lease releases nothing"
     await clients.aclose_all()
     assert owned.is_closed
+
+
+# --- the judge, as the run records it -------------------------------------------------------------------
+
+
+async def test_a_judge_with_no_settings_of_its_own_is_built_from_judge_request_settings(
+    net: ProviderTransport,
+) -> None:
+    """What a judged run records is what the judge sends: the output cap, and the budget as Anthropic's thinking."""
+    plan_reply(net, "anthropic")
+    judge = _factory(net)("judge", None, temperature=0.0)
+    assert judge.chat_model.bound.max_tokens == JUDGE_REQUEST_SETTINGS.max_tokens
+    await _generate(judge)
+    body = net.last(ANTHROPIC_HOST)
+    assert body["max_tokens"] == JUDGE_REQUEST_SETTINGS.max_tokens
+    assert body["thinking"] == {"type": "enabled", "budget_tokens": JUDGE_REQUEST_SETTINGS.reasoning_max_tokens}
+
+
+async def test_a_judge_s_own_settings_are_kept(net: ProviderTransport) -> None:
+    plan_reply(net, "anthropic")
+    url = net.base_url(ANTHROPIC_HOST)
+    clients = models_clients(
+        api_keys={"anthropic": KEYS["anthropic"]},
+        defaults={"judge": DEFAULT_CHAT_MODEL},
+        prices=FakeCatalogue(),
+        judge={"base_url": url, "max_tokens": 2048, "reasoning_effort": "low"},
+    )
+    await _generate(clients("judge", None, temperature=0.0))
+    body = net.last(ANTHROPIC_HOST)
+    assert body["max_tokens"] == 2048 and "thinking" not in body and body["output_config"] == {"effort": "low"}
+
+
+@pytest.mark.parametrize(
+    ("model", "provider"), [("gpt-4o", "openai"), ("~anthropic/claude-sonnet-latest", "openrouter")]
+)
+def test_a_default_judge_that_cannot_carry_the_budget_is_refused_at_construction(model: str, provider: str) -> None:
+    """The run would record a reasoning budget the request never carried: refused by name, before any key is read."""
+    judge = {"provider": provider} if provider == "openrouter" else {}
+    with pytest.raises(ModelsClientRefused, match="the record would be false") as refused:
+        models_clients(defaults={"judge": model}, prices=FakeCatalogue(), judge=judge)
+    assert refused.value.setting == "judge" and refused.value.provider == provider
+
+
+def test_a_judge_the_engine_names_on_such_a_provider_is_refused_when_asked_for(net: ProviderTransport) -> None:
+    clients = _factory(net, api_keys={"anthropic": KEYS["anthropic"], "openai": KEYS["openai"]})
+    with pytest.raises(ModelsClientRefused, match="JUDGE_REQUEST_SETTINGS") as refused:
+        clients("judge", "gpt-4o", temperature=0.0)
+    assert refused.value.setting == "judge" and refused.value.provider == "openai"
+
+
+def test_a_judge_on_such_a_provider_with_settings_passed_explicitly_is_built(net: ProviderTransport) -> None:
+    clients = models_clients(
+        api_keys={"openai": KEYS["openai"]},
+        defaults={"judge": "gpt-5-mini"},
+        prices=FakeCatalogue(),
+        judge={
+            "provider": "openai",
+            "base_url": net.base_url(OPENAI_HOST),
+            "max_tokens": 4096,
+            "reasoning_effort": "high",
+        },
+    )
+    assert clients("judge", None).chat_model.bound.reasoning_effort == "high"
+
+
+# --- the boot-time price load ---------------------------------------------------------------------------
+
+
+async def test_load_prices_lets_every_default_role_s_ceiling_answer(net: ProviderTransport) -> None:
+    catalogue = FakeCatalogue()
+    clients = models_clients(
+        api_keys={"anthropic": KEYS["anthropic"], "openai": KEYS["openai"], "openrouter": KEYS["openrouter"]},
+        defaults={"judge": DEFAULT_CHAT_MODEL, "analysis": "gpt-4o", "simulator": "anthropic/claude-sonnet-4.6"},
+        prices=catalogue,
+        judge={"base_url": net.base_url(ANTHROPIC_HOST)},
+        analysis={"base_url": net.base_url(OPENAI_HOST), "max_tokens": 4096},
+        simulator={"provider": "openrouter", "max_tokens": 4096},
+    )
+    roles: tuple[Any, ...] = ("judge", "analysis", "simulator")
+    before = [clients(role, None) for role in roles]
+    assert [lease.price_ceiling(system="s", user="u") for lease in before] == [None, None, None]
+    assert await clients.load_prices() == {}
+    assert all(lease.price_ceiling(system="s", user="u") is not None for lease in before)
+    later = clients("analysis", None, temperature=0.9)
+    assert later.price_ceiling(system="s", user="u") is not None, "a client built after the load reads the same book"
+    assert len(catalogue.fetches) == 1, "one catalogue read for the whole factory"
+    assert net.requests == []
+    await clients.aclose_all()
+
+
+async def test_load_prices_names_each_default_model_left_unpriced(net: ProviderTransport) -> None:
+    clients = _factory(net, prices=FakeCatalogue(payload={"data": []}))
+    unpriced = await clients.load_prices()
+    assert list(unpriced) == [DEFAULT_CHAT_MODEL] and "no price catalogue row matches" in unpriced[DEFAULT_CHAT_MODEL]
+
+
+# --- shutdown ---------------------------------------------------------------------------------------------
+
+
+async def test_aclose_all_closes_every_client_when_one_fails_and_raises_the_failures_together(
+    net: ProviderTransport,
+) -> None:
+    clients = models_clients(
+        api_keys={"openrouter": KEYS["openrouter"]},
+        defaults={"simulator": "~anthropic/claude-sonnet-latest"},
+        prices=FakeCatalogue(),
+        simulator={"provider": "openrouter"},
+    )
+    failing, healthy = clients("simulator", None, temperature=0.0), clients("simulator", None, temperature=0.5)
+    sdk = failing.chat_model.bound.client
+
+    def refuse(*_: object) -> None:
+        raise RuntimeError("the SDK could not close")
+
+    sdk.__exit__ = refuse
+    owned = healthy.chat_model.bound.client.sdk_configuration.async_client
+    with pytest.raises(ExceptionGroup) as raised:
+        await clients.aclose_all()
+    assert [str(failure) for failure in raised.value.exceptions] == ["the SDK could not close"]
+    assert owned.is_closed, "one failing close left the rest closed"
