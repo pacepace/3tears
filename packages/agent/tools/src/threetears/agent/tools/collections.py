@@ -179,6 +179,7 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         :return: list of entities in chronological order
         :rtype: list[ContextItemEntity]
         """
+        read_ticket = self.scan_ticket()  # before the first await
         cid = conversation_id if isinstance(conversation_id, UUID) else UUID(str(conversation_id))
         assert self.l3_pool is not None
         rows = await self.l3_pool.fetch(
@@ -194,7 +195,7 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
             data = self._coerce_row(dict(row))
             entity = self.entity_class(data, is_new=False, collection=self)
             entity.original_date_updated = data.get("date_updated")
-            self.write_to_cache_sync(data, from_lower_tier=True)
+            self.write_to_cache_sync(data, read_since=read_ticket)
             entities.append(entity)
         return entities
 

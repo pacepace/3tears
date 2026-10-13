@@ -13,6 +13,7 @@ from threetears.enforcement.underscore_access.walkers import (
     shape_d_violations,
     shape_e_violations,
     shape_f_violations,
+    shape_i_violations,
 )
 
 
@@ -482,6 +483,30 @@ class TestShapeF:
 
         assert [(v.category, v.file, v.line, v.symbol) for v in violations] == [("underscore_access.F", path, 2, "_nc")]
 
+    def test_a_private_read_out_of_a_namespace_is_reported(self, tmp_path: Path) -> None:
+        tests = tmp_path / "tests"
+        _write(
+            tests / "test_x.py",
+            "from pkg import mod\n\ndef test_x():\n    assert vars(mod)['_SQL']\n    assert mod.__dict__['_OTHER']\n"
+            "    assert vars(mod)['PUBLIC']\n",
+        )
+
+        assert [v.symbol for v in shape_f_violations((tests,), tmp_path)] == ["_SQL", "_OTHER"]
+
+    def test_a_private_name_fed_to_getattr_from_literals_is_reported(self, tmp_path: Path) -> None:
+        tests = tmp_path / "tests"
+        _write(
+            tests / "test_x.py",
+            "import pytest\nfrom pkg import mod\n\n"
+            "@pytest.mark.parametrize('statement', ['_A_SQL', '_B_SQL'])\n"
+            "def test_p(statement):\n    getattr(mod, statement)\n\n"
+            "def test_loop():\n    for name in ('_C', 'D'):\n        getattr(mod, name)\n\n"
+            "@pytest.mark.parametrize('read', ['list_tables', 'table_hashes'])\n"
+            "def test_public(read, driver):\n    getattr(driver, read)\n",
+        )
+
+        assert [v.symbol for v in shape_f_violations((tests,), tmp_path)] == ["_A_SQL", "_C"]
+
     def test_every_reflective_builtin_is_covered(self, tmp_path: Path) -> None:
         src = tmp_path / "src"
         _write(
@@ -574,3 +599,93 @@ class TestShapeF:
         )
 
         assert [v.symbol for v in shape_f_violations((tests,), tmp_path)] == ["_slot"]
+
+
+class TestShapeI:
+    """a test subclass reaching its production base's private state through ``self``."""
+
+    _BASE = (
+        "class Backend:\n"
+        "    _LIMIT = 3\n"
+        "    def __init__(self):\n"
+        "        self._lock = object()\n"
+        "    def _hook(self):\n"
+        "        return 1\n"
+    )
+
+    def test_it_reports_the_snippet_it_exists_for(self, tmp_path: Path) -> None:
+        """the fallibility test: a test subclass holding its base's private lock is reported."""
+        src, tests = tmp_path / "src", tmp_path / "tests"
+        _write(src / "pkg" / "backend.py", self._BASE)
+        path = _write(
+            tests / "test_x.py",
+            "from pkg.backend import Backend\n\nclass Held(Backend):\n    def write(self):\n"
+            "        with self._lock:\n            pass\n",
+        )
+
+        violations = shape_i_violations((tests,), tmp_path, (src,))
+
+        assert [(v.category, v.file, v.line, v.symbol) for v in violations] == [
+            ("underscore_access.I", path, 5, "_lock")
+        ]
+
+    def test_class_state_and_a_write_of_it_are_reported_too(self, tmp_path: Path) -> None:
+        src, tests = tmp_path / "src", tmp_path / "tests"
+        _write(src / "pkg" / "backend.py", self._BASE)
+        _write(
+            tests / "test_x.py",
+            "from pkg.backend import Backend\n\nclass Held(Backend):\n    def go(self):\n"
+            "        self._LIMIT\n        self._lock = None\n",
+        )
+
+        assert sorted(v.symbol for v in shape_i_violations((tests,), tmp_path, (src,))) == ["_LIMIT", "_lock"]
+
+    def test_a_protected_method_and_the_subclass_s_own_state_are_not_reported(self, tmp_path: Path) -> None:
+        src, tests = tmp_path / "src", tmp_path / "tests"
+        _write(src / "pkg" / "backend.py", self._BASE)
+        _write(
+            tests / "test_x.py",
+            "from pkg.backend import Backend\n\nclass Held(Backend):\n    def __init__(self):\n"
+            "        super().__init__()\n        self._mine = 1\n    def go(self):\n"
+            "        return self._hook() + self._mine\n",
+        )
+
+        assert shape_i_violations((tests,), tmp_path, (src,)) == []
+
+    def test_state_an_ancestor_two_levels_up_keeps_is_reported(self, tmp_path: Path) -> None:
+        """the live case: a test subclass of a collection writing what the collection's base sets."""
+        src, tests = tmp_path / "src", tmp_path / "tests"
+        _write(src / "pkg" / "base.py", "class BaseCollection:\n    def __init__(self):\n        self._l1 = None\n")
+        _write(
+            src / "pkg" / "collection.py",
+            "from pkg.base import BaseCollection\n\nclass Conversations(BaseCollection[int]):\n    def find(self):\n"
+            "        return 1\n",
+        )
+        _write(
+            tests / "test_x.py",
+            "from pkg.collection import Conversations\n\nclass Harness(Conversations):\n    def __init__(self):\n"
+            "        self._l1 = None\n",
+        )
+
+        assert [v.symbol for v in shape_i_violations((tests,), tmp_path, (src,))] == ["_l1"]
+
+    def test_state_reached_through_a_test_defined_middle_class_is_reported(self, tmp_path: Path) -> None:
+        src, tests = tmp_path / "src", tmp_path / "tests"
+        _write(src / "pkg" / "backend.py", self._BASE)
+        _write(
+            tests / "test_x.py",
+            "from pkg.backend import Backend\n\nclass Middle(Backend):\n    def own(self):\n        return 1\n\n"
+            "class Leaf(Middle):\n    def go(self):\n        return self._lock\n",
+        )
+
+        assert [v.symbol for v in shape_i_violations((tests,), tmp_path, (src,))] == ["_lock"]
+
+    def test_a_base_defined_in_the_tests_is_the_tests_own(self, tmp_path: Path) -> None:
+        tests = tmp_path / "tests"
+        _write(
+            tests / "test_x.py",
+            "class Base:\n    def __init__(self):\n        self._x = 1\n\nclass Sub(Base):\n"
+            "    def go(self):\n        return self._x\n",
+        )
+
+        assert shape_i_violations((tests,), tmp_path, (tmp_path / "src",)) == []

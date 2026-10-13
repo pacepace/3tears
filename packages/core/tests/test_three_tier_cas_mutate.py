@@ -138,8 +138,9 @@ class _FakeGenerations:
     async def current(self, table_name: str) -> str:
         return f"i:{self.count}"
 
-    async def advance(self, table_name: str) -> None:
+    async def advance(self, table_name: str) -> str:
         self.count += 1
+        return f"i:{self.count}"
 
 
 class _Nats(FakeNatsClient):
@@ -147,14 +148,14 @@ class _Nats(FakeNatsClient):
 
     def __init__(self) -> None:
         super().__init__()
-        self._subscribers: list[tuple[Any, Any]] = []
+        self._listening: list[tuple[Any, Any]] = []
 
     async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
-        for cb, message_type in list(self._subscribers):
+        for cb, message_type in list(self._listening):
             await cb(message_type.model_validate_json(message.model_dump_json()))
 
     async def subscribe_typed(self, *, subject: Any, cb: Any, message_type: Any, **_: Any) -> object:
-        self._subscribers.append((cb, message_type))
+        self._listening.append((cb, message_type))
         return object()
 
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import tracemalloc
+import contextlib
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -27,7 +28,7 @@ import pytest
 from threetears.datasources.introspection import compute_column_hash
 
 from threetears.datasources.config import (
-    AgentInternalConnectionConfig,
+    BorrowedPoolConnectionConfig,
     PostgresConnectionConfig,
 )
 from threetears.datasources.drivers.asyncpg_driver import AsyncpgDriver
@@ -245,6 +246,134 @@ class TestHappyPath:
 
 
 # ---------------------------------------------------------------------------
+# least-privilege users: the catalog is what the user can SELECT
+# ---------------------------------------------------------------------------
+
+
+_READER_ROLE = "ds_it_least_privilege_reader"
+_READER_PASSWORD = "ds-it-reader"  # noqa: S105 - a throwaway role inside the test container
+
+
+@pytest.fixture
+async def least_privilege_reader(
+    seeded_schema: tuple[str, str],
+) -> AsyncIterator[tuple[str, str]]:
+    """a login role that can SELECT ``widgets`` and a mixed-case ``"Gadgets"``, and only INSERT ``secrets``.
+
+    the INSERT grant is the point: ``information_schema`` lists a table its user holds ANY
+    privilege on, so ``secrets`` is visible to this role and still unreadable -- the shape the
+    reports warehouse users had, where the catalog listed tables every read of which raised 42501.
+
+    yields ``(db_url_as_the_reader, schema)``.
+    """
+    db_url, schema = seeded_schema
+    parsed = _parse_db_url(db_url)
+    conn = await asyncpg.connect(
+        host=parsed["host"],
+        port=parsed["port"],
+        database=parsed["database"],
+        user=parsed["username"],
+        password=parsed["password"],
+    )
+    try:
+        await conn.execute(f'CREATE TABLE "{schema}"."secrets" (id integer, token text)')
+        await conn.execute(f'CREATE TABLE "{schema}"."Gadgets" (id integer)')
+        await conn.execute(f"DROP ROLE IF EXISTS {_READER_ROLE}")
+        await conn.execute(f"CREATE ROLE {_READER_ROLE} LOGIN PASSWORD '{_READER_PASSWORD}'")
+        await conn.execute(f'GRANT USAGE ON SCHEMA "{schema}" TO {_READER_ROLE}')
+        await conn.execute(f'GRANT SELECT ON "{schema}"."widgets", "{schema}"."Gadgets" TO {_READER_ROLE}')
+        await conn.execute(f'GRANT INSERT ON "{schema}"."secrets" TO {_READER_ROLE}')
+        reader_url = (
+            f"postgresql://{_READER_ROLE}:{_READER_PASSWORD}@{parsed['host']}:{parsed['port']}/{parsed['database']}"
+        )
+        yield reader_url, schema
+    finally:
+        # the role owns no objects but holds grants on the schema; drop those first
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.execute(f"DROP ROLE IF EXISTS {_READER_ROLE}")
+        await conn.close()
+
+
+class TestIntrospectionCatalogsOnlySelectableTables:
+    """a table the datasource user cannot SELECT never reaches the catalog, the hash probe or the columns."""
+
+    @pytest.mark.asyncio
+    async def test_every_catalog_read_sees_only_the_selectable_tables(
+        self,
+        least_privilege_reader: tuple[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        reader_url, schema = least_privilege_reader
+        config = _make_config_for_container(reader_url, monkeypatch)
+        driver = AsyncpgDriver(config)
+        try:
+            tables = {row["table_name"] for row in await driver.list_tables([schema])}
+            columns = {row["table_name"] for row in await driver.list_columns([schema])}
+            hashed = {table for _schema, table in await driver.table_hashes([schema])}
+        finally:
+            await driver.close()
+        assert tables == {"widgets", "Gadgets"}
+        assert columns == {"widgets", "Gadgets"}
+        assert hashed == {"widgets", "Gadgets"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("read", ["list_tables", "list_columns", "table_hashes"])
+    async def test_a_table_dropped_while_the_catalog_is_read_is_skipped_not_fatal(
+        self, seeded_schema: tuple[str, str], read: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """a relation dropped mid-read (a dbt promote's DROP, a rename) must not fail the catalog read.
+
+        deterministic: the driver reads on a connection holding a REPEATABLE READ snapshot taken
+        before a second session drops the table, so ``information_schema`` still returns its rows. a
+        privilege check by NAME resolves against the current catalog and raises ``relation does not
+        exist`` -- for every table in scope; by OID it answers NULL and the relation is left out.
+        """
+        db_url, schema = seeded_schema
+        parsed = _parse_db_url(db_url)
+        connect = {
+            "host": parsed["host"],
+            "port": parsed["port"],
+            "database": parsed["database"],
+            "user": parsed["username"],
+            "password": parsed["password"],
+        }
+        reader = await asyncpg.connect(**connect)
+        dropper = await asyncpg.connect(**connect)
+        driver = AsyncpgDriver(_make_config_for_container(db_url, monkeypatch), external_pool=_OneConnection(reader))
+        try:
+            await dropper.execute(f'CREATE TABLE "{schema}"."doomed" (id integer)')
+            async with reader.transaction(isolation="repeatable_read"):
+                await reader.fetchval("SELECT 1")  # the snapshot is taken here
+                await dropper.execute(f'DROP TABLE "{schema}"."doomed"')
+                seen = await reader.fetch(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema = $1", schema
+                )
+                assert "doomed" in {r["table_name"] for r in seen}, (
+                    "the snapshot no longer shows the dropped table; the test proves nothing"
+                )
+                answered = await getattr(driver, read)([schema])
+            names = {key[1] for key in answered} if read == "table_hashes" else {r["table_name"] for r in answered}
+            assert names == {"widgets"}
+        finally:
+            await reader.close()
+            await dropper.close()
+
+
+class _OneConnection:
+    """a pool lending one connection: the driver reads inside the transaction the test holds open on it."""
+
+    def __init__(self, conn: asyncpg.Connection) -> None:
+        self._conn = conn
+
+    @contextlib.asynccontextmanager
+    async def acquire(self, **_: Any) -> AsyncIterator[asyncpg.Connection]:
+        yield self._conn
+
+    async def close(self) -> None:
+        """the test closes the connection itself."""
+
+
+# ---------------------------------------------------------------------------
 # search_path: connection-scope ``SET search_path`` from allowed_schemas
 # ---------------------------------------------------------------------------
 
@@ -364,6 +493,41 @@ class TestStreaming:
             # streaming should be substantially smaller than full materialization
             assert stream_peak < fetch_peak * 0.6, (
                 f"fetch_iter peak {stream_peak} is not substantially below fetch peak {fetch_peak}"
+            )
+        finally:
+            await driver.close()
+
+    @pytest.mark.asyncio
+    async def test_fetch_at_most_reads_the_first_rows_in_order_and_holds_no_more(
+        self,
+        seeded_schema: tuple[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """a statement with no LIMIT of its own over 10k rows: 3 rows read, in order, and memory far below a full read."""
+        db_url, schema = seeded_schema
+        config = _make_config_for_container(db_url, monkeypatch)
+        driver = AsyncpgDriver(config)
+        try:
+            await driver.execute(f'CREATE TABLE "{schema}"."bounded" (id integer, payload text)')
+            payload = "x" * 200
+            values = ", ".join(f"({i}, '{payload}')" for i in range(10000))
+            await driver.execute(f'INSERT INTO "{schema}"."bounded" (id, payload) VALUES {values}')
+            statement = f'SELECT id, payload FROM "{schema}"."bounded" WHERE id >= $1 ORDER BY id DESC'
+
+            tracemalloc.start()
+            everything = await driver.fetch(statement, 0, timeout_seconds=30)
+            _, fetch_peak = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+            del everything
+
+            tracemalloc.start()
+            rows = await driver.fetch_at_most(statement, 0, max_rows=3, timeout_seconds=30)
+            _, bounded_peak = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+
+            assert [row["id"] for row in rows] == [9999, 9998, 9997]
+            assert bounded_peak < fetch_peak * 0.1, (
+                f"bounded read peak {bounded_peak} against a full read's {fetch_peak}"
             )
         finally:
             await driver.close()
@@ -498,7 +662,7 @@ class TestBorrowedPoolLive:
         )
         assert pool is not None
         try:
-            config = AgentInternalConnectionConfig(
+            config = BorrowedPoolConnectionConfig(
                 datasource_type=DataSourceType.AGENT_INTERNAL,
                 schema_name=schema,
             )
@@ -551,7 +715,7 @@ async def test_borrowed_pool_microbenchmark_under_one_ms(
     )
     assert pool is not None
     try:
-        config = AgentInternalConnectionConfig(
+        config = BorrowedPoolConnectionConfig(
             datasource_type=DataSourceType.AGENT_INTERNAL,
             schema_name=schema,
         )

@@ -63,6 +63,15 @@ COPY packages /build/packages
 WORKDIR /build
 RUN uv build --all-packages --wheel --out-dir /wheels
 
+# The lock, exported as constraints for the runtime install below. Installing the wheels
+# alone resolves every third-party dependency fresh, so an upstream release lands in the
+# next image unannounced: camoufox 0.5.7 started pulling fpgen -> indexed-zstd, which has
+# no wheel for this Python on arm64 and failed every local build. The image takes the
+# versions the lock was tested with, as every consumer's own image already does.
+COPY uv.lock /build/uv.lock
+RUN uv export --frozen --all-packages --all-extras --no-emit-workspace --no-dev --no-hashes --no-header \
+        --output-file /wheels-constraints.txt
+
 # ---------------------------------------------------------------------------
 # Stage 2: runtime
 # ---------------------------------------------------------------------------
@@ -85,6 +94,7 @@ RUN groupadd --system --gid 1001 appuser \
 # Wheels live in two places: copied into the venv, and preserved on disk
 # under /threetears-wheels for downstream `COPY --from=...` access.
 COPY --from=wheels /wheels /threetears-wheels
+COPY --from=wheels /wheels-constraints.txt /threetears-constraints.txt
 
 # Canonical venv path. /opt/threetears/.venv is the shared convention for any
 # 3tears-consuming app. Sub-images install into the same venv.
@@ -128,7 +138,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.1 /uv /usr/local/bin/uv
 # this venv without an explicit --python on every call.
 RUN uv pip install --no-cache hatchling build
 
-RUN uv pip install --no-cache /threetears-wheels/*.whl
+RUN uv pip install --no-cache --constraint /threetears-constraints.txt /threetears-wheels/*.whl
 
 # The family-from-base helper ships WITH the base, because every consumer that
 # inherits this image runs the same check against the same family. Copied per

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Final
 
 import os
 
@@ -42,6 +42,10 @@ __all__ = [
     "NATS_TEST_SYSTEM_ACCOUNT",
     "NATS_TEST_SYSTEM_PASSWORD",
     "NATS_TEST_SYSTEM_USER",
+    "SEARXNG_FIXTURE_ENGINES",
+    "SEARXNG_IMAGE",
+    "SEARXNG_STATIC_DIR",
+    "require_searxng_static_dir",
     "db_container",
     "db_image",
     "nats_container",
@@ -470,6 +474,61 @@ def _outbound_proxy_by_ip() -> str | None:
     return url.replace(parts.hostname, address, 1)
 
 
+#: the SearXNG image the test container runs: an exact release, by tag AND digest. The fixture depends on
+#: its layout (the settings path, and the static directory the fixture engines' result lists are
+#: mounted into), which a moving ``:latest`` could change under every run at once. Move it deliberately:
+#: re-run ``test_searxng_live_scoring.py`` against the new one.
+SEARXNG_IMAGE: Final[str] = (
+    "searxng/searxng:2026.8.28-a30b2d474@sha256:addd2cf36efb4b9815a2820a522aef7cce4da0d1c0e4527f6675f5663332fc9b"
+)
+
+#: where the image serves ``/static`` from; the fixture engines' result lists are mounted into it.
+SEARXNG_STATIC_DIR: Final[str] = "/usr/local/searxng/searx/static"
+
+#: a directory the image itself ships inside :data:`SEARXNG_STATIC_DIR`. Checked rather than the static
+#: directory, because a file mounted into a directory the image lacks makes Docker create that
+#: directory -- so the static directory "exists" whether or not the image serves it.
+_SEARXNG_STATIC_SHIPPED: Final[str] = f"{SEARXNG_STATIC_DIR}/themes"
+
+#: the SearXNG test container's own engines: each name, and the result URLs it answers every query
+#: with, in rank order. ``fused`` comes back twice from the first engine and once from the second --
+#: positions ``[1, 2, 2]`` from two engines -- and ``single`` once, from one.
+SEARXNG_FIXTURE_ENGINES: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
+    ("threetears fixture a", ("https://fixture.invalid/fused", "https://fixture.invalid/fused")),
+    ("threetears fixture b", ("https://fixture.invalid/single", "https://fixture.invalid/fused")),
+)
+
+
+def _searxng_fixture_file(engine: str) -> str:
+    """the static file a fixture engine reads its results from.
+
+    :param engine: the fixture engine's name
+    :ptype engine: str
+    :return: the file name under the container's ``/static``
+    :rtype: str
+    """
+    return f"{engine.replace(' ', '-')}.json"
+
+
+def require_searxng_static_dir(container: Any) -> None:
+    """fail the session, naming the path and the image, unless the image serves ``/static`` from where
+    the fixture engines' result lists are mounted.
+
+    :param container: the started SearXNG container (anything with testcontainers' ``exec``)
+    :ptype container: Any
+    :return: None
+    :rtype: None
+    """
+    shipped = container.exec(["test", "-d", _SEARXNG_STATIC_SHIPPED])
+    if shipped.exit_code != 0:
+        pytest.fail(
+            f"{SEARXNG_IMAGE} does not serve /static from {SEARXNG_STATIC_DIR} (it has no "
+            f"{_SEARXNG_STATIC_SHIPPED}), so the fixture engines' result lists mounted there are never "
+            f"served and the scoring tests have nothing deterministic to check. Find the image's static "
+            f"directory and update SEARXNG_STATIC_DIR, or pin an image that has it."
+        )
+
+
 @pytest.fixture(scope="session")
 def searxng_container() -> Iterator[str]:
     """session-scoped SearXNG testcontainer, yielding its base URL.
@@ -488,13 +547,18 @@ def searxng_container() -> Iterator[str]:
     class of reason -- it is a bot defence, and a test client hammering one
     query looks exactly like the thing it defends against.
 
-    **What this container cannot give you is engines.** SearXNG's own
-    scoring is deterministic; the upstream engines it federates are not.
-    They rate-limit, they vary between calls, and a run that saw two engines
-    agree will not reliably see it again -- which is why a test using this
-    fixture must assert an invariant that holds over whatever came back,
-    never that a particular fusion occurred. See
-    ``packages/search/tests/test_searxng_live_scoring.py``.
+    **The internet's engines are not deterministic, so it carries two of its
+    own.** SearXNG's scoring is deterministic; the upstream engines it
+    federates are not -- they rate-limit, CAPTCHA a test client, and vary
+    between calls. So besides the default engines the instance runs
+    :data:`SEARXNG_FIXTURE_ENGINES`: two ``json_engine`` instances that read
+    fixed result lists the container serves itself (from its own ``/static``),
+    answering every ``general`` query the same way. Between them they always
+    produce a result one engine returned twice and the other once -- three
+    positions from two engines, the fusion a live run only sometimes shows --
+    and a single-engine one. A test can therefore demand that fusion rather
+    than hope for it, and still assert its invariant over the live engines'
+    results too. See ``packages/search/tests/test_searxng_live_scoring.py``.
 
     :yield: the container's base URL, e.g. ``http://localhost:32768``
     :rtype: Iterator[str]
@@ -511,6 +575,25 @@ def searxng_container() -> Iterator[str]:
 
     from testcontainers.core.container import DockerContainer  # noqa: PLC0415
 
+    import json  # noqa: PLC0415
+
+    engines = "".join(
+        f"  - name: {name}\n"
+        "    engine: json_engine\n"
+        f"    shortcut: {name.replace(' ', '')}\n"
+        "    categories: general\n"
+        # the container's own static route, over plain HTTP on its own loopback: no upstream, no
+        # proxy, the same answer every time
+        f"    search_url: http://127.0.0.1:8080/static/{_searxng_fixture_file(name)}?q={{query}}\n"
+        "    enable_http: true\n"
+        "    results_query: results\n"
+        "    url_query: url\n"
+        "    title_query: title\n"
+        "    content_query: content\n"
+        "    timeout: 5.0\n"
+        "    disabled: false\n"
+        for name, _urls in SEARXNG_FIXTURE_ENGINES
+    )
     settings = (
         "use_default_settings: true\n"
         "server:\n"
@@ -521,15 +604,25 @@ def searxng_container() -> Iterator[str]:
         "  formats:\n"
         "    - html\n"
         "    - json\n"
+        "engines:\n" + engines
     )
     with tempfile.TemporaryDirectory() as workdir:
         path = Path(workdir) / "settings.yml"
         path.write_text(settings, encoding="utf-8")
         container = (
-            DockerContainer("searxng/searxng:latest")
+            DockerContainer(SEARXNG_IMAGE)
             .with_exposed_ports(8080)
             .with_volume_mapping(str(path), "/etc/searxng/settings.yml", "ro")
         )
+        for name, urls in SEARXNG_FIXTURE_ENGINES:
+            served = Path(workdir) / _searxng_fixture_file(name)
+            served.write_text(
+                json.dumps({"results": [{"url": url, "title": url, "content": name} for url in urls]}),
+                encoding="utf-8",
+            )
+            container = container.with_volume_mapping(
+                str(served), f"{SEARXNG_STATIC_DIR}/{_searxng_fixture_file(name)}", "ro"
+            )
         # Behind an egress proxy the container's engines have no route out, and
         # a nested daemon's bridge cannot resolve the proxy's name, so it is
         # handed the proxy by IP -- the same thing metallm's ``dev-up.sh --proxy``
@@ -539,7 +632,11 @@ def searxng_container() -> Iterator[str]:
         if outbound_proxy:
             for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
                 container = container.with_env(name, outbound_proxy)
+            # the fixture engines ask the container itself, which no proxy can reach
+            for name in ("NO_PROXY", "no_proxy"):
+                container = container.with_env(name, "127.0.0.1,localhost")
         with container:
+            require_searxng_static_dir(container)
             host = container.get_container_host_ip()
             port = container.get_exposed_port(8080)
             base_url = f"http://{host}:{port}"

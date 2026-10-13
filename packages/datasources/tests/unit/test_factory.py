@@ -31,7 +31,7 @@ from typing import Any
 import pytest
 
 from threetears.datasources.config import (
-    AgentInternalConnectionConfig,
+    BorrowedPoolConnectionConfig,
     BigQueryConnectionConfig,
     PostgresConnectionConfig,
     RedshiftConnectionConfig,
@@ -170,7 +170,7 @@ class TestDispatch:
     def test_agent_internal_dispatches_to_asyncpg_with_external_pool(
         self, stub_driver_modules: dict[str, type[_StubDriver]]
     ) -> None:
-        config = AgentInternalConnectionConfig(
+        config = BorrowedPoolConnectionConfig(
             datasource_type=DataSourceType.AGENT_INTERNAL,
             schema_name="agent_abc123",
         )
@@ -181,7 +181,7 @@ class TestDispatch:
         assert driver.external_pool is sentinel_pool  # type: ignore[attr-defined]
 
     def test_agent_internal_without_pool_raises(self, stub_driver_modules: dict[str, type[_StubDriver]]) -> None:
-        config = AgentInternalConnectionConfig(
+        config = BorrowedPoolConnectionConfig(
             datasource_type=DataSourceType.AGENT_INTERNAL,
             schema_name="agent_abc123",
         )
@@ -248,7 +248,7 @@ class TestDatasourceNamePlumbing:
         assert driver.datasource_name == "warehouse-prod"  # type: ignore[attr-defined]
 
     def test_agent_internal_threads_through(self, stub_driver_modules: dict[str, type[_StubDriver]]) -> None:
-        config = AgentInternalConnectionConfig(
+        config = BorrowedPoolConnectionConfig(
             datasource_type=DataSourceType.AGENT_INTERNAL,
             schema_name="agent_xyz",
         )

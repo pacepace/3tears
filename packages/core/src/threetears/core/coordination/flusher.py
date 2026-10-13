@@ -23,6 +23,7 @@ from typing import Final
 
 from threetears.core.collections.flush import WriteBuffer, flush_pending
 from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.exceptions import GenerationUnavailableError
 from threetears.observe import PeriodicTask, get_logger
 
 __all__ = ["PeriodicFlusher"]
@@ -65,8 +66,10 @@ class PeriodicFlusher:
         self._buffer = buffer
         self._registry = registry
         self._interval = interval_seconds
-        # flush on the interval, sleeping first; _flush_once reports its own failure at ERROR.
-        self._loop = PeriodicTask(self._flush_once, interval=interval_seconds, name="coordination-flush", logger=log)
+        # flush on the interval, sleeping first; _flush_on_interval reports its own failure at ERROR.
+        self._loop = PeriodicTask(
+            self._flush_on_interval, interval=interval_seconds, name="coordination-flush", logger=log
+        )
 
     @property
     def running(self) -> bool:
@@ -93,23 +96,60 @@ class PeriodicFlusher:
         The final flush is the difference between a clean shutdown losing nothing and losing one
         interval, so it runs even though the loop is already cancelled.
 
+        A switched-on table's write generation that could not be advanced for the final flush is
+        raised here, after the loop has stopped: the rows were written, and whoever closes the
+        flusher is the one caller left to hear that a follower cannot tell they changed.
+
         :return: nothing
         :rtype: None
+        :raises GenerationUnavailableError: when the final flush wrote its rows and a switched-on
+            table's write generation could not be advanced for them
         """
         await self._loop.stop()
         await self._flush_once()
 
-    async def _flush_once(self) -> None:
-        """flush the buffer, reporting a failure without killing the loop.
+    async def _flush_on_interval(self) -> None:
+        """one interval's flush: every failure is reported, and none ends the loop.
 
-        A flush failure is an L3 outage, and the next interval retries it. Letting it out would
-        end the loop and leave every later write unflushed with nothing saying so.
+        The loop has no caller to raise to, so a write generation that could not be advanced is
+        reported where it happened, as a subscript write reports one.
 
         :return: nothing
         :rtype: None
         """
+        await self._flush_once(raise_generation_failure=False)
+
+    async def _flush_once(self, *, raise_generation_failure: bool = True) -> None:
+        """flush the buffer, reporting a failure.
+
+        A flush failure is an L3 outage, and the next interval retries it. Letting it out would
+        end the loop and leave every later write unflushed with nothing saying so.
+
+        A write generation that could not be advanced is not that. ``flush_pending`` raises it only
+        after every row landed and was acknowledged, so nothing is retried for it: the rows are in
+        L3 and the generation did not move, so a pod following the table cannot tell from it that
+        they changed. It is logged as such, and raised when there is a caller to hear it.
+
+        :param raise_generation_failure: whether a write generation that could not be advanced is
+            raised after it is logged; ``False`` on the interval, which has no caller
+        :ptype raise_generation_failure: bool
+        :return: nothing
+        :rtype: None
+        :raises GenerationUnavailableError: when the rows were written and a switched-on table's
+            write generation could not be advanced for them
+        """
         try:
             flushed = await flush_pending(self._buffer, self._registry)
+        except GenerationUnavailableError as exc:
+            log.error(
+                "coordination write-behind flush: the rows were written, but a table's write "
+                "generation did not move; they are not retried, and a pod following the table "
+                "cannot tell from it that they changed",
+                extra={"extra_data": {"error": str(exc)}},
+            )
+            if raise_generation_failure:
+                raise
+            return
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- an L3 outage must not end the loop
             log.error(
                 "coordination write-behind flush failed; retrying on the next interval",

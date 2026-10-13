@@ -112,7 +112,6 @@ def _make_acl_cache() -> AclCache:
     return AclCache(
         membership_loader=_NoopMembershipLoader(),
         grant_loader=_NoopGrantLoader(),
-        ttl_seconds=60,
     )
 
 

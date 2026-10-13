@@ -210,7 +210,7 @@ async def scheduled_tick_job(
     """
     # local import to keep the lock module out of the engine's always-paid
     # import cost (consumers without NATS skip this).
-    from threetears.nats import LockHeld, nats_distributed_lock  # noqa: PLC0415
+    from threetears.core.coordination import LockHeld, nats_distributed_lock  # noqa: PLC0415
     from threetears.nats.errors import KvError  # noqa: PLC0415
 
     routed_kinds = _validate_routes(dispatch_routes)
