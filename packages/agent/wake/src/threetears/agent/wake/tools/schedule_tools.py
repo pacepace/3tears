@@ -56,8 +56,9 @@ from threetears.agent.wake.rate_limit import (
     resume_schedule_serialized,
 )
 from threetears.agent.wake.types import WakeConversations
+from threetears.agent.wake.wording import format_wake_time
 from threetears.core.exceptions import ConcurrentModificationError
-from threetears.core.utils.local_time import render_local_time, resolve_zone
+from threetears.core.utils.local_time import resolve_zone
 from threetears.scheduled_jobs import compute_next_fire_at
 from threetears.agent.wake.tools.resolve import parse_conversation_id, parse_schedule_id
 from threetears.agent.wake.tools.validators import (
@@ -80,7 +81,6 @@ __all__ = [
     "WakeRegistryClient",
     "WakeYieldProbe",
     "WakeYieldSetter",
-    "format_wake_time",
     "load_wake_schedule_create_tool",
     "load_wake_schedule_delete_tool",
     "load_wake_schedule_list_tool",
@@ -352,25 +352,6 @@ def _validate_task_prompt(prompt: str | None) -> str | None:
     if len(prompt) > TASK_PROMPT_MAX_LEN:
         return f"task_prompt must be at most {TASK_PROMPT_MAX_LEN} characters"
     return None
-
-
-def format_wake_time(value: datetime | None, zone: tzinfo | None = None, *, unset: str = "-") -> str:
-    """A wake's time as its reader says it: in ``zone`` and naming it, or as stored when no zone was named.
-
-    :param value: the moment, or ``None`` when there is none
-    :ptype value: datetime | None
-    :param zone: the reader's zone, when the caller named one
-    :ptype zone: tzinfo | None
-    :param unset: what to say when there is no moment
-    :ptype unset: str
-    :return: the time, or ``unset``
-    :rtype: str
-    """
-    if value is None:
-        return unset
-    if zone is None:
-        return value.isoformat()
-    return render_local_time(value, zone)
 
 
 def _format_schedule_line(

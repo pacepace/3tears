@@ -35,6 +35,7 @@ from threetears.agent.wake.collections import WebhookSubscriptionCollection
 from threetears.agent.wake.entities import EncryptionService
 from threetears.agent.wake.tools.resolve import parse_conversation_id, parse_subscription_id
 from threetears.agent.wake.types import WakeConversations
+from threetears.agent.wake.wording import format_wake_time
 from threetears.core.collections import CallerTransaction
 from threetears.core.exceptions import ConcurrentModificationError
 from threetears.core.utils.local_time import resolve_zone
@@ -42,7 +43,6 @@ from threetears.agent.wake.tools.schedule_tools import (
     WakeRegistryClient,
     _tool_error,
     _validate_name,
-    format_wake_time,
 )
 from threetears.observe import get_logger
 

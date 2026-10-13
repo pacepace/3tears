@@ -113,7 +113,13 @@ from threetears.agent.wake.metrics import (
     reset_wake_emitter_for_testing,
 )
 from threetears.agent.wake.migrations import PROTECTED_GATE_SETTING, register
-from threetears.agent.wake.protected import ProtectedWakeError, delete_protected, update_protected
+from threetears.agent.wake.protected import (
+    ProtectedWakeChange,
+    ProtectedWakeError,
+    delete_protected,
+    update_protected,
+)
+from threetears.agent.wake.wording import describe_schedule, format_wake_time
 from threetears.agent.wake.tables import (
     agent_wake_schedules_table,
     wake_fires_table,
@@ -236,6 +242,7 @@ __all__ = [
     "HandlerCallbackResult",
     "MissedFirePolicy",
     "PreparedWakeContext",
+    "ProtectedWakeChange",
     "ProtectedWakeError",
     "ReapedFire",
     "ReapedFiresHook",
@@ -269,6 +276,8 @@ __all__ = [
     "check_fire_limits",
     "check_rate_limit",
     "delete_protected",
+    "describe_schedule",
+    "format_wake_time",
     "compute_generic_hmac_sha256_signature",
     "detect_silent_prefix",
     "dispatch_wake",

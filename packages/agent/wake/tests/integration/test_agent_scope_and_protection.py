@@ -269,12 +269,18 @@ class TestProtectedDoors:
             agent = _new_uuid()
             _conv, sid = await _seed_schedule(pool, agent_id=agent, protected=True)
             now = datetime.now(UTC)
-            updated = await update_protected(
+            was_due = await pool.fetchval("SELECT next_fire_at FROM agent_wake_schedules WHERE schedule_id = $1", sid)
+            change = await update_protected(
                 collection=schedules, agent_id=agent, schedule_id=sid, schedule_config={"seconds": 7200}, now=now
             )
+            updated = change.schedule
             assert updated.schedule_config == {"seconds": 7200}
             assert updated.status == "active"
             assert updated.next_fire_at == now + timedelta(seconds=7200)
+            # the change says what it replaced, read from the row before the write
+            assert (change.config_before, change.config_after) == ({"seconds": 3600}, {"seconds": 7200})
+            assert (change.next_fire_before, change.next_fire_after) == (was_due, now + timedelta(seconds=7200))
+            assert change.said().startswith("Was every hour, next fire ")
             # the gate closed with the transaction: a plain change is refused again
             with pytest.raises(asyncpg.CheckViolationError):
                 await pool.execute(
