@@ -14,12 +14,19 @@ written today. The stored bytes are not touched; the next write of that document
 toggle's read-modify-write) writes the current version, so migration is lazy and a scope may hold documents
 at several core versions at once.
 
-**Everything else is regenerable.** Analyses, insights and judge profiles are derived from the core, and a cassette
-is re-captured, so they keep the strict rule they always had: a
-document written under any :data:`REGENERABLE_SCHEMA_VERSION` but this build's is refused on read, and the
-operator regenerates it. The bundle (``schema_version``), the report (``REPORT_VERSION``), the cell model and
-the identity keys (``IDENTITY_VERSION``) are separate version spaces with their own pins; an upgrader never
-recomputes a key or a digest.
+**Everything else is regenerable.** Analyses, insights and judge profiles are derived from the core, so they keep
+the strict rule they always had: a document written under any :data:`REGENERABLE_SCHEMA_VERSION` but this build's is
+refused on read, and the operator regenerates it.
+
+**A cassette has a version space of its own.** It is a regenerable record (what a tool answered while a capture
+ran), refused at any :data:`CASSETTE_SCHEMA_VERSION` but this build's and replaced by a fresh capture under a new
+corpus. Its number moves only when the cassette's own format changes, never with the analysis shapes: an analysis is
+cheap to regenerate from the kept runs, but a corpus is re-captured by calling the third-party tools it exists to
+spare, so a new chart type on a finding must not refuse every corpus a host recorded.
+
+The bundle (``schema_version``), the report (``REPORT_VERSION``), the cell model and the identity keys
+(``IDENTITY_VERSION``) are separate version spaces with their own pins too; an upgrader never recomputes a key or a
+digest.
 
 **Reads stay strict.** A core document whose ``schema_version`` is not an integer, is above
 :data:`CORE_SCHEMA_VERSION` (written by a newer build — two builds sharing one store), or is below
@@ -35,7 +42,7 @@ it never touches :data:`CORE_ADDRESSING_FIELDS`, ``host_payload``, ``kind_payloa
 store filters, sorts and projects on the stored bytes before any upgrade runs; a value it cannot derive
 becomes None, read as "not recorded"; and its output must validate strictly.
 
-The document field stays ``schema_version`` for both spaces; ``doc_type`` says which number it is.
+The document field stays ``schema_version`` in all three spaces; ``doc_type`` says which number it is.
 """
 
 from __future__ import annotations
@@ -58,14 +65,31 @@ CORE_BASELINE_VERSION: Final[int] = 14
 CORE_SCHEMA_VERSION: int = 14
 """The core version this build writes, and the newest a read of a core document accepts."""
 
-#: The version every regenerable document is written under, and the only one a read of one accepts.
+#: The version every regenerable document is written under, the cassette apart (:data:`CASSETTE_SCHEMA_VERSION`),
+#: and the only one a read of one accepts.
 #:
 #: - **v9** — the baseline: the first public release's regenerable shapes.
 REGENERABLE_SCHEMA_VERSION: int = 9
-"""The version every regenerable document is written under, and the only one a read of one accepts.
+"""The version every regenerable document but the cassette is written under, and the only one a read of one accepts.
 
 A bump is a drop: regenerable documents written under the old version are refused on read
-(:data:`~threetears.evals.schema.models.SchemaVersion`) and regenerated from the core, never migrated.
+(:data:`~threetears.evals.schema.models.SchemaVersion`) and regenerated from the core, never migrated. It governs
+the analysis, the insight and the judge profile, never the cassette (:data:`CASSETTE_SCHEMA_VERSION`).
+"""
+
+#: The version every cassette is written under, and the only one a read of one accepts. It moves only when the
+#: cassette's own format changes (the fields of :class:`~threetears.evals.schema.models.EvalCassette`), never with
+#: :data:`REGENERABLE_SCHEMA_VERSION`; a recorded payload that no longer rebuilds as its tool's type is the replay
+#: seam's refusal, not a version.
+#:
+#: - **v1** — the baseline: the first public release's cassette format.
+CASSETTE_SCHEMA_VERSION: int = 1
+"""The version every cassette is written under, and the only one a read of one accepts.
+
+A bump is a drop: a cassette written under the old version is refused on read
+(:data:`~threetears.evals.schema.models.CassetteSchemaVersion`), and the corpus is re-captured (a new capture run,
+so a new corpus), never migrated. Bump it only for a change to the cassette's own format, since every bump spends
+the third-party quota of every corpus again.
 """
 
 #: The kept documents, by ``doc_type``: the ``kept`` entries of
@@ -210,6 +234,7 @@ def upgrade_core_document(document: Mapping[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
+    "CASSETTE_SCHEMA_VERSION",
     "CORE_ADDRESSING_FIELDS",
     "CORE_BASELINE_VERSION",
     "CORE_DOC_TYPES",

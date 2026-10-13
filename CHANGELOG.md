@@ -52,9 +52,11 @@ notes).
 - **History is kept across releases.** The evidence core (cases, runs, results, traces, calibration ratings, the
   out-of-run spend ledger, templates, judge configs, rubric dims, campaigns and job records) is read forever from
   this release's **core schema v14**, the baseline. A later release upgrades an older core document in memory, one
-  version at a time, and the stored bytes change only on the next write. Analyses, insights, judge profiles and
-  cassettes can be regenerated: one written by another build is refused, and the operator regenerates it. A store
-  is upgraded with no job running.
+  version at a time, and the stored bytes change only on the next write. Analyses, insights and judge profiles can
+  be regenerated: one written by another build is refused, and the operator regenerates it. A cassette's format has
+  a version of its own (`CASSETTE_SCHEMA_VERSION` 1), so a change to the analyses never refuses a recorded corpus;
+  only a change to the cassette itself does, and the corpus is then re-captured. A store is upgraded with no job
+  running.
 - **Identity.** A configuration is keyed by the content that ran (`IDENTITY_VERSION` 24), so an edited prompt is
   never averaged in with its old version, and a run's kind is part of its variant. Unpriced spend is unknown, never
   $0. A run that cannot confirm which model answered (no `served_model`) says so on every surface. That is
@@ -118,7 +120,8 @@ notes).
   store written before `v0.66.0-evaladopt.21` is not read:** its core documents (schema v8 to v13) are refused by
   name as pre-release and its regenerable ones by version, so such an adopter deletes its eval documents. From
   `.21` on, the store is the v14 baseline this release reads, and every core shape change bumps the version with
-  an upgrader, as it will after release.
+  an upgrader, as it will after release. Every pre-release, `.21` included, stamped its cassettes with the
+  regenerable version; this release reads them at cassette v1 and refuses them, so their corpora are re-captured.
 
 ## v0.65.0 -- 2026-10-05
 

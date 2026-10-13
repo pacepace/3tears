@@ -186,6 +186,7 @@ from threetears.evals.schema.values import (
 )
 from threetears.evals.schema.world_events import Firings, WorldEvent, WorldEventCause, WorldEventKind
 from threetears.evals.schema.versioning import (
+    CASSETTE_SCHEMA_VERSION,
     CORE_ADDRESSING_FIELDS,
     CORE_BASELINE_VERSION,
     CORE_DOC_TYPES,
@@ -222,6 +223,7 @@ __all__ = [
     "DocOrigin",
     "DocTypeFacts",
     "WorldPlacement",
+    "CASSETTE_SCHEMA_VERSION",
     "CORE_ADDRESSING_FIELDS",
     "CORE_BASELINE_VERSION",
     "CORE_DOC_TYPES",

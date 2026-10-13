@@ -206,7 +206,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`'chosen'` | `'inherited'` | `'uncapped'`
 - **`DimName`** · type alias · A rubric dimension's name as every model holds it: `<context>.<dim>`, or a reserved dual-score axis id.
   <br>`Annotated[str, AfterValidator(_namespaced_dim_name)]`
-- **`DocLifecycle`** · literal · Whether a later release reads a stored document: `kept` — in the core, read from the core baseline on and upgraded across core versions; `regenerable` — refused on read after a regenerable schema bump, and made again.
+- **`DocLifecycle`** · literal · Whether a later release reads a stored document: `kept` — in the core, read from the core baseline on and upgraded across core versions; `regenerable` — refused on read after a change to its format, and made again (the cassette's format is `CASSETTE_SCHEMA_VERSION`, every other regenerable type's `REGENERABLE_SCHEMA_VERSION`).
   <br>`'kept'` | `'regenerable'`
 - **`DocOrigin`** · literal · Where a stored document comes from: `input` — what runs read as given, whoever wrote it; `record` — what happened; `derived` — computed from other stored documents.
   <br>`'input'` | `'record'` | `'derived'`
@@ -273,6 +273,8 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 'builtin:'`
 - **`CANDIDATE_SPEAKER`** · constant (str) · The speaker label the candidate's own turns carry in a simulated transcript.
   <br>`= '__candidate__'`
+- **`CASSETTE_SCHEMA_VERSION`** · constant (int) · The version every cassette is written under, and the only one a read of one accepts.
+  <br>`= 1`
 - **`CORE_ADDRESSING_FIELDS`** · constant (mappingproxy) · Per core type, every field the store reads on the stored bytes, before any upgrade: what a query filters or orders on, what a projection keeps, and what a partial write merges.
 - **`CORE_BASELINE_VERSION`** · constant (int) · The first core version a public release wrote, and the oldest this and every later build reads. Below it a document is pre-release, and is refused by name.
   <br>`= 14`
@@ -303,7 +305,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`PROSE_SCHEMA_KEY`** · constant (str) · The JSON Schema keyword marking a string property as model prose, for vocabularies declared as schema rather than as Pydantic models (a world dimension's value schema).
   <br>`= 'x-model-prose'`
 - **`REFUSAL_KINDS`** · constant (tuple) · Every refusal kind.
-- **`REGENERABLE_SCHEMA_VERSION`** · constant (int) · The version every regenerable document is written under, and the only one a read of one accepts.
+- **`REGENERABLE_SCHEMA_VERSION`** · constant (int) · The version every regenerable document is written under, the cassette apart (`CASSETTE_SCHEMA_VERSION`), and the only one a read of one accepts.
   <br>`= 9`
 - **`RESERVED_DIM_IDS`** · constant (frozenset) · The reserved dim ids, which are deliberately NOT namespaced: they identify the two dual-score axes rather than a rubric dimension scored in some context, so there is no context to name. `require_namespaced_dim_name` exempts them — a judge service is built for these ids on every run.
 - **`ROUND_DONE`** · constant (str) · The scheduler's answer that the current speaker round is over and the candidate answers next.

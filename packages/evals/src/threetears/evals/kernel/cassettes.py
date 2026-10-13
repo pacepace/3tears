@@ -138,7 +138,7 @@ class CassetteCorrupt(ApparatusError, ValueError):
     """The corpus cannot be used as recorded.
 
     A recording could not be read back — its stored document no longer loads (written under another
-    schema, or carrying a field this build does not know), the store failed to answer, or its payload
+    cassette format version, or carrying a field this build does not know), the store failed to answer, or its payload
     no longer rebuilds as the type its seam declares — or a capture could not clear a case's previous
     recording, which would leave two sessions mixed in one corpus. An
     :class:`~threetears.evals.kernel.host.apparatus.ApparatusError`
