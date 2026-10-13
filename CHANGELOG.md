@@ -6,6 +6,38 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### OpenRouter: the usage and response fields LangChain drops reach the answer, `is_byok` among them
+
+OpenRouter reports `usage.is_byok` on every reply: whether the call ran on the caller's own
+provider key. Under BYOK `usage.cost` is only OpenRouter's fee, and the upstream provider's charge
+is `cost_details.upstream_inference_cost`. The `openrouter` SDK parses the flag, but
+`langchain-openrouter` 0.2.9 copies only `cost` and `cost_details` into `response_metadata`, so no
+consumer could tell whether a reported cost was the whole charge. It also drops
+`server_tool_use_details` (billed), every token-detail count beyond cached / cache-write /
+reasoning, the difference between a count OpenRouter omitted and `0` (it reads both as `0`), and
+the response-level `openrouter_metadata`, `service_tier` and `system_fingerprint`.
+
+**Fixed:** an OpenRouter model from `create_openrouter_chat` adds two keys to `response_metadata`,
+each OpenRouter's wire shape as sent:
+
+- **`openrouter_usage`**: the reply's `usage` block exactly as sent -- a field OpenRouter did not
+  send is not in the dict (never defaulted), a sent `null` stays `null`. Absent when the reply
+  carried no usage. Read BYOK as `openrouter_usage["is_byok"]`: when `True`, the call's full cost
+  is `cost + cost_details["upstream_inference_cost"]`; when absent, OpenRouter did not say.
+- **`openrouter_response`**: `openrouter_metadata`, `service_tier`, `system_fingerprint`, each only
+  when sent with a value. Absent when none was. Fields LangChain already carries (`id`, `model`,
+  `provider`, `cost`, `cost_details`) are not repeated.
+
+Both are on the message of a non-streamed answer and on the usage chunk of a streamed one (so on
+the aggregated message too); a stream that ends without a usage chunk carries them on a trailing
+empty chunk. Every path: `invoke`, `ainvoke` with or without the call deadline, `stream`,
+`astream`. They are read from the SDK's own parsed replies as they pass the model's `client`,
+which is now a thin wrapper over the SDK client; each call keeps its own, so concurrent calls on
+one model never see each other's. `langchain-openrouter` is not patched, and every key it writes
+arrives exactly as before. A client whose `chat.send` / `chat.send_async` moved raises
+`TypeError` when the model is built. Pinned at the wire, through the real `openrouter` SDK over a
+mock HTTP transport. No public name added.
+
 ## v0.65.0 -- 2026-10-05
 
 ### NATS: a declared KV bucket can carry its exact name and be refilled when it comes back empty
