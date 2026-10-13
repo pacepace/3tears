@@ -325,7 +325,11 @@ quality you care about, each scored 1 to 5 by default.
 
 Give `run_eval` a `Judge`: a completion client, the model it calls, the rubric, and the material each answer is
 judged against. The client below is an offline stand-in that looks for an apology. A real one calls your model
-provider; [`llm_judge.py`](../examples/llm_judge.py) has a small adapter for the `anthropic` SDK.
+provider; [`_live.py`](../examples/_live.py) is a small adapter for the `anthropic` SDK, which
+[`llm_judge.py`](../examples/llm_judge.py) hands to its judge. A stand-in of your own returns what a model would:
+a JSON reply with a string `reasoning` and `criteria_scores`, an object whose one key is the dimension asked
+about as `<context>.<dimension>` (`answer.acknowledges` here, the key the engine's prompt names), mapped to a score
+of 1 to 5 (`"pass"` or `"fail"` on a pass/fail dimension).
 
 ```python
 async def draft_reply(case: dict) -> str:

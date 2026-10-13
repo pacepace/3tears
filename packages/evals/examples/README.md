@@ -6,8 +6,16 @@ order: each builds on the ones before it. They all run offline with no API key, 
 ## Running them
 
 **Outside a checkout** (you installed the package with pip): the examples are not part of the installed package,
-so copy this whole directory from the repository, at the tag or version you installed. Copy all of it: the
-examples import `_live.py` and read `tickets.jsonl` from beside themselves. Then, from inside the copy:
+so fetch this whole directory from the repository, at the tag you installed (the
+[README's install step](../README.md#first-result-in-10-minutes) names it). This fetches only the examples:
+
+```bash
+git clone --depth 1 --branch <tag> --filter=blob:none --sparse https://github.com/pacepace/3tears
+cd 3tears && git sparse-checkout set packages/evals/examples && cd packages/evals/examples
+```
+
+Keep all of it together: the examples import `_live.py` and read `tickets.jsonl` from beside themselves. Then,
+from inside it:
 
 ```bash
 python rung_zero.py
@@ -49,6 +57,14 @@ An example that calls a model prints which way it ran:
   nothing about any model.
 - `No model is called: ...` means the example never calls one, live or not (`cassettes.py`, `reports.py`).
   `rung_zero.py` calls no model either, and prints no such line.
+
+**Your own client.** `_live.py` is the reference completion client. A client of your own, for another provider or
+a stand-in, is anything with an async `generate(*, system, user, response_format=None)` that returns an object
+carrying ten attributes: `content`, `input_tokens`, `output_tokens`, `reasoning_tokens`, `cost_usd`,
+`price_source`, `model`, `served_model`, `stop_reason` and `temperature` (`_live.Completion` is one, and a
+`SimpleNamespace` with the ten is another). `check_completion_conformance` (from `threetears.evals.testing`) is
+the check: hand it one completion your client returned, and it names each attribute missing and a `stop_reason`
+the engine does not know (`end_turn`, `max_tokens`, `content_filter` or `error`).
 
 Live runs use the cheapest Haiku models over 5 to 14 cases, so each costs cents. Each file's
 docstring gives its call count and rough live cost. `reports.py` and `llm_analysis.py` write their files under

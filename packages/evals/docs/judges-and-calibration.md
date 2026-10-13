@@ -9,10 +9,10 @@ ratings that takes, and how the ratings correct the judge's mean. Grade with cod
 The snippets run top to bottom as one script, in one async context (`python -m asyncio`, or inside
 `async def main()`). A store call blocks, so a snippet makes it off the event loop with
 `await run_blocking(host.blocking_executor, fn, ...)`. `client` is any `CompletionClient` (an async
-`generate(system=, user=, response_format=)` and an `aclose()`); `examples/llm_judge.py` has a Claude adapter.
-Every judge call sends its reply's shape as `response_format`, a strict `json_schema` directive (the criterion's
-answers, "can't tell" among them); pass it to a provider that enforces structured output, or send the nearest mode
-yours has. The reply is read and refused on return either way.
+`generate(system=, user=, response_format=)` and an `aclose()`); `examples/_live.py` has a Claude adapter, which
+`examples/llm_judge.py` uses. Every judge call sends its reply's shape as `response_format`, a strict `json_schema`
+directive (the criterion's answers, "can't tell" among them); pass it to a provider that enforces structured output,
+or send the nearest mode yours has. The reply is read and refused on return either way.
 
 ## Step 1: choose a scale, and prefer pass/fail
 

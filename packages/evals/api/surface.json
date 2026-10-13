@@ -4371,6 +4371,11 @@
       "signature": "",
       "tier": "closure"
     },
+    "threetears.evals.analysis.CELL_MODEL_VERSION": {
+      "kind": "constant (int)",
+      "signature": "",
+      "tier": "host-contract"
+    },
     "threetears.evals.analysis.CELL_NOT_RUN": {
       "kind": "constant (str)",
       "signature": "",
@@ -6258,11 +6263,6 @@
     },
     "threetears.evals.quick.JUDGED_CALLABLE_KIND": {
       "kind": "constant (str)",
-      "signature": "",
-      "tier": "closure"
-    },
-    "threetears.evals.quick.JUDGED_CALLABLE_UNSEATED": {
-      "kind": "constant (frozenset)",
       "signature": "",
       "tier": "closure"
     },

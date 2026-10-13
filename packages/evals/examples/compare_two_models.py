@@ -27,7 +27,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
-from _live import claude, online, spent
+from _live import anthropic_sdk, claude, online, spent
 from threetears.evals.quick import Answer, Comparison, compare
 
 LIVE = ("claude-haiku-4-5", "claude-haiku-5-5")  # the model you run today, and the cheaper one you might switch to
@@ -119,6 +119,7 @@ async def main() -> Comparison:
     current, cheaper = LIVE if online() else STAND_INS
     make = claude_classifier if online() else offline_classifier
     if online():
+        anthropic_sdk()  # without the SDK, exit saying how to get it before claiming a live run
         print(f"Running against Claude ({current}, {cheaper}).\n")
     else:
         print("ANTHROPIC_API_KEY is not set: running OFFLINE, with keyword stand-ins for both models.\n")

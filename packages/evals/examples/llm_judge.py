@@ -17,7 +17,7 @@ import json
 import re
 from types import SimpleNamespace
 
-from _live import Completion, claude, online
+from _live import Completion, anthropic_sdk, claude, online
 from threetears.evals.quick import Judge, run_eval
 from threetears.evals.analysis import EvalSummary
 
@@ -101,6 +101,7 @@ async def offline_judge(*, system: str, user: str, response_format: dict | None 
 
 async def main() -> EvalSummary:
     if online():
+        anthropic_sdk()  # without the SDK, exit saying how to get it before claiming a live run
         print(f"Running against Claude ({MODEL}).\n")
         client, model = claude(MODEL), MODEL  # one client, shared by the candidate and the judge
 

@@ -644,6 +644,7 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.schema.CASSETTE_SCHEMA_VERSION",
         "threetears.evals.kernel.IDENTITY_VERSION",
         "threetears.evals.analysis.REPORT_VERSION",
+        "threetears.evals.analysis.CELL_MODEL_VERSION",
         # The closed vocabularies a host writes and passes: each open stored vocabulary's values this build knows.
         "threetears.evals.schema.KnownUsageRole",
         "threetears.evals.schema.KnownSimulatorPurpose",

@@ -434,7 +434,8 @@ release, on:
   name may move in any release, recorded in `MIGRATIONS.toml` and printed in that release's notes, never shimmed.
 
 `packages/evals/api/surface.json` records each name's tier beside its kind and signature, and `HOST_CONTRACT` in
-`packages/evals/scripts/public_surface.py` declares the first tier, with the reason for each group of names. A name
+`packages/evals/scripts/public_surface.py` declares the first tier, with the reason for each group of names. The
+[reference](reference.md#public-api) marks each host-contract name *host contract*. A name
 a topic guide imports and the list does not hold is `closure`. If your host binds to one, ask for it to be
 promoted: promoting a name costs nothing, and demoting one is a break.
 
@@ -839,7 +840,8 @@ leaving one of your own apparatus dimensions unseated, build it with
 `reporter_kind_contract(host_seats=[...])`. On a reporter template, your `refuse_undeliverable_template`
 hook calls `refuse_undeliverable_reporter_template`.
 
-Then register the kind's launch entry (from `threetears.evals.ops`):
+Then register the kind's launch entry, a `LaunchableKind` (from `threetears.evals.run`) whose arguments come from
+`threetears.evals.ops` (`REPORTER_UNHONOURED_LAUNCH_ARGUMENTS`, `plan_reporter_arm`, `price_largest_reporter_call`):
 
 ```python
 LaunchableKind(

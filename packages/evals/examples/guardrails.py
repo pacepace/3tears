@@ -23,7 +23,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
-from _live import claude, online
+from _live import anthropic_sdk, claude, online
 from threetears.evals.quick import Comparison, Guardrail, compare
 
 MODEL = "claude-haiku-5-5"
@@ -119,6 +119,7 @@ def what_to_do(outcome: str, guardrail: str) -> str:
 async def main() -> Comparison:
     make = claude_bot if online() else offline_bot
     if online():
+        anthropic_sdk()  # without the SDK, exit saying how to get it before claiming a live run
         print(f"Running against Claude ({MODEL}).\n")
     else:
         print("ANTHROPIC_API_KEY is not set: running OFFLINE, with a scripted stand-in for each prompt.\n")

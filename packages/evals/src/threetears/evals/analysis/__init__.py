@@ -281,7 +281,13 @@ from threetears.evals.analysis.bundle.schema import (
     WholeSwing,
 )
 from threetears.evals.analysis.campaigns import CampaignStore, OpenAxisFamily
-from threetears.evals.analysis.cells import Cell, NextExperiment, RefusedMerge, SubjectKeyInstability
+from threetears.evals.analysis.cells import (
+    CELL_MODEL_VERSION,
+    Cell,
+    NextExperiment,
+    RefusedMerge,
+    SubjectKeyInstability,
+)
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
 from threetears.evals.analysis.generator import GenerationTally
 from threetears.evals.analysis.reads import LensStore, RowColumns, RunLister
@@ -473,6 +479,7 @@ __all__ = [
     "CampaignReadStore",
     "CampaignStore",
     "CaseSetIdentity",
+    "CELL_MODEL_VERSION",
     "Cell",
     "CellCoordinate",
     "ChangeLabel",
