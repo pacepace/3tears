@@ -1236,7 +1236,10 @@ def create_parse_document_tool(
         # lead the result, the window line first; the document's facts and its
         # text follow.
         window = window_text(result.text, offset=offset, max_chars=_PARSE_DOCUMENT_MAX_CHARS)
-        parts = [note for note in (window.note(tool="parse_document"),) if note]
+        parts: list[str] = []
+        window_note = window.note(tool="parse_document")
+        if window_note:
+            parts.append(window_note)
         if result.was_ocr:
             parts.append("**Note:** OCR was used for some pages")
         if result.title:
