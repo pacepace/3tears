@@ -125,13 +125,14 @@ judges, simulates or analyses runs offline on what a real model said rather than
 examples run this way, and `RECORD=1` re-records one:
 
 ```python
+from threetears.evals.run import JUDGE_REQUEST_SETTINGS
 from threetears.evals.testing import RecordedCompletions
 
 RECORDING = Path("tests/recordings/judge.jsonl")
 
 
 def judge_client():
-    # The settings my_judge_client() is built with: for the judge, the JUDGE_REQUEST_SETTINGS its builder applies.
+    # The settings my_judge_client() is built with: for the judge, the value its builder applies.
     if os.environ.get("RECORD"):
         return RecordedCompletions.record(
             my_judge_client(), RECORDING, settings=JUDGE_REQUEST_SETTINGS, replace=True

@@ -108,7 +108,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`CatalogRubricDim`** · model · A reusable rubric dimension in the shared catalog.
 - **`CellIdentity`** · dataclass · Which cell execution a stretch of work belongs to.
 - **`CellTrace`** · dataclass · What one cell's tracing yielded — filled by the sink, read by the engine.
-- **`ClientRequestSettings`** · model · The request parameters a host applied to one apparatus role's LLM client, for one run.
+- **`ClientRequestSettings`** · *host contract* · model · The request parameters a host applied to one apparatus role's LLM client, for one run.
 - **`CompletionClient`** · *host contract* · protocol · The completion port eval is constructed with.
 - **`CompletionGenerator`** · protocol · The one call a consumer of a completion client makes, without the client's lifecycle.
 - **`CompletionProtocolDefect`** · exception · A host's completion does not meet the `CompletionResult` protocol, found while the engine read it.
@@ -1333,7 +1333,7 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`= 'judge_repeat'`
 - **`JUDGE_REPEAT_BUDGET_S`** · constant (float) · A repeat's wall-clock ceiling as a job: generous, since every call is bounded by its client and the repeat stops on an account refusal; it exists so one whose provider hangs is ended rather than held forever.
   <br>`= 21600.0`
-- **`JUDGE_REQUEST_SETTINGS`** · constant (ClientRequestSettings) · The judge role's request settings as ONE value: what the host's client builder applies to every eval judge client, and what a run launched with a judge records as `judge_request_settings`.
+- **`JUDGE_REQUEST_SETTINGS`** · *host contract* · constant (ClientRequestSettings) · The judge role's request settings as ONE value: what the host's client builder applies to every eval judge client, and what a run launched with a judge records as `judge_request_settings`.
 - **`JUDGE_TEMPERATURE_JOB`** · constant (LeasedJobKind) · A judge temperature comparison's record.
 - **`LAUNCH_CANCEL_REASON`** · constant (str) · The reason recorded on a run its launch's cancel stopped.
   <br>`= 'its launch was cancelled'`

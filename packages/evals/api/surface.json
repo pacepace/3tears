@@ -159,7 +159,7 @@
     "threetears.evals.schema.ClientRequestSettings": {
       "kind": "model",
       "signature": "ClientRequestSettings(max_tokens: int, reasoning_max_tokens: int | None = None, reasoning_effort: StoredReasoningEffort | None = None, strict_output: bool = False)",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.schema.CompletenessSource": {
       "kind": "literal",
@@ -3544,7 +3544,7 @@
     "threetears.evals.run.JUDGE_REQUEST_SETTINGS": {
       "kind": "constant (ClientRequestSettings)",
       "signature": "",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.run.JUDGE_TEMPERATURE_JOB": {
       "kind": "constant (LeasedJobKind)",
