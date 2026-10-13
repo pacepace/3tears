@@ -359,6 +359,10 @@ again.
   object names takes them only while no write claim stands in the pod's pointer bucket
   (`object_store_requests.is_write_claim_key`), and then every one; `older_than` and
   `ORPHAN_CHUNK_MIN_AGE` are gone. A declarer must pass the pod's pointer bucket.
+  The sweep lists the chunk subjects first, then reads the claims, then the named objects, the
+  order the pod-side sweep already keeps: read the other way round, a put that started between the
+  claim read and the listing had its first chunks purged and then wrote metadata for an object no
+  `get` could verify.
 - **Added, `threetears.nats.ObjectStoreFullError`** (`bucket`, `name`), an `ObjectStoreError` raised
   for a store failure that reports its max bytes exceeded (JetStream 10077) and for insufficient
   server resources (10047); any other store failure stays a plain `ObjectStoreError`.
