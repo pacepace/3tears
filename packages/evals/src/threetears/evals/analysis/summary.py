@@ -562,8 +562,11 @@ class RoleSpend(BaseModel):
 
     **A role this build does not know is its own line, under its own name.** A newer minor can add a usage role
     (an open vocabulary); its rows are summed here like any other role's, after the roles this build knows, and its
-    line says the role is one this build does not know (:attr:`known`) — never folded into a known role, and never
-    read as ``external``, whose metering is a fact of that role alone.
+    line says the role is one this build does not know — never folded into a known role, and never read as
+    ``external``, whose metering is a fact of that role alone. Whether a role is known is a fact about the build
+    reading the line, not about the line, so :attr:`known` is a Python property of the reading build and is never
+    serialised: the wire shape carries ``role`` alone, and a client in another language compares it against the
+    roles *it* knows.
 
     Attributes:
         role: The role (:data:`~threetears.evals.schema.UsageRole`): one of
