@@ -21,7 +21,7 @@ import asyncio
 import json
 import math
 from collections.abc import Awaitable, Callable, Iterable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, cast
 from uuid import UUID
 
@@ -1485,23 +1485,38 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             salience_ambient_floor,
         ]
         vec_salience_idx = len(vec_params)
-        vec_coro = self.l3_pool.fetch(
-            f"""
-            SELECT memory_id, content, summary, type_memory, date_created,
-                   embedding::text AS embedding,
-                   1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
-            FROM memories
-            {vec_where}
-              AND embedding IS NOT NULL{vec_date_clause}
-              AND (superseded_by IS NULL OR NOT EXISTS (
-                    SELECT 1 FROM memories g
-                    WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
-              AND {_NOT_RETRACTED}
-              AND salience >= ${vec_salience_idx}
-            ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
-            LIMIT {limit_param}
-            """,
-            *vec_params,
+
+        def _nearest(older_than: datetime | None = None) -> Any:
+            # ``older_than`` narrows the scan to the history: see the history pool below.
+            history_clause = f" AND date_created < ${vec_salience_idx + 1}" if older_than is not None else ""
+            return self.l3_pool.fetch(  # type: ignore[union-attr]
+                f"""
+                SELECT memory_id, content, summary, type_memory, date_created,
+                       embedding::text AS embedding,
+                       1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
+                FROM memories
+                {vec_where}
+                  AND embedding IS NOT NULL{vec_date_clause}
+                  AND (superseded_by IS NULL OR NOT EXISTS (
+                        SELECT 1 FROM memories g
+                        WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
+                  AND {_NOT_RETRACTED}
+                  AND salience >= ${vec_salience_idx}{history_clause}
+                ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
+                LIMIT {limit_param}
+                """,
+                *vec_params,
+                *([older_than] if older_than is not None else []),
+            )
+
+        vec_coro = _nearest()
+        # The history pool. The candidates are the nearest ``candidate_limit`` of
+        # everything, and a burst of recent memories on one subject fills that pool
+        # as surely as it fills the list: capped, the list then came back short,
+        # with the places the cap freed left empty. So with a cap the nearest
+        # ``candidate_limit`` memories older than the window are candidates too.
+        history_coro = (
+            _nearest(datetime.now(UTC) - timedelta(hours=recent_window_hours)) if recent_cap is not None else None
         )
 
         fts_text = _build_fts_text(user_text, fts_min_len, fts_max_len)
@@ -1562,6 +1577,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         else:
             vec_rows = await vec_coro
             fts_rows = []
+        if history_coro is not None:
+            vec_rows = [*vec_rows, *await history_coro]
 
         merged: dict[Any, dict[str, Any]] = {}
         for row in vec_rows:

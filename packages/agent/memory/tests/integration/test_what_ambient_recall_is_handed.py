@@ -246,6 +246,26 @@ class TestTheRecentCap:
             # the rest of the capped places go to the burst's best answers, in order
             assert kept - {best} == set(burst[: cap - 1])
 
+    async def test_a_burst_that_fills_the_candidate_pool_does_not_leave_the_list_short(self, world: _World) -> None:
+        """Forty recent memories nearer the message than any old one: the thirty candidates are all recent.
+
+        The cap frees seven places, and the history must be there to take them.
+        """
+        for i in range(40):
+            await world.remember(f"burst {i}", cosine=0.90 - 0.001 * i, axis=100 + i, age_hours=1.0 + i * 0.1)
+        old = [
+            await world.remember(f"old {i}", cosine=0.70 - 0.01 * i, axis=10 + i, age_hours=24.0 * (60 + 13 * i))
+            for i in range(12)
+        ]
+
+        rows = await world.ambient(recent_cap=3)
+
+        assert len(rows) == 10
+        assert len(_recent(rows)) == 3
+        assert {r["memory_id"] for r in rows if r not in _recent(rows)} == set(old[:7])
+        # and with no cap the search is as it was: the nearest thirty, all of them recent
+        assert len(_recent(await world.ambient())) == 10
+
     async def test_fewer_recent_than_the_cap_drops_nothing(self, world: _World) -> None:
         mine = [
             await world.remember("old", cosine=0.7, axis=10, age_hours=24.0 * 90),
