@@ -711,6 +711,12 @@ async def load_memory_search_tool(
                 return _tool_error("memory_search", "query", f"search incomplete: {', '.join(degraded)} failed")
             return "No relevant memories or documents found for this query."
 
+        sections: list[list[str]] = []
+        if degraded:
+            # Partial results, said first: a reader that keeps only the head of a long result
+            # must still read that the recall is incomplete, or it presents it as exhaustive.
+            sections.append([f"(Partial results: {', '.join(degraded)} failed, so more may exist.)"])
+
         parts: list[str] = []
         if memories:
             parts.append(f"Found {len(memories)} relevant memories:")
@@ -721,10 +727,10 @@ async def load_memory_search_tool(
                     parts.append(f"- {tag} [{m['type']}] [{ts}] {m['content']}")
                 else:
                     parts.append(f"- {tag} [{m['type']}] {m['content']}")
+            sections.append(parts)
 
         if media_results:
-            parts.append("")
-            parts.append(f"Found {len(media_results)} files:")
+            parts = [f"Found {len(media_results)} files:"]
             for mr in media_results:
                 ts = _fmt_dt(mr.get("date_created"))
                 ts_suffix = f" (created: {ts})" if ts else ""
@@ -734,10 +740,10 @@ async def load_memory_search_tool(
                 else:
                     label = mr.get("title") or mr.get("media_category", "media")
                     parts.append(f"- {tag} [{label}] {mr['content']}{ts_suffix}")
+            sections.append(parts)
 
         if doc_chunks:
-            parts.append("")
-            parts.append(f"Found {len(doc_chunks)} passages:")
+            parts = [f"Found {len(doc_chunks)} passages:"]
             for c in doc_chunks:
                 loc_parts = []
                 if c.get("title"):
@@ -749,12 +755,7 @@ async def load_memory_search_tool(
                 location = " ".join(loc_parts) if loc_parts else "unknown source"
                 tag = f"[chunk:{c['chunk_id']}]"
                 parts.append(f"- {tag} [from {location}] {c['content']}")
-
-        if degraded:
-            # Partial results. Told to the model as well as the log, so it does not present an
-            # incomplete recall as an exhaustive one.
-            parts.append("")
-            parts.append(f"(Partial results: {', '.join(degraded)} failed, so more may exist.)")
+            sections.append(parts)
 
         if ledger_callback:
             for m in memories:
@@ -766,7 +767,7 @@ async def load_memory_search_tool(
                 desc = c.get("title") or c["content"]
                 await ledger_callback(c["chunk_id"], "chunk", desc)
 
-        return "\n".join(parts)
+        return "\n\n".join("\n".join(section) for section in sections)
 
     memory_search.description = (
         "Search your memories, the files you have seen and your past conversations. "

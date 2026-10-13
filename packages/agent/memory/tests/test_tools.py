@@ -197,6 +197,113 @@ class TestFmtDt:
         assert "[fact] [42] lives in Leeds" in result
 
 
+# -- A search that lost a branch says so before anything it found ---------------
+
+
+# parity-exempt: answers only the two searches memory_search's query path makes on each collection; the SQL behind them is covered by the collection tests
+class _FakeSearchRows:
+    """a collection whose semantic and full-text searches return fixed rows, or raise."""
+
+    def __init__(
+        self, semantic: list[dict[str, Any]] | None = None, fts: list[dict[str, Any]] | Exception | None = None
+    ) -> None:
+        self.semantic = semantic or []
+        self.fts = fts if fts is not None else []
+
+    async def search_by_semantic(self, **kwargs: Any) -> list[dict[str, Any]]:
+        _ = kwargs
+        return self.semantic
+
+    async def search_by_fts(self, **kwargs: Any) -> list[dict[str, Any]]:
+        _ = kwargs
+        if isinstance(self.fts, Exception):
+            raise self.fts
+        return self.fts
+
+
+async def _search(
+    authorizer: MemoryAuthorizerDependencies,
+    *,
+    memories: _FakeSearchRows,
+    media: _FakeSearchRows,
+    chunks: _FakeSearchRows,
+    **loader_kwargs: Any,
+) -> str:
+    from langchain_core.embeddings import DeterministicFakeEmbedding
+
+    (tool,) = await load_memory_search_tool(
+        uuid4(),
+        DeterministicFakeEmbedding(size=8),
+        uuid4(),
+        uuid4(),
+        authorizer,
+        memories,  # type: ignore[arg-type]
+        media,  # type: ignore[arg-type]
+        chunks,  # type: ignore[arg-type]
+        **loader_kwargs,
+    )
+    result = await tool.ainvoke({"query": "where the person lives"})
+    assert isinstance(result, str)
+    return result
+
+
+def _memory_row(content: str, date_created: Any = None) -> dict[str, Any]:
+    return {"memory_id": uuid4(), "type": "fact", "content": content, "date_created": date_created, "similarity": 0.9}
+
+
+def _media_row(content: str, date_created: Any = None) -> dict[str, Any]:
+    return {
+        "content_id": uuid4(),
+        "content": content,
+        "media_id": uuid4(),
+        "media_category": "image",
+        "metadata_json": None,
+        "date_created": date_created,
+        "similarity": 0.8,
+    }
+
+
+class TestPartialResultsAreSaidFirst:
+    async def test_the_note_is_the_first_line_and_everything_found_follows_it(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies
+    ) -> None:
+        result = await _search(
+            permissive_memory_authorizer,
+            memories=_FakeSearchRows(semantic=[_memory_row("lives in Leeds")], fts=RuntimeError("fts down")),
+            media=_FakeSearchRows(semantic=[_media_row("a photo of the house")]),
+            chunks=_FakeSearchRows(),
+        )
+        lines = result.splitlines()
+        assert lines[0] == "(Partial results: memory full-text search failed, so more may exist.)"
+        assert lines[1] == "" and lines[2] == "Found 1 relevant memories:"
+        assert "lives in Leeds" in result and "a photo of the house" in result
+        assert result.count("Partial results") == 1 and not result.rstrip().endswith(")"), "no note after the body"
+
+    async def test_a_search_that_lost_nothing_starts_with_what_it_found(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies
+    ) -> None:
+        result = await _search(
+            permissive_memory_authorizer,
+            memories=_FakeSearchRows(),
+            media=_FakeSearchRows(semantic=[_media_row("a photo of the house")]),
+            chunks=_FakeSearchRows(),
+        )
+        assert result.startswith("Found 1 files:\n- [media:"), "no blank line before the first section"
+        assert "Partial results" not in result
+
+    async def test_sections_are_parted_by_one_blank_line(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies
+    ) -> None:
+        result = await _search(
+            permissive_memory_authorizer,
+            memories=_FakeSearchRows(semantic=[_memory_row("lives in Leeds")]),
+            media=_FakeSearchRows(semantic=[_media_row("a photo of the house")]),
+            chunks=_FakeSearchRows(),
+        )
+        first, second = result.split("\n\n")
+        assert first.startswith("Found 1 relevant memories:") and second.startswith("Found 1 files:")
+
+
 # -- Shard C input schemas (v0.7.0 transcript-chunks tools) ------------------
 
 
