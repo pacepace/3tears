@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import itertools
 import json
+import threading
 import time
 from collections.abc import Iterator, Sequence
 from typing import Any
@@ -316,55 +316,193 @@ class _IgnoresCreateOnly(InMemoryDocumentStore):
         super().upsert(document, if_match=if_match)
 
 
-class _EtagNeverMoves(InMemoryDocumentStore):
-    """Every write leaves the document's etag where it was."""
+class _EtagScheme(DocumentStore):
+    """The reference store's documents under an etag scheme of the double's own, for the faults that break the etag.
 
-    def _mint_etag(self, key: tuple[str, str]) -> None:
-        self._etags.setdefault(key, f"etag-{key[1]}")
+    Each document lives in an inner :class:`InMemoryDocumentStore`, reached through its public methods only; what
+    the double changes is the token a caller sees. :meth:`token` names the token the scheme gives a stored document
+    (the inner store's own etag, unless a scheme says otherwise), :meth:`get_with_etag` hands that out, and a
+    conditional write presenting it is translated back to the inner store's current etag by :meth:`inner_etag`, so
+    the inner store still does the write. A token that is not the scheme's current one is refused as stale.
 
+    The double's own lock spans the translation and the write, so its compare and its write are one step as the
+    reference store's are: a scheme is caught for the tokens it hands out, never for a race the double opened.
+    """
 
-class _MergeKeepsTheEtag(InMemoryDocumentStore):
-    """``merge_fields`` writes without minting a new etag."""
+    def __init__(self) -> None:
+        """Start empty, over a fresh reference store."""
+        self.inner = InMemoryDocumentStore()
+        self.lock = threading.RLock()
+
+    def token(self, doc_id: str, scope_id: str, document: dict[str, Any], inner_etag: str) -> str:
+        """The token the scheme gives a stored document: by default the inner store's etag, unchanged.
+
+        Args:
+            doc_id: The document's own id.
+            scope_id: The scope it lives in.
+            document: The stored document, as the inner store hands it back.
+            inner_etag: The inner store's etag for it.
+
+        Returns:
+            The token a caller sees.
+        """
+        return inner_etag
+
+    def written(self, doc_id: str, scope_id: str) -> None:
+        """Called under the lock after each write that landed, whole-document or merge; a scheme's state moves here.
+
+        Args:
+            doc_id: The document's own id.
+            scope_id: The scope it lives in.
+        """
+
+    def inner_etag(self, doc_id: str, scope_id: str, if_match: str) -> str | None:
+        """Translate a caller's token to the inner store's etag the write presents.
+
+        Args:
+            doc_id: The document's own id.
+            scope_id: The scope it lives in.
+            if_match: The token the caller presented.
+
+        Returns:
+            The inner store's current etag, when ``if_match`` is the scheme's current token for the document; a
+            scheme may return ``None`` to let the write land unconditionally.
+
+        Raises:
+            StoreConflict: ``if_match`` is not the document's current token, or there is no such document.
+        """
+        document, etag = self.inner.get_with_etag(doc_id, scope_id)
+        if document is None or etag is None or self.token(doc_id, scope_id, document, etag) != if_match:
+            raise StoreConflict(f"document {doc_id!r} in scope {scope_id!r} no longer carries etag {if_match!r}")
+        return etag
+
+    def get(self, doc_id: str, scope_id: str) -> dict[str, Any] | None:
+        return self.inner.get(doc_id, scope_id)
+
+    def get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]:
+        with self.lock:
+            document, etag = self.inner.get_with_etag(doc_id, scope_id)
+            if document is None or etag is None:
+                return None, None
+            return document, self.token(doc_id, scope_id, document, etag)
+
+    def get_many(
+        self,
+        doc_type: str,
+        doc_ids: Sequence[str],
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        keep: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
+        return self.inner.get_many(doc_type, doc_ids, scope_id, exclude=exclude, keep=keep)
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        return self.inner.by_doc_type(doc_type, scope_id, **kwargs)
+
+    def iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]:
+        return self.inner.iter_by_doc_type(doc_type, scope_id)
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
+        doc_id, scope_id = document["id"], document["scope_id"]
+        with self.lock:
+            # An etag and create_only together reach the inner store as given, and it refuses the pair.
+            if if_match is not None and not create_only:
+                if_match = self.inner_etag(doc_id, scope_id, if_match)
+            self.inner.upsert(document, if_match=if_match, create_only=create_only)
+            self.written(doc_id, scope_id)
 
     def merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool:
-        _, etag = self.get_with_etag(doc_id, scope_id)
-        landed = super().merge_fields(doc_id, scope_id, fields)
-        if etag is not None:
-            self._etags[(scope_id, doc_id)] = etag
-        return landed
-
-
-class _EtagSurvivesDelete(InMemoryDocumentStore):
-    """``delete`` forgets the document but not its etag, so the old token still writes."""
+        with self.lock:
+            landed = self.inner.merge_fields(doc_id, scope_id, fields)
+            if landed:
+                self.written(doc_id, scope_id)
+            return landed
 
     def delete(self, doc_id: str, scope_id: str) -> bool:
-        etag = self._etags.get((scope_id, doc_id))
-        deleted = super().delete(doc_id, scope_id)
-        if etag is not None:
-            self._etags[(scope_id, doc_id)] = etag
-        return deleted
+        with self.lock:
+            return self.inner.delete(doc_id, scope_id)
 
 
-class _EtagIsAVersionFromOne(InMemoryDocumentStore):
+class _EtagNeverMoves(_EtagScheme):
+    """Every write leaves the document's etag where it was: the token is the document's id."""
+
+    def token(self, doc_id: str, scope_id: str, document: dict[str, Any], inner_etag: str) -> str:
+        return f"etag-{doc_id}"
+
+
+class _MergeKeepsTheEtag(_EtagScheme):
+    """``merge_fields`` writes without minting a new etag: after a merge the document keeps the token it had."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        #: The token a merge kept, keyed by the inner etag that merge minted.
+        self.kept: dict[str, str] = {}
+
+    def token(self, doc_id: str, scope_id: str, document: dict[str, Any], inner_etag: str) -> str:
+        return self.kept.get(inner_etag, inner_etag)
+
+    def merge_fields(self, doc_id: str, scope_id: str, fields: dict[str, Any]) -> bool:
+        with self.lock:
+            _, before = self.get_with_etag(doc_id, scope_id)
+            landed = super().merge_fields(doc_id, scope_id, fields)
+            _, minted = self.inner.get_with_etag(doc_id, scope_id)
+            if before is not None and minted is not None:
+                self.kept[minted] = before
+            return landed
+
+
+class _EtagSurvivesDelete(_EtagScheme):
+    """``delete`` forgets the document but not its etag, so the old token still writes."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        #: The token each deleted document carried, honoured until the next write to its key.
+        self.survivors: dict[tuple[str, str], str] = {}
+
+    def inner_etag(self, doc_id: str, scope_id: str, if_match: str) -> str | None:
+        if self.inner.get(doc_id, scope_id) is None and self.survivors.get((scope_id, doc_id)) == if_match:
+            # The inner store has no etag for a gone document, so the surviving token writes unconditionally.
+            return None
+        return super().inner_etag(doc_id, scope_id, if_match)
+
+    def written(self, doc_id: str, scope_id: str) -> None:
+        self.survivors.pop((scope_id, doc_id), None)
+
+    def delete(self, doc_id: str, scope_id: str) -> bool:
+        with self.lock:
+            _, etag = self.get_with_etag(doc_id, scope_id)
+            deleted = super().delete(doc_id, scope_id)
+            if etag is not None:
+                self.survivors[(scope_id, doc_id)] = etag
+            return deleted
+
+
+class _EtagIsAVersionFromOne(_EtagScheme):
     """The etag is a per-document version that restarts at 1, so a re-created document reuses its predecessor's."""
 
     def __init__(self) -> None:
         super().__init__()
-        self._versions: dict[tuple[str, str], Iterator[int]] = {}
+        #: How many writes each stored document has had since it was created.
+        self.versions: dict[tuple[str, str], int] = {}
 
-    def _mint_etag(self, key: tuple[str, str]) -> None:
-        self._etags[key] = f"v{next(self._versions.setdefault(key, itertools.count(1)))}"
+    def token(self, doc_id: str, scope_id: str, document: dict[str, Any], inner_etag: str) -> str:
+        return f"v{self.versions[(scope_id, doc_id)]}"
+
+    def written(self, doc_id: str, scope_id: str) -> None:
+        self.versions[(scope_id, doc_id)] = self.versions.get((scope_id, doc_id), 0) + 1
 
     def delete(self, doc_id: str, scope_id: str) -> bool:
-        self._versions.pop((scope_id, doc_id), None)
-        return super().delete(doc_id, scope_id)
+        with self.lock:
+            self.versions.pop((scope_id, doc_id), None)
+            return super().delete(doc_id, scope_id)
 
 
-class _EtagIsAContentHash(InMemoryDocumentStore):
+class _EtagIsAContentHash(_EtagScheme):
     """The etag is a digest of the document, so rewriting the same content keeps it and re-creating it revives it."""
 
-    def _mint_etag(self, key: tuple[str, str]) -> None:
-        self._etags[key] = hashlib.sha256(json.dumps(self.documents[key], sort_keys=True).encode()).hexdigest()
+    def token(self, doc_id: str, scope_id: str, document: dict[str, Any], inner_etag: str) -> str:
+        return hashlib.sha256(json.dumps(document, sort_keys=True).encode()).hexdigest()
 
 
 class _ComparesThenWritesApart(InMemoryDocumentStore):
@@ -441,7 +579,7 @@ class _RoutesOnlyTheTypesItWasBuiltFor(InMemoryDocumentStore):
 
 #: Each broken store, and the cases it must turn red. A case may fail under other faults too; what is
 #: asserted is that these ones go red, and that every case is listed against at least one fault.
-_FAULTS: dict[type[InMemoryDocumentStore], frozenset[str]] = {
+_FAULTS: dict[type[DocumentStore], frozenset[str]] = {
     _MergeCreates: frozenset({"scope.miss_is_an_outcome"}),
     _GetIgnoresScope: frozenset({"scope.isolates_every_method"}),
     _OneDocumentPerId: frozenset({"scope.one_id_two_scopes"}),
@@ -505,9 +643,7 @@ def test_every_case_is_turned_red_by_some_fault() -> None:
     [(fault, name) for fault, names in _FAULTS.items() for name in sorted(names)],
     ids=lambda value: value.__name__.strip("_") if isinstance(value, type) else value,
 )
-def test_a_broken_store_fails_the_case_for_the_rule_it_breaks(
-    fault: type[InMemoryDocumentStore], case_name: str
-) -> None:
+def test_a_broken_store_fails_the_case_for_the_rule_it_breaks(fault: type[DocumentStore], case_name: str) -> None:
     """A broken store raises; a :class:`StoreConflict` escaping a case that expected a write to land counts too."""
     with pytest.raises((StoreConformanceFailure, StoreConflict)):
         _CASES[case_name].run(fault())
