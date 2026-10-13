@@ -519,7 +519,7 @@ class CollectionRegistry:
     def watched_by(self, table_name: str, watching: Callable[[], bool]) -> None:
         """say that a follower watches ``table_name``'s generation, and how to ask whether it still does.
 
-        Called by each follower that runs a watch on the table (``AccessTableFollower``); more than
+        Called by each follower that runs a watch on the table (``threetears.epoch.TableFollower``); more than
         one may. A cache derived from the table trusts what it holds only while every one of them
         answers ``True`` (:meth:`tables_trusted`). The follower withdraws with :meth:`not_watched_by`.
 

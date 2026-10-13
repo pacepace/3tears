@@ -1063,7 +1063,7 @@ hub. Its rbac stack's `AclCache` follows the access tables like every other.
   entry whose loader read began before any eviction is not stored.
 - **Following, one call**: `threetears.agent.acl.generation_follow.follow_access_tables(registry,
   cache, reader)` binds the cache and follows the tables, returning one handle whose `stop()` undoes
-  both; each half alone is unsafe. `AccessTableFollower` runs one `follow_generation_key` watch per
+  both; each half alone is unsafe. `threetears.epoch.TableFollower` runs one `follow_generation_key` watch per
   table as a task and starts it again when it ends or fails, after a delay that doubles from one
   second to a sixty-second cap and resets when the watch is pushed a value. That delay is the
   watch's liveness, not an age on any cached value. Each table's `WatchHealth` (consecutive
@@ -1098,9 +1098,9 @@ must reach cobalt before a hub image whose registry follows.
   agent pod and the owner-data stack pass their client, so their `BrokerGenerationSource` reads;
   the devx workspace runtime passes `None` (the dev `tooling` user holds no read of the bucket).
   The framework's tool-pod stack builds `BrokerGenerationSource(EpochGenerationReader(nc))`, so a
-  product's per-caller cache in a tool pod can follow these tables with `AccessTableFollower` or
+  product's per-caller cache in a tool pod can follow these tables with `threetears.epoch.TableFollower` or
   `follow_generation_key`. `3tears-epoch` joins `3tears-agent-tools`, `3tears-registry`,
-  `3tears-agent-acl[bus]` and the SDK.
+  `3tears-agent-acl[follow]` and the SDK.
 
 ### Writes the Database Made Outside a Collection, Put on the Epoch System
 
@@ -1189,7 +1189,7 @@ Built for the reports product's state limit (its wave 2 chunk 10), 2026-10-09, i
     database, never a cache, and a write's broadcast goes out after its commit.
   - **Trusted only while followed.** It serves and keeps answers only while
     `follow_caller_access_cache` follows it and every watch is running
-    (`AccessTableFollower.watching`); a cache nobody follows, a stopped one, or one whose watches
+    (`TableFollower.watching`); a cache nobody follows, a stopped one, or one whose watches
     are failing (the bucket unreachable, the read grant missing) asks the hub every time, and losing
     trust empties it, so nothing held across the failure is served after.
 - **`follow_caller_access_cache(registry, cache, reader)`** binds and follows in one call, the same
@@ -1307,7 +1307,7 @@ write to them is announced: the hub's template routes and schema endpoint write 
 removal invalidates the rows its delete cascades to (now including the datasources whose
 `origin_datasource_id` its delete clears), and the platform migrations are announced at every hub
 start. The hub and every agent pod follow the four tables beside the access tables
-(`threetears.agent.acl.generation_follow.follow_tables`, `KNOWLEDGE_SCAN_TABLES`). `ScanCache`
+(`threetears.epoch.follow_tables`, `KNOWLEDGE_SCAN_TABLES`). `ScanCache`
 has no TTL: it stores and serves an entry only while every table it depends on is followed with its
 watch running (`CollectionRegistry.tables_trusted`, fed by each follower through `watched_by`), and
 otherwise the scan reads L3. The scans' dependencies now name `namespaces`, which their visibility
@@ -1337,9 +1337,9 @@ listener is subscribed to; any other is read from the row every time.
 and `datasources.spec`, columns no collection declares or caches and no scan reads.
 
 **A follower that stops when its connection closes.** A tool pod on SIGTERM drained its client and
-`AccessTableFollower` restarted every watch against the closed connection, keeping the process
+`TableFollower` restarted every watch against the closed connection, keeping the process
 alive. A watch whose watcher reports its connection closed (`EpochGenerationReader.closed`) now
-stops, and `AccessTableFollower.stop` is bounded (`stop_timeout`, 5 s). The reports product's
+stops, and `TableFollower.stop` is bounded (`stop_timeout`, 5 s). The reports product's
 pod stops following after its server's drain (`storage_closing`); with this it no longer hangs, and
 moving that stop before the drain is the product's to do.
 

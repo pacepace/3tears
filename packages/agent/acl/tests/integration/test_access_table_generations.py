@@ -38,11 +38,17 @@ from threetears.agent.acl import (
     bind_acl_cache_to_access_tables,
 )
 from threetears.agent.acl import ACCESS_TABLES
-from threetears.agent.acl.generation_follow import AccessTableFollower, follow_access_tables
+from threetears.agent.acl.generation_follow import follow_access_tables
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeNatsClient
-from threetears.epoch import EpochGenerationReader, EpochGenerationSource, generation_catchup_tick, generation_kv_key
+from threetears.epoch import (
+    EpochGenerationReader,
+    EpochGenerationSource,
+    TableFollower,
+    generation_catchup_tick,
+    generation_kv_key,
+)
 from threetears.nats import set_default_namespace
 
 pytestmark = pytest.mark.integration
@@ -427,7 +433,7 @@ class TestAMissedBroadcastEmptiesOnlyItsTablesLayer:
     async def test_by_the_key_watcher(self, pool: asyncpg.Pool, bus: _Lossy) -> None:
         writer, follower = await _pods(pool, bus)
         group, ns = uuid.uuid4(), uuid.uuid4()
-        follower_ = AccessTableFollower(follower.registry, follower.reader, grace=timedelta(milliseconds=50))
+        follower_ = TableFollower(follower.registry, follower.reader, ACCESS_TABLES, grace=timedelta(milliseconds=50))
         follower_.start()
         try:
             await asyncio.sleep(0.1)  # each watch is pushed its key's latest value

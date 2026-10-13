@@ -420,10 +420,10 @@ see "What Must Already Be Deployed Everywhere" in the note.
   `async` method to it.
 - **Switched on:** `concepts`, `playbook_entries` (`threetears.agent.knowledge`), `datasources` and
   `datasource_tables` (`threetears.datasources`). A process caching knowledge scans follows them
-  beside the access tables: `generation_follow.follow_tables(registry, reader,
+  beside the access tables: `threetears.epoch.follow_tables(registry, reader,
   KNOWLEDGE_SCAN_TABLES)`. The scans' dependencies name `namespaces` too.
 - **Fixed:** a write-generation watch whose connection is closed stops instead of restarting forever
-  (`EpochGenerationReader.closed`), and `AccessTableFollower.stop` is bounded (`stop_timeout`, 5 s);
+  (`EpochGenerationReader.closed`), and `TableFollower.stop` is bounded (`stop_timeout`, 5 s);
   a tool pod no longer hangs on SIGTERM.
 
 ### Core coordination: a fence on a producer's ready signal
@@ -469,7 +469,7 @@ refused later, by the hub.
   (`trusted`); otherwise every question goes to the hub, and losing trust empties it.
 - **Added, `threetears.agent.acl.generation_follow.follow_caller_access_cache`**: binds the cache and
   follows the access tables in one call, as `follow_access_tables` does for `AclCache`, and tells the
-  cache whether its watches are running (`AccessTableFollower.watching`: running, none failing; a key
+  cache whether its watches are running (`TableFollower.watching`: running, none failing; a key
   never written is watched though never pushed).
 - **Added, `threetears.agent.acl.CallerNamespaces`**: the namespaces the hub's `namespace.discover`
   lists for a caller, asked with the caller's own tokens, kept in a `CallerAccessCache`, and failing
@@ -541,8 +541,8 @@ subjects and `AclCache`'s TTL stay until the contract stage.
   it; `GroupNamespaceEntry.role_ids`, recorded by the evaluator, so a role edit evicts exactly the
   entries that read the role.
 - **Added, `threetears.agent.acl.bind_acl_cache_to_access_tables` and `ACCESS_TABLES`**, and
-  `threetears.agent.acl.generation_follow.AccessTableFollower` (one supervised generation-key watch
-  per table; `3tears-epoch` joins the `[bus]` extra).
+  `threetears.epoch.TableFollower` (one supervised generation-key watch per table; the acl half
+  that uses it needs the `3tears-agent-acl[follow]` extra, which brings `3tears-epoch`).
 - **Changed, a broker reply carrying no generations field says the broker advanced nothing**
   (owner, 2026-10-08): `BrokerGenerationSource.advance` returns `None`, the rows name no
   generation, and a warning is logged once per table, so a pod switched on ahead of its hub still
@@ -558,7 +558,7 @@ subjects and `AclCache`'s TTL stay until the contract stage.
 - **Added, `follow_access_tables(registry, cache, reader)`** in
   `threetears.agent.acl.generation_follow`: binds and follows in one call, returning one handle
   (`AccessTableFollowing`) whose `stop()` undoes both; refuses unless the registry's invalidation
-  listener runs (`CollectionRegistry.invalidation_listener_running`, added). `AccessTableFollower`
+  listener runs (`CollectionRegistry.invalidation_listener_running`, added). `threetears.epoch.TableFollower`
   backs a failing watch off from one second to a sixty-second cap and exposes `WatchHealth` and
   `healthy`; `DegradedEvictions` counts rows whose reach was unknown. `follow_generation_key` takes
   any `threetears.epoch.GenerationWatcher`.
@@ -891,6 +891,24 @@ bound could not be tested against it.
 - **`still_wanted`** is asked by `restart_broker` before a declaration is put back; one answering
   `False` is forgotten and its bucket stays absent; one that raises is logged at ERROR and the
   declaration is restored. Both are what the real restoration does.
+
+### Epoch and agent acl: the table follower lives in `threetears.epoch`
+
+The supervised follower knows nothing about access control: it follows any table's write generation
+on a registry, and the knowledge scan tables are followed through it. It was in
+`threetears.agent.acl.generation_follow`, behind an extra named for a bus this release deletes.
+
+- **Moved, before any release carried them:** `threetears.epoch.table_follow` holds `TableFollower`
+  (was `AccessTableFollower`; `tables` is now a required third argument, with no access-table
+  default), `WatchHealth`, `follow_tables`, `DEFAULT_WATCH_RESTART_DELAY`,
+  `MAX_WATCH_RESTART_DELAY` and `DEFAULT_STOP_TIMEOUT`, all exported from `threetears.epoch`.
+  Nothing is re-exported from the old path.
+- **Stays in `threetears.agent.acl.generation_follow`:** `follow_access_tables`,
+  `follow_caller_access_cache` and `AccessTableFollowing`, which bind a cache to the access tables
+  and follow them with a `TableFollower`.
+- **Changed, breaking, packaging:** the `3tears-agent-acl` extra `bus` is now `follow`
+  (`3tears-agent-acl[follow]`): `3tears-epoch` and the NATS client, needed only to import
+  `threetears.agent.acl.generation_follow`. The acl README names it.
 
 ### Epoch: a durable subject's versions can be read from a per-process copy
 
