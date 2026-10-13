@@ -1655,6 +1655,10 @@ def builtin_judge_config_id(wording: str) -> str:
     wording's sha256 — a handful of built-in wordings will ever exist, so 48 bits leaves no collision to fear,
     and the id stays short enough to read in a report.
 
+    So a release that rewords a built-in prompt changes the judge every stored result names, and says so: its
+    ``MIGRATIONS.toml`` notes carry :data:`JUDGE_WORDING_CHANGE_SENTENCE` (the policy in
+    :mod:`~threetears.evals.schema.versioning`).
+
     Args:
         wording: The built-in prompt's fixed text, as the judge service renders it for the dimension's family.
 
@@ -1662,6 +1666,20 @@ def builtin_judge_config_id(wording: str) -> str:
         ``builtin:<sha12>``.
     """
     return BUILTIN_JUDGE_CONFIG_PREFIX + bytes_digest(wording.encode("utf-8"))[:12]
+
+
+#: The sentence a release's ``MIGRATIONS.toml`` notes carry, verbatim, when it changes the wording of a built-in judge
+#: prompt (:func:`builtin_judge_config_id`) or of the reply-format suffix a configured judge is sent
+#: (:func:`configured_judge_config_id`). Either is a judge's identity, a fingerprint rather than a counter, so the
+#: change is invisible to every version number and would otherwise ship unannounced: no stored document is refused,
+#: while every result judged before the release stops pooling with every result judged after it, and a scope's
+#: ``calibrated`` evidence tier reads ``undetermined`` until the new judge is calibrated.
+#: ``tests/test_judge_identity_pins.py`` pins each fingerprint by value and holds the release's notes to this sentence
+#: when one moves.
+JUDGE_WORDING_CHANGE_SENTENCE: Final[str] = (
+    "The built-in judge wording (or the reply-format suffix a configured judge is sent) changed, so every result "
+    "judged before this release is another judge for agreement, judge profiles, drift and evidence tiers."
+)
 
 
 def is_builtin_judge_config_id(config_id: str | None) -> bool:
@@ -3917,6 +3935,9 @@ class AsyncExternalSpend(EvalDocumentModel, CoreShapeModel):
     (:meth:`~threetears.evals.kernel.spend.ExternalRateTable.money_for`), and leaves them counted and
     unpriced — unknown, never ``0`` — where neither exists. :meth:`as_external_spend` is the one
     conversion every reader takes, so no reader can rebuild the report and drop a field of it.
+
+    Provisional: shaped by the first host that adopted the engine, and kept or removed by whether a second host's
+    adoption uses it (``docs/adopting-a-host.md``, "Provisional mechanisms").
     """
 
     provider: str | None = Field(description="Who was called; None only when the work could not say")
@@ -3995,6 +4016,9 @@ class AsyncDelivery(EvalDocumentModel, CoreShapeModel):
     in flight when the cell ended as much as for work that delivered, since it spent either way. Each
     is ``None`` (or empty) when unreported, never ``0``. A substituted entry spent nothing and may
     report no spend at all.
+
+    Provisional: shaped by the first host that adopted the engine, and kept or removed by whether a second host's
+    adoption uses it (``docs/adopting-a-host.md``, "Provisional mechanisms").
     """
 
     tool: str = Field(min_length=1, description="The tool that did the work, as the kind names it")
@@ -4138,6 +4162,11 @@ UsageRole = str
 #: A value of :data:`UsageRole` this build knows, as a type: what a caller names (an action's argument, a
 #: filter) and what this build writes, refused outside the set as any ``Literal`` is. A stored field reads
 #: the open :data:`UsageRole` instead.
+#:
+#: ``inner_agent`` is the model calls a candidate's background work made on a model of its own, and ``external`` the
+#: paid non-LLM calls it made, both folded from :class:`AsyncDelivery`. Provisional: those two roles were shaped by the
+#: first host that adopted the engine, and are kept or removed by whether a second host's adoption uses them
+#: (``docs/adopting-a-host.md``, "Provisional mechanisms").
 KnownUsageRole = Literal["candidate", "judge", "simulator", "inner_agent", "external"]
 
 #: The values of :data:`UsageRole` this build knows, in the order its readers list them.
@@ -5573,6 +5602,7 @@ __all__ = [
     "BUILTIN_JUDGE_CONFIG_PREFIX",
     "JudgeConfig",
     "builtin_judge_config_id",
+    "JUDGE_WORDING_CHANGE_SENTENCE",
     "configured_judge_config_id",
     "is_builtin_judge_config_id",
     "judge_config_of",

@@ -1,10 +1,10 @@
 """The public surface is held to a checked-in snapshot, and a name never leaves it unrecorded.
 
-``api/surface.json`` is every public root's ``__all__``, one entry per ``root.name`` with its kind and signature,
+``api/surface.json`` is every public root's ``__all__``, one entry per ``root.name`` with its kind, signature and tier,
 written by ``scripts/generate_api_snapshot.py`` over the same walk that renders ``docs/reference.md``. This test
 compares the installed package with it:
 
-* a name added, or a kind or signature changed, fails until the snapshot is regenerated, so every change to the
+* a name added, or a kind, signature or tier changed, fails until the snapshot is regenerated, so every change to the
   surface is a diff a reviewer sees;
 * a name that left a root (moved, renamed or removed) fails until ``MIGRATIONS.toml``'s newest section records
   its new home (or ``removed``) and why, and the generator refuses to write a snapshot without it. The release
@@ -87,8 +87,8 @@ def test_the_snapshot_records_what_a_caller_depends_on() -> None:
     host = installed["threetears.evals.kernel.host.EvalHost"]
     assert host.kind == "dataclass"
     assert host.signature.startswith("EvalHost(profile: HostProfile, storage: EvalStorage")
-    # A constant's value is data, not a contract: a schema version moves on every bump.
-    assert installed["threetears.evals.schema.CORE_SCHEMA_VERSION"] == Entry("constant (int)", "")
+    # A constant's value is data, not a contract: a schema version moves on every bump. Its name is a host's.
+    assert installed["threetears.evals.schema.CORE_SCHEMA_VERSION"] == Entry("constant (int)", "", "host-contract")
 
 
 # --- the snapshot ------------------------------------------------------------------------------------------------

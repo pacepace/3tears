@@ -269,6 +269,9 @@ class Triggered:
     Seeding a triggered dimension *arms* it; the condition fires it. Conformance completes the
     round trip through an optional host fire binding where one exists, and records arming-only
     where none does — never a pass.
+
+    Provisional: shaped by the first host that adopted the engine, and kept or removed by whether a second host's
+    adoption uses it (``docs/adopting-a-host.md``, "Provisional mechanisms").
     """
 
     kind: TriggerKind

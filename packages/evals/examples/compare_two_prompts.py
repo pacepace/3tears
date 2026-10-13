@@ -26,7 +26,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from _live import claude, online
+from _live import anthropic_sdk, claude, online
 from threetears.evals.quick import Comparison, compare
 
 MODEL = "claude-haiku-5-5"
@@ -123,6 +123,7 @@ def offline_classifier(prompt: str) -> Candidate:
 async def main() -> Comparison:
     make = claude_classifier if online() else offline_classifier
     if online():
+        anthropic_sdk()  # without the SDK, exit saying how to get it before claiming a live run
         print(f"Running against Claude ({MODEL}).\n")
     else:
         print("ANTHROPIC_API_KEY is not set: running OFFLINE, with a keyword stand-in for each prompt.\n")

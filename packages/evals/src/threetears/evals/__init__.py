@@ -27,7 +27,41 @@ engine reads a module-level, context-variable or default host, and importing thi
 and configures nothing, so two hosts in one process — even in one event loop — are two values that
 never meet. ``tests/test_two_hosts_one_process.py`` and ``tests/test_no_process_global_state.py``
 hold that.
+
+**Which build is installed** is :data:`__version__`, the distribution's version as its metadata states it. No
+stored document carries it (each carries its own schema version), so a host that wants to say which build wrote
+what records it beside what it stores.
 """
+
+from importlib.metadata import version as _distribution_version
+
+#: The installed distribution's version, as its metadata states it (``importlib.metadata``): the build a host
+#: records beside what it stores, since no stored document or analysis bundle carries it. A build from a
+#: pre-release tag (``v0.66.0-evaladopt.N``) states the version it prepares, so a host running one records the tag.
+#: Read on first use through the module's ``__getattr__`` rather than at import: the source tree imports without
+#: distribution metadata (the installability check and a checkout on ``sys.path`` both do), and a read that finds
+#: no metadata raises ``importlib.metadata.PackageNotFoundError`` by name rather than answering ``"unknown"``.
+__version__: str
+
+
+def __getattr__(name: str) -> str:
+    """Resolve :data:`__version__` from the distribution's metadata on first read.
+
+    Args:
+        name: The attribute asked for; only ``__version__`` is served here.
+
+    Returns:
+        The installed distribution's version string.
+
+    Raises:
+        AttributeError: For any other name, as a module normally would.
+        importlib.metadata.PackageNotFoundError: When no ``3tears-evals`` distribution is installed, so the
+            version cannot be stated; a host records the version only from an installed build.
+    """
+    if name == "__version__":
+        return _distribution_version("3tears-evals")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 #: The public roots, as absolute module names. A consumer imports from these and from no module
 #: below them, and only the names each root's ``__all__`` declares. ``kernel.host`` and
@@ -52,4 +86,4 @@ PUBLIC_ROOTS: tuple[str, ...] = (
     "threetears.evals.vega",
 )
 
-__all__ = ["PUBLIC_ROOTS"]
+__all__ = ["PUBLIC_ROOTS", "__version__"]

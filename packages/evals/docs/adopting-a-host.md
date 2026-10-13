@@ -246,9 +246,14 @@ or the other, an added optional field included:
   minor. So while a fleet is half upgraded, an older process reads what a newer one wrote as if the new fields
   were not there, and keeps them on every part of the document it carries over (a part it replaces with one it
   built afresh, such as a renewed lease, takes them with it); two builds can print different numbers from one
-  store for that window, which each analysis bundle's package version discloses. **The tolerance follows the
-  stored bytes, which are trusted:** a host that writes core documents straight into the store, with a
-  `schema_minor` above the build's, gets it too, so write the minor your build writes.
+  store for that window. A bundle does not name the build that assembled it: it carries its own shape
+  (`schema_version`), the models each role ran (`model_versions`) and the cell model (`cell_model_version`), so
+  record the package version beside what you store (`threetears.evals.__version__`) to tell the two builds apart.
+  **The tolerance follows the stored bytes, which are trusted:** a host that writes core documents straight into the
+  store, with a `schema_minor` above the build's, gets it too, so write the minor your build writes. **The roll has
+  a floor:** the tolerance arrived with the minor, in `v0.66.0-evaladopt.22`. A build before it (`.21` included)
+  declares no `schema_minor` and refuses every field it does not declare, so it refuses every core document `.22` or
+  a later build writes, though the major is 14 for both. Roll back no further than `.22`.
 - **A major is everything else**, and ships an upgrade step (a `CoreUpgrader` appended to `CORE_UPGRADERS`),
   tested against frozen stored documents from every core major since the baseline. Reading an older core
   document upgrades it in memory, one major at a time, before it is validated as strictly as a document written
@@ -281,9 +286,19 @@ written under another cassette version is refused, by name, and you re-capture i
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
 **Each version space moves on its own.** Core documents (v14.0), regenerable documents (v9), cassettes
-(`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 51), the cell model
+(`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 52), the cell model
 (`CELL_MODEL_VERSION`, 12), the report (`REPORT_VERSION`, 9) and the identity keys (`IDENTITY_VERSION`, 24) carry
 separate versions, each at its first public release's value.
+**A judge's identity moves with its wording, and no version number moves with it.** Each result records what asked
+each dim (`EvalResult.judge_config_ids`): `builtin:<sha12>`, a fingerprint of the engine's own judge prompt, or
+`<config id>@<sha12>`, your `JudgeConfig` and a fingerprint of the reply-format suffix the engine appends to its
+prompt. A release that rewords either changes the fingerprint, so every result judged before it is another judge
+for agreement, judge profiles, drift and evidence tiers, and a `calibrated` tier reads `undetermined` until you
+calibrate the new judge. Nothing stored is refused or rewritten. Such a release's notes (`MIGRATIONS.toml`, printed
+by `scripts/release_notes.py`) carry `JUDGE_WORDING_CHANGE_SENTENCE` (in `threetears.evals.schema`) and name
+the wording that moved, so read them before you upgrade a scope whose readings rest on calibration. A run's own `judge_config_ids` (the
+config set it launched with, part of its context key) holds bare config ids and no built-in dim, so a wording change
+does not split runs' context: only the results' recorded judges tell the two judges apart.
 An upgrade never recomputes an identity key, so keys from different predicates never silently pool. A kept
 key is stored beside its pre-image and the identity version that computed it, so a read under a later
 `IDENTITY_VERSION` needs no upgrader: a run keeps `variant_levers` beside the keys its results carry, and a
@@ -402,11 +417,35 @@ launch (a witnessed session, a run your host assembles) is validated as strictly
 - a judge identity in `EvalResult.judge_config_ids` is `builtin:<sha12>` or `<config id>@<sha12>`, as the judge
   service writes it; a bare config id is refused.
 
+## Stability tiers
+
+**Every public name has a tier, and the tier is what a release promises about it.** From 0.66.0, the first tagged
+release, on:
+
+- **`host-contract`** is what a host writes against: the host and its profile, the registries, the kind seam,
+  launching, the stored documents a kind builds, the store port with its conformance kits and the engine's own
+  stores, the refusals, the version constants, the `Known*` vocabularies and their value tuples (`USAGE_ROLES`, …),
+  the quick path and what it returns, and every name this guide, the [tutorial](tutorial.md), the README or an
+  example imports. Such a name moves only with
+  a `MIGRATIONS.toml` record and a deprecation cycle: the release that moves it exports the new name beside the old
+  one, which keeps working for that minor release and is named in its notes, and the next minor release removes the
+  old name, recorded as any removal is.
+- **`closure`** is every other public name: public because a public signature reaches it (a field's type, a value
+  a function returns, an exception it documents), so you can type your code without reaching below a root. Such a
+  name may move in any release, recorded in `MIGRATIONS.toml` and printed in that release's notes, never shimmed.
+
+`packages/evals/api/surface.json` records each name's tier beside its kind and signature, and `HOST_CONTRACT` in
+`packages/evals/scripts/public_surface.py` declares the first tier, with the reason for each group of names. The
+[reference](reference.md#public-api) marks each host-contract name *host contract*. A name
+a topic guide imports and the list does not hold is `closure`. If your host binds to one, ask for it to be
+promoted: promoting a name costs nothing, and demoting one is a break.
+
 ## Upgrading: names that move
 
-**Every name that leaves a public root is written down, and nothing is kept for compatibility.** When a release
-moves a public name to another root, renames it, or removes it, `packages/evals/MIGRATIONS.toml` records it under
-that release: the old name, its new home or `removed`, and why. There is no shim at the old name. The record starts
+**Every name that leaves a public root is written down, and only a host-contract name is kept for compatibility.**
+When a release moves a public name to another root, renames it, or removes it, `packages/evals/MIGRATIONS.toml`
+records it under that release: the old name, its new home or `removed`, and why. A `closure` name has no shim at the
+old name; a `host-contract` one keeps working for a minor release first (above). The record starts
 at 0.66.0, the package's first release, which moved nothing. Pre-release tags are not releases and are not in it.
 The file is
 in the repository, not the installed package: read it at the tag you are moving to, on GitHub
@@ -427,13 +466,14 @@ analysis results the action catalogue names, because `actions` may reach `analys
 name from its home, which is the root the reference lists it under first.
 
 **How the package holds this (for contributors).** `packages/evals/api/surface.json` is a checked-in snapshot of
-every public root's `__all__`, one entry per `root.name` with its kind and signature. The same walk that renders
+every public root's `__all__`, one entry per `root.name` with its kind, signature and tier. The same walk that renders
 the [reference](reference.md) writes it. `tests/test_api_surface.py` compares the installed package with the
 snapshot:
 
-- **A name added, or a kind or signature changed.** The test fails until you regenerate the snapshot, so the
+- **A name added, or a kind, signature or tier changed.** The test fails until you regenerate the snapshot, so the
   change shows up as a diff in review. A signature change needs no record in `MIGRATIONS.toml`. When it breaks
-  callers, add it to the newest section's `notes`.
+  callers, add it to the newest section's `notes`. A tier changes only by editing `HOST_CONTRACT`, and every name
+  the README, this guide, the tutorial or an example imports must be on it (`tests/test_api_tiers.py`).
 - **A name moved, renamed or removed.** The test fails until `MIGRATIONS.toml`'s first section (the release being
   prepared) records it. The generator refuses to write a snapshot that drops an unrecorded name. A name the last
   final release did not export never reached a porter, so it needs only a regeneration, and a record of it is
@@ -708,7 +748,7 @@ a default and one leaving it out are one condition.
 
 The engine steers three LLM calls of its own with a prompt: the analysis generator (`ANALYSIS_GEN_PROMPT`,
 one string), the capability proposer (`PROPOSER_PROMPT`) and the boundary proposer (`BOUNDARY_GEN_PROMPT`),
-both sectioned templates. Each is store-master. Your prompt registry holds the copy that runs, an operator
+both sectioned templates (`SeedSection`'s zones are [provisional](#provisional-mechanisms)). Each is store-master. Your prompt registry holds the copy that runs, an operator
 tunes it with no deploy, and the engine ships only the default a fresh deployment starts from.
 
 `SEED_PROMPTS` (from `threetears.evals.kernel`) is that list, one `SeedPrompt` per prompt. Each names its id
@@ -801,7 +841,8 @@ leaving one of your own apparatus dimensions unseated, build it with
 `reporter_kind_contract(host_seats=[...])`. On a reporter template, your `refuse_undeliverable_template`
 hook calls `refuse_undeliverable_reporter_template`.
 
-Then register the kind's launch entry (from `threetears.evals.ops`):
+Then register the kind's launch entry, a `LaunchableKind` (from `threetears.evals.run`) whose arguments come from
+`threetears.evals.ops` (`REPORTER_UNHONOURED_LAUNCH_ARGUMENTS`, `plan_reporter_arm`, `price_largest_reporter_call`):
 
 ```python
 LaunchableKind(
@@ -854,7 +895,8 @@ on the profile (`WorldRegistry`), and each cell's `prepare` is handed a `WorldSe
 - **Seeding.** The kind seeds through it — the seed walk, the dimensions' own `seed` handles, then each
   attached carrier's `settle` handle before the first turn.
 - **Turns.** It announces each turn (`at_turn`, which applies any ambient perturbation the template's seed
-  scheduled), and fires or observes its triggered dimensions (`fire`, `observe`).
+  scheduled), and fires or observes its triggered dimensions (`fire`, `observe`; triggered dimensions are
+  [provisional](#provisional-mechanisms)).
 - **Reading back.** Once `invoke` returns, the runner reads every attached dimension back through its
   `read` handle and stores it as the cell's end state; what fired is stored on the result as
   `world_events`.
@@ -905,7 +947,8 @@ harness supplied it, and what it spent — its tokens, model calls, `cost_usd` w
 `price_source`, and any paid non-LLM calls (`external_spend`) — their calls, the provider's own units, and
 `money` where the provider itself billed a figure. The engine folds that spend into the result's
 `inner_agent` and `external` usage, for work still in flight when the cell ended as well as work that
-delivered; a substituted entry reports no spend.
+delivered; a substituted entry reports no spend. Both shapes and both roles are
+[provisional](#provisional-mechanisms).
 
 **Payloads.** Anything else your kind wants kept with a result goes in `kind_payload`, which the engine
 stores and never reads; register a measure for whatever should be compared.
@@ -961,3 +1004,38 @@ that errored: a judge's "can't tell" is an answer. Every dim the judge phase ask
 it in `EvalResult.judge_config_ids`, an unfinished one included: a config's id with the reply format's
 fingerprint (`<config id>@<sha12>`; `judge_config_of` reads the id back), or the built-in prompt's `builtin:`
 identity. A re-judge refuses a dim whose recorded identity is not the prompt it would send today.
+
+## Provisional mechanisms
+
+Each mechanism below exists because the first host to adopt the engine needed it. Each was generalised out of
+that host's vocabulary, and none has yet been used by a second host. Use whichever fits your subject. Your
+adoption, as the second host, decides whether each one stays an engine concept. A mechanism no second host uses
+may be removed in a later release, and that release's `MIGRATIONS.toml` notes say so (the core ones then move
+with a core major and an upgrader). None is deprecated, and nothing here changes what is stored. Two of them hang
+off [`host-contract`](#stability-tiers) names: `KnownUsageRole` carries `inner_agent` and `external`, and
+`WorldDimension` reaches `Triggered` through its `when`. Removing either is a signature change to a contract name,
+so it goes through the deprecation cycle, never straight out in one release's notes.
+
+- **`AsyncDelivery` and `AsyncExternalSpend`** (on `EvalResult.async_deliveries`, a core document). They cover
+  background work a candidate hands off and gets back turns later, with its own model spend and the paid
+  non-LLM calls it made. Skip them and the engine does not see work that finishes after the turn that asked
+  for it: its spend, its timing and whether a harness substituted its payload are yours to keep, in
+  `kind_payload`, which the engine never reads ([Background work](#background-work-payloads-and-spend)).
+- **The `inner_agent` and `external` usage roles** (`KnownUsageRole`). They put a background task's own model
+  calls and its paid third-party calls on spend lines of their own. Skip them and that spend is not in the
+  role breakdown or the blended cost.
+- **`MeteredCallLedger`** (`run.metering`). It caps the third-party calls a run's tools may make, counted at
+  your action dispatcher (`max_metered_calls`), for a provider quota the cost cap cannot see (search credits,
+  a billed API). Skip it and a run's third-party quota is bounded only by your tools' own configuration.
+- **Triggered world dimensions** (`Triggered`, `ConversationSpec.world_rounds`). State that arrives on a
+  condition (a turn, an event, a person) rather than at the first turn: a case's seed arms it, and a world
+  round or your kind fires it. Skip them and your world is set once, before the first turn, and no goal check
+  can ask what `fired(...)` ([A world](#a-world-through-the-cells-session)).
+- **`ChartFont`** (`kernel.host`). A brand face for chart text, declared with the per-character advance widths
+  a renderer lays labels out by. Skip it and charts are drawn in the renderer's own face; nothing a chart
+  states changes.
+- **`SeedSection`'s zones** (`primacy`, `reference`, `recency`, in `kernel`). The sectioned prompt template the
+  two proposer prompts are declared in, ordered by zone, each section with its own condition, formatter and
+  cache class. Without a registry for sectioned templates, you render those sections into the system prompt
+  you hand the proposer yourself (`plan_draft` reads the rendered prompt;
+  [The engine's prompts](#the-engines-prompts-seeded-into-your-registry)).

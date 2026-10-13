@@ -6,6 +6,10 @@ without mocking every tool. **Answers:** how to declare a world, seed each case,
 something, prove your world's wiring, and read the results. Why the engine works this way:
 [the world model](world-model.md).
 
+The code blocks run in order, in one async context (`python -m asyncio`, or inside `async def main()`), each using
+names an earlier one defined. A store call blocks, so a block makes it off the event loop with
+`await run_blocking(host.blocking_executor, fn, ...)`.
+
 The **quick path** (`run_eval` or `compare` with a `World`) wires everything for you. A **full host**
 ([adopting a host](adopting-a-host.md#a-world-through-the-cells-session)) is needed when your world is production
 state behind your own write paths, when a template must state preconditions or prove its checks, when lookups
@@ -128,14 +132,16 @@ from threetears.evals.schema import (
     WorldSeed,
 )
 from threetears.evals.quick import CALLABLE_KIND
-from threetears.evals.run import create_template
+from threetears.evals.run import create_template, run_blocking
 
 LIGHT_ON = 'state.light == "on"'
 AT_MOST_ONE_SWITCH = 'call_count("room.switch_light") <= 1'
 accept = lambda *_: None  # stand-ins for a host's own tool-catalog and seed checks
 switch = lambda to: RecordedCall(tool="room", action="switch_light", params={"to": to})
 
-template = create_template(
+template = await run_blocking(  # a store write, so it runs off the event loop
+    host.blocking_executor,
+    create_template,
     host,
     {
         "candidate_kind": CALLABLE_KIND, "name": "dark room", "intent": "Light a dark room for reading.",
@@ -247,13 +253,14 @@ from the agent's own failures.
 
 **Each cell.** Read back what the agent did and where the world ended. These are store reads, which block: from
 async code, run them off the event loop with `await run_blocking(host.blocking_executor, fn, ...)`, as
-[`world.py`](https://github.com/pacepace/3tears/blob/develop/packages/evals/examples/world.py) does.
+[`world.py`](../examples/world.py) does.
 
 ```python
 from threetears.evals.run import get_result_trace, get_run, list_results
 
-for result in list_results(host.storage, summary.run_id, summary.scope_id):
-    trace = get_result_trace(host.storage, result)
+results = await run_blocking(host.blocking_executor, list_results, host.storage, summary.run_id, summary.scope_id)
+for result in results:
+    trace = await run_blocking(host.blocking_executor, get_result_trace, host.storage, result)
     failed = [outcome.expression for outcome in result.goal_state_outcomes if not outcome.passed]
     print(result.test_case_id, trace.call_ledger.calls, trace.end_state, failed or "ok")
 ```
@@ -266,7 +273,8 @@ disclosed under Methods. [Reading a comparison](reading-reports.md#reading-a-com
 **Placements.** Every run records what it did with each dimension:
 
 ```python
-print(get_run(host.storage, summary.run_id, summary.scope_id).world_placements)
+run = await run_blocking(host.blocking_executor, get_run, host.storage, summary.run_id, summary.scope_id)
+print(run.world_placements)
 print(REGISTRY.place(seeded={"light"}, carriers={"room"}))  # {'light': 'representable', 'daylight': 'witnessed'}
 ```
 

@@ -55,7 +55,7 @@ async def test_offline_the_stand_ins_name_no_model_and_not_separated_is_no_reaso
     out = capsys.readouterr().out
     assert out.startswith("ANTHROPIC_API_KEY is not set: running OFFLINE")
     assert "claude" not in out.lower() and "haiku" not in out.lower(), "a stand-in's output reads as a model's"
-    assert f"{cheaper} vs {current} on Accuracy: 1 -> 0.833, delta -0.167, interval [" in out
+    assert f"{cheaper} vs {current} on Accuracy: 1 -> 0.8333, delta -0.1667, interval [" in out
     assert "\nOn accuracy, not separated: these cases could not tell the models apart" in out
     assert "Keep the current model" in out
     assert f"    {current} said phishing, phishing; {cheaper} said legit, legit\n" in out

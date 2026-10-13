@@ -13,16 +13,20 @@ packages (bumped in lock-step).
 A new package (`pip install 3tears-evals`, import root `threetears.evals`). Run each version of a feature, from a
 classifier to a tool-using agent, over the same frozen cases. It reports what moved and with what uncertainty, and
 for an agent it reports what the agent did to a world the application declares, not only what it said. The public
-API is still changing: until a release says otherwise, any release may break it, and every name that leaves a
-public root is recorded in `packages/evals/MIGRATIONS.toml` (`scripts/release_notes.py v<version>` prints a release's
-notes).
+API has two stability tiers, recorded per name in `api/surface.json`: a `host-contract` name (what a host writes
+against, declared in `scripts/public_surface.py`'s `HOST_CONTRACT`) moves only with a deprecation cycle, the old name
+working beside the new one for a minor release, and any other (`closure`) name may move in any release. Either way
+every name that leaves a public root is recorded in `packages/evals/MIGRATIONS.toml` (`scripts/release_notes.py
+v<version>` prints a release's notes).
 
 - **Dependencies.** Python 3.14+ and `pydantic` only. It depends on no other 3tears package. Two extras: `[vega]`
   (`vl-convert-python`, for rendering charts to SVG and PNG) and `[fastmcp]` (the FastMCP transport). The live
   examples need the `anthropic` SDK, which the package does not depend on.
 - **Public roots** (`threetears.evals.PUBLIC_ROOTS`): `schema`, `kernel`, `kernel.host`, `run`, `analysis`,
   `analysis.viz`, `gen`, `storage`, `testing`, `quick`, `ops`, `actions`, `transports.fastmcp`, `vega`. A consumer
-  imports only the names each root's `__all__` declares. `api/surface.json` snapshots the surface.
+  imports only the names each root's `__all__` declares. `api/surface.json` snapshots the surface. The package
+  itself exports the roots and `__version__`, the installed version, which a host records beside what it stores
+  since no stored document or analysis bundle carries it.
 - **The quick path** (`threetears.evals.quick`). `run_eval(cases, candidate, expected=..., k=...)` grades any async
   function from a case to an answer. `summary.misses()` lists each miss with its reason. `compare` runs arms
   against a control and returns a typed verdict per measure: `improved`, `regressed`, `not_separated` or
@@ -112,10 +116,14 @@ notes).
   A judge completion that breaks the protocol fails the run. Judged readings carry an evidence tier decided by code.
   People and agents rate results (`rate_result`), and `judge_agreement` reports exact agreement and Cohen's kappa,
   quadratic-weighted on 1–5 scales. The package also measures a judge's agreement with itself (repeat judging),
-  a second judge, and the judge's temperature.
+  a second judge, and the judge's temperature. A judge's recorded identity is a fingerprint of its wording (the
+  built-in prompt's, or a config's and the reply-format suffix's), so a release that rewords either makes earlier
+  results another judge for agreement, profiles, drift and evidence tiers. The release policy covers that: such a
+  release's `MIGRATIONS.toml` notes carry `JUDGE_WORDING_CHANGE_SENTENCE`, and a pin test holds them to it. A run's
+  own `judge_config_ids` holds bare config ids, so a wording change never re-keys a run's context.
 - **Campaigns and analysis.** A campaign is created declared or exploratory, and can be declared, populated and
   given a control later (`campaign_update`, `campaign_runs_add`, `campaign_runs_remove`). Its fingerprinted
-  context bundle (shape 51) holds the decision surface, comparisons with Holm correction for multiple comparisons
+  context bundle (shape 52, computed under cell model `CELL_MODEL_VERSION` 12, exported from `analysis`) holds the decision surface, comparisons with Holm correction for multiple comparisons
   per declared question, materiality, bars and proposed bars, mechanism checks on swept levers (a setting that
   never took effect does not read as one that changed nothing), strata, a time axis by build or by day, judge
   agreement, and every confound and disclosure. `generate_analysis` has a model write the analysis over the frozen
@@ -139,15 +147,20 @@ notes).
 - **Docs.** The package README; a tutorial; guides to classifier eval sets, reading reports, evaluating agents,
   judges and calibration, adopting a host, choosing a design, cost and budgets, MCP and the command line; and the
   background pages (principles, measuring soundly, the world model, design rationale, prior art, open problems).
-  `docs/reference.md` is generated from the code.
+  `docs/reference.md` is generated from the code. The adopter's guide marks six mechanisms the first adopter shaped
+  as provisional (`AsyncDelivery` and `AsyncExternalSpend`, the `inner_agent` and `external` usage roles,
+  `MeteredCallLedger`, triggered world dimensions, `ChartFont`, and `SeedSection`'s zones): a second adopter's use
+  decides whether each stays, and one removed later is announced in that release's `MIGRATIONS.toml` notes.
 - **Pre-releases.** `v0.66.0-evaladopt.N` tags were cut on `feature/eval-adopt` for one adopter and never published.
   Each tag's own `CHANGELOG.md` and `MIGRATIONS.toml` hold that pre-release's notes and the names that moved. **A
   store written before `v0.66.0-evaladopt.21` is not read:** its core documents (schema v8 to v13) are refused by
   name as pre-release and its regenerable ones by version, so such an adopter deletes its eval documents. From
   `.21` on, the store is the v14 baseline this release reads, and every core shape change is a version, as it will
-  be after release: a minor for an additive change, a major with an upgrader for any other. Every pre-release,
-  `.21` included, stamped its cassettes with the regenerable version; this release reads them at cassette v1 and
-  refuses them, so their corpora are re-captured.
+  be after release: a minor for an additive change, a major with an upgrader for any other. Reading a newer minor
+  arrived in `.22`: a `.21` build does not know `schema_minor` and refuses every core document `.22` or this release
+  writes, though both are v14, so roll back no further than `.22`. Every pre-release, `.21` included, stamped its
+  cassettes with the regenerable version; this release reads them at cassette v1 and refuses them, so their corpora
+  are re-captured.
 
 ## v0.65.0 -- 2026-10-05
 

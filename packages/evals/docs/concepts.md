@@ -193,8 +193,8 @@ of them and compared. *Example:* who sits in an adjudicator's seat: `{"adjudicat
 A place in the rig a kind's runs actually fill (`KindContract.seats`): a pinned role such as `judge` or
 `simulator`, or one apparatus dimension. A dimension a kind does not seat does not apply to its runs, so
 its blank there is not a confound. `None`, the default, holds the kind to every dimension. *Example:* the
-callable kind `run_eval` builds seats none of the judge, simulator or spend ceiling (`CALLABLE_UNSEATED`); its
-judged kind, `callable-judged`, seats the judge and nothing else (`JUDGED_CALLABLE_UNSEATED`).
+callable kind `run_eval` builds seats none of the judge, simulator or spend ceiling; its
+judged kind, `callable-judged`, seats the judge and nothing else.
 
 #### Measurement context
 Everything pinned around a run that is not the variant: the subject and its state, the frozen case set, the
@@ -420,6 +420,82 @@ was generated, say, or that a stratum holds too few cases to read alone.
 Model calls the engine makes outside any run (generating cases, proposing a rubric, writing an analysis,
 repeating judge scores): priced before they are made and ledgered as `OutOfRunSpend`. See
 [cost and budgets](cost-and-budgets.md).
+
+### Building a host
+
+The words [Adopting the engine](adopting-a-host.md) uses for what a host author writes or wires.
+
+#### Bar
+A standard one measure must reach for one behavior (`Bar`, registered on the profile's `BarRegistry`, with
+`PassThreshold` for the 1–5 level an attempt must reach to pass). It is decided on a cell's interval, never its
+mean: `cleared`, `missed` or `undecided`. A campaign's design may declare a bar tighter than the registered one,
+never looser, and the frontier takes one as `bar=`. *Example:* routing accuracy of at least 0.9 for the `routing`
+behavior. See [Reading reports: Methods](reading-reports.md#methods).
+
+#### Conformance kit
+A set of checks you run in your own test suite against what you implemented, so a gap fails there and not in a
+measurement: `STORE_CONFORMANCE_CASES` for a store, `check_completion_conformance` for a completion client,
+`jobs_conformance_cases` for the action catalogue you mount (your own actions among them),
+`check_world_conformance` for a world, and `nonpublic_evals_imports` for your imports. A world check the kit
+cannot run is reported `unavailable` with its reason, never passed. See
+[the store's kit](adopting-a-host.md#the-store-and-the-conformance-kit-that-proves-it) and
+[the world's](evaluating-agents.md#step-5-run-the-conformance-kit-against-your-world).
+
+#### Executor and the event-loop rule
+The store is synchronous and the engine is async, so every store call runs on the host's `blocking_executor`
+(a thread pool, or `None` for the loop's default), never on the event loop. A call made on a thread running a
+loop is refused (`StoreCalledOnEventLoop`, naming the call site). Your own async code follows the same rule: a
+synchronous function that takes the storage or the host is called as
+`await run_blocking(host.blocking_executor, fn, ...)`.
+See [the store](adopting-a-host.md#the-store-and-the-conformance-kit-that-proves-it).
+
+#### Fold
+Two uses. **A completion's usage is folded** into a usage ledger: added to the role's running totals, never
+replacing them (`RoleUsageLedger.add_llm_result`, or a conversation driver's `fold_usage`). **A resolved lever
+folds into its knob** (`ResolvesInto`): when every level of the knob carried one level of the lever it is
+written into, the lever gets no row or confound of its own and the arm is named by the knob. A fold no two arms
+could test is disclosed as `unverified_fold:<lever>`. See [the host](adopting-a-host.md#the-host) and
+[the kind](adopting-a-host.md#the-kind-what-you-are-evaluating).
+
+#### Kept and regenerable
+Every stored type's **lifecycle** (`DOC_TYPE_FACTS`). A **kept** type is the [evidence core](#evidence-core):
+every later release reads it, upgrading it as it is read. A **regenerable** type (analyses, insights, judge
+profiles, cassettes) is refused after its format changes and made again: an analysis, insight or profile over the
+kept runs, a cassette by capturing it anew. A store can route each lifecycle to its own backend
+(`DocTypeRoute(by="lifecycle")`). See [Stored data: what is kept](adopting-a-host.md#stored-data-what-is-kept).
+
+#### Lease
+A running [job](#job)'s claim on its record: the process running it renews it on a schedule (`JobLeases`,
+`LaunchHost.job_lease_s`), stamped in the store's own time when the store offers a `StoreClock`. A job whose lease
+lapses before it ends reads `lost` everywhere. See [Operations and jobs](agents-and-mcp.md#operations-and-jobs).
+
+#### Seam
+A place the engine calls code your host supplies, through a protocol the engine declares: the kind seam
+(`prepare` and `invoke`, under a `KindContract`), the cassette seams a kind wires (`CassetteSeams`), the chart
+renderer behind `ChartRenderer`. See [the kind](adopting-a-host.md#the-kind-what-you-are-evaluating) and
+[cassettes](adopting-a-host.md#cassettes-recording-and-replaying-tools).
+
+#### Sink and reservation
+A **sink** is what code reports into rather than returns: a cell's `CellSink` keeps its spend by source,
+`TraceSink` is your tracing, and a `RegressionWatch` awaits a sink of yours with each alert. A **reservation**
+holds a priced call's worst case against the run's cost cap while the call is in flight (`sink.reserve(source,
+ceiling)`, then `settle(cost)` or `release()`), so cells running side by side cannot together pass the cap;
+`CappedCompletion` does it for every call. See [Caps](cost-and-budgets.md#caps).
+
+#### Store, `DocumentStore` and port
+A **port** is a protocol the engine declares and your host implements: `DocumentStore`, `CompletionClient`,
+`TraceSink`. The **store** is your `DocumentStore` (or an `AsyncDocumentStore` behind `bridge_async_store`): one
+collection keyed `(scope_id, doc_type, id)`, which the engine reads and writes through `EvalStorage`. The engine
+ships three (`InMemoryDocumentStore`, `SqliteDocumentStore`, `RoutedDocumentStore`). See
+[the store](adopting-a-host.md#the-store-and-the-conformance-kit-that-proves-it).
+
+#### Surface
+A place something is shown. A **world's surface** is one place the agent perceives state: each dimension names
+every surface that shows it (`perceived_by`), and the conformance kit checks that each moves with its dimension
+alone. A **reporting surface** is one place a reading is shown to a person or a program: the run summary, the
+report, the bundle, an action's reply. "Said on every surface" means each of them says it. The
+[decision surface](#decision-surface) is its own term. See
+[Evaluating a tool-using agent](evaluating-agents.md#step-1-declare-the-world).
 
 ## What the engine reads from your code
 
