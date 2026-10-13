@@ -184,7 +184,7 @@ pod, and a missed broadcast is caught at the next pass.
 The existing consumer side does not fit as it is. `EpochListener.catch_up` reads
 `EpochClient.current`, which decodes a `DistributedCounter` integer and cannot parse
 `{incarnation}:{count}`; `Subjects.collection_generation_epoch` is documented as never
-broadcast; `EpochClient.observe_broadcast` and `versions(max_age=)` serve the durable tile
+broadcast; `EpochClient.observe_broadcast` and `versions(cached=True)` serve the durable tile
 family only. So the follower is new: the per-table mark lives in core beside
 `GenerationSource`, and one pure-async pass lives in `3tears-epoch` beside `catchup_tick`,
 with the same contract (one pass per call, the consumer schedules it, one table's failure
@@ -1322,6 +1322,16 @@ clause JOINs, and the hub's concept scan names `datasources`, which it reads.
 SQLite backend's injected cached-at stamp, `CACHED_AT_COLUMN`, `TABLES_WITHOUT_CACHE_STAMP`,
 `entry_is_fresh` and `ScanCache`'s `DEFAULT_SCAN_TTL_SECONDS` and `stored_at_monotonic`. A row's own
 declared expiry (`expires_at_column`) is data, not a cache bound, and stays.
+
+**`EpochClient.versions` follows the same ruling (final review of 0.66.0).** Its per-process copy
+of a durable subject's versions was bounded by `max_age`, with a `grace` through a failed read: a
+timer under a cache the epoch broadcasts invalidate. Both are gone. `versions(subject, cached=True)`
+answers a copy until the epoch system says the subject moved: this process's own `advance_to` or
+`bump`, a broadcast heard by an `EpochListener` on the client, or the listener's catch-up, whose
+read of the row drops a copy the row has moved away from. A copy is kept only for a subject such a
+listener is subscribed to; any other is read from the row every time.
+- *Rejected: keeping the age as the cover for a missed broadcast* -- a timer; the catch-up pass is
+  the epoch system's repair for a missed broadcast and now reaches the copy.
 
 **Writes left unannounced, on purpose:** the hub's capability endpoints write `datasources.face_*`
 and `datasources.spec`, columns no collection declares or caches and no scan reads.

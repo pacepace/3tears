@@ -897,26 +897,36 @@ bound could not be tested against it.
 `EpochClient.versions` read the `config_epochs` row on every call, and the hub calls it on every
 TileJSON and tile request; that read failed live when a pool connection dropped.
 
-- **Added, `EpochClient.versions(subject, *, max_age: timedelta | None = None, grace: timedelta =
-  timedelta(seconds=30))`**: with `max_age`, a per-process copy per subject answers for up to
-  `max_age` after it was read. This process's own `advance_to` writes the new versions into it
-  with no read, and its `bump` drops it. A read that fails answers the copy while it is no older
-  than `max_age + grace`, logged at WARNING; past that, or with nothing cached, it raises as
-  before. Without `max_age` every call reads the row, as before, and a non-durable subject still
-  raises `ValueError`. A read that left for the pool before this process moved the subject cannot
-  overwrite the move.
+- **Added, `EpochClient.versions(subject, *, cached: bool = False)`**: with `cached=True`, a
+  per-process copy per subject answers. The copy has no age and no grace: it answers until the
+  epoch system says the subject moved. This process's own `advance_to` writes the new versions
+  into it with no read, its `bump` drops it, a broadcast naming a later epoch drops it
+  (`observe_broadcast`), and a missed broadcast is repaired by the listener's catch-up
+  (`EpochListener.catch_up`, `catchup_tick`): the pass reads `EpochClient.current`, which drops a
+  copy the row has moved away from. Without `cached` every call reads the row, as before, and a
+  non-durable subject still raises `ValueError`. A read that fails raises, cached or not. A read
+  that left for the pool before this process moved the subject cannot overwrite the move.
+- **A copy is kept only for a subject a listener follows.** `EpochListener.subscribe` reports each
+  subscription to its client (`EpochClient.observe_subscription(subject)`, added), concrete or
+  wildcard. A subject no subscription covers has nothing that could drop its copy, so none is kept:
+  `cached=True` reads the row every time and logs that once, at WARNING. A process that wants the
+  cached answer subscribes the subject, or a wildcard covering it, on an `EpochListener` over the
+  same client, and schedules `catchup_tick` over `EpochClient.cached_subjects` (added: the durable
+  subjects a copy is held for).
 - **Added, `EpochClient.observe_broadcast(message: EpochBumpMessage) -> None`**: drops the cached
-  copy when a broadcast names a later epoch than it holds, and fences any read in flight when it
+  copy when a broadcast names a later epoch than it holds, and marks any read in flight when it
   arrives (cached or not), so that read cannot cache the row as it stood before the move.
   `EpochListener` now calls it for every broadcast it receives, before its dedupe, so another
   process's advance invalidates the copy as its broadcast arrives. A broadcast with an empty
-  `subject_path` is keyed by the subscribed subject for both the dedupe and the cache.
-- **Changed, for stand-in epoch clients**: because `EpochListener` calls `observe_broadcast` on every
-  broadcast, an object handed to it as the epoch client must have that method. A real `EpochClient`
-  or a subclass of it does; a hand-rolled duck-typed stub must add it (a no-op is enough).
-- **Constraint for callers**: a cached value may lag the row by up to `max_age` when a broadcast
-  is missed, so it is for choosing what to serve or advertise, never for building at a version
-  whose rows may already be gone. Read without `max_age` before reading source rows.
+  `subject_path` is keyed by the subscribed subject for both the dedupe and the cache. Nothing is
+  kept per broadcast subject: the only per-subject state is a copy, or a read in flight.
+- **Changed, for stand-in epoch clients**: because `EpochListener` calls `observe_subscription` once
+  per subscribe and `observe_broadcast` on every broadcast, an object handed to it as the epoch
+  client must have both methods. A real `EpochClient` or a subclass of it does; a hand-rolled
+  duck-typed stub must add them (no-ops are enough).
+- **Constraint for callers**: between a missed broadcast and the catch-up pass that repairs it a
+  cached value lags the row, so it is for choosing what to serve or advertise, never for building
+  at a version whose rows may already be gone. Read without `cached` before reading source rows.
 
 ### Geo: a feature-cache read with no L1 is one loader call, and a wide rectangle is read once
 
