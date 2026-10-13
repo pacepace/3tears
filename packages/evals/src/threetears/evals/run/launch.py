@@ -3776,11 +3776,11 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 # operation that captured traffic it did not control, and it says so itself.
                 apparatus_provenance="commissioned",
                 judge_model=judge.model if judge is not None else None,
-                model_role_provenance=role_provenance,
+                model_role_provenance=dict(role_provenance),
                 effective_judges=judge.effective_judges if judge is not None else None,
                 effective_judges_source="recorded" if judge is not None else None,
                 judge_config_ids=judge.config_ids if judge is not None else None,
-                judge_config_provenance=judge.config_provenance if judge is not None else None,
+                judge_config_provenance=dict(judge.config_provenance) if judge is not None else None,
                 rubric_scales={dim.name: dim.scale for dim in template.rubric},
                 overlays=freeze(request.overlays),
                 kind_spec=freeze(request.kind_spec),
