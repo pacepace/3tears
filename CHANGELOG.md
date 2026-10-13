@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Wake and scheduled jobs: a fire whose dispatcher is known to be gone is reaped by name
+
+A fire left `'dispatching'` by a process that died is reaped by age (15 minutes by default), because
+the store cannot know who was dispatching it. A consumer that keeps that record can now say so.
+
+- **Added, `WakeFireCollection.reap_fires(fire_ids)` and `JobFireCollection.reap_fires(fire_ids)`:**
+  fail the named fires that are still `'dispatching'`, with the reaper's own marker
+  (`REAPED_DISPATCH_ERROR`), whatever their age. The wake one returns `ReapedFire` rows, as the age
+  sweep does; the job one returns the fire ids. A fire that finished is left as it ended.
+
 ### Observe: a log line can say which process wrote it
 
 Several worker processes under one supervisor write one log, and no line said which worker wrote

@@ -235,6 +235,22 @@ class TestFireStoreWrites:
         assert args[0] == REAPED_DISPATCH_ERROR
         assert args[1] == now - timedelta(seconds=900)
 
+    async def test_reap_fires_fails_only_the_named_fires_still_dispatching(self) -> None:
+        named = [uuid4(), uuid4()]
+        pool = _RecordingPool(fetch_rows=[{"partition_key": uuid4(), "fire_id": named[0]}])
+        coll = _make_fire_collection(pool)
+        assert await coll.reap_fires(named) == [named[0]]
+        sql, args = pool.calls[-1]
+        assert "UPDATE job_fires SET status = 'failed'" in sql
+        assert "status = 'dispatching' AND fire_id = ANY($2::uuid[])" in sql
+        assert args == (REAPED_DISPATCH_ERROR, named)
+
+    async def test_reap_fires_with_nothing_named_touches_nothing(self) -> None:
+        pool = _RecordingPool(fetch_rows=[{"partition_key": uuid4(), "fire_id": uuid4()}])
+        coll = _make_fire_collection(pool)
+        assert await coll.reap_fires([]) == []
+        assert pool.calls == []
+
     async def test_reap_stale_dispatching_none_returns_zero(self) -> None:
         pool = _RecordingPool(fetch_rows=[])
         coll = _make_fire_collection(pool)

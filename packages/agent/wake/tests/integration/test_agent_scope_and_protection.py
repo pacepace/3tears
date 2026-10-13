@@ -1037,6 +1037,32 @@ class TestReaper:
         finally:
             await pool.close()
 
+    async def test_named_fires_are_reaped_whatever_their_age_and_others_are_left(
+        self, pg_schema: tuple[str, str]
+    ) -> None:
+        """A consumer that knows a fire's dispatcher is gone does not wait out the reap age."""
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            _schedules, fires = _collections(pool)
+            started = _new_uuid()
+            conv, lost = await self._dispatching_fire(pool, started=started, age=timedelta(seconds=5))
+            _other_conv, live = await self._dispatching_fire(pool, started=_new_uuid(), age=timedelta(seconds=5))
+            done_conv, done = await self._dispatching_fire(pool, started=_new_uuid(), age=timedelta(seconds=5))
+            await fires.finalize_success(done_conv, done, status="fired", output_text="finished")
+
+            # too young for the age sweep
+            assert await fires.reap_stale_dispatching(datetime.now(UTC), older_than=timedelta(minutes=15)) == []
+            reaped = await fires.reap_fires([lost, done, _new_uuid()])
+
+            assert reaped == [ReapedFire(conversation_id=conv, fire_id=lost, started_conversation_id=started)]
+            assert (await _fire_row(pool, lost))["error"] == REAPED_DISPATCH_ERROR
+            assert (await _fire_row(pool, live))["status"] == "dispatching"
+            assert (await _fire_row(pool, done))["status"] == "fired"
+            assert await fires.reap_fires([lost]) == [] and await fires.reap_fires([]) == []
+        finally:
+            await pool.close()
+
     async def test_a_late_finish_cannot_flip_a_reaped_fire(self, pg_schema: tuple[str, str]) -> None:
         url, schema = pg_schema
         pool = await _apply_schema(url, schema)

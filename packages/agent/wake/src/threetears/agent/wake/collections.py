@@ -1469,6 +1469,43 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
             for row in rows
         ]
 
+    async def reap_fires(self, fire_ids: Sequence[UUID]) -> list[ReapedFire]:
+        """Fail the named fires that are still ``'dispatching'``: their dispatcher is known to be gone.
+
+        :meth:`reap_stale_dispatching` reaps by age, because it cannot know who
+        was dispatching a fire. A consumer that does know (it keeps a record of
+        which process holds each fire, and that process stopped beating) names
+        the fires here and does not wait out the age. Same terminal state and
+        marker as the age sweep, and the same guard: a fire that finished is
+        left as it ended.
+
+        :param fire_ids: the fires whose dispatcher is gone
+        :ptype fire_ids: Sequence[UUID]
+        :return: each fire this call failed, with the conversation it started (if any)
+        :rtype: list[ReapedFire]
+        """
+        if self.l3_pool is None or not fire_ids:
+            return []
+        # __SPANS_PARTITIONS__: the caller names fires across conversations;
+        # ``conversation_id`` is named in the RETURNING clause so the
+        # partition-column enforcement walker sees it as a static literal.
+        # cache-bypass: see reap_stale_dispatching -- no code reads a fire row by primary key.
+        rows = await self.l3_pool.fetch(
+            "UPDATE wake_fires SET status = 'failed', error = $1 "
+            "WHERE status = 'dispatching' AND fire_id = ANY($2::uuid[]) "
+            "RETURNING conversation_id, fire_id, started_conversation_id",
+            REAPED_DISPATCH_ERROR,
+            list(fire_ids),
+        )
+        return [
+            ReapedFire(
+                conversation_id=row["conversation_id"],
+                fire_id=row["fire_id"],
+                started_conversation_id=row["started_conversation_id"],
+            )
+            for row in rows
+        ]
+
     async def count_in_window(
         self,
         conversation_id: UUID,
