@@ -68,12 +68,14 @@ from threetears.evals.providers.adapter import (
     SupportedProvider,
     models_client,
 )
+from threetears.evals.providers.failures import ModelsFailureDescriber
 
 __all__ = [
     "SUPPORTED_PROVIDERS",
     "ModelsClientRefused",
     "ModelsCompletion",
     "ModelsCompletionClient",
+    "ModelsFailureDescriber",
     "SupportedProvider",
     "models_client",
 ]

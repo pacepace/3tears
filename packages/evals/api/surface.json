@@ -7566,6 +7566,11 @@
       "signature": "ModelsCompletionClient(*, model_name: str, provider: SupportedProvider, chat_model: RunnableBinding[Any, Any], call_output_config: Mapping[str, Any], prices: HttpClient | None) -> None",
       "tier": "closure"
     },
+    "threetears.evals.providers.ModelsFailureDescriber": {
+      "kind": "class",
+      "signature": "",
+      "tier": "host-contract"
+    },
     "threetears.evals.providers.SUPPORTED_PROVIDERS": {
       "kind": "constant (tuple)",
       "signature": "",
