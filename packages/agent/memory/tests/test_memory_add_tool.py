@@ -113,7 +113,7 @@ class TestMemoryAddInput:
 
     def test_default_type(self):
         inp = MemoryAddInput(content="something")
-        assert inp.memory_type == "preference"
+        assert inp.memory_type == "fact"
 
 
 class TestLoadAddMemoryTool:
@@ -250,7 +250,11 @@ class TestLoadAddMemoryTool:
         result = await tools[0].ainvoke({"content": "User prefers Rust", "memory_type": "preference"})
 
         assert result.startswith("Stored as [memory:") and "replaces" not in result
-        assert str(existing_id) not in result
+        # the one left standing is named and quoted, so the caller reads that both now stand
+        assert (
+            f'[memory:{existing_id}] (95% the same) still stands beside it and says "User likes Rust programming".'
+            in result
+        )
         assert not any("UPDATE memories" in str(c.args[0]) for c in pool.execute.call_args_list)
 
     async def test_no_dedup_below_threshold(

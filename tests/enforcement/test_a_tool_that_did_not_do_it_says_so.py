@@ -29,6 +29,7 @@ ANSWERS: dict[str, str] = {
     "packages/agent/intention/src/threetears/agent/intention/tools.py:No open wants to raise now.": "a listing that is empty",
     "packages/agent/memory/src/threetears/agent/memory/tools.py:No relevant memories or documents found": "a search that ran",
     "packages/agent/memory/src/threetears/agent/memory/tools.py:No passages matched.": "a search that ran",
+    "packages/agent/memory/src/threetears/agent/memory/tools.py:No more memories match this query past the first ": "a search that ran, read past its last page",
     "packages/agent/skills/src/threetears/agent/skills/tools.py:No skills available.": "a listing that is empty",
     "packages/agent/tools/src/threetears/agent/tools/relevance.py:No matching tools found.": "a search that ran",
     "packages/agent/tools/src/threetears/agent/tools/relevance.py:No tool fits that.": "a search that ran, and whose caller judged the nearest tools too far to offer",

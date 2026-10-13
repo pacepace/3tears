@@ -222,7 +222,10 @@ class TestDatesAreInTheZoneTheCallerNames:
             chunks=_FakeSearchRows(),
             tz="America/Los_Angeles",
         )
-        assert f"- [memory:{memory['memory_id']}] [fact] [Oct 9, 2026 at 9:11 PM PDT] lives in Leeds" in result
+        assert (
+            f"- [memory:{memory['memory_id']}] [fact] [Oct 9, 2026 at 9:11 PM PDT] [match 0.90] lives in Leeds"
+            in result
+        )
         assert f"- [media:{media['content_id']}] a photo of the house (created: Oct 9, 2026 at 9:11 PM PDT)" in result
         assert "Oct 10" not in result, "no date is left in UTC beside the zoned ones"
 
@@ -236,7 +239,7 @@ class TestDatesAreInTheZoneTheCallerNames:
             media=_FakeSearchRows(),
             chunks=_FakeSearchRows(),
         )
-        assert "[fact] [Oct 10, 2026 at 4:11 AM] lives in Leeds" in result
+        assert "[fact] [Oct 10, 2026 at 4:11 AM] [match 0.90] lives in Leeds" in result
 
     async def test_a_zone_that_does_not_exist_is_refused_when_the_tool_is_built(
         self, permissive_memory_authorizer: MemoryAuthorizerDependencies
