@@ -22,15 +22,21 @@ rather than for the stored past. Only the current version's directory is written
 unreleased (the baseline of a release not yet published may be regenerated in place, as the pins test's header
 says). The script refuses, naming the directory, when a ``v<N>`` newer than ``CORE_SCHEMA_VERSION`` exists: that
 means the version constant was moved back or the working tree holds a corpus from a later build, and regenerating
-the older directory would overwrite what the newer one was copied from.
+the older directory would overwrite what the newer one was copied from. It also refuses, naming the release, when
+the newest final release tag's tree already holds ``v{CORE_SCHEMA_VERSION}/``: that corpus shipped, so it is frozen,
+and a shape change from it is a core major with a directory of its own. A checkout without the release tags cannot
+tell, and refuses rather than guessing.
 
 **Why a run on an unchanged tree changes nothing.** ``stored_sample`` reads the clock and draws UUIDs, so two
 samples of one model never agree byte for byte, and writing each one would move every fixture and every digest on
 every run. A fixture is therefore left as it is when the new sample matches it in structure and in every value but
-the ones that are a clock reading (an ISO-8601 timestamp) or a generated id (a UUID) at the same place in both: those
-are what a sample draws fresh, and a corpus document that differs only in them is the same document. Any other
-difference (a field added, removed or retyped, a fixed value changed) is written. A sample whose fixed timestamp or
-id was changed on purpose reads as unchanged by that rule; ``--all`` writes every file regardless.
+the ones that are a clock reading (an ISO-8601 timestamp) or a generated id (a UUID) at the same place in both,
+SPELLED alike: those are what a sample draws fresh, and a corpus document that differs only in them is the same
+document. Spelled alike means the two agree once every digit and hex letter is masked, and a UUID also keeps its
+version digit, so a switch from ``+00:00`` to ``Z``, a change in fractional seconds, or uuid4 to uuid7 is a change
+of what the build writes, not a fresh draw, and is written. Any other difference (a field added, removed or
+retyped, a fixed value changed) is written too. A sample whose fixed timestamp or id was changed on purpose to
+another value of the same spelling reads as unchanged by that rule; ``--all`` writes every file regardless.
 """
 
 from __future__ import annotations
@@ -44,7 +50,7 @@ import typing
 from pathlib import Path
 from typing import Any
 
-from public_surface import PACKAGE_ROOT
+from public_surface import PACKAGE_ROOT, newest_tag, path_at
 
 # The pins test and the sample factories are imported as the suite imports them (``packages.evals.tests...``,
 # namespace packages under the repository root), so the root is put on the path before they are.
@@ -60,6 +66,9 @@ from threetears.evals.schema.versioning import CORE_DOC_TYPES, CORE_SCHEMA_VERSI
 #: The pins test whose two digest tables this script rewrites.
 PINS_PATH = PACKAGE_ROOT / "tests" / "test_core_schema_pins.py"
 
+#: The corpus root as a path inside the repository: what a release's tree is asked about.
+CORPUS_IN_REPO = pins.FIXTURES.relative_to(REPO_ROOT).as_posix()
+
 #: The command that regenerates the corpus, as a refusal tells a reader.
 REGENERATE = "uv run python packages/evals/scripts/regenerate_core_fixtures.py"
 
@@ -71,9 +80,46 @@ _TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\+00:0
 #: A whole string value that is a generated id (a UUID, any version).
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
+#: What a fresh draw changes in a clock reading or a generated id: its digits and hex letters.
+_DRAWN = re.compile(r"[0-9a-f]")
+
+#: Where a UUID spells its version: the generator, which a fresh draw never changes.
+_UUID_VERSION_AT = 14
+
 
 class SupersededCorpusError(RuntimeError):
     """A corpus directory newer than the current core version exists, so regenerating would write a superseded one."""
+
+
+class ReleasedCorpusError(RuntimeError):
+    """The current core version's corpus may have shipped: a final release's tree holds it, or no tag can tell."""
+
+
+def released_corpus_refusal(version: int, tag: str | None) -> str | None:
+    """Why the ``v{version}`` corpus must not be regenerated because a release shipped it, or None when none did.
+
+    Args:
+        version: The current ``CORE_SCHEMA_VERSION``.
+        tag: The newest final release tag the working tree follows (:func:`public_surface.newest_tag`), or None
+            when the checkout has none.
+
+    Returns:
+        The refusal, naming the release and the remedy, or None while no release's tree holds the corpus.
+    """
+    corpus = f"{CORPUS_IN_REPO}/v{version}"
+    if tag is None:
+        return (
+            f"this checkout has no release tag, so whether a release shipped {corpus}/ cannot be told, and a released "
+            f"corpus is never regenerated: fetch the tags (git fetch --tags) and run {REGENERATE} again."
+        )
+    if not path_at(tag, corpus):
+        return None
+    return (
+        f"{tag} shipped {corpus}/, so the v{version} corpus is what a store that release wrote holds: it is frozen, "
+        f"and a released version's corpus is never regenerated. A core shape change from it is a major: copy "
+        f"v{version}/ to v{version + 1}/, move CORE_SCHEMA_VERSION to {version + 1} with its ledger line and an "
+        f"upgrader from {version}, and run {REGENERATE} again (it writes v{version + 1}/ only)."
+    )
 
 
 def newer_corpus_dirs(root: Path, version: int) -> list[Path]:
@@ -94,6 +140,25 @@ def newer_corpus_dirs(root: Path, version: int) -> list[Path]:
     return sorted(newer, key=lambda path: int(path.name[1:]))
 
 
+def spelling(value: str) -> str:
+    """How a drawn value is written, with what a fresh draw changes masked out.
+
+    Every digit and hex letter becomes ``#``, so two clock readings of one format agree and ``+00:00`` against ``Z``,
+    or six fractional digits against none, do not. A UUID keeps its version digit, because the masked form of a uuid4
+    and a uuid7 is otherwise the same.
+
+    Args:
+        value: A timestamp or a UUID.
+
+    Returns:
+        Its spelling.
+    """
+    masked = _DRAWN.sub("#", value)
+    if _UUID.fullmatch(value):
+        masked = masked[:_UUID_VERSION_AT] + value[_UUID_VERSION_AT] + masked[_UUID_VERSION_AT + 1 :]
+    return masked
+
+
 def same_document(kept: Any, sampled: Any) -> bool:
     """Whether two documents agree in structure and in every value but a drawn clock reading or generated id.
 
@@ -103,16 +168,17 @@ def same_document(kept: Any, sampled: Any) -> bool:
 
     Returns:
         ``True`` when they have the same keys and types throughout and differ only where both hold a timestamp or
-        both hold a UUID.
+        both hold a UUID, spelled alike (:func:`spelling`).
     """
     if isinstance(kept, dict) and isinstance(sampled, dict):
         return kept.keys() == sampled.keys() and all(same_document(kept[key], sampled[key]) for key in kept)
     if isinstance(kept, list) and isinstance(sampled, list):
         return len(kept) == len(sampled) and all(same_document(a, b) for a, b in zip(kept, sampled, strict=True))
     if isinstance(kept, str) and isinstance(sampled, str):
-        return kept == sampled or any(
-            pattern.fullmatch(kept) and pattern.fullmatch(sampled) for pattern in (_TIMESTAMP, _UUID)
-        )
+        if kept == sampled:
+            return True
+        drawn = any(pattern.fullmatch(kept) and pattern.fullmatch(sampled) for pattern in (_TIMESTAMP, _UUID))
+        return drawn and spelling(kept) == spelling(sampled)
     return type(kept) is type(sampled) and kept == sampled
 
 
@@ -129,6 +195,8 @@ def write_corpus(root: Path, version: int, *, rewrite_all: bool = False) -> dict
 
     Raises:
         SupersededCorpusError: A ``v<N>`` directory above ``version`` exists; nothing is written.
+        ReleasedCorpusError: The newest final release's tree holds ``v{version}``, or the checkout has no release
+            tag to tell by (:func:`released_corpus_refusal`); nothing is written.
         RuntimeError: A core type in ``CORE_DOC_TYPES`` has no stored model, or a stored core model is not in it.
     """
     newer = newer_corpus_dirs(root, version)
@@ -140,6 +208,9 @@ def write_corpus(root: Path, version: int, *, rewrite_all: bool = False) -> dict
             f"CORE_SCHEMA_VERSION to it (with its ledger line and upgrader) and run {REGENERATE} again; if it is "
             f"stray, remove it."
         )
+    released = released_corpus_refusal(version, newest_tag())
+    if released is not None:
+        raise ReleasedCorpusError(released)
     models = {doc_type_of(model): model for model in stored_models() if issubclass(model, CoreDocumentModel)}
     if set(models) != set(CORE_DOC_TYPES):
         raise RuntimeError(
@@ -225,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
     root = pins.FIXTURES
     try:
         shapes = write_corpus(root, CORE_SCHEMA_VERSION, rewrite_all=args.all)
-    except SupersededCorpusError as refusal:
+    except (SupersededCorpusError, ReleasedCorpusError) as refusal:
         print(refusal, file=sys.stderr)
         return 1
     source = PINS_PATH.read_text(encoding="utf-8")

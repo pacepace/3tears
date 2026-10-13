@@ -45,7 +45,7 @@ judge to everything that keys a judge by it — agreement, judge profiles, drift
 ``calibrated`` tier reads ``undetermined`` until the new judge is calibrated. Two wordings are two instruments, so
 that is the design; the policy is that it never ships unannounced. A release that rewords a built-in prompt or the
 suffix is breaking, and its ``MIGRATIONS.toml`` notes carry
-:data:`~threetears.evals.schema.models.JUDGE_WORDING_CHANGE_SENTENCE` verbatim, naming the wording that moved;
+:data:`~threetears.evals.schema.JUDGE_WORDING_CHANGE_SENTENCE` verbatim, naming the wording that moved;
 ``tests/test_judge_identity_pins.py`` pins every fingerprint by value, as the tree computes it and as the newest
 final release shipped it, and fails while one moved since that release and the notes do not carry the sentence.
 **The run is not re-keyed by it.** ``EvalRun.judge_config_ids``, the config set a run committed to and a component

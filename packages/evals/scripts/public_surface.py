@@ -640,6 +640,17 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.schema.KnownReasoningEffort",
         "threetears.evals.schema.KnownOutOfRunPurpose",
         "threetears.evals.schema.KnownRefusalKind",
+        # The same vocabularies' values as tuples, which a host reads instead of `get_args` on the open stored type.
+        "threetears.evals.schema.USAGE_ROLES",
+        "threetears.evals.schema.SIMULATOR_PURPOSES",
+        "threetears.evals.schema.COST_CAP_ORIGINS",
+        "threetears.evals.schema.METERED_CALL_ORIGINS",
+        "threetears.evals.schema.CELL_TIMEOUT_ORIGINS",
+        "threetears.evals.schema.MODEL_ROLE_ORIGINS",
+        "threetears.evals.schema.ROLE_MODEL_ORIGINS",
+        "threetears.evals.schema.REASONING_EFFORTS",
+        "threetears.evals.schema.OUT_OF_RUN_PURPOSES",
+        "threetears.evals.schema.REFUSAL_KINDS",
         # The quick path, what it returns, and the pieces the host guide hands a host of its own.
         "threetears.evals.quick.run_eval",
         "threetears.evals.quick.compare",
@@ -1185,8 +1196,16 @@ def package_at(tag: str) -> bool:
     return _git("cat-file", "-e", f"{tag}:{_PACKAGE_INIT}").returncode == 0
 
 
-def _source_at(ref: str | None, path: str) -> str | None:
-    """A file under the repository at ``ref``, or in the working tree when ``ref`` is ``None``."""
+def path_at(tag: str, path: str) -> bool:
+    """Whether the tree at ``tag`` holds ``path`` (a file or a directory, as a path inside the repository): what a
+    release shipped, read from git rather than from the working tree."""
+    return _git("cat-file", "-e", f"{tag}:{path}").returncode == 0
+
+
+def source_at(ref: str | None, path: str) -> str | None:
+    """A file under the repository at ``ref``, or in the working tree when ``ref`` is ``None``; ``None`` when that
+    tree holds no such file. The one way the dev tools read a released tree without installing it: the surface here,
+    the released judge pins (``tests/test_judge_identity_pins.py``)."""
     if ref is None:
         local = PACKAGE_ROOT.parent.parent / path
         return local.read_text(encoding="utf-8") if local.exists() else None
@@ -1210,14 +1229,14 @@ def exports_at(ref: str | None) -> dict[str, set[str]]:
     """
     if ref is not None and not package_at(ref):
         return {}
-    package = _source_at(ref, _PACKAGE_INIT)
+    package = source_at(ref, _PACKAGE_INIT)
     if package is None:
         raise SystemExit(f"threetears.evals is not in the tree at {ref or 'the working tree'}")
     roots = _literal_assignment(package, "PUBLIC_ROOTS")
     found: dict[str, set[str]] = {}
     for root in roots:
         base = f"{_SOURCE}/{root.replace('.', '/')}"
-        source = _source_at(ref, f"{base}/__init__.py") or _source_at(ref, f"{base}.py")
+        source = source_at(ref, f"{base}/__init__.py") or source_at(ref, f"{base}.py")
         names = _literal_assignment(source, "__all__") if source is not None else None
         if names is None:
             raise SystemExit(f"{root} has no literal __all__ at {ref or 'the working tree'}")

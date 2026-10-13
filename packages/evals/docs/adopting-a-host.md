@@ -284,7 +284,7 @@ written under another cassette version is refused, by name, and you re-capture i
 corpus); a replay that asks for a refused recording stops its cell with a `CassetteCorrupt` naming both versions.
 
 **Each version space moves on its own.** Core documents (v14.0), regenerable documents (v9), cassettes
-(`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 51), the cell model
+(`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`, 52), the cell model
 (`CELL_MODEL_VERSION`, 12), the report (`REPORT_VERSION`, 9) and the identity keys (`IDENTITY_VERSION`, 24) carry
 separate versions, each at its first public release's value.
 **A judge's identity moves with its wording, and no version number moves with it.** Each result records what asked
@@ -293,7 +293,7 @@ each dim (`EvalResult.judge_config_ids`): `builtin:<sha12>`, a fingerprint of th
 prompt. A release that rewords either changes the fingerprint, so every result judged before it is another judge
 for agreement, judge profiles, drift and evidence tiers, and a `calibrated` tier reads `undetermined` until you
 calibrate the new judge. Nothing stored is refused or rewritten. Such a release's notes (`MIGRATIONS.toml`, printed
-by `scripts/release_notes.py`) carry `JUDGE_WORDING_CHANGE_SENTENCE` (in `threetears.evals.schema.models`) and name
+by `scripts/release_notes.py`) carry `JUDGE_WORDING_CHANGE_SENTENCE` (in `threetears.evals.schema`) and name
 the wording that moved, so read them before you upgrade a scope whose readings rest on calibration. A run's own `judge_config_ids` (the
 config set it launched with, part of its context key) holds bare config ids and no built-in dim, so a wording change
 does not split runs' context: only the results' recorded judges tell the two judges apart.
@@ -422,8 +422,9 @@ release, on:
 
 - **`host-contract`** is what a host writes against: the host and its profile, the registries, the kind seam,
   launching, the stored documents a kind builds, the store port with its conformance kits and the engine's own
-  stores, the refusals, the version constants, the `Known*` vocabularies, the quick path and what it returns, and
-  every name this guide, the [tutorial](tutorial.md), the README or an example imports. Such a name moves only with
+  stores, the refusals, the version constants, the `Known*` vocabularies and their value tuples (`USAGE_ROLES`, …),
+  the quick path and what it returns, and every name this guide, the [tutorial](tutorial.md), the README or an
+  example imports. Such a name moves only with
   a `MIGRATIONS.toml` record and a deprecation cycle: the release that moves it exports the new name beside the old
   one, which keeps working for that minor release and is named in its notes, and the next minor release removes the
   old name, recorded as any removal is.
@@ -1006,7 +1007,10 @@ Each mechanism below exists because the first host to adopt the engine needed it
 that host's vocabulary, and none has yet been used by a second host. Use whichever fits your subject. Your
 adoption, as the second host, decides whether each one stays an engine concept. A mechanism no second host uses
 may be removed in a later release, and that release's `MIGRATIONS.toml` notes say so (the core ones then move
-with a core major and an upgrader). None is deprecated, and nothing here changes what is stored.
+with a core major and an upgrader). None is deprecated, and nothing here changes what is stored. Two of them hang
+off [`host-contract`](#stability-tiers) names: `KnownUsageRole` carries `inner_agent` and `external`, and
+`WorldDimension` reaches `Triggered` through its `when`. Removing either is a signature change to a contract name,
+so it goes through the deprecation cycle, never straight out in one release's notes.
 
 - **`AsyncDelivery` and `AsyncExternalSpend`** (on `EvalResult.async_deliveries`, a core document). They cover
   background work a candidate hands off and gets back turns later, with its own model spend and the paid
