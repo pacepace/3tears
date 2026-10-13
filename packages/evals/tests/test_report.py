@@ -152,7 +152,8 @@ class TestTheToyReportsContent:
         order = ["summary", "questions", "decisions", "guardrails", "findings", "arms", "surface", "next", "methods"]
         seen = list(dict.fromkeys(block.section for block in report.blocks))
         assert seen == [section for section in order if section in seen]
-        assert set(seen) == set(order)
+        # The toy campaign holds no guardrail, so it has no guardrails section; every other section is there.
+        assert set(seen) == set(order) - {"guardrails"}
 
     async def test_an_authors_caveat_is_attached_to_its_finding_as_written(
         self, toy: tuple[Any, EvalAnalysis, Report]

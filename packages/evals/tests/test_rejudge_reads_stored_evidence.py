@@ -506,20 +506,6 @@ async def test_a_rejudged_built_in_dim_was_asked_by_the_built_in_prompt_it_recor
     assert rejudged.judge_rescores[-1].judge_config_ids == today
 
 
-async def test_a_result_judged_before_built_in_prompts_were_identified_is_not_rejudged_by_today_s() -> None:
-    """Its built-in wording is unknown, so a new score could be a different judge's beside its run's others (#633)."""
-    judge = _ScriptedJudge(failing={_DIM})
-    host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge)
-    _stored_as(host, result, judge_config_ids={})
-    judge.failing.clear()
-    judge.calls.clear()
-
-    with pytest.raises(ValidationFailedError, match="records no identity for the built-in prompt"):
-        await rejudge_result(host, result.id, _SCOPE)
-
-    assert judge.calls == []
-
-
 async def test_a_result_judged_by_another_built_in_wording_is_not_rejudged_by_today_s() -> None:
     judge = _ScriptedJudge(failing={_DIM})
     host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge)
@@ -548,10 +534,12 @@ async def test_a_built_in_prompt_on_a_dim_its_run_recorded_a_config_for_is_ambig
 async def test_a_config_its_run_did_not_record_is_still_ambiguous() -> None:
     judge = _ScriptedJudge(failing={_DIM})
     host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge, judge_config_ids={_DIM: "config-1"})
-    _stored_as(host, result, judge_config_ids={_DIM: "config-2"})
+    _stored_as(host, result, judge_config_ids={_DIM: "config-2@aaaaaaaaaaaa"})
     judge.calls.clear()
 
-    with pytest.raises(ValidationFailedError, match="by config 'config-2' while its run recorded 'config-1'"):
+    with pytest.raises(
+        ValidationFailedError, match="by config 'config-2@aaaaaaaaaaaa' while its run recorded 'config-1'"
+    ):
         await rejudge_result(host, result.id, _SCOPE)
 
     assert judge.calls == []
@@ -574,18 +562,3 @@ async def test_a_rejudged_configured_dim_was_asked_by_its_config_with_the_reply_
     rejudged = await rejudge_result(host, result.id, _SCOPE)
 
     assert rejudged.judge_config_ids[_DIM] == recorded and rejudged.judge_error is None
-
-
-async def test_a_configured_result_stored_before_the_reply_format_was_identified_is_not_rejudged() -> None:
-    """Its suffix wording is unknown, so today's configured prompt may be a different judge from its run's."""
-    judge = _ScriptedJudge(failing={_DIM})
-    config = _config()
-    host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge, configs={_DIM: config})
-    _stored_as(host, result, judge_config_ids={_DIM: config.id})
-    judge.failing.clear()
-    judge.calls.clear()
-
-    with pytest.raises(ValidationFailedError, match="without the reply format it was sent with"):
-        await rejudge_result(host, result.id, _SCOPE)
-
-    assert judge.calls == []

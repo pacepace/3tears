@@ -1098,12 +1098,14 @@ class RubricScore(EvalDocumentModel):
             "as unknown, never as a match."
         ),
     )
-    judge_temperature: JudgeTemperature = Field(
+    judge_temperature: JudgeTemperature | None = Field(
+        default=None,
         description=(
             "The sampling temperature the call that produced this score was actually SENT at, as the completion "
             "reported it: a number, or 'model_default' when the model refuses a temperature and was sent none. "
             "Part of the judge's identity beside served_model: a different temperature is a different judge, and "
-            "never pools with this one."
+            "never pools with this one. The judge service always records it; None = a score made outside a judge "
+            "phase (a host's own reviewers), which no call sampled: compared as unknown, never as a match."
         ),
     )
     output_fingerprint: str | None = Field(
@@ -4483,10 +4485,12 @@ class RepeatedScore(EvalDocumentModel):
             "config, or another built-in wording, measures a different judge, and is not paired."
         ),
     )
-    first_judge_temperature: JudgeTemperature = Field(
+    first_judge_temperature: JudgeTemperature | None = Field(
+        default=None,
         description=(
-            "The temperature the first score was sent at, as it recorded it. A repeat sent at another temperature "
-            "measures a different judge, and is not paired."
+            "The temperature the first score was sent at, as it recorded it; None for a score made outside a judge "
+            "phase. A repeat sent at another temperature — or beside a first score that recorded none — measures a "
+            "different (or an unknown) judge, and is not paired."
         ),
     )
     repeat: RubricScore | None = Field(
@@ -4605,7 +4609,10 @@ class SecondJudgeScore(EvalDocumentModel):
             "its wording; None = the result records no judge for it (a score made outside a judge phase)."
         ),
     )
-    first_judge_temperature: JudgeTemperature = Field(description="The temperature the first score was sent at.")
+    first_judge_temperature: JudgeTemperature | None = Field(
+        default=None,
+        description="The temperature the first score was sent at; None for a score made outside a judge phase.",
+    )
     second: RubricScore | None = Field(
         default=None, description="The second judge's score, when it scored the dimension."
     )

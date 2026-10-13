@@ -1566,7 +1566,7 @@ def _judge_temperatures(_run: EvalRun, results: Sequence[EvalResult]) -> list[st
 
     Returns:
         The sorted distinct levels when every stored score recorded one; ``None`` when ANY recorded none — a
-        score judged before temperatures were recorded, or by a client that reports none — for the reason
+        score made outside a judge phase — for the reason
         :func:`_judge_served_models` returns ``None`` on a partial record; ``[]`` when nothing was scored. Both
         blanks read as undecidable, never as agreement.
     """

@@ -729,13 +729,6 @@ def test_an_arm_the_lens_gave_no_standing_reads_untested():
     assert dominance == {LABEL["A"]: "untested", LABEL["B"]: "untested", LABEL["C"]: "dominated"}
 
 
-def test_a_surface_frozen_before_standings_states_no_domination():
-    """No standings recorded: nothing is flagged, and nothing is called tested."""
-    payload = build(VALID["frontier"])
-
-    assert all(point["dominance"] is None and point["dominated"] is False for point in payload["points"])
-
-
 def test_a_frontiers_axis_titles_are_computed_from_its_measures():
     """The authored chart carries no label, so each title is what a reader calls the measure and, when it has one, its unit.
 

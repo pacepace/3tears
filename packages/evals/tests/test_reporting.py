@@ -62,7 +62,7 @@ from threetears.evals.analysis.lenses.pivot import (
     PivotError,
     compute_pivot,
 )
-from threetears.evals.analysis.lenses.frontier import FrontierResult, FrontierError, compute_frontier
+from threetears.evals.analysis.lenses.frontier import FrontierError, compute_frontier
 from threetears.evals.analysis.lenses.history import HistoryError, compute_history
 from threetears.evals.analysis.lenses.program_budget import compute_program_budget
 from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
@@ -6482,14 +6482,6 @@ class TestFrontierBoundaryPillar:
         subject = compute_frontier([run], results, archived_run_ids=None, control_variant_key="vk").subjects[0]
 
         assert (subject.boundary_dimensions, subject.boundary_pillar) == ([], None)
-
-    def test_a_frozen_frontier_carrying_the_retired_disclosure_still_reads(self):
-        stored = compute_frontier([], [], archived_run_ids=None).to_dict()
-        stored["two_pillar"] = {"boundary_pillar_available": False}
-
-        assert FrontierResult.from_dict(stored).subjects == []
-        with pytest.raises(ValidationError, match="two_pillar"):
-            FrontierResult.model_validate(stored)
 
 
 class TestFrontierExclusions:

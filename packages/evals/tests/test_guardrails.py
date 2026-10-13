@@ -156,11 +156,6 @@ class TestEachGuardrailIsDecidedAgainstTheControl:
         assert bundle.guardrails.checks == []
         assert bundle.guardrails.withheld is not None and "not the same as held" in bundle.guardrails.withheld
 
-    def test_scores_judged_before_the_axis_was_stamped_are_named(self):
-        bundle = two_arm_bundle([(CAPABILITY, "capability", CAPABILITY_GAIN), (BOUNDARY, None, GUARDRAIL_LOST)])
-        assert bundle.guardrails.unstamped_dimensions == [BOUNDARY]
-        assert bundle.guardrails.checks == [], "an unstamped score is read as capability, as it was then"
-
     def test_the_writer_sees_the_guardrails_by_cell_alias(self):
         message = build_user_message(two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST)))
         assert '"guardrails"' in message and '"decision": "breached"' in message

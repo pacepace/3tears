@@ -264,9 +264,12 @@ class JudgeTrial(EvalBaseModel):
     served_model: str | None = Field(
         default=None, description="The model the response named as having answered; None when it named none."
     )
-    judge_config_id: str = Field(
-        min_length=1,
-        description="The versioned JudgeConfig that asked, or a ``builtin:`` id = the built-in prompt, by its wording.",
+    judge_config_id: str | None = Field(
+        default=None,
+        description=(
+            "The versioned JudgeConfig that asked, or a ``builtin:`` id = the built-in prompt, by its wording; None = "
+            "no judge identity was recorded: an unknown judge, never the same as a recorded one."
+        ),
     )
     judge_temperature: JudgeTemperature | None = Field(
         default=None,

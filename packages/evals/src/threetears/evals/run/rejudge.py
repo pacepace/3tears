@@ -272,17 +272,11 @@ def recorded_judge_pins(run: EvalRun, *, request_settings: RequestSettingsPolicy
             remedy=RELAUNCH_TO_REJUDGE,
         )
     # The judge service asks every dim with no config for DEFAULT_JUDGE_TEMPERATURE. A run that recorded
-    # another — or none, which is a run launched when such dims were sampled at the provider's default —
-    # would have its new scores sampled by a different judge from the rest of it (#633).
+    # another would have its new scores sampled by a different judge from the rest of it (#633).
     if request_settings == "today" and run.judge_temperature != DEFAULT_JUDGE_TEMPERATURE:
-        recorded = (
-            "recorded no judge temperature (its dims without a config were sampled at the provider's default)"
-            if run.judge_temperature is None
-            else f"was judged at temperature {run.judge_temperature}"
-        )
         raise ValidationFailedError(
-            f"run '{run.id}' {recorded} and a judge call now asks for {DEFAULT_JUDGE_TEMPERATURE}; a new score "
-            "would be sampled differently from the rest of the run",
+            f"run '{run.id}' was judged at temperature {run.judge_temperature} and a judge call now asks for "
+            f"{DEFAULT_JUDGE_TEMPERATURE}; a new score would be sampled differently from the rest of the run",
             remedy=RELAUNCH_TO_REJUDGE,
         )
     return run.judge_model

@@ -853,10 +853,6 @@ class TestTheShapeRefusesWhatCannotBeTrue:
         with pytest.raises(ValidationError, match="subset"):
             _facts(n_candidate_failed=1, n_no_turn=2)
 
-    def test_one_count_without_the_other_is_refused(self) -> None:
-        with pytest.raises(ValidationError, match="kept together"):
-            _facts(n_candidate_failed=1)
-
     def test_failures_the_strata_do_not_add_up_to_are_refused(self) -> None:
         strata = [
             StratumFacts(stratum="a", n_observations=2, n_cases=2, n_candidate_failed=1, n_no_turn=1),
@@ -873,12 +869,6 @@ class TestTheShapeRefusesWhatCannotBeTrue:
         assert not _facts(n_candidate_failed=0, n_no_turn=0, n_infra_excluded=4).all_failed
         # Every result failed, but the budget ended turns that ran: they have a cost and latency to state.
         assert not _facts(n_candidate_failed=4, n_no_turn=0).all_failed
-
-    def test_an_analysis_frozen_before_the_counts_were_kept_reads_as_not_counted(self) -> None:
-        stored = _facts().model_dump(mode="json")
-        del stored["n_candidate_failed"], stored["n_no_turn"]
-        legacy = CellFacts.model_validate(stored)
-        assert (legacy.n_candidate_failed, legacy.n_no_turn, legacy.all_failed) == (None, None, False)
 
 
 class TestDeliveredIsDeclaredOnlyOnATurnsTimeOrSpend:

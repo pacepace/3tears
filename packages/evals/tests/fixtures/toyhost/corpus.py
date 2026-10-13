@@ -507,7 +507,6 @@ def toyhost_measurements(
                         score=layout_fidelity + (1 if repeat == 3 else 0),
                         scale="ordinal",
                         axis="capability",
-                        judge_temperature=0.0,
                     )
                 ]
                 if layout_fidelity is not None

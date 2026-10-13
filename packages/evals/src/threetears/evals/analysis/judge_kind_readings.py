@@ -180,7 +180,7 @@ def _order(entry: tuple[EvalResult, JudgeTrial]) -> tuple[str, int, str]:
 
 def _score_of(trial: JudgeTrial) -> RubricScore:
     """A scored trial's answer as the score a judged result would hold."""
-    assert trial.score is not None and trial.judge_temperature is not None
+    assert trial.score is not None
     return RubricScore(
         dim=trial.dim,
         scale=trial.scale,

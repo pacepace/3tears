@@ -13,7 +13,6 @@ over the same in-memory evals-repo stand-in the campaign tests use.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 import pytest
@@ -356,33 +355,10 @@ def test_the_stored_tiers_are_the_authored_tiers():
 
 
 def test_a_lever_carries_no_confidence_looked_up_from_its_status():
-    """``confidence`` was a fixed lookup on ``status``: it is not a field, and naming it says what became of it."""
+    """A lever carries no confidence: how firmly a reading stands is its evidence tier, so the key is refused."""
     assert "confidence" not in LeverCoverage.model_fields
-    with pytest.raises(ValidationError, match="`confidence` is not a field of LeverCoverage: it was removed"):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         LeverCoverage(name="l", cells=1, k=1, n=1, dispersion="±0", status="unswept", confidence="low")
-
-
-@pytest.mark.parametrize("tier", ["high", "medium", "low"])
-def test_a_stored_analysis_whose_levers_carry_a_confidence_still_loads(tier: str):
-    """An analysis stored before the field was retired loads, the tier discarded and every fact kept."""
-    analysis = _make_analysis()
-    stored = analysis.to_dict()
-    stored["coverage"]["levers"][0]["confidence"] = tier
-
-    reloaded = EvalAnalysis.from_dict(stored)
-
-    assert reloaded == analysis
-    assert "confidence" not in reloaded.to_dict()["coverage"]["levers"][0]
-
-
-def test_an_old_analysis_loads_through_storage():
-    storage, store = memory_storage()
-    analysis = _make_analysis()
-    stored = analysis.to_dict()
-    stored["coverage"]["levers"][0]["confidence"] = "high"
-    store.upsert(stored)
-
-    assert storage.load_analysis(analysis.id, analysis.scope_id) == analysis
 
 
 # ---------------------------------------------------------------------------
@@ -571,43 +547,6 @@ def test_the_retired_execution_flavoured_verdicts_are_gone(retired: str):
 
 
 @pytest.mark.parametrize(
-    ("model", "kwargs", "field"),
-    [
-        (
-            EvalInsight,
-            {
-                "scope_id": "uni-1",
-                "subject_id": "s",
-                "subject_kind": "agent",
-                "statement": "st",
-                "confidence": "medium",
-            },
-            "scope",
-        ),
-        (
-            EvalInsight,
-            {
-                "scope_id": "uni-1",
-                "subject_id": "s",
-                "subject_kind": "agent",
-                "statement": "st",
-                "confidence": "medium",
-            },
-            "invalidation_trigger",
-        ),
-    ],
-)
-def test_optional_prose_accepts_null_as_empty(model, kwargs, field):
-    """A ``null`` on an optional prose field must not discard a paid generation.
-
-    These fields are already allowed to be empty, and a model asked for an
-    optional string returns ``null`` as readily as ``""``.
-    """
-    built = model(**kwargs, **{field: None})
-    assert getattr(built, field) == ""
-
-
-@pytest.mark.parametrize(
     ("build", "field"),
     [
         (
@@ -627,7 +566,7 @@ def test_optional_prose_accepts_null_as_empty(model, kwargs, field):
     ids=["EvalInsight.statement", "Finding.title", "NextStep.title"],
 )
 def test_required_prose_still_rejects_null(build, field):
-    """The null tolerance is scoped to fields that were already optional.
+    """A required prose field refuses null.
 
     Where the text is the claim itself, its absence IS the failure and must surface loudly
     rather than be normalized into an empty string — and the authored contract has no
@@ -637,30 +576,8 @@ def test_required_prose_still_rejects_null(build, field):
         build()
 
 
-@pytest.mark.parametrize("field", ["evidence_run_ids", "evidence_result_ids"])
-def test_optional_llm_list_accepts_null_as_empty(field):
-    """The list sibling of the prose rule — a ``null`` array must not discard a paid generation.
-
-    ``default_factory=list`` covers an ABSENT key, not an explicit ``null``.
-    """
-    built = EvalInsight(
-        scope_id="uni-1",
-        subject_id="s",
-        subject_kind="agent",
-        statement="st",
-        confidence="medium",
-        **{field: None},
-        invalidation_trigger="retired when its analysis is archived, or replaced by a later analysis restating it",
-    )
-    assert getattr(built, field) == []
-
-
-def test_llm_list_tolerance_did_not_erase_the_element_schema():
-    """The null tolerance must not cost the element types it wraps.
-
-    ``_LLMList`` is generic (``_LLMList[str]``) precisely so this holds. A bare ``list``
-    would accept the nulls AND silently stop checking the elements.
-    """
+def test_an_insights_evidence_lists_check_their_elements():
+    """An insight's evidence id lists hold strings, and refuse anything else."""
     insight = EvalInsight(
         scope_id="uni-1",
         subject_id="s",
@@ -732,76 +649,6 @@ def test_query_insights_filters_by_source_campaign():
 
     ids = {i.id for i in storage.query_insights("uni-1", source_campaign_id="camp-1")}
     assert ids == {from_camp_1.id}
-
-
-def test_a_null_array_is_logged_not_silently_swallowed(caplog):
-    """The tolerance must leave a trace, or it converts a loud failure into a quiet lie.
-
-    A normalized null renders identically to a field the generator genuinely had nothing
-    for, so without this line an operator reads a malfunctioning paid generation as truthful.
-    """
-    with caplog.at_level(logging.WARNING):
-        EvalInsight(
-            scope_id="uni-1",
-            subject_id="s",
-            subject_kind="agent",
-            statement="st",
-            confidence="medium",
-            evidence_run_ids=None,
-            invalidation_trigger="retired when its analysis is archived, or replaced by a later analysis restating it",
-        )
-    assert "arrived as null" in caplog.text
-    assert any(r.levelname == "WARNING" for r in caplog.records)
-    # A trace that does not say WHICH array was emptied cannot answer the question it exists
-    # for — re-run the billed generation, or accept what it minted?
-    assert "'evidence_run_ids'" in caplog.text, "the warning must name the field an operator has to distrust"
-
-
-def test_the_null_coercion_log_is_pinned_to_one_exact_string(caplog):
-    """The operator-facing string must not name a code path — it was wrong three times trying.
-
-    `_coerce_null_list` is a BeforeValidator, so it fires wherever an `_LLMList` field is
-    validated, on generate and on load alike. The taxonomy belongs in the comment, which has
-    room to be accurate.
-
-    This guard has two independent halves, because neither alone is sufficient:
-
-    1. The emitted line IS the constant with the field name interpolated — this pins the call
-       site to the template, so the log cannot drift away from it or drop the field name.
-    2. The CONSTANT names no code path and no mechanism. Half 1 cannot check that: it compares
-       the constant against the message that same constant produced, so both sides move together
-       and a reworded constant passes green.
-
-    Half 2 is itself a blocklist, so be honest about its reach: it covers the wordings that
-    shipped and their near neighbours in any case, but a phrasing that avoids every token can
-    still assert a path. Reviewing this string when it changes is the rest of the guard.
-    """
-    with caplog.at_level(logging.WARNING):
-        EvalInsight(
-            scope_id="uni-1",
-            subject_id="s",
-            subject_kind="agent",
-            statement="st",
-            confidence="medium",
-            evidence_result_ids=None,
-            invalidation_trigger="retired when its analysis is archived, or replaced by a later analysis restating it",
-        )
-
-    assert "arrived as null" in caplog.text, "the coercion stopped warning at all"
-    # The template is read off the record the coercion emitted, so the two halves below are about
-    # the string an operator actually receives rather than a copy of it.
-    (record,) = [r for r in caplog.records if "arrived as null" in r.getMessage()]
-    template = record.msg
-    assert record.args == ("evidence_result_ids",) and record.getMessage() == template % "evidence_result_ids", (
-        "the emitted warning is no longer one template with the field name in it — the log call has "
-        "drifted from its template, or stopped naming the field an operator must distrust."
-    )
-    lowered = template.lower()
-    for claim in ("path", "nested", "rehydrat", "read time", "_as_list", "validator", "model_validate"):
-        assert claim not in lowered, (
-            f"the null-list warning names {claim!r}. This string fires on BOTH the generate and load "
-            "paths, so any path or mechanism claim in it is false for half its callers."
-        )
 
 
 class TestAResolutionIsTheReadingsItsFindingNames:

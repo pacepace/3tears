@@ -411,6 +411,7 @@ class TestWhichCasesAreReJudged:
                                     axis="capability",
                                     judge_temperature=0.0,
                                 ),
+                                first_judge_temperature=0.0,
                             )
                         ],
                     )
@@ -507,16 +508,16 @@ class TestAClientThatIgnoresTemperature:
 _PRE_STRICT_SETTINGS = JUDGE_REQUEST_SETTINGS.model_copy(update={"strict_output": False})
 
 
-class TestAPreTemperatureRunIsReplayedAsRecorded:
-    """A run judged before #633 recorded no temperature, and before strict_output was asked with older settings.
+class TestARunAskedWithOtherSettingsIsReplayedAsRecorded:
+    """A run whose judge was asked with other request settings than today's.
 
-    Neither matters to this comparison: it forces its own temperature on both sides and pairs nothing with the run's
-    scores. A judge REPEAT, whose answers pair with the run's, still refuses such a run.
+    That does not matter to this comparison: it forces its own temperature on both sides and pairs nothing with the
+    run's scores. A judge REPEAT, whose answers pair with the run's, still refuses such a run.
     """
 
-    async def test_a_run_with_no_recorded_temperature_and_older_settings_is_compared_at_the_forced_temperatures(self):
+    async def test_a_run_with_older_settings_is_compared_at_the_forced_temperatures(self):
         judge = _Judge()
-        host, run_id = await _judged_run(judge, judge_temperature=None, judge_request_settings=_PRE_STRICT_SETTINGS)
+        host, run_id = await _judged_run(judge, judge_request_settings=_PRE_STRICT_SETTINGS)
         with pytest.raises(ValidationFailedError):
             await estimate_judge_repeat(host, run_id, _SCOPE, out_of_run_cap_usd=None)
 
@@ -530,7 +531,7 @@ class TestAPreTemperatureRunIsReplayedAsRecorded:
 
     async def test_a_run_whose_template_was_edited_since_is_still_refused(self):
         judge = _Judge()
-        host, run_id = await _judged_run(judge, judge_temperature=None, judge_request_settings=_PRE_STRICT_SETTINGS)
+        host, run_id = await _judged_run(judge, judge_request_settings=_PRE_STRICT_SETTINGS)
         run = off_loop(host.storage.load_eval_run, run_id, _SCOPE)
         assert run is not None
         template = off_loop(host.storage.load_template, run.template_id, _SCOPE)
@@ -546,7 +547,7 @@ class TestAPreTemperatureRunIsReplayedAsRecorded:
 
     async def test_a_run_that_recorded_no_request_settings_is_still_refused(self):
         judge = _Judge()
-        host, run_id = await _judged_run(judge, judge_temperature=None, judge_request_settings=None)
+        host, run_id = await _judged_run(judge, judge_request_settings=None)
 
         with pytest.raises(ValidationFailedError, match="request settings"):
             await compare_judge_temperatures(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)
@@ -645,7 +646,8 @@ class TestASideThatOnlyCouldNotTellMeasuredNothing:
                     scale="ordinal",
                     judge_temperature=MODEL_DEFAULT_TEMPERATURE,
                     axis="capability",
-                )
+                ),
+                config_id="builtin:aaaaaaaaaaaa",
             )
             for score in (3, 4)
         ]
@@ -689,7 +691,8 @@ class TestASideThatOnlyCouldNotTellMeasuredNothing:
             TemperatureAnswer(
                 score=RubricScore(
                     dim=_DIM, score=3, scale="ordinal", judge_temperature=DEFAULT_JUDGE_TEMPERATURE, axis="capability"
-                )
+                ),
+                config_id="builtin:aaaaaaaaaaaa",
             ),
             TemperatureAnswer(cannot_tell="the answer is cut off"),
         ]

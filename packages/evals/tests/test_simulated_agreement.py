@@ -374,7 +374,7 @@ def test_the_pooled_tier_from_several_people_holds_its_error_at_the_bar(label: s
     rng = random.Random(f"pooled-tier-at-bar-{label}")
     replicates = 400
     met = 0
-    key = JudgeKey(_DIM, "ordinal", _JUDGE, None)
+    key = JudgeKey(_DIM, "ordinal", _JUDGE, None, 0.0)
     for _ in range(replicates):
         ratings, results = draw(rng)
         (tier,) = judge_evidence_tiers(judge_agreement(ratings, results), judge_self_agreement([]), {key})

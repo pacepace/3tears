@@ -54,6 +54,7 @@ from typing import Any
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
 from threetears.evals.kernel import CampaignDesign, EvalCampaign
 from threetears.evals.schema import (
+    DEFAULT_JUDGE_TEMPERATURE,
     ControlEndState,
     EvalResult,
     EvalRun,
@@ -421,7 +422,10 @@ async def execute_toyhost_run(
     arms = arms if arms is not None else [ToyhostArm(model=model) for model in RUN_MODELS]
     runs = [
         toyhost_run(model=arm.model, template=template, kind=kind, world=world, arm=arm).model_copy(
-            update={"judge_model": judge_model}
+            update={
+                "judge_model": judge_model,
+                "judge_temperature": DEFAULT_JUDGE_TEMPERATURE if judge_model is not None else None,
+            }
         )
         for arm in arms
     ]

@@ -62,6 +62,7 @@ def _results(
                             axis="capability",
                             judge_temperature=0.0,
                         ),
+                        first_judge_temperature=0.0,
                     )
                 )
             judging = SecondJudging(pass_id="pass", judge=_SECOND, sample_fraction=1.0, sample_seed=0, scores=scores)
