@@ -6,6 +6,58 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Memory: what ambient recall hands an agent, one event stored once, and a dream that makes nothing permanent
+
+On one deployment eight of the ten memories an agent was handed on a turn were from the last five
+days, most of them its own corrections; 168 of 291 recent memories were written by scheduled fires
+with nobody present; one event was stored three and four times in a few minutes; and a dream had
+marked its merges of the person's own facts permanent, in the agent's first person.
+
+**Every new knob defaults to "as before", except the two marked Changed.**
+
+- **Changed, `DreamService`:** a dream never sets `evergreen` on a gist. The `permanent` field of
+  the reflector's answer is no longer read, and `DEFAULT_CONSOLIDATION_PROMPT` no longer asks for
+  it. The prompt gains one rule: `Keep who each fact is about. A fact about a person stays about
+  that person, in the words the memories use for them. Never restate someone's fact as "I" unless
+  the memories say "I".` A consumer whose own consolidation prompt still asks for `permanent` gets
+  an answer field nothing reads. `DreamService._reflect` returns three values, not four.
+- **Changed, extraction's ADD:** written through `revisions.write_once`. With
+  `MemoryConfig.same_event_threshold` unset this is the same single insert as before.
+- **Added, `threetears.agent.memory.origin`:** `UNATTENDED_TAG` (`"unattended"`),
+  `MADE_BY_PREFIX` (`"made_by:"`), `made_by_tag`, `origin_tags`, `origin_of`, `MemoryOrigin`. Where a
+  memory came from, as tags on its row. A row with neither tag has no recorded origin, and
+  `origin_of` answers `unattended=None` for it, never `False`. A dream's gist carries
+  `UNATTENDED_TAG` when every memory it merges does.
+- **Added, `MemoryConfig`:** `ambient_recent_cap` (`None`), `ambient_recent_days` (`7.0`),
+  `ambient_excluded_tags` (`()`), `ambient_bumps_salience` (`True`), `same_event_threshold`
+  (`None`). `MemoryRetriever` reads the first four.
+- **Added, `MemoriesCollection.hybrid_search(recent_cap=, recent_window_hours=)`:** at most
+  `recent_cap` of the returned memories were written inside the window. Which recent ones is decided
+  on semantic and keyword evidence, never on recency; the returned order is still the composite's.
+- **Added, `RetrievalScope.tags_none`:** rows carrying any of these tags are not eligible. An empty
+  tuple excludes nothing.
+- **Added, `MemoriesCollection.find_same_event`** and **`revisions.write_once`, `Written`,
+  `SAME_EVENT_RATIONALE`:** a new memory replaces a stored one from the same source messages
+  (`near_message_ids`: this turn's and the one before) that is at least `threshold` like it. A
+  permanent one is never replaced: `when_permanent="skip"` writes nothing, `"beside"` writes beside
+  it.
+- **Added, `MemoryExtractor.extract(near_message_ids=, reply_is_source=)`**, both keyword-only.
+  `reply_is_source=False` shows the worthiness and extraction models `REPLY_NOT_A_SOURCE`
+  (`"(not given)"`) in place of the reply. The length gates still read the reply as it was.
+- **Added, `load_memory_add_tool(permanent_allowed=, near_message_ids=, same_event_threshold=)`**,
+  keyword-only. A same-event replacement answers in the words a near-duplicate's does:
+  `Stored as [memory:<id>]: <text>. It replaces [memory:<id>] (<n>% the same, written <date>),
+  which said "<text>" and stays readable by its id. If they are two facts and not one, store it
+  again with replace=false.` A `permanent=true` the host's `permanent_allowed` refuses is stored
+  not permanent, and the result ends `It is not kept permanently: making this one permanent needs
+  your person's word.` (`PERMANENT_NEEDS_THE_PERSON`).
+- **Added, `load_memory_keep_tool(permanent_allowed=)`**, keyword-only. Refused:
+  `[NO CHANGE] memory_keep: [memory:<id>] is as it was. It is not kept permanently: making this one
+  permanent needs your person's word.`
+- **Added, `load_memory_recall_tool(salience_bump=)`**, keyword-only, default `0.0`: opening a
+  current memory raises its salience by that much.
+- **Changed, additive:** `MemoriesCollection.find_active_for_consolidation` rows carry `tags`.
+
 ### Memory tools: every result says which memories still stand, and an agent can correct, retire and restore its own
 
 A search returned a replaced memory and its replacement as two equal facts, and a retired memory
