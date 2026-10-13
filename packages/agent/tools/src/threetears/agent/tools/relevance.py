@@ -60,6 +60,8 @@ from threetears.agent.tools.utils import tool_no_change
 __all__ = [
     "DEFAULT_SEARCH_MAX_LIMIT",
     "ToolRelevanceIndex",
+    "ToolSearchFamilyInput",
+    "ToolSearchInput",
     "ToolSearchResult",
     "ToolSelectionResult",
     "also_in_family",
@@ -597,8 +599,12 @@ def also_in_family(
     return lines
 
 
-class _ToolSearchInput(BaseModel):
-    """Input schema for the ``tool_search`` meta-tool."""
+class ToolSearchInput(BaseModel):
+    """What ``tool_search`` takes over a catalog without families.
+
+    Public so a consumer that adds its own argument to the tool extends this
+    class and checks ``tool.args_schema`` against it.
+    """
 
     query: str = Field(
         description="What you need the tool to do, in plain words.",
@@ -609,8 +615,11 @@ class _ToolSearchInput(BaseModel):
     )
 
 
-class _ToolSearchFamilyInput(_ToolSearchInput):
-    """Input schema for ``tool_search`` over a catalog that has families."""
+class ToolSearchFamilyInput(ToolSearchInput):
+    """What ``tool_search`` takes over a catalog that has families (``group_of`` given).
+
+    Public for the same reason as :class:`ToolSearchInput`.
+    """
 
     query: str = Field(
         default="",
@@ -846,5 +855,5 @@ def create_tool_search_tool(
         coroutine=_search,
         name="tool_search",
         description=description,
-        args_schema=_ToolSearchFamilyInput if group_of is not None else _ToolSearchInput,
+        args_schema=ToolSearchFamilyInput if group_of is not None else ToolSearchInput,
     )

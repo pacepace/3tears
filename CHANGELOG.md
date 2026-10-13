@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Tools: the arguments of `tool_search` have public names
+
+- **Added, `threetears.agent.tools.relevance.ToolSearchInput` and `ToolSearchFamilyInput`:** the
+  argument schemas `create_tool_search_tool` builds its tool with (the second when `group_of` is
+  given). A consumer that adds an argument of its own extends the class and checks
+  `tool.args_schema` against it. They were `_ToolSearchInput` and `_ToolSearchFamilyInput`; the
+  underscored names are gone.
+
 ### Tools: a recall that misses names what is saved
 
 - **Changed, `context_recall` (both `load_workflow_tools` and the `threetears.context_recall`
