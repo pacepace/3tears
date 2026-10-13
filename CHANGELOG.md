@@ -34,6 +34,8 @@ marked its merges of the person's own facts permanent, in the agent's first pers
 - **Added, `MemoriesCollection.hybrid_search(recent_cap=, recent_window_hours=)`:** at most
   `recent_cap` of the returned memories were written inside the window. Which recent ones is decided
   on semantic and keyword evidence, never on recency; the returned order is still the composite's.
+  With a cap the nearest `candidate_limit` memories older than the window are candidates too (one
+  more vector query), so a burst that fills the candidate pool does not leave the list short.
 - **Added, `RetrievalScope.tags_none`:** rows carrying any of these tags are not eligible. An empty
   tuple excludes nothing.
 - **Added, `MemoriesCollection.find_same_event`** and **`revisions.write_once`, `Written`,
