@@ -2,9 +2,18 @@
 #
 # A public root is a module in threetears.evals.PUBLIC_ROOTS, and its public names are its __all__. When a name
 # that shipped in a final release leaves one (moved to another root, renamed, or removed) it is recorded here, and
-# there is no compatibility shim: a porter reads the release notes, which are printed from this file:
+# a porter reads the release notes, which are printed from this file:
 #
 #     uv run python packages/evals/scripts/release_notes.py v<version>
+#
+# Every public name has a stability tier, recorded in api/surface.json and declared in one place, HOST_CONTRACT in
+# scripts/public_surface.py. The promise starts at 0.66.0, the first tagged release:
+#   host-contract  a name a host writes against. It moves only with a record here AND a deprecation cycle: the
+#                  release that moves it exports the new name beside the old one, which keeps working for that minor
+#                  release and is named in that section's `notes`; the next minor release drops the old name, and its
+#                  section records the removal in a [[release.change]] as any move is recorded.
+#   closure        a name public only because a public signature reaches it. Any release may move it, recorded
+#                  here, and there is no compatibility shim.
 #
 # tests/test_api_surface.py fails while a name is missing from the checked-in snapshot (api/surface.json) without
 # being recorded in the FIRST section below, and scripts/generate_api_snapshot.py refuses to write a snapshot that
@@ -43,7 +52,7 @@ The first release of 3tears-evals. No earlier release shipped the package, so no
 removed: every name on the surface is new, and api/surface.json is the baseline later releases are measured from.
 """
 notes = [
-    "The public API is still changing: until a release says otherwise, any release may break it. Every name that leaves a public root from here on is recorded in this file and printed in that release's notes, with its new home or `removed`.",
+    "The public API has two stability tiers (this file's header): a `host-contract` name moves only with a deprecation cycle, from this release on, and any other public name may move in any release. Every name that leaves a public root from here on is recorded in this file and printed in that release's notes, with its new home or `removed`.",
     "The `v0.66.0-evaladopt.N` tags are pre-releases, never published to PyPI, and nothing here is measured from them. A host that ran one imports each name from the root `docs/reference.md` lists it under; each pre-release tag's own `MIGRATIONS.toml` and `CHANGELOG.md` still describe the moves between them.",
     "A store a pre-release wrote is not read. Core schema v14 is the baseline: a core document at v8 to v13 is refused by name as pre-release, and regenerable documents (schema v9), bundles (shape 51) and cells (model 12) are refused or re-assembled at their new versions. Delete every eval document a pre-release wrote before deploying this release.",
     "A cassette has a version space of its own: `EvalCassette.schema_version` is `CASSETTE_SCHEMA_VERSION` (1, exported from `threetears.evals.schema`), no longer `REGENERABLE_SCHEMA_VERSION`. A cassette a pre-release wrote (at v9) is refused by name and its corpus re-captured. A regenerable bump no longer refuses any cassette; only a change to the cassette's own format bumps its version.",

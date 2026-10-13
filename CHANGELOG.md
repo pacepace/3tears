@@ -13,9 +13,11 @@ packages (bumped in lock-step).
 A new package (`pip install 3tears-evals`, import root `threetears.evals`). Run each version of a feature, from a
 classifier to a tool-using agent, over the same frozen cases. It reports what moved and with what uncertainty, and
 for an agent it reports what the agent did to a world the application declares, not only what it said. The public
-API is still changing: until a release says otherwise, any release may break it, and every name that leaves a
-public root is recorded in `packages/evals/MIGRATIONS.toml` (`scripts/release_notes.py v<version>` prints a release's
-notes).
+API has two stability tiers, recorded per name in `api/surface.json`: a `host-contract` name (what a host writes
+against, declared in `scripts/public_surface.py`'s `HOST_CONTRACT`) moves only with a deprecation cycle, the old name
+working beside the new one for a minor release, and any other (`closure`) name may move in any release. Either way
+every name that leaves a public root is recorded in `packages/evals/MIGRATIONS.toml` (`scripts/release_notes.py
+v<version>` prints a release's notes).
 
 - **Dependencies.** Python 3.14+ and `pydantic` only. It depends on no other 3tears package. Two extras: `[vega]`
   (`vl-convert-python`, for rendering charts to SVG and PNG) and `[fastmcp]` (the FastMCP transport). The live

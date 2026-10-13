@@ -5,8 +5,10 @@ each version over the same cases and it reports what moved, with the uncertainty
 real. For an agent, it measures what the agent did to a world your application declares, not only what it said:
 the open tickets it closed, the meeting it booked, the light it switched on.
 
-> **The public API is still changing.** This package was extracted from a production app's eval engine, and its
-> API will change without notice until a release says otherwise.
+> **The public API is still changing.** This package was extracted from a production app's eval engine. From
+> 0.66.0 only its host contract is promised: a name on it moves with a deprecation cycle, and any other public name
+> may change in any release, recorded in `MIGRATIONS.toml`
+> ([stability tiers](https://github.com/pacepace/3tears/blob/develop/packages/evals/docs/adopting-a-host.md#stability-tiers)).
 
 ## What is different
 
