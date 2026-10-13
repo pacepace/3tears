@@ -218,3 +218,19 @@ async def test_workflow_declare_tool(ctx: ToolContextManager) -> None:
     )
     assert "Workflow declared" in result
     assert ctx.has_active_workflow
+
+
+@pytest.mark.asyncio
+async def test_workflow_declare_says_what_it_replaced(ctx: ToolContextManager) -> None:
+    tools = _make_tools(ctx)
+    first = tools["workflow_declare"].invoke({"plan": "Move house", "steps": ["pack", "drive", "unpack"]})
+    assert (
+        first
+        == "Workflow declared. No plan was there before.\n  Plan: Move house\n  Steps:\n  1. pack\n  2. drive\n  3. unpack"
+    )
+    ctx.advance_workflow_step()
+    second = tools["workflow_declare"].invoke({"plan": "Stay put", "steps": ["unpack"]})
+    assert second == (
+        "Workflow declared. It replaced the plan 'Move house' (3 steps, 1 done, active).\n"
+        "  Plan: Stay put\n  Steps:\n  1. unpack"
+    )

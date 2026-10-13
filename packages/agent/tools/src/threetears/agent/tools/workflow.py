@@ -111,9 +111,19 @@ async def _recall_context(
 
 
 def _declare_workflow(tool_context: ToolContextManager, plan: str, steps: list[str]) -> str:
+    before = tool_context.workflow_state
+    was = _plan_before(before) if before else "No plan was there before."
     state = tool_context.declare_workflow(plan, steps)
     step_list = "\n".join(f"  {i + 1}. {s}" for i, s in enumerate(steps))
-    return f"Workflow declared:\n  Plan: {state['plan']}\n  Steps:\n{step_list}"
+    return f"Workflow declared. {was}\n  Plan: {state['plan']}\n  Steps:\n{step_list}"
+
+
+def _plan_before(state: dict[str, Any]) -> str:
+    """The plan a new declaration replaces: its name, its steps and how far it got."""
+    steps = state.get("steps") or []
+    done = min(int(state.get("current_step") or 0), len(steps))
+    count = f"{len(steps)} step{'' if len(steps) == 1 else 's'}, {done} done"
+    return f"It replaced the plan {str(state.get('plan') or '')!r} ({count}, {state.get('status') or 'unknown'})."
 
 
 # ---------------------------------------------------------------------------

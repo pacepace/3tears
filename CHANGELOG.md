@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Tools: a new plan says what it replaced, and a specialist that is not there names the ones that are
+
+- **Changed, `workflow_declare`:** the result opens `Workflow declared. No plan was there before.`
+  or `Workflow declared. It replaced the plan '<plan>' (<n> steps, <m> done, <status>).`, then the
+  plan and steps as before. It opened `Workflow declared:`. **A consumer that matched that opening
+  with the colon no longer matches.**
+- **Changed, `invoke_tool_llm`:** when the resolver returns `None` the result is
+  `[TOOL ERROR] invoke_tool_llm: specialist '<name>' not found. Your specialists: <names>.`, or
+  `You have no specialists to ask.` The names come from the resolver's `available_names()`, an
+  optional async method (`ToolLlmResolver` is unchanged); a resolver without it, or one whose list
+  fails, gets `It is not on your list.` as before.
+
 ### Tools: the arguments of `tool_search` have public names
 
 - **Added, `threetears.agent.tools.relevance.ToolSearchInput` and `ToolSearchFamilyInput`:** the
