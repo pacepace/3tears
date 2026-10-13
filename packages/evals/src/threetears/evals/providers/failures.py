@@ -61,6 +61,8 @@ def _body_message(body: object) -> str | None:
         try:
             body = json.loads(body)
         except ValueError:
+            # NOSILENT: a body that is not JSON holds no provider message to quote; the describer still names the
+            # provider and the status, and None here is the documented "carries none", not a lost failure.
             return None
     if not isinstance(body, Mapping):
         return None

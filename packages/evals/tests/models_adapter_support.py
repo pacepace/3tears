@@ -27,6 +27,7 @@ import httpx
 import pytest
 
 from threetears.evals.providers import ModelsCompletionClient, models_client
+from threetears.models import DEFAULT_CHAT_MODEL
 
 __all__ = [
     "ANTHROPIC_HOST",
@@ -142,7 +143,7 @@ def mocked_providers(monkeypatch: pytest.MonkeyPatch) -> Iterator[ProviderTransp
 def anthropic_reply(
     *,
     text: str = '{"score": 4}',
-    model: str = "claude-sonnet-4-6-20260201",
+    model: str = f"{DEFAULT_CHAT_MODEL}-20260201",
     stop_reason: str | None = "end_turn",
     thinking_tokens: int | None = 5,
     thinking_block: bool = True,
@@ -265,10 +266,11 @@ def ok(payload: dict[str, Any] | str) -> Planned:
 #: A slice of OpenRouter's public ``/models`` catalogue, per-token prices as strings, as it serves them.
 CATALOGUE: dict[str, Any] = {
     "data": [
+        {"id": f"anthropic/{DEFAULT_CHAT_MODEL}", "pricing": {"prompt": "0.000003", "completion": "0.000015"}},
         {"id": "anthropic/claude-sonnet-4.6", "pricing": {"prompt": "0.000003", "completion": "0.000015"}},
         {"id": "openai/gpt-5-mini", "pricing": {"prompt": "0.00000025", "completion": "0.000002"}},
         {"id": "openai/gpt-4o", "pricing": {"prompt": "0.0000025", "completion": "0.00001"}},
-        {"id": "anthropic/claude-unpriced", "pricing": {"prompt": "0", "completion": "0"}},
+        {"id": "anthropic/unpriced", "pricing": {"prompt": "0", "completion": "0"}},
     ]
 }
 
@@ -301,7 +303,7 @@ class FakeCatalogue:
 #: The model each provider's client is built for, unless a test names another: ids models' registry places on
 #: their own for Anthropic and OpenAI, and an alias, which OpenRouter needs ``provider=`` for.
 MODELS: dict[str, str] = {
-    "anthropic": "claude-sonnet-4-6",
+    "anthropic": DEFAULT_CHAT_MODEL,
     "openai": "gpt-4o",
     "openrouter": "~anthropic/claude-sonnet-latest",
 }

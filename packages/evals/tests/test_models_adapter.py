@@ -25,7 +25,7 @@ import pytest
 
 from threetears.evals.providers import ModelsClientRefused, ModelsCompletion, models_client
 from threetears.evals.testing import check_completion_conformance
-from threetears.models import CircuitOpenError, create_chat_model
+from threetears.models import DEFAULT_CHAT_MODEL, DEFAULT_EMBEDDING_MODEL, CircuitOpenError, create_chat_model
 
 from packages.evals.tests.models_adapter_support import (
     ANTHROPIC_HOST,
@@ -222,13 +222,13 @@ def test_a_model_the_registry_cannot_place_needs_a_provider() -> None:
 
 def test_a_provider_the_adapter_does_not_build_for_is_refused() -> None:
     with pytest.raises(ModelsClientRefused, match="bring a completion client of your own"):
-        models_client("voyage-3", api_key="k", provider="voyageai", prices=FakeCatalogue())
+        models_client(DEFAULT_EMBEDDING_MODEL, api_key="k", provider="voyageai", prices=FakeCatalogue())
 
 
 def test_the_claude_cli_route_is_refused_with_its_reason() -> None:
     """A subscription token routes to the CLI, whose completions read as finished whatever stopped them."""
     with pytest.raises(ModelsClientRefused, match="read as finished") as refused:
-        models_client("claude-sonnet-4-6", api_key="sk-ant-oat01-subscription", prices=FakeCatalogue())
+        models_client(DEFAULT_CHAT_MODEL, api_key="sk-ant-oat01-subscription", prices=FakeCatalogue())
     assert refused.value.setting == "api_key"
 
 
@@ -283,7 +283,7 @@ async def test_the_process_wide_breaker_neither_trips_the_client_nor_is_tripped_
     net.plan(ANTHROPIC_HOST, bad)
     tripped_key, untouched_key = "sk-ant-api03-tripped", "sk-ant-api03-untouched"
     shared_url = net.base_url(ANTHROPIC_HOST)
-    plain = create_chat_model("claude-sonnet-4-6", api_key=tripped_key, max_retries=0, base_url=shared_url)
+    plain = create_chat_model(DEFAULT_CHAT_MODEL, api_key=tripped_key, max_retries=0, base_url=shared_url)
     for _ in range(5):
         with pytest.raises(anthropic.BadRequestError):
             await plain.ainvoke("x")
@@ -299,7 +299,7 @@ async def test_the_process_wide_breaker_neither_trips_the_client_nor_is_tripped_
         with pytest.raises(anthropic.BadRequestError):
             await _generate(adapter)
     net.plan(ANTHROPIC_HOST, ok(anthropic_reply()))
-    other = create_chat_model("claude-sonnet-4-6", api_key=untouched_key, max_retries=0, base_url=shared_url)
+    other = create_chat_model(DEFAULT_CHAT_MODEL, api_key=untouched_key, max_retries=0, base_url=shared_url)
     await other.ainvoke("x")  # the adapter's six failures left the process-wide breaker for this key closed
 
 
@@ -327,7 +327,7 @@ async def test_the_temperature_reported_is_the_one_sent(net: ProviderTransport) 
 @pytest.mark.parametrize(
     ("provider", "model", "per_input", "per_output", "row"),
     [
-        ("anthropic", "claude-sonnet-4-6", 3.0, 15.0, "anthropic/claude-sonnet-4.6"),
+        ("anthropic", DEFAULT_CHAT_MODEL, 3.0, 15.0, f"anthropic/{DEFAULT_CHAT_MODEL}"),
         ("openai", "gpt-4o", 2.5, 10.0, "openai/gpt-4o"),
     ],
 )
@@ -355,9 +355,9 @@ async def test_the_catalogue_is_read_once_per_client(net: ProviderTransport) -> 
 @pytest.mark.parametrize(
     ("model", "catalogue", "reason"),
     [
-        ("claude-nowhere-1", FakeCatalogue(), "no price catalogue row matches"),
-        ("claude-unpriced", FakeCatalogue(), "carries no input or output rate"),
-        ("claude-sonnet-4-6", FakeCatalogue(failure=httpx.ConnectError("offline")), "could not be fetched"),
+        ("nowhere-1", FakeCatalogue(), "no price catalogue row matches"),
+        ("unpriced", FakeCatalogue(), "carries no input or output rate"),
+        (DEFAULT_CHAT_MODEL, FakeCatalogue(failure=httpx.ConnectError("offline")), "could not be fetched"),
     ],
 )
 async def test_an_unpriced_call_is_none_with_its_reason(
@@ -437,8 +437,8 @@ async def test_openrouter_s_echo_of_a_requested_alias_is_not_a_served_model(
 
 
 async def test_the_served_model_is_the_reply_s_on_the_direct_providers(net: ProviderTransport) -> None:
-    plan_reply(net, "anthropic", model="claude-sonnet-4-6-20260201")
-    assert (await _generate(build(net, "anthropic"))).served_model == "claude-sonnet-4-6-20260201"
+    plan_reply(net, "anthropic", model=f"{DEFAULT_CHAT_MODEL}-20260201")
+    assert (await _generate(build(net, "anthropic"))).served_model == f"{DEFAULT_CHAT_MODEL}-20260201"
     plan_reply(net, "openai", model=None)
     unnamed = await _generate(build(net, "openai"))
     assert unnamed.served_model is None and unnamed.model == MODELS["openai"]
