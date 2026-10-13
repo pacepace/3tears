@@ -1209,26 +1209,40 @@ on a cache the epoch system invalidates; derived caches row by row, ALL only for
 ### What Must Already Be Deployed Everywhere
 
 Contract is the last step of expand, migrate, contract, so it is safe only once nothing older than
-the switch-on stage runs. **Before this release ships anywhere, every one of these is on the
-switch-on release: images built from 3tears `5173b662`, hub `e6b3f9f2` and SDK `3db24dd2`
-(`feature/reports` with the switch-on stage merged) or later:**
+the switch-on stage runs. **No release carries the switch-on stage on its own: expand, switch-on and
+contract all ship in 3tears 0.66.0, with the hub and SDK releases built on it. So there is no
+rolling-safe path from 0.65.0 for the access tables, and the precondition is a deploy rule.**
 
-- **every hub and gateway replica.** A hub older than switch-on neither advances the access tables
-  for its own writes and the broker's commits nor follows them. A contract follower has no TTL, so a
-  broadcast lost from such a writer would never be corrected.
-- **every agent pod (SDK) and tool pod (framework).** Their own writes go through the broker, which
-  advances, so as writers an older pod is safe; but as a reader a pod older than switch-on follows
-  nothing, and once the hub stops publishing `acl.*` its cache is bounded by its own TTL alone.
-- **the standalone registry**, for the same reason as a pod, with the static grant that lets it read
-  `{ns}-epochs` already rendered to cobalt (the switch-on stage's requirement).
+Why a 0.65.0 process cannot run beside a 0.66.0 one:
+
+- **a 0.65.0 hub or gateway replica** neither advances the access tables for its own writes and the
+  broker's commits nor follows them. It publishes `acl.*`, which no 0.66.0 process subscribes to. A
+  0.66.0 follower has no TTL, so a grant such a replica changes is not seen by any 0.66.0 hub,
+  gateway, registry or pod, and nothing ages it out.
+- **a 0.65.0 agent pod (SDK) or tool pod (framework)** writes through the broker, which advances, so
+  as a writer it is safe beside a 0.66.0 hub; as a reader it follows nothing, and once the hub stops
+  publishing `acl.*` its cache is bounded by its own TTL alone.
+- **a 0.65.0 standalone registry**, for the same reason as a pod. A 0.66.0 registry needs the static
+  grant that lets it read `{ns}-epochs` rendered before it starts.
 - **identity-core** writes these tables only through the hub's RPCs, so the hub covers it.
+- **a 0.65.0 writer of a durable tile epoch** does not maintain `config_epochs.previous_epoch`
+  (`EpochClient` `_BUMP_SQL` names the column only from 0.66.0). A tile epoch it bumps after a
+  0.66.0 move keeps the previous version that earlier move recorded, and
+  `threetears.datasources.geo_reload.generations_to_delete` then keeps that generation and deletes
+  the one clients still hold.
 
-A hub, gateway or registry still on the switch-on build, once its static grants are rendered from
-this release, still subscribes to `acl.*` and logs one refused-subscribe ERROR per connect; the
-connection stays up and nothing is lost, since nothing publishes those subjects. Within the
-contract release the pieces upgrade in any order: a contract hub publishes no `acl.*`,
-and a switch-on pod still subscribes but follows the generations; a contract pod subscribes nothing.
-**Rolling a hub or gateway back below switch-on, while any contract follower runs, is not safe.**
+**The rule, for the deploy that takes a fleet from 0.65.0 to 0.66.0:**
+
+1. While any 0.65.0 process runs beside a 0.66.0 one, make no access changes (group members, roles,
+   role assignments, groups, namespaces) and reload no geography layer.
+2. Once the last 0.65.0 process is gone, restart every hub, gateway, registry, agent pod and tool
+   pod once, so nothing cached while a 0.65.0 process could still write is kept.
+3. Do not roll a hub, gateway, registry or pod back below 0.66.0 while any 0.66.0 process runs.
+
+Within 0.66.0 the pieces start in any order: a 0.66.0 hub publishes no `acl.*`, and a 0.66.0 pod
+subscribes nothing. A 0.65.0 hub, gateway or registry whose static grants are already rendered from
+0.66.0 logs one refused-subscribe ERROR per connect for `acl.*`; the connection stays up and nothing
+is lost, since nothing publishes those subjects.
 
 ### What Was Removed
 

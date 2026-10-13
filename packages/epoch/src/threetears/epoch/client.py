@@ -315,6 +315,11 @@ class DurableEpoch:
     never moved, whose ``epoch`` is ``0``, and for a row written before migration v002 until
     its next move.
 
+    every writer's own statement records it, so it is right only while every writer of the
+    subject runs 0.66.0 or later: a 0.65.0 writer moves ``epoch`` and leaves ``previous``
+    naming an earlier move. no durable subject is bumped while a 0.65.0 process still runs
+    (the 0.66.0 deploy rule, in the changelog).
+
     :ivar epoch: the subject's epoch, ``0`` when it has never moved
     :ivar previous: the epoch the latest move replaced, or ``None``
     """

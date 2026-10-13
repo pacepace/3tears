@@ -370,10 +370,23 @@ again.
 ### Agent acl, core, nats, registry, memory and conversations: the access tables' contract stage
 
 Stage 5 of `docs/epoch-task-06-collection-generations-by-default.md`, for the access tables. The
-write generations are now the only invalidation of every cache derived from them. **Deploy
-precondition: every hub, gateway, agent pod, tool pod and standalone registry is on the switch-on
-release (3tears `5173b662`, hub `e6b3f9f2`, SDK `3db24dd2`) or later before this ships anywhere;**
-see "What Must Already Be Deployed Everywhere" in the note.
+write generations are now the only invalidation of every cache derived from them.
+
+**Deploy rule for 0.66.0. There is no rolling-safe path from 0.65.0 for the access tables.** The
+stages this was built in (expand, switch-on, contract) all ship in 0.66.0; none was released on its
+own. While a 0.65.0 hub or gateway replica and a 0.66.0 one run together, a grant the 0.65.0
+replica changes (a group member, a role, a role assignment) advances no write generation, so no
+0.66.0 hub, gateway, registry or pod sees the change, and nothing ages it out of their caches. So:
+
+1. **During the deploy, make no access changes and reload no geography layer.** The second because
+   a 0.65.0 writer does not maintain `config_epochs.previous_epoch`: a tile epoch it bumps keeps the
+   previous version an earlier move recorded, and a pod reporting next keeps that generation and
+   deletes the one clients still hold (`generations_to_delete`).
+2. **Once the last 0.65.0 process is gone, restart every hub, gateway, registry, agent pod and tool
+   pod once.** A restart drops whatever a 0.66.0 process cached while a 0.65.0 one could still write.
+3. **Do not roll any of them back below 0.66.0 while any 0.66.0 process runs.**
+
+See "What Must Already Be Deployed Everywhere" in the note.
 
 - **Removed, breaking:** `threetears.agent.acl.invalidation_bus` (`subscribe_acl_invalidation`,
   `unsubscribe_acl_invalidation`, `publish_membership_invalidation`,
