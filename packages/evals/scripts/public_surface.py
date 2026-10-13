@@ -10,6 +10,10 @@ The walk starts at each public root's ``__all__`` (the roots are ``threetears.ev
 everything else from code: first docstring paragraphs and ``#:`` comments, signatures, Pydantic and dataclass
 fields with their annotations as written. Everything it renders is deterministic: stable ordering, no
 timestamps, no object addresses, sets sorted.
+
+Each name also has a stability tier, the one thing the walk does not read from code: :data:`HOST_CONTRACT` declares
+the names a host binds to, and every other public name is ``closure``, public because a public signature reaches
+it. The snapshot records each entry's tier, so a promotion or a demotion is a diff in review like any other.
 """
 
 from __future__ import annotations
@@ -420,9 +424,18 @@ def public_names() -> Iterator[tuple[str, str, Any]]:
             yield root, name, getattr(module, name)
 
 
+#: A public name's stability tier. ``host-contract`` is a name a host binds to (:data:`HOST_CONTRACT`): it moves
+#: only with a ``MIGRATIONS.toml`` record and a deprecation cycle. ``closure`` is a name public because a public
+#: signature reaches it: it may move in any release, recorded in ``MIGRATIONS.toml`` and never shimmed.
+Tier = Literal["host-contract", "closure"]
+
+#: The tiers, in the order the promise weakens.
+TIERS: tuple[Tier, ...] = typing.get_args(Tier)
+
+
 @dataclasses.dataclass(frozen=True)
 class SurfaceEntry:
-    """One public name as the snapshot records it: what it is and how it is called or built.
+    """One public name as the snapshot records it: what it is, how it is called or built, and what it promises.
 
     Attributes:
         kind: The reference's kind: ``model``, ``protocol``, ``function``, ``literal``, ``constant (int)`` and so on.
@@ -430,10 +443,13 @@ class SurfaceEntry:
             with their annotations as written and their defaults; a protocol's members; an enum's or a literal's
             values; a type alias's definition; a class's or exception's constructor. Empty for a constant, whose
             value is data rather than a contract (a schema version moves on every bump).
+        tier: Its stability tier (:data:`Tier`): ``host-contract`` when :data:`HOST_CONTRACT` lists it, otherwise
+            ``closure``, which is what a name nobody has promised is.
     """
 
     kind: str
     signature: str
+    tier: Tier = "closure"
 
 
 def _fields_signature(cls: type) -> str:
@@ -499,9 +515,180 @@ def surface_entry(root: str, name: str, obj: Any) -> SurfaceEntry:
     return SurfaceEntry(item.kind, item.detail.strip("`"))
 
 
+# --- tiers: what a host binds to ---------------------------------------------------------------------------------
+
+#: The host contract: every public name a host binds to, by ``root.name``. Each moves only with a
+#: ``MIGRATIONS.toml`` record and a deprecation cycle (the old name keeps working beside the new one for one minor
+#: release), from 0.66.0 on. Every other public name is ``closure``.
+#:
+#: The ruling is what a host author is told to write against: ``docs/adopting-a-host.md``, ``docs/tutorial.md``, the
+#: README and ``examples/`` (every name they import is here, which ``tests/test_api_tiers.py`` holds), and the
+#: courier host (``tests/fixtures/courierhost/``), the least a product writes to be a host. A name a topic guide
+#: alone imports, a field type a contract name's signature reaches, and a name a later section of the host guide
+#: mentions for an optional feature are ``closure``: promoting one later is free, and demoting one is a break.
+HOST_CONTRACT: frozenset[str] = frozenset(
+    {
+        # The host: the one value every entrypoint takes, and the services it is built from.
+        "threetears.evals.kernel.host.EvalHost",
+        "threetears.evals.kernel.host.HostProfile",
+        "threetears.evals.kernel.host.CompletionClients",
+        "threetears.evals.kernel.host.default_cell_timeout",
+        "threetears.evals.kernel.EvalStorage",
+        "threetears.evals.kernel.withhold_failure_detail",
+        "threetears.evals.schema.ProviderFailureDescriber",
+        "threetears.evals.schema.CompletionClient",
+        "threetears.evals.schema.CompletionResult",
+        "threetears.evals.schema.TraceSink",
+        # The registries a profile holds: the host's vocabulary of levers, measures, bars and world.
+        "threetears.evals.kernel.host.SHARED_CORE",
+        "threetears.evals.kernel.host.Sweepable",
+        "threetears.evals.kernel.host.SweepableRegistry",
+        "threetears.evals.kernel.host.MeasureRegistry",
+        "threetears.evals.kernel.MetricDescriptor",
+        "threetears.evals.kernel.host.BarRegistry",
+        "threetears.evals.kernel.host.Bar",
+        "threetears.evals.kernel.host.PassThreshold",
+        "threetears.evals.kernel.host.load_bar_registry",
+        "threetears.evals.kernel.host.WorldRegistry",
+        "threetears.evals.kernel.host.WorldDimension",
+        "threetears.evals.kernel.host.SeedRefused",
+        # The kind: the seam a host implements to turn a case into a call to its own code, and what crosses it.
+        "threetears.evals.kernel.host.KindContract",
+        "threetears.evals.kernel.CandidateKind",
+        "threetears.evals.kernel.CandidateOutput",
+        "threetears.evals.kernel.CandidateTelemetry",
+        "threetears.evals.kernel.CandidatePreparationFailed",
+        "threetears.evals.kernel.CandidateKindDefect",
+        "threetears.evals.kernel.CellSink",
+        "threetears.evals.kernel.CellCassettes",
+        "threetears.evals.kernel.CellSpanWindow",
+        "threetears.evals.kernel.VariantConfig",
+        "threetears.evals.kernel.WorldSession",
+        "threetears.evals.schema.SubjectSnapshot",
+        "threetears.evals.schema.RoleUsage",
+        "threetears.evals.schema.SweepableValue",
+        "threetears.evals.schema.IntervalScale",
+        "threetears.evals.schema.JudgedArtifact",
+        "threetears.evals.schema.WorldSeed",
+        # Launching: the launch host, a kind's launch entry and wiring, and the calls that start and run a run.
+        "threetears.evals.run.LaunchHost",
+        "threetears.evals.run.LaunchSettings",
+        "threetears.evals.run.LaunchableKind",
+        "threetears.evals.run.LaunchRequest",
+        "threetears.evals.run.KindLauncher",
+        "threetears.evals.run.KindWiring",
+        "threetears.evals.run.KindFactory",
+        "threetears.evals.run.SubjectResolver",
+        "threetears.evals.run.UnknownSubject",
+        "threetears.evals.run.launch_run",
+        "threetears.evals.run.start_run",
+        "threetears.evals.run.execute_run",
+        "threetears.evals.run.RunnerOptions",
+        "threetears.evals.run.price_subject_call_floor",
+        "threetears.evals.run.run_blocking",
+        "threetears.evals.kernel.default_job_timeout",
+        "threetears.evals.kernel.EvalCampaign",
+        # The stored documents a host's kind and launcher build and its own code reads back.
+        "threetears.evals.schema.EvalRun",
+        "threetears.evals.schema.EvalResult",
+        "threetears.evals.schema.EvalTemplate",
+        "threetears.evals.schema.EvalTestCase",
+        "threetears.evals.schema.EvalTrace",
+        # The store: the port a host implements, the conformance kits that prove it, and the engine's own stores.
+        "threetears.evals.schema.DocumentStore",
+        "threetears.evals.schema.AsyncDocumentStore",
+        "threetears.evals.schema.StoreClock",
+        "threetears.evals.schema.AsyncStoreClock",
+        "threetears.evals.schema.StoreConflict",
+        "threetears.evals.testing.STORE_CONFORMANCE_CASES",
+        "threetears.evals.testing.StoreConformanceCase",
+        "threetears.evals.testing.check_completion_conformance",
+        "threetears.evals.testing.CompletionGuard",
+        "threetears.evals.testing.JobsConformanceHost",
+        "threetears.evals.testing.jobs_conformance_cases",
+        "threetears.evals.storage.InMemoryDocumentStore",
+        "threetears.evals.storage.SqliteDocumentStore",
+        "threetears.evals.storage.RoutedDocumentStore",
+        "threetears.evals.storage.DocTypeRoute",
+        "threetears.evals.storage.bridge_async_store",
+        # The refusals: one exception per refusal kind, which a host maps in its own routes, and the stored kind.
+        "threetears.evals.kernel.EvalServiceError",
+        "threetears.evals.kernel.NotFoundError",
+        "threetears.evals.kernel.ConflictError",
+        "threetears.evals.kernel.ValidationFailedError",
+        "threetears.evals.kernel.StorageError",
+        "threetears.evals.kernel.ProviderRefusedError",
+        "threetears.evals.kernel.AdmissionRefusedError",
+        "threetears.evals.kernel.UnreadableRunError",
+        "threetears.evals.schema.RefusalKind",
+        # The version constants a host checks a store or a stored document against: one per version space.
+        "threetears.evals.schema.CORE_SCHEMA_VERSION",
+        "threetears.evals.schema.CORE_SCHEMA_MINOR",
+        "threetears.evals.schema.CORE_BASELINE_VERSION",
+        "threetears.evals.schema.REGENERABLE_SCHEMA_VERSION",
+        "threetears.evals.schema.CASSETTE_SCHEMA_VERSION",
+        "threetears.evals.kernel.IDENTITY_VERSION",
+        "threetears.evals.analysis.REPORT_VERSION",
+        # The closed vocabularies a host writes and passes: each open stored vocabulary's values this build knows.
+        "threetears.evals.schema.KnownUsageRole",
+        "threetears.evals.schema.KnownSimulatorPurpose",
+        "threetears.evals.schema.KnownCostCapOrigin",
+        "threetears.evals.schema.KnownMeteredCallOrigin",
+        "threetears.evals.schema.KnownCellTimeoutOrigin",
+        "threetears.evals.schema.KnownModelRoleOrigin",
+        "threetears.evals.schema.KnownRoleModelOrigin",
+        "threetears.evals.schema.KnownReasoningEffort",
+        "threetears.evals.schema.KnownOutOfRunPurpose",
+        "threetears.evals.schema.KnownRefusalKind",
+        # The quick path, what it returns, and the pieces the host guide hands a host of its own.
+        "threetears.evals.quick.run_eval",
+        "threetears.evals.quick.compare",
+        "threetears.evals.quick.Comparison",
+        "threetears.evals.quick.ArmKey",
+        "threetears.evals.analysis.EvalSummary",
+        "threetears.evals.analysis.Report",
+        "threetears.evals.quick.callable_host",
+        "threetears.evals.quick.CALLABLE_KIND",
+        "threetears.evals.quick.Answer",
+        "threetears.evals.quick.Judge",
+        "threetears.evals.quick.Guardrail",
+        "threetears.evals.quick.CandidateTools",
+        "threetears.evals.quick.World",
+        "threetears.evals.quick.WorldTool",
+        "threetears.evals.quick.WorldTools",
+        "threetears.evals.quick.Dimension",
+        "threetears.evals.quick.measure",
+        "threetears.evals.quick.callable_kind",
+        "threetears.evals.quick.callable_kind_contracts",
+        # Reading runs back, as the tutorial and the examples do.
+        "threetears.evals.ops.scope_history",
+        "threetears.evals.run.list_results",
+        "threetears.evals.run.get_result_trace",
+        # Analysing a campaign and rendering its report, as the examples do.
+        "threetears.evals.analysis.inspect_campaign_bundle",
+        "threetears.evals.analysis.generate_analysis",
+        "threetears.evals.analysis.EVAL_ANALYSIS_GEN_DEFAULT",
+        "threetears.evals.analysis.report_markdown",
+        "threetears.evals.analysis.report_html",
+        "threetears.evals.analysis.ChartBlock",
+        "threetears.evals.kernel.EvalAnalysis",
+        "threetears.evals.vega.VegaRenderer",
+    }
+)
+
+
+def tier_of(qualified: str) -> Tier:
+    """A public name's tier, by ``root.name``: ``host-contract`` when :data:`HOST_CONTRACT` lists it."""
+    return "host-contract" if qualified in HOST_CONTRACT else "closure"
+
+
 def installed_surface() -> dict[str, SurfaceEntry]:
-    """``root.name`` → its entry, for every public name the installed package exports."""
-    return {f"{root}.{name}": surface_entry(root, name, obj) for root, name, obj in public_names()}
+    """``root.name`` → its entry, with its tier, for every public name the installed package exports."""
+    surface = {}
+    for root, name, obj in public_names():
+        qualified = f"{root}.{name}"
+        surface[qualified] = dataclasses.replace(surface_entry(root, name, obj), tier=tier_of(qualified))
+    return surface
 
 
 def exported_twice() -> dict[str, list[str]]:
@@ -558,8 +745,9 @@ REMOVED = "removed"
 #: The version of the section for the release being prepared, before it is named for its version.
 UNRELEASED = "unreleased"
 
-#: The snapshot file's own format version, so a reader of an older layout is refused rather than misread.
-SNAPSHOT_FORMAT = 1
+#: The snapshot file's own format version, so a reader of an older layout is refused rather than misread. 2 added
+#: each entry's ``tier``.
+SNAPSHOT_FORMAT = 2
 
 
 class _Record(BaseModel):
@@ -730,12 +918,19 @@ def load_snapshot(path: Path = SNAPSHOT_PATH) -> dict[str, SurfaceEntry]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if data.get("format") != SNAPSHOT_FORMAT:
         raise SystemExit(f"{path} is format {data.get('format')!r}, not {SNAPSHOT_FORMAT}; regenerate it")
+    for name, entry in data["names"].items():
+        if entry.get("tier") not in TIERS:
+            # An entry's tier is never defaulted on a read: a missing one would read as ``closure`` and drop a
+            # promise without a diff saying so.
+            raise SystemExit(
+                f"{path} records {name} with tier {entry.get('tier')!r}, not one of {TIERS}; regenerate it"
+            )
     return {name: SurfaceEntry(**entry) for name, entry in data["names"].items()}
 
 
 def render_snapshot(surface: dict[str, SurfaceEntry]) -> str:
     """The snapshot file: one entry per ``root.name``, in walk order, so a change is a small, readable diff."""
-    names = {name: {"kind": e.kind, "signature": e.signature} for name, e in surface.items()}
+    names = {name: {"kind": e.kind, "signature": e.signature, "tier": e.tier} for name, e in surface.items()}
     return json.dumps({"format": SNAPSHOT_FORMAT, "names": names}, indent=2, ensure_ascii=False) + "\n"
 
 
@@ -748,8 +943,8 @@ class Finding:
 
     Attributes:
         problem: What is wrong and what to do about it.
-        regenerating_fixes: Whether regenerating the snapshot is the whole remedy. A name added, or a kind or
-            signature changed, is: the diff the regeneration makes is the record. A name that left a root is not
+        regenerating_fixes: Whether regenerating the snapshot is the whole remedy. A name added, or a kind,
+            signature or tier changed, is: the diff the regeneration makes is the record. A name that left a root is not
             until ``MIGRATIONS.toml`` records it, and the generator refuses to write while any finding is not.
     """
 
@@ -793,11 +988,17 @@ def snapshot_findings(
                 )
             )
         else:
+            remedy = (
+                "It is host-contract: it keeps working beside its new home for one minor release before it leaves, "
+                "and the record names both."
+                if recorded[name].tier == "host-contract"
+                else "No compatibility shim: a porter reads the release notes."
+            )
             findings.append(
                 Finding(
                     f"{name} left the public surface, and MIGRATIONS.toml's newest section ({newest.version}) does "
                     f"not record it. Add it to a [[release.change]] there with its new home (or 'removed') and why, "
-                    f"then run `{REGENERATE_SNAPSHOT}`. No compatibility shim: a porter reads the release notes.",
+                    f"then run `{REGENERATE_SNAPSHOT}`. {remedy}",
                     False,
                 )
             )
@@ -805,7 +1006,7 @@ def snapshot_findings(
         findings.append(Finding(f"{name} is new on the public surface: run `{REGENERATE_SNAPSHOT}`.", True))
     for name in [n for n in installed if n in recorded]:
         now, was = installed[name], recorded[name]
-        if now != was:
+        if (now.kind, now.signature) != (was.kind, was.signature):
             findings.append(
                 Finding(
                     f"{name} changed: was {was.kind} `{was.signature}`, now {now.kind} `{now.signature}`. Run "
@@ -814,7 +1015,29 @@ def snapshot_findings(
                     True,
                 )
             )
+        if now.tier != was.tier:
+            findings.append(
+                Finding(
+                    f"{name} moved from tier {was.tier} to {now.tier} (HOST_CONTRACT in scripts/public_surface.py). "
+                    f"Run `{REGENERATE_SNAPSHOT}`; once a release has shipped it as host-contract, leaving that tier "
+                    f"is a breaking change for the newest section's `notes`.",
+                    True,
+                )
+            )
     return findings
+
+
+def tier_findings(installed: dict[str, SurfaceEntry]) -> list[Finding]:
+    """Names :data:`HOST_CONTRACT` lists that no public root exports: a list naming a name that moved or left, which
+    would promise nothing while reading as a promise."""
+    return [
+        Finding(
+            f"HOST_CONTRACT in scripts/public_surface.py lists {name}, which no public root exports: name it at the "
+            f"root that exports it now, or drop it once its record in MIGRATIONS.toml says it left.",
+            False,
+        )
+        for name in sorted(HOST_CONTRACT - installed.keys())
+    ]
 
 
 def _destination(migration: Migration) -> str:
@@ -918,13 +1141,14 @@ def all_findings(
     migrations: Migrations,
     reexports: ReExports,
 ) -> list[Finding]:
-    """Every finding over the installed package: the snapshot, the newest record and the duplicates."""
+    """Every finding over the installed package: the snapshot, the newest record, the duplicates and the tiers."""
     exports = exports_by_name()
     homes = {name: home_root(where[0][0], name) for name, where in exports.items() if len(where) > 1}
     newest = migrations.releases[0]
     tag = newest_tag()
     return [
         *duplicate_findings(exports, homes, reexports),
+        *tier_findings(installed),
         *record_findings(installed, newest),
         *snapshot_findings(installed, recorded, newest, released_names(newest)),
         *(f for release in migrations.releases if release.since for f in history_findings(release)),
