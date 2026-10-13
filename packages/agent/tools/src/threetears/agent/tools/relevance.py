@@ -50,7 +50,7 @@ from typing import Any, Callable
 
 from langchain_core.embeddings import Embeddings
 from langchain_core.tools import BaseTool, StructuredTool
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, Field
 
 from threetears.observe import get_logger
 from threetears.tool_schema.self_contained import declared_type
@@ -58,6 +58,7 @@ from threetears.tool_schema.self_contained import declared_type
 from threetears.agent.tools.utils import tool_no_change
 
 __all__ = [
+    "DEFAULT_SEARCH_MAX_LIMIT",
     "ToolRelevanceIndex",
     "ToolSearchResult",
     "ToolSelectionResult",
@@ -492,6 +493,9 @@ def _words(text: str) -> list[str]:
 #: The sentence every list of found tools ends its first line with: found is not bound until the next round.
 _CALL_AFTER = "Call them after this search returns, not alongside it:"
 
+#: The most tools one ``tool_search`` call returns unless its builder says otherwise.
+DEFAULT_SEARCH_MAX_LIMIT = 20
+
 #: How many of a family's other tools a hit list names before it counts the rest.
 _SIBLINGS_NAMED = 8
 
@@ -593,34 +597,29 @@ def also_in_family(
     return lines
 
 
-def _search_input(*, limit: int, max_limit: int, with_family: bool) -> type[BaseModel]:
-    """The ``tool_search`` argument schema: the query, how many, and a family when the catalog has them."""
-    fields: dict[str, Any] = {
-        "query": (
-            str,
-            Field(
-                default="" if with_family else ...,
-                description=(
-                    "What you need the tool to do, in plain words. Leave it out to list a whole family."
-                    if with_family
-                    else "What you need the tool to do, in plain words."
-                ),
-            ),
-        ),
-        "limit": (
-            int | None,
-            Field(
-                default=None,
-                description=f"The most tools to return: {limit} when left out, {max_limit} at most.",
-            ),
-        ),
-    }
-    if with_family:
-        fields["family"] = (
-            str | None,
-            Field(default=None, description="Search only this family of tools, by the family's name."),
-        )
-    return create_model("_ToolSearchInput", __doc__="Input schema for the ``tool_search`` meta-tool.", **fields)
+class _ToolSearchInput(BaseModel):
+    """Input schema for the ``tool_search`` meta-tool."""
+
+    query: str = Field(
+        description="What you need the tool to do, in plain words.",
+    )
+    limit: int | None = Field(
+        default=None,
+        description="The most tools to return. Leave it out for the usual few.",
+    )
+
+
+class _ToolSearchFamilyInput(_ToolSearchInput):
+    """Input schema for ``tool_search`` over a catalog that has families."""
+
+    query: str = Field(
+        default="",
+        description="What you need the tool to do, in plain words. Leave it out to list a whole family.",
+    )
+    family: str | None = Field(
+        default=None,
+        description="Search only this family of tools, by the family's name.",
+    )
 
 
 def create_tool_search_tool(
@@ -629,7 +628,7 @@ def create_tool_search_tool(
     on_hit: Callable[[list[BaseTool]], None],
     limit: int = 5,
     *,
-    max_limit: int = 20,
+    max_limit: int = DEFAULT_SEARCH_MAX_LIMIT,
     group_of: Callable[[BaseTool], str | None] | None = None,
     nothing_fits: Callable[[str, Sequence[tuple[BaseTool, float]]], bool] | None = None,
 ) -> BaseTool:
@@ -829,5 +828,5 @@ def create_tool_search_tool(
         coroutine=_search,
         name="tool_search",
         description=description,
-        args_schema=_search_input(limit=default_limit, max_limit=max_limit, with_family=group_of is not None),
+        args_schema=_ToolSearchFamilyInput if group_of is not None else _ToolSearchInput,
     )
