@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.67.0 -- 2026-10-13
+
 ### Models: which request settings a model accepts
 
 - **Added, request-settings facts on `threetears.models.ModelCapabilities` and `CapabilityOverride`:**
