@@ -17,8 +17,9 @@ from typing import Any, Self
 import pytest
 from pydantic import BaseModel, ConfigDict
 
+from threetears.evals.kernel import OutOfRunBudget, PlannedCall
 from threetears.evals.kernel.host import ApparatusError
-from threetears.evals.schema import ClientRequestSettings, CompletionResult, StopReason
+from threetears.evals.schema import ClientRequestSettings, CompletionResult, OutOfRunSpend, StopReason
 from threetears.evals.testing import (
     CompletionConformanceFailure,
     ReplayedCompletion,
@@ -169,7 +170,8 @@ async def test_replay_serves_repeats_in_order_and_refuses_the_call_past_the_reco
         await client.generate(system=SYSTEM, user="Roll a die.")
     message = str(refused.value)
     assert "'Roll a die.'" in message and "recorded 2 time(s)" in message and "call 2" in message
-    assert "RECORD=1" in message and str(path) in message
+    assert f"re-record {path} with the client it stands in for" in message, "no command given: the generic remedy"
+    assert "RECORD=1" not in message, "no convention is named that the caller did not pass"
     assert refused.value.remedy in message
 
 
@@ -322,7 +324,7 @@ async def test_check_covers_names_every_prompt_the_recording_no_longer_covers(tm
 
 
 async def test_replay_refuses_a_missing_or_empty_recording_with_the_remedy(tmp_path: Path) -> None:
-    with pytest.raises(RecordingRefused, match="there is no recording at this path; re-record .* with `RECORD=1"):
+    with pytest.raises(RecordingRefused, match="there is no recording at this path; re-record .* with the client it"):
         RecordedCompletions.replay(tmp_path / "never.jsonl", settings=BUDGETED)
     (empty := tmp_path / "empty.jsonl").write_text("", encoding="utf-8")
     with pytest.raises(RecordingRefused, match="holds no calls"):
@@ -422,6 +424,8 @@ async def test_a_completion_the_recording_could_not_replay_is_refused_when_recor
         (_WithRawMessage(content="ok", raw=object()), "`raw` holds a value of type object, which JSON cannot hold"),
         (replace(_Reply(content="ok"), input_tokens="12"), "`input_tokens` holds '12' (str)"),  # type: ignore[arg-type]
         (replace(_Reply(content="ok"), stop_reason="length"), "stop_reason 'length' is not one of"),  # type: ignore[arg-type]
+        (replace(_Reply(content="ok"), cost_usd=float("nan")), "`cost_usd` holds nan, a number JSON cannot hold"),
+        (replace(_Reply(content="ok"), temperature=float("inf")), "`temperature` holds inf, a number JSON cannot hold"),
     ]
     for completion, problem in cases:
         inner = _FakeInner()
@@ -577,3 +581,75 @@ def test_settings_are_a_required_keyword_with_no_default(tmp_path: Path) -> None
     with pytest.raises(TypeError, match="settings"):
         RecordedCompletions.check_covers(path, [])  # type: ignore[call-arg]
     assert not path.exists(), "the signature refuses the call before anything is read or written"
+
+
+# --- standing in for a bound client: an analysis writer, an out-of-run call ------------------------------
+
+
+# parity-with: threetears.evals.schema.BoundCompletionClient
+class _FakeBoundInner(_FakeInner):
+    """A scripted client that names its model and prices each call, as a role factory's client does."""
+
+    model_name = "acme/large"
+
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
+        return 0.25
+
+
+# parity-with: threetears.evals.schema.out_of_run_spend.OutOfRunSpendStore
+class _FakeLedger:
+    """Keeps every out-of-run row the budget writes."""
+
+    def __init__(self) -> None:
+        self.rows: list[OutOfRunSpend] = []
+
+    def save_out_of_run_spend(self, spend: OutOfRunSpend, /) -> None:
+        self.rows.append(spend)
+
+
+async def _analysis_call(client: Any) -> tuple[list[float | None], Any, _FakeLedger]:
+    """One analysis call through the engine's out-of-run budget, as ``generate_analysis`` makes it: priced, then made."""
+    ledger = _FakeLedger()
+    budget = OutOfRunBudget(ledger, scope_id="s", cap_usd=1.0, blocking_executor=None)
+    [admitted] = budget.admit(client, "analysis", [PlannedCall(system=SYSTEM, user="Write the analysis.")])
+    made = await budget.generate(client, admitted)
+    return [admitted.ceiling_usd], made, ledger
+
+
+async def test_a_recorder_of_a_bound_client_stands_in_for_an_analysis_client(tmp_path: Path) -> None:
+    path = tmp_path / "analysis.jsonl"
+    inner = _FakeBoundInner(_Reply(content="The analysis."))
+    recorder = RecordedCompletions.record(inner, path, settings=None)
+    assert recorder.model_name == "acme/large", "the inner client's model, read through"
+    assert recorder.price_ceiling(system=SYSTEM, user="u") == 0.25, "the inner client's ceiling: every call goes to it"
+    ceilings, made, ledger = await _analysis_call(recorder)
+    assert ceilings == [0.25] and made.result.content == "The analysis." and len(ledger.rows) == 1
+    assert len(_lines(path)) == 1
+
+
+async def test_a_replay_stands_in_for_an_analysis_client_and_costs_nothing(tmp_path: Path) -> None:
+    path = tmp_path / "analysis.jsonl"
+    await _record(path, ("Write the analysis.", _Reply(content="The analysis.")), settings=None)
+    replay = RecordedCompletions.replay(path, settings=None)
+    assert replay.model_name == "acme/large", "the one model the recording holds"
+    assert replay.price_ceiling(system=SYSTEM, user="anything") == 0.0, "a replay sends nothing and costs nothing"
+    ceilings, made, _ = await _analysis_call(replay)
+    assert ceilings == [0.0] and made.result.content == "The analysis."
+
+
+async def test_a_replay_s_model_is_the_one_it_names_and_ambiguity_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "two.jsonl"
+    await _record(path, ("Hello.", _Reply(content="a")), ("Hello.", replace(_Reply(content="b"), model="acme/small")))
+    assert RecordedCompletions.replay(path, settings=BUDGETED, model="acme/small").model_name == "acme/small"
+    with pytest.raises(RecordingRefused, match="holds calls of 2 models .* ambiguous") as refused:
+        _ = RecordedCompletions.replay(path, settings=BUDGETED).model_name
+    assert "model=" in refused.value.remedy
+
+
+def test_a_recorder_of_a_plain_client_names_no_model_and_prices_nothing(tmp_path: Path) -> None:
+    """A plain ``CompletionClient`` has neither member, so its recorder says so by name rather than inventing one."""
+    recorder = RecordedCompletions.record(_FakeInner(), tmp_path / "plain.jsonl", settings=None)
+    with pytest.raises(AttributeError, match="model_name: the recorded client _FakeInner names no model"):
+        _ = recorder.model_name
+    with pytest.raises(AttributeError, match="price_ceiling: the recorded client _FakeInner prices no call"):
+        recorder.price_ceiling(system=SYSTEM, user="u")
