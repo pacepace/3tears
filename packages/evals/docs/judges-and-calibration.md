@@ -6,7 +6,9 @@ an LLM judge, collect person ratings, and read whether the judge agrees with peo
 ratings that takes, and how the ratings correct the judge's mean. Grade with code wherever code can decide; a judge is for judgment
 ([principles](principles.md)).
 
-The snippets run top to bottom as one script. `client` is any `CompletionClient` (an async
+The snippets run top to bottom as one script, in one async context (`python -m asyncio`, or inside
+`async def main()`). A store call blocks, so a snippet makes it off the event loop with
+`await run_blocking(host.blocking_executor, fn, ...)`. `client` is any `CompletionClient` (an async
 `generate(system=, user=, response_format=)` and an `aclose()`); `examples/llm_judge.py` has a Claude adapter.
 Every judge call sends its reply's shape as `response_format`, a strict `json_schema` directive (the criterion's
 answers, "can't tell" among them); pass it to a provider that enforces structured output, or send the nearest mode
@@ -148,11 +150,12 @@ A person reads results and scores the same dimension on the same scale. Rate wit
 score first.
 
 ```python
-from threetears.evals.run import list_results, rate_result
+from threetears.evals.run import list_results, rate_result, run_blocking
 
-results = list_results(host.storage, summary.run_id, summary.scope_id)
+results = await run_blocking(host.blocking_executor, list_results, host.storage, summary.run_id, summary.scope_id)
 for result in results:  # in practice: the results a person has read
-    rate_result(
+    await run_blocking(
+        host.blocking_executor, rate_result,
         host.storage, result_id=result.id, scope_id=summary.scope_id, rubric_dim="answer.grounded",
         rater="ana@example.com", rater_kind="person", score=1, reason="Every claim is in the policy.",
     )
@@ -180,14 +183,13 @@ case.
   another scale, you get a new criterion, and no earlier label claims it. The rubric axis is not part of the
   criterion. A reserved transcript or outcome axis is its id and its 1-5 scale.
 
-To find the labels of an output you hold, build its key and read the store. The store reads on this page are
-synchronous: from async code, run each off the event loop, as `await run_blocking(host.blocking_executor, fn, ...)`.
+To find the labels of an output you hold, build its key and read the store:
 
 ```python
 from threetears.evals.schema import label_key_of
 
 key = label_key_of(evidence, rubric_dim)  # a JudgeEvidence, and a RubricDim or reserved axis id
-labels = host.storage.query_calibration_ratings(scope_id, label_key=key)
+labels = await run_blocking(host.blocking_executor, host.storage.query_calibration_ratings, scope_id, label_key=key)
 ```
 
 A score no key was computed for (one restated from a judge trial) has none, and neither does a rating of it. Such a
@@ -198,7 +200,9 @@ rating is read by its result alone.
 ```python
 from threetears.evals.analysis import judge_agreement
 
-ratings = host.storage.query_calibration_ratings(summary.scope_id, run_id=summary.run_id)
+ratings = await run_blocking(
+    host.blocking_executor, host.storage.query_calibration_ratings, summary.scope_id, run_id=summary.run_id
+)
 agreement = judge_agreement(ratings, results)
 for dim in agreement.dimensions:
     print(dim.rubric_dim, dim.n, dim.results, dim.exact_agreement, dim.kappa, dim.agreement_interval)
@@ -325,7 +329,8 @@ work = await judge_repeat_work(judging_host, summary.run_id, summary.scope_id, o
 leases = JobLeases(judging_host.storage)
 ended = await run_job_work(work, store=judging_host.storage, executor=None, leases=leases)
 report = JudgeRepeatReport.model_validate(ended.result)
-self_agreement = judge_self_agreement(list_results(host.storage, summary.run_id, summary.scope_id))
+results = await run_blocking(host.blocking_executor, list_results, host.storage, summary.run_id, summary.scope_id)
+self_agreement = judge_self_agreement(results)
 ```
 
 A repeat runs as a job, as every model-calling operation does: `judge_repeat_work` makes the refusals and admits
@@ -356,7 +361,7 @@ work = await second_judge_work(       # every call priced and admitted here; non
 leases = JobLeases(judging_host.storage)
 passed = await run_job_work(work, store=judging_host.storage, executor=None, leases=leases)  # the calls
 await leases.shut_down()
-results = list_results(host.storage, summary.run_id, summary.scope_id)
+results = await run_blocking(host.blocking_executor, list_results, host.storage, summary.run_id, summary.scope_id)
 agreement = inter_judge_agreement(results, pass_id=passed.id)
 drift = judge_drift(results, pass_id=passed.id)
 ```
@@ -566,8 +571,9 @@ judge_template = EvalTemplate(
     scope_id=summary.scope_id, name="grounded judge", candidate_kind=JUDGE_KIND,
     intent="Score whether an answer is grounded in the store policy, as a person would.",
 )
-host.storage.save_template(judge_template)
-frozen = freeze_judge_cases(
+await run_blocking(host.blocking_executor, host.storage.save_template, judge_template)
+frozen = await run_blocking(
+    host.blocking_executor, freeze_judge_cases,
     host.storage, template=judge_template, run_ids=[summary.run_id], scope_id=summary.scope_id,
     dims=["answer.grounded"], case_set="grounded-judge",
 )
@@ -615,7 +621,9 @@ same judge scores can read it:
 ```python
 from threetears.evals.ops import JudgeProfilesRecord, judge_profiles_record
 
-recording = judge_profiles_record(host, JudgeProfilesRecord(judge_run_ids=arm_run_ids), scope_id)
+recording = await run_blocking(
+    host.blocking_executor, judge_profiles_record, host, JudgeProfilesRecord(judge_run_ids=arm_run_ids), scope_id
+)
 for entry in recording.profiles:
     print(entry.profile.rubric_dim, entry.profile.judge_config_id, entry.tier, entry.profile.measured_at)
 ```
