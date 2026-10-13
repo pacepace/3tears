@@ -944,7 +944,7 @@
     "threetears.evals.schema.StopReason": {
       "kind": "literal",
       "signature": "'end_turn'` | `'max_tokens'` | `'content_filter'` | `'truncated'` | `'error'",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.schema.StoreCalledOnEventLoop": {
       "kind": "exception",
@@ -2814,7 +2814,7 @@
     "threetears.evals.kernel.host.CompletionRole": {
       "kind": "literal",
       "signature": "'judge'` | `'simulator'` | `'analysis'` | `'variation'` | `'proposer'",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.kernel.host.ConformanceResult": {
       "kind": "dataclass",
@@ -6114,7 +6114,7 @@
     "threetears.evals.testing.RecordingRefused": {
       "kind": "exception",
       "signature": "RecordingRefused(path: Path, problem: str, remedy: str) -> None",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.testing.ReplayedCompletion": {
       "kind": "dataclass",
@@ -7579,12 +7579,12 @@
     "threetears.evals.providers.ModelsClientRefused": {
       "kind": "exception",
       "signature": "ModelsClientRefused(setting: str, why: str, *, provider: str | None = None) -> None",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.providers.ModelsClients": {
       "kind": "class",
       "signature": "ModelsClients(*, api_keys: Mapping[str, str] | None, defaults: Mapping[CompletionRole, str], prices: HttpClient | None, role_settings: Mapping[str, Mapping[str, Any]]) -> None",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.providers.ModelsCompletion": {
       "kind": "dataclass",

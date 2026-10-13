@@ -289,7 +289,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`Annotated[NominalScale | OrdinalScale | IntervalScale, Field(discriminator='kind')]`
 - **`SimulatorPurpose`** · type alias · What one simulator-role call was for: an actor's line, or the `llm_decided` scheduler's pick of who speaks next.
   <br>`str`
-- **`StopReason`** · literal · Why a completion stopped, in the engine's words.
+- **`StopReason`** · *host contract* · literal · Why a completion stopped, in the engine's words.
   <br>`'end_turn'` | `'max_tokens'` | `'content_filter'` | `'truncated'` | `'error'`
 - **`UsageRole`** · type alias · The roles an eval cell can spend on, five in this build.
   <br>`str`
@@ -952,7 +952,7 @@ The host contract — what a consuming product declares, and what the engine nev
   <br>`'round_trip'` | `'perception_ab'` | `'perception_stillness'` | `'ambient_isolation'` | `'independence'` | `'vocabulary_completeness'`
 - **`Comparability`** · literal · The three outcomes of comparing one input across a set of runs.
   <br>`'same'` | `'differs'` | `'unknown'`
-- **`CompletionRole`** · literal · The apparatus roles the engine asks a host for a completion client in.
+- **`CompletionRole`** · *host contract* · literal · The apparatus roles the engine asks a host for a completion client in.
   <br>`'judge'` | `'simulator'` | `'analysis'` | `'variation'` | `'proposer'`
 - **`CoverageState`** · literal · The answer to "does eval reach this precondition", per axis.
   <br>`'covered'` | `'uncovered'` | `'inapplicable'`
@@ -1978,7 +1978,7 @@ What the engine ships for an adopter's own test suite: conformance kits a host r
 - **`ReaderSample`** · dataclass · What the kit checks a host's readers over: the host's profile and runs it produced.
 - **`RecordedCompletions`** · *host contract* · class · A completion client that records the calls an inner client answers, or replays a recording of them.
 - **`RecordedPrompt`** · *host contract* · class · One call a recording is expected to serve, as `RecordedCompletions.check_covers` is handed it.
-- **`RecordingRefused`** · exception · A recording cannot serve what was asked of it: a miss, a missing or unreadable file, a newer format.
+- **`RecordingRefused`** · *host contract* · exception · A recording cannot serve what was asked of it: a miss, a missing or unreadable file, a newer format.
 - **`ReplayedCompletion`** · dataclass · A completion as it was recorded, replayed: the ten `CompletionResult` members.
 - **`StoreConformanceCase`** · *host contract* · dataclass · One rule of the port, as a check over a store.
 - **`StoreConformanceFailure`** · exception · A store broke a rule of the `DocumentStore` port; the message names the case and the rule.
@@ -2534,8 +2534,8 @@ The shipped provider adapter: a chat model 3tears-models builds, as the engine's
 
 **Classes**
 
-- **`ModelsClientRefused`** · exception · A setting the adapter cannot carry to the provider, refused before anything is sent.
-- **`ModelsClients`** · class · The engine's role factory over `models_client`: `models_clients` builds one.
+- **`ModelsClientRefused`** · *host contract* · exception · A setting the adapter cannot carry to the provider, refused before anything is sent.
+- **`ModelsClients`** · *host contract* · class · The engine's role factory over `models_client`: `models_clients` builds one.
 - **`ModelsCompletion`** · dataclass · One completion as the adapter read it off the chat model's reply: the port's ten members and two of its own.
 - **`ModelsCompletionClient`** · class · The completion port over one chat model 3tears-models built: `models_client` returns one.
 - **`ModelsFailureDescriber`** · *host contract* · class · A `ProviderFailureDescriber` for the adapter's providers, total over `BaseException`.
