@@ -116,6 +116,36 @@ host's, because one subject id means a live entity to one kind, a fixed prompt k
 third; `launchable_judge_kind` brings its own, which admits any non-blank label. It is asked at admission, once the
 template's kind is known, so `launch_estimate` and a launch refuse an unknown subject alike, before anything is priced.
 
+## Bringing a provider
+
+**The engine calls models through one port, and names no provider.** A client is anything with
+`async generate(*, system, user, response_format=None)` returning a `CompletionResult`, plus `aclose`
+(`CompletionClient`, in `threetears.evals.schema`); the failure half is your `failure_describer`. You can write
+both yourself, or bind to the adapter the package ships over 3tears-models (`threetears.evals.providers`, the
+`[models]` extra), which builds Anthropic, OpenAI and OpenRouter chat models through `create_chat_model`:
+
+```python
+from threetears.evals.providers import ModelsFailureDescriber, models_clients
+
+clients = models_clients(defaults={"judge": "claude-sonnet-4-6", "analysis": "claude-sonnet-4-6"})
+host = EvalHost(..., clients=clients, failure_describer=ModelsFailureDescriber())
+```
+
+`models_clients` keeps one client per role, model, temperature and reasoning setting, reads each provider's key
+from `api_keys=` or the provider's own environment variable the first time a client for it is asked for, and
+`await clients.aclose_all()` closes them at shutdown. Per-role settings go by role name
+(`judge={"reasoning_max_tokens": 8192, "max_tokens": 16384}`); `models_client` builds one client on its own. The
+adapter sends every request once (retries off), keeps a circuit breaker of its own that never opens, prices
+Anthropic and OpenAI calls from models' price catalogue and OpenRouter calls by OpenRouter's own figure (unpriced
+is `None` with the reason, never `0`), and refuses by name a reasoning word or budget the provider cannot carry
+rather than sending its nearest neighbour. What it reads off each provider's reply is in
+`threetears.evals.providers`' own docstring, member by member.
+
+**Keep a client of your own** when you price from a catalogue of your own or route through a gateway, when your
+provider is one 3tears-models has no factory for, or when you call Claude through a subscription: the adapter
+refuses the Claude CLI route, whose completions read as finished whatever stopped them, until models carries the
+CLI's real stop reason. Either way, run `check_completion_conformance` on your client's completions in your suite.
+
 ## Tenancy: the scope
 
 **Tenancy is one opaque `scope_id`.** Every stored document carries a non-empty `scope_id`, and the

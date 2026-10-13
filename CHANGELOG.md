@@ -19,11 +19,13 @@ working beside the new one for a minor release, and any other (`closure`) name m
 every name that leaves a public root is recorded in `packages/evals/MIGRATIONS.toml` (`scripts/release_notes.py
 v<version>` prints a release's notes).
 
-- **Dependencies.** Python 3.14+ and `pydantic` only. It depends on no other 3tears package. Two extras: `[vega]`
-  (`vl-convert-python`, for rendering charts to SVG and PNG) and `[fastmcp]` (the FastMCP transport). The live
-  examples need the `anthropic` SDK, which the package does not depend on.
+- **Dependencies.** Python 3.14+ and `pydantic` only. The engine depends on no other 3tears package. Three extras:
+  `[vega]` (`vl-convert-python`, for rendering charts to SVG and PNG), `[fastmcp]` (the FastMCP transport) and
+  `[models]` (`3tears-models`, for the shipped provider adapter). The live examples need the `anthropic` SDK, which
+  the package does not depend on.
 - **Public roots** (`threetears.evals.PUBLIC_ROOTS`): `schema`, `kernel`, `kernel.host`, `run`, `analysis`,
-  `analysis.viz`, `gen`, `storage`, `testing`, `quick`, `ops`, `actions`, `transports.fastmcp`, `vega`. A consumer
+  `analysis.viz`, `gen`, `storage`, `testing`, `quick`, `ops`, `actions`, `transports.fastmcp`, `vega`,
+  `providers`. A consumer
   imports only the names each root's `__all__` declares. `api/surface.json` snapshots the surface. The package
   itself exports the roots and `__version__`, the installed version, which a host records beside what it stores
   since no stored document or analysis bundle carries it.
@@ -48,6 +50,17 @@ v<version>` prints a release's notes).
   `scope_id`, required on every stored document. The subject under test is the application's, reached through a
   candidate kind. A kind declares how many cells it runs at once, and plans and prices its own arms
   (`plan_arm`). The adopter's guide is `docs/adopting-a-host.md`.
+- **A shipped provider adapter** (`threetears.evals.providers`, the `[models]` extra). `models_client` turns a chat
+  model 3tears-models builds for Anthropic, OpenAI or OpenRouter into the completion client, `models_clients` is
+  the role factory a host hands `EvalHost` as `clients` (keys from `api_keys=` or each provider's environment
+  variable, refused by name at first use), and `ModelsFailureDescriber` maps each SDK's errors onto the failure
+  port without repeating a payload. Every request is sent once, under a breaker of the adapter's own; a reply's
+  served model, stop reason, reasoning tokens and the temperature actually sent are read per provider, and which
+  members each provider exposes is pinned by a test, so a LangChain or models upgrade that moves one fails by
+  name. Anthropic and OpenAI calls are priced from models' price catalogue, OpenRouter calls by OpenRouter's own
+  figure, and an unpriced call is `None` with its reason. A reasoning setting a provider cannot carry, and the
+  Claude CLI route (whose completions read as finished whatever stopped them), are refused by name. The engine
+  never imports it.
 - **Storage.** `EvalStorage` runs over a `DocumentStore` port, and `storage` ships an in-memory store, a SQLite
   store, a routed store that sends each doc type to its own backend, and `bridge_async_store` for an async
   backend. A store call made on an event-loop thread is refused (`StoreCalledOnEventLoop`), and the refusal names
