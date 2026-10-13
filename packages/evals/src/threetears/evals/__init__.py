@@ -38,7 +38,30 @@ from importlib.metadata import version as _distribution_version
 #: The installed distribution's version, as its metadata states it (``importlib.metadata``): the build a host
 #: records beside what it stores, since no stored document or analysis bundle carries it. A build from a
 #: pre-release tag (``v0.66.0-evaladopt.N``) states the version it prepares, so a host running one records the tag.
-__version__: str = _distribution_version("3tears-evals")
+#: Read on first use through the module's ``__getattr__`` rather than at import: the source tree imports without
+#: distribution metadata (the installability check and a checkout on ``sys.path`` both do), and a read that finds
+#: no metadata raises ``importlib.metadata.PackageNotFoundError`` by name rather than answering ``"unknown"``.
+__version__: str
+
+
+def __getattr__(name: str) -> str:
+    """Resolve :data:`__version__` from the distribution's metadata on first read.
+
+    Args:
+        name: The attribute asked for; only ``__version__`` is served here.
+
+    Returns:
+        The installed distribution's version string.
+
+    Raises:
+        AttributeError: For any other name, as a module normally would.
+        importlib.metadata.PackageNotFoundError: When no ``3tears-evals`` distribution is installed, so the
+            version cannot be stated; a host records the version only from an installed build.
+    """
+    if name == "__version__":
+        return _distribution_version("3tears-evals")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 #: The public roots, as absolute module names. A consumer imports from these and from no module
 #: below them, and only the names each root's ``__all__`` declares. ``kernel.host`` and
