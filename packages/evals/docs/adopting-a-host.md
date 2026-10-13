@@ -293,7 +293,7 @@ each dim (`EvalResult.judge_config_ids`): `builtin:<sha12>`, a fingerprint of th
 prompt. A release that rewords either changes the fingerprint, so every result judged before it is another judge
 for agreement, judge profiles, drift and evidence tiers, and a `calibrated` tier reads `undetermined` until you
 calibrate the new judge. Nothing stored is refused or rewritten. Such a release's notes (`MIGRATIONS.toml`, printed
-by `scripts/release_notes.py`) carry `JUDGE_WORDING_CHANGE_SENTENCE` (in `threetears.evals.schema.models`) and name
+by `scripts/release_notes.py`) carry `JUDGE_WORDING_CHANGE_SENTENCE` (in `threetears.evals.schema`) and name
 the wording that moved, so read them before you upgrade a scope whose readings rest on calibration. A run's own `judge_config_ids` (the
 config set it launched with, part of its context key) holds bare config ids and no built-in dim, so a wording change
 does not split runs' context: only the results' recorded judges tell the two judges apart.

@@ -471,6 +471,11 @@
       "signature": "judge_config_of(recorded: str | None) -> str | None",
       "tier": "closure"
     },
+    "threetears.evals.schema.JUDGE_WORDING_CHANGE_SENTENCE": {
+      "kind": "constant (str)",
+      "signature": "",
+      "tier": "closure"
+    },
     "threetears.evals.schema.JudgeAttributionSource": {
       "kind": "literal",
       "signature": "'recorded'` | `'derived'",
