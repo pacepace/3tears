@@ -403,7 +403,14 @@ class TestWhichCasesAreReJudged:
                                 first_score=5,
                                 first_served_model=_JUDGE,
                                 first_judge_config_id=None,
-                                repeat=RubricScore(dim=_DIM, scale="ordinal", score=4, served_model=_JUDGE),
+                                repeat=RubricScore(
+                                    dim=_DIM,
+                                    scale="ordinal",
+                                    score=4,
+                                    served_model=_JUDGE,
+                                    axis="capability",
+                                    judge_temperature=0.0,
+                                ),
                             )
                         ],
                     )
@@ -632,7 +639,13 @@ class TestASideThatOnlyCouldNotTellMeasuredNothing:
     def _answers(*, pinned: list[TemperatureAnswer]) -> JudgeTemperatureAnswers:
         scored = [
             TemperatureAnswer(
-                score=RubricScore(dim=_DIM, score=score, scale="ordinal", judge_temperature=MODEL_DEFAULT_TEMPERATURE)
+                score=RubricScore(
+                    dim=_DIM,
+                    score=score,
+                    scale="ordinal",
+                    judge_temperature=MODEL_DEFAULT_TEMPERATURE,
+                    axis="capability",
+                )
             )
             for score in (3, 4)
         ]
@@ -674,7 +687,9 @@ class TestASideThatOnlyCouldNotTellMeasuredNothing:
     def test_a_score_beside_a_cannot_tell_is_a_measurement_of_instability(self) -> None:
         mixed = [
             TemperatureAnswer(
-                score=RubricScore(dim=_DIM, score=3, scale="ordinal", judge_temperature=DEFAULT_JUDGE_TEMPERATURE)
+                score=RubricScore(
+                    dim=_DIM, score=3, scale="ordinal", judge_temperature=DEFAULT_JUDGE_TEMPERATURE, axis="capability"
+                )
             ),
             TemperatureAnswer(cannot_tell="the answer is cut off"),
         ]

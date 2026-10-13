@@ -124,7 +124,13 @@ def _bundle(
                     else {}
                 ),
                 rubric_scores=[
-                    RubricScore(dim=dim, score=3 + (diffs[case] if model == CONTRAST else 0), scale="ordinal")
+                    RubricScore(
+                        dim=dim,
+                        score=3 + (diffs[case] if model == CONTRAST else 0),
+                        scale="ordinal",
+                        axis="capability",
+                        judge_temperature=0.0,
+                    )
                     for dim, diffs in zip(dims, differences, strict=True)
                 ],
             )

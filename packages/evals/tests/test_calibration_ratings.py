@@ -50,7 +50,9 @@ def _result(result_id: str, *scores: RubricScore, **extra: Any) -> EvalResult:
 
 
 def _tone(score: int, judge: str | None = "judge-a") -> RubricScore:
-    return RubricScore(dim=TONE, score=score, scale="ordinal", served_model=judge)
+    return RubricScore(
+        dim=TONE, score=score, scale="ordinal", served_model=judge, axis="capability", judge_temperature=0.0
+    )
 
 
 # --- the document ------------------------------------------------------------------------------------
@@ -108,7 +110,9 @@ class TestRateResult:
         return storage
 
     def test_the_run_and_the_scale_are_read_off_the_result(self) -> None:
-        storage = self._stored(RubricScore(dim=HELPED, score=1, scale="pass_fail"))
+        storage = self._stored(
+            RubricScore(dim=HELPED, score=1, scale="pass_fail", axis="capability", judge_temperature=0.0)
+        )
 
         rating = rate_result(
             storage,
@@ -161,7 +165,11 @@ class TestRateResult:
         assert sorted((r.rater, r.score, r.reason) for r in stored) == [("guest", 5, "lovely"), ("host", 3, "fine")]
 
     def test_a_dual_score_axis_can_be_rated(self) -> None:
-        storage = self._stored(transcript_score=RubricScore(dim=TRANSCRIPT_DIM_ID, score=4, scale="ordinal"))
+        storage = self._stored(
+            transcript_score=RubricScore(
+                dim=TRANSCRIPT_DIM_ID, score=4, scale="ordinal", axis="capability", judge_temperature=0.0
+            )
+        )
 
         rating = rate_result(
             storage,
@@ -399,8 +407,12 @@ class TestJudgeAgreement:
 
     def test_pass_fail_carries_no_weighted_kappa(self) -> None:
         results = [
-            _result("r-1", RubricScore(dim=HELPED, score=1, scale="pass_fail")),
-            _result("r-2", RubricScore(dim=HELPED, score=0, scale="pass_fail")),
+            _result(
+                "r-1", RubricScore(dim=HELPED, score=1, scale="pass_fail", axis="capability", judge_temperature=0.0)
+            ),
+            _result(
+                "r-2", RubricScore(dim=HELPED, score=0, scale="pass_fail", axis="capability", judge_temperature=0.0)
+            ),
         ]
         ratings = [
             _rating(result_id="r-1", rubric_dim=HELPED, scale="pass_fail", score=1),
@@ -415,8 +427,13 @@ class TestJudgeAgreement:
     def test_a_rating_with_no_judge_score_to_meet_is_named_with_why(self) -> None:
         results = [
             _result("r-tone", _tone(3)),
-            _result("r-moved", RubricScore(dim=TONE, score=1, scale="pass_fail")),
-            _result("r-unscored", RubricScore(dim=HELPED, score=1, scale="pass_fail")),
+            _result(
+                "r-moved", RubricScore(dim=TONE, score=1, scale="pass_fail", axis="capability", judge_temperature=0.0)
+            ),
+            _result(
+                "r-unscored",
+                RubricScore(dim=HELPED, score=1, scale="pass_fail", axis="capability", judge_temperature=0.0),
+            ),
         ]
         ratings = [
             _rating(result_id="r-gone", rater="a"),

@@ -270,7 +270,9 @@ def make_eval_result(**overrides: Any) -> EvalResult:
         "model": "sonnet",
         "k_iteration": 1,
         "goal_state_outcomes": [GoalStateOutcome(expression="state.shop.cart.length >= 1", passed=True)],
-        "rubric_scores": [RubricScore(dim="conversation.tone", score=4, scale="ordinal")],
+        "rubric_scores": [
+            RubricScore(dim="conversation.tone", score=4, scale="ordinal", axis="capability", judge_temperature=0.0)
+        ],
         "cost_usd": 0.01,
     }
     defaults.update(overrides)
@@ -317,7 +319,10 @@ def make_scored_result(
         model=model,
         k_iteration=k,
         goal_state_outcomes=[GoalStateOutcome(expression=f"g{i}", passed=p) for i, p in enumerate(goal_passes)],
-        rubric_scores=[RubricScore(dim=n, score=s, scale="ordinal") for n, s in rubric_scores],
+        rubric_scores=[
+            RubricScore(dim=n, score=s, scale="ordinal", axis="capability", judge_temperature=0.0)
+            for n, s in rubric_scores
+        ],
         candidate_error=candidate_error,
         infra_error=infra_error,
         judge_error=judge_error,
@@ -447,6 +452,8 @@ def make_analysis(**overrides: Any) -> EvalAnalysis:
             repaired_refusal=None,
             cell_model_version=1,
             user_message_digest="sha256:message",
+            bundle_schema_version=50,
+            host_declarations_digest="sha256:declarations",
         ),
         document=AuthoredAnalysis(headline="h", summary="", findings=[], decisions=[], questions=[], next=[]),
         decision_surface=DecisionSurface(),

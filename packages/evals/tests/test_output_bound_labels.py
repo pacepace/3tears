@@ -65,7 +65,17 @@ def _scored(
     stamp = {} if key is None else {"output_fingerprint": key[0], "criterion_fingerprint": key[1]}
     return make_eval_result(
         id=result_id,
-        rubric_scores=[RubricScore(dim=TONE, score=score, scale="ordinal", served_model=judge, **stamp)],
+        rubric_scores=[
+            RubricScore(
+                dim=TONE,
+                score=score,
+                scale="ordinal",
+                served_model=judge,
+                **stamp,
+                axis="capability",
+                judge_temperature=0.0,
+            )
+        ],
         **extra,
     )
 
@@ -126,7 +136,14 @@ class TestTheCriterionFingerprint:
 class TestTheKeyOnTheDocuments:
     def test_half_a_key_is_refused_on_a_score_and_on_a_rating(self) -> None:
         with pytest.raises(ValidationError, match="set together"):
-            RubricScore(dim=TONE, score=3, scale="ordinal", output_fingerprint=KEY.output_fingerprint)
+            RubricScore(
+                dim=TONE,
+                score=3,
+                scale="ordinal",
+                output_fingerprint=KEY.output_fingerprint,
+                axis="capability",
+                judge_temperature=0.0,
+            )
         with pytest.raises(ValidationError, match="set together"):
             make_calibration_rating(criterion_fingerprint=KEY.criterion_fingerprint)
 

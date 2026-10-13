@@ -4475,13 +4475,12 @@ class RepeatedScore(EvalDocumentModel):
             "The judge whose self-agreement this pair measures."
         ),
     )
-    first_judge_config_id: str = Field(
-        min_length=1,
+    first_judge_config_id: str | None = Field(
         description=(
             "The versioned JudgeConfig that asked for the first score, as the result recorded it, or a "
-            "``builtin:`` id = the built-in prompt, by its wording. The rest of the judge's identity: a repeat "
-            "answered under another config, or another built-in wording, measures a different judge, and is not "
-            "paired."
+            "``builtin:`` id = the built-in prompt, by its wording; None = the result records no judge for it (a "
+            "score made outside a judge phase). The rest of the judge's identity: a repeat answered under another "
+            "config, or another built-in wording, measures a different judge, and is not paired."
         ),
     )
     first_judge_temperature: JudgeTemperature = Field(
@@ -4600,11 +4599,10 @@ class SecondJudgeScore(EvalDocumentModel):
     first_served_model: str | None = Field(
         description="The model that served the first score, as its response named it; None when it named none."
     )
-    first_judge_config_id: str = Field(
-        min_length=1,
+    first_judge_config_id: str | None = Field(
         description=(
             "The versioned JudgeConfig that asked for the first score, or a ``builtin:`` id = the built-in prompt, by "
-            "its wording."
+            "its wording; None = the result records no judge for it (a score made outside a judge phase)."
         ),
     )
     first_judge_temperature: JudgeTemperature = Field(description="The temperature the first score was sent at.")

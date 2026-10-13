@@ -120,7 +120,7 @@ class JudgeKey(NamedTuple):
     rubric_dim: str
     scale: RubricScale
     judge_model: str | None
-    judge_config_id: str
+    judge_config_id: str | None
     judge_temperature: JudgeTemperature | None
 
 
@@ -138,7 +138,7 @@ def judge_key(result: EvalResult, dim: str) -> JudgeKey | None:
     score = result.judge_score(dim)
     if score is None:
         return None
-    return JudgeKey(dim, score.scale, score.served_model, result.judge_config_ids[dim], score.judge_temperature)
+    return JudgeKey(dim, score.scale, score.served_model, result.judge_config_ids.get(dim), score.judge_temperature)
 
 
 def _sort_key(key: JudgeKey) -> tuple[str, str, str, str, str]:
@@ -170,11 +170,12 @@ class DimensionAgreement(EvalDocumentModel):
             "model, so which judge these pairs calibrate is unknown — never read as a match for a named one."
         ),
     )
-    judge_config_id: str = Field(
-        min_length=1,
+    judge_config_id: str | None = Field(
         description=(
             "The versioned JudgeConfig that asked for the scores, or a ``builtin:`` id = the built-in prompt, by its "
             "wording."
+            " None = no judge identity was recorded (a score made outside a judge phase): an unknown judge, never "
+            "the same as a recorded one."
         ),
     )
     judge_temperature: JudgeTemperature | None = Field(
@@ -715,11 +716,12 @@ class SelfAgreementDimension(EvalDocumentModel):
             "a judge nobody observed, never read as a match for a named one."
         ),
     )
-    judge_config_id: str = Field(
-        min_length=1,
+    judge_config_id: str | None = Field(
         description=(
             "The versioned JudgeConfig that asked both times, or a ``builtin:`` id = the built-in prompt, by its "
             "wording."
+            " None = no judge identity was recorded (a score made outside a judge phase): an unknown judge, never "
+            "the same as a recorded one."
         ),
     )
     judge_temperature: JudgeTemperature | None = Field(
@@ -915,22 +917,24 @@ class InterJudgeDimension(EvalDocumentModel):
     judge_model: str | None = Field(
         description="The model that served the first scores, as the provider named it; None when it named none."
     )
-    judge_config_id: str = Field(
-        min_length=1,
+    judge_config_id: str | None = Field(
         description=(
             "The versioned JudgeConfig that asked for the first scores, or a ``builtin:`` id = the built-in prompt, "
             "by its wording."
+            " None = no judge identity was recorded (a score made outside a judge phase): an unknown judge, never "
+            "the same as a recorded one."
         ),
     )
     judge_temperature: JudgeTemperature | None = Field(
         default=None, description="The temperature the first scores were sent at."
     )
     second_model: str = Field(min_length=1, description="The model the second judge was asked as.")
-    second_judge_config_id: str = Field(
-        min_length=1,
+    second_judge_config_id: str | None = Field(
         description=(
             "The versioned JudgeConfig that asked the second judge, or a ``builtin:`` id = the built-in prompt, by "
             "its wording."
+            " None = no judge identity was recorded (a score made outside a judge phase): an unknown judge, never "
+            "the same as a recorded one."
         ),
     )
     second_temperature: float | None = Field(
@@ -1024,8 +1028,8 @@ def inter_judge_agreement(results: Iterable[EvalResult], *, pass_id: str | None 
     Returns:
         The agreement per (dimension, scale, first judge, second judge), and the scores that could not be paired.
     """
-    groups: dict[tuple[JudgeKey, str, str, float | None], list[_Pair]] = {}
-    served: dict[tuple[JudgeKey, str, str, float | None], set[str]] = {}
+    groups: dict[tuple[JudgeKey, str, str | None, float | None], list[_Pair]] = {}
+    served: dict[tuple[JudgeKey, str, str | None, float | None], set[str]] = {}
     unpaired: list[UnpairedSecondScore] = []
     read = 0
     for result in results:
@@ -1048,13 +1052,13 @@ def inter_judge_agreement(results: Iterable[EvalResult], *, pass_id: str | None 
                     entry.first_judge_config_id,
                     entry.first_judge_temperature,
                 )
-                key = (first, judging.judge.model, judging.judge_config_ids[entry.dim], judging.judge.temperature)
+                key = (first, judging.judge.model, judging.judge_config_ids.get(entry.dim), judging.judge.temperature)
                 second = entry.second.score if entry.second is not None else None
                 groups.setdefault(key, []).append(_Pair(entry.first_score, second, judging.pass_id, result.id))
                 if entry.second is not None and entry.second.served_model is not None:
                     served.setdefault(key, set()).add(entry.second.served_model)
     dimensions = []
-    for key in sorted(groups, key=lambda k: (*_sort_key(k[0]), k[1], k[2], "" if k[3] is None else str(k[3]))):
+    for key in sorted(groups, key=lambda k: (*_sort_key(k[0]), k[1], k[2] or "", "" if k[3] is None else str(k[3]))):
         first, model, config_id, temperature = key
         numbers = _agreement_numbers(first.scale, groups[key])
         figure = numbers.weighted_kappa if first.scale == "ordinal" else numbers.kappa

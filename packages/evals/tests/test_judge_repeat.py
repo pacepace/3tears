@@ -205,8 +205,16 @@ _OTHER_WRITERS_REPEAT = JudgeRepeat(
             scale="ordinal",
             first_score=1,
             first_served_model="judge/other-writer",
-            first_judge_config_id=None,
-            repeat=RubricScore(dim=_DIM, scale="ordinal", score=1, served_model="judge/other-writer"),
+            first_judge_config_id=_KEY.judge_config_id,
+            first_judge_temperature=MODEL_DEFAULT_TEMPERATURE,
+            repeat=RubricScore(
+                dim=_DIM,
+                scale="ordinal",
+                score=1,
+                served_model="judge/other-writer",
+                axis="capability",
+                judge_temperature=0.0,
+            ),
         )
     ],
 )

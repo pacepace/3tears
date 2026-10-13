@@ -714,7 +714,7 @@ def _judging_of(
                 scale=first.scale,
                 first_score=first.score,
                 first_served_model=first.served_model,
-                first_judge_config_id=result.judge_config_ids[dim],  # every scored dim records its judge
+                first_judge_config_id=result.judge_config_ids.get(dim),
                 first_judge_temperature=first.judge_temperature,
                 second=outcome.score,
                 error=(outcome.error or "no answer") if outcome.score is None and outcome.cannot_tell is None else None,

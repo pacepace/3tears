@@ -153,7 +153,14 @@ def _scored(result_id: str, score: int, temperature: float | str | None) -> Any:
     return make_eval_result(
         id=result_id,
         rubric_scores=[
-            RubricScore(dim=_TONE, scale="ordinal", score=score, served_model="judge-a", judge_temperature=temperature)
+            RubricScore(
+                dim=_TONE,
+                scale="ordinal",
+                score=score,
+                served_model="judge-a",
+                judge_temperature=temperature,
+                axis="capability",
+            )
         ],
     )
 
@@ -183,7 +190,12 @@ class TestADifferentTemperatureIsADifferentJudge:
                     first_judge_config_id=None,
                     first_judge_temperature=first,
                     repeat=RubricScore(
-                        dim=_TONE, scale="ordinal", score=4, served_model="judge-a", judge_temperature=again
+                        dim=_TONE,
+                        scale="ordinal",
+                        score=4,
+                        served_model="judge-a",
+                        judge_temperature=again,
+                        axis="capability",
                     ),
                 )
             ],

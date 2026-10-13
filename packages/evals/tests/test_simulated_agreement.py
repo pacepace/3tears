@@ -139,7 +139,16 @@ def _calibration(
         judge_score = rng.choices(_SCALE, weights=marginal)[0]
         result = make_eval_result(
             id=f"result-{index}",
-            rubric_scores=[RubricScore(dim=_DIM, score=judge_score, scale="ordinal", served_model=_JUDGE)],
+            rubric_scores=[
+                RubricScore(
+                    dim=_DIM,
+                    score=judge_score,
+                    scale="ordinal",
+                    served_model=_JUDGE,
+                    axis="capability",
+                    judge_temperature=0.0,
+                )
+            ],
         )
         results.append(result)
         who = rng.sample(list(raters), 2 if rng.random() < 0.5 else 1)
@@ -333,7 +342,16 @@ def _correlated_calibration(
         judge = truth if rng.random() < agreement else rng.choices(_SCALE, weights=marginal)[0]
         result = make_eval_result(
             id=f"result-{index}",
-            rubric_scores=[RubricScore(dim=_DIM, score=judge, scale="ordinal", served_model=_JUDGE)],
+            rubric_scores=[
+                RubricScore(
+                    dim=_DIM,
+                    score=judge,
+                    scale="ordinal",
+                    served_model=_JUDGE,
+                    axis="capability",
+                    judge_temperature=0.0,
+                )
+            ],
         )
         results.append(result)
         for rater in rng.sample(["ana", "ben", "cai"], 2 if rng.random() < 0.5 else 1):

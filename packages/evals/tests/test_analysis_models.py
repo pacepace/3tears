@@ -184,6 +184,8 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
             repaired_refusal=None,
             cell_model_version=1,
             user_message_digest="sha256:message",
+            bundle_schema_version=50,
+            host_declarations_digest="sha256:declarations",
         ),
         coverage=CoverageLens(
             levers=[
@@ -320,7 +322,14 @@ def test_insight_storage_round_trip_preserves_every_field():
         pytest.param(lambda c: _finding(confidence=c), id="Finding"),
         pytest.param(lambda c: _decision(confidence=c), id="Decision"),
         pytest.param(
-            lambda c: EvalInsight(scope_id="uni-1", subject_kind="", subject_id="s", statement="st", confidence=c),
+            lambda c: EvalInsight(
+                scope_id="uni-1",
+                subject_kind="",
+                subject_id="s",
+                statement="st",
+                confidence=c,
+                invalidation_trigger="retired when its analysis is archived, or replaced by a later analysis restating it",
+            ),
             id="EvalInsight",
         ),
     ],
@@ -603,7 +612,12 @@ def test_optional_prose_accepts_null_as_empty(model, kwargs, field):
     [
         (
             lambda: EvalInsight(
-                scope_id="uni-1", subject_id="s", subject_kind="agent", statement=None, confidence="medium"
+                scope_id="uni-1",
+                subject_id="s",
+                subject_kind="agent",
+                statement=None,
+                confidence="medium",
+                invalidation_trigger="retired when its analysis is archived, or replaced by a later analysis restating it",
             ),
             "statement",
         ),
@@ -630,7 +644,13 @@ def test_optional_llm_list_accepts_null_as_empty(field):
     ``default_factory=list`` covers an ABSENT key, not an explicit ``null``.
     """
     built = EvalInsight(
-        scope_id="uni-1", subject_id="s", subject_kind="agent", statement="st", confidence="medium", **{field: None}
+        scope_id="uni-1",
+        subject_id="s",
+        subject_kind="agent",
+        statement="st",
+        confidence="medium",
+        **{field: None},
+        invalidation_trigger="retired when its analysis is archived, or replaced by a later analysis restating it",
     )
     assert getattr(built, field) == []
 
@@ -648,6 +668,7 @@ def test_llm_list_tolerance_did_not_erase_the_element_schema():
         statement="st",
         confidence="medium",
         evidence_run_ids=["run-a"],
+        invalidation_trigger="retired when its analysis is archived, or replaced by a later analysis restating it",
     )
     assert insight.evidence_run_ids == ["run-a"]
     with pytest.raises(ValidationError):
@@ -658,6 +679,7 @@ def test_llm_list_tolerance_did_not_erase_the_element_schema():
             statement="st",
             confidence="medium",
             evidence_run_ids=[{"not": "a string"}],
+            invalidation_trigger="retired when its analysis is archived, or replaced by a later analysis restating it",
         )
 
 
@@ -726,6 +748,7 @@ def test_a_null_array_is_logged_not_silently_swallowed(caplog):
             statement="st",
             confidence="medium",
             evidence_run_ids=None,
+            invalidation_trigger="retired when its analysis is archived, or replaced by a later analysis restating it",
         )
     assert "arrived as null" in caplog.text
     assert any(r.levelname == "WARNING" for r in caplog.records)
@@ -761,6 +784,7 @@ def test_the_null_coercion_log_is_pinned_to_one_exact_string(caplog):
             statement="st",
             confidence="medium",
             evidence_result_ids=None,
+            invalidation_trigger="retired when its analysis is archived, or replaced by a later analysis restating it",
         )
 
     assert "arrived as null" in caplog.text, "the coercion stopped warning at all"

@@ -236,7 +236,7 @@ def _repeats_of(answered: TemperatureCaseAnswers, judge_model: str) -> list[Judg
     if anchor_at is None:
         return []
     anchor: TemperatureAnswer = answered.answers[anchor_at]
-    assert anchor.score is not None and anchor.config_id is not None  # a score names its judge
+    assert anchor.score is not None
     repeats: list[JudgeRepeat] = []
     for answer in answered.answers[anchor_at + 1 :]:
         entry = RepeatedScore(

@@ -163,6 +163,8 @@ def _cell(
                 evidence_tier="undetermined",
             )
         ],
+        n_candidate_failed=0,
+        n_no_turn=0,
     )
 
 
@@ -831,6 +833,8 @@ def test_an_arm_the_index_cannot_describe_is_labelled_as_such():
         run_ids=["run-x"],
         n_observations=8,
         measures=_cell("A").measures,
+        n_candidate_failed=0,
+        n_no_turn=0,
     )
     unavailable = VariantIndexEntry(variant_key="e" * 64, levers={}, levels_unavailable="minted under predicate v3")
     orphan = stranger.model_copy(update={"variant_key": "e" * 64})

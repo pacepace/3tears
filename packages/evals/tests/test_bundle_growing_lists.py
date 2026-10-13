@@ -44,6 +44,7 @@ def _insight(index: int, *, statement: str | None = None, source: str = "") -> E
         confidence="medium",
         observed_at=f"2026-01-01T00:{index // 60:02d}:{index % 60:02d}+00:00",
         source_analysis_id=source,
+        invalidation_trigger="retired when its analysis is archived, or replaced by a later analysis restating it",
     )
 
 

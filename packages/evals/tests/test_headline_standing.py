@@ -17,6 +17,7 @@ import asyncio
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, TOYHOST_WIDE, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
@@ -28,7 +29,6 @@ from threetears.evals.analysis.report import build_report
 from threetears.evals.analysis.report.model import TextBlock
 from threetears.evals.analysis.report.serialize_html import report_html
 from threetears.evals.analysis.report.serialize_md import report_markdown
-from threetears.evals.analysis.report.words import STANDING_NOT_RECORDED
 from threetears.evals.analysis.reporter_kind import render_memo_as_written
 from threetears.evals.analysis.standing import headline_standing, summary_standings
 from threetears.evals.kernel.campaign import EvalAnalysis
@@ -78,12 +78,12 @@ def analysis() -> EvalAnalysis:
     return _generated()
 
 
-@pytest.fixture(scope="module")
-def stored_before(analysis: EvalAnalysis) -> EvalAnalysis:
-    """The same analysis as one stored before the links existed: its stored document carries neither key."""
+def test_an_analysis_over_findings_that_names_no_link_is_refused(analysis: EvalAnalysis) -> None:
+    """Over findings, the headline and each bullet name what they rest on, or the analysis is not a document."""
     document = analysis.model_dump(mode="json")
     del document["document"]["headline_rests_on"], document["document"]["summary_rests_on"]
-    return EvalAnalysis.model_validate(document)
+    with pytest.raises(ValidationError, match="headline_rests_on is empty over findings"):
+        EvalAnalysis.model_validate(document)
 
 
 class TestTheStandingIsTheWeakestOfTheFindingsUnderIt:
@@ -99,12 +99,6 @@ class TestTheStandingIsTheWeakestOfTheFindingsUnderIt:
             ("The wide width is slower.", "high"),
             ("It also costs more, though less surely.", "medium"),
         ]
-
-    def test_an_analysis_stored_before_the_links_has_no_standing_rather_than_a_guessed_one(
-        self, stored_before: EvalAnalysis
-    ) -> None:
-        assert headline_standing(stored_before) is None
-        assert summary_standings(stored_before) is None
 
 
 class TestTheReportServesIt:
@@ -135,26 +129,14 @@ class TestTheReportServesIt:
         )
         assert '<div data-role="headline"><p class="facts">The headline: Confidence: medium' in report_html(report)
 
-    def test_an_analysis_stored_before_the_links_says_its_standing_was_not_recorded(
-        self, stored_before: EvalAnalysis
-    ) -> None:
-        report = build_report(stored_before)
-        headline, summary = report.blocks[0], report.blocks[1]
-        assert isinstance(headline, TextBlock) and headline.role == "headline" and headline.rests_on == []
-        assert [(fact.name, fact.value) for fact in headline.facts] == [("Stands on", STANDING_NOT_RECORDED)]
-        assert isinstance(summary, TextBlock) and summary.body == _SUMMARY and summary.facts == []
-        assert STANDING_NOT_RECORDED in report_markdown(report)
 
-
-def test_the_listing_states_the_headlines_standing(analysis: EvalAnalysis, stored_before: EvalAnalysis) -> None:
+def test_the_listing_states_the_headlines_standing(analysis: EvalAnalysis) -> None:
     host = toyhost_host()
     host.storage.save_analysis(analysis)
-    host.storage.save_analysis(stored_before.model_copy(update={"id": "stored-before"}))
     lines = {line.id: line for line in analyses_list(host, analysis.campaign_id, analysis.scope_id).analyses}
     assert lines[analysis.id].headline_standing == (
         "Confidence: medium · Stands on: checks and measures · rests on finding 1, 2"
     )
-    assert lines["stored-before"].headline_standing == f"Stands on: {STANDING_NOT_RECORDED}"
 
 
 def test_the_memo_the_judge_reads_carries_the_standing(analysis: EvalAnalysis) -> None:

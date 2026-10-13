@@ -282,15 +282,13 @@ _N_NO_TURN = (
     "delivering one (`delivered_a_turn` is False) — left out of every cost and latency measure, which "
     "describe the turns the candidate took. A failure that took a turn (its budget ended it, its output cap "
     "cut it, its deadline struck mid-call, its model failed after delivered turns) is not here: its time and "
-    "spend stay in. None exactly when `n_candidate_failed` is."
+    "spend stay in."
 )
 
 #: How :attr:`CellFacts.n_candidate_failed` and :attr:`StratumFacts.n_candidate_failed` read.
 _N_CANDIDATE_FAILED = (
     "Observations the candidate failed (`classify_result`'s `candidate_fail`), for any cause: counted against "
-    "the arm in every rate, bar and judged score below. None on an analysis frozen before the count was kept "
-    "— whose cost and latency were read over every non-faulted result, failures included — never 0 standing "
-    "in for a count nobody took."
+    "the arm in every rate, bar and judged score below."
 )
 
 
@@ -324,8 +322,8 @@ class StratumFacts(EvalDocumentModel):
     n_infra_excluded: int = Field(
         default=0, ge=0, description="Observations the harness faulted, excluded from every value below."
     )
-    n_candidate_failed: int = Field(ge=0, description=_N_CANDIDATE_FAILED)
-    n_no_turn: int = Field(ge=0, description=_N_NO_TURN)
+    n_candidate_failed: int = Field(default=0, ge=0, description=_N_CANDIDATE_FAILED)
+    n_no_turn: int = Field(default=0, ge=0, description=_N_NO_TURN)
     measures: MeasureCollection = Field(
         default_factory=MeasureCollection,
         description="Every measure over the stratum's observations, by the cell's own rules.",
@@ -385,8 +383,8 @@ class CellFacts(EvalDocumentModel):
     n_infra_excluded: int = Field(
         default=0, ge=0, description="Observations the harness faulted, excluded from every value below."
     )
-    n_candidate_failed: int = Field(ge=0, description=_N_CANDIDATE_FAILED)
-    n_no_turn: int = Field(ge=0, description=_N_NO_TURN)
+    n_candidate_failed: int = Field(default=0, ge=0, description=_N_CANDIDATE_FAILED)
+    n_no_turn: int = Field(default=0, ge=0, description=_N_NO_TURN)
     measures: MeasureCollection = Field(
         default_factory=MeasureCollection,
         description=(

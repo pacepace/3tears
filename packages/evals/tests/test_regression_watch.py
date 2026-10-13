@@ -57,7 +57,14 @@ def _results(run: EvalRun, *, cost: float, transcript: int) -> list[EvalResult]:
             scope_id=_SCOPE,
             test_case_id=case,
             cost_usd=cost + index * 0.0001,
-            transcript_score=RubricScore(dim=TRANSCRIPT_DIM_ID, score=transcript, scale="ordinal", served_model=_JUDGE),
+            transcript_score=RubricScore(
+                dim=TRANSCRIPT_DIM_ID,
+                score=transcript,
+                scale="ordinal",
+                served_model=_JUDGE,
+                axis="capability",
+                judge_temperature=0.0,
+            ),
         )
         for index, case in enumerate(_CASES)
     ]

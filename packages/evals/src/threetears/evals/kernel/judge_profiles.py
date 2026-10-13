@@ -63,7 +63,7 @@ def judge_profile_id(
     rubric_dim: str,
     scale: str,
     judge_model: str,
-    judge_config_id: str,
+    judge_config_id: str | None,
     judge_temperature: JudgeTemperature,
     criterion_digest: str,
 ) -> str:
@@ -120,11 +120,12 @@ class EvalJudgeProfile(EvalDocumentModel):
     rubric_dim: DimName = Field(description="The criterion's dim.")
     scale: RubricScale = Field(description="The scale it was asked on.")
     judge_model: str = Field(min_length=1, description="The model the judge's replies named as having answered.")
-    judge_config_id: str = Field(
-        min_length=1,
+    judge_config_id: str | None = Field(
         description=(
             "The versioned JudgeConfig that asked, with the reply format it was sent (``<config id>@<sha12>``), or a "
             "``builtin:`` id = the built-in prompt, by its wording."
+            " None = no judge identity was recorded (a score made outside a judge phase): an unknown judge, never "
+            "the same as a recorded one."
         ),
     )
     judge_temperature: JudgeTemperature = Field(

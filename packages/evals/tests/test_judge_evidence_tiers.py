@@ -304,7 +304,13 @@ class TestTheTierRule:
 
 def _scored(result_id: str, score: int, judge: str | None = "judge-a", **extra: Any) -> EvalResult:
     return make_eval_result(
-        id=result_id, rubric_scores=[RubricScore(dim=TONE, scale="ordinal", score=score, served_model=judge)], **extra
+        id=result_id,
+        rubric_scores=[
+            RubricScore(
+                dim=TONE, scale="ordinal", score=score, served_model=judge, axis="capability", judge_temperature=0.0
+            )
+        ],
+        **extra,
     )
 
 
@@ -329,7 +335,11 @@ def _repeat(
                 first_score=first,
                 first_served_model=judge,
                 first_judge_config_id=first_config,
-                repeat=None if again is None else RubricScore(dim=TONE, scale=scale, score=again, served_model=served),
+                repeat=None
+                if again is None
+                else RubricScore(
+                    dim=TONE, scale=scale, score=again, served_model=served, axis="capability", judge_temperature=0.0
+                ),
                 error="cut short" if again is None and not cannot_tell else None,
                 cannot_tell="the evidence does not show it" if cannot_tell else None,
             )
@@ -663,7 +673,9 @@ class TestACannotTellRepeatCountsAgainstTheJudge:
         results = []
         for index, first in enumerate(firsts):
             declined = index < 10
-            score = RubricScore(dim=TONE, scale=scale, score=first, served_model="judge-a")
+            score = RubricScore(
+                dim=TONE, scale=scale, score=first, served_model="judge-a", axis="capability", judge_temperature=0.0
+            )
             results.append(
                 make_eval_result(
                     id=f"r-{index}",
@@ -714,7 +726,16 @@ class TestATierBelongsToTheWholeJudge:
         pass_fail = [
             make_eval_result(
                 id=f"pf-{i}",
-                rubric_scores=[RubricScore(dim=TONE, scale="pass_fail", score=i % 2, served_model="judge-a")],
+                rubric_scores=[
+                    RubricScore(
+                        dim=TONE,
+                        scale="pass_fail",
+                        score=i % 2,
+                        served_model="judge-a",
+                        axis="capability",
+                        judge_temperature=0.0,
+                    )
+                ],
                 judge_repeats=[_repeat(i % 2, i % 2, scale="pass_fail")],
             )
             for i in range(SEPARATING_RESULTS)
@@ -786,7 +807,12 @@ def _repeated(result: EvalResult, *, agree: bool) -> EvalResult:
                 first_served_model=score.served_model,
                 first_judge_config_id=config,
                 repeat=RubricScore(
-                    dim=TOYHOST_JUDGED_DIMENSION, scale=score.scale, score=again, served_model=score.served_model
+                    dim=TOYHOST_JUDGED_DIMENSION,
+                    scale=score.scale,
+                    score=again,
+                    served_model=score.served_model,
+                    axis="capability",
+                    judge_temperature=0.0,
                 ),
             )
         ],

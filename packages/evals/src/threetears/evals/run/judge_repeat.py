@@ -43,7 +43,13 @@ from pydantic import ValidationError as PydanticValidationError
 
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
-from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES, EvalResult, EvalRun, JudgeRepeat, RepeatedScore
+from threetears.evals.schema.models import (
+    NON_TERMINAL_RUN_STATUSES,
+    EvalResult,
+    EvalRun,
+    JudgeRepeat,
+    RepeatedScore,
+)
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
 from threetears.evals.schema.out_of_run_spend import OutOfRunPurpose
@@ -586,7 +592,7 @@ def _repeat_of(result: EvalResult, outcomes: list[tuple[str, JudgeOutcome]], *, 
                 scale=first.scale,
                 first_score=first.score,
                 first_served_model=first.served_model,
-                first_judge_config_id=result.judge_config_ids[dim],  # every scored dim records its judge
+                first_judge_config_id=result.judge_config_ids.get(dim),
                 first_judge_temperature=first.judge_temperature,
                 repeat=outcome.score,
                 error=outcome.error if outcome.score is None and outcome.cannot_tell is None else None,

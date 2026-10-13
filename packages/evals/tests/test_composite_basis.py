@@ -35,7 +35,9 @@ def _result(run, case: str, dims: list[str], *, score: int = 4, **overrides):
         model=run.candidate_model,
         test_case_id=case,
         goal_state_outcomes=[],
-        rubric_scores=[RubricScore(dim=dim, score=score, scale="ordinal") for dim in dims],
+        rubric_scores=[
+            RubricScore(dim=dim, score=score, scale="ordinal", axis="capability", judge_temperature=0.0) for dim in dims
+        ],
         **overrides,
     )
 

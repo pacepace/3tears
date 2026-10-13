@@ -56,9 +56,15 @@ def _result(**overrides: object) -> EvalResult:
 
 #: A result in each judging state, so every arm the resolver can classify is driven through it.
 _JUDGING_STATES: dict[str, dict[str, object]] = {
-    "scored": {"rubric_scores": [RubricScore(dim="conversation.tone", score=4, scale="ordinal")]},
+    "scored": {
+        "rubric_scores": [
+            RubricScore(dim="conversation.tone", score=4, scale="ordinal", axis="capability", judge_temperature=0.0)
+        ]
+    },
     "partial": {
-        "rubric_scores": [RubricScore(dim="conversation.tone", score=4, scale="ordinal")],
+        "rubric_scores": [
+            RubricScore(dim="conversation.tone", score=4, scale="ordinal", axis="capability", judge_temperature=0.0)
+        ],
         "judge_error": "judge timed out",
     },
     "failed": {"judge_error": "judge timed out"},
@@ -129,7 +135,9 @@ def test_an_excluded_result_discloses_the_exclusion_beside_its_scores():
         _result(
             termination="completed",
             infra_error="apparatus: cassette miss",
-            rubric_scores=[RubricScore(dim="reply.helpfulness", score=4, scale="ordinal")],
+            rubric_scores=[
+                RubricScore(dim="reply.helpfulness", score=4, scale="ordinal", axis="capability", judge_temperature=0.0)
+            ],
         )
     )
 
@@ -194,7 +202,9 @@ def test_a_healthy_scored_result_discloses_nothing():
         _result(
             termination="completed",
             usage=[],
-            rubric_scores=[RubricScore(dim="reply.helpfulness", score=4, scale="ordinal")],
+            rubric_scores=[
+                RubricScore(dim="reply.helpfulness", score=4, scale="ordinal", axis="capability", judge_temperature=0.0)
+            ],
         )
     )
 
@@ -226,9 +236,21 @@ def test_a_pinned_judge_that_never_ran_is_not_evidence_of_judging():
     "evidence",
     [
         {"judge_reasoning": "it answered the question"},
-        {"rubric_scores": [RubricScore(dim="reply.helpfulness", score=3, scale="ordinal")]},
-        {"transcript_score": RubricScore(dim=TRANSCRIPT_DIM_ID, score=5, scale="ordinal")},
-        {"outcome_score": RubricScore(dim=OUTCOME_DIM_ID, score=2, scale="ordinal")},
+        {
+            "rubric_scores": [
+                RubricScore(dim="reply.helpfulness", score=3, scale="ordinal", axis="capability", judge_temperature=0.0)
+            ]
+        },
+        {
+            "transcript_score": RubricScore(
+                dim=TRANSCRIPT_DIM_ID, score=5, scale="ordinal", axis="capability", judge_temperature=0.0
+            )
+        },
+        {
+            "outcome_score": RubricScore(
+                dim=OUTCOME_DIM_ID, score=2, scale="ordinal", axis="capability", judge_temperature=0.0
+            )
+        },
     ],
     ids=["reasoning-only", "rubric-only", "transcript-axis-only", "outcome-axis-only"],
 )
@@ -245,7 +267,9 @@ def test_a_judge_that_scored_some_dims_and_errored_on_others_is_partial():
     """Collapsing this into either neighbour loses whichever half the reader needed."""
     condition = resolve_result_condition(
         _result(
-            rubric_scores=[RubricScore(dim="reply.helpfulness", score=4, scale="ordinal")],
+            rubric_scores=[
+                RubricScore(dim="reply.helpfulness", score=4, scale="ordinal", axis="capability", judge_temperature=0.0)
+            ],
             judge_error="dim 'tone': 429",
         )
     )
@@ -386,7 +410,9 @@ class TestTheJudgeCouldNotTell:
             test_case_id="t",
             model="m",
             k_iteration=1,
-            rubric_scores=[RubricScore(dim="reply.tone", score=4, scale="ordinal")],
+            rubric_scores=[
+                RubricScore(dim="reply.tone", score=4, scale="ordinal", axis="capability", judge_temperature=0.0)
+            ],
             judge_cannot_tell={"__transcript__": "no turns"},
             termination="completed",
             cost_usd=0.0,
@@ -409,7 +435,9 @@ class TestTheJudgeCouldNotTell:
             test_case_id="t",
             model="m",
             k_iteration=1,
-            rubric_scores=[RubricScore(dim="reply.tone", score=4, scale="ordinal")],
+            rubric_scores=[
+                RubricScore(dim="reply.tone", score=4, scale="ordinal", axis="capability", judge_temperature=0.0)
+            ],
             termination="completed",
             cost_usd=0.0,
             cost_roles=["candidate", "inner_agent", "judge", "simulator"],

@@ -222,6 +222,8 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
                 scale="ordinal",
                 output_fingerprint=_LABEL_KEY.output_fingerprint,
                 criterion_fingerprint=_LABEL_KEY.criterion_fingerprint,
+                axis="capability",
+                judge_temperature=0.0,
             )
         ]
     ),

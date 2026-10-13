@@ -503,7 +503,11 @@ def toyhost_measurements(
             rubric_scores=(
                 [
                     RubricScore(
-                        dim=TOYHOST_JUDGED_DIMENSION, score=layout_fidelity + (1 if repeat == 3 else 0), scale="ordinal"
+                        dim=TOYHOST_JUDGED_DIMENSION,
+                        score=layout_fidelity + (1 if repeat == 3 else 0),
+                        scale="ordinal",
+                        axis="capability",
+                        judge_temperature=0.0,
                     )
                 ]
                 if layout_fidelity is not None

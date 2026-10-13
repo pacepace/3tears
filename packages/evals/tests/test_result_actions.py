@@ -435,7 +435,9 @@ def test_a_judged_result_lists_its_reserved_axes_beside_its_rubric() -> None:
             "res-judged",
             "tc-c",
             1,
-            transcript_score=RubricScore(dim=TRANSCRIPT_DIM_ID, score=2, scale="ordinal"),
+            transcript_score=RubricScore(
+                dim=TRANSCRIPT_DIM_ID, score=2, scale="ordinal", axis="capability", judge_temperature=0.0
+            ),
         )
     )
     (line,) = [

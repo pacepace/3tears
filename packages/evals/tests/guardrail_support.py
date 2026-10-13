@@ -81,7 +81,7 @@ def two_arm_bundle(
                 cost_usd=None,
                 host_measures=dict(host_measures[side][case]) if host_measures is not None else {},
                 rubric_scores=[
-                    RubricScore(dim=name, scale=scale, axis=axis, score=scores[side][case])
+                    RubricScore(dim=name, scale=scale, axis=axis, score=scores[side][case], judge_temperature=0.0)
                     for name, axis, scores in dimensions
                 ],
             )

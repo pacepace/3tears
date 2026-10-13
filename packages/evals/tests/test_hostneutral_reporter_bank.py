@@ -97,7 +97,10 @@ def _result(result_id: str, case_id: str, model: str, k: int, scores: dict[str, 
         model=model,
         k_iteration=k,
         rubric_scores=[
-            RubricScore(dim=dim, score=score, reasoning=f"why {dim}", scale="ordinal") for dim, score in scores.items()
+            RubricScore(
+                dim=dim, score=score, reasoning=f"why {dim}", scale="ordinal", axis="capability", judge_temperature=0.0
+            )
+            for dim, score in scores.items()
         ],
         **{**result_capture_defaults(), **extra},
     )
@@ -222,7 +225,7 @@ class TestReadingCalibration:
         low, high = LABEL_BANDS[direction]
 
         def score(value: int) -> RubricScore:
-            return RubricScore(dim="x.d", score=value, scale="ordinal")
+            return RubricScore(dim="x.d", score=value, scale="ordinal", axis="capability", judge_temperature=0.0)
 
         assert label_agrees(direction, score(low)) and label_agrees(direction, score(high))
         assert label_agrees(direction, score(inside))
@@ -231,8 +234,18 @@ class TestReadingCalibration:
     def test_a_pass_fail_dimension_has_no_band_and_does_not_abort_the_read(self) -> None:
         """Five directions onto two answers would be a calibration rule nobody ratified, and a raise here
         would abandon every other dimension's reading after the run was paid for."""
-        assert label_agrees("high", RubricScore(dim="x.d", scale="pass_fail", score=1)) is None
-        assert label_agrees("high", RubricScore(dim="x.d", score=5, scale="ordinal")) is True
+        assert (
+            label_agrees(
+                "high", RubricScore(dim="x.d", scale="pass_fail", score=1, axis="capability", judge_temperature=0.0)
+            )
+            is None
+        )
+        assert (
+            label_agrees(
+                "high", RubricScore(dim="x.d", score=5, scale="ordinal", axis="capability", judge_temperature=0.0)
+            )
+            is True
+        )
 
     def test_a_pass_fail_dimension_reads_as_pass_or_fail_beside_a_1_to_5_verdict(self) -> None:
         """One pass/fail dimension neither aborts the read nor borrows a band, and reads in its own words.
@@ -248,9 +261,9 @@ class TestReadingCalibration:
             model="writer-a",
             k_iteration=1,
             rubric_scores=[
-                RubricScore(dim=ACCURACY, scale="pass_fail", score=1),
-                RubricScore(dim="summary.tone", score=1, scale="ordinal"),
-                RubricScore(dim=CLARITY, scale="pass_fail", score=0),
+                RubricScore(dim=ACCURACY, scale="pass_fail", score=1, axis="capability", judge_temperature=0.0),
+                RubricScore(dim="summary.tone", score=1, scale="ordinal", axis="capability", judge_temperature=0.0),
+                RubricScore(dim=CLARITY, scale="pass_fail", score=0, axis="capability", judge_temperature=0.0),
             ],
             termination="completed",
             cost_usd=0.0,

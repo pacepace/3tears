@@ -86,10 +86,11 @@ class JudgeKindReading(EvalDocumentModel):
     rubric_dim: str = Field(min_length=1, description="The criterion's dim.")
     scale: RubricScale = Field(description="The scale it was asked on.")
     judge_model: str | None = Field(description="The model the judge's responses named; None when none named one.")
-    judge_config_id: str = Field(
-        min_length=1,
+    judge_config_id: str | None = Field(
         description=(
             "The versioned JudgeConfig that asked, or a ``builtin:`` id = the built-in prompt, by its wording."
+            " None = no judge identity was recorded (a score made outside a judge phase): an unknown judge, never "
+            "the same as a recorded one."
         ),
     )
     judge_temperature: JudgeTemperature | None = Field(

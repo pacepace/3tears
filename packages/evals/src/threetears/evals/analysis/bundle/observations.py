@@ -2,7 +2,7 @@
 
 :func:`variant_key_of_run` and :func:`_variant_key_of` read the variant key a run or result was stamped with,
 :func:`_observations` turns a campaign's results into the observations the cell algebra pools, and
-:func:`_apparatus_classes` groups the apparatus a cell id is neutral to (:data:`CELL_ID_NEUTRAL`).
+:func:`_apparatus_classes` classifies each run's rig.
 """
 
 from __future__ import annotations
@@ -229,6 +229,5 @@ def variant_key_of_run(results: Sequence[EvalResult]) -> str | None:
 
 
 __all__ = [
-    "CELL_ID_NEUTRAL",
     "variant_key_of_run",
 ]

@@ -64,21 +64,23 @@ class JudgeDriftDimension(EvalDocumentModel):
     rubric_dim: str = Field(min_length=1, description="The judged dimension.")
     scale: RubricScale = Field(description="The scale both judges scored it on.")
     judge_model: str | None = Field(description="The model that served the first scores; None when it named none.")
-    judge_config_id: str = Field(
-        min_length=1,
+    judge_config_id: str | None = Field(
         description=(
             "The JudgeConfig that asked for the first scores, or a ``builtin:`` id = the built-in prompt, by its "
             "wording."
+            " None = no judge identity was recorded (a score made outside a judge phase): an unknown judge, never "
+            "the same as a recorded one."
         ),
     )
     judge_temperature: JudgeTemperature | None = Field(
         default=None, description="The temperature the first scores were sent at."
     )
     second_model: str = Field(min_length=1, description="The model the second judge was asked as.")
-    second_judge_config_id: str = Field(
-        min_length=1,
+    second_judge_config_id: str | None = Field(
         description=(
             "The JudgeConfig that asked the second judge, or a ``builtin:`` id = the built-in prompt, by its wording; "
+            " None = no judge identity was recorded (a score made outside a judge phase): an unknown judge, never "
+            "the same as a recorded one."
         ),
     )
     second_temperature: float | None = Field(
@@ -133,7 +135,7 @@ class JudgeDrift(EvalDocumentModel):
     disclosure: str = Field(default=DRIFT_DETECTS_MOVEMENT, description="What drift detects, and what it does not.")
 
 
-_GroupKey = tuple[JudgeKey, str, str, float | None]
+_GroupKey = tuple[JudgeKey, str, str | None, float | None]
 
 
 def _paired_test(
@@ -202,7 +204,7 @@ def judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) ->
                     entry.first_judge_config_id,
                     entry.first_judge_temperature,
                 )
-                key = (first, judging.judge.model, judging.judge_config_ids[entry.dim], judging.judge.temperature)
+                key = (first, judging.judge.model, judging.judge_config_ids.get(entry.dim), judging.judge.temperature)
                 cases = pairs.setdefault(key, {})
                 if entry.second is None:
                     unanswered[key] = unanswered.get(key, 0) + 1
@@ -217,7 +219,7 @@ def judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) ->
             k[0].judge_config_id or "",
             "" if k[0].judge_temperature is None else str(k[0].judge_temperature),
             k[1],
-            k[2],
+            k[2] or "",
             "" if k[3] is None else str(k[3]),
         ),
     )

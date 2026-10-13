@@ -1351,7 +1351,10 @@ def _dim_result(model="m1", run_id="r1", k=1, dims: dict[str, int] | None = None
         test_case_id=test_case_id,
         model=model,
         k_iteration=k,
-        rubric_scores=[RubricScore(dim=d, score=s, scale="ordinal") for d, s in (dims or {}).items()],
+        rubric_scores=[
+            RubricScore(dim=d, score=s, scale="ordinal", axis="capability", judge_temperature=0.0)
+            for d, s in (dims or {}).items()
+        ],
         **{**result_capture_defaults(), **kwargs},
     )
 
@@ -1499,14 +1502,18 @@ class TestResultComposite:
 
     @pytest.mark.parametrize(("score", "expected"), [(1, 0.0), (3, 0.5), (5, 1.0)])
     def test_normalizes_single_dim_to_unit_interval(self, score: int, expected: float) -> None:
-        r = make_eval_result(rubric_scores=[RubricScore(dim="x.d", score=score, scale="ordinal")])
+        r = make_eval_result(
+            rubric_scores=[
+                RubricScore(dim="x.d", score=score, scale="ordinal", axis="capability", judge_temperature=0.0)
+            ]
+        )
         assert result_composite(r) == pytest.approx(expected)
 
     def test_averages_across_dims(self) -> None:
         r = make_eval_result(
             rubric_scores=[
-                RubricScore(dim="x.a", score=4, scale="ordinal"),
-                RubricScore(dim="x.b", score=2, scale="ordinal"),
+                RubricScore(dim="x.a", score=4, scale="ordinal", axis="capability", judge_temperature=0.0),
+                RubricScore(dim="x.b", score=2, scale="ordinal", axis="capability", judge_temperature=0.0),
             ]
         )
         assert result_composite(r) == pytest.approx(0.5)  # (0.75 + 0.25) / 2
@@ -1520,7 +1527,12 @@ class TestResultComposite:
     def test_candidate_errored_result_composites_to_zero(self) -> None:
         # A broken candidate scores 0.0 (depress, don't vanish) even with rubric dims.
         assert result_composite(
-            make_eval_result(candidate_error="402", rubric_scores=[RubricScore(dim="x.d", score=5, scale="ordinal")])
+            make_eval_result(
+                candidate_error="402",
+                rubric_scores=[
+                    RubricScore(dim="x.d", score=5, scale="ordinal", axis="capability", judge_temperature=0.0)
+                ],
+            )
         ) == pytest.approx(0.0)
 
     def test_no_rubric_dims_has_no_composite(self) -> None:
@@ -1535,7 +1547,9 @@ class TestCompositeSummary:
             eval_run_id="r",
             model="m",
             test_case_id=tc,
-            rubric_scores=[RubricScore(dim="x.d", score=score, scale="ordinal")],
+            rubric_scores=[
+                RubricScore(dim="x.d", score=score, scale="ordinal", axis="capability", judge_temperature=0.0)
+            ],
             **kw,
         )
 
@@ -1592,13 +1606,17 @@ class TestPerCaseComposites:
                 eval_run_id="r",
                 model="m",
                 test_case_id="tc1",
-                rubric_scores=[RubricScore(dim="x.d", score=5, scale="ordinal")],
+                rubric_scores=[
+                    RubricScore(dim="x.d", score=5, scale="ordinal", axis="capability", judge_temperature=0.0)
+                ],
             ),
             make_eval_result(
                 eval_run_id="r",
                 model="m",
                 test_case_id="tc2",
-                rubric_scores=[RubricScore(dim="x.d", score=3, scale="ordinal")],
+                rubric_scores=[
+                    RubricScore(dim="x.d", score=3, scale="ordinal", axis="capability", judge_temperature=0.0)
+                ],
             ),
         ]
         per_case = compute_per_case_composites(results)
@@ -1623,7 +1641,9 @@ class TestAJudgeThatCouldNotTell:
             test_case_id="tc-told",
             model="m1",
             eval_run_id="r1",
-            rubric_scores=[RubricScore(dim="reply.tone", score=5, scale="ordinal")],
+            rubric_scores=[
+                RubricScore(dim="reply.tone", score=5, scale="ordinal", axis="capability", judge_temperature=0.0)
+            ],
             judge_cannot_tell={"reply.refusal": "the user never asked for anything to refuse"},
         )
         scored = make_eval_result(
@@ -1631,8 +1651,8 @@ class TestAJudgeThatCouldNotTell:
             model="m1",
             eval_run_id="r1",
             rubric_scores=[
-                RubricScore(dim="reply.tone", score=5, scale="ordinal"),
-                RubricScore(dim="reply.refusal", score=4, scale="ordinal"),
+                RubricScore(dim="reply.tone", score=5, scale="ordinal", axis="capability", judge_temperature=0.0),
+                RubricScore(dim="reply.refusal", score=4, scale="ordinal", axis="capability", judge_temperature=0.0),
             ],
         )
         return told, scored
@@ -1672,11 +1692,31 @@ class TestWhatAJudgedDimCountsAs:
     def test_a_cut_off_hold_turn_the_judge_passed_counts_as_a_fail(self):
         silent = _cut_off(
             make_scored_result(goal_passes=()).model_copy(
-                update={"rubric_scores": [RubricScore(dim="reply.treats_as_present", scale="pass_fail", score=1)]}
+                update={
+                    "rubric_scores": [
+                        RubricScore(
+                            dim="reply.treats_as_present",
+                            scale="pass_fail",
+                            score=1,
+                            axis="capability",
+                            judge_temperature=0.0,
+                        )
+                    ]
+                }
             )
         )
         delivered = make_scored_result(test_case_id="tc2", goal_passes=()).model_copy(
-            update={"rubric_scores": [RubricScore(dim="reply.treats_as_present", scale="pass_fail", score=1)]}
+            update={
+                "rubric_scores": [
+                    RubricScore(
+                        dim="reply.treats_as_present",
+                        scale="pass_fail",
+                        score=1,
+                        axis="capability",
+                        judge_temperature=0.0,
+                    )
+                ]
+            }
         )
         assert self._dims(delivered)["reply.treats_as_present"] == 1.0  # the control
         assert self._dims(silent, delivered)["reply.treats_as_present"] == 0.5
