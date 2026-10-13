@@ -453,6 +453,11 @@ _OPENROUTER_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_openai_auto_cache=True,
         min_cacheable_tokens=0,
         cache_ttl_seconds=0,
+        # "structured_outputs" is in this id's supported_parameters (the same
+        # 2026-07-23 catalogue read as supports_tools above). the other
+        # request-settings facts were not checked against the catalogue, so
+        # they stay None.
+        structured_output=True,
     ),
 }
 
