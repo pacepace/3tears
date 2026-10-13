@@ -32,7 +32,7 @@ from threetears.evals.kernel.declaration import CampaignDesign
 from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier, JudgedTierRule, weakest_judged_tier
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
-from threetears.evals.schema.base import CoreDocumentModel, EvalDocumentModel
+from threetears.evals.schema.base import CoreDocumentModel, CoreShapeModel, EvalDocumentModel
 from threetears.evals.schema.job_lease import (
     CancelRequestReasonField,
     CancelRequestedAtField,
@@ -163,7 +163,10 @@ class EvalCampaign(CoreDocumentModel):
     stopped being an experiment, even where three other runs carried the identical
     contestant stack. ``declared_design.control`` is a variant key, so a control
     resolves through whichever observation carries it — and nothing on this model is
-    a pointer at a run whose deletion could dangle it.
+    a pointer at a run whose deletion could dangle it. The key is kept beside its
+    pre-image (``control_levers``, ``control_identity_version``), as a run keeps its
+    lever map beside its own, so a change to how the identity predicate digests a map
+    re-keys the control instead of orphaning it.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
@@ -1143,7 +1146,7 @@ class EvalGenerationSlot(CoreDocumentModel):
 SweepOutcome = Literal["running", "completed", "failed", "cancelled", "timed_out"]
 
 
-class SweepArmRecord(EvalDocumentModel):
+class SweepArmRecord(EvalDocumentModel, CoreShapeModel):
     """One arm of a sweep as its record carries it: what it is called, its model, and its run once launched."""
 
     label: str = Field(min_length=1, description="The arm's name, unique within the sweep.")

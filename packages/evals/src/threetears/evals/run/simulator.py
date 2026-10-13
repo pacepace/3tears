@@ -113,8 +113,8 @@ from threetears.evals.schema.models import (
     ClientRequestSettings,
     ConversationSpec,
     ConversationStopCause,
-    ReasoningEffort,
-    SimulatorPurpose,
+    KnownReasoningEffort,
+    KnownSimulatorPurpose,
     WorldRound,
 )
 from threetears.evals.schema.completion import SimulatorLLM
@@ -138,7 +138,7 @@ from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
 #: **What it does not guarantee.** An effort level bounds nothing in tokens on any model; a model
 #: that takes reasoning as a token budget maps the level back to one by its own rule, and a model
 #: that does not reason ignores it. The cap below is the only hard stop.
-SIMULATOR_REASONING_EFFORT: ReasoningEffort = "minimal"
+SIMULATOR_REASONING_EFFORT: KnownReasoningEffort = "minimal"
 
 #: Room the output cap leaves for the simulated user's private reasoning at
 #: :data:`SIMULATOR_REASONING_EFFORT`. Never sent — the request carries the effort, not a budget —
@@ -280,7 +280,7 @@ class SimulatorCall:
     off the response whatever the reply held, with ``None`` fields where the client reported nothing.
     """
 
-    purpose: SimulatorPurpose
+    purpose: KnownSimulatorPurpose
     actor_id: str | None
     round_index: int
     usage: CallUsage

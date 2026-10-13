@@ -38,7 +38,7 @@ from threetears.evals.schema.models import (
     SCALES,
     RubricScale,
 )
-from threetears.evals.kernel.surface import FrontierDominance, GuardrailDecision
+from threetears.evals.kernel.surface import EarlierControl, FrontierDominance, GuardrailDecision, earlier_control_mark
 from threetears.evals.kernel.result_condition import (
     ResultOutcome,
     classify_result,
@@ -522,6 +522,14 @@ class FrontierPoint(EvalBaseModel):
     #: carries and the p it was shown at. In the order the points are sorted, which is the order
     #: the table prints them, so a reader scanning for a named dominator meets them in that order.
     dominated_by: list[FrontierDominator] = []
+
+    #: ``the control under identity predicate vN`` on the point the declared control's cells under an earlier
+    #: identity predicate make up (``RealizedDesign.earlier_control``); ``None`` on every other point. Such a
+    #: point is the control as it ran before the predicate changed, not a contestant: it is in no dominance test
+    #: (so never dominated nor dominating, and its ``dominance`` stays ``untested``), never the pick, never one
+    #: the pick is tied with, and held against nothing on the boundary pillar. It stays in the ranking, marked,
+    #: so the control's earlier runs are not silently missing from it.
+    earlier_control: str | None = None
 
 
 class FrontierVerdict(EvalBaseModel):
@@ -1089,14 +1097,19 @@ def _decide_dominance(points: list[FrontierPoint], cases: list[_ContestantCases]
     flagged dominated when it is not stays within α — the rule every family of between-arm claims in
     the engine is read by. A domination is shown when its pair's adjusted p is below α in that direction.
 
+    A point marked :attr:`FrontierPoint.earlier_control` is in no pair: it is the control under an earlier
+    predicate, and testing it against the control would read the control against itself under another
+    digest — "dominated by itself" — while testing it against the contestants would make it one.
+
     Args:
         points: The subject's points, in display order. Mutated.
         cases: Each point's per-case values, aligned with ``points``.
     """
     family: list[tuple[int, int, float]] = []
     tested: set[int] = set()
-    for i in range(len(points)):
-        for j in range(i + 1, len(points)):
+    contestants = [index for index, point in enumerate(points) if point.earlier_control is None]
+    for position, i in enumerate(contestants):
+        for j in contestants[position + 1 :]:
             forward = _dominance_p(points[i], cases[i], points[j], cases[j])
             backward = _dominance_p(points[j], cases[j], points[i], cases[i])
             if forward is not None:
@@ -1230,6 +1243,9 @@ def _decide_boundary_pillar(
 ) -> tuple[list[str], str | None]:
     """Hold every contestant's boundary dimensions against the control, in place, and say how the pillar was read.
 
+    The control's cells under an earlier identity predicate are the control, so they are held against nothing:
+    holding them against the control would read the control against itself under another digest.
+
     Returns:
         The subject's boundary dimensions, sorted, and the sentence for :attr:`SubjectFrontier.boundary_pillar`.
     """
@@ -1251,7 +1267,7 @@ def _decide_boundary_pillar(
         )
     reference = _boundary_values(members[control[0]])
     for index, point in enumerate(points):
-        if index in control:
+        if index in control or point.earlier_control is not None:
             continue
         values = _boundary_values(members[index])
         checks = []
@@ -1300,6 +1316,7 @@ def compute_frontier(
     archived_run_ids: set[str] | None,
     profile: HostProfile | None = None,
     control_variant_key: str | None = None,
+    earlier_control: EarlierControl | None = None,
     guardrail_margins: Mapping[str, float] | None = None,
     tiers: Sequence[JudgeEvidenceTier] = (),
 ) -> FrontierResult:
@@ -1396,6 +1413,9 @@ def compute_frontier(
             host payload elided reads as unchecked. ``None`` leaves that field ``None`` — nobody checked.
         control_variant_key: The variant every contestant's boundary dimensions are held against — the campaign's
             control arm. ``None`` checks none, and says so.
+        earlier_control: The control's cells under an earlier identity predicate (``RealizedDesign.earlier_control``),
+            or None. The point they make up is marked (:attr:`FrontierPoint.earlier_control`) and is not a
+            contestant: in no dominance test, never the pick, never a cost tie, held against nothing.
         guardrail_margins: The margin each boundary dimension is held to, by dimension name
             (``CampaignDesign.guardrail_margins``); a dimension absent is held at zero change.
         tiers: The evidence tiers of the judges behind the results' scores
@@ -1523,9 +1543,16 @@ def compute_frontier(
         built.sort(key=lambda entry: (entry[0].model, entry[0].variant_key, entry[0].variant_identity_version))
         points = [point for point, _, _ in built]
         point_cases = [cases for _, cases, _ in built]
+        if earlier_control is not None:
+            for point in points:
+                if point.variant_key == earlier_control.variant_key:
+                    point.earlier_control = earlier_control_mark(earlier_control)
         _decide_dominance(points, point_cases)
         boundary_dimensions, boundary_pillar = _decide_boundary_pillar(
-            points, [members for _, _, members in built], control_variant_key, guardrail_margins or {}
+            points,
+            [members for _, _, members in built],
+            control_variant_key,
+            guardrail_margins or {},
         )
 
         verdict: FrontierVerdict | None = None
@@ -1550,6 +1577,9 @@ def compute_frontier(
                     index
                     for index, p in enumerate(points)
                     if p.bar_decision == "cleared"
+                    # The control under an earlier predicate is not a contestant: never the pick, and so — the
+                    # rivals being the rest of this set — never one the pick is tied with.
+                    and p.earlier_control is None
                     and _boundary_eligible(p, control_variant_key)
                     and p.production_replicating_cost is not None
                     and p.pass_hat_k is not None

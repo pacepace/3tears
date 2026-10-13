@@ -49,7 +49,7 @@ from threetears.evals.run import ceilings
 from threetears.evals.schema.logs import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.schema.models import MeteredCallOrigin
+    from threetears.evals.schema.models import KnownMeteredCallOrigin
 
 log = get_logger(__name__)
 
@@ -317,7 +317,7 @@ class MeteredCallLedger:
     @staticmethod
     def resolve_ceiling_origin(
         max_metered_calls: int | None, *, configured_max_metered_calls: int | None, enforcement_enabled: bool
-    ) -> MeteredCallOrigin:
+    ) -> KnownMeteredCallOrigin:
         """Return which tier of the cascade supplied the ceiling a run is bounded by.
 
         The companion of :meth:`resolve_effective_ceiling`, answering from the same launch and

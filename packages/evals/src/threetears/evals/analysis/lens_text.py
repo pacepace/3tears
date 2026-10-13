@@ -72,7 +72,9 @@ def frontier_text(result: FrontierResult) -> str:
                 else "latency unobserved"
             )
             standing = (
-                f"disqualified: breached {', '.join(point.disqualified_by)}"
+                f"{point.earlier_control}, not a contestant"
+                if point.earlier_control is not None
+                else f"disqualified: breached {', '.join(point.disqualified_by)}"
                 if point.disqualified_by
                 else f"dominated by {', '.join(_contestant(rival.model, rival.variant_key) for rival in point.dominated_by)}"
                 if point.dominated

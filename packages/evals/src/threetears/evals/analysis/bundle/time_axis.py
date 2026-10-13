@@ -16,11 +16,13 @@ from threetears.evals.analysis.cells import (
     Observation,
     pool_observations,
 )
+from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.reporting import ScoreRecord
 from threetears.evals.kernel.declaration import CampaignDesign
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.schema.models import EvalResult
 from threetears.evals.kernel.surface import (
+    EarlierControl,
     TimeAxis,
     TimeAxisBasis,
     TimePosition,
@@ -47,6 +49,8 @@ def _time_axis(
     short_runs: dict[str, str],
     incomplete_runs: dict[str, str],
     profile: HostProfile,
+    control: str | None,
+    earlier_control: EarlierControl | None = None,
     names: Mapping[str, str],
 ) -> tuple[TimeAxis | None, str | None]:
     """Place the campaign's runs in time, or say why they cannot be.
@@ -70,6 +74,13 @@ def _time_axis(
         short_runs: The bundle's short-run sentences, by run id.
         incomplete_runs: The bundle's incomplete-run statuses, by run id.
         profile: The host, whose ``release_label`` names its builds.
+        control: The control arm's variant key as the realized design matched it
+            (``RealizedDesign.control_arm``), or None — never the declaration's own key, which can name the arm
+            by a key its cells do not carry.
+        earlier_control: The control's cells under an earlier identity predicate (``RealizedDesign.earlier_control``),
+            or None. A position holding them says so (``TimePosition.control_disclosure``), and where they are the
+            only control cells there they lead as its reference: a position from before the predicate changed
+            would otherwise read as one with no control at all.
         names: The bundle's arm names, which order each position's cells as the whole surface's are.
 
     Returns:
@@ -91,6 +102,18 @@ def _time_axis(
         judged = _judged_measures(
             [record for record in records if record.result_id in result_ids], by_cell, design, tiers=tiers
         )
+        held = {cell_key[0] for cell_key in by_cell}
+        reference, note = control, None
+        if earlier_control is not None and earlier_control.variant_key in held:
+            if control not in held:
+                reference = earlier_control.variant_key
+            note = (
+                f"The control's cells at {key} include runs stamped under identity predicate "
+                f"v{earlier_control.identity_version} ({short_digest(earlier_control.variant_key)}): they are the "
+                f"control under identity predicate v{earlier_control.identity_version}"
+                + (", its only cells here, so they lead as the reference" if control not in held else "")
+                + ", and are not the control arm the campaign's numbers are read against."
+            )
         positions.append(
             TimePosition(
                 key=key,
@@ -107,9 +130,10 @@ def _time_axis(
                     short_runs=short_runs,
                     incomplete_runs=incomplete_runs,
                     profile=profile,
-                    control=design.control if design else None,
+                    control=reference,
                     names=names,
                 ),
+                control_disclosure=note,
             )
         )
     if basis == "release":

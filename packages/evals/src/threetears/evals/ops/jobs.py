@@ -73,7 +73,7 @@ from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
 from threetears.evals.kernel.host.eval_host import CompletionRole
 from threetears.evals.schema.completion import BoundCompletionClient
-from threetears.evals.schema.out_of_run_spend import OutOfRunPurpose
+from threetears.evals.schema.out_of_run_spend import KnownOutOfRunPurpose
 from threetears.evals.analysis.agreement import InterJudgeAgreement, inter_judge_agreement
 from threetears.evals.analysis.judge_drift import JudgeDrift, judge_drift
 from threetears.evals.analysis.judge_temperature import read_judge_temperatures
@@ -774,7 +774,7 @@ async def start_paid_call[R: BaseModel](
     action: str,
     role: CompletionRole,
     model: str | None,
-    purpose: OutOfRunPurpose,
+    purpose: KnownOutOfRunPurpose,
     budget: OutOfRunBudget,
     call: PlannedCall,
     make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]],

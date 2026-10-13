@@ -3,8 +3,8 @@
 The engine stores twenty-four document types through one :class:`~threetears.evals.schema.store_port.DocumentStore`,
 and three questions about each one decide how it may be kept: **where it comes from** (an input a run reads as given,
 a record of what happened, or a document computed from other stored documents), **whether a later release reads it**
-(kept, and upgraded across core versions; or regenerable, refused after a regenerable bump and made again), and, for a
-tombstone, **which type it suppresses**. :data:`DOC_TYPE_FACTS` answers them, one entry per type, and every list of
+(kept, and upgraded across core versions; or regenerable, refused after a change to its format and made again), and,
+for a tombstone, **which type it suppresses**. :data:`DOC_TYPE_FACTS` answers them, one entry per type, and every list of
 types the engine keeps is derived from it: :data:`~threetears.evals.schema.models.EVAL_DOC_TYPES` (what the operator
 wipe sweeps) is its keys, and :data:`~threetears.evals.schema.versioning.CORE_DOC_TYPES` (what is kept) its ``kept``
 entries. Two hand-kept lists could disagree; one registry and two derivations cannot. ``tests/test_doc_type_facts.py``
@@ -24,7 +24,11 @@ reading.
 
 **Lifecycle follows from whether the document can be made again**, not from its origin. A ``derived`` document is
 always regenerable. An input or a record is kept unless the engine can make it again without loss: the one record
-that is regenerable is the cassette, whose replacement is a fresh capture under a new corpus. A campaign's
+that is regenerable is the cassette, whose replacement is a fresh capture under a new corpus. Because that capture
+calls the third-party tools again, the cassette's format has a version of its own
+(:data:`~threetears.evals.schema.versioning.CASSETTE_SCHEMA_VERSION`), and every other regenerable type is governed by
+:data:`~threetears.evals.schema.versioning.REGENERABLE_SCHEMA_VERSION`: an analysis shape change refuses analyses,
+never a corpus. Both are the ``regenerable`` lifecycle, so a host routing by it places them together. A campaign's
 generation slot is kept though nothing is lost without it: a build that could not read it would either block every
 generation of the campaign or, reading it as free, start a second beside a live one (see
 :mod:`threetears.evals.schema.versioning`).
@@ -42,7 +46,9 @@ from typing import Final, Literal, get_args
 DocOrigin = Literal["input", "record", "derived"]
 
 #: Whether a later release reads a stored document: ``kept`` — in the core, read from the core baseline on and
-#: upgraded across core versions; ``regenerable`` — refused on read after a regenerable schema bump, and made again.
+#: upgraded across core versions; ``regenerable`` — refused on read after a change to its format, and made again
+#: (the cassette's format is :data:`~threetears.evals.schema.versioning.CASSETTE_SCHEMA_VERSION`, every other
+#: regenerable type's :data:`~threetears.evals.schema.versioning.REGENERABLE_SCHEMA_VERSION`).
 DocLifecycle = Literal["kept", "regenerable"]
 
 
@@ -100,6 +106,7 @@ DOC_TYPE_FACTS: Final[Mapping[str, DocTypeFacts]] = MappingProxyType(
         "eval_out_of_run_spend": DocTypeFacts(origin="record", lifecycle="kept"),
         "eval_sweep": DocTypeFacts(origin="record", lifecycle="kept"),
         "eval_analysis_attempt": DocTypeFacts(origin="record", lifecycle="kept"),
+        # Re-captured, not migrated, under its own CASSETTE_SCHEMA_VERSION: an analysis bump leaves corpora readable.
         "eval_cassette": DocTypeFacts(origin="record", lifecycle="regenerable"),
         "eval_generation_slot": DocTypeFacts(origin="record", lifecycle="kept"),
         "eval_launch": DocTypeFacts(origin="record", lifecycle="kept"),

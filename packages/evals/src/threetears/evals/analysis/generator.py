@@ -1044,7 +1044,8 @@ def _reject_unseparated_adoptions(document: AuthoredAnalysis, bundle: AnalysisCo
     one would refuse nearly every adoption in any campaign that carries a guardrail — and it is never read
     as held either: the report states it on the adopted decision.
 
-    Adopting the declared control (keeping what is there) needs no separation, and a ``rejected`` or
+    Adopting the declared control (keeping what is there) needs no separation — its cells under an earlier
+    identity predicate (``design.earlier_control``) included, which are the control too — and a ``rejected`` or
     ``deferred`` decision, or one naming no cell, is not checked. Runs after cells are translated
     from aliases, so it reads full refs; the refusal names them, and the repair round renders them
     back into the writer's aliases.
@@ -1053,7 +1054,12 @@ def _reject_unseparated_adoptions(document: AuthoredAnalysis, bundle: AnalysisCo
         SoundnessRefusal: An adopted decision names a non-control arm with a breached guardrail, or with no
             ``improved`` reading.
     """
-    control = bundle.declared_design.control if bundle.declared_design else None
+    # The control as the realized design matched it, as every lens reads it: the declaration's own key can name
+    # the arm by a key its cells do not carry, and exempting that one would exempt nothing — or another arm.
+    control = bundle.design.control_arm.variant_key if bundle.design.control_arm is not None else None
+    # The control's cells under an earlier identity predicate are the control too, compared with nothing: keeping
+    # them is keeping the control, and there is no separation to ask of the control from itself.
+    earlier = bundle.design.earlier_control.variant_key if bundle.design.earlier_control is not None else None
     comparisons = bundle.multiple_comparisons
     names = arm_names(bundle.variant_index)
     remedy = "mark it `deferred` with what would settle it in `revisit_when`" + (
@@ -1065,7 +1071,7 @@ def _reject_unseparated_adoptions(document: AuthoredAnalysis, bundle: AnalysisCo
         arms: dict[str, str] = {}
         for cell in decision.cells:
             variant = variant_of_cell_ref(cell)
-            if variant is not None and variant != control:
+            if variant is not None and variant not in (control, earlier):
                 arms.setdefault(variant, cell)
         for variant, cell in arms.items():
             arm = f"the arm at cell {cell}" + (f" ({names[variant]})" if variant in names else "")

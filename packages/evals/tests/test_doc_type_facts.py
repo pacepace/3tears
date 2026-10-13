@@ -12,12 +12,14 @@ from collections import Counter
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
-from packages.evals.tests.stored_models import doc_type_of, stored_models
+from packages.evals.tests.stored_models import doc_type_of, stored_models, stored_sample
 from threetears.evals.schema import DOC_TYPE_FACTS, DocTypeFacts
 from threetears.evals.schema.base import CoreDocumentModel
-from threetears.evals.schema.models import EVAL_DOC_TYPES
-from threetears.evals.schema.versioning import CORE_DOC_TYPES, REGENERABLE_SCHEMA_VERSION
+from threetears.evals.schema import models as schema_models
+from threetears.evals.schema.models import EVAL_DOC_TYPES, EvalCassette
+from threetears.evals.schema.versioning import CASSETTE_SCHEMA_VERSION, CORE_DOC_TYPES, REGENERABLE_SCHEMA_VERSION
 
 
 def test_every_stored_model_s_doc_type_is_registered_exactly_once() -> None:
@@ -42,7 +44,43 @@ def test_a_type_is_kept_exactly_when_its_model_is_on_the_core_base(model: Any) -
         assert issubclass(model, CoreDocumentModel)
     else:
         assert not issubclass(model, CoreDocumentModel)
+        assert model.model_fields["schema_version"].default in {REGENERABLE_SCHEMA_VERSION, CASSETTE_SCHEMA_VERSION}
+
+
+def _regenerable_models() -> list[Any]:
+    return [model for model in stored_models() if DOC_TYPE_FACTS[doc_type_of(model)].lifecycle == "regenerable"]
+
+
+@pytest.mark.parametrize("model", _regenerable_models(), ids=lambda model: model.__name__)
+def test_the_cassette_alone_is_written_under_the_cassette_version(model: Any) -> None:
+    """The two regenerable version spaces stay apart: the cassette carries one constant, every other model the other."""
+    if model is EvalCassette:
+        assert model.model_fields["schema_version"].default == CASSETTE_SCHEMA_VERSION
+    else:
         assert model.model_fields["schema_version"].default == REGENERABLE_SCHEMA_VERSION
+
+
+@pytest.mark.parametrize("model", _regenerable_models(), ids=lambda model: model.__name__)
+def test_each_regenerable_bump_refuses_its_own_space_and_no_other(model: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An analysis bump must never refuse a recorded corpus, nor a cassette bump an analysis.
+
+    A cassette is re-captured by calling the third-party tools again, so it reads against
+    ``CASSETTE_SCHEMA_VERSION`` and nothing else does. Each constant is moved in turn, to a number neither space
+    uses, and a stored document reads exactly when the constant it is governed by did not move: so a cassette typed
+    ``SchemaVersion``, or an analysis typed ``CassetteSchemaVersion``, is named here whatever the two numbers are.
+    """
+    document = stored_sample(model)
+    unused = max(REGENERABLE_SCHEMA_VERSION, CASSETTE_SCHEMA_VERSION) + 1
+    governs = "CASSETTE_SCHEMA_VERSION" if model is EvalCassette else "REGENERABLE_SCHEMA_VERSION"
+
+    for constant in ("REGENERABLE_SCHEMA_VERSION", "CASSETTE_SCHEMA_VERSION"):
+        with monkeypatch.context() as bumped:
+            bumped.setattr(schema_models, constant, unused)
+            if constant == governs:
+                with pytest.raises(ValidationError, match=f"v{document['schema_version']}"):
+                    model.from_dict(document)
+            else:
+                assert model.from_dict(document).schema_version == document["schema_version"]
 
 
 def test_every_tombstone_suppresses_a_registered_type_sharing_its_facts() -> None:

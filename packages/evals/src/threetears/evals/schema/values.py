@@ -20,10 +20,11 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from threetears.evals.schema.base import CoreShapeModel
 from threetears.evals.schema.hashing import bytes_digest, canonical_digest
 
 
-class NominalScale(BaseModel):
+class NominalScale(CoreShapeModel):
     """Unordered categories. Two levels are different, and neither is larger."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -31,7 +32,7 @@ class NominalScale(BaseModel):
     kind: Literal["nominal"] = "nominal"
 
 
-class OrdinalScale(BaseModel):
+class OrdinalScale(CoreShapeModel):
     """Ordered but unspaced — ``small`` / ``medium`` / ``large``.
 
     ``rank`` orders the levels and says nothing about the distance between them, which is the
@@ -44,7 +45,7 @@ class OrdinalScale(BaseModel):
     rank: int = Field(description="Position in the host's ordering. Comparable within one axis only.")
 
 
-class IntervalScale(BaseModel):
+class IntervalScale(CoreShapeModel):
     """A real number with real spacing — ``0.4``, ``15``, ``2000ms``."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -70,7 +71,7 @@ _NOT_THIS_KIND = b"\x00not a run of kind "
 _NOT_THIS_KIND_DISPLAY = ("(not a ", " run)")
 
 
-class SweepableValue(BaseModel):
+class SweepableValue(CoreShapeModel):
     """One level of one swept input: what it *is*, what to call it, and what kind of axis it is on.
 
     R9 requires identity to be **content-addressed** — a value joins across observations by what

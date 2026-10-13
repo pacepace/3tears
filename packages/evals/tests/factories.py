@@ -347,7 +347,13 @@ def make_eval_trace(**overrides: Any) -> EvalTrace:
     return EvalTrace(**defaults)
 
 
-def minimal_declaration(*, control: str | None = None, axis_id: str | None = None) -> CampaignDesign:
+def minimal_declaration(
+    *,
+    control: str | None = None,
+    control_levers: dict[str, SweepableValue] | None = None,
+    control_identity_version: int | None = None,
+    axis_id: str | None = None,
+) -> CampaignDesign:
     """The smallest valid ``CampaignDesign``, optionally carrying a control variant key.
 
     Takes a key VERBATIM. Where the point is a control an observation actually carries, pass the
@@ -356,6 +362,10 @@ def minimal_declaration(*, control: str | None = None, axis_id: str | None = Non
 
     Args:
         control: The declared control variant key, or None.
+        control_levers: The control's pre-image, as ``control_from_run_id`` records it, or None for a
+            typed key.
+        control_identity_version: The predicate the key was computed under; None lets the
+            declaration date it with this build's, as it dates any key typed without one.
         axis_id: The axis to declare. Defaults to the candidate model, the one lever every host
             declares.
 
@@ -365,6 +375,8 @@ def minimal_declaration(*, control: str | None = None, axis_id: str | None = Non
     return CampaignDesign(
         axes=[SweptAxis(axis_id=axis_id or CANDIDATE_MODEL_LEVER, values=[SweepableValue.of("glm", display="GLM")])],
         control=control,
+        control_levers=control_levers,
+        control_identity_version=control_identity_version,
         held_fixed=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
     )
 

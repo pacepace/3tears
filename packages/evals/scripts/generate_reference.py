@@ -138,10 +138,15 @@ def api_section() -> Iterator[str]:
         items: dict[str, list[Item]] = {}
         again: list[tuple[str, str]] = []
         for name, obj in ((n, o) for r, n, o in names if r == root):
-            if isinstance(obj, (type, types.FunctionType)) and id(obj) in first_root:
+            # A class or function exported under its own name is one object however many roots export it, and is
+            # described once. One bound to another name (``UsageRole = str``) is an alias of it, which says what
+            # the name means, so it is described where it is exported rather than collapsed into the first alias
+            # of the same type.
+            shared = isinstance(obj, (type, types.FunctionType)) and getattr(obj, "__name__", None) == name
+            if shared and id(obj) in first_root:
                 again.append((name, first_root[id(obj)]))
                 continue
-            if isinstance(obj, (type, types.FunctionType)):
+            if shared:
                 first_root[id(obj)] = root
             item = describe(root, name, obj)
             if not item.description:

@@ -1,7 +1,7 @@
 {
   "archived": false,
   "behavior": "conversation",
-  "created_at": "2026-10-13T01:41:35.677144+00:00",
+  "created_at": "2026-10-13T05:04:01.453175+00:00",
   "created_by": "test:fixture",
   "declared_design": {
     "axes": [
@@ -21,9 +21,20 @@
       }
     ],
     "bars": [],
-    "control": null,
+    "control": "ca7f329820cf3b5c33c650c26f43238834a75c4b1a85ca0987c2fe2b18b6f203",
+    "control_identity_version": 24,
+    "control_levers": {
+      "model": {
+        "content_hash": "86c00dfccfbdc638d7620f51ba7a42dea4151c6fb042b1763f12d6e1e6321d81",
+        "display": "GLM",
+        "raw": null,
+        "scale": {
+          "kind": "nominal"
+        }
+      }
+    },
     "crossing": null,
-    "declared_at": "2026-10-13T01:41:35.677096+00:00",
+    "declared_at": "2026-10-13T05:04:01.453108+00:00",
     "declared_by": "",
     "guardrail_margins": [],
     "held_fixed": {
@@ -39,9 +50,10 @@
   },
   "description": "",
   "doc_type": "eval_campaign",
-  "id": "01a132ec-173d-704f-bbd7-8f3c74f437b0",
+  "id": "01a133a5-6bad-73f4-947f-8a94a69589af",
   "name": "campaign",
   "run_ids": [],
+  "schema_minor": 0,
   "schema_version": 14,
   "scope_id": "uni-1",
   "subject_id": "subject-1",

@@ -41,8 +41,9 @@ from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
 
 from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_validator
 
-from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.schema.base import CoreShapeModel, EvalBaseModel, EvalDocumentModel
 from threetears.evals.kernel.errors import RefusedInput
+from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key
 from threetears.evals.kernel.covariates import COVARIATE_KEYS
 from threetears.evals.kernel.host.bars import Bar, BarRegistrationError, contradicts_descriptor, no_better_end
 from threetears.evals.schema.values import Scale, SweepableValue
@@ -78,7 +79,7 @@ if TYPE_CHECKING:
 _VARIANT_KEY_LENGTH = 64
 
 
-class SweptAxis(EvalDocumentModel):
+class SweptAxis(EvalDocumentModel, CoreShapeModel):
     """One axis this campaign set out to vary, and the levels it meant to compare.
 
     ``axis_id`` must be something the campaign's host will accept as an axis — checked at campaign
@@ -194,7 +195,7 @@ class SweptAxis(EvalDocumentModel):
         return addressed
 
 
-class BarOverride(EvalDocumentModel):
+class BarOverride(EvalDocumentModel, CoreShapeModel):
     """A standard this campaign holds itself to, tighter than the registered one.
 
     Tighter only. A campaign that could lower the bar it is judged against is not being judged;
@@ -231,7 +232,7 @@ class BarOverride(EvalDocumentModel):
     )
 
 
-class GuardrailMargin(EvalDocumentModel):
+class GuardrailMargin(EvalDocumentModel, CoreShapeModel):
     """How much worse than the control an arm may be on one judged guardrail, and still hold it.
 
     A measure's margin is its descriptor's ``materiality_threshold``, declared by the host. A judged dimension has
@@ -258,7 +259,7 @@ class GuardrailMargin(EvalDocumentModel):
     )
 
 
-class Question(EvalDocumentModel):
+class Question(EvalDocumentModel, CoreShapeModel):
     """Something this campaign is trying to find out.
 
     Questions live on the campaign; **resolutions live on the analysis**, because a resolution
@@ -356,7 +357,7 @@ def exploratory_reading(axis: MeritAxis | None, questions: Sequence[Question]) -
     return not any(axis_in_question_scope(axis, question.merit_axes) for question in questions)
 
 
-class ControlDeclaration(EvalDocumentModel):
+class ControlDeclaration(EvalDocumentModel, CoreShapeModel):
     """What held still, stated — because an absent control is a fact, not a null.
 
     Two independent axes, and the engine must not collapse them. ``stimulus`` says whether a
@@ -401,7 +402,7 @@ class ControlDeclaration(EvalDocumentModel):
         return self
 
 
-class CampaignDesign(EvalDocumentModel):
+class CampaignDesign(EvalDocumentModel, CoreShapeModel):
     """The declaration: what this campaign set out to learn, before it learned anything.
 
     Operator input throughout. Every field here is a statement of intent, and none of it is
@@ -411,6 +412,22 @@ class CampaignDesign(EvalDocumentModel):
     ``control`` is a **variant key**, not a run id. Curating the control *run* out of a campaign
     no longer destroys the design if another observation carries the same variant — a state that
     previously needed its own field because it was a live failure.
+
+    **The key is stored beside its pre-image, as every stored variant key is.** A run keeps
+    ``variant_levers`` beside the keys its results carry, because a digest says which stack and
+    refuses to say what that stack was, and the predicate computing it is designed to move. The
+    control is a key of the same kind on a document that is kept forever, so it keeps the same two
+    things beside it: ``control_levers``, the map it was digested from, and
+    ``control_identity_version``, the predicate that digested it. A read resolves the control through
+    :func:`resolve_declared_control`, never through ``control`` directly, to the keys that name its arm
+    under this build — the stored one, and the one its map re-keys to — so a control declared under one
+    predicate still names its arm's cells under the next.
+
+    **The pre-image is the server's, never the caller's.** ``control_levers`` and
+    ``control_identity_version`` are recorded when the control is addressed from a run, and carried — or
+    cleared, with the key dated this build's — when a typed declaration keeps or changes the key; an
+    authoring surface refuses either one sent with a value it would not store
+    (:func:`~threetears.evals.analysis.campaigns.create_campaign`, ``update_campaign``).
 
     ``held_fixed`` says what held still while the campaign ran.
     """
@@ -458,7 +475,37 @@ class CampaignDesign(EvalDocumentModel):
             "authored in. None = no control declared, and the analysis says so rather than "
             "electing one. NOT 'baseline', which is temporal: a control is contemporaneous, same "
             "apparatus and same campaign. Not `held_fixed` below: this is WHICH CELL is the "
-            "reference; that is WHAT HELD STILL while the campaign ran."
+            "reference; that is WHAT HELD STILL while the campaign ran. Read through "
+            "`control_identity_version` and `control_levers` beside it, never alone."
+        ),
+    )
+    control_levers: dict[str, SweepableValue] | None = Field(
+        default=None,
+        description=(
+            "The control's PRE-IMAGE: the resolved lever map `control` was digested from, recorded from the run "
+            "`control_from_run_id` named — that run's own `variant_levers`, kept here for the reason the run keeps "
+            "them beside its key. A key says which contestant stack and refuses to say what that stack WAS, and "
+            "the predicate computing it is designed to move. So when this build keys variants under a predicate "
+            "other than `control_identity_version`, the control matches the key this map re-keys to as well as the "
+            "stored one: its arm is the cells under this build's predicate wherever any carry the re-keyed key, "
+            "and its cells under the earlier predicate are named beside it (`RealizedDesign.earlier_control`), "
+            "never contrasted and never stale while they are here; and "
+            "whatever happens to the key, the map still says which levels the control ran. Server-owned: "
+            "recorded from the run, carried while a typed declaration keeps the key, never taken from a caller. "
+            "None = the key was TYPED, not addressed from a run (or addressed from one whose observations carry a "
+            "key no map reproduces), so it names only the cells stamped under its own predicate: where none "
+            "carries it under another predicate, the analysis says the control cannot be resolved, and the "
+            "remedy is to re-address it from a run with `control_from_run_id` on campaign_update."
+        ),
+    )
+    control_identity_version: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Which key-derivation predicate (`IDENTITY_VERSION`) `control` was computed under, stored beside the "
+            "key as every stored variant key's version is. Server-owned, as `control_levers` is: a typed key "
+            "is dated by the build that accepts it, the only predicate it can have been read under, and keeps the "
+            "stored date while an update leaves it unchanged. None exactly when `control` is."
         ),
     )
     intended_repetitions: int | None = Field(
@@ -575,6 +622,72 @@ class CampaignDesign(EvalDocumentModel):
                 "with `control_from_run_id` on campaign_create or campaign_update, and the key is resolved for you"
             )
         return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def _a_typed_control_is_dated_by_the_build_accepting_it(cls, data: Any) -> Any:
+        """Stamp the identity version beside a control that arrives without one.
+
+        Every stored variant key carries the predicate that computed it, and the control is no
+        exception — without it a read cannot tell a key it can match from one a later predicate
+        has orphaned. A key typed by hand, or a declaration authored with its control and nothing
+        else, states no version; the only predicate it can have been read under is the one of the
+        build accepting it, so that is the version it is given. A version that IS stated is kept as
+        stated, which is what a stored declaration's read needs. An authoring surface never lets a
+        caller state one (:func:`~threetears.evals.analysis.campaigns.update_campaign` carries the
+        stored date of a key it keeps, and refuses any other).
+
+        Args:
+            data: The authored or stored fields, before validation.
+
+        Returns:
+            The fields, with ``control_identity_version`` stamped where a control has none.
+        """
+        if (
+            isinstance(data, Mapping)
+            and data.get("control") is not None
+            and data.get("control_identity_version") is None
+        ):
+            return {**data, "control_identity_version": IDENTITY_VERSION}
+        return data
+
+    @model_validator(mode="after")
+    def _the_control_s_pre_image_is_its_own(self) -> CampaignDesign:
+        """The control's lever map and version stand only beside its key, and the map digests to it.
+
+        The map is checked against the key only under this build's predicate: a map recorded under
+        another one digested to the key by THAT predicate's arithmetic, and holding it to this one
+        would refuse every control declared before a bump — the exact document the map is kept
+        to rescue.
+
+        Returns:
+            The validated design.
+
+        Raises:
+            ValueError: A lever map or an identity version is given with no control, so it
+                describes a key nobody declared; or the map, under this build's predicate, does
+                not digest to the control, so it is some other arm's pre-image and re-keying from
+                it would move the control onto that arm.
+        """
+        if self.control is None:
+            if self.control_levers is not None or self.control_identity_version is not None:
+                raise ValueError(
+                    "`control_levers` and `control_identity_version` describe the declared control's key, and this "
+                    "design declares no control — clear them with it, or name the control "
+                    "(`control_from_run_id`)"
+                )
+            return self
+        if (
+            self.control_levers is not None
+            and self.control_identity_version == IDENTITY_VERSION
+            and compute_variant_key(self.control_levers) != self.control
+        ):
+            raise ValueError(
+                "`control_levers` does not digest to `control` under this build's identity predicate, so it is "
+                "not the control's pre-image — address the control from a run (`control_from_run_id`), which "
+                "records the two together"
+            )
+        return self
 
     @model_validator(mode="after")
     def _axes_and_bars_are_keyed_too(self) -> CampaignDesign:
@@ -714,6 +827,134 @@ class CampaignDesign(EvalDocumentModel):
         """
         superseded = {q.supersedes for q in self.questions if q.supersedes}
         return [q for q in self.questions if q.retired_at is None and q.id not in superseded]
+
+
+#: How a declared control's keys were arrived at. ``undeclared`` — the design names no control. ``current`` — the
+#: key was computed under this build's predicate, and it is the one key. ``rekeyed`` — it was computed under another
+#: predicate and the stored lever map re-keys it, so the control matches the recomputed key and the stored one.
+#: ``unrekeyable`` — it was computed under another predicate with no lever map beside it, so the stored key is the
+#: only one, and no run this build stamps can carry it.
+ControlSource = Literal["undeclared", "current", "rekeyed", "unrekeyable"]
+
+
+class ResolvedControl(EvalBaseModel):
+    """A declared control as the SET of keys that name its arm under this build — a value, never written back.
+
+    A set, not one key, because stamped keys are never re-derived: a cell keeps the key it was stamped with
+    under the predicate it ran under. A control declared under an older predicate therefore matches TWO keys
+    once the predicate moves — the stored key, which the cells stamped under the older predicate still carry,
+    and the key its lever map re-keys to, which the cells stamped under this one carry. Matching only the
+    re-keyed one would read a campaign holding only old cells as stale. Which of them is the control ARM in a
+    given campaign is a question about its cells, so it is answered where the cells are (:meth:`matched`,
+    from ``_campaign_design``): the first one any cell carries, in :attr:`variant_keys` order. A campaign
+    carrying both keeps ONE control arm, the re-keyed cells, and names the others as the control under the
+    earlier predicate (``RealizedDesign.earlier_control``) — never pooled into the control's numbers, which
+    would mix two predicates' keys, and never contrasted with it, which would read the control against
+    itself.
+
+    Returned rather than assigned for the reason every identity read in
+    :mod:`~threetears.evals.kernel.identity` is: a key recomputed at read and saved onto the campaign
+    would be indistinguishable from the one the operator declared, and the next save would turn a
+    read into a backfill.
+    """
+
+    variant_keys: list[str] = Field(
+        description=(
+            "Every key that names the control's arm under this build, preferred first: the key its lever map "
+            "re-keys to under this build's predicate (when the stored key was computed under another and the "
+            "recomputation differs), then the stored key as declared — always, since cells stamped under its "
+            "predicate carry it for good. Empty when the design declares no control."
+        )
+    )
+    identity_version: int | None = Field(
+        description=(
+            "The predicate the stored key was computed under, which is what says how far behind it is. None "
+            "when no control is declared."
+        )
+    )
+    source: ControlSource = Field(description="How the keys were arrived at — see `ControlSource`.")
+    stale_disclosure: str | None = Field(
+        default=None,
+        description=(
+            "Set exactly when the control is `unrekeyable`: what a reader is told if no cell of the campaign "
+            "carries the stored key — that the control cannot be resolved, the two predicates that say why, and "
+            "the remedy. Never said while a cell does carry it: such a control resolves, to the cells stamped "
+            "under its own predicate."
+        ),
+    )
+
+    def matched(self, carried: Collection[str]) -> str | None:
+        """The key that names the control's arm among ``carried`` — the first of :attr:`variant_keys` one carries.
+
+        Args:
+            carried: The variant keys the campaign's cells carry.
+
+        Returns:
+            The control's key in this campaign, or None when no cell carries any key that names it.
+        """
+        return next((key for key in self.variant_keys if key in carried), None)
+
+
+def resolve_declared_control(design: CampaignDesign | None) -> ResolvedControl:
+    """The keys that name a campaign's declared control under this build — the one place that is decided.
+
+    The control is a variant key, and keys are never re-derived at read: a cell keeps the key it was
+    stamped with, and a run survives an :data:`~threetears.evals.kernel.identity.IDENTITY_VERSION` bump
+    because it keeps its lever map beside it. The control keeps its map too (``control_levers``), and
+    this is where it is read:
+
+    - **The same predicate:** the key as stored, alone. Nothing moved, so nothing is recomputed.
+    - **Another predicate, with a map:** the key recomputed from the map
+      (:func:`~threetears.evals.kernel.identity.compute_variant_key`) — the key a run of the same arm
+      launched on this build carries — AND the stored key, which the arm's cells stamped under the older
+      predicate still carry. A campaign holding only old cells matches the stored key and is never stale;
+      one holding new cells has them as its control arm, with any old cells disclosed beside it.
+    - **Another predicate, without one:** the stored key, alone (``unrekeyable``). It still names every cell
+      stamped under its own predicate, which is the control as it ran; what it cannot name is a run this
+      build stamps. When no cell of the campaign carries it, the bundle says so with the remedy
+      (:attr:`ResolvedControl.stale_disclosure`, read as ``RealizedDesign.control_excluded == "stale"``),
+      rather than reading the campaign as one that declared no control.
+
+    **Recomputing replays the map's arithmetic, not its names or its composition.** The map records the
+    levers as the host named and resolved them when the control was declared. It re-keys the control across
+    a change to how a map is DIGESTED; it does not follow a host that renames a lever, a kind or an overlay
+    field, nor an engine that adds a lever to every map, because the new runs' maps differ from the stored
+    one and no recomputation of the stored one reaches them — just as those runs share no key with the old
+    runs of the same arm. What the map does across such a change is keep the control DESCRIBED (which levels
+    it ran is on the declaration, in the bundle and on every analysis of it), which is what an operator
+    re-addressing it from a run of the changed arm needs.
+
+    A control with no stated version is read as this build's: validation stamps one on every
+    declaration, so an undated key exists only as an in-process copy this build made, and this build's
+    predicate is the only one it can be under.
+
+    Args:
+        design: The declaration, or None for a campaign that declares none.
+
+    Returns:
+        The resolved control.
+    """
+    if design is None or design.control is None:
+        return ResolvedControl(variant_keys=[], identity_version=None, source="undeclared")
+    stored = design.control_identity_version if design.control_identity_version is not None else IDENTITY_VERSION
+    if stored == IDENTITY_VERSION:
+        return ResolvedControl(variant_keys=[design.control], identity_version=stored, source="current")
+    if design.control_levers is not None:
+        rekeyed = compute_variant_key(design.control_levers)
+        keys = [design.control] if rekeyed == design.control else [rekeyed, design.control]
+        return ResolvedControl(variant_keys=keys, identity_version=stored, source="rekeyed")
+    return ResolvedControl(
+        variant_keys=[design.control],
+        identity_version=stored,
+        source="unrekeyable",
+        stale_disclosure=(
+            f"The declared control {design.control} matches no observation here and cannot be resolved: it is a "
+            f"bare variant key computed under identity predicate v{stored}, this build keys variants under "
+            f"v{IDENTITY_VERSION}, and no lever map was recorded beside it to re-key it from, so no run this build "
+            "stamps can carry it and every comparison here is marginal. Re-address the control from a run of its "
+            "arm (control_from_run_id on campaign_update), which records the lever map beside the key."
+        ),
+    )
 
 
 def reconcile_question_edits(stored: list[Question], incoming: list[Question]) -> list[Question]:
@@ -1392,8 +1633,10 @@ __all__ = [
     "BarOverride",
     "CampaignDesign",
     "ControlDeclaration",
+    "ControlSource",
     "GuardrailMargin",
     "Question",
+    "ResolvedControl",
     "SweptAxis",
     "DesignRefused",
     "UndeclarableAxisError",
@@ -1405,4 +1648,5 @@ __all__ = [
     "reconcile_question_edits",
     "refuse_an_undeclarable_design",
     "resolve_bar_name",
+    "resolve_declared_control",
 ]

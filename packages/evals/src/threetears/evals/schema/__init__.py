@@ -20,7 +20,7 @@ being exported from a public root. Code inside the package imports its own modul
 
 from __future__ import annotations
 
-from threetears.evals.schema.base import CoreDocumentModel, EvalBaseModel, EvalDocumentModel
+from threetears.evals.schema.base import CoreDocumentModel, CoreShapeModel, EvalBaseModel, EvalDocumentModel
 from threetears.evals.schema.call_ledger import PASS_ACTION, PASS_TOOL, CallLedger, RecordedCall, is_pass
 from threetears.evals.schema.doc_types import DOC_TYPE_FACTS, DocLifecycle, DocOrigin, DocTypeFacts
 from threetears.evals.schema.completion import (
@@ -48,6 +48,22 @@ from threetears.evals.schema.judge_attribution import (
     JudgeAttributionState,
 )
 from threetears.evals.schema.models import (
+    KnownModelRoleOrigin,
+    KnownRoleModelOrigin,
+    KnownCostCapOrigin,
+    KnownMeteredCallOrigin,
+    KnownCellTimeoutOrigin,
+    KnownReasoningEffort,
+    KnownUsageRole,
+    KnownSimulatorPurpose,
+    CELL_TIMEOUT_ORIGINS,
+    COST_CAP_ORIGINS,
+    METERED_CALL_ORIGINS,
+    MODEL_ROLE_ORIGINS,
+    REASONING_EFFORTS,
+    ROLE_MODEL_ORIGINS,
+    SIMULATOR_PURPOSES,
+    USAGE_ROLES,
     ApparatusSettingValue,
     CANDIDATE_SPEAKER,
     DEFAULT_LAUNCH_K_RUNS,
@@ -145,7 +161,14 @@ from threetears.evals.schema.models import (
     UsageRole,
     VariationAxis,
 )
-from threetears.evals.schema.out_of_run_spend import OutOfRunOutcome, OutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
+from threetears.evals.schema.out_of_run_spend import (
+    OUT_OF_RUN_PURPOSES,
+    KnownOutOfRunPurpose,
+    OutOfRunOutcome,
+    OutOfRunPurpose,
+    OutOfRunSpend,
+    OutOfRunSpendStore,
+)
 from threetears.evals.schema.prose import PROSE_SCHEMA_KEY
 from threetears.evals.schema.schema_nesting import NestedSchema, nested_schemas
 from threetears.evals.schema.store_port import (
@@ -172,7 +195,7 @@ from threetears.evals.schema.job_lease import (
     LostField,
     with_fault,
 )
-from threetears.evals.schema.refusal import REFUSAL_KINDS, JobRefusal, RefusalField, RefusalKind
+from threetears.evals.schema.refusal import REFUSAL_KINDS, JobRefusal, KnownRefusalKind, RefusalField, RefusalKind
 from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.schema.traces import CellIdentity, CellTrace, TraceSink
 from threetears.evals.schema.values import (
@@ -186,16 +209,38 @@ from threetears.evals.schema.values import (
 )
 from threetears.evals.schema.world_events import Firings, WorldEvent, WorldEventCause, WorldEventKind
 from threetears.evals.schema.versioning import (
+    CASSETTE_SCHEMA_VERSION,
     CORE_ADDRESSING_FIELDS,
     CORE_BASELINE_VERSION,
     CORE_DOC_TYPES,
+    CORE_SCHEMA_MINOR,
     CORE_SCHEMA_VERSION,
     CORE_UPGRADERS,
+    MINOR_ADDITIVITY_SENTENCE,
     REGENERABLE_SCHEMA_VERSION,
     CoreUpgrader,
 )
 
 __all__ = [
+    "KnownModelRoleOrigin",
+    "KnownRoleModelOrigin",
+    "KnownCostCapOrigin",
+    "KnownMeteredCallOrigin",
+    "KnownCellTimeoutOrigin",
+    "KnownReasoningEffort",
+    "KnownUsageRole",
+    "KnownSimulatorPurpose",
+    "KnownOutOfRunPurpose",
+    "KnownRefusalKind",
+    "CELL_TIMEOUT_ORIGINS",
+    "COST_CAP_ORIGINS",
+    "METERED_CALL_ORIGINS",
+    "MODEL_ROLE_ORIGINS",
+    "REASONING_EFFORTS",
+    "ROLE_MODEL_ORIGINS",
+    "SIMULATOR_PURPOSES",
+    "USAGE_ROLES",
+    "OUT_OF_RUN_PURPOSES",
     "StoreClock",
     "CancelRequestedAtField",
     "CancelRequestReasonField",
@@ -222,13 +267,17 @@ __all__ = [
     "DocOrigin",
     "DocTypeFacts",
     "WorldPlacement",
+    "CASSETTE_SCHEMA_VERSION",
     "CORE_ADDRESSING_FIELDS",
     "CORE_BASELINE_VERSION",
     "CORE_DOC_TYPES",
+    "CORE_SCHEMA_MINOR",
     "CORE_SCHEMA_VERSION",
     "CORE_UPGRADERS",
+    "MINOR_ADDITIVITY_SENTENCE",
     "REGENERABLE_SCHEMA_VERSION",
     "CoreDocumentModel",
+    "CoreShapeModel",
     "CoreUpgrader",
     "JSON_OBJECT_RESPONSE_FORMAT",
     "MODEL_DEFAULT_TEMPERATURE",

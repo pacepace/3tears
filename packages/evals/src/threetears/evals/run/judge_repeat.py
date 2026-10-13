@@ -52,7 +52,7 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
-from threetears.evals.schema.out_of_run_spend import OutOfRunPurpose
+from threetears.evals.schema.out_of_run_spend import KnownOutOfRunPurpose
 from threetears.evals.run.job_work import EvalActionJob, JobWork, action_job_work
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
@@ -167,7 +167,7 @@ class BudgetedJudgeClient:
     """
 
     def __init__(
-        self, inner: BoundCompletionClient, budget: OutOfRunBudget, purpose: OutOfRunPurpose = "judge"
+        self, inner: BoundCompletionClient, budget: OutOfRunBudget, purpose: KnownOutOfRunPurpose = "judge"
     ) -> None:
         """Wrap ``inner`` so its calls are made through ``budget``.
 
@@ -178,7 +178,7 @@ class BudgetedJudgeClient:
         """
         self._inner = inner
         self._budget = budget
-        self._purpose: OutOfRunPurpose = purpose
+        self._purpose: KnownOutOfRunPurpose = purpose
         self._pending: list[AdmittedCall] = []
 
     @property

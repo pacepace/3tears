@@ -38,10 +38,10 @@ PASS_TOOL = "__engine__"
 #: The action half of the reserved deliberate-pass entry (``__engine__.pass``).
 PASS_ACTION = "pass"
 
-from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.schema.base import CoreShapeModel, EvalDocumentModel
 
 
-class RecordedCall(EvalDocumentModel):
+class RecordedCall(EvalDocumentModel, CoreShapeModel):
     """One call a candidate made that succeeded — or, in a control end state, one it is stated to have made."""
 
     tool: str = Field(min_length=1, description="The tool the call went to, as the host's tools name it.")
@@ -49,7 +49,7 @@ class RecordedCall(EvalDocumentModel):
     params: dict[str, Any] = Field(default_factory=dict, description="The parameters the call passed.")
 
 
-class CallLedger(EvalDocumentModel):
+class CallLedger(EvalDocumentModel, CoreShapeModel):
     """The calls one cell's candidate made that succeeded, across every tool, in recorded order.
 
     One ledger across tools rather than one per tool, because the goal language's ordering

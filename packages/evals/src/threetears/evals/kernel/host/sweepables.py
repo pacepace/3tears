@@ -1431,10 +1431,14 @@ def _max_cost_usd(run: EvalRun, _results: Sequence[EvalResult]) -> float | str |
     Returns:
         :data:`UNCAPPED_SPEND` when the run records it ran uncapped, whatever number it also carries,
         since none bound it; else ``max_cost_usd``, which is ``None`` only for a run whose writer
-        recorded no ceiling and no origin — the one blank this dimension cannot decide.
+        recorded no ceiling and no origin — the one blank this dimension cannot decide. An origin a newer
+        build recorded and this one does not know reads the number too: a new origin never means that
+        nothing bound the run (that would be a major, not an open vocabulary's minor), so the number is
+        the ceiling, and the run's summary names the origin.
     """
     if run.max_cost_usd_origin == "uncapped":
         return UNCAPPED_SPEND
+    # Every other origin reads the number: ``chosen``, ``inherited``, and one a newer build recorded.
     return run.max_cost_usd
 
 
@@ -1662,6 +1666,13 @@ def _candidate_model_departs(run: EvalRun, _results: Sequence[EvalResult]) -> bo
         return False
     origin = (run.model_role_provenance or {}).get("candidate")
     if origin is None:
+        return None
+    # Imported here: the models module imports from this package, so a module-level import would cycle.
+    from threetears.evals.schema.models import ROLE_MODEL_ORIGINS
+
+    if origin not in ROLE_MODEL_ORIGINS:
+        # An origin a newer build recorded: whether it moved the model is that build's to say, and reading
+        # anything but ``inherited`` as moved would claim a departure nobody recorded.
         return None
     return origin != "inherited"
 

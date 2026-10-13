@@ -45,7 +45,7 @@ from pydantic import Field, field_validator
 
 from threetears.evals.kernel.job_leases import LeasedJobKind
 from threetears.evals.run.job_work import JobOutcome, JobRecorder, JobWork, end_record, leased_job_kind
-from threetears.evals.schema.base import CoreDocumentModel, EvalBaseModel
+from threetears.evals.schema.base import CoreDocumentModel, CoreShapeModel, EvalBaseModel
 from threetears.evals.schema.job_lease import (
     CancelRequestedAtField,
     CancelRequestReasonField,
@@ -76,6 +76,7 @@ from threetears.evals.run.rejudge import (
     judged_template,
     recorded_judge_pins,
     reproducible_judge_inputs,
+    request_settings_drift,
 )
 from threetears.evals.run.runner import build_judge_context, judge_dims, judge_requests
 from threetears.evals.schema.logs import get_logger
@@ -97,7 +98,7 @@ _WRITE_ATTEMPTS = 3
 DEFAULT_SECOND_JUDGE_SEED = 0
 
 
-class SecondJudgeSkip(EvalBaseModel):
+class SecondJudgeSkip(EvalBaseModel, CoreShapeModel):
     """A result of the run that the second judge is not asked about, and why."""
 
     result_id: str
@@ -135,7 +136,7 @@ class SecondJudgeEstimate(EvalBaseModel):
     skipped: list[SecondJudgeSkip]
 
 
-class SecondJudgeReport(EvalBaseModel):
+class SecondJudgeReport(EvalBaseModel, CoreShapeModel):
     """What a second judge's pass did, what it spent apart from the candidate's cost, and what it read.
 
     Attributes:
@@ -247,8 +248,8 @@ def _collect(
     recorded_judge_pins(run, request_settings="as_recorded")
     if run.judge_request_settings != JUDGE_REQUEST_SETTINGS:
         raise ValidationFailedError(
-            f"run '{run_id}' was judged with request settings {run.judge_request_settings!r} and a judge call now "
-            f"sends {JUDGE_REQUEST_SETTINGS!r}; the second judge would differ from the first by more than it names",
+            f"run '{run_id}' {request_settings_drift(run.judge_request_settings)}; the second judge would differ "
+            "from the first by more than it names",
             remedy=RELAUNCH_TO_REJUDGE,
         )
     if _same_judge(run, judge):

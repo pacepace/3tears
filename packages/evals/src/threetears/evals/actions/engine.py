@@ -23,7 +23,7 @@ from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller, 
 from threetears.evals.schema import EvalRunStatus
 from threetears.evals.kernel import ResultOutcome, ValidationFailedError
 from threetears.evals.schema.base import EvalBaseModel
-from threetears.evals.schema import OutOfRunPurpose
+from threetears.evals.schema import KnownOutOfRunPurpose
 from threetears.evals.ops import (
     SweepArguments,
     SweepSettings,
@@ -586,10 +586,11 @@ class ScopeOutOfRunSpendParams(EvalBaseModel):
     """``scope_out_of_run_spend`` — what the engine spent outside any run, narrowed or not."""
 
     purpose_filter: Annotated[
-        OutOfRunPurpose | None,
+        KnownOutOfRunPurpose | None,
         Field(
             description="Only calls made for this purpose: variation (a launch's case generation), proposer (a "
-            "rubric draft) or analysis (an analysis generation)."
+            "rubric draft), analysis (an analysis generation), judge (a judge's repeat or temperature comparison) "
+            "or second_judge (a second judge's pass)."
         ),
     ] = None
     launch_group_filter: Annotated[

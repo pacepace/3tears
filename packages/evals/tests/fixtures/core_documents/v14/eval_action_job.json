@@ -2,14 +2,14 @@
   "action": "rubric_propose",
   "cancel_request_reason": null,
   "cancel_requested_at": null,
-  "created_at": "2026-10-13T01:41:35.675661+00:00",
+  "created_at": "2026-10-13T05:04:01.446145+00:00",
   "detail": null,
   "doc_type": "eval_action_job",
   "ended_at": "2026-10-11T00:00:00+00:00",
   "faults": [
     "job lease: its holder, process 0199a000-0000-7000-8000-000000000001, could not renew it for 60s, its whole lease, and stopped the job \u2014 the last renewal failed: StorageError: the store refused the write"
   ],
-  "id": "01a132ec-173b-737b-b61e-0efeb9500dfa",
+  "id": "01a133a5-6ba6-7376-a628-0493f60e52a2",
   "label": "",
   "lease": null,
   "lost": null,
@@ -19,6 +19,7 @@
     "draft": "tone"
   },
   "result_model": "Draft",
+  "schema_minor": 0,
   "schema_version": 14,
   "scope_id": "uni-1"
 }

@@ -123,9 +123,12 @@ from threetears.evals.kernel.declaration import (
     BarNameRefusal,
     BarOverride,
     ControlDeclaration,
+    ControlSource,
     GuardrailMargin,
     Question,
+    ResolvedControl,
     SweptAxis,
+    resolve_declared_control,
 )
 from threetears.evals.kernel.dsl import NOT_ESTABLISHED
 from threetears.evals.kernel.errors import (
@@ -360,6 +363,7 @@ from threetears.evals.kernel.surface import (
     ArmGuardrails,
     CellFacts,
     DecisionSurface,
+    EarlierControl,
     GuardrailCell,
     GuardrailCheck,
     GuardrailDecision,
@@ -387,6 +391,7 @@ from threetears.evals.kernel.usage_capture import (
 from threetears.evals.kernel.world_session import WorldSession, WorldSessionError
 
 __all__ = [
+    "EarlierControl",
     "EvalGenerationSlot",
     "generation_slot_id",
     "ANALYSIS_JOB",
@@ -513,6 +518,7 @@ __all__ = [
     "ConfidenceTier",
     "ConflictError",
     "ControlDeclaration",
+    "ControlSource",
     "CostCapReached",
     "CoverageLens",
     "Decision",
@@ -640,6 +646,7 @@ __all__ = [
     "Reading",
     "Recordable",
     "ReplayedDelivery",
+    "ResolvedControl",
     "ResolvedUsage",
     "ResultStore",
     "ResultCondition",
@@ -701,6 +708,7 @@ __all__ = [
     "count_substituted_deliveries",
     "derive_variant_identity",
     "resolve_context_identity",
+    "resolve_declared_control",
     "resolve_result_condition",
     "resolve_result_usage",
     "resolve_variant_identity",

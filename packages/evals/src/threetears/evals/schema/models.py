@@ -13,11 +13,15 @@ Four managed shapes carry an evaluation:
 Schema rule: every stored entity carries ``schema_version``, and a read is strict — an unknown field
 or a missing required one is refused, never coerced. The evidence core (the template, test case, run,
 result, trace, calibration rating, case set and the definitions with their tombstones here; the campaign,
-sweep and analysis attempt in the kernel) is kept: a stored read of an older core version upgrades it
-through registered upgraders, and a newer or pre-release version is refused. A regenerable document (the
+sweep and analysis attempt in the kernel) is kept: a stored read of an older core major upgrades it
+through registered upgraders, a newer major or a pre-release version is refused, and a newer minor of
+this build's major — additive by rule — is read, keeping what this build does not declare for the next
+write (:class:`~threetears.evals.schema.base.CoreShapeModel`, which every shape a core document embeds
+carries). A regenerable document (the
 cassette here; the analysis, insight and judge profile in the kernel) written under another version is
-refused and regenerated. Which is which is :data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`.
-:mod:`~threetears.evals.schema.versioning` holds both versions, their ledgers, and the rules.
+refused and regenerated; the cassette's version is its own, so an analysis change never refuses a corpus. Which is
+which is :data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`. :mod:`~threetears.evals.schema.versioning` holds
+the three versions, their ledgers, and the rules.
 """
 
 from __future__ import annotations
@@ -35,7 +39,6 @@ from typing import Annotated, Any, Final, Literal, NamedTuple, Self, get_args
 
 from pydantic import (
     AfterValidator,
-    BaseModel,
     ConfigDict,
     Field,
     PrivateAttr,
@@ -49,6 +52,8 @@ from pydantic import (
 
 from threetears.evals.schema.base import (
     CoreDocumentModel,
+    CoreShapeModel,
+    known_unless_newer_minor,
     EvalBaseModel,
     EvalDocumentModel,
     VerbatimJsonObject,
@@ -60,7 +65,11 @@ from threetears.evals.schema.hashing import bytes_digest, canonical_digest
 from threetears.evals.schema.goal_grammar import DSLError, extract_paths, parse, referenced_fires
 from threetears.evals.schema.external_spend import ExternalSpend
 from threetears.evals.schema.subject import SubjectSnapshot
-from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION, REGENERABLE_SCHEMA_VERSION
+from threetears.evals.schema.versioning import (
+    CASSETTE_SCHEMA_VERSION,
+    CORE_SCHEMA_VERSION,
+    REGENERABLE_SCHEMA_VERSION,
+)
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.schema.judge_attribution import JudgeAttributionSource, JudgeAttributionState, attribution_state
 from threetears.evals.schema.prose import ModelProse
@@ -101,6 +110,35 @@ def _current_schema_only(version: int) -> int:
 #: The ``schema_version`` field type of every regenerable stored document: defaulted to the current version on
 #: write, and refusing any other on read.
 SchemaVersion = Annotated[int, AfterValidator(_current_schema_only)]
+
+
+def _current_cassette_only(version: int) -> int:
+    """Refuse a cassette written under any cassette version but this build's.
+
+    The cassette's version space is its own (:data:`~threetears.evals.schema.versioning.CASSETTE_SCHEMA_VERSION`),
+    so a bump of the regenerable version, which every analysis shape change makes, leaves a recorded corpus readable.
+
+    Args:
+        version: The cassette's ``schema_version``.
+
+    Returns:
+        The version, unchanged.
+
+    Raises:
+        ValueError: ``version`` is not :data:`~threetears.evals.schema.versioning.CASSETTE_SCHEMA_VERSION`.
+    """
+    if version != CASSETTE_SCHEMA_VERSION:
+        raise ValueError(
+            f"this cassette was written under cassette format v{version} and this build reads cassette format "
+            f"v{CASSETTE_SCHEMA_VERSION} only; a cassette is never migrated across a format change: re-capture the "
+            "template (a new run with cassette_mode='capture', so a new corpus) and replay that corpus"
+        )
+    return version
+
+
+#: The ``schema_version`` field type of a cassette: defaulted to the current cassette version on write, and refusing
+#: any other on read. A version space apart from :data:`SchemaVersion`'s, so a corpus outlives an analysis bump.
+CassetteSchemaVersion = Annotated[int, AfterValidator(_current_cassette_only)]
 
 
 def _current_core_only(version: int) -> int:
@@ -192,7 +230,7 @@ def utc_now_iso() -> str:
 # =============================================================================
 
 
-class VariationAxis(EvalDocumentModel):
+class VariationAxis(EvalDocumentModel, CoreShapeModel):
     """One axis along which test cases vary for a template.
 
     Three generator types:
@@ -226,7 +264,7 @@ class VariationAxis(EvalDocumentModel):
     )
 
 
-class ActorPolicy(EvalDocumentModel):
+class ActorPolicy(EvalDocumentModel, CoreShapeModel):
     """One simulated actor in a template's conversation.
 
     A conversation may have several: a party of players, a panel, a room. Each speaks under its
@@ -265,7 +303,7 @@ CANDIDATE_SPEAKER = "__candidate__"
 WORLD_SPEAKER = "__world__"
 
 
-class WorldRound(EvalDocumentModel):
+class WorldRound(EvalDocumentModel, CoreShapeModel):
     """A round whose stimulus is a world event rather than an actor's line.
 
     Before the candidate's ``turn``-th answer, the engine fires ``dimension`` through the cell's world session —
@@ -282,7 +320,7 @@ class WorldRound(EvalDocumentModel):
     )
 
 
-class ConversationSpec(EvalDocumentModel):
+class ConversationSpec(EvalDocumentModel, CoreShapeModel):
     """The simulated side of a conversing candidate: who talks to it, in what order, for how long.
 
     One optional block on :class:`EvalTemplate` rather than loose fields, because they mean something
@@ -393,7 +431,7 @@ class ConversationSpec(EvalDocumentModel):
         return next((world for world in self.world_rounds if world.turn == turn), None)
 
 
-class WorldSeed(EvalDocumentModel):
+class WorldSeed(EvalDocumentModel, CoreShapeModel):
     """Initial state for the eval's stateful world.
 
     ``namespaces`` keys are carriers and each sub-key names one state dimension, through the host
@@ -443,7 +481,7 @@ class WorldSeed(EvalDocumentModel):
         return value
 
 
-class Precondition(EvalDocumentModel):
+class Precondition(EvalDocumentModel, CoreShapeModel):
     """One thing a template presumes about the world before the subject's first turn.
 
     A scenario that only makes sense against a particular starting state presumes one, and this
@@ -553,7 +591,7 @@ GOAL_CHECK_PROOF_RULES = 2
 CHECK_REFUSED_UNDER_CURRENT_GRAMMAR = "refused under the current grammar"
 
 
-class ControlEndState(EvalDocumentModel):
+class ControlEndState(EvalDocumentModel, CoreShapeModel):
     """An end state a template's author states, to prove its goal checks can tell outcomes apart.
 
     Authoring data, and nothing else: it is read when the template is written, to evaluate the
@@ -620,7 +658,7 @@ class ControlEndState(EvalDocumentModel):
     )
 
 
-class GoalCheckControl(EvalDocumentModel):
+class GoalCheckControl(EvalDocumentModel, CoreShapeModel):
     """One goal check's intent, and the end state that proves it discriminates."""
 
     check: str = Field(min_length=1, description="The goal check, verbatim as it appears in goal_state_checks.")
@@ -640,7 +678,7 @@ class GoalCheckControl(EvalDocumentModel):
     )
 
 
-class GoalCheckControls(EvalDocumentModel):
+class GoalCheckControls(EvalDocumentModel, CoreShapeModel):
     """Proof, at authoring, that each of a template's goal checks can tell its outcomes apart.
 
     Each check is evaluated twice: against the untouched seed with no calls — the candidate did
@@ -857,7 +895,7 @@ def _namespaced_dim_name(name: str) -> str:
 DimName = Annotated[str, AfterValidator(_namespaced_dim_name)]
 
 
-class RubricDim(EvalDocumentModel):
+class RubricDim(EvalDocumentModel, CoreShapeModel):
     """One judge-scored rubric dimension.
 
     Reserved for genuinely subjective qualities (tone, style) —
@@ -1011,7 +1049,7 @@ def _label_key_halves(output: str | None, criterion: str | None, owner: str) -> 
     return None if output is None or criterion is None else LabelKey(output, criterion)
 
 
-class GoalStateOutcome(EvalDocumentModel):
+class GoalStateOutcome(EvalDocumentModel, CoreShapeModel):
     """One judge-free fact a candidate's execution established, and whether it held.
 
     Named for the check it was built for — a goal-state expression evaluated against the
@@ -1028,7 +1066,7 @@ class GoalStateOutcome(EvalDocumentModel):
     detail: str = Field(default="", description="Brief explanation; e.g. 'queue.length=2 satisfies >= 1'")
 
 
-class PreconditionOutcome(EvalDocumentModel):
+class PreconditionOutcome(EvalDocumentModel, CoreShapeModel):
     """Outcome of one precondition asserted against the world at t=0.
 
     The reader :class:`Precondition`'s required ``presumes`` prose exists for. A precondition
@@ -1066,7 +1104,7 @@ MODEL_DEFAULT_TEMPERATURE: Literal["model_default"] = "model_default"
 JudgeTemperature = float | Literal["model_default"]
 
 
-class RubricScore(EvalDocumentModel):
+class RubricScore(EvalDocumentModel, CoreShapeModel):
     """Outcome of one rubric judge dimension.
 
     ``dim`` carries the dimension's identifier — a template ``RubricDim`` name
@@ -1984,7 +2022,7 @@ def case_set_doc_id(name: str, version: int) -> str:
     return f"case_set:{name}:v{version}"
 
 
-class CaseSetRef(EvalBaseModel):
+class CaseSetRef(EvalBaseModel, CoreShapeModel):
     """Which named, versioned case set a run was launched against: a label on its frozen case ids.
 
     Not an identity of its own: the run's case-set identity stays the frozen ids (``case_basis``), so two runs
@@ -2203,7 +2241,7 @@ class EvalCaseStratum(EvalDocumentModel):
 # =============================================================================
 
 
-class ContextComponents(EvalDocumentModel):
+class ContextComponents(EvalDocumentModel, CoreShapeModel):
     """The separately-recorded pieces a run's ``context_key`` is composed from.
 
     ``context_key`` alone answers "are these two runs comparable?"; it cannot
@@ -2375,7 +2413,23 @@ ApparatusProvenance = Literal["commissioned", "witnessed"]
 #: means the role default supplied it, so the same launch arguments would pick up
 #: whatever that default has since become. Once the model is stored resolved, this is
 #: the only thing that still distinguishes the two.
-ModelRoleOrigin = Literal["chosen", "inherited"]
+#:
+#: An open vocabulary, its values this build knows registered in :data:`MODEL_ROLE_ORIGINS`: a value a newer minor added
+#: is read from a document that minor wrote, and every reader that branches on it names it rather than folding it into a
+#: value it knows (:mod:`~threetears.evals.schema.versioning`).
+ModelRoleOrigin = str
+
+#: A value of :data:`ModelRoleOrigin` this build knows, as a type: what a caller names (an action's argument, a
+#: filter) and what this build writes, refused outside the set as any ``Literal`` is. A stored field reads
+#: the open :data:`ModelRoleOrigin` instead.
+KnownModelRoleOrigin = Literal["chosen", "inherited"]
+
+#: The values of :data:`ModelRoleOrigin` this build knows, in the order its readers list them.
+MODEL_ROLE_ORIGINS: Final[tuple[str, ...]] = get_args(KnownModelRoleOrigin)
+
+#: The type of a stored field carrying a judge config origin: one of :data:`MODEL_ROLE_ORIGINS`, or, on the stored read
+#: of a newer minor's document, a value that minor added.
+StoredModelRoleOrigin = Annotated[ModelRoleOrigin, known_unless_newer_minor("judge config origin", MODEL_ROLE_ORIGINS)]
 
 #: How a run arrived at one of its resolved role MODELS — :data:`ModelRoleOrigin`'s two values plus
 #: ``alternate``: the launch named no judge, and the host's alternate judge
@@ -2387,7 +2441,23 @@ ModelRoleOrigin = Literal["chosen", "inherited"]
 #: candidate. Recorded from what the launch can see — no pin named, and the judge equal to the alternate
 #: setting — so a host whose alternate is set to the role default itself records ``alternate`` for that
 #: model too: the two settings named one model, and either reproduces it.
-RoleModelOrigin = Literal["chosen", "inherited", "alternate"]
+#:
+#: An open vocabulary, its values this build knows registered in :data:`ROLE_MODEL_ORIGINS`: a value a newer minor added
+#: is read from a document that minor wrote, and every reader that branches on it names it rather than folding it into a
+#: value it knows (:mod:`~threetears.evals.schema.versioning`).
+RoleModelOrigin = str
+
+#: A value of :data:`RoleModelOrigin` this build knows, as a type: what a caller names (an action's argument, a
+#: filter) and what this build writes, refused outside the set as any ``Literal`` is. A stored field reads
+#: the open :data:`RoleModelOrigin` instead.
+KnownRoleModelOrigin = Literal["chosen", "inherited", "alternate"]
+
+#: The values of :data:`RoleModelOrigin` this build knows, in the order its readers list them.
+ROLE_MODEL_ORIGINS: Final[tuple[str, ...]] = get_args(KnownRoleModelOrigin)
+
+#: The type of a stored field carrying a role model origin: one of :data:`ROLE_MODEL_ORIGINS`, or, on the stored read of
+#: a newer minor's document, a value that minor added.
+StoredRoleModelOrigin = Annotated[RoleModelOrigin, known_unless_newer_minor("role model origin", ROLE_MODEL_ORIGINS)]
 
 #: How a run arrived at the spend ceiling it ran under. Deliberately NOT
 #: :data:`ModelRoleOrigin`: that literal's two values cannot express the third state this
@@ -2415,7 +2485,23 @@ RoleModelOrigin = Literal["chosen", "inherited", "alternate"]
 #: true: the launch argument becomes ``max_metered_calls`` and the setting
 #: ``LaunchSettings.max_metered_calls``, and ``uncapped`` comes off the same enforcement flag
 #: both ceilings share. The name is cost's because cost came first.
-CostCapOrigin = Literal["chosen", "inherited", "uncapped"]
+#:
+#: An open vocabulary, its values this build knows registered in :data:`COST_CAP_ORIGINS`: a value a newer minor added
+#: is read from a document that minor wrote, and every reader that branches on it names it rather than folding it into a
+#: value it knows (:mod:`~threetears.evals.schema.versioning`).
+CostCapOrigin = str
+
+#: A value of :data:`CostCapOrigin` this build knows, as a type: what a caller names (an action's argument, a
+#: filter) and what this build writes, refused outside the set as any ``Literal`` is. A stored field reads
+#: the open :data:`CostCapOrigin` instead.
+KnownCostCapOrigin = Literal["chosen", "inherited", "uncapped"]
+
+#: The values of :data:`CostCapOrigin` this build knows, in the order its readers list them.
+COST_CAP_ORIGINS: Final[tuple[str, ...]] = get_args(KnownCostCapOrigin)
+
+#: The type of a stored field carrying a cost cap origin: one of :data:`COST_CAP_ORIGINS`, or, on the stored read of a
+#: newer minor's document, a value that minor added.
+StoredCostCapOrigin = Annotated[CostCapOrigin, known_unless_newer_minor("cost cap origin", COST_CAP_ORIGINS)]
 
 #: Which tier supplied a run's metered-call ceiling (:attr:`EvalRun.max_metered_calls_origin`): the
 #: three :data:`CostCapOrigin` tiers, read with the currency swapped, and one more —
@@ -2423,12 +2509,48 @@ CostCapOrigin = Literal["chosen", "inherited", "uncapped"]
 #: of ``None``). That run records a ceiling of ``0``: no metered call may happen, and one that does
 #: contradicts the host's declaration and is refused and counted. Distinct from ``uncapped``, which
 #: is a host with metered tools whose enforcement is off.
-MeteredCallOrigin = Literal["chosen", "inherited", "uncapped", "none_declared"]
+#:
+#: An open vocabulary, its values this build knows registered in :data:`METERED_CALL_ORIGINS`: a value a newer minor
+#: added is read from a document that minor wrote, and every reader that branches on it names it rather than folding it
+#: into a value it knows (:mod:`~threetears.evals.schema.versioning`).
+MeteredCallOrigin = str
+
+#: A value of :data:`MeteredCallOrigin` this build knows, as a type: what a caller names (an action's argument, a
+#: filter) and what this build writes, refused outside the set as any ``Literal`` is. A stored field reads
+#: the open :data:`MeteredCallOrigin` instead.
+KnownMeteredCallOrigin = Literal["chosen", "inherited", "uncapped", "none_declared"]
+
+#: The values of :data:`MeteredCallOrigin` this build knows, in the order its readers list them.
+METERED_CALL_ORIGINS: Final[tuple[str, ...]] = get_args(KnownMeteredCallOrigin)
+
+#: The type of a stored field carrying a metered call origin: one of :data:`METERED_CALL_ORIGINS`, or, on the stored
+#: read of a newer minor's document, a value that minor added.
+StoredMeteredCallOrigin = Annotated[
+    MeteredCallOrigin, known_unless_newer_minor("metered call origin", METERED_CALL_ORIGINS)
+]
 
 #: Where a run's per-cell deadline came from (:attr:`EvalRun.cell_timeout_s_origin`): ``launch`` — the launch
 #: named it (``cell_timeout_s``), within the host's ceiling; ``kind`` — the kind's launcher wired its own
 #: (``KindWiring.cell_timeout_s``); ``default`` — neither did, so the engine's ``DEFAULT_CELL_TIMEOUT_S`` held.
-CellTimeoutOrigin = Literal["launch", "kind", "default"]
+#:
+#: An open vocabulary, its values this build knows registered in :data:`CELL_TIMEOUT_ORIGINS`: a value a newer minor
+#: added is read from a document that minor wrote, and every reader that branches on it names it rather than folding it
+#: into a value it knows (:mod:`~threetears.evals.schema.versioning`).
+CellTimeoutOrigin = str
+
+#: A value of :data:`CellTimeoutOrigin` this build knows, as a type: what a caller names (an action's argument, a
+#: filter) and what this build writes, refused outside the set as any ``Literal`` is. A stored field reads
+#: the open :data:`CellTimeoutOrigin` instead.
+KnownCellTimeoutOrigin = Literal["launch", "kind", "default"]
+
+#: The values of :data:`CellTimeoutOrigin` this build knows, in the order its readers list them.
+CELL_TIMEOUT_ORIGINS: Final[tuple[str, ...]] = get_args(KnownCellTimeoutOrigin)
+
+#: The type of a stored field carrying a cell timeout origin: one of :data:`CELL_TIMEOUT_ORIGINS`, or, on the stored
+#: read of a newer minor's document, a value that minor added.
+StoredCellTimeoutOrigin = Annotated[
+    CellTimeoutOrigin, known_unless_newer_minor("cell timeout origin", CELL_TIMEOUT_ORIGINS)
+]
 
 
 def scored_dim_ids(rubric_dim_names: list[str], judged_artifact: JudgedArtifact) -> list[str]:
@@ -2492,7 +2614,7 @@ def resolve_effective_judges(
 #: ``stored_results`` is what a later process can reconstruct after the one executing
 #: the run died with its tally. They are not interchangeable and the record says which,
 #: because a reconstruction's *attribution* of the shortfall is weaker than its total.
-class VariationCounts(EvalDocumentModel):
+class VariationCounts(EvalDocumentModel, CoreShapeModel):
     """How many test cases a launch asked generation for, and how many it froze.
 
     Generation may legitimately return fewer cases than asked — a ``sample`` or ``enum``
@@ -2533,7 +2655,7 @@ class VariationCounts(EvalDocumentModel):
 CompletenessSource = Literal["run_loop", "stored_results"]
 
 
-class RunCompleteness(EvalDocumentModel):
+class RunCompleteness(EvalDocumentModel, CoreShapeModel):
     """How much of its matrix a run actually delivered.
 
     A run whose status says ``completed`` while three of its twelve cells never
@@ -2643,10 +2765,26 @@ class RunCompleteness(EvalDocumentModel):
 #: A reasoning effort level, as the router's ``reasoning.effort`` takes it. ``none`` disables
 #: reasoning, and a model whose reasoning is mandatory refuses it; which of the others a model
 #: accepts is its own (the router lists each model's ``supported_efforts``).
-ReasoningEffort = Literal["max", "xhigh", "high", "medium", "low", "minimal", "none"]
+#:
+#: An open vocabulary, its values this build knows registered in :data:`REASONING_EFFORTS`: a value a newer minor added
+#: is read from a document that minor wrote, and every reader that branches on it names it rather than folding it into a
+#: value it knows (:mod:`~threetears.evals.schema.versioning`).
+ReasoningEffort = str
+
+#: A value of :data:`ReasoningEffort` this build knows, as a type: what a caller names (an action's argument, a
+#: filter) and what this build writes, refused outside the set as any ``Literal`` is. A stored field reads
+#: the open :data:`ReasoningEffort` instead.
+KnownReasoningEffort = Literal["max", "xhigh", "high", "medium", "low", "minimal", "none"]
+
+#: The values of :data:`ReasoningEffort` this build knows, in the order its readers list them.
+REASONING_EFFORTS: Final[tuple[str, ...]] = get_args(KnownReasoningEffort)
+
+#: The type of a stored field carrying a reasoning effort: one of :data:`REASONING_EFFORTS`, or, on the stored read of a
+#: newer minor's document, a value that minor added.
+StoredReasoningEffort = Annotated[ReasoningEffort, known_unless_newer_minor("reasoning effort", REASONING_EFFORTS)]
 
 
-class ClientRequestSettings(EvalDocumentModel):
+class ClientRequestSettings(EvalDocumentModel, CoreShapeModel):
     """The request parameters a host applied to one apparatus role's LLM client, for one run.
 
     Recorded because the same model can be asked two different ways, and the asking is part of
@@ -2678,7 +2816,7 @@ class ClientRequestSettings(EvalDocumentModel):
             "provider's default applied — a recorded level, not an absence. Never set beside `reasoning_effort`."
         ),
     )
-    reasoning_effort: ReasoningEffort | None = Field(
+    reasoning_effort: StoredReasoningEffort | None = Field(
         default=None,
         description=(
             "The reasoning effort level sent with every request (the provider's `reasoning.effort`): a level, not a "
@@ -2726,7 +2864,7 @@ DEFAULT_LAUNCH_K_RUNS = 3
 DeclaredMeritAxis = Literal["quality", "cost", "latency", "reliability"]
 
 
-class MeasureDeclaration(EvalBaseModel):
+class MeasureDeclaration(EvalBaseModel, CoreShapeModel):
     """How the launching host declared one of its own measures to be read, frozen onto the run it launched.
 
     The reading-side half of a :class:`~threetears.evals.kernel.metrics.MetricDescriptor`: which way is better,
@@ -2893,7 +3031,7 @@ class EvalRun(CoreDocumentModel):
             "judged run that names no judge, or an unjudged run that names one."
         ),
     )
-    model_role_provenance: dict[str, RoleModelOrigin] | None = Field(
+    model_role_provenance: dict[str, StoredRoleModelOrigin] | None = Field(
         default=None,
         description=(
             "How each pinned role model was arrived at, keyed by role (``candidate`` / ``judge`` / ``simulator``): "
@@ -2984,7 +3122,7 @@ class EvalRun(CoreDocumentModel):
             "genuinely agree stop pooling together."
         ),
     )
-    judge_config_provenance: dict[DimName, ModelRoleOrigin] | None = Field(
+    judge_config_provenance: dict[DimName, StoredModelRoleOrigin] | None = Field(
         default=None,
         description=(
             "How each entry of ``judge_config_ids`` was arrived at, keyed by the same dim ids: "
@@ -3225,7 +3363,7 @@ class EvalRun(CoreDocumentModel):
             "ceiling (origin None); a truncated run is visible either way through the budget_stopped status."
         ),
     )
-    max_cost_usd_origin: CostCapOrigin | None = Field(
+    max_cost_usd_origin: StoredCostCapOrigin | None = Field(
         default=None,
         description=(
             "Which tier of the cascade supplied max_cost_usd — see CostCapOrigin. Kept beside the ceiling for "
@@ -3252,7 +3390,7 @@ class EvalRun(CoreDocumentModel):
             "because a hard stop would discard a partly-measured matrix."
         ),
     )
-    max_metered_calls_origin: MeteredCallOrigin | None = Field(
+    max_metered_calls_origin: StoredMeteredCallOrigin | None = Field(
         default=None,
         description=(
             "Which tier of the cascade supplied max_metered_calls — see MeteredCallOrigin. Kept "
@@ -3296,7 +3434,7 @@ class EvalRun(CoreDocumentModel):
             "never read as today's default. Not hashed into any identity key, like turn_budget_s."
         ),
     )
-    cell_timeout_s_origin: CellTimeoutOrigin | None = Field(
+    cell_timeout_s_origin: StoredCellTimeoutOrigin | None = Field(
         default=None,
         description=(
             "Where cell_timeout_s came from: ``launch`` (the launch named it), ``kind`` (the kind's launcher "
@@ -3667,7 +3805,7 @@ class EvalRunStamp(EvalDocumentModel):
 # =============================================================================
 
 
-class LatencyMetrics(EvalDocumentModel):
+class LatencyMetrics(EvalDocumentModel, CoreShapeModel):
     """Per-result latency decomposition: harvested OTel spans, plus what they miss.
 
     The price/performance verdict needs a performance-time axis alongside
@@ -3769,7 +3907,7 @@ class LatencyMetrics(EvalDocumentModel):
 AsyncDeliveryStatus = Literal["delivered", "failed", "undelivered"]
 
 
-class AsyncExternalSpend(EvalDocumentModel):
+class AsyncExternalSpend(EvalDocumentModel, CoreShapeModel):
     """Paid non-LLM calls one piece of background work made at one provider, as the work reports them.
 
     The caller reports and the engine prices: these are the calls, the provider's own units, and —
@@ -3828,7 +3966,7 @@ class AsyncExternalSpend(EvalDocumentModel):
         return self
 
 
-class AsyncDelivery(EvalDocumentModel):
+class AsyncDelivery(EvalDocumentModel, CoreShapeModel):
     """One piece of background work the candidate started: acknowledged at once, delivered later.
 
     A candidate can hand work to a tool that answers immediately ("on it") and reports back turns
@@ -3988,18 +4126,50 @@ class AsyncDelivery(EvalDocumentModel):
 # =============================================================================
 
 
-#: The five roles an eval cell can spend on. Named once because two fields carry the
+#: The roles an eval cell can spend on, five in this build. Named once because two fields carry the
 #: vocabulary — the role a usage row observed, and the roles a blended total was summed
-#: over — and a second copy of a closed set is a copy that can go stale in one place.
-UsageRole = Literal["candidate", "judge", "simulator", "inner_agent", "external"]
+#: over — and a second copy of the set is a copy that can go stale in one place.
+#:
+#: An open vocabulary, its values this build knows registered in :data:`USAGE_ROLES`: a value a newer minor added is
+#: read from a document that minor wrote, and every reader that branches on it names it rather than folding it into a
+#: value it knows (:mod:`~threetears.evals.schema.versioning`).
+UsageRole = str
+
+#: A value of :data:`UsageRole` this build knows, as a type: what a caller names (an action's argument, a
+#: filter) and what this build writes, refused outside the set as any ``Literal`` is. A stored field reads
+#: the open :data:`UsageRole` instead.
+KnownUsageRole = Literal["candidate", "judge", "simulator", "inner_agent", "external"]
+
+#: The values of :data:`UsageRole` this build knows, in the order its readers list them.
+USAGE_ROLES: Final[tuple[str, ...]] = get_args(KnownUsageRole)
+
+#: The type of a stored field carrying a usage role: one of :data:`USAGE_ROLES`, or, on the stored read of a newer
+#: minor's document, a value that minor added.
+StoredUsageRole = Annotated[UsageRole, known_unless_newer_minor("usage role", USAGE_ROLES)]
 
 
 #: What one simulator-role call was for: an actor's line, or the ``llm_decided`` scheduler's pick of
 #: who speaks next. Carried on the ``simulator`` role's :class:`RoleUsage` rows.
-SimulatorPurpose = Literal["utterance", "schedule"]
+#:
+#: An open vocabulary, its values this build knows registered in :data:`SIMULATOR_PURPOSES`: a value a newer minor added
+#: is read from a document that minor wrote, and every reader that branches on it names it rather than folding it into a
+#: value it knows (:mod:`~threetears.evals.schema.versioning`).
+SimulatorPurpose = str
+
+#: A value of :data:`SimulatorPurpose` this build knows, as a type: what a caller names (an action's argument, a
+#: filter) and what this build writes, refused outside the set as any ``Literal`` is. A stored field reads
+#: the open :data:`SimulatorPurpose` instead.
+KnownSimulatorPurpose = Literal["utterance", "schedule"]
+
+#: The values of :data:`SimulatorPurpose` this build knows, in the order its readers list them.
+SIMULATOR_PURPOSES: Final[tuple[str, ...]] = get_args(KnownSimulatorPurpose)
+
+#: The type of a stored field carrying a simulator purpose: one of :data:`SIMULATOR_PURPOSES`, or, on the stored read of
+#: a newer minor's document, a value that minor added.
+StoredSimulatorPurpose = Annotated[SimulatorPurpose, known_unless_newer_minor("simulator purpose", SIMULATOR_PURPOSES)]
 
 
-class RoleUsage(EvalDocumentModel):
+class RoleUsage(EvalDocumentModel, CoreShapeModel):
     """Per-role token + cost observation for one :class:`EvalResult`.
 
     One row per (role, model) that spent tokens or dollars producing a result.
@@ -4048,7 +4218,7 @@ class RoleUsage(EvalDocumentModel):
     the rule because it never gets the chance.
     """
 
-    role: UsageRole
+    role: StoredUsageRole
     model: str | None = Field(
         default=None,
         description=(
@@ -4117,7 +4287,7 @@ class RoleUsage(EvalDocumentModel):
             "ending, a refused reply)."
         ),
     )
-    purpose: SimulatorPurpose | None = Field(
+    purpose: StoredSimulatorPurpose | None = Field(
         default=None,
         description=(
             "Which simulator calls this row counts: an actor's 'utterance', or a 'schedule' pick by the "
@@ -4282,7 +4452,7 @@ class JudgedArtifact(StrEnum):
     """Nothing a judge reads — the kind's grade is code (``host_measures``); a judged run refuses it."""
 
 
-class JudgeEvidence(BaseModel):
+class JudgeEvidence(CoreShapeModel):
     """Everything a judge reads about one cell's candidate, rendered by the kind that ran it.
 
     The engine renders none of it and reads none of it. A judge needs to know what it is
@@ -4414,7 +4584,7 @@ class EvalTrace(CoreDocumentModel):
         return self
 
 
-class JudgeRescore(EvalDocumentModel):
+class JudgeRescore(EvalDocumentModel, CoreShapeModel):
     """One re-judge of a result's failed judge dimensions, recorded on the result it changed.
 
     A judge call can fail after the trial it scores has finished — a reply cut off at its
@@ -4466,7 +4636,7 @@ class JudgeRescore(EvalDocumentModel):
     )
 
 
-class RepeatedScore(EvalDocumentModel):
+class RepeatedScore(EvalDocumentModel, CoreShapeModel):
     """One dimension's stored judge score, asked again of the same judge from the same evidence.
 
     The pair a judge's self-agreement is read from: ``first_score`` is the score the result held
@@ -4529,7 +4699,7 @@ class RepeatedScore(EvalDocumentModel):
         return self
 
 
-class JudgeRepeat(EvalDocumentModel):
+class JudgeRepeat(EvalDocumentModel, CoreShapeModel):
     """One repeat of a result's judge scores: the same judge asked the same question again, recorded beside them.
 
     A judge's agreement with ITSELF — re-scoring evidence it already scored, under the apparatus the run
@@ -4568,7 +4738,7 @@ class JudgeRepeat(EvalDocumentModel):
         return scores
 
 
-class SecondJudge(EvalDocumentModel):
+class SecondJudge(EvalDocumentModel, CoreShapeModel):
     """A judge other than the one a run was scored by: a model, the prompt per dimension, and a temperature.
 
     The three things a judge's identity is made of (:class:`~threetears.evals.analysis.JudgeKey`), named for a
@@ -4597,7 +4767,7 @@ class SecondJudge(EvalDocumentModel):
     )
 
 
-class SecondJudgeScore(EvalDocumentModel):
+class SecondJudgeScore(EvalDocumentModel, CoreShapeModel):
     """One dimension's stored judge score beside a second judge's answer to the same question.
 
     The pair inter-judge agreement and judge drift are read from. Both halves are carried here, as a
@@ -4651,7 +4821,7 @@ class SecondJudgeScore(EvalDocumentModel):
         return self
 
 
-class SecondJudging(EvalDocumentModel):
+class SecondJudging(EvalDocumentModel, CoreShapeModel):
     """A second judge's scores of one result's stored evidence, recorded beside the scores the run's judge gave.
 
     A measurement of the JUDGE — how far a second judge agrees with the first (inter-judge agreement), or how far
@@ -4868,7 +5038,7 @@ class EvalResult(CoreDocumentModel):
     #
     # Required: every exit of a cell writes it
     # (:func:`threetears.evals.kernel.usage_capture.blended_cost_roles`).
-    cost_roles: list[UsageRole]
+    cost_roles: list[StoredUsageRole]
 
     # Per-role usage & cost. Required: every exit of a cell sets a list,
     # ``[]`` when capture ran and attributed no roles (e.g. a candidate-factory failure before
@@ -5200,7 +5370,9 @@ class EvalCassette(EvalDocumentModel):
 
     id: str = Field(min_length=1)
     doc_type: Literal["eval_cassette"] = "eval_cassette"
-    schema_version: SchemaVersion = REGENERABLE_SCHEMA_VERSION
+    #: Its own version space (:data:`~threetears.evals.schema.versioning.CASSETTE_SCHEMA_VERSION`), never the
+    #: analyses': re-capturing a corpus spends the third-party quota a cassette exists to spare.
+    schema_version: CassetteSchemaVersion = CASSETTE_SCHEMA_VERSION
     scope_id: str = Field(min_length=1)
 
     corpus_id: str = Field(min_length=1)
@@ -5316,6 +5488,30 @@ class EvalCassette(EvalDocumentModel):
 
 __all__ = [
     "EVAL_DOC_TYPES",
+    "KnownModelRoleOrigin",
+    "KnownRoleModelOrigin",
+    "KnownCostCapOrigin",
+    "KnownMeteredCallOrigin",
+    "KnownCellTimeoutOrigin",
+    "KnownReasoningEffort",
+    "KnownUsageRole",
+    "KnownSimulatorPurpose",
+    "MODEL_ROLE_ORIGINS",
+    "ROLE_MODEL_ORIGINS",
+    "COST_CAP_ORIGINS",
+    "METERED_CALL_ORIGINS",
+    "CELL_TIMEOUT_ORIGINS",
+    "REASONING_EFFORTS",
+    "USAGE_ROLES",
+    "SIMULATOR_PURPOSES",
+    "StoredModelRoleOrigin",
+    "StoredRoleModelOrigin",
+    "StoredCostCapOrigin",
+    "StoredMeteredCallOrigin",
+    "StoredCellTimeoutOrigin",
+    "StoredReasoningEffort",
+    "StoredUsageRole",
+    "StoredSimulatorPurpose",
     "WorldPlacement",
     "stored_variation",
     "CHECK_REFUSED_UNDER_CURRENT_GRAMMAR",
@@ -5333,6 +5529,7 @@ __all__ = [
     "case_set_doc_id",
     "CANDIDATE_SPEAKER",
     "DEFAULT_JUDGE_TEMPERATURE",
+    "CassetteSchemaVersion",
     "CoreSchemaVersion",
     "MODEL_DEFAULT_TEMPERATURE",
     "JudgeTemperature",

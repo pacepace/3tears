@@ -70,6 +70,7 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.kernel.surface import (
     CellFacts,
+    EarlierControl,
     GuardrailReadings,
     PredictionPoweredReading,
     TimeAxis,
@@ -566,21 +567,47 @@ class RealizedDesign(EvalDocumentModel):
         default=None,
         description=(
             "The arm every contrast is read against: the campaign's DECLARED control variant, with every resolved "
-            "run that measured it. Null when no control resolved."
+            "run that measured it. Null when no control resolved. Where the declared control's cells carry two "
+            "keys — its stored one, stamped under an earlier identity predicate, and the one its lever map re-keys "
+            "to under this build's — this is the cells under this build's predicate only, and `earlier_control` "
+            "names the rest."
         ),
     )
-    control_excluded: Literal["archived", "unresolved", "unobserved"] | None = Field(
+    earlier_control: EarlierControl | None = Field(
         default=None,
         description=(
-            "Set only when the campaign DID declare a control and no resolved observation carries it. "
-            "Three causes, three different operator actions, and collapsing any two sends someone the "
-            "wrong way. 'archived' = a member run carrying that variant was curated out, so the campaign "
-            "gave up its design by choice — un-archive it or declare another. 'unresolved' = some member "
-            "run could not be loaded at all, so whether it carried the variant is UNKNOWABLE rather than "
-            "false; a membership outliving its run is a recurring state in a real store, and this is the arm that "
-            "keeps it from being reported as a coverage gap. 'unobserved' = every member resolved and "
-            "none carried it, which is the only one that says the experiment was not run as designed. "
+            "The declared control's cells under an earlier identity predicate, where the campaign's cells carry "
+            "both of its keys: the control as it ran before the predicate changed, so in no contrast, no guardrail, "
+            "no adoption check and no frontier contest (`FrontierPoint.earlier_control` marks its point) — a rival "
+            "arm it is not — and not pooled into `control_arm`'s numbers, which "
+            "are the current predicate's cells only. Its `disclosure` says so; say it as written. None otherwise."
+        ),
+    )
+    control_excluded: Literal["stale", "archived", "unresolved", "unobserved"] | None = Field(
+        default=None,
+        description=(
+            "Set only when the campaign DID declare a control and no resolved observation carries any key that "
+            "names it (the stored key, and the one its lever map re-keys to under this build). Four causes, four "
+            "different operator actions, and collapsing any two sends someone the wrong way. 'archived' = a member "
+            "run carrying one of those keys was curated out, so the campaign gave up its design by choice — "
+            "un-archive it or declare another. 'unresolved' = some member run could not be loaded at all, so "
+            "whether it carried the control is UNKNOWABLE rather than false; a membership outliving its run is a "
+            "recurring state in a real store, and this is the arm that keeps it from being reported as a coverage "
+            "gap. 'stale' = every member resolved, none carries the stored key, and no run this build stamps can: "
+            "it is a bare key (typed, with no `control_levers` beside it) computed under an identity predicate "
+            "other than this build's (`declared_design.control_identity_version` says which) — re-address it "
+            "from a run with `control_from_run_id` on campaign_update, which records the lever map a later "
+            "predicate re-keys it from (`stale_control_disclosure` says so). 'unobserved' = every member "
+            "resolved and none carried it, though a run of the arm launched now would, which is the only one "
+            "that says the experiment was not run as designed. "
             "Null alongside a null control_arm means no control was ever declared."
+        ),
+    )
+    stale_control_disclosure: str | None = Field(
+        default=None,
+        description=(
+            "Set exactly when control_excluded is 'stale': that the declared control cannot be resolved, the "
+            "identity predicate its key was computed under and this build's, and the remedy — say it as written."
         ),
     )
     contrasts: list[DesignArm] = Field(
@@ -1898,10 +1925,11 @@ class AnalysisContextBundle(EvalDocumentModel):
     # changed shape reads as evidence that moved, which is the one thing this number separates. A
     # HOST editing its own declarations is not a reason to bump it, and a host has no way to: that
     # move is carried by `host_declarations_digest`, derived from the declarations themselves. An
-    # A/B set spanning a bump must be read as spanning it. 50 is the first public release's bundle
-    # shape; the shapes before it were pre-release.
+    # A/B set spanning a bump must be read as spanning it. 51 is the first public release's bundle
+    # shape (50 plus `RealizedDesign.earlier_control` and `FrontierPoint.earlier_control`, added before the
+    # release); the shapes before it were pre-release.
     schema_version: int = Field(
-        default=50, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=51, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -2011,7 +2039,9 @@ class AnalysisContextBundle(EvalDocumentModel):
             "declared question got exactly one resolution' are both uncheckable without it, and inferring the "
             "declaration from `design` below would make coverage a description of whatever ran. None means the "
             "campaign declared nothing — an exploratory campaign, as `reading_scope.disclosure` says — which is a "
-            "different fact from declaring nothing to sweep."
+            "different fact from declaring nothing to sweep. Carried as declared, its `control` included: which "
+            "arm that control is among these cells is `design.control_arm`, decided once, and every reading here "
+            "that names the control reads that."
         ),
     )
     design: RealizedDesign = Field(

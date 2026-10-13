@@ -1,4 +1,4 @@
-"""Which stored documents are kept across releases, which are regenerated, and how a kept one is read when it is old.
+"""Which stored documents are kept across releases, which are regenerated, and how a kept one is read, old or new.
 
 **The evidence core is kept.** A document the engine cannot regenerate, and that an audit needs, is in the
 core (:data:`CORE_DOC_TYPES`, the ``kept`` entries of :data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`):
@@ -14,28 +14,145 @@ written today. The stored bytes are not touched; the next write of that document
 toggle's read-modify-write) writes the current version, so migration is lazy and a scope may hold documents
 at several core versions at once.
 
-**Everything else is regenerable.** Analyses, insights and judge profiles are derived from the core, and a cassette
-is re-captured, so they keep the strict rule they always had: a
-document written under any :data:`REGENERABLE_SCHEMA_VERSION` but this build's is refused on read, and the
-operator regenerates it. The bundle (``schema_version``), the report (``REPORT_VERSION``), the cell model and
-the identity keys (``IDENTITY_VERSION``) are separate version spaces with their own pins; an upgrader never
-recomputes a key or a digest.
+**Everything else is regenerable.** Analyses, insights and judge profiles are derived from the core, so they keep
+the strict rule they always had: a document written under any :data:`REGENERABLE_SCHEMA_VERSION` but this build's is
+refused on read, and the operator regenerates it.
 
-**Reads stay strict.** A core document whose ``schema_version`` is not an integer, is above
-:data:`CORE_SCHEMA_VERSION` (written by a newer build — two builds sharing one store), or is below
-:data:`CORE_BASELINE_VERSION` (written before the first public release) is refused, by name, never guessed.
+**A cassette has a version space of its own.** It is a regenerable record (what a tool answered while a capture
+ran), refused at any :data:`CASSETTE_SCHEMA_VERSION` but this build's and replaced by a fresh capture under a new
+corpus. Its number moves only when the cassette's own format changes, never with the analysis shapes: an analysis is
+cheap to regenerate from the kept runs, but a corpus is re-captured by calling the third-party tools it exists to
+spare, so a new chart type on a finding must not refuse every corpus a host recorded.
 
-**How a core change ships.** Any change to a core type's shape is a bump, an added optional field included:
-copy the frozen fixtures under ``tests/fixtures/core_documents/`` to the next version's directory before
-changing a shape, bump :data:`CORE_SCHEMA_VERSION` with a ledger line, append one :class:`CoreUpgrader` whose
-``from_version`` is the old number (an identity step for a purely additive change), and re-pin
-``tests/test_core_schema_pins.py``. A step obeys four rules: it is pure (no store, host, clock or randomness);
-it never touches :data:`CORE_ADDRESSING_FIELDS`, ``host_payload``, ``kind_payload`` or a stored key or digest
-(``variant_key``, ``context_key``, ``context_components``, ``content_hash``, ``identity_version``), because the
-store filters, sorts and projects on the stored bytes before any upgrade runs; a value it cannot derive
-becomes None, read as "not recorded"; and its output must validate strictly.
+The bundle (``schema_version``), the report (``REPORT_VERSION``), the cell model and the identity keys
+(``IDENTITY_VERSION``) are separate version spaces with their own pins too; an upgrader never recomputes a key or a
+digest. A kept key is stored beside its pre-image and the identity version that computed
+it — a run's ``variant_levers`` beside the keys its results carry, a campaign control's ``control_levers`` and
+``control_identity_version`` beside ``control`` — so no upgrader recomputes it. A read under a later
+``IDENTITY_VERSION`` names the control's arm by its stored key, which the cells stamped under its own predicate keep,
+and by the key its map re-keys to (``resolve_declared_control``). That follows a change to how a map is DIGESTED
+only: a host renaming a lever, a kind or an overlay field, or the engine adding a lever to every map, gives new runs
+a different map, which no recomputation of the stored one reaches, so across such a change the control names only
+the cells stamped before it and the map keeps it described.
 
-The document field stays ``schema_version`` for both spaces; ``doc_type`` says which number it is.
+**A core version is a major and a minor.** ``schema_version`` is the major (:data:`CORE_SCHEMA_VERSION`) and
+``schema_minor`` the minor within it (:data:`CORE_SCHEMA_MINOR`); the store addresses documents by the major
+alone, so the minor is not one of :data:`CORE_ADDRESSING_FIELDS`. A **minor** is additive and nothing else: a new
+optional field with a default, a new optional sub-object, a new member of an open vocabulary (below), a new doc
+type. It needs no upgrader. A **major** is everything else — a rename, a removal, a type change, a new required
+field, a new member of a closed vocabulary, any change to what a stored value means — and ships an upgrader.
+
+**How a core document is read.** By its stored read, :meth:`~threetears.evals.schema.base.CoreDocumentModel.from_dict`:
+
+- *Its major is this build's and its minor this build's or older:* read strictly. A field this build does not
+  declare, at any level, is refused, and so is a value outside a vocabulary this build knows: a writer at this
+  minor cannot have written either, so either is drift, and drift is refused by name.
+- *Its major is this build's and its minor newer:* read. Every field this build does not declare — at the top
+  level and inside every shape the document embeds — is kept on the instance it was found on, opaquely: never
+  validated, never an attribute, never in ``model_dump`` or in any digest, and written back exactly as read. A
+  value of an open vocabulary this build does not know is read, and every reader that branches on that
+  vocabulary has a branch for it that names it rather than folding it into a value it knows.
+- *Its major is older:* upgraded through :data:`CORE_UPGRADERS` to this build's shape at this build's minor; a
+  field the chain left behind is refused.
+- *Its major is newer, below* :data:`CORE_BASELINE_VERSION`*, or not an integer, or its minor is not a whole
+  number:* refused, by name, never guessed.
+
+Only the stored read is tolerant. Constructing a core document, or validating a payload, at a minor newer
+than this build's is refused, so a document cannot be rebuilt from a read one and silently lose what a newer
+build wrote: it is copied (``model_copy``), or read again from its ``to_dict`` (the read-modify-write every
+writer here does).
+
+**How a core document is written.** ``to_dict`` writes every field this build declares, puts back every field a
+newer minor's read kept, where it was found, and stamps ``schema_minor`` with the newest minor any shape it
+carries was read at (a shape read at a newer minor carries that minor whether or not it held a field this build
+does not know, so a value of an open vocabulary moves with its minor too), or this build's when that is newer. A
+write therefore keeps every field a newer build wrote on each shape it carries over, and never claims a minor older
+than anything it carries. A shape the write REPLACES with one built afresh — a renewed lease, a recomputed
+completeness record, a re-scored rubric list — takes its kept fields with it, which is right: they described the
+shape that was replaced, and the additivity sentence below is what makes the fields beside it stay true. Two
+rules keep that true on the paths that write less than a whole document, and on the digests:
+
+- **A partial write carries baseline fields only.** ``merge_fields`` sets top-level fields on the stored bytes
+  and cannot take the newest of a minor it never read, so it names only fields of its major's first minor
+  (today, addressing fields). A field a minor introduces is written by a read-modify-write.
+- **A field a minor adds stays out of every digest pre-image while it holds its default.** A pre-image taken
+  over a whole shape's ``model_dump`` (a judged output's fingerprint, a judge case's digest) would otherwise
+  split every key between the two builds, even for documents that never use the field.
+
+**A vocabulary on a core shape is open or closed, and which is decided here.** An *open* vocabulary is a ``str``
+with the values this build knows registered beside it; a new value is a minor, because every reader that branches
+on it has a branch for a value it does not know, which names that value (a role's spend on a line of its own, an
+origin stated by name, a departure read as "cannot say") rather than folding it into one it knows. A value outside
+the registry is read only from a newer minor's document, and refused anywhere else. Only a STORED field is open:
+each vocabulary also has a ``Literal`` of the values this build knows (``KnownUsageRole``, …), which every
+caller-facing parameter (an action's filter, a query's) and every writer here takes, so a caller's misspelt value
+is refused as before, and the registry is that ``Literal``'s values. The open vocabularies:
+``UsageRole`` (``USAGE_ROLES``), ``SimulatorPurpose`` (``SIMULATOR_PURPOSES``), ``CostCapOrigin``
+(``COST_CAP_ORIGINS``), ``MeteredCallOrigin`` (``METERED_CALL_ORIGINS``), ``CellTimeoutOrigin``
+(``CELL_TIMEOUT_ORIGINS``), ``ModelRoleOrigin`` (``MODEL_ROLE_ORIGINS``), ``RoleModelOrigin``
+(``ROLE_MODEL_ORIGINS``), ``ReasoningEffort`` (``REASONING_EFFORTS``), ``OutOfRunPurpose``
+(``OUT_OF_RUN_PURPOSES``) and ``RefusalKind`` (``REFUSAL_KINDS``).
+
+Every other vocabulary on a core shape is *closed by design*: a new value changes how an older build must read
+the document, so extending one is a major. Each, and why:
+
+- ``EvalRunStatus``, ``JobOutcome`` (and ``SweepOutcome``), ``AttemptOutcome`` — lease settling, the boot reclaim and
+  every terminal test branch on them; a state misread strands a job or resurrects one.
+- ``CellTermination`` — decides whether a cell is excluded from every figure.
+- ``ConversationStopCause`` — its members are split into a conversation ending on its own terms and a rig fault,
+  which excludes the cell.
+- ``GoalCheckProof``, ``GoalCheckIntent`` — what a goal check proves, and how it is checked.
+- ``ApparatusProvenance`` — witnessed or commissioned decides which levers read as moved; cells never pool across it.
+- ``RubricScale``, ``RubricAxis``, the scale ``kind`` tags (``nominal``, ``ordinal``, ``interval``) and the
+  ``model_default`` temperature — how a score or a level is read; a new scale tag is a new model.
+- ``JudgedArtifact`` — which axes a cell is judged on.
+- ``WorldPlacement``, ``WorldEventKind``, ``WorldEventCause`` — what a transcript or a world means to the judge.
+- ``AsyncDeliveryStatus`` — what a delivered count counts.
+- ``CassetteMode`` — replay semantics, and identity.
+- ``TemperatureSelection``, ``TemperatureSetting``, ``CompletenessSource``, ``JudgeAttributionSource`` — facts of
+  method that a reader trusts or re-derives by.
+- ``DeclaredMeritAxis``, ``GuardrailDirection``, ``CampaignDesign.crossing``, ``ControlDeclaration.stimulus`` — the
+  semantics of an analysis design.
+- ``VariationAxis.generator``, ``ConversationSpec.turn_scheduler`` — instructions an older build must carry out.
+- ``RaterKind`` — calibration reads a person as ground truth.
+- ``OutOfRunOutcome`` — binary and complete.
+- ``SecondJudgeAskedBy`` — an unknown asker's pass would be pooled into the wrong agreement.
+- ``StopReason`` — the normalized provider contract, which already has a catch-all (``error``).
+- Every ``doc_type`` — a new type is a new model, never a new value.
+
+**A minor's ledger entry asserts its additivity in words**, and review holds it there, because a schema diff
+cannot see a field that is additive in shape and breaking in meaning (a ``faults`` field meaning "exclude this
+cell"). Every minor's entry ends with :data:`MINOR_ADDITIVITY_SENTENCE`, verbatim; when that sentence is false,
+the change is a major. A newly computed field is safe under it: a newer build discards the stored echo and
+re-derives it.
+
+**A new doc type is a minor, with two gaps an older build cannot close.** An older build never reads the new
+type (every read selects by ``doc_type``), but its operator wipe sweeps only the types it knows, so it leaves the
+new type's documents in the store; and its deletes (``run_delete`` and the cascades it runs) cannot cascade to a
+type it does not know, so a delete on an older build can leave the new type's documents orphaned for the
+upgraded build to find. Both are disclosed rather than prevented; an operator wiping or deleting during a roll
+does it from the newest build.
+
+**How a core change ships.** Every change to a core shape re-pins ``tests/test_core_schema_pins.py``. A minor
+bumps :data:`CORE_SCHEMA_MINOR` with a ledger line carrying the sentence above; no fixture is copied and no
+step is written. A major copies the frozen fixtures under ``tests/fixtures/core_documents/`` to the next major's
+directory before changing a shape, bumps :data:`CORE_SCHEMA_VERSION` with a ledger line, resets
+:data:`CORE_SCHEMA_MINOR` to 0, and appends one :class:`CoreUpgrader` whose ``from_version`` is the old major. A
+step reads every minor of its ``from_version`` up to the newest one released, and obeys four rules: it is pure
+(no store, host, clock or randomness); it never touches :data:`CORE_ADDRESSING_FIELDS`, ``host_payload``,
+``kind_payload`` or a stored key or digest (``variant_key``, ``context_key``, ``context_components``,
+``content_hash``, ``identity_version``), because the store filters, sorts and projects on the stored bytes
+before any upgrade runs; a value it cannot derive becomes None, read as "not recorded"; and its output must
+validate strictly.
+
+**Hook points this release leaves for later ones**, none of which an older build needs: a mechanical gate that a
+minor's schema diff from the pinned shape adds only non-required properties (in ``tests/test_core_schema_pins.py``,
+beside the digests it would diff); a write-version pin for rolling a major, which writes the older major through a
+downgrader at :meth:`~threetears.evals.schema.base.CoreDocumentModel.to_dict`, where the minor is stamped; and
+per-type minors, which turn :data:`CORE_SCHEMA_MINOR` into a mapping by ``doc_type`` so a change to one embedded
+shape does not restamp every type.
+
+The document field stays ``schema_version`` in all three spaces; ``doc_type`` says which number it is.
 """
 
 from __future__ import annotations
@@ -56,16 +173,47 @@ CORE_BASELINE_VERSION: Final[int] = 14
 #: - **v14** — the baseline: the first public release's evidence core. Every field a writer always sets is
 #:   required; an optional field's ``None`` has one present-day meaning, stated on the field.
 CORE_SCHEMA_VERSION: int = 14
-"""The core version this build writes, and the newest a read of a core document accepts."""
+"""The core major this build writes, and the newest a read of a core document accepts."""
 
-#: The version every regenerable document is written under, and the only one a read of one accepts.
+#: The core minor this build writes within :data:`CORE_SCHEMA_VERSION`. A minor is additive only (the module's
+#: rule), so a read accepts any minor of this build's major. Every minor appends one line here, ending with
+#: :data:`MINOR_ADDITIVITY_SENTENCE`; a major resets it to 0.
+#:
+#: - **v14.0** — the baseline minor.
+CORE_SCHEMA_MINOR: int = 0
+"""The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
+
+#: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When
+#: it is false for a change, the change is a major.
+MINOR_ADDITIVITY_SENTENCE: Final[str] = (
+    "An older build that ignores this field reads the document correctly, and its writes leave it true."
+)
+
+#: The version every regenerable document is written under, the cassette apart (:data:`CASSETTE_SCHEMA_VERSION`),
+#: and the only one a read of one accepts.
 #:
 #: - **v9** — the baseline: the first public release's regenerable shapes.
 REGENERABLE_SCHEMA_VERSION: int = 9
-"""The version every regenerable document is written under, and the only one a read of one accepts.
+"""The version every regenerable document but the cassette is written under, and the only one a read of one accepts.
 
 A bump is a drop: regenerable documents written under the old version are refused on read
-(:data:`~threetears.evals.schema.models.SchemaVersion`) and regenerated from the core, never migrated.
+(:data:`~threetears.evals.schema.models.SchemaVersion`) and regenerated from the core, never migrated. It governs
+the analysis, the insight and the judge profile, never the cassette (:data:`CASSETTE_SCHEMA_VERSION`).
+"""
+
+#: The version every cassette is written under, and the only one a read of one accepts. It moves only when the
+#: cassette's own format changes (the fields of :class:`~threetears.evals.schema.models.EvalCassette`), never with
+#: :data:`REGENERABLE_SCHEMA_VERSION`; a recorded payload that no longer rebuilds as its tool's type is the replay
+#: seam's refusal, not a version.
+#:
+#: - **v1** — the baseline: the first public release's cassette format.
+CASSETTE_SCHEMA_VERSION: int = 1
+"""The version every cassette is written under, and the only one a read of one accepts.
+
+A bump is a drop: a cassette written under the old version is refused on read
+(:data:`~threetears.evals.schema.models.CassetteSchemaVersion`), and the corpus is re-captured (a new capture run,
+so a new corpus), never migrated. Bump it only for a change to the cassette's own format, since every bump spends
+the third-party quota of every corpus again.
 """
 
 #: The kept documents, by ``doc_type``: the ``kept`` entries of
@@ -194,6 +342,32 @@ def upgrade_document(
     return upgraded
 
 
+def read_core_minor(document: Mapping[str, Any]) -> int:
+    """The minor a stored core document was written at: ``0`` when it carries none, refused when it is not a number.
+
+    A document stored before a minor existed lacks the key, and reads as its major's first minor, as any optional
+    field's absence reads as its default.
+
+    Args:
+        document: The stored document, as the store returned it.
+
+    Returns:
+        Its ``schema_minor``.
+
+    Raises:
+        CoreVersionRefused: ``schema_minor`` is present and is not a whole number of zero or more.
+    """
+    if "schema_minor" not in document:
+        return 0
+    minor = document["schema_minor"]
+    if type(minor) is not int or minor < 0:
+        raise CoreVersionRefused(
+            f"this {document.get('doc_type') or 'core'} document's schema_minor is {minor!r}, not a core minor "
+            "number, so this build cannot say whether it knows every field the document holds"
+        )
+    return minor
+
+
 def upgrade_core_document(document: Mapping[str, Any]) -> dict[str, Any]:
     """:func:`upgrade_document` with this build's chain, version and baseline.
 
@@ -210,14 +384,18 @@ def upgrade_core_document(document: Mapping[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
+    "CASSETTE_SCHEMA_VERSION",
     "CORE_ADDRESSING_FIELDS",
     "CORE_BASELINE_VERSION",
     "CORE_DOC_TYPES",
+    "CORE_SCHEMA_MINOR",
     "CORE_SCHEMA_VERSION",
     "CORE_UPGRADERS",
+    "MINOR_ADDITIVITY_SENTENCE",
     "REGENERABLE_SCHEMA_VERSION",
     "CoreUpgrader",
     "CoreVersionRefused",
+    "read_core_minor",
     "upgrade_core_document",
     "upgrade_document",
 ]

@@ -1201,7 +1201,13 @@ def _time_axis_blocks(axis: TimeAxis | None) -> list[ReportBlock]:
         text = f"The time axis is builds of {axis.release_label}, in the order each first ran."
     else:
         text = f"The time axis is UTC days, not builds: {axis.basis_reason}."
-    return [DisclosureBlock(section="methods", source="time_axis", text=text)]
+    blocks: list[ReportBlock] = [DisclosureBlock(section="methods", source="time_axis", text=text)]
+    blocks.extend(
+        DisclosureBlock(section="methods", source="time_axis", text=position.control_disclosure)
+        for position in axis.positions
+        if position.control_disclosure
+    )
+    return blocks
 
 
 # =============================================================================
@@ -1251,6 +1257,7 @@ def build_code_only_report(
                 decisions=(),
                 resolutions=(),
                 source=f"eval.campaign {bundle.campaign_id} (code-only report)",
+                earlier_control=surface.earlier_control,
             )
         )
     )
@@ -1900,6 +1907,8 @@ def _evidence_disclosures(bundle: AnalysisContextBundle) -> list[ReportBlock]:
         )
     for cell in bundle.short_cells:
         say("runs", cell.sentence)
+    say("comparisons", bundle.design.stale_control_disclosure)
+    say("comparisons", bundle.design.earlier_control.disclosure if bundle.design.earlier_control else None)
     say("surface", _verdict_order_sentence(bundle))
     say("measurement", bundle.launch_disclosure)
     say("measurement", bundle.measurement_window_disclosure)

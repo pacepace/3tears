@@ -259,9 +259,12 @@ scores, cost and what the kind reported. Its turn-by-turn trace is stored beside
 The stored documents a later release always reads (`CORE_DOC_TYPES`): cases, runs, results and their traces,
 calibration ratings, out-of-run spend, case sets, the templates, judge configs and rubric dims they name,
 campaigns, sweeps, analysis attempts, generation slots, and the records of every other job (launches, second
-judge passes, judge temperature comparisons, host action jobs). An older one is upgraded as it is read. Analyses, insights, judge
+judge passes, judge temperature comparisons, host action jobs). An older one is upgraded as it is read, and one a
+newer minor wrote (an additive change) is read with the fields this build does not know kept and written back.
+Analyses, insights, judge
 profiles and cassettes are outside it: a release that changes their format refuses them, and they are made again
-([what is kept](adopting-a-host.md#stored-data-what-is-kept)).
+([what is kept](adopting-a-host.md#stored-data-what-is-kept)). A cassette's format has a version of its own, so a
+change to the analyses never refuses a corpus.
 
 #### Battery
 The universal templates, run as one pre-flighted set (`start_universal_battery`): templates marked
@@ -270,7 +273,9 @@ The universal templates, run as one pre-flighted set (`start_universal_battery`)
 #### Cassette
 A recording of what a candidate's tools answered. A run in `cassette_mode="capture"` records one; a run in
 `"replay"` is served that recording instead of calling the tools live, so two arms can face exactly the
-same tool answers. It records the tools only, never the candidate (`examples/cassettes.py`).
+same tool answers. It records the tools only, never the candidate (`examples/cassettes.py`). Its stored format has
+its own version (`CASSETTE_SCHEMA_VERSION`), apart from the analyses': a corpus is refused only when the cassette's
+own format changes, and is then re-captured.
 
 #### Simulator
 The engine's simulated user: the other side of a conversation a conversing kind holds
@@ -339,7 +344,8 @@ agreement, never its point estimate, and an undecided one says how many more res
 #### Campaign
 A curated set of runs under one subject and behaviour, the hub an analysis attaches to (`EvalCampaign`).
 Membership is chosen, not queried; a run may sit in several campaigns. Its declared design names a
-**control**, which is a variant key, not a run, and what it **held fixed** (`held_fixed`: the stimulus,
+**control**, which is a variant key, not a run, kept beside the lever map and identity version it was computed
+from (`control_levers`, `control_identity_version`), and what it **held fixed** (`held_fixed`: the stimulus,
 controlled or not, and the apparatus, commissioned or witnessed). A campaign with no declared design is
 **exploratory**, and its creator says so (`exploratory=True`); that is read off the missing design, never stored,
 so declaring one later (`update_campaign`, the `campaign_update` action) ends it. *Example:* "triage v1 vs v2",
@@ -348,7 +354,19 @@ control = the v1 variant, held fixed = one case battery on a commissioned rig. W
 
 #### Control
 The arm every other arm in a campaign is tested against: usually what runs today. It is a variant, not a run,
-so any run of that configuration counts toward it. `compare` sets it from `control=`. *Example:* the v1 arm.
+so any run of that configuration counts toward it. `compare` sets it from `control=`; elsewhere it is addressed
+from a run (`control_from_run_id`), which records the run's lever map and identity version beside the key, as a
+run records its own; nobody sets those by hand. Every read resolves it through `resolve_declared_control` to the
+keys it matches: the stored key, which the cells stamped under its identity version keep, and, under a later
+version, also the key recomputed from that lever map, which new runs of the arm carry. That recomputation follows a
+change to how a lever map is digested, not a renamed lever, kind or overlay field. So a control keeps matching its
+old cells and is never stale while they are in the campaign. The control ARM (`design.control_arm` in the bundle),
+which every reading names and every contrast is read against, is the cells under the current identity version
+wherever any run carries the recomputed key; the cells under the earlier version are then the control under that
+version (`design.earlier_control`), named on every surface, disclosed once, in no contrast or adoption check, no contestant on the frontier,
+and not in the control's numbers. A key typed by hand records no lever map; when no cell carries it under a later
+identity version it is **stale**: the bundle says it cannot be resolved (`control_excluded`), and the remedy is to
+address it again from a run. *Example:* the v1 arm.
 
 #### Delta, interval and adjusted p
 What a comparison reports for each arm against the control, per reading. The **delta** is the arm's mean minus

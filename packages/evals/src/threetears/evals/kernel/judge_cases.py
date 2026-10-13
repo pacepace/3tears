@@ -48,7 +48,7 @@ from threetears.evals.schema.models import (
     RubricAxis,
     RubricDim,
     RubricScale,
-    UsageRole,
+    KnownUsageRole,
 )
 
 __all__ = [
@@ -79,7 +79,7 @@ JUDGE_CASE_KEY = "judge_case"
 
 #: The role every call a judge trial makes is metered under. The judge under test is the cell's subject, but what
 #: it spends is judge spend: no candidate model runs in a judge campaign, so no ``candidate`` row is ever written.
-JUDGE_KIND_ROLE: UsageRole = "judge"
+JUDGE_KIND_ROLE: KnownUsageRole = "judge"
 
 #: The measure a trial lands when the judge under test answered: whether its reply kept the protocol — a score on
 #: the criterion's scale, or the offered "can't tell" — rather than a reply that could not be read.

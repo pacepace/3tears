@@ -73,6 +73,7 @@ from threetears.evals.analysis.lenses.program_budget import compute_program_budg
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.kernel.campaign import EvalInsight, derive_window
+from threetears.evals.kernel.declaration import resolve_declared_control
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import (
     MetricDescriptor,
@@ -361,14 +362,18 @@ def assemble_context_bundle(
     # disclose it — the coverage map (where most findings are formed), the divergences, and
     # the campaign-wide scan that answers even when neither of those exists.
     apparatus_levels = _apparatus_levels(runs, results_by_run, profile=profile)
-    # Derived before the lenses, because it decides which runs each of them compares.
-    control_variant = campaign.declared_design.control if campaign.declared_design else None
+    # Derived before the lenses, because it decides which runs each of them compares: the keys that name the
+    # declared control's arm under this build — the stored key, which cells stamped under its predicate carry
+    # for good, and the key its lever map re-keys to under this one. `_campaign_design` matches them against
+    # the arms and is the only place that does: every lens below reads its answer (`design.control_arm`),
+    # never `declared_design.control`, so no two of them can disagree about which cell is the control.
+    declared_control = resolve_declared_control(campaign.declared_design)
     # Read only when a declared control might have been curated out, and only over the archived
     # set: "the runs carrying your control were archived" and "nothing ever ran it" are different
     # operator actions, and the archived runs' results are the only place the difference lives.
     # Every other path pays nothing for the distinction.
     archived_control_variants: set[str] = set()
-    if control_variant and archived:
+    if declared_control.variant_keys and archived:
         for run_id in archived:
             archived_key = variant_key_of_run(storage.query_eval_results_by_run(run_id, scope_id))
             if archived_key is not None:
@@ -386,7 +391,7 @@ def assemble_context_bundle(
     served = _served_models(results)
     design = _campaign_design(
         runs,
-        control_variant,
+        declared_control,
         results_by_run=results_by_run,
         arms=arms,
         archived_control_variants=archived_control_variants,
@@ -510,6 +515,7 @@ def assemble_context_bundle(
             # The boundary pillar: each contestant's guardrail dimensions held against the campaign's control arm,
             # at the margins it declares, by the rule the bundle's guardrails are decided by (#613).
             control_variant_key=design.control_arm.variant_key if design.control_arm is not None else None,
+            earlier_control=design.earlier_control,
             guardrail_margins=(
                 {entry.dimension: entry.margin for entry in campaign.declared_design.guardrail_margins}
                 if campaign.declared_design is not None
@@ -631,7 +637,7 @@ def assemble_context_bundle(
     # and before the catalog: its collections are measure collections like any other here, so the
     # catalog has to describe their names too. Laid out in the surface's one row order (the control as
     # the reference, then the arms by name), which the writer reads and the frozen surface keeps.
-    control = campaign.declared_design.control if campaign.declared_design else None
+    control = design.control_arm.variant_key if design.control_arm is not None else None
     names = arm_names(bundle.variant_index)
     bundle.cell_measures = _cell_measures(
         cells,
@@ -671,6 +677,8 @@ def assemble_context_bundle(
         short_runs=bundle.short_runs,
         incomplete_runs=bundle.incomplete_runs,
         profile=profile,
+        control=control,
+        earlier_control=design.earlier_control,
         names=names,
     )
     bundle.measure_catalog = _measure_catalog(bundle, profile=profile)
