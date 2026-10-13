@@ -415,11 +415,33 @@ launch (a witnessed session, a run your host assembles) is validated as strictly
 - a judge identity in `EvalResult.judge_config_ids` is `builtin:<sha12>` or `<config id>@<sha12>`, as the judge
   service writes it; a bare config id is refused.
 
+## Stability tiers
+
+**Every public name has a tier, and the tier is what a release promises about it.** From 0.66.0, the first tagged
+release, on:
+
+- **`host-contract`** is what a host writes against: the host and its profile, the registries, the kind seam,
+  launching, the stored documents a kind builds, the store port with its conformance kits and the engine's own
+  stores, the refusals, the version constants, the `Known*` vocabularies, the quick path and what it returns, and
+  every name this guide, the [tutorial](tutorial.md), the README or an example imports. Such a name moves only with
+  a `MIGRATIONS.toml` record and a deprecation cycle: the release that moves it exports the new name beside the old
+  one, which keeps working for that minor release and is named in its notes, and the next minor release removes the
+  old name, recorded as any removal is.
+- **`closure`** is every other public name: public because a public signature reaches it (a field's type, a value
+  a function returns, an exception it documents), so you can type your code without reaching below a root. Such a
+  name may move in any release, recorded in `MIGRATIONS.toml` and printed in that release's notes, never shimmed.
+
+`packages/evals/api/surface.json` records each name's tier beside its kind and signature, and `HOST_CONTRACT` in
+`packages/evals/scripts/public_surface.py` declares the first tier, with the reason for each group of names. A name
+a topic guide imports and the list does not hold is `closure`. If your host binds to one, ask for it to be
+promoted: promoting a name costs nothing, and demoting one is a break.
+
 ## Upgrading: names that move
 
-**Every name that leaves a public root is written down, and nothing is kept for compatibility.** When a release
-moves a public name to another root, renames it, or removes it, `packages/evals/MIGRATIONS.toml` records it under
-that release: the old name, its new home or `removed`, and why. There is no shim at the old name. The record starts
+**Every name that leaves a public root is written down, and only a host-contract name is kept for compatibility.**
+When a release moves a public name to another root, renames it, or removes it, `packages/evals/MIGRATIONS.toml`
+records it under that release: the old name, its new home or `removed`, and why. A `closure` name has no shim at the
+old name; a `host-contract` one keeps working for a minor release first (above). The record starts
 at 0.66.0, the package's first release, which moved nothing. Pre-release tags are not releases and are not in it.
 The file is
 in the repository, not the installed package: read it at the tag you are moving to, on GitHub
@@ -440,13 +462,14 @@ analysis results the action catalogue names, because `actions` may reach `analys
 name from its home, which is the root the reference lists it under first.
 
 **How the package holds this (for contributors).** `packages/evals/api/surface.json` is a checked-in snapshot of
-every public root's `__all__`, one entry per `root.name` with its kind and signature. The same walk that renders
+every public root's `__all__`, one entry per `root.name` with its kind, signature and tier. The same walk that renders
 the [reference](reference.md) writes it. `tests/test_api_surface.py` compares the installed package with the
 snapshot:
 
-- **A name added, or a kind or signature changed.** The test fails until you regenerate the snapshot, so the
+- **A name added, or a kind, signature or tier changed.** The test fails until you regenerate the snapshot, so the
   change shows up as a diff in review. A signature change needs no record in `MIGRATIONS.toml`. When it breaks
-  callers, add it to the newest section's `notes`.
+  callers, add it to the newest section's `notes`. A tier changes only by editing `HOST_CONTRACT`, and every name
+  the README, this guide, the tutorial or an example imports must be on it (`tests/test_api_tiers.py`).
 - **A name moved, renamed or removed.** The test fails until `MIGRATIONS.toml`'s first section (the release being
   prepared) records it. The generator refuses to write a snapshot that drops an unrecorded name. A name the last
   final release did not export never reached a porter, so it needs only a regeneration, and a record of it is

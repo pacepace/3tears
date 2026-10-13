@@ -9,12 +9,13 @@ Dev tooling for ``3tears-evals``: it lives beside the package, not in it, and is
     uv run python packages/evals/scripts/generate_api_snapshot.py --check
 
 The snapshot is every public root's ``__all__`` (the roots are ``threetears.evals.PUBLIC_ROOTS``), one entry per
-``root.name`` with its kind and signature, read by the same walk that renders ``docs/reference.md``
+``root.name`` with its kind, signature and stability tier, read by the same walk that renders ``docs/reference.md``
 (``public_surface.py``). ``tests/test_api_surface.py`` holds the installed package to it, so a change to the
-surface is a diff in review rather than a surprise in an adopter's import.
+surface is a diff in review rather than a surprise in an adopter's import. A name's tier is ``host-contract`` when
+``public_surface.HOST_CONTRACT`` lists it and ``closure`` otherwise; that list is the one place it is declared.
 
-**What regenerating records, and what it refuses to.** A name added, or a kind or signature changed, is recorded
-by regenerating: the diff is the record. A name that left a root (moved, renamed or removed) is not, when the
+**What regenerating records, and what it refuses to.** A name added, or a kind, signature or tier changed, is
+recorded by regenerating: the diff is the record. A name that left a root (moved, renamed or removed) is not, when the
 release before shipped it: it must first be written down in ``MIGRATIONS.toml``'s newest section (its new home or
 ``removed``, and why), which is what the release notes are printed from (``release_notes.py``), and until it is
 this script writes nothing. A name no release shipped leaves with a regeneration alone. A name exported from two

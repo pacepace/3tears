@@ -22,11 +22,11 @@ from threetears.evals.kernel.host import EvalHost, KindContract
 from threetears.evals.quick import (
     CALLABLE_KIND_CONTRACT,
     JUDGED_CALLABLE_KIND,
-    JUDGED_CALLABLE_KIND_CONTRACT,
     Judge,
     callable_host,
     run_eval,
 )
+from threetears.evals.quick.one_call import JUDGED_CALLABLE_KIND_CONTRACT
 from threetears.evals.analysis import summarize_run
 from threetears.evals.run import (
     get_result_trace,

@@ -193,7 +193,7 @@ of them and compared. *Example:* who sits in an adjudicator's seat: `{"adjudicat
 A place in the rig a kind's runs actually fill (`KindContract.seats`): a pinned role such as `judge` or
 `simulator`, or one apparatus dimension. A dimension a kind does not seat does not apply to its runs, so
 its blank there is not a confound. `None`, the default, holds the kind to every dimension. *Example:* the
-callable kind `run_eval` builds seats none of the judge, simulator or spend ceiling (`CALLABLE_UNSEATED`); its
+callable kind `run_eval` builds seats none of the judge, simulator or spend ceiling; its
 judged kind, `callable-judged`, seats the judge and nothing else (`JUDGED_CALLABLE_UNSEATED`).
 
 #### Measurement context

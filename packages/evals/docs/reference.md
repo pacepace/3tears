@@ -2053,7 +2053,6 @@ Batteries: run an eval in one call, and drive the engine from a command line.
 - **`CALLABLE_KIND`** · constant (str) · The kind `run_eval` launches, as its template names it.
   <br>`= 'callable'`
 - **`CALLABLE_KIND_CONTRACT`** · constant (KindContract) · The callable kind's contract: no overlays, no spec, and no rig seat — nothing in a `run_eval` run is graded by a model or talks to a simulated user.
-- **`CALLABLE_UNSEATED`** · constant (frozenset) · What a `run_eval` run never has as a level of its rig, whatever host it runs in, so a callable-kind contract may seat none of it: the engine's judge and simulator (by role or by any pinned dimension) — the callable kind is unjudged and simulates nobody — and the spend ceiling, which is off unless a call caps it (`max_cost_usd=`) and is then a condition stated beside the run: a run it stopped says so by its status, and two runs under different caps measured the same candidate the same way until one stopped.
 - **`DEFAULT_PROG`** · constant (str) · The program name the command line prints when it is run as `python -m threetears.evals`.
   <br>`= 'python -m threetears.evals'`
 - **`DEFAULT_QUICK_SCOPE`** · constant (str) · The scope a quick call with no host of its own stores its runs in when it is named none: the call's store is in memory and lives only as long as the call, so no other run can share it by accident.
@@ -2071,10 +2070,7 @@ Batteries: run an eval in one call, and drive the engine from a command line.
   <br>`= 1`
 - **`JUDGED_CALLABLE_KIND`** · constant (str) · The kind `run_eval` launches when it is handed a judge: the callable, its answers judged as documents.
   <br>`= 'callable-judged'`
-- **`JUDGED_CALLABLE_KIND_CONTRACT`** · constant (KindContract) · The judged callable kind's contract: no overlays, no spec, and the engine's judge seated — its runs are graded by a model, so who judged them is part of what two of them are compared on, and a run judged by another model or under other judge configs is a confound rather than a blank.
-- **`JUDGED_CALLABLE_UNSEATED`** · constant (frozenset) · What a judged `run_eval` run never has as a level of its rig: the simulator (by role or by any pinned dimension) and the spend ceiling, a condition beside the run as `CALLABLE_UNSEATED` says.
-- **`SHARED_ARM_MODEL`** · constant (str) · The candidate model every arm of a single-factor `compare` shares when its arms are named on `ARM_LEVER`: the arms' names are not models, and a lever every arm shares splits none of them.
-  <br>`= 'callable'`
+- **`JUDGED_CALLABLE_UNSEATED`** · constant (frozenset) · What a judged `run_eval` run never has as a level of its rig: the simulator (by role or by any pinned dimension) and the spend ceiling, a condition beside the run as it is for the unjudged kind.
 - **`UNUSABLE_ANSWER`** · constant (str) · The predicted label a classifier's answer is counted under when it is not a usable label: not a string, or a blank one.
   <br>`= '(unusable answer)'`
 

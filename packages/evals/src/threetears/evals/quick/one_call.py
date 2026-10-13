@@ -226,8 +226,8 @@ CALLABLE_UNSEATED: frozenset[str] = frozenset(
 JUDGED_CALLABLE_KIND_CONTRACT = KindContract(JUDGED_CALLABLE_KIND, seats=frozenset({"judge"}))
 
 #: What a judged ``run_eval`` run never has as a level of its rig: the simulator (by role or by any pinned
-#: dimension) and the spend ceiling, a condition beside the run as :data:`CALLABLE_UNSEATED` says. The judge is
-#: not here — it is the one seat the judged kind fills.
+#: dimension) and the spend ceiling, a condition beside the run as it is for the unjudged kind. The judge is not
+#: here — it is the one seat the judged kind fills.
 JUDGED_CALLABLE_UNSEATED: frozenset[str] = frozenset(
     {
         *(name for role in SHARED_CORE.roles if role.name != "judge" for name in (role.name, *role.pins)),
@@ -1086,8 +1086,12 @@ def _refuse_an_undeclared_callable_contract(host: EvalHost, *, judged: bool) -> 
     refused here, before anything is stored, rather than discovered in an analysis.
     """
     profile = host.profile
+    # The remedy names what a host imports from the ``quick`` root: the judged contract is not exported there, and
+    # ``callable_kind_contracts()`` hands it over beside the unjudged one.
     kind, model = (
-        (JUDGED_CALLABLE_KIND, "JUDGED_CALLABLE_KIND_CONTRACT") if judged else (CALLABLE_KIND, "CALLABLE_KIND_CONTRACT")
+        (JUDGED_CALLABLE_KIND, "the judged contract callable_kind_contracts() returns")
+        if judged
+        else (CALLABLE_KIND, "CALLABLE_KIND_CONTRACT")
     )
     unseated = JUDGED_CALLABLE_UNSEATED if judged else CALLABLE_UNSEATED
     contract = next((declared for declared in profile.kinds if declared.kind == kind), None)
@@ -1626,8 +1630,8 @@ async def run_eval(
         host: Where to run and store: ``None`` builds :func:`callable_host` over the scorers and ``store``. A
             host of the caller's own must declare a measure for every scorer, and a contract for the callable
             kind (:data:`CALLABLE_KIND_CONTRACT`, or one seating only apparatus of its own — never anything in
-            :data:`CALLABLE_UNSEATED`), and for a judged call one for the judged kind
-            (:data:`JUDGED_CALLABLE_KIND_CONTRACT`, or one seating the judge and nothing in
+            :data:`CALLABLE_UNSEATED`), and for a judged call one for the judged kind (the judged contract
+            :func:`callable_kind_contracts` returns, or one seating the judge and nothing in
             :data:`JUDGED_CALLABLE_UNSEATED`).
         store: Where the host ``run_eval`` builds stores the run (any
             :class:`~threetears.evals.schema.DocumentStore`), so it outlives this call:
