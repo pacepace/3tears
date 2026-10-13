@@ -521,7 +521,9 @@ async def run_judge_llm(
         # Checked BEFORE parsing. ``extract_json`` salvages partial payloads, so a
         # cut-short reply could otherwise parse, or fail as "Failed to parse" and be
         # re-bought. Either way the provider has already said why, and that is the
-        # reason to report.
+        # reason to report. Every cut-short reason takes this one branch: ``truncated`` (a cause
+        # the provider did not name) is handled as ``max_tokens`` is, its parse not trusted, and
+        # nothing here treats ``error`` apart from them.
         incomplete = describe_incomplete_completion(result)
         if incomplete is not None:
             log.warning(

@@ -58,7 +58,9 @@ v<version>` prints a release's notes).
   name. Anthropic and OpenAI calls are priced from models' price catalogue, OpenRouter calls by OpenRouter's own
   figure, and an unpriced call is `None` with its reason. A reasoning setting a provider cannot carry, and the
   Claude CLI route (whose completions read as finished whatever stopped them), are refused by name. The engine
-  never imports it.
+  never imports it. A stop the provider did not name (no finish reason, an unknown one, Anthropic's `pause_turn`)
+  reads as `truncated`, output cut short for an unnamed cause, and only a provider-reported failure as `error`; a
+  host mapping its own client onto `StopReason` follows the same split.
 - **Storage.** `EvalStorage` runs over a `DocumentStore` port, and `storage` ships an in-memory store, a SQLite
   store, a routed store that sends each doc type to its own backend, and `bridge_async_store` for an async
   backend. A store call made on an event-loop thread is refused (`StoreCalledOnEventLoop`), and the refusal names

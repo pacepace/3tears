@@ -456,28 +456,39 @@ async def test_the_served_model_is_the_reply_s_on_the_direct_providers(net: Prov
         ("anthropic", "max_tokens", "max_tokens"),
         ("anthropic", "model_context_window_exceeded", "max_tokens"),
         ("anthropic", "refusal", "content_filter"),
-        ("anthropic", "pause_turn", "error"),
-        ("anthropic", None, "error"),
+        ("anthropic", "pause_turn", "truncated"),
+        ("anthropic", None, "truncated"),
+        ("anthropic", "a_future_reason", "truncated"),
         ("openai", "stop", "end_turn"),
         ("openai", "tool_calls", "end_turn"),
         ("openai", "length", "max_tokens"),
         ("openai", "content_filter", "content_filter"),
-        ("openai", "a_future_reason", "error"),
+        ("openai", "a_future_reason", "truncated"),
+        ("openai", None, "truncated"),
         ("openrouter", "stop", "end_turn"),
         ("openrouter", "length", "max_tokens"),
         ("openrouter", "error", "error"),
-        ("openrouter", None, "error"),
+        ("openrouter", None, "truncated"),
+        ("openrouter", "a_future_reason", "truncated"),
     ],
 )
 async def test_the_stop_reason_is_the_engine_s_word(
     net: ProviderTransport, provider: str, raw: Any, engine: str
 ) -> None:
-    """A truncation is never read as finished: an absent or unknown reason is cut short."""
+    """A truncation is never read as finished, and output cut short is never read as a failed call.
+
+    An absent or unknown reason, and Anthropic's ``pause_turn``, had output and stopped early for a cause the provider
+    did not name: ``truncated``. Only OpenRouter's own ``error`` finish reason, the provider reporting a failure, is
+    ``error``.
+    """
     if provider == "anthropic":
         plan_reply(net, provider, stop_reason=raw)
     else:
         plan_reply(net, provider, finish_reason=raw)
-    assert (await _generate(build(net, provider))).stop_reason == engine
+    result = await _generate(build(net, provider))
+    assert result.stop_reason == engine
+    # The provider's own word rides beside the engine's, so a `truncated` names what, if anything, was sent.
+    assert result.provider_stop_reason == raw
 
 
 async def test_an_openai_refusal_beside_a_finished_reply_is_the_content_filter(net: ProviderTransport) -> None:

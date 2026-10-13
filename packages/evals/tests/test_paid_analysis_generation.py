@@ -124,6 +124,7 @@ class _Claude:
         usage = response.usage
         details = getattr(usage, "output_tokens_details", None)
         input_rate, output_rate = self._rates
+        # An absent or unmapped stop reason is output cut short for a cause unnamed here: `truncated`.
         stopped = {"end_turn": "end_turn", "max_tokens": "max_tokens", "refusal": "content_filter"}
         return _Completion(
             content="".join(block.text for block in response.content if block.type == "text"),
@@ -134,7 +135,7 @@ class _Claude:
             price_source="anthropic list price, from the paid lane's PRICES",
             model=self.model_name,
             served_model=response.model,
-            stop_reason=stopped.get(response.stop_reason or "", "error"),
+            stop_reason=stopped.get(response.stop_reason or "", "truncated"),
             temperature=None,
         )
 

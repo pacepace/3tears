@@ -943,7 +943,7 @@
     },
     "threetears.evals.schema.StopReason": {
       "kind": "literal",
-      "signature": "'end_turn'` | `'max_tokens'` | `'content_filter'` | `'error'",
+      "signature": "'end_turn'` | `'max_tokens'` | `'content_filter'` | `'truncated'` | `'error'",
       "tier": "closure"
     },
     "threetears.evals.schema.StoreCalledOnEventLoop": {
@@ -7588,7 +7588,7 @@
     },
     "threetears.evals.providers.ModelsCompletion": {
       "kind": "dataclass",
-      "signature": "ModelsCompletion(content: str, input_tokens: int | None, output_tokens: int | None, reasoning_tokens: int | None, cost_usd: float | None, price_source: str | None, model: str, served_model: str | None, temperature: float | None, stop_reason: StopReason, served_provider: str | None, pricing_failure: str | None)",
+      "signature": "ModelsCompletion(content: str, input_tokens: int | None, output_tokens: int | None, reasoning_tokens: int | None, cost_usd: float | None, price_source: str | None, model: str, served_model: str | None, temperature: float | None, stop_reason: StopReason, provider_stop_reason: str | None, served_provider: str | None, pricing_failure: str | None)",
       "tier": "closure"
     },
     "threetears.evals.providers.ModelsCompletionClient": {

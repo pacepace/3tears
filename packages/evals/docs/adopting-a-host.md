@@ -197,6 +197,17 @@ provider is one 3tears-models has no factory for, or when you call Claude throug
 refuses the Claude CLI route, whose completions read as finished whatever stopped them, until models carries the
 CLI's real stop reason. Either way, run `check_completion_conformance` on your client's completions in your suite.
 
+**A client of your own maps its provider's finish reason onto five words** (`StopReason`): `end_turn` for a
+completion that finished, `max_tokens` for one stopped at the output cap (OpenAI's `length`), `content_filter` for a
+refusal or a filtered reply, `truncated` for output that stopped early for a reason the provider did not name or
+named in words your mapping does not know (no finish reason at all, a value newer than your mapping, a pause such as
+Anthropic's `pause_turn`), and `error` only when the provider reported an error in place of a completion
+(OpenRouter's `error` finish reason) or returned no choices. Map anything you do not recognise to `truncated`, never to
+`end_turn`, which would read a cut-short reply as finished, and never to `error`, which tells the operator the call
+failed when it produced output. Every word but `end_turn` is cut short: the judge and the analysis generator never
+parse or repair such a reply, and their message says why for each; for `truncated` the provider's raw value is what
+to look at, so log it.
+
 ## Tenancy: the scope
 
 **Tenancy is one opaque `scope_id`.** Every stored document carries a non-empty `scope_id`, and the

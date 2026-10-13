@@ -41,7 +41,8 @@ class SoundnessRefusal(GenerationError):
     retry-with-feedback.
 
     A bare ``GenerationError`` means there was no output to correct: the provider cut the
-    call short (an output-cap truncation or a content filter), or nothing was ever sent —
+    call short (an output-cap truncation, a content filter, output stopped early for a cause the
+    provider did not name, or an error the provider reported in place of a completion), or nothing was ever sent —
     because the resolved prompt predates the memo contract, because the bundle describes
     no arm at all, so nothing the memo said could name which arm it meant, or because the host
     does not allow the requested writer model. Those

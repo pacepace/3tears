@@ -64,7 +64,9 @@ carrying ten attributes: `content`, `input_tokens`, `output_tokens`, `reasoning_
 `price_source`, `model`, `served_model`, `stop_reason` and `temperature` (`_live.Completion` is one, and a
 `SimpleNamespace` with the ten is another). `check_completion_conformance` (from `threetears.evals.testing`) is
 the check: hand it one completion your client returned, and it names each attribute missing and a `stop_reason`
-the engine does not know (`end_turn`, `max_tokens`, `content_filter` or `error`).
+the engine does not know (`end_turn`, `max_tokens`, `content_filter`, `truncated` or `error`). An absent or unknown
+finish reason is `truncated` (output that stopped early, cause unnamed); `error` is for a provider that reported a
+failure in place of a completion.
 
 Live runs use the cheapest Haiku models over 5 to 14 cases (50 for `guardrails.py`), so each costs cents. Each file's
 docstring gives its call count and rough live cost. `reports.py` and `llm_analysis.py` write their files under

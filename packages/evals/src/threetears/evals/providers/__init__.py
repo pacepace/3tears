@@ -29,9 +29,10 @@ member fails there, and the commit that moves the pin says so):
 * ``model`` is the id the client was built for; ``served_model`` the one the reply named. On OpenRouter, LangChain
   fills an empty reply model with the requested id, so a requested alias (``~…``, ``-latest``, ``openrouter/…``)
   echoed back reads ``None``; the serving upstream is kept beside it as ``served_provider``.
-* ``stop_reason``: Anthropic's ``stop_reason`` and the OpenAI-shaped ``finish_reason`` mapped onto the engine's four
+* ``stop_reason``: Anthropic's ``stop_reason`` and the OpenAI-shaped ``finish_reason`` mapped onto the engine's five
   words. A refusal (Anthropic's ``refusal``, OpenAI's ``refusal`` beside empty content) is ``content_filter``; an
-  absent or unknown reason is ``error``, cut short, never a finish.
+  absent or unknown reason, and Anthropic's ``pause_turn``, is ``truncated``, cut short with the cause unnamed,
+  never a finish; only OpenRouter's own ``error`` finish reason, a provider-reported failure, is ``error``.
 * ``temperature`` is what the built model sends, read back from it: LangChain drops a temperature OpenAI's
   ``gpt-5`` family refuses, and a thinking budget on Anthropic is built with none.
 * ``cost_usd`` and ``price_source``: OpenRouter's own reported figure (``openrouter:reported``; under
