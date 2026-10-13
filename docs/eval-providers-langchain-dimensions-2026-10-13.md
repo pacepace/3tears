@@ -4,20 +4,16 @@ Investigation for `eval-providers-design-2026-10-13.md`. Nothing in any checkout
 from building real factory models with dummy keys and replacing every `httpx.AsyncClient` transport with an
 `httpx.MockTransport` that returns canned provider replies. No provider was called. The probe scripts were throwaway and are not kept.
 
-**Which checkout was read, and why it is not the one the brief named.** `/opt/3tears` is on `develop` at
-`b68ec21a4` (2026-09-05). That is **750 commits behind `origin/develop`** (`ff00526c5`), and its
-`packages/models` is 0.32.1, which has no `declare_served_provider`, no `served_provider`, and an older lock
-(langchain-core 1.4.9, langchain-openrouter 0.2.6). The `adopt-23` worktree's `packages/models` is
-`origin/develop`'s copy byte for byte (`git diff origin/develop 741c00467 -- packages/models` touches only the
-pyproject version, which reads 0.66.0). So everything below was read from
-`/opt/3tears/.worktrees/adopt-23/packages/models`, the code a `3tears-evals[models]` adapter would ship against,
-and was probed with that worktree's own venv (`.venv/bin/python -I`, no `uv sync`, no `--active`, `/opt/venv`
-untouched).
+**Which tree was read.** `packages/models` at `origin/develop` `ff00526c5` (models 0.65.0). The eval-adopt `.23`
+integration branch at `741c00467` carries the same `packages/models` byte for byte apart from the pyproject
+version, which reads 0.66.0, so this is the code a `3tears-evals[models]` adapter would ship against. The probes
+ran in that branch's workspace venv. An older develop checkout (models 0.32.1, langchain-core 1.4.9,
+langchain-openrouter 0.2.6) has no `declare_served_provider` or `served_provider`; do not design against it.
 
 Path shorthands:
-- `M/` = `/opt/3tears/.worktrees/adopt-23/packages/models/src/threetears/models/`
-- `E/` = `/opt/3tears/.worktrees/adopt-23/packages/evals/src/threetears/evals/`
-- `SP/` = `/opt/3tears/.worktrees/adopt-23/.venv/lib/python3.14/site-packages/`
+- `M/` = `packages/models/src/threetears/models/`
+- `E/` = `packages/evals/src/threetears/evals/` (at `741c00467`)
+- `SP/` = the workspace venv's `lib/python3.14/site-packages/`
 
 "claude_cli" means the anthropic provider given an OAuth `sk-ant-oat…` token. `create_anthropic_chat` routes that
 token to `create_subscription_chat` (`M/providers/anthropic.py:271`). `create_chat_model` has no `claude_cli`
@@ -445,7 +441,7 @@ Every retry below is invisible on the returned `AIMessage`. The probe got the sa
   - anthropic / openai: (1 + max_retries) × (timeout + back-off).
   - openrouter: up to 300 s of back-off on top of a 120 s-per-chunk deadline.
 
-  The brief's "no hidden retries" rule is met only by `max_retries=0` on the three HTTP providers.
+  The design's "no hidden retries" rule is met only by `max_retries=0` on the three HTTP providers.
 
 ---
 
@@ -555,12 +551,12 @@ Each entry names the smallest change.
 
 ## Versions inspected
 
-Taken from the `adopt-23` worktree venv, whose lock is `origin/develop`'s:
+Taken from the eval-adopt `.23` branch's workspace venv, whose lock is `origin/develop`'s:
 
 | package | version |
 |---|---|
-| 3tears-models | 0.66.0 (the `adopt-23` worktree; = `origin/develop` `ff00526c5` + version bump) |
-| 3tears-evals | 0.66.0 (`adopt-23` @ `741c00467`) |
+| 3tears-models | 0.66.0 (`origin/develop` `ff00526c5` plus the version bump) |
+| 3tears-evals | 0.66.0 (eval-adopt `.23` branch at `741c00467`) |
 | langchain-core | 1.6.3 |
 | langchain-anthropic | 1.4.8 |
 | langchain-openai | 1.3.5 |
@@ -572,9 +568,6 @@ Taken from the `adopt-23` worktree venv, whose lock is `origin/develop`'s:
 | claude-agent-sdk | 0.2.163 (bundled Claude Code CLI 2.1.286) |
 | httpx | 0.28.1 |
 | Python | 3.14.6 |
-
-The stale `/opt/3tears` develop checkout's lock differs: langchain-core 1.4.9, langchain-openrouter 0.2.6,
-claude-agent-sdk 0.2.116, models 0.32.1. Do not design against it.
 
 **Not verified empirically** (no network and no CLI run):
 - the live OpenRouter 404 wording;

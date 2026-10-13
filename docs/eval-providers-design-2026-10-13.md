@@ -46,8 +46,9 @@ without network. The dimensions LangChain hides are pinned by a test, not left t
   never at import.
 - `ModelsFailureDescriber -> ProviderFailureDescriber`. Maps models' `errors.py` taxonomy (and the raw SDK
   errors it wraps, with HTTP status where carried) onto `ProviderFailure` kinds. Nothing is retried under the
-  engine: the adapter builds the chat model with retries off and no circuit breaker, and says so in its
-  docstring; a host that wants a breaker composes it outside the engine's cell.
+  engine: the adapter builds the chat model with retries off and with a breaker of its own that never opens,
+  in place of models' process-wide (provider, key) breaker, and says so in its docstring; a host that wants a
+  breaker composes it outside the engine's cell.
 - The engine never imports `providers`; `providers` imports only public roots of evals and of models. The
   package matrix test already holds the first; a test holds the second.
 
@@ -60,8 +61,9 @@ without network. The dimensions LangChain hides are pinned by a test, not left t
    ask on every provider models supports; nothing is sent. A served model that cannot honour a schema is a
    refusal by name, not a silent plain-text reply.
 3. Reasoning effort: the engine's seven words map per provider (budget tokens on Anthropic-style models,
-   effort words on OpenAI-style, pass-through on OpenRouter) using models' capability metadata; a model that
-   takes neither refuses an effort other than `none` by name.
+   effort words on OpenAI-style, pass-through on OpenRouter), keyed on the provider the adapter resolved.
+   Models' capabilities registry carries no reasoning, effort or temperature metadata, so the per-provider
+   table lives in the adapter; a model that takes neither refuses an effort other than `none` by name.
 4. The ten members, from the `AIMessage`'s `usage_metadata` and `response_metadata`:
    `content`, `input_tokens`, `output_tokens`, `reasoning_tokens`, `model` (as asked), `served_model` (as the
    provider named it; on OpenRouter also the serving provider, in the form the engine's floating-alias
@@ -189,7 +191,7 @@ Optional conveniences, not scheduled: `breaker=False` on the factory; cache-read
 
 ## Sequencing and build plan
 
-1. `.23` lands and is tagged (in flight).
+1. `.23` lands and is tagged: done, `v0.66.0-evaladopt.23` (PR #775).
 2. `.24` on `evals/adopt-24`, three builders from briefs, then one review pass:
    - A: `providers` root, adapter, describer, factory, dimensions test, conformance test over recordings.
    - B: `RecordedCompletions`, its tests, the paid-lane fixture recorder.

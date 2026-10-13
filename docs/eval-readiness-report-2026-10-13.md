@@ -4,6 +4,11 @@
 **Consumer reviewed:** Discodon at its `.21` adoption (PR #2873, `63043673a`).
 **Scope:** architecture, separation of concerns, adoption, usability, forward compatibility. Not a bug hunt.
 
+**Status since this review.** The report is kept as written against `.21`. The three blockers landed on the line
+as `v0.66.0-evaladopt.22` (PR #770). S5 (surface tiers), S7 (provisional marks) and S8 (the judge-wording policy)
+landed as `v0.66.0-evaladopt.23` (PR #775). S1 is designed in `eval-providers-design-2026-10-13.md` and is being
+built for `.24`. Read the verdict below as the state of `.21`, not of the line today.
+
 ## BLUF
 
 **Merge after three small fixes on the line. Do not merge as-is.** The engine is far better than any consumer
