@@ -422,3 +422,233 @@ class TestOwnerScopedLeaseKeys:
     def test_a_scope_that_is_not_one_literal_token_is_refused(self, scope: str) -> None:
         with pytest.raises(ValueError, match="key_scope"):
             KVLease(FakeNatsClient(), bucket_name="leases", key_scope=scope)  # type: ignore[arg-type]
+
+
+class TestAnEntryInAnotherFormatIsAnotherHolders:
+    """a value the lease did not write is somebody's claim: never reclaimed, refreshed or deleted, never a crash.
+
+    The NATS lock wrote its holder's raw ``token_hex(16)`` before it ran on this lease, and during a
+    deploy those entries share keys with lease envelopes. A hex token can parse as JSON -- all digits
+    is a number, digits around an ``e`` an exponent -- so "unreadable" has to cover those too.
+    """
+
+    @pytest.mark.parametrize(
+        "foreign",
+        [
+            b"9f86d081884c7d659a2feaa0c55ad015",
+            b"12345678901234567890123456789012",
+            b"1234e567890123456789012345678901",
+            b"1",
+            b'["pod-alpha"]',
+        ],
+    )
+    async def test_acquire_reports_it_held(self, foreign: bytes) -> None:
+        lease, client = await _make_lease()
+        bucket = await _bucket_for(client, "test_leases")
+        await bucket.create(key="lock/a", value=foreign)
+        with pytest.raises(LeaseUnavailable):
+            await lease.acquire("lock/a", ttl_seconds=30, max_wait_seconds=0)
+        assert await bucket.get(key="lock/a") == foreign
+
+    async def test_refresh_reports_it_taken_and_release_leaves_it(self) -> None:
+        lease, client = await _make_lease()
+        handle = await lease.acquire("lock/a", ttl_seconds=30)
+        bucket = await _bucket_for(client, "test_leases")
+        assert await bucket.delete(key="lock/a", revision=handle.revision)
+        await bucket.create(key="lock/a", value=b"12345678901234567890123456789012")
+        with pytest.raises(LeaseLost) as lost:
+            await handle.refresh()
+        assert lost.value.reason is lease_module.LeaseLossReason.TAKEN
+        await handle.release()
+        assert await bucket.get(key="lock/a") == b"12345678901234567890123456789012"
+
+
+class TestLeaseLostSaysWhy:
+    async def test_a_missing_entry_is_expired(self) -> None:
+        lease, client = await _make_lease()
+        handle = await lease.acquire("lock/a", ttl_seconds=30)
+        assert await (await _bucket_for(client, "test_leases")).delete(key="lock/a", revision=handle.revision)
+        with pytest.raises(LeaseLost) as lost:
+            await handle.refresh()
+        assert lost.value.reason is lease_module.LeaseLossReason.EXPIRED
+
+    def test_a_lease_lost_raised_without_a_reason_still_constructs(self) -> None:
+        assert LeaseLost("gone").reason is None
+
+
+class TestAWriteAppliedButNeverAnswered:
+    """the server applied a refresh whose answer never arrived: the handle is one revision behind its own entry."""
+
+    async def _unanswered_refresh(self) -> tuple[LeaseHandle, FakeKvBucket]:
+        lease, client = await _make_lease()
+        handle = await lease.acquire("lock/a", ttl_seconds=30)
+        bucket = await _bucket_for(client, "test_leases")
+        real_update = bucket.update
+
+        async def applied_then_lost(**kwargs: Any) -> int | None:
+            await real_update(**kwargs)
+            bucket.update = real_update  # type: ignore[method-assign]
+            raise TimeoutError("the answer never came")
+
+        bucket.update = applied_then_lost  # type: ignore[method-assign]
+        with pytest.raises(TimeoutError):
+            await handle.refresh()
+        return handle, bucket
+
+    async def test_the_next_refresh_renews_from_its_own_write(self) -> None:
+        handle, bucket = await self._unanswered_refresh()
+        await handle.refresh()
+        entry = await bucket.get_entry(key="lock/a")
+        assert entry is not None and entry[1] == handle.revision
+
+    async def test_a_refresh_refused_for_another_reason_keeps_the_record_for_the_release(self) -> None:
+        """a later refresh that fails must not forget the unanswered write: the release still needs it."""
+        handle, bucket = await self._unanswered_refresh()
+        real_get_entry = bucket.get_entry
+
+        async def unreachable(**kwargs: Any) -> tuple[bytes, int] | None:
+            raise ConnectionError("kv is unreachable")
+
+        bucket.get_entry = unreachable  # type: ignore[method-assign]
+        with pytest.raises(ConnectionError):
+            await handle.refresh()
+        bucket.get_entry = real_get_entry  # type: ignore[method-assign]
+        await handle.release()
+        assert await bucket.get(key="lock/a") is None
+
+    async def _write_that_lands_late(self) -> tuple[LeaseHandle, FakeKvBucket]:
+        """a refresh whose write is sent, never answered, and lands only as the next refresh swaps."""
+        lease, client = await _make_lease()
+        handle = await lease.acquire("lock/a", ttl_seconds=30)
+        bucket = await _bucket_for(client, "test_leases")
+        real_update = bucket.update
+        sent: dict[str, Any] = {}
+
+        async def lands_before_this_swap(**kwargs: Any) -> int | None:
+            bucket.update = real_update  # type: ignore[method-assign]
+            await real_update(**sent)
+            return await real_update(**kwargs)
+
+        async def sent_and_never_answered(**kwargs: Any) -> int | None:
+            sent.update(kwargs)
+            bucket.update = lands_before_this_swap  # type: ignore[method-assign]
+            raise TimeoutError("the answer never came")
+
+        bucket.update = sent_and_never_answered  # type: ignore[method-assign]
+        with pytest.raises(TimeoutError):
+            await handle.refresh()
+        return handle, bucket
+
+    async def test_a_write_that_lands_between_the_next_refreshs_read_and_its_swap_is_renewed_from(self) -> None:
+        """the read saw the entry before the unanswered write; the swap was refused because it landed."""
+        handle, bucket = await self._write_that_lands_late()
+        await handle.refresh()
+        entry = await bucket.get_entry(key="lock/a")
+        assert entry is not None and entry[1] == handle.revision
+
+    async def test_a_refused_swap_whose_re_read_fails_keeps_the_record_for_the_release(self) -> None:
+        """the swap was refused and the entry could not be read again: the unanswered write is still the
+        handle's own, and the release deletes it."""
+        handle, bucket = await self._write_that_lands_late()
+        real_get_entry = bucket.get_entry
+        reads = 0
+
+        async def second_read_fails(**kwargs: Any) -> tuple[bytes, int] | None:
+            nonlocal reads
+            reads += 1
+            if reads == 2:
+                raise ConnectionError("kv is unreachable")
+            return await real_get_entry(**kwargs)
+
+        bucket.get_entry = second_read_fails  # type: ignore[method-assign]
+        with pytest.raises(ConnectionError):
+            await handle.refresh()
+        bucket.get_entry = real_get_entry  # type: ignore[method-assign]
+        await handle.release()
+        assert await bucket.get(key="lock/a") is None
+
+    async def test_another_holders_entry_is_still_a_lost_lease(self) -> None:
+        handle, bucket = await self._unanswered_refresh()
+        entry = await bucket.get_entry(key="lock/a")
+        assert entry is not None
+        stolen = entry[0].replace(b"pod-alpha", b"pod-thief")
+        assert await bucket.update(key="lock/a", value=stolen, revision=entry[1]) is not None
+        with pytest.raises(LeaseLost):
+            await handle.refresh()
+        await handle.release()
+        assert await bucket.get(key="lock/a") == stolen
+
+
+class TestHolder:
+    """a reader asks who holds a lease without contending for it."""
+
+    async def test_a_free_key_has_no_holder(self) -> None:
+        lease, _ = await _make_lease()
+        assert await lease.holder("load") is None
+
+    async def test_a_held_lease_names_its_holder_to_every_factory_and_none_once_released(self) -> None:
+        client = FakeNatsClient()
+        holding = KVLease(nats_client=client, pod_id="pod-alpha", key_scope="pod1")  # type: ignore[arg-type]
+        reading = KVLease(nats_client=client, pod_id="pod-beta", key_scope="pod1")  # type: ignore[arg-type]
+
+        handle = await holding.acquire("load", ttl_seconds=30)
+
+        assert await reading.holder("load") == "pod-alpha"
+        assert await holding.holder("load") == "pod-alpha"
+        # asking is not contending: the holder still holds, and can renew
+        await handle.refresh()
+        await handle.release()
+        assert await reading.holder("load") is None
+
+    async def test_a_lease_under_another_owners_scope_is_not_this_ones(self) -> None:
+        client = FakeNatsClient()
+        await KVLease(nats_client=client, pod_id="pod-alpha", key_scope="pod1").acquire("load", ttl_seconds=30)  # type: ignore[arg-type]
+
+        assert await KVLease(nats_client=client, pod_id="pod-beta", key_scope="pod2").holder("load") is None  # type: ignore[arg-type]
+
+    async def test_a_holder_that_died_is_named_until_its_entry_expires_and_not_after(self) -> None:
+        lease, client = await _make_lease(pod_id="pod-reader")
+        bucket = await _bucket_for(client, "test_leases")
+        now = datetime.now(UTC)
+
+        def entry(expires: datetime) -> bytes:
+            return serialize_to_json(
+                {
+                    "holder": "pod-dead",
+                    "expires_at": json_datetime(expires),
+                    "acquired_at": json_datetime(now - timedelta(minutes=5)),
+                }
+            )
+
+        await bucket.put(key="load", value=entry(now + timedelta(seconds=30)))
+        assert await lease.holder("load") == "pod-dead"
+        await bucket.put(key="load", value=entry(now - timedelta(seconds=1)))
+        assert await lease.holder("load") is None
+
+    async def test_an_entry_this_lease_did_not_write_names_no_holder(self) -> None:
+        lease, client = await _make_lease()
+        await (await _bucket_for(client, "test_leases")).put(key="load", value=b"not an envelope")
+
+        assert await lease.holder("load") is None
+
+    async def test_a_holding_is_named_by_when_it_was_taken_which_renewals_keep_and_a_new_holding_does_not(
+        self,
+    ) -> None:
+        lease, _ = await _make_lease()
+        handle = await lease.acquire("load", ttl_seconds=30)
+        taken = await lease.held("load")
+        assert taken is not None and taken.holder == "pod-alpha"
+
+        await asyncio.sleep(0.002)
+        await handle.refresh()
+        await handle.refresh(ttl_seconds=60)
+        renewed = await lease.held("load")
+        # the same holding, however often it is renewed
+        assert renewed == taken
+
+        await handle.release()
+        assert await lease.held("load") is None
+        await asyncio.sleep(0.002)
+        await lease.acquire("load", ttl_seconds=30)
+        again = await lease.held("load")
+        assert again is not None and again.holder == "pod-alpha" and again.acquired_at > taken.acquired_at

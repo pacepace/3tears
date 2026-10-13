@@ -158,7 +158,11 @@ def entity_collection_stub(
     def _key_from_row(data: dict[str, Any], columns: tuple[str, ...] | None = None) -> tuple[Any, ...]:
         return tuple(data.get(col) for col in (columns if columns is not None else primary_key_columns))
 
-    def _write_to_cache(data: dict[str, Any], primary_key: str | tuple[str, ...] | None = None) -> bool:
+    def _write_to_cache(
+        data: dict[str, Any], primary_key: str | tuple[str, ...] | None = None, *, read_since: Any = None
+    ) -> bool:
+        # ``read_since`` is the real signature's scan fence; nothing evicts behind a stub's back,
+        # so every read here is still the newest
         # the ``primary_key`` override is the real signature's second
         # parameter, and it is positional-or-keyword there, so it is
         # here too. it names the columns THIS write keys on, exactly as

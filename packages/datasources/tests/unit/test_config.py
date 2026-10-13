@@ -24,7 +24,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError, create_model
 
 from threetears.datasources.config import (
-    AgentInternalConnectionConfig,
+    BorrowedPoolConnectionConfig,
     BigQueryConnectionConfig,
     ConnectionConfig,
     DatasourceConfig,
@@ -350,18 +350,18 @@ class TestBigQueryConnectionConfig:
         assert not hasattr(cfg, "password_ref")
 
 
-class TestAgentInternalConnectionConfig:
+class TestBorrowedPoolConnectionConfig:
     """agent_internal: no external identity; just the schema_name."""
 
     def test_minimal(self) -> None:
-        cfg = AgentInternalConnectionConfig(
+        cfg = BorrowedPoolConnectionConfig(
             datasource_type=DataSourceType.AGENT_INTERNAL,
             schema_name="agent_abc123",
         )
         assert cfg.schema_name == "agent_abc123"
 
     def test_no_connection_identity(self) -> None:
-        cfg = AgentInternalConnectionConfig(
+        cfg = BorrowedPoolConnectionConfig(
             datasource_type=DataSourceType.AGENT_INTERNAL,
             schema_name="agent_xyz",
         )
@@ -605,7 +605,7 @@ class TestConnectionConfigDiscriminator:
                 "schema_name": "agent_abc",
             }
         )
-        assert isinstance(cfg, AgentInternalConnectionConfig)
+        assert isinstance(cfg, BorrowedPoolConnectionConfig)
 
     def test_unknown_discriminator_rejected(self) -> None:
         with pytest.raises(ValidationError):

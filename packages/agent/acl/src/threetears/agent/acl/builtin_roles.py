@@ -176,6 +176,9 @@ async def ensure_platform_builtin_tool_user_role(
         _json.dumps(PLATFORM_BUILTIN_TOOL_USER_ROLE_PERMISSIONS),
         now,
     )
+    # the table carries a write generation: announce the row, in one advance, so a pod following
+    # ``roles`` hears the insert rather than finding an advance with no row and dropping the table
+    await role_collection.invalidate_cache(new_id)
     log.info(
         "platform builtin tool-user role inserted",
         extra={

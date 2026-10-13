@@ -294,6 +294,52 @@ class S3ObjectStore:
                         },
                     )
 
+    async def delete_versions(self, prefix: str) -> int:
+        """Delete every version and delete marker under ``prefix``, for good.
+
+        In a versioned bucket a plain delete only stacks a delete marker on the object and keeps
+        its data as a noncurrent version. This removes the data itself: every version and every
+        marker under the prefix, by version id, in batches of S3's 1000-key limit. A key S3
+        reports it could not delete is raised, never skipped, so a caller that must not leave
+        data behind learns that it did.
+
+        :param prefix: the key prefix, non-empty (a whole bucket is never cleared by accident)
+        :ptype prefix: str
+        :return: how many versions and delete markers were deleted
+        :rtype: int
+        :raises ValueError: when ``prefix`` is empty
+        :raises RuntimeError: when S3 refused to delete any of them
+        """
+        if not prefix:
+            raise ValueError("delete_versions needs a non-empty prefix")
+        deleted = 0
+        async with self._client() as client:
+            markers: dict[str, str] = {}
+            while True:
+                resp = await client.list_object_versions(Bucket=self._bucket, Prefix=prefix, **markers)
+                entries = [
+                    {"Key": v["Key"], "VersionId": v["VersionId"]}
+                    for v in [*resp.get("Versions", []), *resp.get("DeleteMarkers", [])]
+                ]
+                for start in range(0, len(entries), _DELETE_BATCH_SIZE):
+                    answer = await client.delete_objects(
+                        Bucket=self._bucket,
+                        Delete={"Objects": entries[start : start + _DELETE_BATCH_SIZE], "Quiet": True},
+                    )
+                    errors = answer.get("Errors") or []
+                    if errors:
+                        first = errors[0]
+                        raise RuntimeError(
+                            f"S3 did not delete {len(errors)} version(s) under {prefix!r}: "
+                            f"{first.get('Key')} {first.get('Code')}"
+                        )
+                deleted += len(entries)
+                if not resp.get("IsTruncated"):
+                    break
+                markers = {"KeyMarker": resp["NextKeyMarker"], "VersionIdMarker": resp["NextVersionIdMarker"]}
+        log.info("object versions deleted", extra={"extra_data": {"prefix": prefix, "deleted": deleted}})
+        return deleted
+
     async def _iter_contents(self, prefix: str | None) -> AsyncIterator[dict[str, Any]]:
         """Yield each ``Contents`` entry across every listing page.
 

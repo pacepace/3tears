@@ -43,6 +43,8 @@ from __future__ import annotations
 import re
 from typing import Final
 
+from threetears.nats.subject_permissions import kv_stream_name
+
 __all__ = ["kv_grant_remedy", "kv_timeout_remedy", "permissions_violation_remedy"]
 
 #: The server's refusal text, as ``nats-py`` surfaces it (lower-cased by its parser).
@@ -102,7 +104,7 @@ def kv_grant_remedy(bucket: str, *, certain: bool = True) -> str:
         f"`js_resources` in `threetears.nats.subject_permissions`, deciding its key scope and its "
         f"write intent, then re-mint the user JWT and reconnect. `mint_user_jwt` expands that one "
         f'entry into a PUBLISH-ONLY data grant ("$KV.{bucket}.>", or "$KV.{bucket}.<scope>.>" for a '
-        f'scoped bucket) plus JetStream control over stream "KV_{bucket}" at the capability the '
+        f'scoped bucket) plus JetStream control over stream "{kv_stream_name(bucket)}" at the capability the '
         f"entry declares. Do NOT hand-add `$KV` to the subscribe list: nothing subscribes it, and "
         f"it leaks every write's full value. If this deployment declares grants anywhere else as "
         f"well (the static NATS users in `nats.conf`), add it there too."

@@ -42,6 +42,7 @@ __all__ = [
     "DriverConnectError",
     "DriverCredentialPausedError",
     "DriverMissingCredentialError",
+    "DriverPoolBusyError",
     "PasswordConfig",
     "connect_error_from",
     "optional_password",
@@ -99,6 +100,14 @@ class DriverConnectError(Exception):
         super().__init__(message)
         self.sqlstate = sqlstate
         self.server_message = server_message
+
+
+class DriverPoolBusyError(Exception):
+    """the pool a driver borrows from its host had no connection to spare within the bound.
+
+    Nothing ran. Not a statement timeout (the warehouse never saw the statement) and not a login
+    failure: the host is busy, and the same query may succeed a moment later.
+    """
 
 
 class DriverAuthError(DriverConnectError):
