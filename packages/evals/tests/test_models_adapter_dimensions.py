@@ -25,6 +25,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.schema.completion import COMPLETION_RESULT_ATTRIBUTES
+from threetears.models import DEFAULT_CHAT_MODEL
 
 from packages.evals.tests.models_adapter_support import ProviderTransport, build, mocked_providers, plan_reply
 
@@ -79,7 +80,7 @@ PINNED: dict[str, dict[str, str]] = {
 
 #: Each provider's model for the full reply: one whose temperature LangChain keeps (``gpt-5`` drops it at build,
 #: which ``test_models_adapter.py`` holds), and an OpenRouter id that is not an alias, whose reply names the model.
-_MODELS = {"anthropic": "claude-sonnet-4-6", "openai": "gpt-4o", "openrouter": "anthropic/claude-sonnet-4.6"}
+_MODELS = {"anthropic": DEFAULT_CHAT_MODEL, "openai": "gpt-4o", "openrouter": "anthropic/claude-sonnet-4.6"}
 
 
 @pytest.fixture

@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.providers import PROVIDER_KEY_VARIABLES, ModelsClientRefused, ModelsCompletion, models_clients
+from threetears.models import DEFAULT_CHAT_MODEL
 
 from packages.evals.tests.models_adapter_support import (
     ANTHROPIC_HOST,
@@ -43,16 +44,16 @@ def _factory(net: ProviderTransport, **kwargs: Any) -> Any:
     url = net.base_url(ANTHROPIC_HOST)
     kwargs.setdefault("api_keys", {"anthropic": KEYS["anthropic"]})
     kwargs.setdefault("prices", FakeCatalogue())
-    return models_clients(defaults={"judge": "claude-sonnet-4-6"}, judge={"base_url": url}, **kwargs)
+    return models_clients(defaults={"judge": DEFAULT_CHAT_MODEL}, judge={"base_url": url}, **kwargs)
 
 
 async def test_the_factory_builds_once_per_key_and_hands_out_leases(net: ProviderTransport) -> None:
     plan_reply(net, "anthropic")
     clients = _factory(net)
     first = clients("judge", None, temperature=0.0)
-    again = clients("judge", "claude-sonnet-4-6", temperature=0.0)
+    again = clients("judge", DEFAULT_CHAT_MODEL, temperature=0.0)
     warmer = clients("judge", None, temperature=0.7)
-    assert first.model_name == "claude-sonnet-4-6"
+    assert first.model_name == DEFAULT_CHAT_MODEL
     assert first.chat_model is again.chat_model and first.chat_model is not warmer.chat_model
     async with first:
         await _generate(first)
