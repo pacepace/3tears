@@ -44,6 +44,7 @@ __all__ = [
     "mocked_providers",
     "ok",
     "openai_reply",
+    "openai_responses_reply",
     "openrouter_stream",
     "plan_reply",
     "status",
@@ -67,10 +68,12 @@ class ProviderTransport:
     Attributes:
         plans: Host key -> the replies it serves in order; the last one repeats.
         requests: ``(host key, JSON body)`` for every request, in arrival order.
+        paths: ``(host key, URL path)`` for every request, in arrival order.
     """
 
     plans: dict[str, list[Planned]] = field(default_factory=dict)
     requests: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    paths: list[tuple[str, str]] = field(default_factory=list)
 
     def plan(self, host: str, *replies: Planned) -> None:
         """Serve ``replies`` to ``host``, in order, the last repeating."""
@@ -101,6 +104,7 @@ class ProviderTransport:
         key = self._host_key(request)
         body = json.loads(request.content) if request.content else {}
         self.requests.append((key, body))
+        self.paths.append((key, request.url.path))
         plan = self.plans.get(key)
         assert plan, f"no reply planned for {key} ({request.url})"
         status, payload, headers = plan.pop(0) if len(plan) > 1 else plan[0]
@@ -147,6 +151,8 @@ def anthropic_reply(
     stop_reason: str | None = "end_turn",
     thinking_tokens: int | None = 5,
     thinking_block: bool = True,
+    cache_read: int = 3,
+    cache_creation: int = 0,
 ) -> dict[str, Any]:
     """An Anthropic Messages reply: a thinking block (by default), one text block, usage with a thinking split."""
     content: list[dict[str, Any]] = []
@@ -156,8 +162,8 @@ def anthropic_reply(
     usage: dict[str, Any] = {
         "input_tokens": 11,
         "output_tokens": 22,
-        "cache_read_input_tokens": 3,
-        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": cache_read,
+        "cache_creation_input_tokens": cache_creation,
     }
     if thinking_tokens is not None:
         usage["output_tokens_details"] = {"thinking_tokens": thinking_tokens}
@@ -181,6 +187,7 @@ def openai_reply(
     reasoning_tokens: int | None = 7,
     refusal: str | None = None,
     usage: bool = True,
+    cached_tokens: int | None = None,
 ) -> dict[str, Any]:
     """An OpenAI chat-completions reply."""
     message: dict[str, Any] = {"role": "assistant", "content": text}
@@ -201,6 +208,47 @@ def openai_reply(
             "total_tokens": 33,
             "completion_tokens_details": details,
         }
+        if cached_tokens is not None:
+            reply["usage"]["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
+    return reply
+
+
+def openai_responses_reply(
+    *,
+    text: str = '{"score": 4}',
+    model: str = "gpt-5-pro-2025-10-06",
+    status: str = "completed",
+    incomplete_reason: str | None = None,
+) -> dict[str, Any]:
+    """An OpenAI Responses-API reply: one output message, a ``status``, and ``incomplete_details`` when given."""
+    reply: dict[str, Any] = {
+        "id": "resp_1",
+        "object": "response",
+        "created_at": 1,
+        "model": model,
+        "status": status,
+        "output": [
+            {
+                "type": "message",
+                "id": "msg_1",
+                "status": status,
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": text, "annotations": []}],
+            }
+        ],
+        "parallel_tool_calls": True,
+        "tool_choice": "auto",
+        "tools": [],
+        "usage": {
+            "input_tokens": 11,
+            "output_tokens": 22,
+            "total_tokens": 33,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens_details": {"reasoning_tokens": 7},
+        },
+    }
+    if incomplete_reason is not None:
+        reply["incomplete_details"] = {"reason": incomplete_reason}
     return reply
 
 
@@ -214,6 +262,7 @@ def openrouter_stream(
     model: str = "anthropic/claude-4.6-sonnet-20260201",
     upstream: str | None = "Anthropic",
     finish_reason: str | None = "stop",
+    native_finish_reason: str | None = None,
     cost: float | None = 0.00123,
     upstream_cost: float | None = None,
     reasoning_tokens: int | None = 7,
@@ -229,9 +278,10 @@ def openrouter_stream(
         delta: dict[str, Any] = {"content": part}
         if index == 0:
             delta["role"] = "assistant"
-        chunks.append(
-            {**base, "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason if last else None}]}
-        )
+        choice: dict[str, Any] = {"index": 0, "delta": delta, "finish_reason": finish_reason if last else None}
+        if last and native_finish_reason is not None:
+            choice["native_finish_reason"] = native_finish_reason
+        chunks.append({**base, "choices": [choice]})
     if usage:
         stats: dict[str, Any] = {
             "prompt_tokens": 11,
@@ -271,6 +321,7 @@ CATALOGUE: dict[str, Any] = {
         {"id": "openai/gpt-5-mini", "pricing": {"prompt": "0.00000025", "completion": "0.000002"}},
         {"id": "openai/gpt-4o", "pricing": {"prompt": "0.0000025", "completion": "0.00001"}},
         {"id": "anthropic/unpriced", "pricing": {"prompt": "0", "completion": "0"}},
+        {"id": "~anthropic/claude-sonnet-latest", "pricing": {"prompt": "0.000003", "completion": "0.000015"}},
     ]
 }
 
@@ -283,19 +334,30 @@ class FakeCatalogue:
         fetches: Every URL fetched, in order.
         failure: An exception to raise instead of answering, or ``None``.
         payload: What the catalogue serves.
+        body: Raw text to serve instead of ``payload`` (a body that is not JSON), or ``None``.
     """
 
-    def __init__(self, *, failure: BaseException | None = None, payload: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        failure: BaseException | None = None,
+        payload: dict[str, Any] | None = None,
+        body: str | None = None,
+    ) -> None:
         self.fetches: list[str] = []
         self.failure = failure
         self.payload = CATALOGUE if payload is None else payload
+        self.body = body
 
     async def get(self, url: str, /) -> httpx.Response:
         """Answer one catalogue read."""
         self.fetches.append(url)
         if self.failure is not None:
             raise self.failure
-        return httpx.Response(200, json=self.payload, request=httpx.Request("GET", url))
+        request = httpx.Request("GET", url)
+        if self.body is not None:
+            return httpx.Response(200, text=self.body, request=request)
+        return httpx.Response(200, json=self.payload, request=request)
 
 
 # --- clients on the mocked network -----------------------------------------------------------------------

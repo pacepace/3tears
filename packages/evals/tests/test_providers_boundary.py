@@ -160,14 +160,34 @@ def test_the_engine_never_names_the_adapter() -> None:
     )
 
 
+#: The one reach below a public root the adapter makes, and why: the package's logger. Every module of the package
+#: takes its stdlib logger from :mod:`threetears.evals.schema.logs` (the repository's conventions gate refuses
+#: ``logging.getLogger`` everywhere else, and ``tests/test_package_matrix.py`` lets every package import it), and the
+#: adapter logs what the engine does not store: a reply read as ``truncated`` with the provider's raw stop reason,
+#: and every pricing failure. A host logs through loggers of its own and never needs it, which is why it is not a
+#: public name; the adapter is the package's own code, held to the package's logging convention.
+PACKAGE_LOGGING = "threetears.evals.schema.logs.get_logger"
+
+
 def test_the_adapter_reaches_the_engine_only_through_public_roots() -> None:
-    """Every reach into ``threetears.evals`` from the adapter is a public root's declared name, as for any host."""
+    """Every reach into ``threetears.evals`` from the adapter is a public root's declared name, as for any host.
+
+    The one exception is :data:`PACKAGE_LOGGING`, the package's logger, named exactly.
+    """
     findings = [
-        finding for finding in nonpublic_evals_imports(PROVIDERS_ROOT) if not _names_the_adapter(finding.target)
+        finding
+        for finding in nonpublic_evals_imports(PROVIDERS_ROOT)
+        if not _names_the_adapter(finding.target) and finding.target != PACKAGE_LOGGING
     ]
     assert not findings, "The adapter reaches below a public root of the engine:\n  " + "\n  ".join(
         str(finding) for finding in findings
     )
+
+
+def test_the_logging_exception_is_the_one_reach_it_names() -> None:
+    """Non-vacuity: the exception is in use, as a static import of exactly that name, and covers nothing else."""
+    reaches = [finding for finding in nonpublic_evals_imports(PROVIDERS_ROOT) if finding.target == PACKAGE_LOGGING]
+    assert reaches and {finding.rule for finding in reaches} == {"static_import"}
 
 
 def test_the_adapter_reaches_models_only_through_public_names() -> None:

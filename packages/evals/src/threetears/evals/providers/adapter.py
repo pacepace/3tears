@@ -24,6 +24,22 @@ what the engine records is what was sent.
 the same ``output_config``). Nothing about a call is written to the client, so concurrent calls on one instance
 each send exactly their own prompt pair, as the port requires.
 
+**Loaded once, at boot: the prices.** A client's rates come from models' price catalogue, which is read over the
+network, and :meth:`ModelsCompletionClient.price_ceiling` is synchronous (the port's signature), so it can only
+answer from rates already loaded. A host awaits ``await client.load_prices()`` once after building a client (the
+factory's ``await clients.load_prices()`` does it for every role's default model), before the engine makes an
+out-of-run call under an enforced ``out_of_run_cap_usd``: until then the ceiling is ``None``, and the engine refuses
+such a call rather than make it, since unknown is not $0. On Anthropic and OpenAI the first priced call also loads
+the rates; on OpenRouter, whose calls are priced by OpenRouter's own reported figure, only ``load_prices`` does,
+from the same catalogue (OpenRouter's models endpoint prices OpenRouter ids), for the ceiling alone.
+
+**A pricing failure never costs the answer.** Pricing runs after the call. A catalogue that cannot be fetched or
+read is logged at WARNING and not kept, so the next call (or the next ``load_prices``) tries again; a model the
+catalogue does not price is logged once and kept, since asking again changes nothing. Any other exception while
+pricing (a bug in a host's registered price source, a host ``prices=`` client raising something other than a
+transport error) is logged at ERROR with its traceback, and the paid completion is returned unpriced, its
+``pricing_failure`` naming the exception: the call was made and paid for, and the caller is owed its answer.
+
 **Refused, by name, before anything is sent.** A provider the adapter does not support, a model id models'
 registry cannot place, the Claude CLI route, a reasoning word or budget the provider cannot carry, and a provider
 keyword that would bypass what the adapter guarantees (retries, breaker, streaming, reasoning). Each is a
@@ -48,22 +64,25 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableBinding
 
 from threetears.evals.schema import KnownReasoningEffort, StopReason
+from threetears.evals.schema.logs import get_logger
 from threetears.models import CircuitBreaker, PriceLookup, create_chat_model, get_capabilities, lookup_price
-from threetears.models.price_lookup import HttpClient
+from threetears.models.price_lookup import OPENROUTER_MODELS_URL, HttpClient
 from threetears.models.providers.claude_cli import OAUTH_TOKEN_PREFIX, is_subscription_token
 from threetears.models.providers.structured_output import structured_output_kwargs
 
 __all__ = [
     "PROVIDER_KEY_VARIABLES",
     "SUPPORTED_PROVIDERS",
-    "CatalogueFetches",
     "ModelsClientRefused",
     "ModelsCompletion",
     "ModelsCompletionClient",
+    "PriceBook",
     "SupportedProvider",
     "models_client",
     "resolve_provider",
 ]
+
+log = get_logger(__name__)
 
 #: The providers the adapter builds a client for, as models' registry names them. The Claude CLI route (the
 #: ``anthropic`` provider given a subscription token) is refused even though models routes it: see
@@ -145,15 +164,17 @@ _CATALOGUE_TIMEOUT_S: Final = 20.0
 _OPENROUTER_ROUTERS_PREFIX: Final = "openrouter/"
 
 #: Anthropic's stop reasons, in the engine's words. ``tool_use`` is a finish: the adapter binds no tools.
-#: ``model_context_window_exceeded`` is a truncation at the window, so it reads as the cap. ``pause_turn`` is a
-#: server-tool pause: output exists and stopped early for a cause that is neither the cap nor a filter, so it is
-#: ``truncated``, never ``error`` (nothing failed) and never ``end_turn`` (the turn is not over).
+#: ``model_context_window_exceeded`` is the context window filling, not the output cap: it is ``truncated``, never
+#: ``max_tokens``, whose remedy (raise the cap) makes an overflowing context worse. ``pause_turn`` is a server-tool
+#: pause: output exists and stopped early for a cause that is neither the cap nor a filter, so it is ``truncated``,
+#: never ``error`` (nothing failed) and never ``end_turn`` (the turn is not over). The raw value rides beside either
+#: (:attr:`ModelsCompletion.provider_stop_reason`).
 _ANTHROPIC_STOPS: Final[Mapping[str, StopReason]] = {
     "end_turn": "end_turn",
     "stop_sequence": "end_turn",
     "tool_use": "end_turn",
     "max_tokens": "max_tokens",
-    "model_context_window_exceeded": "max_tokens",
+    "model_context_window_exceeded": "truncated",
     "refusal": "content_filter",
     "pause_turn": "truncated",
 }
@@ -168,6 +189,33 @@ _OPENAI_STOPS: Final[Mapping[str, StopReason]] = {
     "content_filter": "content_filter",
     "error": "error",
 }
+
+#: Why an OpenAI Responses-API reply stopped short, in the engine's words: its ``incomplete_details.reason``. A reply
+#: whose ``status`` is ``completed`` is ``end_turn``; any other status, or a reason not named here, is ``truncated``.
+_RESPONSES_INCOMPLETE: Final[Mapping[str, StopReason]] = {
+    "max_output_tokens": "max_tokens",
+    "content_filter": "content_filter",
+}
+
+#: Model id prefixes ``ChatOpenAI`` always sends to OpenAI's Responses API, whatever it is asked: langchain-openai's
+#: own list (``chat_models/base.py``), copied because the original is private there, as is the ``codex`` rule beside
+#: it. ``tests/test_models_adapter.py`` holds the copy to where LangChain actually sends each id, so an upgrade that
+#: moves an id fails there by name.
+_RESPONSES_ONLY_PREFIXES: Final = ("gpt-5-pro", "gpt-5.2-pro", "gpt-5.4-pro", "gpt-5.5-pro")
+
+#: ``ChatOpenAI`` fields any non-``None`` value of which routes every call to the Responses API.
+_RESPONSES_FIELDS: Final = ("context_management", "include", "reasoning", "truncation")
+
+#: Request keywords that route a ``ChatOpenAI`` call to the Responses API when its payload carries one, as a
+#: provider's ``model_kwargs`` would.
+_RESPONSES_PAYLOAD_KEYS: Final = frozenset(
+    {"context_management", "include", "previous_response_id", "reasoning", "text", "truncation"}
+)
+
+#: What ``price_source`` gains when a catalogue-priced call read or wrote the prompt cache: the catalogue carries no
+#: cache rates, so those tokens were priced at the plain input rate, and the stored cost is approximate, in either
+#: direction (a provider bills a cache read below the input rate and an Anthropic cache write above it).
+_CACHE_APPROXIMATE: Final = ";cache-approximate"
 
 #: What an absent or unknown finish reason reads as: cut short, cause unnamed, never finished. A reply with no
 #: finish reason (a stream that ended without one) or with one this build does not know (a future provider value)
@@ -207,7 +255,7 @@ class ModelsClientRefused(ValueError):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ModelsCompletion:
-    """One completion as the adapter read it off the chat model's reply: the port's ten members and two of its own.
+    """One completion as the adapter read it off the chat model's reply: the port's ten members and three of its own.
 
     Implements :class:`~threetears.evals.schema.CompletionResult` structurally, frozen as the protocol's read-only
     members ask. Every count and the cost are ``None`` where the provider reported nothing, never ``0``. Which
@@ -221,16 +269,21 @@ class ModelsCompletion:
         reasoning_tokens: The reasoning share of ``output_tokens``, or ``None`` when the provider reported no split.
         cost_usd: What the call cost, or ``None`` when nothing priced it (``pricing_failure`` says why).
         price_source: Where ``cost_usd`` came from: ``openrouter:reported`` for OpenRouter's own figure, or
-            ``<source>:<matched catalogue id>`` for a rate from ``threetears.models.price_lookup``.
+            ``<source>:<matched catalogue id>`` for a rate from ``threetears.models.price_lookup``, which ends in
+            ``;cache-approximate`` when the reply read or wrote the prompt cache: the catalogue has no cache rates,
+            so those tokens were priced at the plain input rate and the cost is approximate, in either direction.
         model: The model id the client was built for, which is what spend is attributed to.
         served_model: The model the provider's reply named, or ``None`` when it named none.
         temperature: The temperature the request carried, or ``None`` when it carried none.
         stop_reason: The provider's stop reason in the engine's words; an absent or unknown one, and Anthropic's
-            ``pause_turn``, is ``truncated``, and only a provider-reported error (OpenRouter's ``error``) is
-            ``error``.
-        provider_stop_reason: The stop reason as the provider named it (Anthropic's ``stop_reason``, the
-            ``finish_reason`` elsewhere), or ``None`` when it named none. It is what to look at when ``stop_reason``
-            is ``truncated``: the engine's word says the cause went unnamed, this says what, if anything, was sent.
+            ``pause_turn`` and ``model_context_window_exceeded``, is ``truncated``, and only a provider-reported
+            error (OpenRouter's ``error``) is ``error``.
+        provider_stop_reason: The stop reason as the provider named it (Anthropic's ``stop_reason``; OpenAI's
+            ``finish_reason``, or on its Responses API the ``incomplete_details.reason``, else the ``status``;
+            OpenRouter's ``native_finish_reason`` when LangChain carries it, else its ``finish_reason``), or ``None``
+            when it named none. It is what to look at when ``stop_reason`` is ``truncated``: the engine's word says
+            the cause went unnamed, this says what, if anything, was sent. The adapter logs it at WARNING whenever a
+            reply reads as ``truncated``, since the engine stores only its own word.
         served_provider: The upstream that served an OpenRouter call, as OpenRouter's reply names it; ``None`` on
             a provider called directly, whose reply names no upstream, and on an OpenRouter reply that named none.
         pricing_failure: Why ``cost_usd`` is ``None``, in a sentence; ``None`` when the call was priced.
@@ -258,13 +311,26 @@ class _Unpriced:
     reason: str
 
 
-class CatalogueFetches:
-    """Each URL a price source reads, fetched once and kept: ``price_lookup`` fetches it on every lookup.
+class _CatalogueUnreadable(Exception):
+    """OpenRouter's catalogue answered, and its body is not JSON: the one parse the adapter reads as a bad catalogue.
 
-    ``threetears.models.price_lookup.lookup_price`` GETs the whole OpenRouter catalogue every time it is called,
-    and caches nothing. This sits between it and the HTTP client, so a client (or, under :class:`ModelsClients`,
-    every client of one factory) reads each catalogue once. Only a response that passed ``raise_for_status`` is
-    kept; a failed fetch propagates, and the client that saw it records why it is unpriced.
+    Raised by :meth:`PriceBook.get` rather than left to ``price_lookup``'s own ``response.json()``, so a ``ValueError``
+    from anywhere else (a host's registered price source) is not mistaken for a malformed catalogue.
+    """
+
+
+class PriceBook:
+    """The price catalogue a client reads, or every client of one :class:`~threetears.evals.providers.ModelsClients`.
+
+    Two caches. ``threetears.models.price_lookup.lookup_price`` GETs the whole catalogue on every call and caches
+    nothing, so this sits between it and the HTTP client and keeps each URL's response once it passed
+    ``raise_for_status``. And it keeps each model's looked-up rates by provider and model id, which is what lets
+    :meth:`ModelsCompletionClient.price_ceiling`, which is synchronous, answer from rates an earlier
+    :meth:`ModelsCompletionClient.load_prices` loaded, for every client of the model the book serves.
+
+    What is kept is what asking again would not change: a response that was read, rates that were found, and a
+    catalogue that prices no row for the model. A fetch that failed, or a catalogue body that is not JSON, is not
+    kept: the next call or load tries again. Every outcome that leaves a model unpriced is logged at WARNING.
     """
 
     def __init__(self, client: HttpClient | None) -> None:
@@ -275,21 +341,31 @@ class CatalogueFetches:
         """
         self._client = client
         self._responses: dict[str, Any] = {}
-        self._lock = asyncio.Lock()
+        self._fetch_lock = asyncio.Lock()
+        self._rates: dict[tuple[str, str], PriceLookup | _Unpriced] = {}
+        self._rates_lock = asyncio.Lock()
 
     async def get(self, url: str, /) -> Any:  # Any: models' HttpClient protocol types the response as Any
-        """The response for ``url``, fetched on the first read and kept.
+        """The response for ``url``, fetched on the first read and kept: the ``HttpClient`` ``lookup_price`` reads.
 
         Args:
             url: The URL a price source reads.
 
         Returns:
-            The response, already checked with ``raise_for_status``.
+            The response, already checked with ``raise_for_status`` (and, for OpenRouter's catalogue, parsed).
+
+        Raises:
+            _CatalogueUnreadable: OpenRouter's catalogue answered with a body that is not JSON.
         """
-        async with self._lock:
+        async with self._fetch_lock:
             if url not in self._responses:
                 response = await self._fetch(url)
                 response.raise_for_status()
+                if url == OPENROUTER_MODELS_URL:
+                    try:
+                        response.json()
+                    except ValueError as unparsed:
+                        raise _CatalogueUnreadable(f"{type(unparsed).__name__}: {unparsed}") from unparsed
                 self._responses[url] = response
             return self._responses[url]
 
@@ -298,6 +374,76 @@ class CatalogueFetches:
             return await self._client.get(url)
         async with httpx.AsyncClient(timeout=_CATALOGUE_TIMEOUT_S, follow_redirects=True) as owned:
             return await owned.get(url)
+
+    def rates(self, provider: str, model: str) -> PriceLookup | _Unpriced | None:
+        """The rates already looked up for ``model`` on ``provider``, why it is unpriced, or ``None`` when not looked up.
+
+        Args:
+            provider: The provider, as models' registry names it.
+            model: The model id.
+
+        Returns:
+            What the book holds for the model, without touching the network.
+        """
+        return self._rates.get((provider, model))
+
+    async def look_up(self, provider: str, model: str) -> PriceLookup | _Unpriced:
+        """The model's rates, looked up on the first ask and kept, or why it is unpriced.
+
+        Args:
+            provider: The provider, as models' registry names it.
+            model: The model id.
+
+        Returns:
+            The rates, both of them present, or why there are none.
+
+        Raises:
+            Exception: Whatever a host's registered price source, or a host ``prices=`` client, raises beyond a
+                failed fetch (``httpx.HTTPError``, ``OSError``) and an unreadable catalogue: a defect there is not a
+                price, and is not kept.
+        """
+        async with self._rates_lock:
+            known = self._rates.get((provider, model))
+            if known is not None:
+                return known
+            try:
+                found = await lookup_price(self, provider=provider, api_name=model)
+            except (httpx.HTTPError, OSError) as exc:
+                return self._unpriced(
+                    provider, model, f"the price catalogue could not be fetched ({type(exc).__name__}: {exc})"
+                )
+            except _CatalogueUnreadable as exc:
+                return self._unpriced(provider, model, f"the price catalogue could not be read ({exc})")
+            if found.matched_id is None:
+                outcome: PriceLookup | _Unpriced = self._unpriced(
+                    provider, model, f"no price catalogue row matches {provider} model {model!r}"
+                )
+            elif found.cost_per_1m_input is None or found.cost_per_1m_output is None:
+                outcome = self._unpriced(
+                    provider, model, f"the price catalogue row {found.matched_id!r} carries no input or output rate"
+                )
+            else:
+                outcome = found
+            self._rates[(provider, model)] = outcome
+            return outcome
+
+    async def load(self, provider: str, model: str) -> str | None:
+        """Look the model's rates up (:meth:`look_up`), and say why it is unpriced, or ``None`` when it is priced.
+
+        Args:
+            provider: The provider, as models' registry names it.
+            model: The model id.
+
+        Returns:
+            ``None`` when the rates are loaded, else why the model is unpriced (already logged at WARNING).
+        """
+        rates = await self.look_up(provider, model)
+        return rates.reason if isinstance(rates, _Unpriced) else None
+
+    @staticmethod
+    def _unpriced(provider: str, model: str, reason: str) -> _Unpriced:
+        log.warning("eval.providers unpriced provider=%s model=%s: %s", provider, model, reason)
+        return _Unpriced(reason)
 
 
 def resolve_provider(model_id: str, provider: str | None) -> SupportedProvider:
@@ -405,13 +551,69 @@ def _mapping(value: object) -> Mapping[str, Any]:  # Any: LangChain's metadata d
     return value if isinstance(value, Mapping) else {}
 
 
+def _named(value: object) -> str | None:
+    """``value`` when it is a non-empty string, else ``None``: a stop reason the provider named, or none."""
+    return value if isinstance(value, str) and value else None
+
+
+def _routes_to_responses(bound: object) -> bool:
+    """Whether ``ChatOpenAI`` sends this model's calls to OpenAI's Responses API rather than Chat Completions.
+
+    LangChain's own rule, read off the built model's public fields: ``use_responses_api`` when it is set; otherwise
+    an ``output_version`` of ``responses/v1``, any Responses-only field or ``model_kwargs`` keyword, a previous
+    response id, or a model id LangChain always routes there (:data:`_RESPONSES_ONLY_PREFIXES`, and any id
+    containing ``codex``).
+
+    Args:
+        bound: The built ``ChatOpenAI``.
+
+    Returns:
+        Whether every call goes to the Responses API.
+    """
+    chosen = getattr(bound, "use_responses_api", None)
+    if isinstance(chosen, bool):
+        return chosen
+    if getattr(bound, "output_version", None) == "responses/v1" or getattr(bound, "use_previous_response_id", False):
+        return True
+    if any(getattr(bound, name, None) is not None for name in _RESPONSES_FIELDS):
+        return True
+    if _RESPONSES_PAYLOAD_KEYS & set(_mapping(getattr(bound, "model_kwargs", None))):
+        return True
+    model = getattr(bound, "model_name", None)
+    return isinstance(model, str) and (model.startswith(_RESPONSES_ONLY_PREFIXES) or "codex" in model)
+
+
+def _responses_temperature(bound: object, temperature: float | None) -> float | None:
+    """The temperature a Responses-API payload carries: LangChain drops it there for a reasoning ``gpt-5`` model.
+
+    Its payload builder removes the temperature for a model id starting ``gpt-5`` that is not a ``chat`` model,
+    unless the reasoning effort is ``none``; construction already dropped any value but 1 for the same models, so
+    this is where a ``temperature=1`` goes too.
+
+    Args:
+        bound: The built ``ChatOpenAI``.
+        temperature: The temperature the built model holds.
+
+    Returns:
+        The temperature the request carries, or ``None``.
+    """
+    model = getattr(bound, "model_name", None)
+    effort = getattr(bound, "reasoning_effort", None) or _mapping(getattr(bound, "reasoning", None)).get("effort")
+    if isinstance(model, str) and model.startswith("gpt-5") and "chat" not in model and effort != "none":
+        return None
+    return temperature
+
+
 class ModelsCompletionClient:
     """The completion port over one chat model 3tears-models built: :func:`models_client` returns one.
 
     Implements :class:`~threetears.evals.schema.CompletionClient` and
     :class:`~threetears.evals.schema.BoundCompletionClient`. ``generate`` is safe to call concurrently: every call
-    builds its own messages and its own bind, and the only state it writes is the pricing outcome (computed once,
-    under a lock) and :attr:`last_pricing_failure`.
+    builds its own messages and its own bind, and the only state it writes is the price book's (under its locks)
+    and :attr:`last_pricing_failure`.
+
+    **Await** :meth:`load_prices` **once after building it**, before the engine makes an out-of-run call on it under
+    an enforced cap: :meth:`price_ceiling` answers only from loaded rates.
 
     Attributes:
         model_name: The model id the client calls, which every completion is attributed to.
@@ -435,20 +637,21 @@ class ModelsCompletionClient:
             chat_model: The binding ``create_chat_model`` returned.
             call_output_config: ``output_config`` entries every call sends (Anthropic's effort), merged with a
                 schema's format into one ``output_config``, since a second bind replaces the first.
-            prices: The httpx-like client the price catalogue is read through, or ``None`` for one of the
-                client's own per fetch.
+            prices: The httpx-like client a price book of the client's own reads the catalogue through, or
+                ``None`` for one that opens a client of its own per fetch; a factory passes its own
+                :class:`PriceBook` (itself such a client), which every client it builds then shares.
         """
         self.model_name = model_name
         self.provider: SupportedProvider = provider
         self._chat = chat_model
         self._call_output_config = dict(call_output_config)
-        self._catalogue = prices if isinstance(prices, CatalogueFetches) else CatalogueFetches(prices)
+        self._book = prices if isinstance(prices, PriceBook) else PriceBook(prices)
         bound = chat_model.bound
+        self._responses_api = provider == "openai" and _routes_to_responses(bound)
         temperature = getattr(bound, "temperature", None)
-        self._temperature = float(temperature) if isinstance(temperature, int | float) else None
+        built = float(temperature) if isinstance(temperature, int | float) else None
+        self._temperature = _responses_temperature(bound, built) if self._responses_api else built
         self._output_cap = _int_or_none(getattr(bound, "max_tokens", None))
-        self._rates: PriceLookup | _Unpriced | None = None
-        self._rates_lock = asyncio.Lock()
         self._closed = False
         self.last_pricing_failure: str | None = None
         """Why the most recent completion went unpriced, or ``None`` when it was priced.
@@ -472,15 +675,44 @@ class ModelsCompletionClient:
         """The temperature every request is sent with, read back from the built model; ``None`` when none is sent.
 
         Read after construction, never echoed from the argument: LangChain drops a temperature a model refuses at
-        build (OpenAI's ``gpt-5`` family), and on Anthropic a thinking budget is built with none, since the API
-        refuses one beside extended thinking.
+        build (OpenAI's ``gpt-5`` family), and again from the request on OpenAI's Responses API for a reasoning
+        ``gpt-5`` model, and on Anthropic a thinking budget is built with none, since the API refuses one beside
+        extended thinking.
         """
         return self._temperature
+
+    async def load_prices(self) -> str | None:
+        """Look the model's rates up in the price catalogue, so :meth:`price_ceiling` can answer: the boot step.
+
+        A host awaits it once after building the client, before the engine makes an out-of-run call on it under an
+        enforced cap (``out_of_run_cap_usd``); a client a factory built shares the factory's book, so a model loaded
+        once is loaded for every client of it. Rates found, and a catalogue that prices no row for the model, are
+        kept; a failed fetch is not, so awaiting it again tries again. On OpenRouter the rates serve the ceiling
+        alone: a call's stored cost stays OpenRouter's own reported figure.
+
+        Returns:
+            ``None`` when the rates are loaded, else why the model is unpriced (also logged at WARNING), in which
+            case :meth:`price_ceiling` stays ``None`` and an out-of-run call under an enforced cap is refused.
+
+        Raises:
+            Exception: What a host's registered price source, or a host ``prices=`` client, raises beyond a failed
+                fetch: a defect there surfaces at boot rather than as an unpriced model.
+        """
+        return await self._book.load(self.provider, self.model_name)
 
     def _request_kwargs(self, response_format: dict[str, Any] | None) -> dict[str, Any]:  # Any: provider kwargs
         """The bind keywords for one call: the response format as the provider takes it, and the effort beside it."""
         kwargs: dict[str, Any] = {}
         output_config: dict[str, Any] = dict(self._call_output_config)
+        if response_format is not None and self._responses_api:
+            raise ModelsClientRefused(
+                "response_format",
+                f"{self.model_name!r} is sent to OpenAI's Responses API, which takes a reply format as text.format, "
+                "and models' structured-output translation writes Chat Completions' response_format, which that API "
+                "refuses; use a model ChatOpenAI sends to Chat Completions (and no Responses-only keyword), or a "
+                "client of your own",
+                provider=self.provider,
+            )
         if response_format is not None:
             kind = response_format.get("type")
             if kind == "json_schema":
@@ -532,13 +764,15 @@ class ModelsCompletionClient:
                 ``extra_body.response_format``, OpenRouter's ``response_format`` with ``require_parameters``, so
                 an upstream that cannot honour it is refused rather than answering in prose); or a
                 ``json_object`` one, sent as OpenAI and OpenRouter take it and not at all on Anthropic, which has
-                no JSON mode. Either way the content is the reply's raw text.
+                no JSON mode. Either way the content is the reply's raw text. Refused on a model ``ChatOpenAI``
+                sends to OpenAI's Responses API, which takes neither in that shape.
 
         Returns:
-            The completion.
+            The completion. Its price never costs it: a pricing failure after the call returns it unpriced.
 
         Raises:
-            ModelsClientRefused: ``response_format`` is not a directive the adapter translates.
+            ModelsClientRefused: ``response_format`` is not a directive the adapter translates, or the model is on
+                OpenAI's Responses API.
             TypeError: The chat model returned something other than an ``AIMessage``.
         """
         kwargs = self._request_kwargs(response_format)
@@ -562,11 +796,16 @@ class ModelsCompletionClient:
             )
         else:
             reasoning = _int_or_none(_mapping(usage.get("output_token_details")).get("reasoning"))
-        if self.provider == "openrouter":
-            cost, source, unpriced = self._reported_cost(meta)
-        else:
-            cost, source, unpriced = await self._catalogue_cost(input_tokens, output_tokens)
+        cost, source, unpriced = await self._price(meta, usage, input_tokens, output_tokens)
         self.last_pricing_failure = unpriced
+        stop_reason, provider_stop_reason = self._stop(reply, meta)
+        if stop_reason == "truncated":
+            log.warning(
+                "eval.providers reply read as truncated provider=%s model=%s provider_stop_reason=%s",
+                self.provider,
+                self.model_name,
+                provider_stop_reason or "none",
+            )
         served_provider = meta.get("provider") if self.provider == "openrouter" else None
         return ModelsCompletion(
             content=reply.text,
@@ -578,11 +817,37 @@ class ModelsCompletionClient:
             model=self.model_name,
             served_model=self._served_model(meta),
             temperature=self._temperature,
-            stop_reason=self._stop_reason(reply, meta),
-            provider_stop_reason=self._provider_stop_reason(meta),
+            stop_reason=stop_reason,
+            provider_stop_reason=provider_stop_reason,
             served_provider=served_provider if isinstance(served_provider, str) and served_provider else None,
             pricing_failure=unpriced,
         )
+
+    async def _price(
+        self,
+        meta: Mapping[str, Any],  # Any: LangChain's metadata
+        usage: Mapping[str, Any],  # Any: as above
+        input_tokens: int | None,
+        output_tokens: int | None,
+    ) -> tuple[float | None, str | None, str | None]:
+        """The call's cost, where it came from, and why it is unpriced: never an exception, since the call is paid.
+
+        Pricing runs after the provider answered. An exception from it (a host's price source, a host ``prices=``
+        client raising something other than a transport error) is logged at ERROR with its traceback and recorded on
+        the completion as its ``pricing_failure``; the paid completion is still returned.
+        """
+        try:
+            if self.provider == "openrouter":
+                return self._reported_cost(meta)
+            return await self._catalogue_cost(usage, input_tokens, output_tokens)
+        except Exception as exc:  # the paid answer is returned unpriced; the failure is logged and recorded on it
+            log.exception(
+                "eval.providers pricing raised after a paid call provider=%s model=%s; the completion is returned "
+                "unpriced",
+                self.provider,
+                self.model_name,
+            )
+            return None, None, f"pricing the call raised {type(exc).__name__}: {exc}"
 
     def _served_model(self, meta: Mapping[str, Any]) -> str | None:  # Any: LangChain's metadata
         """The model the reply named. On OpenRouter, LangChain's fallback to the requested alias is not evidence."""
@@ -596,21 +861,34 @@ class ModelsCompletionClient:
             return None
         return named
 
-    def _provider_stop_reason(self, meta: Mapping[str, Any]) -> str | None:  # Any: LangChain's metadata
-        """The stop reason exactly as the provider named it, or ``None`` when it named none."""
-        raw = meta.get("stop_reason") if self.provider == "anthropic" else meta.get("finish_reason")
-        return raw if isinstance(raw, str) and raw else None
+    def _stop(self, reply: AIMessage, meta: Mapping[str, Any]) -> tuple[StopReason, str | None]:  # Any: metadata
+        """The stop reason in the engine's words, and as the provider named it (``None`` when it named none).
 
-    def _stop_reason(self, reply: AIMessage, meta: Mapping[str, Any]) -> StopReason:  # Any: LangChain's metadata
-        """The provider's stop reason in the engine's words; a refusal is the content filter, an unnamed stop is cut short."""
+        A refusal is the content filter; an absent or unknown stop is cut short (:data:`_UNNAMED_STOP`).
+        """
         if self.provider == "anthropic":
-            raw = meta.get("stop_reason")
-            return _ANTHROPIC_STOPS.get(raw, _UNNAMED_STOP) if isinstance(raw, str) else _UNNAMED_STOP
+            raw = _named(meta.get("stop_reason"))
+            return (_ANTHROPIC_STOPS.get(raw, _UNNAMED_STOP) if raw else _UNNAMED_STOP), raw
+        if self.provider == "openai" and "finish_reason" not in meta and "status" in meta:
+            return self._responses_stop(reply, meta)
+        finish = _named(meta.get("finish_reason"))
+        raw = (_named(meta.get("native_finish_reason")) or finish) if self.provider == "openrouter" else finish
         if reply.additional_kwargs.get("refusal"):
             # A structured-mode refusal arrives beside empty content with finish_reason `stop`.
-            return "content_filter"
-        raw = meta.get("finish_reason")
-        return _OPENAI_STOPS.get(raw, _UNNAMED_STOP) if isinstance(raw, str) else _UNNAMED_STOP
+            return "content_filter", raw
+        return (_OPENAI_STOPS.get(finish, _UNNAMED_STOP) if finish else _UNNAMED_STOP), raw
+
+    @staticmethod
+    def _responses_stop(reply: AIMessage, meta: Mapping[str, Any]) -> tuple[StopReason, str | None]:  # Any: as above
+        """An OpenAI Responses-API reply's stop: its ``status``, and when incomplete the ``incomplete_details``."""
+        status = _named(meta.get("status"))
+        reason = _named(_mapping(meta.get("incomplete_details")).get("reason"))
+        raw = reason or status
+        if reply.additional_kwargs.get("refusal"):
+            return "content_filter", raw
+        if status == "completed":
+            return "end_turn", raw
+        return (_RESPONSES_INCOMPLETE.get(reason, _UNNAMED_STOP) if reason else _UNNAMED_STOP), raw
 
     def _reported_cost(self, meta: Mapping[str, Any]) -> tuple[float | None, str | None, str | None]:  # Any: as above
         """OpenRouter's own figure, as it reported it, or why there is none.
@@ -626,39 +904,29 @@ class ModelsCompletionClient:
         return float(cost), "openrouter:reported", None
 
     async def _catalogue_cost(
-        self, input_tokens: int | None, output_tokens: int | None
+        self,
+        usage: Mapping[str, Any],  # Any: LangChain's usage metadata
+        input_tokens: int | None,
+        output_tokens: int | None,
     ) -> tuple[float | None, str | None, str | None]:
-        """Tokens times the catalogue's per-million rates for the requested model, or why there is no price."""
-        rates = await self._load_rates()
+        """Tokens times the catalogue's per-million rates for the requested model, or why there is no price.
+
+        A prompt that read or wrote the cache is priced at the plain input rate (the catalogue has no cache rates),
+        so its cost is approximate and its source says so (:data:`_CACHE_APPROXIMATE`).
+        """
+        rates = await self._book.look_up(self.provider, self.model_name)
         if isinstance(rates, _Unpriced):
             return None, None, rates.reason
         if input_tokens is None or output_tokens is None:
             return None, None, "the reply reported no input or output token count, so there is nothing to price"
-        assert rates.cost_per_1m_input is not None and rates.cost_per_1m_output is not None  # held by _load_rates
+        assert rates.cost_per_1m_input is not None and rates.cost_per_1m_output is not None  # held by the book
         dollars = (input_tokens * rates.cost_per_1m_input + output_tokens * rates.cost_per_1m_output) / Decimal(
             1_000_000
         )
-        return float(dollars), f"{rates.source}:{rates.matched_id}", None
-
-    async def _load_rates(self) -> PriceLookup | _Unpriced:
-        """The client's rates, looked up once and kept, failure included: a client is priced alike for its life."""
-        async with self._rates_lock:
-            if self._rates is None:
-                self._rates = await self._lookup_rates()
-            return self._rates
-
-    async def _lookup_rates(self) -> PriceLookup | _Unpriced:
-        try:
-            found = await lookup_price(self._catalogue, provider=self.provider, api_name=self.model_name)
-        except (httpx.HTTPError, OSError) as exc:
-            return _Unpriced(f"the price catalogue could not be fetched ({type(exc).__name__}: {exc})")
-        except ValueError as exc:
-            return _Unpriced(f"the price catalogue could not be read ({type(exc).__name__}: {exc})")
-        if found.matched_id is None:
-            return _Unpriced(f"no price catalogue row matches {self.provider} model {self.model_name!r}")
-        if found.cost_per_1m_input is None or found.cost_per_1m_output is None:
-            return _Unpriced(f"the price catalogue row {found.matched_id!r} carries no input or output rate")
-        return found
+        cached = _mapping(usage.get("input_token_details"))
+        cache_tokens = (_int_or_none(cached.get("cache_read")) or 0) + (_int_or_none(cached.get("cache_creation")) or 0)
+        marker = _CACHE_APPROXIMATE if cache_tokens else ""
+        return float(dollars), f"{rates.source}:{rates.matched_id}{marker}", None
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         """The most one :meth:`generate` with this prompt pair can cost, or ``None`` when the client cannot say.
@@ -667,10 +935,11 @@ class ModelsCompletionClient:
         byte-level tokenizer exceeds, plus an allowance for the framing the provider adds) and to the output cap
         the model was built with, reasoning included. One attempt per request, since the adapter retries nothing.
 
-        ``None`` until the client has looked its rates up, which its first priced call does (the lookup is async
-        and this is not), on OpenRouter (whose calls are priced by its own figure, so no rates are fetched), when
-        no catalogue row prices the model, and when the model was built with no output cap. An out-of-run call
-        under an enforced cap is then refused by the engine rather than made, since unknown is not $0.
+        ``None`` until the rates are loaded: **await** :meth:`load_prices` **once at boot** (on Anthropic and OpenAI a
+        first priced call also loads them; on OpenRouter only ``load_prices`` does, since its calls are priced by
+        OpenRouter's own figure). Also ``None`` when no catalogue row prices the model (``load_prices`` returned
+        why), and when the model was built with no output cap (pass ``max_tokens``). An out-of-run call under an
+        enforced cap is then refused by the engine rather than made, since unknown is not $0.
 
         Args:
             system: The system message the call would send.
@@ -680,10 +949,10 @@ class ModelsCompletionClient:
         Returns:
             The ceiling in dollars, or ``None``.
         """
-        rates = self._rates
+        rates = self._book.rates(self.provider, self.model_name)
         if not isinstance(rates, PriceLookup) or self._output_cap is None:
             return None
-        assert rates.cost_per_1m_input is not None and rates.cost_per_1m_output is not None  # held by _load_rates
+        assert rates.cost_per_1m_input is not None and rates.cost_per_1m_output is not None  # held by the book
         prompt_bound = len(system.encode()) + len(user.encode()) + _PROMPT_FRAMING_ALLOWANCE_TOKENS
         if response_format is not None:
             prompt_bound += len(json.dumps(response_format).encode())
@@ -807,7 +1076,8 @@ def models_client(
             catalogue is read through, or ``None`` for the adapter to open its own per fetch. Anthropic and OpenAI
             calls are priced from ``threetears.models.price_lookup.lookup_price``, read once per client (a host's
             source registered with ``register_price_source`` is consulted before the OpenRouter catch-all);
-            OpenRouter calls by OpenRouter's own figure.
+            OpenRouter calls by OpenRouter's own figure. Await :meth:`ModelsCompletionClient.load_prices` on the
+            client before an out-of-run call under an enforced cap, so its price ceiling can answer.
         **provider_kwargs: Passed to the provider's LangChain constructor through ``create_chat_model``
             (``base_url``, ``timeout``, OpenRouter routing). A keyword the adapter sets or maps itself is refused.
 

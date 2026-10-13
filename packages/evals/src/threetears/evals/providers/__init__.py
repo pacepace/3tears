@@ -1,6 +1,8 @@
 """The shipped provider adapter: a chat model 3tears-models builds, as the engine's completion client.
 
-Install with ``pip install "3tears-evals[models]"``. The engine names no provider and imports nothing of this root
+Install with ``pip install "3tears-evals[models]"`` once 0.67.0 is on PyPI; until then the extra cannot resolve from
+a git tag (it needs 3tears-models and the family packages models depends on at 0.67.0), so install from a checkout
+at the tag with ``uv sync --extra models``. The engine names no provider and imports nothing of this root
 (``tests/test_providers_boundary.py`` holds both directions): a host either brings its own client, implementing
 :class:`~threetears.evals.schema.CompletionClient`, or binds to the three names here. :func:`models_client` builds
 one client for one model; :func:`models_clients` is the role factory a host hands
@@ -29,19 +31,35 @@ member fails there, and the commit that moves the pin says so):
 * ``model`` is the id the client was built for; ``served_model`` the one the reply named. On OpenRouter, LangChain
   fills an empty reply model with the requested id, so a requested alias (``~…``, ``-latest``, ``openrouter/…``)
   echoed back reads ``None``; the serving upstream is kept beside it as ``served_provider``.
-* ``stop_reason``: Anthropic's ``stop_reason`` and the OpenAI-shaped ``finish_reason`` mapped onto the engine's five
-  words. A refusal (Anthropic's ``refusal``, OpenAI's ``refusal`` beside empty content) is ``content_filter``; an
-  absent or unknown reason, and Anthropic's ``pause_turn``, is ``truncated``, cut short with the cause unnamed,
-  never a finish; only OpenRouter's own ``error`` finish reason, a provider-reported failure, is ``error``.
+* ``stop_reason``: Anthropic's ``stop_reason``, the OpenAI-shaped ``finish_reason``, and on OpenAI's Responses API
+  (which LangChain uses for ``gpt-5-pro``-style and ``codex`` ids, or when a Responses-only keyword is passed) the
+  reply's ``status`` and ``incomplete_details``, mapped onto the engine's five words. A refusal (Anthropic's
+  ``refusal``, OpenAI's ``refusal`` beside empty content) is ``content_filter``; an absent or unknown reason, and
+  Anthropic's ``pause_turn`` and ``model_context_window_exceeded`` (the window filled, not the output cap), is
+  ``truncated``, cut short with the cause unnamed, never a finish; only OpenRouter's own ``error`` finish reason, a
+  provider-reported failure, is ``error``. The raw value is ``provider_stop_reason`` (on OpenRouter its
+  ``native_finish_reason`` when LangChain carries it), and every ``truncated`` reply is logged at WARNING with it,
+  since the engine stores only its own word.
 * ``temperature`` is what the built model sends, read back from it: LangChain drops a temperature OpenAI's
-  ``gpt-5`` family refuses, and a thinking budget on Anthropic is built with none.
+  ``gpt-5`` family refuses (at build, and again from a Responses-API request), and a thinking budget on Anthropic
+  is built with none.
 * ``cost_usd`` and ``price_source``: OpenRouter's own reported figure (``openrouter:reported``; under
   bring-your-own-key that is OpenRouter's fee alone, since LangChain drops the flag that would tell the upstream's
   charge apart, so a BYOK call is understated); on Anthropic and OpenAI the
   tokens times models' catalogue rates for the requested model (``<source>:<matched id>``), the catalogue read once
   per client. Unpriced is ``None``, never ``0``, and the completion's ``pricing_failure`` (and the client's
-  ``last_pricing_failure``) says why. Cache-read discounts are not in the catalogue's rates, so a cached Anthropic
-  prompt is priced at the full input rate: an overstatement, never an understatement.
+  ``last_pricing_failure``) says why. The catalogue has no cache rates, so a prompt that read or wrote the cache is
+  priced at the plain input rate and its cost is approximate in either direction (a cache read is billed below that
+  rate, an Anthropic cache write above it): its ``price_source`` ends in ``;cache-approximate``. A pricing failure
+  after the call never costs the paid answer: the completion is returned unpriced, with the reason.
+
+**At boot, load the prices.** A client's ``price_ceiling`` is synchronous (the port's signature) and answers only
+from rates already loaded, and the engine refuses an out-of-run call (an analysis, a case generation, a second judge
+or a rejudge) it cannot price under an enforced ``out_of_run_cap_usd``. So a host awaits
+``await clients.load_prices()`` once at boot (it loads every role's default model into the price book the factory's
+clients share, and returns model id -> why for each one left unpriced), or ``await client.load_prices()`` on a
+client built with :func:`models_client` (``None`` when loaded, else why). On OpenRouter the loaded rates serve the
+ceiling alone; the stored cost stays OpenRouter's reported figure.
 
 What the request carries: retries off on every provider (the Anthropic and OpenAI SDKs retry twice by default,
 OpenAI an exhausted quota too, and the OpenRouter SDK, given no retry setting of LangChain's, backs off on a 5XX for

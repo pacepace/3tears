@@ -185,11 +185,18 @@ host = EvalHost(..., clients=clients, failure_describer=ModelsFailureDescriber()
 `models_clients` keeps one client per role, model, temperature and reasoning setting, reads each provider's key
 from `api_keys=` or the provider's own environment variable the first time a client for it is asked for, and
 `await clients.aclose_all()` closes them at shutdown. Per-role settings go by role name
-(`judge={"reasoning_max_tokens": 8192, "max_tokens": 16384}`); `models_client` builds one client on its own. The
-adapter sends every request once (retries off), keeps a circuit breaker of its own that never opens, prices
-Anthropic and OpenAI calls from models' price catalogue and OpenRouter calls by OpenRouter's own figure (unpriced
-is `None` with the reason, never `0`), and refuses by name a reasoning word or budget the provider cannot carry
-rather than sending its nearest neighbour. What it reads off each provider's reply is in
+(`simulator={"reasoning_effort": "minimal", "provider": "openrouter"}`); `models_client` builds one client on its own.
+**The judge is built from `JUDGE_REQUEST_SETTINGS`**, the request settings a judged run records as its
+`judge_request_settings` (`max_tokens=10240`, `reasoning_max_tokens=8192`, `strict_output=True`): a `judge` role
+given no `max_tokens`, `reasoning_max_tokens` or `reasoning_effort` of its own gets that output cap and that
+reasoning budget, which on Anthropic goes as the thinking budget, and `strict_output` is the strict structured
+directive the judge already sends. On OpenAI and OpenRouter the adapter cannot send a reasoning budget, so a judge
+there cannot match the settings the run records: `models_clients` refuses it by name unless you pass the judge's
+settings yourself (`judge={"max_tokens": ..., "reasoning_effort": ...}`), and then the run's recorded settings do not
+describe what was sent. The adapter sends every request once (retries off), keeps a circuit breaker of its own that
+never opens, prices Anthropic and OpenAI calls from models' price catalogue and OpenRouter calls by OpenRouter's own
+figure (unpriced is `None` with the reason, never `0`), and refuses by name a reasoning word or budget the provider
+cannot carry rather than sending its nearest neighbour. What it reads off each provider's reply is in
 `threetears.evals.providers`' own docstring, member by member.
 
 **Keep a client of your own** when you price from a catalogue of your own or route through a gateway, when your

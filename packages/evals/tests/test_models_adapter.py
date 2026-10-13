@@ -16,14 +16,20 @@ Recorded replies replace the canned ones in a later release; the assertions stay
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Iterator
 from typing import Any
 
 import anthropic
 import httpx
 import pytest
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableBinding
 
-from threetears.evals.providers import ModelsClientRefused, ModelsCompletion, models_client
+from threetears.evals.kernel import OutOfRunBudget, PlannedCall, ValidationFailedError
+from threetears.evals.providers import ModelsClientRefused, ModelsCompletion, ModelsCompletionClient, models_client
+from threetears.evals.schema import OutOfRunSpend
 from threetears.evals.testing import check_completion_conformance
 from threetears.models import DEFAULT_CHAT_MODEL, DEFAULT_EMBEDDING_MODEL, CircuitOpenError, create_chat_model
 
@@ -39,9 +45,14 @@ from packages.evals.tests.models_adapter_support import (
     build,
     mocked_providers,
     ok,
+    openai_reply,
+    openai_responses_reply,
     plan_reply,
     status,
 )
+
+#: The logger the adapter writes to.
+ADAPTER_LOGGER = "threetears.evals.providers.adapter"
 
 PROVIDERS = ("anthropic", "openai", "openrouter")
 
@@ -334,7 +345,7 @@ async def test_the_temperature_reported_is_the_one_sent(net: ProviderTransport) 
 async def test_a_call_is_priced_from_the_catalogue_row_for_the_requested_model(
     net: ProviderTransport, provider: str, model: str, per_input: float, per_output: float, row: str
 ) -> None:
-    plan_reply(net, provider)
+    plan_reply(net, provider, **({"cache_read": 0} if provider == "anthropic" else {}))
     result = await _generate(build(net, provider, model=model))
     assert result.input_tokens is not None and result.output_tokens is not None
     expected = (result.input_tokens * per_input + result.output_tokens * per_output) / 1_000_000
@@ -454,7 +465,7 @@ async def test_the_served_model_is_the_reply_s_on_the_direct_providers(net: Prov
         ("anthropic", "stop_sequence", "end_turn"),
         ("anthropic", "tool_use", "end_turn"),
         ("anthropic", "max_tokens", "max_tokens"),
-        ("anthropic", "model_context_window_exceeded", "max_tokens"),
+        ("anthropic", "model_context_window_exceeded", "truncated"),
         ("anthropic", "refusal", "content_filter"),
         ("anthropic", "pause_turn", "truncated"),
         ("anthropic", None, "truncated"),
@@ -522,3 +533,281 @@ async def test_aclose_leaves_the_shared_client_open(net: ProviderTransport, prov
     await first.aclose()
     await _generate(second)
     await _generate(first)
+
+
+# --- the price load at boot, and pricing failures -------------------------------------------------------
+
+
+# parity-with: threetears.evals.schema.out_of_run_spend.OutOfRunSpendStore
+class _FakeLedger:
+    """Keeps every out-of-run row written: admission writes none, so the tests here read it only to build a budget."""
+
+    def __init__(self) -> None:
+        self.rows: list[OutOfRunSpend] = []
+
+    def save_out_of_run_spend(self, spend: OutOfRunSpend, /) -> None:
+        self.rows.append(spend)
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "per_output"),
+    [
+        ("anthropic", DEFAULT_CHAT_MODEL, 15.0),
+        ("openai", "gpt-4o", 10.0),
+        ("openrouter", "anthropic/claude-sonnet-4.6", 15.0),
+        ("openrouter", "~anthropic/claude-sonnet-latest", 15.0),
+    ],
+)
+async def test_a_loaded_client_answers_a_ceiling_on_every_provider(
+    net: ProviderTransport, provider: str, model: str, per_output: float
+) -> None:
+    """The ceiling is synchronous, so it answers from rates ``load_prices`` loaded, and from nothing before."""
+    client = build(net, provider, model=model, max_tokens=1000)
+    assert client.price_ceiling(system="s", user="u") is None, "nothing is loaded at construction"
+    assert await client.load_prices() is None
+    ceiling = client.price_ceiling(system="s", user="u")
+    assert ceiling is not None and ceiling >= 1000 * per_output / 1_000_000
+    assert net.requests == [], "loading the prices calls no provider"
+
+
+async def test_an_out_of_run_call_under_a_cap_is_admitted_once_the_prices_are_loaded(net: ProviderTransport) -> None:
+    """The engine refuses a call it cannot price under an enforced cap; a fresh client is priceable after the load."""
+    client = build(net, "openrouter", model="anthropic/claude-sonnet-4.6", max_tokens=1000)
+    budget = OutOfRunBudget(_FakeLedger(), scope_id="s", cap_usd=1.0, blocking_executor=None)
+    call = PlannedCall(system="Write the analysis.", user="the bundle")
+    with pytest.raises(ValidationFailedError, match="cannot be priced"):
+        budget.admit(client, "analysis", [call])
+    await client.load_prices()
+    assert len(budget.admit(client, "analysis", [call])) == 1
+
+
+async def test_openrouter_s_loaded_rates_serve_the_ceiling_and_its_cost_stays_its_own(net: ProviderTransport) -> None:
+    plan_reply(net, "openrouter", cost=0.00123)
+    client = build(net, "openrouter", model="anthropic/claude-sonnet-4.6", max_tokens=1000)
+    assert await client.load_prices() is None
+    result = await _generate(client)
+    assert (result.cost_usd, result.price_source) == (0.00123, "openrouter:reported")
+    assert client.price_ceiling(system="s", user="u") is not None
+
+
+async def test_a_failed_catalogue_fetch_is_reported_logged_and_tried_again(
+    net: ProviderTransport, caplog: pytest.LogCaptureFixture
+) -> None:
+    catalogue = FakeCatalogue(failure=httpx.ConnectError("offline"))
+    client = build(net, "anthropic", max_tokens=1000, prices=catalogue)
+    with caplog.at_level(logging.WARNING, logger=ADAPTER_LOGGER):
+        reason = await client.load_prices()
+    assert reason is not None and "could not be fetched" in reason and "offline" in reason
+    assert [r.levelno for r in caplog.records if "offline" in r.getMessage()] == [logging.WARNING]
+    assert client.price_ceiling(system="s", user="u") is None
+    catalogue.failure = None
+    assert await client.load_prices() is None, "a failed fetch is not kept: the next load tries again"
+    assert client.price_ceiling(system="s", user="u") is not None
+
+
+async def test_a_call_after_a_failed_fetch_tries_the_catalogue_again(net: ProviderTransport) -> None:
+    plan_reply(net, "anthropic", cache_read=0)
+    catalogue = FakeCatalogue(failure=httpx.ConnectError("offline"))
+    client = build(net, "anthropic", prices=catalogue)
+    first = await _generate(client)
+    assert (
+        first.cost_usd is None and first.pricing_failure is not None and "could not be fetched" in first.pricing_failure
+    )
+    catalogue.failure = None
+    second = await _generate(client)
+    assert second.cost_usd is not None and second.pricing_failure is None
+
+
+async def test_a_catalogue_that_is_not_json_is_reported_as_unreadable(net: ProviderTransport) -> None:
+    client = build(net, "anthropic", prices=FakeCatalogue(body="<html>maintenance</html>"))
+    reason = await client.load_prices()
+    assert reason is not None and "could not be read" in reason
+
+
+@pytest.mark.parametrize("failure", [KeyError("acct_SECRET"), ValueError("a bug in the host's price source")])
+async def test_a_price_source_s_own_exception_at_load_is_raised_not_read_as_a_bad_catalogue(
+    net: ProviderTransport, failure: Exception
+) -> None:
+    """Only the catalogue's own parse is read as unreadable; a host source's ``ValueError`` is its defect."""
+    client = build(net, "anthropic", prices=FakeCatalogue(failure=failure))
+    with pytest.raises(type(failure)):
+        await client.load_prices()
+
+
+@pytest.mark.parametrize("failure", [KeyError("acct_SECRET"), ValueError("a bug in the host's price source")])
+async def test_a_pricing_exception_after_the_call_returns_the_paid_completion_unpriced(
+    net: ProviderTransport, caplog: pytest.LogCaptureFixture, failure: Exception
+) -> None:
+    plan_reply(net, "anthropic")
+    client = build(net, "anthropic", prices=FakeCatalogue(failure=failure))
+    with caplog.at_level(logging.ERROR, logger=ADAPTER_LOGGER):
+        result = await _generate(client)
+    assert result.content == '{"score": 4}', "the paid answer is the caller's"
+    assert result.cost_usd is None and result.price_source is None
+    assert result.pricing_failure is not None
+    assert result.pricing_failure.startswith(f"pricing the call raised {type(failure).__name__}")
+    assert client.last_pricing_failure == result.pricing_failure
+    [logged] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert logged.exc_info is not None and logged.exc_info[1] is failure, "logged with its traceback"
+
+
+@pytest.mark.parametrize(
+    ("provider", "reply"),
+    [
+        ("anthropic", {"cache_read": 3, "cache_creation": 0}),
+        ("anthropic", {"cache_read": 0, "cache_creation": 5}),
+        ("openai", {"cached_tokens": 4}),
+    ],
+)
+async def test_a_cached_prompt_s_cost_is_marked_approximate(
+    net: ProviderTransport, provider: str, reply: dict[str, Any]
+) -> None:
+    """The catalogue has no cache rates: a cache read or write is priced at the input rate, and says so."""
+    plan_reply(net, provider, **reply)
+    result = await _generate(build(net, provider))
+    assert result.cost_usd is not None
+    assert result.price_source is not None and result.price_source.endswith(";cache-approximate")
+
+
+@pytest.mark.parametrize(
+    ("provider", "reply"),
+    [("anthropic", {"cache_read": 0, "cache_creation": 0}), ("openai", {"cached_tokens": 0}), ("openai", {})],
+)
+async def test_an_uncached_prompt_s_cost_carries_no_marker(
+    net: ProviderTransport, provider: str, reply: dict[str, Any]
+) -> None:
+    plan_reply(net, provider, **reply)
+    result = await _generate(build(net, provider))
+    assert result.price_source is not None and not result.price_source.endswith(";cache-approximate")
+
+
+# --- stop reasons beyond the table ------------------------------------------------------------------------
+
+
+async def test_openrouter_s_provider_stop_reason_is_its_native_finish_reason_when_langchain_carries_it() -> None:
+    """The upstream's own word is the raw value; OpenRouter's normalised ``finish_reason`` still decides the mapping."""
+    carried = AIMessage(
+        content="{",
+        response_metadata={"finish_reason": "length", "native_finish_reason": "MAX_TOKENS", "model_name": "x/y"},
+    )
+    client = ModelsCompletionClient(
+        model_name="x/y",
+        provider="openrouter",
+        chat_model=RunnableBinding(bound=GenericFakeChatModel(messages=iter([carried])), kwargs={}),
+        call_output_config={},
+        prices=FakeCatalogue(),
+    )
+    result = await _generate(client)
+    assert (result.stop_reason, result.provider_stop_reason) == ("max_tokens", "MAX_TOKENS")
+
+
+async def test_openrouter_s_finish_reason_is_the_raw_value_while_the_sdk_drops_the_native_one(
+    net: ProviderTransport,
+) -> None:
+    """Pinned: the OpenRouter SDK's typed chunk declares no ``native_finish_reason``, so LangChain never sees it today.
+
+    When an SDK or LangChain upgrade starts carrying it, this fails and the adapter already reports it (above).
+    """
+    plan_reply(net, "openrouter", finish_reason="length", native_finish_reason="MAX_TOKENS")
+    result = await _generate(build(net, "openrouter"))
+    assert (result.stop_reason, result.provider_stop_reason) == ("max_tokens", "length")
+
+
+async def test_a_truncated_reply_logs_the_provider_s_raw_stop_reason(
+    net: ProviderTransport, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The engine stores only its own word, so the raw value is logged where an operator can find it."""
+
+    def truncations() -> list[str]:
+        return [
+            r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and "truncated" in r.getMessage()
+        ]
+
+    with caplog.at_level(logging.WARNING, logger=ADAPTER_LOGGER):
+        plan_reply(net, "anthropic", stop_reason="pause_turn")
+        await _generate(build(net, "anthropic"))
+        plan_reply(net, "openai", finish_reason=None)
+        await _generate(build(net, "openai"))
+        plan_reply(net, "openrouter")
+        await _generate(build(net, "openrouter"))
+    assert truncations() == [
+        f"eval.providers reply read as truncated provider=anthropic model={DEFAULT_CHAT_MODEL} "
+        "provider_stop_reason=pause_turn",
+        f"eval.providers reply read as truncated provider=openai model={MODELS['openai']} provider_stop_reason=none",
+    ], "one line per truncated reply, and none for a finished one"
+
+
+# --- OpenAI's Responses API ------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("status_word", "reason", "engine", "raw"),
+    [
+        ("completed", None, "end_turn", "completed"),
+        ("incomplete", "max_output_tokens", "max_tokens", "max_output_tokens"),
+        ("incomplete", "content_filter", "content_filter", "content_filter"),
+        ("incomplete", "a_future_reason", "truncated", "a_future_reason"),
+        ("incomplete", None, "truncated", "incomplete"),
+        ("failed", None, "truncated", "failed"),
+    ],
+)
+async def test_a_responses_api_reply_s_stop_is_read_from_its_status(
+    net: ProviderTransport, status_word: str, reason: str | None, engine: str, raw: str
+) -> None:
+    """LangChain's Responses-API result has no ``finish_reason``; its ``status`` and ``incomplete_details`` say why."""
+    net.plan(OPENAI_HOST, ok(openai_responses_reply(status=status_word, incomplete_reason=reason)))
+    result = await _generate(build(net, "openai", model="gpt-5-pro"))
+    assert net.paths[-1][1].endswith("/responses")
+    assert (result.stop_reason, result.provider_stop_reason) == (engine, raw)
+
+
+async def test_the_temperature_a_responses_api_request_carries_is_the_one_reported(net: ProviderTransport) -> None:
+    """LangChain drops the temperature from a Responses-API request for a reasoning gpt-5 model, even a kept 1."""
+    net.plan(OPENAI_HOST, ok(openai_responses_reply()))
+    dropped = build(net, "openai", model="gpt-5-pro", temperature=1.0)
+    result = await _generate(dropped)
+    assert "temperature" not in net.last(OPENAI_HOST)
+    assert result.temperature is None and dropped.temperature is None
+    kept = build(net, "openai", model="gpt-4o", temperature=0.3, use_responses_api=True)
+    result = await _generate(kept)
+    assert net.last(OPENAI_HOST)["temperature"] == 0.3 and result.temperature == 0.3
+
+
+@pytest.mark.parametrize(
+    ("model", "kwargs", "responses"),
+    [
+        ("gpt-5-pro", {}, True),
+        ("gpt-5.2-pro", {}, True),
+        ("gpt-5.4-pro", {}, True),
+        ("gpt-5.5-pro", {}, True),
+        ("gpt-5-codex", {}, True),
+        ("gpt-4o", {"use_responses_api": True}, True),
+        ("gpt-4o", {"output_version": "responses/v1"}, True),
+        ("gpt-4o", {"truncation": "auto"}, True),
+        ("gpt-4o", {"include": ["message.output_text.logprobs"]}, True),
+        ("gpt-4o", {}, False),
+        ("gpt-5-mini", {}, False),
+        ("gpt-5-pro", {"use_responses_api": False}, False),
+    ],
+)
+async def test_the_adapter_knows_which_api_langchain_sends_a_model_to(
+    net: ProviderTransport, model: str, kwargs: dict[str, Any], responses: bool
+) -> None:
+    """The adapter's copy of LangChain's routing rule, held to where LangChain actually sends each request.
+
+    On the Responses API a schema directive is refused before anything is sent: models' structured-output
+    translation writes Chat Completions' ``response_format``, which that API does not take.
+    """
+    net.plan(OPENAI_HOST, ok(openai_responses_reply()) if responses else ok(openai_reply()))
+    client = build(net, "openai", model=model, **kwargs)
+    await _generate(client)
+    assert net.paths[-1][1].endswith("/responses" if responses else "/chat/completions")
+    sent = len(net.requests)
+    if responses:
+        with pytest.raises(ModelsClientRefused, match="Responses API") as refused:
+            await client.generate(system="s", user="u", response_format=SCHEMA_DIRECTIVE)
+        assert refused.value.setting == "response_format"
+        assert len(net.requests) == sent, "nothing was sent"
+    else:
+        await _generate(client, response_format=SCHEMA_DIRECTIVE)
+        assert net.paths[-1][1].endswith("/chat/completions")
