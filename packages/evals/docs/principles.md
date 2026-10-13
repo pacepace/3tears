@@ -126,7 +126,9 @@ starts its next plan from what to delete.
 
 **Contracts are strict, and a change to one is a version bump.**
 Unknown fields are refused on read and construction, and identity changes bump a version, because tolerant
-readers hide drift until it corrupts a comparison.
+readers hide drift until it corrupts a comparison. The one tolerance is scoped to where a tested contract makes
+the unknown safe: a newer minor of the evidence core, additive by rule, whose fields are kept untouched and
+written back rather than read.
 
 **Statistical rigour, not enterprise plumbing.**
 Sized for one operator: rigour earns its cost by changing decisions, while multi-tenant access control
