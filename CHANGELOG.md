@@ -161,9 +161,9 @@ v<version>` prints a release's notes).
   (`nonpublic_evals_imports`) a host runs over its own code. Beside them, `RecordedCompletions` records the calls a
   host's real completion client answers into a JSONL file once and replays them with no network, so a suite runs
   offline on what a model actually said. A call is matched on its prompt and on the model, temperature and request
-  settings (`ClientRequestSettings`, a required `settings=` on `record` and `replay`) it was made with; a prompt the
-  recording does not hold, or holds only under other settings, is refused by name with the command that re-records
-  it, never sent live.
+  settings (`ClientRequestSettings`, a required `settings=` on `record`, `replay` and `check_covers`) it was made
+  with; a prompt the recording does not hold, or holds only under other settings, is refused by name with the
+  command that re-records it, never sent live.
 - **Docs.** The package README; a tutorial; guides to classifier eval sets, reading reports, evaluating agents,
   judges and calibration, adopting a host, choosing a design, cost and budgets, MCP and the command line; and the
   background pages (principles, measuring soundly, the world model, design rationale, prior art, open problems).
@@ -171,14 +171,17 @@ v<version>` prints a release's notes).
   as provisional (`AsyncDelivery` and `AsyncExternalSpend`, the `inner_agent` and `external` usage roles,
   `MeteredCallLedger`, triggered world dimensions, `ChartFont`, and `SeedSection`'s zones): a second adopter's use
   decides whether each stays, and one removed later is announced in that release's `MIGRATIONS.toml` notes.
-- **Pre-releases.** `v0.66.0-evaladopt.N` tags were cut on `feature/eval-adopt` for one adopter and never published.
-  Each tag's own `CHANGELOG.md` and `MIGRATIONS.toml` hold that pre-release's notes and the names that moved. **A
-  store written before `v0.66.0-evaladopt.21` is not read:** its core documents (schema v8 to v13) are refused by
-  name as pre-release and its regenerable ones by version, so such an adopter deletes its eval documents. From
-  `.21` on, the store is the v14 baseline this release reads, and every core shape change is a version, as it will
-  be after release: a minor for an additive change, a major with an upgrader for any other. Reading a newer minor
-  arrived in `.22`: a `.21` build does not know `schema_minor` and refuses every core document `.22` or this release
-  writes, though both are v14, so roll back no further than `.22`. Every pre-release, `.21` included, stamped its
+- **Pre-releases.** `v0.66.0-evaladopt.N` tags (through `.23`) and `v0.67.0-evaladopt.N` tags (from `.24`) were cut on
+  `feature/eval-adopt` for one adopter and never published. Each tag's own `CHANGELOG.md` and `MIGRATIONS.toml` hold
+  that pre-release's notes and the names that moved. **A store written before `v0.66.0-evaladopt.21` is not read:**
+  its core documents (schema v8 to v13) are refused by name as pre-release and its regenerable ones by version, so
+  such an adopter deletes its eval documents. From `.21` on, the store is the v14 baseline this release reads, and
+  every core shape change is a version, as it will be after release: a minor for an additive change, a major with an
+  upgrader for any other. Reading a newer minor arrived in `.22`: a `.21` build does not know `schema_minor` and
+  refuses every core document `.22` or this release writes, though both are v14, so roll back no further than `.22`.
+  **Once any document carries `stop_reason="truncated"`, roll back no further than `.24`:** that word joined the
+  unreleased v14 baseline in `.24` with no new version, and `.22` and `.23`, which read and write v14.0 too, know four
+  stop reasons and refuse every out-of-run spend document carrying it. Every pre-release, `.21` included, stamped its
   cassettes with the regenerable version; this release reads them at cassette v1 and refuses them, so their corpora
   are re-captured.
 

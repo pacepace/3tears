@@ -121,8 +121,10 @@ template's kind is known, so `launch_estimate` and a launch refuse an unknown su
 **Record your real client once, and replay it in your suite.** `RecordedCompletions` (in
 `threetears.evals.testing`) wraps your completion client: `record` sends every call through and appends what it
 returned to a JSONL file, and `replay` serves those completions back in order with no network, so a suite that
-judges, simulates or analyses runs offline on what a real model said rather than on a stand-in's text. The
-examples run this way, and `RECORD=1` re-records one:
+judges, simulates or analyses runs offline on what a real model said rather than on a stand-in's text. Build the
+recorder once per suite, a session fixture or a module-level object, and hand that one object to every unit of work:
+`replace=True` empties the file each time a recorder is built with it, so one built per test would keep only the
+last test's calls.
 
 ```python
 from threetears.evals.run import JUDGE_REQUEST_SETTINGS
@@ -131,15 +133,18 @@ from threetears.evals.testing import RecordedCompletions
 RECORDING = Path("tests/recordings/judge.jsonl")
 
 
+@pytest.fixture(scope="session")
 def judge_client():
     # The settings my_judge_client() is built with: for the judge, the value its builder applies.
     if os.environ.get("RECORD"):
-        return RecordedCompletions.record(
+        client = RecordedCompletions.record(
             my_judge_client(), RECORDING, settings=JUDGE_REQUEST_SETTINGS, replace=True
         )
-    return RecordedCompletions.replay(
-        RECORDING, settings=JUDGE_REQUEST_SETTINGS, rerecord="RECORD=1 pytest tests/test_judge.py"
-    )
+    else:
+        client = RecordedCompletions.replay(
+            RECORDING, settings=JUDGE_REQUEST_SETTINGS, rerecord="RECORD=1 pytest tests/test_judge.py"
+        )
+    return client
 ```
 
 **Pass the settings your client is built with.** `record` and `replay` both require `settings=`: the
@@ -173,7 +178,13 @@ cannot hold is refused when it is recorded.
 `async generate(*, system, user, response_format=None)` returning a `CompletionResult`, plus `aclose`
 (`CompletionClient`, in `threetears.evals.schema`); the failure half is your `failure_describer`. You can write
 both yourself, or bind to the adapter the package ships over 3tears-models (`threetears.evals.providers`, the
-`[models]` extra), which builds Anthropic, OpenAI and OpenRouter chat models through `create_chat_model`:
+`[models]` extra), which builds Anthropic, OpenAI and OpenRouter chat models through `create_chat_model`.
+
+**The `[models]` extra installs from PyPI once 0.67.0 ships** (`pip install "3tears-evals[models]"`). Until then
+it does not install from a git tag the way the base package does
+([the README's install step](../README.md#first-result-in-10-minutes)): it needs 3tears-models and the family
+packages models depends on at 0.67.0, and none of them is on PyPI yet. Use a checkout of the repository at the tag,
+where `uv sync --extra models` at the root installs it.
 
 ```python
 from threetears.evals.providers import ModelsFailureDescriber, models_clients
@@ -189,8 +200,11 @@ from `api_keys=` or the provider's own environment variable the first time a cli
 adapter sends every request once (retries off), keeps a circuit breaker of its own that never opens, prices
 Anthropic and OpenAI calls from models' price catalogue and OpenRouter calls by OpenRouter's own figure (unpriced
 is `None` with the reason, never `0`), and refuses by name a reasoning word or budget the provider cannot carry
-rather than sending its nearest neighbour. What it reads off each provider's reply is in
-`threetears.evals.providers`' own docstring, member by member.
+rather than sending its nearest neighbour. That refusal, and a role with no model or a provider with no key, raise
+`ModelsClientRefused` (a `ValueError`), naming the setting and what to pass instead. On Anthropic and OpenAI, a call whose
+prompt hit the provider's prompt cache has its `cost_usd` overstated: the provider bills cached input tokens at a
+discount, but models' price catalogue carries no cache rate, so the adapter prices them at the full input rate.
+What it reads off each provider's reply is in `threetears.evals.providers`' own docstring, member by member.
 
 **Keep a client of your own** when you price from a catalogue of your own or route through a gateway, when your
 provider is one 3tears-models has no factory for, or when you call Claude through a subscription: the adapter
@@ -345,7 +359,10 @@ or the other, an added optional field included:
   store, with a `schema_minor` above the build's, gets it too, so write the minor your build writes. **The roll has
   a floor:** the tolerance arrived with the minor, in `v0.66.0-evaladopt.22`. A build before it (`.21` included)
   declares no `schema_minor` and refuses every field it does not declare, so it refuses every core document `.22` or
-  a later build writes, though the major is 14 for both. Roll back no further than `.22`.
+  a later build writes, though the major is 14 for both. Roll back no further than `.22`. **And no further than
+  `.24` once any document carries `stop_reason="truncated"`:** that word joined the unreleased v14 baseline in
+  `v0.67.0-evaladopt.24` with no new version, and `.22` and `.23`, which read and write v14.0 too, know four words
+  and refuse every out-of-run spend document carrying it.
 - **A major is everything else**, and ships an upgrade step (a `CoreUpgrader` appended to `CORE_UPGRADERS`),
   tested against frozen stored documents from every core major since the baseline. Reading an older core
   document upgrades it in memory, one major at a time, before it is validated as strictly as a document written
