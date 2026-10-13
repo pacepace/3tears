@@ -6,6 +6,45 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.67.0 -- 2026-10-13
+
+### Models: which request settings a model accepts
+
+- **Added, request-settings facts on `threetears.models.ModelCapabilities` and `CapabilityOverride`:**
+  `accepts_temperature`, `reasoning_efforts` (the provider-native effort words a request may carry,
+  lowest first; `[]` = the model takes no effort parameter), `reasoning_budget` (takes a reasoning
+  token budget, Anthropic `thinking.budget_tokens`), `adaptive_reasoning` (takes
+  `thinking={"type": "adaptive"}`), `reasoning_disable` (reasoning can be switched off, Anthropic
+  `thinking={"type": "disabled"}`) and `structured_output` (takes a strict `json_schema` reply
+  format). Each is tri-state: `None` means not declared, and a caller that needs the fact learns it
+  from the provider. The off switch is its own field rather than `"none"` in the effort list,
+  because Anthropic's off switch is a thinking type, not an effort word, and a budget-only model
+  (effort refused) can still be switched off. `register_model_capabilities_bulk` reads the same keys
+  from a product row.
+- **Added, a provider-published capability layer:** `register_published_capabilities`,
+  `get_published_capabilities` and `unregister_published_capabilities`. `get_capabilities` and
+  `list_capabilities` now layer three sources, lowest first: the static entry, the facts the
+  provider publishes, and a deployment override. A model with no static entry keeps its published
+  facts in the layer (readable with `get_published_capabilities`) but stays `None` from
+  `get_capabilities`, which will not invent a model's type or tier.
+- **Added, `threetears.models.anthropic_capabilities`:** reads Anthropic's Models API
+  (`load_anthropic_capabilities` for one model, `load_all_anthropic_capabilities` for the paginated
+  listing) through a caller-supplied client built with `anthropic_models_api_headers`, maps
+  `capabilities.effort`, `capabilities.thinking.types.{enabled,adaptive,disabled}` and
+  `capabilities.structured_outputs` onto the fields, and records them in the published layer,
+  cached per process (`max_age_seconds`, default a day). A failed fetch returns a
+  `PublishedCapabilityLoad` naming the failure, logs a WARNING and changes nothing; an unknown
+  capability key is ignored; a known key in a shape the build cannot read raises
+  `PublishedCapabilityShapeError` before anything is recorded. Temperature is not published there.
+- **Changed, the static entries:** the registered chat models carry the facts their providers'
+  docs state, and nothing more. `claude-opus-4-8` and `claude-sonnet-5`: temperature and budgets
+  refused, adaptive, effort `low`..`max`, can be switched off, structured outputs.
+  `claude-sonnet-4-6`: budget and adaptive, effort `low`/`medium`/`high`/`max`, can be switched off.
+  `claude-haiku-4-5-20251001`: budget only, no effort parameter, can be switched off, structured
+  outputs. `gpt-4o` / `gpt-4o-mini`: no effort parameter, no budget, structured outputs.
+  `deepseek/deepseek-v4-flash`: structured outputs. Temperature is recorded only where a provider
+  documents its removal; "allowed" stays `None`.
+
 ### OpenRouter: the usage and response fields LangChain drops reach the answer, `is_byok` among them
 
 OpenRouter reports `usage.is_byok` on every reply: whether the call ran on the caller's own

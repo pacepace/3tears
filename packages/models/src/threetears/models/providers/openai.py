@@ -256,6 +256,14 @@ _OPENAI_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_openai_auto_cache=True,
         min_cacheable_tokens=0,
         cache_ttl_seconds=0,
+        # not a reasoning model: no effort parameter, no budget, no adaptive
+        # thinking; strict json_schema response_format supported (OpenAI's
+        # structured-outputs docs list the gpt-4o family). temperature is left
+        # None: no catalogue publishes it, so a caller learns it from a refusal.
+        reasoning_efforts=[],
+        reasoning_budget=False,
+        adaptive_reasoning=False,
+        structured_output=True,
     ),
     "gpt-4o-mini": ModelCapabilities(
         model_name="gpt-4o-mini",
@@ -273,6 +281,14 @@ _OPENAI_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_openai_auto_cache=True,
         min_cacheable_tokens=0,
         cache_ttl_seconds=0,
+        # not a reasoning model: no effort parameter, no budget, no adaptive
+        # thinking; strict json_schema response_format supported (OpenAI's
+        # structured-outputs docs list the gpt-4o family). temperature is left
+        # None: no catalogue publishes it, so a caller learns it from a refusal.
+        reasoning_efforts=[],
+        reasoning_budget=False,
+        adaptive_reasoning=False,
+        structured_output=True,
     ),
     "text-embedding-3-small": ModelCapabilities(
         model_name="text-embedding-3-small",
