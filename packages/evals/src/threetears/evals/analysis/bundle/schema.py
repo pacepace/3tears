@@ -70,6 +70,7 @@ from threetears.evals.schema.models import (
 )
 from threetears.evals.kernel.surface import (
     CellFacts,
+    EarlierControl,
     GuardrailReadings,
     PredictionPoweredReading,
     TimeAxis,
@@ -566,7 +567,19 @@ class RealizedDesign(EvalDocumentModel):
         default=None,
         description=(
             "The arm every contrast is read against: the campaign's DECLARED control variant, with every resolved "
-            "run that measured it. Null when no control resolved."
+            "run that measured it. Null when no control resolved. Where the declared control's cells carry two "
+            "keys — its stored one, stamped under an earlier identity predicate, and the one its lever map re-keys "
+            "to under this build's — this is the cells under this build's predicate only, and `earlier_control` "
+            "names the rest."
+        ),
+    )
+    earlier_control: EarlierControl | None = Field(
+        default=None,
+        description=(
+            "The declared control's cells under an earlier identity predicate, where the campaign's cells carry "
+            "both of its keys: the control as it ran before the predicate changed, so in no contrast, no guardrail "
+            "and no adoption check — a rival arm it is not — and not pooled into `control_arm`'s numbers, which "
+            "are the current predicate's cells only. Its `disclosure` says so; say it as written. None otherwise."
         ),
     )
     control_excluded: Literal["stale", "archived", "unresolved", "unobserved"] | None = Field(
@@ -1911,10 +1924,11 @@ class AnalysisContextBundle(EvalDocumentModel):
     # changed shape reads as evidence that moved, which is the one thing this number separates. A
     # HOST editing its own declarations is not a reason to bump it, and a host has no way to: that
     # move is carried by `host_declarations_digest`, derived from the declarations themselves. An
-    # A/B set spanning a bump must be read as spanning it. 50 is the first public release's bundle
-    # shape; the shapes before it were pre-release.
+    # A/B set spanning a bump must be read as spanning it. 51 is the first public release's bundle
+    # shape (50 plus `RealizedDesign.earlier_control`, added before the release); the shapes before it
+    # were pre-release.
     schema_version: int = Field(
-        default=50, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=51, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---

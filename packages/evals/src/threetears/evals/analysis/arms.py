@@ -32,7 +32,7 @@ from threetears.evals.kernel.campaign import EvalAnalysis, FindingResolution, Va
 from threetears.evals.kernel.host.sweepables import CANDIDATE_KIND_LEVER, CANDIDATE_MODEL_LEVER
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.schema.base import EvalDocumentModel
-from threetears.evals.kernel.surface import CellFacts
+from threetears.evals.kernel.surface import CellFacts, EarlierControl, earlier_control_mark
 from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
@@ -731,6 +731,7 @@ def arm_table(analysis: EvalAnalysis) -> ArmTable:
     return arm_table_of(
         analysis.variant_index,
         control=analysis.decision_surface.control_variant_key or declared,
+        earlier_control=analysis.decision_surface.earlier_control,
         decisions=analysis.document.decisions,
         resolutions=analysis.resolutions,
         source=f"eval.analysis {analysis.id}",
@@ -744,6 +745,7 @@ def arm_table_of(
     decisions: Sequence[Decision],
     resolutions: Sequence[FindingResolution],
     source: str,
+    earlier_control: EarlierControl | None = None,
 ) -> ArmTable:
     """Derive the arm comparison from its inputs — a stored analysis's, or a campaign's evidence alone.
 
@@ -757,6 +759,10 @@ def arm_table_of(
         decisions: The decisions whose cells place a verdict on an arm.
         resolutions: The findings' resolved evidence, in finding order.
         source: What the table is of, named in the log line when a coordinate cannot be placed.
+        earlier_control: The control's cells under an earlier identity predicate
+            (``DecisionSurface.earlier_control``), or None. Their row is labelled as the control under that
+            predicate (:func:`~threetears.evals.kernel.surface.earlier_control_mark`), so it never reads as one
+            more arm beside the control.
 
     Returns:
         The table. Every arm the variant index holds gets a row, plus the declared control when the
@@ -784,7 +790,11 @@ def arm_table_of(
         rows.append(
             ArmRow(
                 variant_key=key,
-                label=arm_label(key, names),
+                label=(
+                    f"{arm_label(key, names)} — {earlier_control_mark(earlier_control)}"
+                    if earlier_control is not None and key == earlier_control.variant_key
+                    else arm_label(key, names)
+                ),
                 levels=naming_levels(entry, distinguishing),
                 settings=arm_settings(entry),
                 levels_unavailable=entry.levels_unavailable if entry else None,

@@ -55,7 +55,7 @@ from threetears.evals.kernel.analysis_measures import BarAdjudication, BarDecisi
 from threetears.evals.kernel.campaign import EvalAnalysis, VariantIndexEntry
 from threetears.evals.kernel.metrics import MeritAxis
 from threetears.evals.schema.base import EvalDocumentModel
-from threetears.evals.kernel.surface import CellFacts, DecisionSurface, all_failed_sentence
+from threetears.evals.kernel.surface import CellFacts, DecisionSurface, all_failed_sentence, earlier_control_mark
 
 #: Said in place of the table when the surface froze no cell.
 NO_CELLS = "No cells — the campaign measured nothing this analysis could freeze."
@@ -695,8 +695,13 @@ def surface_table_of(surface: DecisionSurface, variant_index: Sequence[VariantIn
                 apparatus_class_id=cell.apparatus_class_id,
                 is_control=cell.variant_key == control,
                 placed=entry is not None,
-                # The arm table's own functions, so the two tables name one arm alike.
-                label=arm_label(cell.variant_key, names, rig=rig),
+                # The arm table's own functions, so the two tables name one arm alike — the control's cells under an
+                # earlier identity predicate marked as such, as the arm table marks them.
+                label=(
+                    f"{arm_label(cell.variant_key, names, rig=rig)} — {earlier_control_mark(surface.earlier_control)}"
+                    if surface.earlier_control is not None and cell.variant_key == surface.earlier_control.variant_key
+                    else arm_label(cell.variant_key, names, rig=rig)
+                ),
                 levels=naming_levels(entry, distinguishing),
                 levels_unavailable=entry.levels_unavailable if entry else None,
                 rig=rig,

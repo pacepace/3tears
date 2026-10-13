@@ -130,6 +130,7 @@ def bundle_decision_surface(bundle: AnalysisContextBundle) -> DecisionSurface:
     """
     return DecisionSurface(
         control_variant_key=bundle.design.control_arm.variant_key if bundle.design.control_arm is not None else None,
+        earlier_control=bundle.design.earlier_control,
         cells=bundle.cell_measures,
         bars=bundle.bar_adjudications,
         measures=cell_measure_facts(bundle),

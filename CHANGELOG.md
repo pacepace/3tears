@@ -75,10 +75,13 @@ notes).
   never averaged in with its old version, and a run's kind is part of its variant. A key is stored beside the lever
   map it was computed from: a run's `variant_levers`, and a campaign control's `control_levers` and
   `control_identity_version`, recorded when the control is named from a run and never taken from a caller. A
-  control names its arm by its stored key, which the cells stamped under its own version keep, and, under a later
-  `IDENTITY_VERSION`, also by the key its map re-keys to. That re-keying follows a change to how a lever map is
-  digested only: a renamed lever, kind or overlay field, or a lever added to every map, gives new runs a different
-  map, which no recomputation of the stored one reaches, and the control then names only its old cells. A control
+  control matches its stored key, which the cells stamped under its own version keep, and, under a later
+  `IDENTITY_VERSION`, also the key its map re-keys to, so it is never stale while its old cells are there. Its arm
+  is the new version's cells wherever any exist; the old version's cells are named beside it as the control under
+  that version, disclosed, in no contrast and not in the control's numbers. That re-keying follows a change to how
+  a lever map is digested only: a renamed lever, kind or overlay field, or a lever added to every map, gives new
+  runs a different map, which no recomputation of the stored one reaches, and the control then matches only its old
+  cells. A control
   key typed by hand has no map: when no cell carries it the analysis says it cannot be resolved and how to name it
   again, rather than reading it as no control. Unpriced
   spend is unknown, never $0. A run that cannot confirm which model answered (no `served_model`) says so on every surface. That is
@@ -112,7 +115,7 @@ notes).
   a second judge, and the judge's temperature.
 - **Campaigns and analysis.** A campaign is created declared or exploratory, and can be declared, populated and
   given a control later (`campaign_update`, `campaign_runs_add`, `campaign_runs_remove`). Its fingerprinted
-  context bundle (shape 50) holds the decision surface, comparisons with Holm correction for multiple comparisons
+  context bundle (shape 51) holds the decision surface, comparisons with Holm correction for multiple comparisons
   per declared question, materiality, bars and proposed bars, mechanism checks on swept levers (a setting that
   never took effect does not read as one that changed nothing), strata, a time axis by build or by day, judge
   agreement, and every confound and disclosure. `generate_analysis` has a model write the analysis over the frozen

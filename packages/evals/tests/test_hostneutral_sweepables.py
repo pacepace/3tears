@@ -97,9 +97,12 @@ class TestHowARoleWasAskedIsAnApparatusInput:
 #: first. Append a row for every bump; never edit one.
 _CORE_V24 = frozenset({"judge_config_ids", "judge_dim_divergence", "judge_model", "max_cost_usd", "simulator_model"})
 CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
-    # 50/12: the first public release's baseline — every core apparatus dimension a cell id digests, the judge's
-    # request settings and temperature among them.
+    # 50/12: the baseline — every core apparatus dimension a cell id digests, the judge's request settings and
+    # temperature among them.
     ((50, 12), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
+    # 51/12: the first public release's — the bundle gains `RealizedDesign.earlier_control`; the apparatus set and
+    # the cell model hold.
+    ((51, 12), _CORE_V24 | {"judge_request_settings", "simulator_request_settings", "judge_temperature"}),
 )
 
 

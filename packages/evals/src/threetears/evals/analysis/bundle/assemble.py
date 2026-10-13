@@ -515,6 +515,9 @@ def assemble_context_bundle(
             # The boundary pillar: each contestant's guardrail dimensions held against the campaign's control arm,
             # at the margins it declares, by the rule the bundle's guardrails are decided by (#613).
             control_variant_key=design.control_arm.variant_key if design.control_arm is not None else None,
+            earlier_control_variant_key=(
+                design.earlier_control.variant_key if design.earlier_control is not None else None
+            ),
             guardrail_margins=(
                 {entry.dimension: entry.margin for entry in campaign.declared_design.guardrail_margins}
                 if campaign.declared_design is not None
@@ -677,6 +680,7 @@ def assemble_context_bundle(
         incomplete_runs=bundle.incomplete_runs,
         profile=profile,
         control=control,
+        earlier_control=design.earlier_control,
         names=names,
     )
     bundle.measure_catalog = _measure_catalog(bundle, profile=profile)

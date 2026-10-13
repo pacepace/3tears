@@ -8,9 +8,14 @@ on the cells stamped after — and the control must name both. Pinned here:
 - **Addressing a control from a run records its pre-image**: ``campaign_create`` and ``campaign_update`` with
   ``control_from_run_id``, and ``set_campaign_control``, store the run's lever map and the predicate beside the key;
   clearing the control clears all three.
-- **A control names its arm on either side of a predicate change**: re-keyed from its map, it names the cells this
-  build stamps; by its stored key, it names the cells its own predicate stamped — a typed key included, and a control
-  addressed from a run whose map does not reproduce its stamped key. The campaign keeps the key as declared.
+- **A control matches its arm on either side of a predicate change**: re-keyed from its map, it matches the cells
+  this build stamps; by its stored key, it matches the cells its own predicate stamped — a typed key included, and a
+  control addressed from a run whose map does not reproduce its stamped key — so it is never stale while they are
+  here. The campaign keeps the key as declared.
+- **A campaign carrying both keys keeps ONE control arm**: the cells under this build's predicate. The cells under
+  the earlier one are named as the control under that predicate, disclosed in the bundle, the code-only report and
+  the time positions they ran at, and kept out of every contrast, guardrail, frontier boundary check and adoption
+  check, and out of the control's numbers.
 - **Every reading agrees on which arm is the control**: the realized design decides it once, and the decision
   surface, the surface's row order, the time axis, the adoption check and the arm table read that.
 - **A key nothing can carry is disclosed, never silent**: a typed key from another predicate that no cell carries
@@ -37,6 +42,8 @@ from threetears.evals.analysis.arms import arm_table
 from threetears.evals.analysis.campaigns import set_campaign_control, update_campaign
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.generator import generate_analysis
+from threetears.evals.analysis.references import cell_aliases
+from threetears.evals.analysis.surface_table import surface_table_of
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.analysis.report.build import build_code_only_report
 from threetears.evals.kernel import EvalCampaign, IDENTITY_VERSION
@@ -240,7 +247,7 @@ def test_a_run_s_recorded_lever_map_is_what_the_control_keeps() -> None:
     assert designated.declared_design.control == _key_of(fixture, run_id)
 
 
-# --- A control names its arm on either side of a predicate change -------------------------------------------------
+# --- A control matches its arm on either side of a predicate change ----------------------------------------------
 
 
 def test_a_control_addressed_under_an_earlier_predicate_names_the_cells_this_build_stamps() -> None:
@@ -623,3 +630,133 @@ def test_a_model_whose_key_was_changed_beside_its_stored_map_is_refused() -> Non
             updated_by="op",
             profile=eval_host.profile,
         )
+
+
+# --- A campaign carrying both of the control's keys keeps one control arm, and says so --------------------------
+
+
+#: The day the control's re-keyed run ran — after the predicate changed — so the time axis has a position before it.
+_AFTER_THE_CHANGE = "2026-03-15T09:30:00+00:00"
+
+
+def _split_control_campaign() -> tuple[OpsFixture, EvalCampaign, str, str, str, str]:
+    """The corpus campaign, its control's arm run twice: once under the earlier predicate, once under this one.
+
+    The first control run's cells carry the stored key the earlier predicate stamped; a second run of the same
+    arm, a day later, carries the key this build stamps. The control is declared under the earlier predicate with
+    its lever map, so it matches both.
+
+    Returns:
+        The fixture, the stored campaign, the earlier run, the re-keyed run, the stored key and the re-keyed key.
+    """
+    fixture = ops_fixture()
+    storage = fixture.host.eval_host.storage
+    earlier_run = fixture.campaign.run_ids[0]
+    run = storage.load_eval_run(earlier_run, TOYHOST_SCOPE)
+    assert run is not None
+    current_key = _key_of(fixture, earlier_run)
+    rerun = run.model_copy(update={"id": f"{earlier_run}-rerun", "created_at": _AFTER_THE_CHANGE})
+    storage.save_eval_run(rerun)
+    for result in storage.query_eval_results_by_run(earlier_run, TOYHOST_SCOPE):
+        storage.save_eval_result(result.model_copy(update={"id": f"{result.id}-rerun", "eval_run_id": rerun.id}))
+    stored_key = _stamped_under_the_earlier_predicate(fixture, earlier_run)
+    campaign = _declared_under_an_earlier_predicate(fixture, earlier_run, with_levers=True)
+    campaign = campaign.model_copy(update={"run_ids": [*campaign.run_ids, rerun.id]})
+    storage.save_campaign(campaign)
+    return fixture, campaign, earlier_run, rerun.id, stored_key, current_key
+
+
+def test_a_campaign_carrying_both_keys_keeps_one_control_arm_and_names_the_earlier_cells() -> None:
+    fixture, campaign, earlier_run, rerun, stored_key, current_key = _split_control_campaign()
+
+    bundle = _assemble(fixture, campaign)
+
+    assert bundle.design.control_arm is not None
+    assert (bundle.design.control_arm.variant_key, bundle.design.control_arm.run_ids) == (current_key, [rerun]), (
+        "the control's numbers are the current predicate's cells only"
+    )
+    earlier = bundle.design.earlier_control
+    assert earlier is not None
+    assert (earlier.variant_key, earlier.identity_version, earlier.run_ids) == (stored_key, _EARLIER, [earlier_run])
+    assert bundle.design.control_excluded is None
+    assert bundle_decision_surface(bundle).earlier_control == earlier
+
+
+def test_the_earlier_control_cells_are_in_no_contrast_and_no_guardrail() -> None:
+    fixture, campaign, _earlier_run, _rerun, stored_key, _current_key = _split_control_campaign()
+
+    bundle = _assemble(fixture, campaign)
+
+    assert stored_key not in {contrast.variant_key for contrast in bundle.design.contrasts}
+    assert bundle.design.contrasts, "the campaign's other arm is still contrasted"
+    compared = {c.contrast.variant_key for f in bundle.multiple_comparisons.families for c in f.comparisons}
+    assert compared and stored_key not in compared, "the control is never compared with itself under another digest"
+    assert stored_key not in {check.contrast.variant_key for check in bundle.guardrails.checks}
+    for subject in bundle.frontier.subjects:
+        for point in subject.points:
+            if point.variant_key == stored_key:
+                assert point.boundary_checks == [] and point.disqualified_by == []
+
+
+def test_the_split_is_disclosed_in_the_bundle_and_the_code_only_report() -> None:
+    fixture, campaign, _earlier_run, _rerun, stored_key, _current_key = _split_control_campaign()
+
+    bundle = _assemble(fixture, campaign)
+    report = build_code_only_report(
+        bundle, measures=fixture.host.eval_host.profile.measures, assembled_at=utc_now_iso()
+    )
+
+    earlier = bundle.design.earlier_control
+    assert earlier is not None
+    assert f"v{_EARLIER}" in earlier.disclosure and f"v{IDENTITY_VERSION}" in earlier.disclosure
+    assert f"The control's numbers are the v{IDENTITY_VERSION} cells only" in earlier.disclosure
+    texts = [getattr(block, "text", None) for block in report.blocks]
+    assert earlier.disclosure in texts
+    surface = surface_table_of(bundle_decision_surface(bundle), bundle.variant_index)
+    (marked,) = [row for row in surface.rows if row.variant_key == stored_key]
+    assert marked.label.endswith(f"the control under identity predicate v{_EARLIER}") and not marked.is_control
+
+
+def test_a_time_position_before_the_change_names_its_control_rather_than_reading_as_having_none() -> None:
+    fixture, campaign, _earlier_run, _rerun, stored_key, current_key = _split_control_campaign()
+
+    bundle = _assemble(fixture, campaign)
+    report = build_code_only_report(
+        bundle, measures=fixture.host.eval_host.profile.measures, assembled_at=utc_now_iso()
+    )
+
+    assert bundle.time_axis is not None
+    before, after = bundle.time_axis.positions
+    assert before.cells[0].variant_key == stored_key, "the earlier cells lead as the reference before the change"
+    assert before.control_disclosure is not None
+    assert f"control under identity predicate v{_EARLIER}" in before.control_disclosure
+    assert after.cells[0].variant_key == current_key and after.control_disclosure is None
+    assert before.control_disclosure in [getattr(block, "text", None) for block in report.blocks]
+
+
+async def test_keeping_the_control_under_the_earlier_predicate_needs_no_separation() -> None:
+    fixture, campaign, _earlier_run, rerun, stored_key, _current_key = off_loop(_split_control_campaign)
+    bundle = off_loop(_assemble, fixture, campaign)
+    # The toy memo names the narrow arm by its one run; read without the rerun's summary, that is the earlier cells.
+    payload = memo_payload(
+        bundle.model_copy(update={"run_summaries": [s for s in bundle.run_summaries if s.run_id != rerun]})
+    )
+    (decision,) = payload["decisions"]
+    assert [variant_of_cell_ref(cell_aliases(bundle.cell_measures)[decision["cells"][0]])] == [stored_key]
+    payload["decisions"] = [{**decision, "disposition": "adopted", "revisit_when": ""}]
+    client = FixturedClient(json.dumps(payload))
+
+    analysis, _insights = await generate_analysis(
+        bundle,
+        prompt=PROMPT,
+        model=MODEL,
+        client=client,
+        prompt_id=PROMPT_ID,
+        bundle_assembled_at=utc_now_iso(),
+        profile=fixture.host.eval_host.profile,
+    )
+
+    assert len(client.calls) == 1, "the earlier cells are the control: adopting them is keeping it, never checked"
+    assert analysis.decision_surface.earlier_control == bundle.design.earlier_control
+    (row,) = [row for row in arm_table(analysis).rows if row.variant_key == stored_key]
+    assert row.label.endswith(f"the control under identity predicate v{_EARLIER}") and not row.is_control

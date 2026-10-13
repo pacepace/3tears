@@ -513,6 +513,46 @@ def all_failed_sentence(n_all_failed: int, n_cells: int) -> str:
     )
 
 
+class EarlierControl(EvalDocumentModel):
+    """The declared control's cells under an earlier identity predicate — the control as it ran, never a rival arm.
+
+    Stamped keys are never re-derived, so once the identity predicate changes how a lever map is digested, the
+    control's runs from before the change carry one key and its runs from after carry another. Both are the
+    declared control (:func:`~threetears.evals.kernel.declaration.resolve_declared_control` names both), but a
+    cell is one key, so the two sets of cells stay apart: the control ARM is the cells under the build's own
+    predicate, and these are the cells under the earlier one. Pooling them would put observations keyed by two
+    predicates into one number; contrasting them would compare the control with itself under another digest and
+    let a reader report the control "not separated" from the control. So they are named, kept out of every
+    contrast, guardrail and adoption check, and said once.
+    """
+
+    variant_key: str = Field(min_length=1, description="The key the control's earlier cells carry: the stored key.")
+    identity_version: int = Field(ge=1, description="The identity predicate that stamped them.")
+    run_ids: list[str] = Field(min_length=1, description="The member runs whose cells carry it, sorted.")
+    disclosure: str = Field(
+        min_length=1,
+        description=(
+            "That the control's cells split across two identity predicates, which are its arm, and that the "
+            "control's numbers are the current predicate's cells only — in the words a reader is shown."
+        ),
+    )
+
+
+def earlier_control_mark(earlier: EarlierControl) -> str:
+    """What a surface appends to the label of a cell the earlier predicate stamped for the control.
+
+    Said beside the arm's own name, as a second rig is (``@ rig <digest>``), because the levels are the
+    control's and only the predicate differs.
+
+    Args:
+        earlier: The control's cells under the earlier predicate.
+
+    Returns:
+        The mark.
+    """
+    return f"the control under identity predicate v{earlier.identity_version}"
+
+
 #: What a campaign's time positions are: the builds a host labels (``release``), or the UTC days its runs
 #: started on (``date``).
 TimeAxisBasis = Literal["release", "date"]
@@ -535,7 +575,16 @@ class TimePosition(EvalDocumentModel):
     cells: list[CellFacts] = Field(
         min_length=1,
         description=(
-            "Every cell measured at this position, in the decision surface's row order (see `DecisionSurface.cells`)."
+            "Every cell measured at this position, in the decision surface's row order (see `DecisionSurface.cells`). "
+            "At a position where only the control's earlier-predicate cells ran, they lead as its reference."
+        ),
+    )
+    control_disclosure: str | None = Field(
+        default=None,
+        description=(
+            "Set where this position holds the control's cells under an earlier identity predicate "
+            "(`DecisionSurface.earlier_control`): which cells are the control here, and that they are not the "
+            "control arm the surface's numbers are read against. None everywhere else."
         ),
     )
 
@@ -764,6 +813,14 @@ class DecisionSurface(EvalDocumentModel):
             "declared no control, and when no cell carries it (the bundle's `design.control_excluded` says why)."
         ),
     )
+    earlier_control: EarlierControl | None = Field(
+        default=None,
+        description=(
+            "The control's cells under an earlier identity predicate, where the campaign's cells carry both of "
+            "its keys (the realized design's `earlier_control`): named on every surface, in no contrast. None "
+            "otherwise."
+        ),
+    )
     cells: list[CellFacts] = Field(
         default_factory=list,
         description=(
@@ -857,6 +914,7 @@ __all__ = [
     "ArmGuardrails",
     "CellFacts",
     "DecisionSurface",
+    "EarlierControl",
     "GuardrailCell",
     "GuardrailCheck",
     "GuardrailDecision",
@@ -870,4 +928,5 @@ __all__ = [
     "TimeAxisBasis",
     "TimePosition",
     "all_failed_sentence",
+    "earlier_control_mark",
 ]
