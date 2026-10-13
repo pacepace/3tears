@@ -1201,11 +1201,13 @@ def _time_axis_blocks(axis: TimeAxis | None) -> list[ReportBlock]:
         text = f"The time axis is builds of {axis.release_label}, in the order each first ran."
     else:
         text = f"The time axis is UTC days, not builds: {axis.basis_reason}."
-    return [DisclosureBlock(section="methods", source="time_axis", text=text)] + [
+    blocks: list[ReportBlock] = [DisclosureBlock(section="methods", source="time_axis", text=text)]
+    blocks.extend(
         DisclosureBlock(section="methods", source="time_axis", text=position.control_disclosure)
         for position in axis.positions
         if position.control_disclosure
-    ]
+    )
+    return blocks
 
 
 # =============================================================================
