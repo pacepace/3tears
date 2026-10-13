@@ -501,7 +501,9 @@ def _input_schema(tool: BaseTool) -> Mapping[str, Any]:
     schema = tool.tool_call_schema
     if isinstance(schema, Mapping):
         return schema
-    return schema.model_json_schema()
+    if issubclass(schema, BaseModel):
+        return schema.model_json_schema()
+    return schema.schema()  # a pydantic v1 model, which LangChain still accepts as a tool's schema
 
 
 def tool_arguments(tool: BaseTool) -> str:
