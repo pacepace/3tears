@@ -640,6 +640,17 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.schema.KnownReasoningEffort",
         "threetears.evals.schema.KnownOutOfRunPurpose",
         "threetears.evals.schema.KnownRefusalKind",
+        # The same vocabularies' values as tuples, which a host reads instead of `get_args` on the open stored type.
+        "threetears.evals.schema.USAGE_ROLES",
+        "threetears.evals.schema.SIMULATOR_PURPOSES",
+        "threetears.evals.schema.COST_CAP_ORIGINS",
+        "threetears.evals.schema.METERED_CALL_ORIGINS",
+        "threetears.evals.schema.CELL_TIMEOUT_ORIGINS",
+        "threetears.evals.schema.MODEL_ROLE_ORIGINS",
+        "threetears.evals.schema.ROLE_MODEL_ORIGINS",
+        "threetears.evals.schema.REASONING_EFFORTS",
+        "threetears.evals.schema.OUT_OF_RUN_PURPOSES",
+        "threetears.evals.schema.REFUSAL_KINDS",
         # The quick path, what it returns, and the pieces the host guide hands a host of its own.
         "threetears.evals.quick.run_eval",
         "threetears.evals.quick.compare",

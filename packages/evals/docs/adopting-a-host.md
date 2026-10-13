@@ -422,8 +422,9 @@ release, on:
 
 - **`host-contract`** is what a host writes against: the host and its profile, the registries, the kind seam,
   launching, the stored documents a kind builds, the store port with its conformance kits and the engine's own
-  stores, the refusals, the version constants, the `Known*` vocabularies, the quick path and what it returns, and
-  every name this guide, the [tutorial](tutorial.md), the README or an example imports. Such a name moves only with
+  stores, the refusals, the version constants, the `Known*` vocabularies and their value tuples (`USAGE_ROLES`, …),
+  the quick path and what it returns, and every name this guide, the [tutorial](tutorial.md), the README or an
+  example imports. Such a name moves only with
   a `MIGRATIONS.toml` record and a deprecation cycle: the release that moves it exports the new name beside the old
   one, which keeps working for that minor release and is named in its notes, and the next minor release removes the
   old name, recorded as any removal is.
@@ -1006,7 +1007,10 @@ Each mechanism below exists because the first host to adopt the engine needed it
 that host's vocabulary, and none has yet been used by a second host. Use whichever fits your subject. Your
 adoption, as the second host, decides whether each one stays an engine concept. A mechanism no second host uses
 may be removed in a later release, and that release's `MIGRATIONS.toml` notes say so (the core ones then move
-with a core major and an upgrader). None is deprecated, and nothing here changes what is stored.
+with a core major and an upgrader). None is deprecated, and nothing here changes what is stored. Two of them hang
+off [`host-contract`](#stability-tiers) names: `KnownUsageRole` carries `inner_agent` and `external`, and
+`WorldDimension` reaches `Triggered` through its `when`. Removing either is a signature change to a contract name,
+so it goes through the deprecation cycle, never straight out in one release's notes.
 
 - **`AsyncDelivery` and `AsyncExternalSpend`** (on `EvalResult.async_deliveries`, a core document). They cover
   background work a candidate hands off and gets back turns later, with its own model spend and the paid

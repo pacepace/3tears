@@ -124,7 +124,7 @@
     "threetears.evals.schema.CELL_TIMEOUT_ORIGINS": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.schema.CellIdentity": {
       "kind": "dataclass",
@@ -244,7 +244,7 @@
     "threetears.evals.schema.COST_CAP_ORIGINS": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.schema.CostCapOrigin": {
       "kind": "type alias",
@@ -619,7 +619,7 @@
     "threetears.evals.schema.METERED_CALL_ORIGINS": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.schema.MeteredCallOrigin": {
       "kind": "type alias",
@@ -639,7 +639,7 @@
     "threetears.evals.schema.MODEL_ROLE_ORIGINS": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.schema.ModelRoleOrigin": {
       "kind": "type alias",
@@ -679,7 +679,7 @@
     "threetears.evals.schema.OUT_OF_RUN_PURPOSES": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.schema.OUTCOME_DIM_ID": {
       "kind": "constant (str)",
@@ -774,7 +774,7 @@
     "threetears.evals.schema.REASONING_EFFORTS": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.schema.ReasoningEffort": {
       "kind": "type alias",
@@ -794,7 +794,7 @@
     "threetears.evals.schema.REFUSAL_KINDS": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.schema.RefusalField": {
       "kind": "type alias",
@@ -834,7 +834,7 @@
     "threetears.evals.schema.ROLE_MODEL_ORIGINS": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.schema.RoleModelOrigin": {
       "kind": "type alias",
@@ -919,7 +919,7 @@
     "threetears.evals.schema.SIMULATOR_PURPOSES": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.schema.SimulatorLLM": {
       "kind": "protocol",
@@ -974,7 +974,7 @@
     "threetears.evals.schema.USAGE_ROLES": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.schema.UsageRole": {
       "kind": "type alias",
