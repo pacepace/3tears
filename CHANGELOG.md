@@ -76,6 +76,21 @@ no zone, to a reader whose clock is somewhere else.
 - **Added, `threetears.agent.wake.format_wake_time` and `describe_schedule`:** a wake's time and
   its schedule in words (`every 4 hours`, `daily at 03:00 America/Los_Angeles`).
 
+### Tools: a stored result a later call replaced says so
+
+A result saved under its input's key is one row, refreshed by the same call again. A handle from the
+first call then opened the second call's answer with nothing saying it had changed.
+
+- **Changed, `context_recall`** (the workflow tool and the `threetears.context_recall` builtin): a
+  row whose `date_updated` is after its `date_created` opens with
+  `(Updated at <time>: a later call with the same input replaced what this first held.)`, a blank
+  line, then the result. A row written once reads as before.
+- **Added, `load_workflow_tools(tool_context, tz=None)` and `ContextRecallTool(tz=None)`** (the
+  builtin's factory reads `config["tz"]`): the zone that time is said in; UTC, and named, without one.
+- **Added, `threetears.agent.tools.context.refreshed_note(item, tz=None)`.**
+- **Fixed, `ToolContextManager.save_tool_result`:** on a refresh the in-memory row keeps the
+  `date_created` the stored row keeps, where it took the refresh's.
+
 ### Wake: a change to a protected wake says what was there before
 
 - **Changed, `update_protected`:** returns `ProtectedWakeChange` (`schedule`, `schedule_type`,

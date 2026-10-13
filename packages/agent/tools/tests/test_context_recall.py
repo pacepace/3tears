@@ -99,6 +99,27 @@ class TestContextRecallExecute:
         assert result.content == full
 
     @pytest.mark.asyncio
+    async def test_a_refreshed_result_says_when_before_its_body(self, manager: ToolContextManager) -> None:
+        """a row a later call replaced opens with one line saying so, in the zone the tool was built with."""
+        cid = await manager.save_tool_result("nmap", "old scan", input_fingerprint="host=a")
+        await manager.save_tool_result("nmap", "new scan", input_fingerprint="host=a")
+        tool = ContextRecallTool(tz="America/Los_Angeles")
+        async with enter_call_scope(_scope_for(manager)):
+            result = await tool.execute(context_id=cid)
+        assert result.success is True
+        note, blank, body = result.content.split("\n", 2)
+        assert note.startswith("(Updated at ") and ("PDT:" in note or "PST:" in note)
+        assert (blank, body) == ("", "new scan")
+
+    @pytest.mark.asyncio
+    async def test_a_result_written_once_has_no_note(self, manager: ToolContextManager) -> None:
+        """a row written once is its content and nothing else."""
+        cid = await manager.save_tool_result("nmap", "one scan", input_fingerprint="host=a")
+        async with enter_call_scope(_scope_for(manager)):
+            result = await ContextRecallTool().execute(context_id=cid)
+        assert result.content == "one scan"
+
+    @pytest.mark.asyncio
     async def test_recall_unknown_id_is_graceful_miss(self, manager: ToolContextManager) -> None:
         """an unknown id returns a clear not-found result, not an exception."""
         tool = ContextRecallTool()

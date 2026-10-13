@@ -131,6 +131,50 @@ async def test_context_recall_tool(ctx: ToolContextManager) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_result_written_once_is_recalled_with_no_note(ctx: ToolContextManager) -> None:
+    cid = await ctx.save_tool_result("web_search", "old results", input_fingerprint="query=moon")
+    result = await _make_tools(ctx)["context_recall"].ainvoke({"context_id": cid})
+    assert result.endswith(": old results")
+    assert "Updated at" not in result
+
+
+@pytest.mark.asyncio
+async def test_a_refreshed_result_says_when_before_its_body(ctx: ToolContextManager) -> None:
+    """The same call again replaces the row; a handle from the first call then opens the second's answer."""
+    first = await ctx.save_tool_result("web_search", "old results", input_fingerprint="query=moon")
+    second = await ctx.save_tool_result("web_search", "fresh results", input_fingerprint="query=moon")
+    assert first == second
+    item = await ctx.get_context_item(first)
+    assert item is not None and item["date_updated"] > item["date_created"], (
+        "the row keeps the day it was first written"
+    )
+
+    tools = {t.name: t for t in load_workflow_tools(ctx, tz="America/Los_Angeles")}
+    result = await tools["context_recall"].ainvoke({"context_id": first})
+
+    note, blank, body = result.split("\n", 2)
+    assert note.startswith("(Updated at ") and note.endswith(
+        ": a later call with the same input replaced what this first held.)"
+    )
+    assert note.split(":")[-2].split()[-1] in {"PDT", "PST"}, f"the time names the caller's zone: {note}"
+    assert blank == ""
+    assert body.endswith(": fresh results")
+
+
+@pytest.mark.asyncio
+async def test_a_refreshed_result_with_no_zone_named_says_utc(ctx: ToolContextManager) -> None:
+    cid = await ctx.save_tool_result("web_search", "old", input_fingerprint="q")
+    await ctx.save_tool_result("web_search", "new", input_fingerprint="q")
+    result = await _make_tools(ctx)["context_recall"].ainvoke({"context_id": cid})
+    assert result.splitlines()[0].startswith("(Updated at ") and " UTC:" in result.splitlines()[0]
+
+
+def test_a_zone_that_is_not_one_is_refused(ctx: ToolContextManager) -> None:
+    with pytest.raises(ValueError, match="not a time zone"):
+        load_workflow_tools(ctx, tz="Mars/Olympus")
+
+
+@pytest.mark.asyncio
 async def test_context_recall_not_found(ctx: ToolContextManager) -> None:
     tools = _make_tools(ctx)
     result = await tools["context_recall"].ainvoke({"context_id": "bad-id"})

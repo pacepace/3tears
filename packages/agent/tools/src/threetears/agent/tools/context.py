@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, datetime
+from collections.abc import Mapping
+from datetime import UTC, datetime, tzinfo
 from typing import Any
 from uuid import UUID, uuid7
 
 from threetears.agent.memory.collections import MemoryRefsCollection
 from threetears.agent.tools.collections import ContextItemCollection
+from threetears.core.utils.local_time import render_local_time
 from threetears.observe import get_logger
 from threetears.langgraph.fence import explained_fence
 
@@ -18,6 +20,7 @@ __all__ = [
     "ToolContextManager",
     "VariableLimitError",
     "make_tool_result_dedup_key",
+    "refreshed_note",
 ]
 
 
@@ -31,6 +34,31 @@ class VariableLimitError(ValueError):
 
 
 _MEMORY_REF_FIFO_CAPACITY = 50
+
+
+def refreshed_note(item: Mapping[str, Any], tz: tzinfo | str | None = None) -> str | None:
+    """The line a stored result opens with when a later call replaced what it first held.
+
+    A result saved under its input's key is one row: the same call again
+    refreshes it. Whoever opens that row by a handle from the first call is
+    reading the second call's answer, and nothing in the content says so.
+
+    :param item: a context item, with its ``date_created`` and ``date_updated``
+    :ptype item: Mapping[str, Any]
+    :param tz: the zone of the person the time is read to: a ``tzinfo`` or an
+        IANA name; ``None`` shows it in UTC, and says so
+    :ptype tz: tzinfo | str | None
+    :return: the note, or ``None`` for a row that was written once
+    :rtype: str | None
+    :raises ValueError: when ``tz`` is a name that is not a known zone
+    """
+    created, updated = item.get("date_created"), item.get("date_updated")
+    if not isinstance(created, datetime) or not isinstance(updated, datetime) or updated <= created:
+        return None
+    return (
+        f"(Updated at {render_local_time(updated, tz)}: a later call with the same input replaced "
+        "what this first held.)"
+    )
 
 
 def make_tool_result_dedup_key(tool_name: str, input_fingerprint: str) -> str:
@@ -410,6 +438,13 @@ class ToolContextManager:
             # Drop the pre-existing projection row for the upserted id
             # (UUID comparison -- identifiers stay UUID internally per the
             # border discipline) before re-appending the refreshed data.
+            # The row keeps the day it was first written, as the stored row does:
+            # that it was refreshed is read from the two dates differing.
+            first_written = next(
+                (i.get("date_created") for i in self.items if i.get("context_id") == returned_id), None
+            )
+            if first_written is not None:
+                data["date_created"] = first_written
             self.items = [i for i in self.items if i.get("context_id") != returned_id]
         self.items.append(data)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import tzinfo
 from typing import Any
 
 from langchain_core.tools import StructuredTool
@@ -9,7 +10,9 @@ from pydantic import BaseModel, Field
 
 from threetears.observe import get_logger
 
-from threetears.agent.tools.context import ToolContextManager, VariableLimitError
+from threetears.core.utils.local_time import resolve_zone
+
+from threetears.agent.tools.context import ToolContextManager, VariableLimitError, refreshed_note
 from threetears.agent.tools.utils import TOOL_ERROR_PREFIX, tool_no_change
 
 log = get_logger(__name__)
@@ -92,11 +95,13 @@ async def _get_variable(tool_context: ToolContextManager, key: str) -> str:
     return f"{key} ({var['value_type']}): {var['value']}"
 
 
-async def _recall_context(tool_context: ToolContextManager, context_id: str) -> str:
+async def _recall_context(tool_context: ToolContextManager, context_id: str, zone: tzinfo | None = None) -> str:
     item = await tool_context.get_context_item(context_id)
     if item is None:
         return f"Saved result '{context_id}' not found in this conversation."
-    return f"{item.get('key', 'unknown')}: {item.get('content', '')}"
+    body = f"{item.get('key', 'unknown')}: {item.get('content', '')}"
+    note = refreshed_note(item, zone)
+    return body if note is None else f"{note}\n\n{body}"
 
 
 def _declare_workflow(tool_context: ToolContextManager, plan: str, steps: list[str]) -> str:
@@ -110,11 +115,20 @@ def _declare_workflow(tool_context: ToolContextManager, plan: str, steps: list[s
 # ---------------------------------------------------------------------------
 
 
-def load_workflow_tools(tool_context: ToolContextManager) -> list[Any]:
+def load_workflow_tools(tool_context: ToolContextManager, *, tz: tzinfo | str | None = None) -> list[Any]:
     """Create workflow management tools bound to a ToolContextManager.
 
-    Returns a list of LangChain ``BaseTool`` instances.
+    :param tool_context: the conversation's context manager
+    :ptype tool_context: ToolContextManager
+    :param tz: the zone of the person the results are read to: a ``tzinfo`` or
+        an IANA name. ``context_recall`` says when a stored result was
+        refreshed in it; ``None`` says it in UTC.
+    :ptype tz: tzinfo | str | None
+    :return: a list of LangChain ``BaseTool`` instances
+    :rtype: list[Any]
+    :raises ValueError: when ``tz`` is a name that is not a known zone
     """
+    zone = resolve_zone(tz)
     return [
         StructuredTool.from_function(
             func=lambda key, value, value_type="string": None,
@@ -135,7 +149,7 @@ def load_workflow_tools(tool_context: ToolContextManager) -> list[Any]:
         ),
         StructuredTool.from_function(
             func=lambda context_id: None,
-            coroutine=lambda context_id: _recall_context(tool_context, context_id),
+            coroutine=lambda context_id: _recall_context(tool_context, context_id, zone),
             name="context_recall",
             description="Read the whole of a saved tool result by the id in its [ctx:<id>] mark.",
             args_schema=RecallContextInput,
