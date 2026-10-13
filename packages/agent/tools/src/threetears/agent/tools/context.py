@@ -29,6 +29,7 @@ class VariableLimitError(ValueError):
     been handed.
     """
 
+
 _MEMORY_REF_FIFO_CAPACITY = 50
 
 
