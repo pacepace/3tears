@@ -702,6 +702,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.analysis.ChartBlock",
         "threetears.evals.kernel.EvalAnalysis",
         "threetears.evals.vega.VegaRenderer",
+        # The shipped provider adapter: a host that brings no client of its own binds to these.
+        "threetears.evals.providers.models_client",
     }
 )
 

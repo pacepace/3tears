@@ -60,10 +60,20 @@ it, and only the names in ``__all__``.
 
 from __future__ import annotations
 
-from threetears.evals.providers.adapter import SUPPORTED_PROVIDERS, ModelsClientRefused, SupportedProvider
+from threetears.evals.providers.adapter import (
+    SUPPORTED_PROVIDERS,
+    ModelsClientRefused,
+    ModelsCompletion,
+    ModelsCompletionClient,
+    SupportedProvider,
+    models_client,
+)
 
 __all__ = [
     "SUPPORTED_PROVIDERS",
     "ModelsClientRefused",
+    "ModelsCompletion",
+    "ModelsCompletionClient",
     "SupportedProvider",
+    "models_client",
 ]

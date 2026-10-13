@@ -2521,9 +2521,16 @@ The Vega-Lite chart renderer — an optional adapter over eval's chart intent.
 
 The shipped provider adapter: a chat model 3tears-models builds, as the engine's completion client.
 
+**Functions**
+
+- **`models_client`** · *host contract* · function · Build the completion client for one model: `create_chat_model` with retries off, wrapped in the port.
+  <br>`models_client(model_id: str, *, api_key: str, provider: str | None = None, temperature: float | None = None, reasoning_effort: KnownReasoningEffort | None = None, reasoning_max_tokens: int | None = None, max_tokens: int | None = None, prices: HttpClient | None = None, **provider_kwargs: Any) -> ModelsCompletionClient`
+
 **Classes**
 
 - **`ModelsClientRefused`** · exception · A setting the adapter cannot carry to the provider, refused before anything is sent.
+- **`ModelsCompletion`** · dataclass · One completion as the adapter read it off the chat model's reply: the port's ten members and two of its own.
+- **`ModelsCompletionClient`** · class · The completion port over one chat model 3tears-models built: `models_client` returns one.
 
 **Types**
 
