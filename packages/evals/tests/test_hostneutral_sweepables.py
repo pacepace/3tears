@@ -113,10 +113,11 @@ class TestTheCoresApparatusSetIsPinnedToTheVersionsThatNameIt:
     def test_the_cores_apparatus_declarations_are_the_pinned_set(self) -> None:
         assert frozenset(d.name for d in CORE_SWEEPABLES if d.role == "apparatus") == CORE_PINNED[-1][1]
 
-    @pytest.mark.parametrize("index", range(1, len(CORE_PINNED)))
-    def test_a_set_change_moves_both_versions(self, index: int) -> None:
-        (schema_before, cell_before), set_before = CORE_PINNED[index - 1]
-        (schema_after, cell_after), set_after = CORE_PINNED[index]
-        assert schema_after > schema_before
-        if set_after != set_before:
-            assert cell_after > cell_before
+    def test_a_set_change_moves_both_versions(self) -> None:
+        """Every row after the baseline moves the bundle version, and the cell model too when the set moved."""
+        for ((schema_before, cell_before), set_before), ((schema_after, cell_after), set_after) in zip(
+            CORE_PINNED, CORE_PINNED[1:], strict=False
+        ):
+            assert schema_after > schema_before
+            if set_after != set_before:
+                assert cell_after > cell_before
