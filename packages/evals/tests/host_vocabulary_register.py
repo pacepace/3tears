@@ -241,6 +241,14 @@ CEILINGS: dict[str, dict[str, int]] = {
     "run/simulator.py": {},
     "run/witnessed.py": {},
     "__main__.py": {},
+    # The provider adapter names the providers it builds clients for, by 3tears-models' registry names, and
+    # `openrouter` is one of them: a provider's name there, where naming providers is the tree's purpose, and a
+    # host noun everywhere else (the shared-contract canary's _PROVIDER_NAMES says the same). These counts are
+    # exact, so a doc edit that adds or drops a mention moves them; no other host term is allowed in the tree.
+    "providers/__init__.py": {"openrouter": 2},
+    "providers/adapter.py": {"openrouter": 23},
+    "providers/factory.py": {"openrouter": 1},
+    "providers/failures.py": {"openrouter": 16},
     "quick/__init__.py": {},
     "quick/answer.py": {},
     "quick/cli.py": {},

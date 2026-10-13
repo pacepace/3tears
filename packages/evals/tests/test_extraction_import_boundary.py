@@ -72,6 +72,14 @@ IMPORT_ROOTS_BY_DEPENDENCY: dict[str, tuple[str, ...]] = {
 IMPORT_ROOTS_BY_EXTRA: dict[str, tuple[str, dict[str, tuple[str, ...]]]] = {
     "vega": ("threetears.evals.vega", {"vl-convert-python": ("vl_convert",)}),
     "fastmcp": ("threetears.evals.transports.fastmcp", {"fastmcp": ("fastmcp",)}),
+    # The provider adapter names 3tears-models and the provider layer it is built on, every one of them a runtime
+    # dependency of 3tears-models itself (``langchain-core``, ``anthropic`` and ``openrouter`` directly, ``openai``
+    # through ``langchain-openai``, ``httpx`` through every SDK): it reads LangChain's message types and the SDKs'
+    # exception types, and holds a pin on the models extra, not on each SDK.
+    "models": (
+        "threetears.evals.providers",
+        {"3tears-models": ("threetears.models", "langchain_core", "anthropic", "openai", "openrouter", "httpx")},
+    ),
 }
 
 #: Packages the portable test support may neither name nor load: the first host, and the web and

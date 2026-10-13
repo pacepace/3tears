@@ -1,6 +1,6 @@
 """Structural gate: the engine's packages import only what the allowed-dependency matrix permits.
 
-``threetears.evals`` is twelve physical subpackages, and one allowed-dependency matrix says which may
+``threetears.evals`` is thirteen physical subpackages, and one allowed-dependency matrix says which may
 import which:
 
 ============  ======  ======  =====  ========  ===  =======  =======  =====  ====  ============================================
@@ -39,6 +39,13 @@ Nothing in the engine imports any of the three, ``quick`` included, but ``testin
 runs ``ops`` and ``actions`` from above them (see below): the run summary it prints, the
 report it serializes and the spend it totals live in ``analysis``, below both. None of the three
 imports ``vega``.
+
+``providers`` is the shipped provider adapter (the ``[models]`` extra): it turns a chat model 3tears-models builds
+into the completion port, so it may import schema, kernel and itself, and past the stdlib ``threetears.models`` and
+the provider layer under it (``langchain_core``, ``anthropic``, ``openai``, ``openrouter``, ``httpx``) and pydantic.
+Like ``vega``, its column is empty but its own row: nothing in the engine, and nothing above it, imports it, which
+is what keeps the engine provider-neutral (``tests/test_providers_boundary.py`` holds the same from the adapter's
+side, name by name).
 
 ``storage`` holds adapters behind the one port and ``testing`` the conformance kits an adopter runs
 against its own adapter, and nothing in the engine may reach either. ``storage`` needs nothing but
@@ -106,7 +113,7 @@ TESTS_ROOT = Path(__file__).resolve().parent
 #: The repository root, which the probes run from.
 REPO_ROOT = TESTS_ROOT.parents[2]
 
-#: The matrix, for the twelve packages.
+#: The matrix, for the thirteen packages.
 ALLOWED_PACKAGES: dict[str, frozenset[str]] = {
     "schema": frozenset({"schema"}),
     "kernel": frozenset({"schema", "kernel"}),
@@ -120,6 +127,7 @@ ALLOWED_PACKAGES: dict[str, frozenset[str]] = {
     "ops": frozenset({"schema", "kernel", "run", "analysis", "ops"}),
     "actions": frozenset({"schema", "kernel", "run", "ops", "actions"}),
     "transports": frozenset({"schema", "kernel", "ops", "actions", "transports"}),
+    "providers": frozenset({"schema", "kernel", "providers"}),
 }
 
 #: The matrix's third-party column, by import root (a ``threetears`` namespace package by its two
@@ -137,6 +145,11 @@ ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
     "ops": frozenset({"pydantic"}),
     "actions": frozenset({"pydantic"}),
     "transports": frozenset({"pydantic"}),
+    # The `[models]` extra's package and the provider layer it is built on, all 3tears-models' own runtime
+    # dependencies: the adapter reads LangChain's messages and the SDKs' exception types directly.
+    "providers": frozenset(
+        {"threetears.models", "langchain_core", "anthropic", "openai", "openrouter", "httpx", "pydantic"}
+    ),
 }
 
 #: The module-level third-party exceptions, one per extra: the Vega renderer's rasteriser and nothing
@@ -150,7 +163,7 @@ THIRD_PARTY_EXCEPTIONS: dict[str, frozenset[str]] = {
 #: The public roots, relative to ``threetears.evals``. A consumer reaches a package only through one
 #: of these. ``kernel.host`` and ``analysis.viz`` are roots of their own inside a package: the first
 #: is the contract a host implements, the second the chart intent and the renderer seam. ``vega`` is the
-#: optional Vega-Lite renderer.
+#: optional Vega-Lite renderer, and ``providers`` the optional provider adapter.
 PUBLIC_ROOTS: tuple[str, ...] = (
     "schema",
     "kernel",
@@ -166,6 +179,7 @@ PUBLIC_ROOTS: tuple[str, ...] = (
     "actions",
     "transports.fastmcp",
     "vega",
+    "providers",
 )
 
 #: The consumers walked, as globs under the tests directory.
@@ -400,7 +414,7 @@ def consumer_files(tests_root: Path) -> list[tuple[str, Path]]:
 
 
 def _in_a_package(module: str) -> bool:
-    """Whether ``module`` is one of the eleven packages or below one."""
+    """Whether ``module`` is one of the packages or below one."""
     return placement(module) in ALLOWED_PACKAGES
 
 

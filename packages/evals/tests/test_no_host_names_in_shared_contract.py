@@ -519,6 +519,10 @@ _SHARED_CONTRACT_TYPES: dict[str, tuple[str, ...]] = {}
 #: on the same terms too: it draws for every host (a host's typeface arrives through the renderer's
 #: theme), and it was scanned as part of ``analysis`` before it moved out of the core.
 #:
+#: ``providers``, the provider adapter the package ships as an optional extra, is whole from birth on the same
+#: terms: it serves every host that brings no client of its own. It names the providers it builds clients for,
+#: and one of them is also a host noun; :data:`_PROVIDER_NAMES` says which, and nothing else is exempt there.
+#:
 #: A host's adapter tree never belongs here. Its whole purpose is host coupling — it names its
 #: host's concepts on purpose, and an extraction deletes it rather than porting it. Scanning it
 #: would report the design as a violation.
@@ -534,7 +538,19 @@ _SHARED_CONTRACT_TREES: tuple[str, ...] = (
     "actions",
     "transports",
     "vega",
+    "providers",
 )
+
+#: Host nouns that, inside one shared-contract tree, name a PROVIDER the tree builds clients for, by tree.
+#:
+#: ``openrouter`` is a host noun because the engine names no provider: the first host's client was the reason it
+#: reached engine code, and everywhere else it still fails. The provider adapter's purpose is naming providers by
+#: the names 3tears-models' registry gives them (its ``SupportedProvider`` vocabulary, each provider's key
+#: variable, the per-provider mapping tables), so there it is the provider's name rather than a host's. A
+#: violation in the tree is exempt only when every noun it carries is listed here, so a ``persona`` or a
+#: ``discord`` in the adapter fails like anywhere else, and :func:`test_every_provider_name_exemption_is_still_needed`
+#: fails on an entry the tree no longer needs.
+_PROVIDER_NAMES: dict[str, frozenset[str]] = {"providers": frozenset({"openrouter"})}
 
 _HOST_NOUN_RE = re.compile(rf"^(?:{'|'.join(HOST_NOUNS)})s?$", re.IGNORECASE)
 
@@ -757,7 +773,19 @@ def _scan_type(module: str, source: str, name: str) -> list[Violation]:
     return sorted(set(scanner.violations))
 
 
+def _names_a_provider(violation: Violation) -> bool:
+    """Whether every host noun ``violation`` carries names a provider in its tree (:data:`_PROVIDER_NAMES`)."""
+    tree, _, rest = violation.module.partition("/")
+    exempt = _PROVIDER_NAMES.get(tree, frozenset())
+    return bool(rest) and bool(exempt) and {noun.lower() for noun in violation.nouns} <= exempt
+
+
 def _scan_shared_contract() -> list[Violation]:
+    """Every violation across the declared set, but a provider's name in the tree that names providers."""
+    return [violation for violation in _scan_declared_set() if not _names_a_provider(violation)]
+
+
+def _scan_declared_set() -> list[Violation]:
     """Every violation across the declared set — whole modules, whole trees, and declared types."""
     found: list[Violation] = []
     for path in _shared_contract_files():
@@ -1090,6 +1118,36 @@ def test_no_host_name_reaches_the_shared_contract() -> None:
             "Host nouns reached the shared eval contract, which must stay host-agnostic.\n"
             "  Rename it, or file an issue and add an _ALLOWLIST entry citing it.\n  " + detail
         )
+
+
+def test_every_provider_name_exemption_is_still_needed() -> None:
+    """Each provider name :data:`_PROVIDER_NAMES` exempts is one its tree still declares.
+
+    The exemption's anti-rot half, as the allowlist has one: an entry for a name the tree stopped declaring
+    would sit there covering the next host noun of that spelling, so it fails until it is deleted.
+    """
+    declared = {
+        (violation.module.partition("/")[0], noun.lower())
+        for violation in _scan_declared_set()
+        if _names_a_provider(violation)
+        for noun in violation.nouns
+    }
+    stale = sorted(
+        (tree, noun) for tree, nouns in _PROVIDER_NAMES.items() for noun in nouns if (tree, noun) not in declared
+    )
+    assert not stale, f"_PROVIDER_NAMES exempts names its tree no longer declares; delete them: {stale}"
+
+
+def test_a_provider_name_is_exempt_only_alone_and_only_in_its_tree() -> None:
+    """``openrouter`` in the provider tree passes; beside another host noun, or in any other tree, it fails."""
+    provider = Violation("providers/adapter.py", "literal-member", "openrouter", 1, ("openrouter",))
+    mixed = Violation("providers/adapter.py", "name", "openrouter_persona", 1, ("openrouter", "persona"))
+    other_noun = Violation("providers/adapter.py", "name", "persona_id", 1, ("persona",))
+    elsewhere = Violation("analysis/reporting.py", "literal-member", "openrouter", 1, ("openrouter",))
+    assert _names_a_provider(provider)
+    assert not _names_a_provider(mixed)
+    assert not _names_a_provider(other_noun)
+    assert not _names_a_provider(elsewhere)
 
 
 def test_every_allowlist_entry_still_matches_a_live_violation() -> None:
