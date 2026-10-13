@@ -6,6 +6,38 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Agent tools: a coalesced operation runs a request its lost lease left, and one first run for replicas that start together
+
+- **Fixed, a unit whose lease was lost left its request with nobody to run it.** `CoalescedRun`
+  cancels such a unit and records its request again, and the run ends `failed: LeaseLost`; with no
+  other replica draining, the request then sat until a manual request or a restart.
+  `CoalescedOperation` now looks again after it, as it does after a run that found the lease held:
+  once the lease has had its lifetime it runs the request if no live holder is there to.
+- **Fixed, a bucket error while the first run was being decided ended the wait for good.**
+  `start_when_needed` reads and writes the request beside the lease; an error there was not among a
+  pod's `retry_on` (its own check's errors), so the wait ended, the status read failed, and no first
+  run started. Those reads and writes are now retried like the errors a pod names, whatever the
+  bucket's client raises, and logged.
+- **Fixed, replicas starting together could run the first unit twice.** A replica whose `needed`
+  says yes while the lease is held (and no run is in progress on it) records no request: the run in
+  progress is the first run. It waits a lease's lifetime at a time and asks `needed` again once no
+  live holder remains, so a first run that failed is still run. Until now it recorded a request,
+  which a holder that had already taken its own ran as a second unit after the first.
+- **Fixed, an entry a replica could not remove could hide its next run.** A progress entry now
+  names the holding of the lease it was written under (`holding`, when the lease was taken), and a
+  reader takes it for the run in progress only when that is the holding the lease has now. A
+  `work_over` entry left behind by an earlier holding, the same replica's included, no longer says
+  anything of the run that has just taken the lease; nor does that run depend on its own first
+  write landing. An entry naming no holding is still its holder's present run's. A unit that
+  follows one whose work was over removes its progress when it ends, as any unit does.
+- **Added, `KVLease.held(key)`** (`LeaseHolding(holder, acquired_at)`): who holds a lease and since
+  when. `holder(key)` is its holder. **Changed, a renewal keeps `acquired_at`**: `refresh` wrote the
+  time of the renewal there, though the envelope documents it as when the lease was first taken; it
+  now keeps that, so it names one holding. Nothing else reads the field.
+- **Changed, the module's "no request lost" says its bound:** a request is lost only when the
+  process holding it is killed after taking it and before its unit ends (`CoalescedRun` takes a
+  request before it runs).
+
 ### Agent tools: a coalesced operation says how far it is on every replica, once, and when its work is over
 
 - **Changed, the replica that runs says how far it is.** `status_across_replicas` (with

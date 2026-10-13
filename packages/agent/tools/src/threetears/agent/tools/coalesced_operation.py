@@ -4,11 +4,16 @@
 whichever takes it. A load, a refresh or a rebuild that a pod runs on request therefore needs all
 of the following, and :class:`CoalescedOperation` is the one object that holds them:
 
-- **One unit of work at a time, everywhere, and no request lost.** The unit runs under a lease in
-  the replicas' shared bucket (:class:`~threetears.core.coordination.coalesced_run.CoalescedRun` on
-  a :class:`~threetears.core.coordination.lease.KVLease`). A request made while a unit runs, here or
+- **One unit of work at a time, everywhere, and no request lost while its holder lives.** The unit
+  runs under a lease in the replicas' shared bucket
+  (:class:`~threetears.core.coordination.coalesced_run.CoalescedRun` on a
+  :class:`~threetears.core.coordination.lease.KVLease`). A request made while a unit runs, here or
   on another replica, is one key beside the lease; the holder takes it when its unit ends and runs
-  once more, however many requests there were.
+  once more, however many requests there were. A unit that is stopped, or whose lease is lost, has
+  its request recorded again and run later. The one request that is lost is the one a holder had
+  taken when its process was killed before its unit ended: the request is taken before the unit
+  runs, and a process that dies records nothing. The next request, or a first run that is still
+  needed when a pod starts, runs it.
 - **In the background, started and reported by tools.** The drain of those requests is a
   :class:`~threetears.agent.tools.background_operation.BackgroundOperation`
   (:attr:`CoalescedOperation.operation`), which a pod registers ``RequestOperationTool`` and
@@ -19,8 +24,9 @@ of the following, and :class:`CoalescedOperation` is the one object that holds t
   and shows the holder's run with the progress it last reported
   (:class:`~threetears.agent.tools.background_operation.SharedProgress`,
   :meth:`CoalescedOperation.report_progress`).
-- **A request left behind a holder that died is run.** A drain that found the lease held leaves its
-  request to the holder, and looks again once the lease has had its lifetime.
+- **A request left behind is run.** A drain that found the lease held leaves its request to the
+  holder, and one whose lease was lost has its request recorded again with nobody draining; either
+  looks again once the lease has had its lifetime, and runs the request if no live holder is there to.
 - **A stop that ends all of it,** and says whether it did.
 
 **A drain that ran nothing is not a run.** A drain started on a replica that cannot hold the lease,
@@ -62,6 +68,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from threetears.core.coordination.coalesced_run import CoalescedRun
+from threetears.core.coordination.lease import LeaseLost
 from threetears.observe import get_logger
 
 from threetears.agent.tools.background_operation import (
@@ -79,6 +86,11 @@ __all__ = ["CoalescedOperation", "Drained", "rendered_drain"]
 log = get_logger(__name__)
 
 UnitT = TypeVar("UnitT")
+_AnswerT = TypeVar("_AnswerT")
+
+
+class _BesideTheLeaseUnreachable(Exception):
+    """the bucket beside the lease could not be asked or written while the first run was being decided."""
 
 
 @dataclass(frozen=True)
@@ -286,16 +298,24 @@ class CoalescedOperation(Generic[UnitT]):
         reach until the hub grants it storage). A unit is wanted when ``needed`` says so, or when a
         request is still recorded: one no replica has run (the unit that took it was stopped by a
         shutdown, which records it again). A needed first run is a request like any other, so the
-        drain runs it, and replicas that start together ask for one unit, not one each. No request
-        is recorded while a run is in progress here: that run is the first run, and a second
-        request would have it followed by another.
+        drain runs it. No request is recorded while a run is in progress here: that run is the
+        first run, and a second request would have it followed by another.
 
-        Only the errors in ``retry_on`` are retried, as
-        :meth:`~threetears.agent.tools.background_operation.BackgroundOperation.start_when_needed` does.
+        **Replicas that start together run one unit, not one each.** A replica whose ``needed``
+        says yes while the lease is held (and no run is in progress here) records nothing: the run
+        in progress under it is the first run. It waits, a lease's lifetime at a time, and asks ``needed`` again once no
+        live holder remains; so a first run that failed, or did not do what was needed, is still
+        run. (Two replicas that both find no holder in the same instant each record the request,
+        which is one request unless the second lands after the first was taken.)
+
+        Only the errors in ``retry_on`` end nothing and are retried, as
+        :meth:`~threetears.agent.tools.background_operation.BackgroundOperation.start_when_needed`
+        does; and so is the bucket beside the lease when it cannot be asked or written, whatever
+        its client raises: a pod names the errors of its own ``needed``, not the bucket's.
 
         :param needed: whether the work has never been done (a table is empty)
         :ptype needed: Callable[[], Awaitable[bool]]
-        :param retry_on: the errors that mean "not reachable yet", retried after ``retry_seconds``
+        :param retry_on: the errors of ``needed`` that mean "not reachable yet", retried after ``retry_seconds``
         :ptype retry_on: tuple[type[BaseException], ...]
         :param retry_seconds: the wait between attempts
         :ptype retry_seconds: float
@@ -305,13 +325,43 @@ class CoalescedOperation(Generic[UnitT]):
 
         async def wanted() -> bool:
             answer = await needed()
+            while answer and not self._operation.running and await self._beside_the_lease(self._held()):
+                # the run in progress there is the first run; whether one is still needed is asked
+                # again once it is over, or its holder is gone
+                await asyncio.sleep(self._lease_retry_seconds)
+                answer = await needed()
             if not answer:
-                answer = await self._run.requested()
+                answer = await self._beside_the_lease(self._run.requested())
             elif not self._operation.running:
-                await self._run.request()
+                await self._beside_the_lease(self._run.request())
             return answer
 
-        return self._operation.start_when_needed(wanted, retry_on=retry_on, retry_seconds=retry_seconds)
+        return self._operation.start_when_needed(
+            wanted, retry_on=(*retry_on, _BesideTheLeaseUnreachable), retry_seconds=retry_seconds
+        )
+
+    async def _held(self) -> bool:
+        """whether the operation's lease is held now, by a holder that is not known to be gone.
+
+        :return: True while a live holder is named
+        :rtype: bool
+        """
+        return await self._lease.holder(self._key) is not None
+
+    async def _beside_the_lease(self, asked: Awaitable[_AnswerT]) -> _AnswerT:
+        """what a read or write of the bucket beside the lease answers, its failure made one the first run's wait retries.
+
+        :param asked: the read or write
+        :ptype asked: Awaitable[_AnswerT]
+        :return: its answer
+        :rtype: _AnswerT
+        :raises _BesideTheLeaseUnreachable: whatever it raised
+        """
+        try:
+            answer = await asked
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- whatever the bucket's client raises, the first run's wait must go on rather than end for good: raised as the one error that wait retries, which logs it
+            raise _BesideTheLeaseUnreachable(f"{type(exc).__name__}: {exc}") from exc
+        return answer
 
     def report_progress(self, progress: Mapping[str, Any] | Callable[[], Mapping[str, Any]]) -> None:
         """the unit running here moved: have every replica show this as its progress.
@@ -442,6 +492,11 @@ class CoalescedOperation(Generic[UnitT]):
         else:
             try:
                 results = await self._run.drain_results()
+            except LeaseLost:
+                # the unit was cancelled and its request recorded again, with nobody draining: this
+                # replica looks for it again, as it does for one it left to a holder
+                self._look_again_later()
+                raise
             finally:
                 if self._over:
                     # the lease is let go: the entry saying the work was over has nothing left to say
@@ -451,10 +506,7 @@ class CoalescedOperation(Generic[UnitT]):
                 if await self._left_to_a_holder():
                     # another replica holds the lease and runs the request; if it never does, this
                     # replica does, later
-                    if self._retry is None or self._retry.done():
-                        self._retry = asyncio.get_running_loop().create_task(
-                            self._look_again(), name=f"{self._name}-retry"
-                        )
+                    self._look_again_later()
                     log.info(
                         "no unit ran on this replica; the request is left for the replica that holds the lease",
                         extra={"extra_data": {"operation": self._name, "lease": self._key}},
@@ -466,6 +518,15 @@ class CoalescedOperation(Generic[UnitT]):
                     )
                 self._tell_ran_nothing()
         return Drained(results=tuple(results))
+
+    def _look_again_later(self) -> None:
+        """have this replica look for the recorded request again, unless it is already waiting to.
+
+        :return: nothing
+        :rtype: None
+        """
+        if self._retry is None or self._retry.done():
+            self._retry = asyncio.get_running_loop().create_task(self._look_again(), name=f"{self._name}-retry")
 
     async def _left_to_a_holder(self) -> bool:
         """whether a run that ran nothing left its request behind: another replica holds the lease.
@@ -491,8 +552,13 @@ class CoalescedOperation(Generic[UnitT]):
         :rtype: UnitT
         """
         self._in_unit = True
-        # the entry is this holder's from the start, so a run before it is never shown as this one's,
-        # and a held lease reads as a run in progress before the unit has reported anything
+        # a unit that starts is a run in progress, whatever the unit before it said of its own work
+        self._over = False
+        # the entries of this unit name the holding of the lease it runs under, so one left by an
+        # earlier holding (this replica's own included) is never taken for this run's
+        await self._begin_progress()
+        # the entry is this holder's from the start, so a held lease reads as a run in progress
+        # with nothing reported yet
         self._progress.report({})
         await self._write_reported()
         try:
@@ -502,6 +568,20 @@ class CoalescedOperation(Generic[UnitT]):
             self._progress.report(None)
             await self._end_progress()
         return result
+
+    async def _begin_progress(self) -> None:
+        """learn the holding of the lease this unit's entries are written under; a failure is logged.
+
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            await self._progress.begin()
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- sharing progress is a courtesy to the other replicas; whatever the bucket's client raises, this replica's unit goes on, its entries naming no holding; logged
+            log.warning(
+                "cannot read the lease the unit runs under; its progress names no holding of it",
+                extra={"extra_data": {"operation": self._name, "error": f"{type(exc).__name__}: {exc}"}},
+            )
 
     async def _write_reported(self) -> bool:
         """write what the unit running here last reported; a failure is logged, and the unit goes on.
@@ -559,9 +639,10 @@ class CoalescedOperation(Generic[UnitT]):
         """
         try:
             await self._progress.clear()
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- a progress entry that cannot be removed is ignored by readers once the lease is let go; the unit's own ending must not be changed by it; logged
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- an entry that cannot be removed is no run's once the lease is let go, and names the holding it was written under so no later one takes it for its own; the unit's own ending must not be changed by it; logged
             log.warning(
-                "the unit's progress could not be removed; readers ignore it once the lease is let go",
+                "the unit's progress could not be removed; it names the holding it was written under, "
+                "so it is no later run's",
                 extra={"extra_data": {"operation": self._name, "error": f"{type(exc).__name__}: {exc}"}},
             )
 

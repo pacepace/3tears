@@ -88,7 +88,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, Generic, Literal, TypeVar
 
-from threetears.core.serialization import serialize_to_json
+from threetears.core.serialization import json_datetime, serialize_to_json
 from threetears.observe import get_logger
 
 from threetears.agent.tools.base_tool import CONFLICT, TOOL_NOT_READY, MCPToolDefinition, TearsTool, ToolResult
@@ -131,8 +131,12 @@ _PROGRESS_HOLDER: Final = "holder"
 #: the field of a progress entry by which its writer says its work is over, though it holds the lease
 _PROGRESS_OVER: Final = "work_over"
 
+#: the field of a progress entry that names the holding of the lease it was written under: when the
+#: lease was taken (``LeaseHolding.acquired_at``), in the one stored form of a datetime
+_PROGRESS_HOLDING: Final = "holding"
+
 #: the fields of a progress entry that are the record's own, never the run's
-_PROGRESS_OWN: Final = frozenset({_PROGRESS_HOLDER, _PROGRESS_OVER})
+_PROGRESS_OWN: Final = frozenset({_PROGRESS_HOLDER, _PROGRESS_OVER, _PROGRESS_HOLDING})
 
 #: how many times a write of the shared outcome is tried again after another replica's write beat it
 _DEFAULT_PUBLISH_ATTEMPTS: Final = 8
@@ -408,10 +412,18 @@ class SharedProgress:
     progress, with what was reported. Work over, the lease still held: no run in progress. The
     lease let go: no run in progress.
 
-    **The entry's form.** The progress the run reported, a JSON object, with one field added:
-    ``holder``, the writer's ``pod_id``; or ``holder`` and ``work_over: true`` alone. An entry
-    without ``holder`` (written by code that did not name its writer) counts as the progress of
-    whoever holds the lease.
+    **An entry is one holding's.** A holder that lets the lease go and takes it again makes another
+    run, and an entry it could not remove must not be taken for the new run's: least of all one
+    saying the work is over, which would hide the run. So a run that starts (:meth:`begin`) reads
+    when its lease was taken, and writes that into every entry; a reader takes an entry for the
+    run in progress only when it names the holding the lease has now. A run that has just taken
+    the lease is therefore a run in progress whatever entry is there.
+
+    **The entry's form.** The progress the run reported, a JSON object, with fields added:
+    ``holder``, the writer's ``pod_id``, and ``holding``, when its lease was taken; or those and
+    ``work_over: true`` alone. An entry without ``holder`` (written by code that did not name its
+    writer) counts as the progress of whoever holds the lease, and one without ``holding`` as its
+    holder's present run's.
 
     **This replica's own.** :meth:`report` keeps what the run in progress here last reported, and
     :meth:`reported` answers it, so this replica's status shows what the others read.
@@ -428,6 +440,8 @@ class SharedProgress:
         self._key = lease.stored_key(f"{key}{_PROGRESS_SUFFIX}")
         # what the run in progress here last reported, or what answers it; None when none runs here
         self._reported: Mapping[str, Any] | Callable[[], Mapping[str, Any]] | None = None
+        # the holding of the lease the run in progress here writes under; None when it is not known
+        self._holding: str | None = None
 
     @property
     def replica(self) -> str:
@@ -437,6 +451,33 @@ class SharedProgress:
         :rtype: str
         """
         return self._lease.pod_id
+
+    async def begin(self) -> None:
+        """a run starts here under the lease: learn which holding of the lease its entries are written under.
+
+        Called by the run that has just taken the lease. Until it is called, and when the lease
+        cannot be read or is not held, entries name no holding.
+
+        :return: nothing
+        :rtype: None
+        """
+        # forgotten first: a read that fails must not leave the run writing under the holding before it
+        self._holding = None
+        holding = await self._lease.held(self._lease_key)
+        self._holding = None if holding is None else json_datetime(holding.acquired_at)
+
+    def _entry(self, body: Mapping[str, Any]) -> bytes:
+        """an entry's value: the body, with its writer and the holding it is written under.
+
+        :param body: the run's progress, or the record's own word that its work is over
+        :ptype body: Mapping[str, Any]
+        :return: the JSON bytes
+        :rtype: bytes
+        """
+        own: dict[str, Any] = {_PROGRESS_HOLDER: self.replica}
+        if self._holding is not None:
+            own[_PROGRESS_HOLDING] = self._holding
+        return serialize_to_json({**body, **own})
 
     def report(self, progress: Mapping[str, Any] | Callable[[], Mapping[str, Any]] | None) -> None:
         """keep what the run in progress here reports of itself, for :meth:`reported`; nothing is written.
@@ -467,8 +508,8 @@ class SharedProgress:
     async def publish(self, progress: Mapping[str, Any]) -> None:
         """write the progress of the run this replica makes under the lease.
 
-        :param progress: what the run is doing, as JSON values; a ``holder`` or ``work_over`` field
-            of its own is the record's, and is replaced or dropped
+        :param progress: what the run is doing, as JSON values; a ``holder``, ``holding`` or
+            ``work_over`` field of its own is the record's, and is replaced or dropped
         :ptype progress: Mapping[str, Any]
         :return: nothing
         :rtype: None
@@ -477,7 +518,7 @@ class SharedProgress:
         """
         bucket = await self._lease.bucket()
         body = {name: item for name, item in progress.items() if name not in _PROGRESS_OWN}
-        await bucket.put(key=self._key, value=serialize_to_json({**body, _PROGRESS_HOLDER: self.replica}))
+        await bucket.put(key=self._key, value=self._entry(body))
 
     async def over(self) -> None:
         """say the work of the run this replica makes is over, though it still holds the lease.
@@ -486,7 +527,7 @@ class SharedProgress:
         :rtype: None
         """
         bucket = await self._lease.bucket()
-        await bucket.put(key=self._key, value=serialize_to_json({_PROGRESS_HOLDER: self.replica, _PROGRESS_OVER: True}))
+        await bucket.put(key=self._key, value=self._entry({_PROGRESS_OVER: True}))
 
     async def clear(self) -> bool:
         """remove this replica's progress, its run having ended; another replica's is left.
@@ -511,15 +552,22 @@ class SharedProgress:
             holder has said its work is over
         :rtype: RunningElsewhere | None
         """
-        holder = await self._lease.holder(self._lease_key)
+        holding = await self._lease.held(self._lease_key)
         running: RunningElsewhere | None = None
-        if holder is not None and holder != self.replica:
+        if holding is not None and holding.holder != self.replica:
+            holder = holding.holder
             bucket = await self._lease.bucket()
             value = await bucket.get(key=self._key)
             body = None if value is None else self._decoded(value)
             progress: dict[str, Any] | None = None
             over = False
-            if body is not None and body.get(_PROGRESS_HOLDER, holder) == holder:
+            # an entry is the run's when it names this holder (or nobody) and this holding of the
+            # lease (or none): one the same holder left under an earlier holding is not
+            if (
+                body is not None
+                and body.get(_PROGRESS_HOLDER, holder) == holder
+                and body.get(_PROGRESS_HOLDING) in (None, json_datetime(holding.acquired_at))
+            ):
                 # only this holder's own word ends its run early: an entry naming no writer may be
                 # one a holder before it left
                 over = body.get(_PROGRESS_HOLDER) == holder and body.get(_PROGRESS_OVER) is True

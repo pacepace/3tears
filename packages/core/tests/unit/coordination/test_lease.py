@@ -630,3 +630,25 @@ class TestHolder:
         await (await _bucket_for(client, "test_leases")).put(key="load", value=b"not an envelope")
 
         assert await lease.holder("load") is None
+
+    async def test_a_holding_is_named_by_when_it_was_taken_which_renewals_keep_and_a_new_holding_does_not(
+        self,
+    ) -> None:
+        lease, _ = await _make_lease()
+        handle = await lease.acquire("load", ttl_seconds=30)
+        taken = await lease.held("load")
+        assert taken is not None and taken.holder == "pod-alpha"
+
+        await asyncio.sleep(0.002)
+        await handle.refresh()
+        await handle.refresh(ttl_seconds=60)
+        renewed = await lease.held("load")
+        # the same holding, however often it is renewed
+        assert renewed == taken
+
+        await handle.release()
+        assert await lease.held("load") is None
+        await asyncio.sleep(0.002)
+        await lease.acquire("load", ttl_seconds=30)
+        again = await lease.held("load")
+        assert again is not None and again.holder == "pod-alpha" and again.acquired_at > taken.acquired_at
