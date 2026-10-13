@@ -15,9 +15,8 @@ which also catches a validator tightening the JSON schema cannot show (the goal 
   else is a minor: before changing the shape, copy ``tests/fixtures/core_documents/v{N}/`` to ``v{N+1}/`` (the old
   directory stays as it is: it is what an old store holds), bump ``CORE_SCHEMA_VERSION`` with a ledger line above
   it, reset ``CORE_SCHEMA_MINOR`` to 0, append one ``CoreUpgrader`` from ``N``, re-pin the digests and the version
-  here, and regenerate the new directory's fixtures from
-  :func:`~packages.evals.tests.stored_models.stored_sample`, pinning their files. Give the step its own test of the
-  fields it transforms.
+  here, and regenerate the new directory's fixtures and pin their files (``regenerate_core_fixtures.py``, below).
+  Give the step its own test of the fields it transforms.
 - **The version moved and the pins did not.** Re-pin every digest under the new major or minor, even where a
   shape held, so this file states what it was checked under.
 - **The version moved and the ledger or the chain has no entry for it.** Write the ledger line (a minor's
@@ -31,7 +30,19 @@ which also catches a validator tightening the JSON schema cannot show (the goal 
   what is kept, recorded in ``CORE_DOC_TYPES`` and here together.
 
 The v14 corpus is the baseline of a release that has not been published: no store a released build wrote holds a
-v14 document yet, so while that is true a baseline change regenerates it in place rather than copying it.
+v14 document yet, so while that is true a baseline change regenerates it in place rather than copying it. **A
+released version's corpus is never regenerated**: it is what an old store holds, and rewriting it would make the test
+that reads it vouch for the current build instead of for the stored past.
+
+**Regenerating the current corpus** is one command, from the repo root, which writes
+``tests/fixtures/core_documents/v{CORE_SCHEMA_VERSION}/`` from :func:`~packages.evals.tests.stored_models.stored_sample`
+and re-pins ``CORE_SHAPE_DIGESTS`` and ``FIXTURE_DIGESTS`` below (it leaves ``PINNED_CORE_SCHEMA_VERSION`` and
+``PINNED_CORE_SCHEMA_MINOR`` to the author)::
+
+    uv run python packages/evals/scripts/regenerate_core_fixtures.py
+
+It refuses when a ``v<N>`` directory newer than the current version exists, and on an unchanged tree it changes
+nothing.
 """
 
 from __future__ import annotations
