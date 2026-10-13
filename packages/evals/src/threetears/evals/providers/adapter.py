@@ -145,7 +145,9 @@ _CATALOGUE_TIMEOUT_S: Final = 20.0
 _OPENROUTER_ROUTERS_PREFIX: Final = "openrouter/"
 
 #: Anthropic's stop reasons, in the engine's words. ``tool_use`` is a finish: the adapter binds no tools.
-#: ``model_context_window_exceeded`` is a truncation at the window, so it reads as the cap.
+#: ``model_context_window_exceeded`` is a truncation at the window, so it reads as the cap. ``pause_turn`` is a
+#: server-tool pause: output exists and stopped early for a cause that is neither the cap nor a filter, so it is
+#: ``truncated``, never ``error`` (nothing failed) and never ``end_turn`` (the turn is not over).
 _ANTHROPIC_STOPS: Final[Mapping[str, StopReason]] = {
     "end_turn": "end_turn",
     "stop_sequence": "end_turn",
@@ -153,10 +155,11 @@ _ANTHROPIC_STOPS: Final[Mapping[str, StopReason]] = {
     "max_tokens": "max_tokens",
     "model_context_window_exceeded": "max_tokens",
     "refusal": "content_filter",
+    "pause_turn": "truncated",
 }
 
 #: OpenAI-shaped finish reasons (OpenAI and OpenRouter), in the engine's words. OpenRouter's own ``error`` finish
-#: reason is a generation that failed part-way.
+#: reason is the provider reporting an error in place of a completion, so it stays ``error``.
 _OPENAI_STOPS: Final[Mapping[str, StopReason]] = {
     "stop": "end_turn",
     "tool_calls": "end_turn",
@@ -166,10 +169,12 @@ _OPENAI_STOPS: Final[Mapping[str, StopReason]] = {
     "error": "error",
 }
 
-#: What an absent or unknown finish reason reads as: cut short, never finished. The engine has no member for
-#: "cut short, cause unknown"; ``error`` is the one whose remedy (look again, do not raise a cap or reword) fits a
-#: stop the provider did not name, and a truncation read as ``end_turn`` is the defect the port exists to prevent.
-_UNNAMED_STOP: Final[StopReason] = "error"
+#: What an absent or unknown finish reason reads as: cut short, cause unnamed, never finished. A reply with no
+#: finish reason (a stream that ended without one) or with one this build does not know (a future provider value)
+#: still carried output, so it is not ``error``, which says the call failed; and a truncation read as ``end_turn``
+#: is the defect the port exists to prevent. The raw value is not carried on the completion: the adapter has no
+#: public member for it, and adding one is a surface change this mapping does not need.
+_UNNAMED_STOP: Final[StopReason] = "truncated"
 
 
 class ModelsClientRefused(ValueError):
@@ -220,7 +225,9 @@ class ModelsCompletion:
         model: The model id the client was built for, which is what spend is attributed to.
         served_model: The model the provider's reply named, or ``None`` when it named none.
         temperature: The temperature the request carried, or ``None`` when it carried none.
-        stop_reason: The provider's stop reason in the engine's words; an absent or unknown one is ``error``.
+        stop_reason: The provider's stop reason in the engine's words; an absent or unknown one, and Anthropic's
+            ``pause_turn``, is ``truncated``, and only a provider-reported error (OpenRouter's ``error``) is
+            ``error``.
         served_provider: The upstream that served an OpenRouter call, as OpenRouter's reply names it; ``None`` on
             a provider called directly, whose reply names no upstream, and on an OpenRouter reply that named none.
         pricing_failure: Why ``cost_usd`` is ``None``, in a sentence; ``None`` when the call was priced.

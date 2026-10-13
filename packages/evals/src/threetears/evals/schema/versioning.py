@@ -140,7 +140,8 @@ the document, so extending one is a major. Each, and why:
 - ``RaterKind`` — calibration reads a person as ground truth.
 - ``OutOfRunOutcome`` — binary and complete.
 - ``SecondJudgeAskedBy`` — an unknown asker's pass would be pooled into the wrong agreement.
-- ``StopReason`` — the normalized provider contract, which already has a catch-all (``error``).
+- ``StopReason`` — the normalized provider contract, which already has a catch-all for output cut short by a
+  cause it does not name (``truncated``), kept apart from a call that failed (``error``).
 - Every ``doc_type`` — a new type is a new model, never a new value.
 
 **A minor's ledger entry asserts its additivity in words**, and review holds it there, because a schema diff

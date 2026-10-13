@@ -13,7 +13,7 @@ stops copying a field hides a member, one that starts copying it exposes one, an
 failure names the member and the direction, and the commit that moves the pin says which upgrade moved it.
 
 ``stop_reason``, ``content`` and ``model`` are populated on every reply by construction (an unnamed stop reads
-``error``, never ``None``); they are pinned anyway, because the table is the whole member set or it is not a
+``truncated``, never ``None``); they are pinned anyway, because the table is the whole member set or it is not a
 report.
 """
 

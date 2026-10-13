@@ -168,8 +168,16 @@ class TestCompletionPort:
         fields: dict[str, object] = {name: None for name in COMPLETION_RESULT_ATTRIBUTES}
         fields.update(content="{}", stop_reason="length")
 
-        with pytest.raises(CompletionConformanceFailure, match="stop_reason 'length'"):
+        with pytest.raises(CompletionConformanceFailure, match="stop_reason 'length'.*unknown one to 'truncated'"):
             check_completion_conformance(type("RawCompletion", (), fields)())
+
+    @pytest.mark.parametrize("reason", get_args(StopReason))
+    def test_every_member_of_the_vocabulary_passes_the_check(self, reason):
+        """``truncated`` included: a host mapping an unnamed stop onto it conforms."""
+        fields: dict[str, object] = {name: None for name in COMPLETION_RESULT_ATTRIBUTES}
+        fields.update(content="{}", stop_reason=reason)
+
+        check_completion_conformance(type("MappedCompletion", (), fields)())
 
     def test_the_ledger_reads_the_served_model_never_the_requested_one(self):
         """A completion naming the alias in ``model`` and the concrete model in ``served_model`` lands both, apart."""
@@ -267,6 +275,28 @@ class TestDescribeIncompleteCompletion:
 
         assert note is not None
         assert "no choices at all" in note
+        assert "reported an ERROR in place of a completion" in note
+
+    def test_a_truncation_with_no_named_cause_is_not_told_it_failed_or_hit_the_cap(self):
+        """``truncated`` had output and stopped early: neither "no choices at all" nor the cap's remedy fits it.
+
+        Reading an unnamed stop as ``error`` told the operator nothing was generated about a completion that had
+        output; reading it as the cap would send them to raise a budget that was never reached.
+        """
+        note = describe_incomplete_completion(
+            _Completion(content='{"verdict": "pa', stop_reason="truncated", output_tokens=212, reasoning_tokens=0)
+        )
+        error = describe_incomplete_completion(_Completion(content='{"verdict": "pa', stop_reason="error"))
+
+        assert note is not None and error is not None
+        assert "CUT SHORT for a reason the provider did not name" in note
+        assert "raising the cap is not the remedy" in note
+        assert "retrying may finish it" in note
+        assert "raw finish reason" in note
+        assert "212 output token(s), of which 0 were reasoning" in note
+        assert "no choices at all" not in note and "ERROR" not in note
+        assert note.split(" [")[0] != error.split(" [")[0]
+        assert "truncated" in INCOMPLETE_STOP_REASONS
 
     def test_every_cut_short_reason_gets_its_own_sentence(self):
         """Exhaustive AND distinct — "returns something" is what a fallthrough also does.

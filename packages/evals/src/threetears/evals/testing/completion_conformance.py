@@ -65,7 +65,7 @@ def check_completion_conformance(completion: object) -> None:
     if "stop_reason" not in missing and (reason := getattr(completion, "stop_reason")) not in get_args(StopReason):
         problems.append(
             f"stop_reason {reason!r} is not one of {', '.join(get_args(StopReason))}: a provider's own finish reason "
-            "must be mapped first, or a truncated completion reads as finished"
+            "must be mapped first (an absent or unknown one to 'truncated'), or a completion cut short reads as finished"
         )
     if problems:
         raise CompletionConformanceFailure(f"{type(completion).__name__}: " + "; ".join(problems))

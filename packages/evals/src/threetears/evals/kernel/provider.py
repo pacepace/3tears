@@ -197,7 +197,17 @@ _CUT_SHORT_CAUSES: dict[StopReason, str] = {
         "the completion was CUT SHORT by the provider's content filter (finish_reason="
         "content_filter) — the request needs changing, not retrying"
     ),
-    "error": "the provider returned no choices at all, so nothing was generated to parse",
+    "truncated": (
+        "the completion was CUT SHORT for a reason the provider did not name, or named in words this build does "
+        "not know (no finish reason, an unrecognised one, or a pause) — it is not the output cap, so raising the "
+        "cap is not the remedy; retrying may finish it, and the provider's raw finish reason, when there was one, "
+        "is what to look at"
+    ),
+    "error": (
+        "the provider reported an ERROR in place of a completion, or returned no choices at all, so nothing usable "
+        "was generated to parse — a failed call, not output that stopped early, so neither the cap nor the "
+        "request is the remedy; the provider's own report of the failure is what to look at"
+    ),
 }
 
 

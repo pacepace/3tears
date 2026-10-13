@@ -943,7 +943,7 @@
     },
     "threetears.evals.schema.StopReason": {
       "kind": "literal",
-      "signature": "'end_turn'` | `'max_tokens'` | `'content_filter'` | `'error'",
+      "signature": "'end_turn'` | `'max_tokens'` | `'content_filter'` | `'truncated'` | `'error'",
       "tier": "closure"
     },
     "threetears.evals.schema.StoreCalledOnEventLoop": {

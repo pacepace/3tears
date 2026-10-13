@@ -690,7 +690,9 @@ def _reject_incomplete_generation(result: CompletionResult) -> None:
     # both are reachable, but not the way it phrases the first: no ACTION takes the cap. It is the
     # host's configured answer budget, which the host's client builder derives the cap from per client. So this SCOPES the shared advice to where the
     # knob actually is; naming a per-call parameter would send an operator hunting for one that does
-    # not exist. The budget's value is not restated — it is the host's, and would drift here.
+    # not exist. The budget's value is not restated — it is the host's, and would drift here. Only
+    # ``max_tokens`` gets it: ``truncated`` is cut short by a cause the provider did not name, which is
+    # not the cap, so pointing at the budget there would send the operator after the wrong knob.
     remedy = (
         " The output cap is not a parameter of this action: it is the host's configured generator answer "
         "budget. Raise that budget, re-run with a larger-output generator model, or narrow the campaign so "

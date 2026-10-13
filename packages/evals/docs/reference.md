@@ -290,7 +290,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`SimulatorPurpose`** · type alias · What one simulator-role call was for: an actor's line, or the `llm_decided` scheduler's pick of who speaks next.
   <br>`str`
 - **`StopReason`** · literal · Why a completion stopped, in the engine's words.
-  <br>`'end_turn'` | `'max_tokens'` | `'content_filter'` | `'error'`
+  <br>`'end_turn'` | `'max_tokens'` | `'content_filter'` | `'truncated'` | `'error'`
 - **`UsageRole`** · type alias · The roles an eval cell can spend on, five in this build.
   <br>`str`
 - **`WorldEventCause`** · literal · Who made it happen.

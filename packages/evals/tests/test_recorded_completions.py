@@ -219,6 +219,19 @@ async def test_a_replayed_completion_is_the_recorded_ten_members_and_conforms(tm
         replayed.extra["served_provider"] = "elsewhere"  # type: ignore[index]
 
 
+async def test_a_truncated_completion_round_trips_as_truncated(tmp_path: Path) -> None:
+    """Output cut short for an unnamed cause is recorded and replayed as such, never as a failed call or a finish."""
+    path = tmp_path / "rec.jsonl"
+    await _record(path, ("Summarise the thread.", _Reply(content='{"summary": "The cust', stop_reason="truncated")))
+
+    assert _lines(path)[0]["result"]["stop_reason"] == "truncated"
+    replayed = await RecordedCompletions.replay(path, settings=BUDGETED).generate(
+        system=SYSTEM, user="Summarise the thread."
+    )
+    check_completion_conformance(replayed)
+    assert (replayed.stop_reason, replayed.content) == ("truncated", '{"summary": "The cust')
+
+
 async def test_a_price_is_replayed_as_recorded(tmp_path: Path) -> None:
     path = tmp_path / "rec.jsonl"
     await _record(path, ("Price me.", _Reply(content="ok", cost_usd=0, temperature=0)))
