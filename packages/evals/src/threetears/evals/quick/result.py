@@ -70,7 +70,7 @@ from threetears.evals.kernel import (
     separation_criterion,
     tier_of,
 )
-from threetears.evals.schema import CalibrationRating, EvalResult, utc_now_iso
+from threetears.evals.schema import CalibrationRating, EvalResult, RubricScale, utc_now_iso
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.cells import cell_ref
@@ -737,7 +737,7 @@ def _write_to_label(path: Path, rows: Iterable[Mapping[str, str]]) -> None:
         writer.writerows(rows)
 
 
-def _read_labels(path: Path, scope_id: str, scales: Mapping[str, str]) -> list[CalibrationRating]:
+def _read_labels(path: Path, scope_id: str, scales: Mapping[str, RubricScale]) -> list[CalibrationRating]:
     """The labels a person filled in on a :data:`TO_LABEL` file, as ratings to pair with the judge's scores.
 
     Raises:
@@ -785,7 +785,8 @@ def _read_labels(path: Path, scope_id: str, scales: Mapping[str, str]) -> list[C
 def _criterion(entry: Any, *, of: Any) -> TierCriterion:
     """A tier criterion over one agreement reading, or an insufficient one where there is none."""
     if entry is None:
-        return of(0, 0, None, None)
+        insufficient: TierCriterion = of(0, 0, None, None)
+        return insufficient
     statistic = agreement_statistic(entry.scale, entry.kappa, entry.weighted_kappa)
     criterion: TierCriterion = of(entry.n, entry.results, statistic, entry.agreement_interval)
     return criterion

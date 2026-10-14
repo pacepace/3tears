@@ -32,7 +32,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeIs
 
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel import GuardrailMargin
@@ -580,7 +580,7 @@ def as_host(
     )
 
 
-def _is_store(store: StoreSpec) -> bool:
+def _is_store(store: StoreSpec) -> TypeIs[DocumentStore]:
     """Whether ``store`` is a document store already, rather than what names one."""
     return store is not None and not isinstance(store, str | os.PathLike)
 
