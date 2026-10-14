@@ -71,6 +71,7 @@ from langchain_core.tools import StructuredTool
 from threetears.agent.tools.text_window import WindowedInput, window_text
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.config import PDF_PARSE_TIMEOUT_SECONDS as DEFAULT_PDF_PARSE_TIMEOUT_SECONDS
 from threetears.media.contracts import EXTRACTION_STATUS_COMPLETE, EXTRACTION_STATUS_UNCHANGED
 from threetears.search.bind import project_failure_metadata, project_metadata, shown_date
 from threetears.search.contracts import (
@@ -129,9 +130,6 @@ DEFAULT_PDF_MAX_BYTES: Final[int] = 20 * 1024 * 1024
 
 #: The most pages read from one PDF. The rest is said, not silently dropped.
 DEFAULT_PDF_MAX_PAGES: Final[int] = 100
-
-#: How long one PDF may take to parse.
-DEFAULT_PDF_PARSE_TIMEOUT_SECONDS: Final[float] = 30.0
 
 #: The media types a PDF is declared as.
 PDF_MEDIA_TYPES: Final[tuple[str, ...]] = ("application/pdf", "application/x-pdf")

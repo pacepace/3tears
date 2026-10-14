@@ -516,15 +516,20 @@ class TestASearchSaysWhatItLeftOut:
         new_file = await world.file(parent, "tea ledger, October", title="October", at=new)
         old_part = await world.chunk(parent, "tea passage from September", index=0, at=old)
         new_part = await world.chunk(parent, "tea passage from October", index=1, at=new)
+        # A file is listed by the id the media tools take, its media id.
+        new_media, old_media = [
+            await world.conn.fetchval("SELECT media_id FROM media_content WHERE content_id = $1", c)
+            for c in (new_file, old_file)
+        ]
         search = await world.search()
 
         said = await search.ainvoke({"query": "tea", "date_after": "2026-10-01"})
 
-        assert str(new_file) in said and str(new_part) in said
-        assert str(old_file) not in said and str(old_part) not in said and str(parent) not in said
+        assert str(new_media) in said and str(new_part) in said
+        assert str(old_media) not in said and str(old_part) not in said and str(parent) not in said
         # and with no filter, the older ones are there: the filter is what removed them
         everything = await search.ainvoke({"query": "tea"})
-        assert str(old_file) in everything and str(old_part) in everything
+        assert str(old_media) in everything and str(old_part) in everything
 
     async def test_a_full_page_says_more_may_match_first_and_offset_reads_on(self, world: _World) -> None:
         ids = [await world.memory(f"tea note {i}", age_days=i) for i in range(5)]
@@ -562,15 +567,17 @@ class TestASearchSaysWhatItLeftOut:
         content_id = await world.file(parent, "harbour " + "x" * 900, title="Tide tables")
         short_id = await world.file(parent, "harbour, briefly", title="Short")
         media_id = await world.conn.fetchval("SELECT media_id FROM media_content WHERE content_id = $1", content_id)
+        short_media = await world.conn.fetchval("SELECT media_id FROM media_content WHERE content_id = $1", short_id)
         search = await world.search(file_reader="media_read_text")
 
         said = await search.ainvoke({"ids": [str(content_id), str(short_id)]})
 
-        cut = next(line for line in said.splitlines() if str(content_id) in line)
+        # Each file is listed once, by its media id.
+        cut = next(line for line in said.splitlines() if f"[media:{media_id}]" in line)
         assert (
             f"(cut: the first 500 of 908 characters; media_read_text reads it whole by its media id {media_id})" in cut
         )
-        whole = next(line for line in said.splitlines() if str(short_id) in line)
+        whole = next(line for line in said.splitlines() if f"[media:{short_media}]" in line)
         assert whole.endswith("harbour, briefly") and "cut" not in whole
 
 
