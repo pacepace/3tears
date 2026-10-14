@@ -238,7 +238,8 @@ def evidence_rows(
     """A finding's evidence as table rows, keyed by :data:`EVIDENCE_COLUMNS` — each reading by what a reader calls it.
 
     A measure's value and spread are stated on its one ruler for the report
-    (:func:`~threetears.evals.analysis.report.figures.measure_rulers`); a judged score has no unit.
+    (:func:`~threetears.evals.analysis.report.figures.measure_rulers`); a judged score has no unit; a goal check's
+    pass rate is its count (``11 of 12``), as the scoreboard counts.
 
     Args:
         analysis: The analysis the evidence was resolved under.
@@ -262,8 +263,21 @@ def evidence_rows(
         }
         cells = {key: TableCell(value=value) for key, value in values.items()}
         cells["value"] = TableCell(value=row.value * ruler.factor, unit=ruler.unit)
+        if (passed := _passed_of(row)) is not None:
+            cells["value"] = TableCell(value=passed)
         rows.append({key: cells[key] for key, _ in EVIDENCE_COLUMNS})
     return rows
+
+
+def _passed_of(row: EvidenceRow) -> str | None:
+    """A goal check's pass rate as the scoreboard counts it (``11 of 12``); None for any other reading.
+
+    A check holds or not on each observation, so its rate times its observations is the count that held.
+    """
+    if row.reading != "measure" or goal_check_of(row.measure_id) is None or row.n <= 0:
+        return None
+    held = row.value * row.n
+    return f"{round(held)} of {row.n}" if abs(held - round(held)) < 1e-6 else None
 
 
 def _restated_spread(analysis: EvalAnalysis, row: EvidenceRow, factor: float) -> str:
