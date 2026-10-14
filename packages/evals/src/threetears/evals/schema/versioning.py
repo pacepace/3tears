@@ -9,13 +9,10 @@ needs, and that a run produced or binds is in the core (:data:`CORE_DOC_TYPES`, 
 :data:`~threetears.evals.schema.doc_types.DOC_TYPE_FACTS`): the run, its results and traces, the out-of-run spend
 ledger, the campaign a person declared and gathered runs into, and the records of what a sweep and each analysis
 generation came to, which attempt holds a campaign's generation slot, and the records of every other job — a
-launch, a second judge's pass, a judge temperature comparison, a host action. A core document is read from
-:data:`CORE_BASELINE_VERSION` on: a read of an older core document upgrades it in memory, one version at a time,
-through :data:`CORE_UPGRADERS`, and the result is validated as strictly as a document written today. The stored
-bytes are not touched; the next write of that document (a rescore, an archive toggle's read-modify-write) writes
-the current version, so migration is lazy and a scope may hold documents at several core versions at once. A core
-baseline reset moves :data:`CORE_BASELINE_VERSION` instead, and every core document below it is refused by name and
-deleted (``EvalStorage.reset_core``).
+launch, a second judge's pass, a judge temperature comparison, a host action. A core document is read only at
+this build's major (:data:`CORE_BASELINE_VERSION` is :data:`CORE_SCHEMA_VERSION`), and no core upgrader exists: a
+core major is a baseline reset, which moves both numbers, refuses every core document below them by name, and is
+followed by deleting them (``EvalStorage.reset_core``). A newer minor of the same major is read (below).
 
 **What people author is durable** (:data:`DURABLE_DOC_TYPES`, the ``durable`` entries of the registry): the
 templates, rubric dims and judge configs (with their tombstones), case sets and test cases, and calibration
@@ -96,10 +93,9 @@ field, a new member of a closed vocabulary, any change to what a stored value me
   The tolerance has a floor, the build that wrote the v15 baseline (``v0.67.0-evaladopt.25``): every build
   before it writes and reads core v14 or older, so it refuses every v15 document as written by a newer build,
   and that build refuses theirs as pre-release. A fleet rolls back no further than ``.25``.
-- *Its major is older:* upgraded through :data:`CORE_UPGRADERS` to this build's shape at this build's minor; a
-  field the chain left behind is refused.
-- *Its major is newer, below* :data:`CORE_BASELINE_VERSION`*, or not an integer, or its minor is not a whole
-  number:* refused, by name, never guessed.
+- *Its major is older (below* :data:`CORE_BASELINE_VERSION` *, which a core major moves), newer, or not an integer,
+  or its minor is not a whole number:* refused, by name, never guessed. A durable document at an older major is
+  upgraded through :data:`DURABLE_UPGRADERS` instead; that is the one space with upgraders.
 
 Only the stored read is tolerant. Constructing a core document, or validating a payload, at a minor newer
 than this build's is refused, so a document cannot be rebuilt from a read one and silently lose what a newer
@@ -182,15 +178,17 @@ does it from the newest build.
 
 **How a core change ships.** Every change to a core shape re-pins ``tests/test_core_schema_pins.py``. A minor
 bumps :data:`CORE_SCHEMA_MINOR` with a ledger line carrying the sentence above; no fixture is copied and no
-step is written. A major copies the frozen fixtures under ``tests/fixtures/core_documents/`` to the next major's
-directory before changing a shape, bumps :data:`CORE_SCHEMA_VERSION` with a ledger line, resets
-:data:`CORE_SCHEMA_MINOR` to 0, and appends one :class:`CoreUpgrader` whose ``from_version`` is the old major. A
-step reads every minor of its ``from_version`` up to the newest one released, and obeys four rules: it is pure
-(no store, host, clock or randomness); it never touches :data:`CORE_ADDRESSING_FIELDS`, ``host_payload``,
-``kind_payload`` or a stored key or digest (``variant_key``, ``context_key``, ``context_components``,
-``content_hash``, ``identity_version``), because the store filters, sorts and projects on the stored bytes
-before any upgrade runs; a value it cannot derive becomes None, read as "not recorded"; and its output must
-validate strictly.
+step is written. A major is a baseline reset: it bumps :data:`CORE_SCHEMA_VERSION` and
+:data:`CORE_BASELINE_VERSION` together with a ledger line, resets :data:`CORE_SCHEMA_MINOR` to 0, regenerates
+the frozen fixtures under ``tests/fixtures/core_documents/`` (``scripts/regenerate_core_fixtures.py``), and says
+in its release notes that every core document is deleted before deploying it (``EvalStorage.reset_core``). A
+durable major instead appends one :class:`CoreUpgrader` to :data:`DURABLE_UPGRADERS`, whose ``from_version`` is
+the old major. A step reads every minor of its ``from_version`` up to the newest one released, and obeys four
+rules: it is pure (no store, host, clock or randomness); it never touches :data:`DURABLE_ADDRESSING_FIELDS`,
+``host_payload``, ``kind_payload`` or a stored key or digest (``variant_key``, ``context_key``,
+``context_components``, ``content_hash``, ``identity_version``), because the store filters, sorts and projects on
+the stored bytes before any upgrade runs; a value it cannot derive becomes None, read as "not recorded"; and its
+output must validate strictly.
 
 **Hook points this release leaves for later ones**, none of which an older build needs: a mechanical gate that a
 minor's schema diff from the pinned shape adds only non-required properties (in ``tests/test_core_schema_pins.py``,
@@ -211,11 +209,12 @@ from typing import Any, Final
 
 from threetears.evals.schema.doc_types import DOC_TYPE_FACTS
 
-#: The first core version a public release wrote, and the oldest this and every later build reads. Below it a
-#: document is pre-release, and is refused by name.
+#: The oldest core major this build reads: always :data:`CORE_SCHEMA_VERSION`, since the core ships no upgrader and a
+#: core major is a baseline reset that moves both. Below it a document is pre-release or pre-reset, refused by name.
 CORE_BASELINE_VERSION: Final[int] = 15
 
-#: The core version this build writes. Every bump appends one line here and one :class:`CoreUpgrader`.
+#: The core version this build writes. Every bump is a baseline reset, appends one line here and moves
+#: :data:`CORE_BASELINE_VERSION` with it.
 #:
 #: - **v15** — the baseline: the first public release's evidence core. Every field a writer always sets is
 #:   required; an optional field's ``None`` has one present-day meaning, stated on the field. What a request was
@@ -360,11 +359,14 @@ DURABLE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyTyp
 
 @dataclass(frozen=True)
 class CoreUpgrader:
-    """One step of the core's upgrade chain: a document at ``from_version`` rewritten to ``from_version + 1``.
+    """One step of a kept space's upgrade chain (the durable space's: the core has none): ``from_version`` to the next.
+
+    Named for the shared reader (:meth:`~threetears.evals.schema.base.CoreDocumentModel.from_dict`), which the durable
+    space reads through.
 
     Attributes:
         from_version: The core version the step reads.
-        doc_types: The core types it rewrites. Every other core type passes through the step unchanged but
+        doc_types: The types it rewrites. Every other type of its space passes through the step unchanged but
             for its number.
         reason: What changed at the bump, in one line.
         upgrade: The rewrite: pure, and never touching an addressing field, a host or kind payload, or a
@@ -376,10 +378,6 @@ class CoreUpgrader:
     reason: str
     upgrade: Callable[[dict[str, Any]], dict[str, Any]]
 
-
-#: The registered steps, oldest first: ``[s.from_version for s in CORE_UPGRADERS]`` is
-#: ``range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION)``. A constant, so no import registers a step.
-CORE_UPGRADERS: tuple[CoreUpgrader, ...] = ()
 
 #: The first durable version, and the oldest every build reads, forever: it never moves, so a durable document any
 #: release since ``.25`` wrote stays readable (``tests/test_durable_schema_pins.py`` pins it). Below it a document is
@@ -442,7 +440,7 @@ class VersionSpace:
         version: The major this build writes, and the newest a read accepts.
         minor: The minor this build writes within ``version``.
         baseline: The oldest major a read accepts.
-        upgraders: The chain from ``baseline`` to ``version``.
+        upgraders: The chain from ``baseline`` to ``version``; empty for the core, which reads only its own major.
     """
 
     name: str
@@ -458,7 +456,7 @@ CORE_VERSION_SPACE: Final[VersionSpace] = VersionSpace(
     version=CORE_SCHEMA_VERSION,
     minor=CORE_SCHEMA_MINOR,
     baseline=CORE_BASELINE_VERSION,
-    upgraders=CORE_UPGRADERS,
+    upgraders=(),
 )
 
 #: The durable space.
@@ -492,9 +490,9 @@ def upgrade_document(
 
     Args:
         document: The stored document, as the store returned it.
-        steps: The upgrade chain (:data:`CORE_UPGRADERS` in production).
-        current: The version to read to (:data:`CORE_SCHEMA_VERSION`).
-        baseline: The oldest version read (:data:`CORE_BASELINE_VERSION`).
+        steps: The upgrade chain (:data:`DURABLE_UPGRADERS` in production; the core's is empty).
+        current: The version to read to.
+        baseline: The oldest version read.
         space: The version space's name, as a refusal states it.
 
     Returns:
@@ -562,21 +560,6 @@ def read_core_minor(document: Mapping[str, Any], *, space: str = "core") -> int:
     return minor
 
 
-def upgrade_core_document(document: Mapping[str, Any]) -> dict[str, Any]:
-    """:func:`upgrade_document` with this build's chain, version and baseline.
-
-    Args:
-        document: A stored core document.
-
-    Returns:
-        The document at :data:`CORE_SCHEMA_VERSION`.
-
-    Raises:
-        CoreVersionRefused: See :func:`upgrade_document`.
-    """
-    return upgrade_document(document, steps=CORE_UPGRADERS, current=CORE_SCHEMA_VERSION, baseline=CORE_BASELINE_VERSION)
-
-
 def upgrade_durable_document(document: Mapping[str, Any]) -> dict[str, Any]:
     """:func:`upgrade_document` with this build's durable chain, version and baseline.
 
@@ -606,7 +589,6 @@ __all__ = [
     "CORE_RESET_DOC_TYPES",
     "CORE_SCHEMA_MINOR",
     "CORE_SCHEMA_VERSION",
-    "CORE_UPGRADERS",
     "CORE_VERSION_SPACE",
     "DURABLE_ADDRESSING_FIELDS",
     "DURABLE_BASELINE_VERSION",
@@ -621,7 +603,6 @@ __all__ = [
     "CoreVersionRefused",
     "VersionSpace",
     "read_core_minor",
-    "upgrade_core_document",
     "upgrade_document",
     "upgrade_durable_document",
 ]

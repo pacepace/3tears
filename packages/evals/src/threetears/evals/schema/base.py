@@ -599,9 +599,9 @@ class CoreDocumentModel(EvalDocumentModel, CoreShapeModel):
     space's on :class:`DurableDocumentModel`, which is this class under another space's numbers. Every rule below
     reads "core" as "the class's space".
 
-    Its stored read, :meth:`from_dict`, upgrades the document through
-    :data:`~threetears.evals.schema.versioning.CORE_UPGRADERS` to the current core major before
-    validating it, so every validator — the model's own and its bases' — sees today's shape. Upgrading
+    Its stored read, :meth:`from_dict`, upgrades the document through its space's chain (the durable space's
+    :data:`~threetears.evals.schema.versioning.DURABLE_UPGRADERS`; the core has none and reads only its own major)
+    before validating it, so every validator — the model's own and its bases' — sees today's shape. Upgrading
     before validation rather than in a ``before`` validator is deliberate: pydantic runs a concrete
     model's own ``before`` validators ahead of one it inherits, so an inherited upgrade could not
     promise to run first. A refusal (a newer major, a pre-release version, no version number at all,

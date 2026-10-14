@@ -1,7 +1,7 @@
 """The evidence core's shape is pinned: a core shape cannot change without a minor or a major, as the change is.
 
-``schema/versioning.py`` promises that a core document is read forever from the baseline, and that a newer minor of
-this build's major is read too. This holds the first promise from both ends: every core type's validation JSON schema
+``schema/versioning.py`` promises that a core document of this build's major is read, a newer minor of it included,
+and that the core ships no upgrader: a core major is a baseline reset. This holds the first promise from both ends: every core type's validation JSON schema
 is pinned to a digest under the major and minor recorded here, so a shape change without a version goes red here; and
 a frozen corpus of stored core documents, one directory per core major, must keep reading under the current build,
 which also catches a validator tightening the JSON schema cannot show (the goal grammar, an ``AfterValidator``).
@@ -12,19 +12,19 @@ which also catches a validator tightening the JSON schema cannot show (the goal 
   optional field included. If it is additive only (a new optional field with a default, a new optional
   sub-object, a new member of an open vocabulary, a new doc type) it is a **minor**: bump ``CORE_SCHEMA_MINOR``
   with a ledger line ending in ``MINOR_ADDITIVITY_SENTENCE``, and re-pin the digests and the minor here. Nothing
-  else is a minor: before changing the shape, copy ``tests/fixtures/core_documents/v{N}/`` to ``v{N+1}/`` (the old
-  directory stays as it is: it is what an old store holds), bump ``CORE_SCHEMA_VERSION`` with a ledger line above
-  it, reset ``CORE_SCHEMA_MINOR`` to 0, append one ``CoreUpgrader`` from ``N``, re-pin the digests and the version
-  here, and regenerate the new directory's fixtures and pin their files (``regenerate_core_fixtures.py``, below).
-  Give the step its own test of the fields it transforms.
+  else is a minor: anything else is a **major**, which for the core is a baseline reset with no upgrader. Bump
+  ``CORE_SCHEMA_VERSION`` and ``CORE_BASELINE_VERSION`` together with a ledger line above them, reset
+  ``CORE_SCHEMA_MINOR`` to 0, replace ``tests/fixtures/core_documents/v{N}/`` with ``v{N+1}/`` (a reset refuses and
+  deletes every older core document, so no build reads the old corpus), re-pin the digests and the version here, and
+  pin the new fixtures (``regenerate_core_fixtures.py``, below). Its release notes tell a host to delete its core
+  documents before deploying (``EvalStorage.reset_core``).
 - **The version moved and the pins did not.** Re-pin every digest under the new major or minor, even where a
   shape held, so this file states what it was checked under.
-- **The version moved and the ledger or the chain has no entry for it.** Write the ledger line (a minor's
-  carrying the additivity sentence), and for a major the upgrader.
+- **The version moved and the ledger has no entry for it.** Write the ledger line (a minor's carrying the
+  additivity sentence), and for a major move the baseline with it.
 - **A frozen fixture stopped reading.** The current build no longer reads a document an older build
-  stored. Either a validator tightened (a major and a step that brings old documents into line, or a None
-  for what cannot be derived), or a step is wrong. Never edit the fixture: its digest is pinned so it
-  cannot be.
+  stored at this major. A validator tightened, which is a major (a baseline reset). Never edit the fixture: its
+  digest is pinned so it cannot be.
 - **A frozen fixture's digest moved.** Someone edited a stored document of the past. Restore it.
 - **The core's membership moved.** A type became core or stopped being core; that is a decision about
   what is kept, recorded in ``CORE_DOC_TYPES`` and here together. The eight types people author left the core
@@ -71,7 +71,6 @@ from threetears.evals.schema.versioning import (
     CORE_DOC_TYPES,
     CORE_SCHEMA_MINOR,
     CORE_SCHEMA_VERSION,
-    CORE_UPGRADERS,
     CORE_VERSION_SPACE,
     MINOR_ADDITIVITY_SENTENCE,
 )
@@ -145,20 +144,6 @@ PINNED_ADDRESSING_FIELDS: dict[str, frozenset[str]] = {
         }
     ),
 }
-
-#: What a step may never touch beyond the addressing fields: the host's and the kind's opaque payloads, and
-#: every stored key or digest (an upgrader never recomputes identity).
-UNTOUCHABLE_FIELDS = frozenset(
-    {
-        "host_payload",
-        "kind_payload",
-        "variant_key",
-        "context_key",
-        "context_components",
-        "content_hash",
-        "identity_version",
-    }
-)
 
 #: The frozen corpus: one directory per core version, one stored document per core type.
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "core_documents"
@@ -305,14 +290,13 @@ def test_the_addressing_fields_are_pinned_and_are_fields() -> None:
 _LEDGER_ENTRY = re.compile(r"^#: - \*\*v(\d+)\*\*", re.MULTILINE)
 
 
-def test_every_core_version_has_a_ledger_entry_and_an_upgrader() -> None:
-    """Every version from the baseline is explained, and every step between two of them is registered."""
+def test_the_core_reads_only_its_own_major_and_every_major_has_a_ledger_entry() -> None:
+    """The core ships no upgrader: a core major is a baseline reset, so the baseline is the major, explained."""
     source = inspect.getsource(versioning)
     ledger = source[source.index("CORE_BASELINE_VERSION: Final") : source.index("CORE_SCHEMA_VERSION: int =")]
-    recorded = {int(version) for version in _LEDGER_ENTRY.findall(ledger)}
-    assert set(range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION + 1)) <= recorded
-    assert [step.from_version for step in CORE_UPGRADERS] == list(range(CORE_BASELINE_VERSION, CORE_SCHEMA_VERSION))
-    assert all(step.doc_types <= CORE_DOC_TYPES and step.reason for step in CORE_UPGRADERS)
+    assert CORE_BASELINE_VERSION == CORE_SCHEMA_VERSION
+    assert CORE_VERSION_SPACE.upgraders == ()
+    assert CORE_SCHEMA_VERSION in {int(version) for version in _LEDGER_ENTRY.findall(ledger)}
 
 
 def test_every_core_minor_has_a_ledger_entry_carrying_the_additivity_sentence() -> None:
@@ -396,22 +380,3 @@ def test_a_frozen_document_written_before_its_optional_fields_still_reads(path: 
     sparse = {key: value for key, value in document.items() if key not in optional or key in addressed}
 
     assert model.from_dict(sparse).schema_version == CORE_SCHEMA_VERSION  # type: ignore[attr-defined]
-
-
-def test_every_registered_step_keeps_to_the_step_rules() -> None:
-    """On every frozen document at its version, a step leaves what the store reads and every key untouched.
-
-    Empty at the baseline, where no step is registered; the mechanism tests hold the runner to the same
-    rules with synthetic steps.
-    """
-    for step, path in (
-        (step, path) for step in CORE_UPGRADERS for path in sorted((FIXTURES / f"v{step.from_version}").glob("*.json"))
-    ):
-        document = json.loads(path.read_text(encoding="utf-8"))
-        if document["doc_type"] not in step.doc_types:
-            continue
-        protected = CORE_ADDRESSING_FIELDS[document["doc_type"]] | UNTOUCHABLE_FIELDS
-        upgraded = step.upgrade(dict(document))
-        moved = {key for key in protected if upgraded.get(key) != document.get(key)}
-        assert moved <= {"schema_version"}, f"the v{step.from_version} step touched {sorted(moved)} in {path.name}"
-        assert step.upgrade(dict(document)) == upgraded, "a step is pure: the same input gives the same output"
