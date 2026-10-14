@@ -715,7 +715,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-evals"
-version = "0.67.0"
+version = "0.68.0"
 source = { editable = "packages/evals" }
 dependencies = [
     { name = "pydantic" },
