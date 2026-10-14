@@ -8,6 +8,82 @@ packages (bumped in lock-step).
 
 ## v0.67.0 -- 2026-10-13
 
+### Web tools: search by kind, date, page and site; robots that cannot be read are not a refusal; PDFs, thin pages and charsets read; every failure says why and what next
+
+`web_search` took a query and nothing else and showed no dates; `web_fetch` refused a whole site whose
+`robots.txt` was its app shell, called a robots timeout "the site refused", read no PDF, cut nothing
+but decoded everything as UTF-8, and a failed read said only "No readable text could be taken".
+
+**Added (search):**
+
+- **`extract(...)` gains** `robots_timeout_seconds=5.0` (the robots read's own bound),
+  `robots_unreadable="deny" | "allow"` (deployment config: whether rules that cannot be read let the page
+  be read), `readers=()` (`CarrierReader`s for carriers that are not pages, each with its own media types
+  and cap) and `thin_page_chars=None` (when set, a page with less readable text that points at its
+  article -- a `citation_pdf_url` meta, or its one `iframe` -- follows it one level, same registrable site
+  only, through the same transport, robots asked for the frame, out of the byte cap and time the page
+  left). All default to the old behaviour except the robots changes below.
+- **New facets:** `EXTRACTION_NEXT_STEP_FACET` ("try again", "find the same facts on another site"),
+  `EXTRACTION_FINAL_URL_FACET`, `EXTRACTION_CHARSET_FACET`, `EXTRACTION_NOTES_FACET` (a followed frame, a
+  PDF read in part, robots read past under `allow`), `EXTRACTION_THIN_TEXT_FACET` (what a thin page held
+  when its frame was not read). A read candidate now carries the page's own `title` and `published_at`
+  (trafilatura's metadata) when the candidate had none.
+- **`CarrierReader`, `CarrierText`, `CarrierUnreadable`, `robots_agent_token(user_agent)`,
+  `same_site(a, b)`, `DEFAULT_ROBOTS_TIMEOUT_SECONDS`, `DEFAULT_THIN_PAGE_CHARS`,
+  `DEFAULT_FETCH_TIME_BUDGET_SECONDS`, `ROBOTS_UNREADABLE_DENY` / `_ALLOW`** in `threetears.search.extract`.
+- **`threetears.search.testing.RecordedFetchTransport` and `RecordedPage`**: a `FetchTransport` that
+  answers each URL from a recording and keeps the real transport's byte cap and content-type gate.
+- **`threetears.search.bind`:** `result_facts(candidate, zone)`, `shown_date(value, zone)`,
+  `DISPLAY_ZONE_METADATA_KEY`; `render_prose`, `bind_candidate_set` and `bind_search` take `zone=`.
+- **`threetears.search.standalone.DEFAULT_TRANSPORT_USER_AGENT`** names the transport's default.
+
+**Changed (search):**
+
+- **The prose under each result's `URL:` line gains one line**: `published 2026-10-01; found by
+  duckduckgo, wikipedia` (or `no date given`). A day-only date is shown as that day; a time of day is
+  shown in `zone` with its abbreviation, else UTC. Prose is no longer byte-identical to the old renderer.
+- **Robots:** a 2xx `robots.txt` is parsed whatever its content type (it had to be `text/plain`). A
+  timeout, a 5xx, a transport failure or a robots file past 512 KB records the candidate `failed`
+  (was `refused`) with "robots.txt could not be read (timed out after 5 s)" and "try again". A disallowing
+  file is still `refused`. Rules are matched against the user agent's product token, so a caller passing
+  its full user agent (`metallm/1.0 (+url)`) is matched as `metallm`.
+- **Charset:** a page is decoded by its header's charset, then a BOM, then a `<meta>` charset, then UTF-8,
+  then charset_normalizer (trafilatura's own dependency); it was always UTF-8 with replacement.
+- **Reasons:** a non-2xx page says which (`the site refused the request (403 Forbidden); ...`, `the site is
+  turning requests away for now (429 Too Many Requests); it asks to wait 60 s`, `the page was not found
+  (404)`, `the site had an error (503)`, `the page needs a login (401)`) where it said "the server answered
+  N"; a cap says which cap and its size; a timeout says the bound.
+
+**Added (agent-tools):**
+
+- **`web_search` takes `category`** (SearXNG's categories), **`time_range`** (`day`/`week`/`month`/`year`),
+  **`page`** (from 1) and **`site`** (a domain; sent as `site:` and held as a domains-include filter). An
+  argument it cannot take is answered before anything is sent. Its first line says what was searched and
+  how many results came back, and names the next page when this one was full. `zone=` (config
+  `_user_timezone`) shows times in the person's zone.
+- **`web_fetch` reads PDFs** through `document.parse_document` (PyMuPDF), as a `CarrierReader`:
+  `pdf_max_bytes` (20 MB), `pdf_max_pages` (100; the rest is named), `pdf_parse_timeout_seconds` (30), no
+  OCR, and the `%PDF-` signature checked in the first kilobyte. `pdf_reader(...)` is public.
+- **`web_fetch` config:** `user_agent` (sent by the default transport and matched by robots),
+  `robots_unreadable`, `thin_page_chars` (1000; 0 turns frame-following off), the PDF limits, and
+  `_user_timezone`. The default transport's own ceiling is the largest carrier the tool reads.
+- **`build_fetch_transport(user_agent=...)`.**
+- **`parse_document(..., max_pages=None)`**: for PDFs, reads at most that many pages;
+  `metadata["pages_read"]` says how many, and `creationDate` / `modDate` are kept in `metadata`.
+
+**Changed (agent-tools):**
+
+- **A fetch opens with one line**: `Read "<title>" (published <date>) at <final URL>: characters a-b of N.`
+  Notes follow on their own lines (the window's "this is a part", a followed frame, a PDF's pages), then a
+  blank line and the text. A read that did not happen is `Did not read <url>: <reason>; <next step>.`
+  (was `No readable text could be taken from <url>: <reason>.`), with what a thin page held below it.
+- **`BackgroundOperation.start_when_needed`** marks its wait's error seen once the wait ends: the error
+  is logged where it is raised and still raised to whoever awaits, and a wait nobody awaited was logged a
+  second time ("Task exception was never retrieved") when it was collected.
+
+**Not built:** pages rendered by JavaScript (a rendering service is an open question for the
+deployment); a PDF served as `application/octet-stream` is refused at the content-type gate.
+
 ### Skills: the whole skill, what a change changed, an outcome counted once with its note kept, and each use listed
 
 `skill_invoke` named every tool a skill adds, held or not, so the agent called tools it did not have;
