@@ -86,6 +86,40 @@ matches a media id as well as a content id. The ambient "Files you have seen" bl
 **Breaking:** a caller that relied on a bare calculator number, a question being served the cached
 description, or `question` being required, now gets the forms above.
 
+### Image providers: size, aspect and seed, and what each could not apply
+
+The five image providers in `threetears.models` did not take the `size`, `aspect` and `seed` the
+image contract gained above, so none of them satisfied `ImageGenerationBackend` and the typecheck
+failed on each. ComfyUI sent seed 0 for every image, so the same prompt made the same picture each
+time. GPT Image models were sent `style` and `response_format`, which they refuse.
+
+**Changed (models, image providers):** each `generate` takes keyword `size`, `aspect` and `seed`,
+applies what the service takes, and says in the result's metadata (`GENERATION_SIZE`,
+`GENERATION_SEED`, `GENERATION_SOURCE_USED`, `GENERATION_IGNORED`) what it made and what it could
+not apply. A call with none of the three sends the body it sent before, except ComfyUI's seed.
+
+- **OpenAI:** a size must be one the model makes (DALL-E 3, DALL-E 2, GPT Image), else it is refused
+  with the sizes it takes and nothing is sent; an aspect picks the model's nearest size, and on a
+  model whose sizes are not known is named as not applied. A seed is named as not applied ("OpenAI's
+  image models take no seed"). A GPT Image model is sent no `style` (named as not applied) and no
+  `response_format`, and `standard` / `hd` quality read as `auto` / `high`. The result's width and
+  height are the size made.
+- **HuggingFace:** `width`, `height` and `seed` go as the task's `parameters`, only when asked.
+- **ModelsLab:** `width` and `height` from the size or aspect (512 by 512 unless asked, at most 1024 on
+  a side); a seed only when asked; the seed the service reports in `meta` is the one said.
+- **ComfyUI:** the empty latent takes the size or aspect (512 by 512 unless asked, at most 2048); the
+  sampler takes the seed asked for, else a new one per image, and the seed used is said. A negative
+  seed is named as not applied and a new one used.
+- **A1111:** `width` and `height` from the size or aspect on both txt2img and img2img (512 by 512
+  unless asked, at most 2048); a seed only when asked; the seed the server reports in `info` is the
+  one said.
+- **HuggingFace, ModelsLab and ComfyUI** carry `takes_source_image = False`, so the image tool refuses
+  an edit on them before an image is made from the words alone; A1111 carries `True`.
+
+**Added (models):** `threetears.models.providers.image.options`: `dimensions_for`, `parse_size`,
+`result_metadata`, `ASPECTS`. An unreadable size or aspect, or a size past a provider's largest side,
+raises `ValueError` saying what to write.
+
 ### Web tools: search by kind, date, page and site; robots that cannot be read are not a refusal; PDFs, thin pages and charsets read; every failure says why and what next
 
 `web_search` took a query and nothing else and showed no dates; `web_fetch` refused a whole site whose
