@@ -2083,7 +2083,7 @@ Batteries: run an eval in one call, and drive the engine from a command line.
 - **`Guardrail`** · *host contract* · dataclass · A reading every arm must not get worse on than the control by more than `margin`.
 - **`HostCommand`** · dataclass · A subcommand a host adds beside the engine's own, mounted by `run_cli` under the same program.
 - **`Judge`** · *host contract* · dataclass · A model that grades each answer on a rubric, one call per dimension.
-- **`JudgeExample`** · dataclass · An answer the judge must grade a known way: one that must fail a dimension, or one that looks wrong and must pass.
+- **`JudgeExample`** · *host contract* · dataclass · An answer the judge must grade a known way: one that must fail a dimension, or one that looks wrong and must pass.
 - **`Measure`** · class · A function that computes a measure, carrying the measure's declaration.
 - **`ToolRefused`** · exception · A tool call the world did not make: no such tool, or parameters its schema refuses. Nothing changed.
 - **`World`** · *host contract* · class · A small world: named state each case seeds, and tools the candidate changes it with.

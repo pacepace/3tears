@@ -670,6 +670,48 @@ frozen = await run_blocking(
 )
 ```
 
+### Seeding hard negatives
+
+Labels on stored results only cover what your candidates happened to write. The first calibration items to write
+are the ones they have not: a **hard negative**, an output that must fail a dimension though a lenient judge would
+pass it, and an output that looks wrong but must pass. Write each as an **authored case**
+(`AuthoredJudgeCase`): the output, what it is judged against, the criterion and scenario exactly as the subject's
+template words them, and the verdict it must get, with your note on why. Its verdict is its one label, so a trial,
+`judge_kind_readings` and a judge profile read it as they read a labelled case.
+
+```python
+from threetears.evals.kernel import AuthoredJudgeCase
+
+grounded = judge.dims[0]  # the dimension as the run's template stores it: its wording keys the judge's profile
+material = judge.case_material({"question": "Can I return worn shoes?"})
+hard = [
+    AuthoredJudgeCase(
+        criterion=grounded, intent=summary.intent, case_material=material, output="Yes, within 60 days.",
+        expected="fail", author="ana@example.com", note="60 days is in no policy: a confident, wrong number",
+    ),
+    AuthoredJudgeCase(
+        criterion=grounded, intent=summary.intent, case_material=material, output="No.",
+        expected="pass", author="ana@example.com", note="curt, but worn items are exactly what the policy excludes",
+    ),
+]
+seeded = await run_blocking(
+    host.blocking_executor, freeze_judge_cases,
+    host.storage, template=judge_template, scope_id=summary.scope_id, authored=hard, case_set="grounded-hard",
+)
+```
+
+`authored=` also rides beside `run_ids` or `from_labels`, so one case set can list both kinds. A verdict the
+dimension's scale cannot hold (`"fail"` on an ordinal dimension, `7`, `3` on pass/fail) is refused when the case is
+written, naming both. Through an agent, the `judge_case_author` action writes one case, naming the dimension by its
+template (`criterion_template_id`, `criterion`) and recording the caller as its author. On the quick path, hand the
+`Judge` its examples, and every judged `run_eval` stores them as authored cases of the judge template
+`<template id>-judge`, listed by the case set of that name, calling no model:
+
+```
+Judge(client=client, model="judge-model", rubric=[GROUNDED], case_material=...,
+      examples=[JudgeExample("grounded", "Yes, within 60 days.", "fail", "60 days is in no policy", case=ticket)])
+```
+
 Run one arm per judge. Through a launch, a host registers `launchable_judge_kind` for `JUDGE_KIND` and declares
 `JUDGE_KIND_CONTRACT` (and `JUDGE_KIND_MEASURES`) on its profile. Then each arm is a `run_launch` of the judge
 template, with the judge's model and its `config_ids` and `temperature` overlays. A host driving the runner

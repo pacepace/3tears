@@ -6464,7 +6464,7 @@
     "threetears.evals.quick.JudgeExample": {
       "kind": "dataclass",
       "signature": "JudgeExample(dimension: str, answer: Any, expected: AuthoredVerdict, note: str, case: Mapping[str, Any] = dict(), author: str = 'run_eval example')",
-      "tier": "closure"
+      "tier": "host-contract"
     },
     "threetears.evals.quick.Measure": {
       "kind": "class",

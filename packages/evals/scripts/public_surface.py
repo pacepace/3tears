@@ -712,6 +712,7 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.quick.CALLABLE_KIND",
         "threetears.evals.quick.Answer",
         "threetears.evals.quick.Judge",
+        "threetears.evals.quick.JudgeExample",
         "threetears.evals.quick.Guardrail",
         "threetears.evals.quick.CandidateTools",
         "threetears.evals.quick.World",

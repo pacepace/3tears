@@ -27,7 +27,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-from threetears.evals.quick import Judge, compare, run_eval
+from threetears.evals.quick import Judge, JudgeExample, compare, run_eval
 
 CASES = [
     {"id": "double-charge", "ticket": "I was charged twice for March.", "queue": "billing"},
@@ -357,6 +357,7 @@ async def main() -> None:
         model="stand-in",
         rubric={"acknowledges": "The reply acknowledges the customer's problem before anything else."},
         case_material=lambda case: f"Ticket: {case['ticket']}",
+        examples=[JudgeExample("acknowledges", "We've passed your ticket on.", 1, "skips the problem", case=CASES[0])],
     )
     summary = await run_eval(CASES, draft_reply, judge=judge, k=2)
     print(summary.render())
@@ -400,6 +401,8 @@ hours: answer.acknowledges 2, because stand-in: looks for an apology
   rubric would have reason to as well: the ticket asks a question and reports no problem, so there is nothing to
   acknowledge. The rubric is at fault, not the reply. Reword it ("acknowledges the customer's problem, if there
   is one").
+- **`examples=`** are answers the judge must grade a known way: here, a reply that skips the problem must score 1.
+  They are stored as the cases a judge campaign calibrates it on, calling no model ([Seeding hard negatives](judges-and-calibration.md#seeding-hard-negatives)).
 - `judge=` works on `compare` too, and code grading (`expected=`, scorers) can run beside it.
 
 A judge's scores are only as good as the judge. Use a different model from the candidate's, and check it
