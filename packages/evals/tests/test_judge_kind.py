@@ -744,9 +744,7 @@ async def test_a_freeze_from_labels_skips_by_name_a_label_that_carries_no_conten
     assert len(report.cases) == len({rating.label_key for rating in ratings}) - (len(alone) == 1)
     assert source
     with pytest.raises(ValidationFailedError, match="reads no run or result"):
-        freeze_judge_cases(
-            host.storage, template=template, run_ids=["x"], scope_id=TOYHOST_SCOPE, from_labels=True
-        )
+        freeze_judge_cases(host.storage, template=template, run_ids=["x"], scope_id=TOYHOST_SCOPE, from_labels=True)
 
 
 def test_a_result_whose_trial_this_build_cannot_read_is_left_out_saying_why() -> None:

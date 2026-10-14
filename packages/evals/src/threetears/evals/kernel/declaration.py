@@ -1663,7 +1663,6 @@ def refuse_an_undeclarable_design(
             )
 
 
-
 def preregistered_questions(design: CampaignDesign, first_run_at: str | None) -> list[Question]:
     """The live questions asked no later than the campaign's first run: the ones a reading may confirm.
 
@@ -1706,6 +1705,7 @@ def _instant(stamp: str, what: str) -> datetime:
     if instant.tzinfo is None:
         raise ValueError(f"{what} is stamped {stamp!r}, with no offset, so it cannot be ordered against another time")
     return instant
+
 
 __all__ = [
     "NO_TEMPLATE_REMEDY",

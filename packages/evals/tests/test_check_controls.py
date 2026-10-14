@@ -448,7 +448,8 @@ class TestARefusalCheckIsProvenAsACallCheckIs:
 
         # A host that lists its tools' actions, so an undefined one is refused rather than left unchecked.
         listing = replace(
-            toyhost_profile(), tool_actions=lambda tool: frozenset({"emit_field"}) if tool == "extractor" else frozenset()
+            toyhost_profile(),
+            tool_actions=lambda tool: frozenset({"emit_field"}) if tool == "extractor" else frozenset(),
         )
 
         with pytest.raises(ValidationFailedError, match=re.escape(says)):

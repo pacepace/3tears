@@ -183,7 +183,9 @@ async def test_every_call_the_world_refuses_is_recorded_before_it_is_refused_and
         ("room", "shout", {"loud": True}, 0),
     ]
     assert "dim" in refused[0].reason and "no tool 'shout'" in refused[1].reason
-    assert [(o.expression, o.passed) for o in result.goal_state_outcomes] == list(zip(checks, [True, True, False], strict=True))
+    assert [(o.expression, o.passed) for o in result.goal_state_outcomes] == list(
+        zip(checks, [True, True, False], strict=True)
+    )
 
 
 async def test_a_world_cell_with_no_refusal_keeps_an_empty_record_so_a_refusal_check_grades_it() -> None:

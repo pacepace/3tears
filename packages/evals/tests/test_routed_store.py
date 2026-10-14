@@ -321,7 +321,9 @@ def test_a_lifecycle_rule_places_what_people_author_in_a_store_of_its_own() -> N
     """The durable lifecycle is a value a rule maps like any other: the eight authored types go where it says."""
     stores = {**_stores(), "authored": InMemoryDocumentStore()}
     route = DocTypeRoute(
-        by="lifecycle", to={"kept": "evidence", "durable": "authored", "regenerable": "scratch"}, unregistered="evidence"
+        by="lifecycle",
+        to={"kept": "evidence", "durable": "authored", "regenerable": "scratch"},
+        unregistered="evidence",
     )
     router, _ = _router(stores, route)
 

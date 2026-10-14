@@ -459,6 +459,7 @@ def _differential_exclusions(arms: Sequence[ArmExclusions]) -> list[Differential
             )
     return flags
 
+
 def _cannot_tell_on(bar: BarName, counted: list[EvalResult], judged_rows: dict[str, list[ScoreRecord]]) -> int:
     """How many of a cell's counted results the judge could not score on a judged bar's dimension."""
     if bar.kind != "judged":

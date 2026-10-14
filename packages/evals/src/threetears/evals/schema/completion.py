@@ -42,8 +42,6 @@ JSON_OBJECT_RESPONSE_FORMAT: dict[str, Any] = {"type": "json_object"}
 RequestCeiling = Callable[[int], float]
 
 
-
-
 class CompletionResult(Protocol):
     """What eval reads off one completion, whatever produced it.
 
