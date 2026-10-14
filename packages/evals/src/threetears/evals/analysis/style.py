@@ -142,7 +142,9 @@ def arm_name(display: str, *, control: bool = False) -> ArmName:
 
 #: Every term of art a page may use, in one plain sentence each.
 GLOSSARY: dict[str, str] = {
-    "control": "The arm every other arm is compared against, usually what runs in production today.",
+    "control": (
+        "The arm every other arm is compared against, usually what runs in production today; ▸ marks it in a table."
+    ),
     "trial": "One case run once on one arm.",
     "case": "One input the eval feeds every arm; repeats of a case are not independent.",
     "usable": "A trial the test setup did not spoil; only usable trials count for or against an arm.",

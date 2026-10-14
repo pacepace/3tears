@@ -470,7 +470,8 @@ def _scoreboard_blocks(
             row["other"] = sum(board.failed.get(cause, 0) for cause in other_causes)
         rows.append(row)
     columns = [
-        TableColumn(key="arm", header="Arm"),
+        # The ▸ marking the control is defined where the glossary defines the control.
+        TableColumn(key="arm", header="Arm", term="control" if control is not None else None),
         TableColumn(key="ran", header="Ran"),
         *([TableColumn(key="lost", header="Lost", term="lost")] if lost_any else []),
         TableColumn(key="usable", header="Usable", term="usable"),
@@ -1122,17 +1123,40 @@ def _question_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
                 total_rows=len(rows),
             )
         )
-    exploratory = [*scope.exploratory_measures, *(f"{name} (judged)" for name in scope.exploratory_dimensions)]
+    catalog = bundle.measure_catalog
+    exploratory = [
+        *(
+            measure_name(name, catalog[name].reader_name if name in catalog else None)
+            for name in scope.exploratory_measures
+        ),
+        *(f"{humanize('dimension', name)} (judged)" for name in scope.exploratory_dimensions),
+    ]
     if exploratory and scope.questions_declared:
-        blocks.append(
+        blocks += [
             DisclosureBlock(
                 section="not_tested",
                 source="scope",
-                text=f"No declared question asks about these, so read them as leads: {_listed(exploratory)}.",
-                term="exploratory",
-            )
-        )
+                text="No declared question asks about these readings, so read them as leads.",
+            ),
+            _readings_table("unasked", "Unasked readings", [{"reading": name} for name in exploratory]),
+        ]
     return blocks
+
+
+def _readings_table(name: str, title: str, rows: list[dict[str, CellValue]]) -> TableBlock:
+    """Readings the page lists rather than strings into a sentence, one row each, each named once."""
+    columns = [TableColumn(key="reading", header="Reading")]
+    if any("declare" in row for row in rows):
+        columns.append(TableColumn(key="declare", header="Declaring one"))
+    return TableBlock(
+        section="not_tested",
+        name=name,
+        title=title,
+        columns=columns,
+        rows=[table_row({column.key: row.get(column.key) for column in columns}) for row in rows],
+        order="as the bundle lists them",
+        total_rows=len(rows),
+    )
 
 
 def _contrast_blocks(
@@ -2336,9 +2360,8 @@ def _not_tested_blocks(
     for proof in bundle.goal_check_proofs:
         if proof.proof != "proven":
             said.append(_unproven_check_sentence(proof))
-    if (no_margin := _no_margin_sentence(bundle)) is not None:
-        said.append(no_margin)
     blocks: list[ReportBlock] = [DisclosureBlock(section="not_tested", source="not_tested", text=text) for text in said]
+    blocks += _no_margin_blocks(bundle)
     blocks += [
         DisclosureBlock(section="not_tested", source="calibration", text=text, term="calibrated")
         for text in _calibration_sentences(bundle.judge_evidence_tiers)
@@ -2405,8 +2428,8 @@ def _unproven_check_sentence(proof: GoalCheckProofReading) -> str:
     )
 
 
-def _no_margin_sentence(bundle: AnalysisContextBundle) -> str | None:
-    """The measures tested with no margin to be equivalent on, and how each kind takes one; None when none."""
+def _no_margin_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
+    """The measures tested with no margin to be equivalent on: one sentence, then each once with how it takes one."""
     catalog = bundle.measure_catalog
     names = list(
         dict.fromkeys(
@@ -2417,39 +2440,29 @@ def _no_margin_sentence(bundle: AnalysisContextBundle) -> str | None:
         )
     )
     if not names:
-        return None
-    scorers = [name for name in names if name not in METRIC_DESCRIPTORS]
-    rates = [name for name in names if name in RUN_MARGIN_MEASURES]
-    fixed = [name for name in names if name in METRIC_DESCRIPTORS and name not in RUN_MARGIN_MEASURES]
+        return []
 
-    def heading(group: list[str]) -> str:
-        return ", ".join(measure_name(name, catalog[name].reader_name) for name in group)
+    def declaring(name: str) -> str:
+        if name not in METRIC_DESCRIPTORS:
+            ranged = catalog[name].family == "mechanical" and catalog[name].value_range is None
+            # A check is graded by its scenario, not a grader the caller names: no call to quote.
+            call = "" if goal_check_of(name) is not None else f": `grader({name}, margin=...)`"
+            return f"where it is graded{call}" + (", with its `range=`" if ranged else "")
+        if name in RUN_MARGIN_MEASURES:
+            return "on the classifier's field, on every arm's run: `grader('<field>', margin=...)`"
+        return "cannot: the engine owns its description"
 
-    advice = []
-    if scorers:
-        advice.append(
-            f"Declare a margin on {heading(scorers)} where it is graded (`grader({scorers[0]}, margin=...)`)"
-            + (
-                "; a grader returning a number takes its range beside it (`range=`)."
-                if any(catalog[name].family == "mechanical" and catalog[name].value_range is None for name in scorers)
-                else "."
-            )
-        )
-    if rates:
-        advice.append(
-            f"Declare a margin on {heading(rates)} on the classifier's field (`grader('<field>', margin=...)`), on "
-            "every arm's run."
-        )
-    if fixed:
-        advice.append(
-            f"No comparison can declare one on {heading(fixed)}: the engine owns "
-            f"{'its' if len(fixed) == 1 else 'their'} description."
-        )
-    them = "it" if len(names) == 1 else "them"
-    return (
-        f"No margin is declared on {heading(names)}, so no contrast on {them} can read equivalent. Not separated "
-        "never means the arms are alike. " + " ".join(advice)
-    )
+    rows: list[dict[str, CellValue]] = [
+        {"reading": measure_name(name, catalog[name].reader_name), "declare": declaring(name)} for name in names
+    ]
+    return [
+        DisclosureBlock(
+            section="not_tested",
+            source="not_tested",
+            text="No margin is declared on these, so none can read equivalent: not separated never means the arms are alike.",
+        ),
+        _readings_table("no_margin", "No margin", rows),
+    ]
 
 
 def _method_blocks(

@@ -151,6 +151,18 @@ async def test_every_linked_term_is_defined_once_in_the_glossary() -> None:
         assert page.index('id="glossary"') > page.index('id="methods"'), "the glossary folds last"
 
 
+async def test_the_glossary_lists_only_what_the_page_uses_and_explains_the_control_mark(
+    g2_ruled: tuple[Result, Report],
+) -> None:
+    _, report = g2_ruled
+    # The question was declared, so the page offers no "exploratory" leads, and the glossary does not define it.
+    assert "exploratory" not in report.terms
+    # The ▸ in the scoreboard and the cases table is defined with the control.
+    assert "control" in report.terms and "▸" in GLOSSARY["control"]
+    # Settled says what settles each way, never that the outcome cannot change.
+    assert "cannot change" not in GLOSSARY["settled"] and "interval" in GLOSSARY["settled"]
+
+
 async def test_one_arm_reads_n_of_n_cases_passed_first() -> None:
     one = await Eval(CASES, {"production": answering(10, 0.003)}, ["label"], k=3, name="queue").run(store=":memory:")
     (verdict,) = [b for b in one.report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
