@@ -241,11 +241,14 @@ class Written:
     :ivar replaced: the earlier writes of the same event it replaced, as
         :meth:`MemoriesCollection.find_same_event` returned them
     :ivar standing: a permanent earlier write of the same event, left as it is
+    :ivar held: the earlier writes it would have replaced, when the caller said
+        not to replace one: nothing was written
     """
 
     memory_id: UUID | None
     replaced: tuple[dict[str, Any], ...] = ()
     standing: dict[str, Any] | None = None
+    held: tuple[dict[str, Any], ...] = ()
 
 
 async def write_once(
@@ -257,6 +260,7 @@ async def write_once(
     near_message_ids: Sequence[UUID] = (),
     threshold: float | None = None,
     when_permanent: Literal["beside", "skip"] = "beside",
+    when_replaceable: Literal["replace", "hold"] = "replace",
 ) -> Written:
     """Write a new memory, replacing an earlier write of the same event from this turn or the one before.
 
@@ -295,7 +299,12 @@ async def write_once(
     :ptype threshold: float | None
     :param when_permanent: what a permanent earlier write of the event means for the new one
     :ptype when_permanent: Literal["beside", "skip"]
-    :return: what was written, replaced and left standing
+    :param when_replaceable: what an earlier write of the event that is not
+        permanent means for the new one: ``"replace"`` it, or ``"hold"``: write
+        nothing, change nothing, and name it in :attr:`Written.held` (a turn
+        nobody is present for does not replace a memory)
+    :ptype when_replaceable: Literal["replace", "hold"]
+    :return: what was written, replaced, held and left standing
     :rtype: Written
     """
     same: list[dict[str, Any]] = []
@@ -311,6 +320,8 @@ async def write_once(
     replaceable = [row for row in same if not row["evergreen"]]
     if standing is not None and when_permanent == "skip":
         return Written(memory_id=None, standing=standing)
+    if replaceable and when_replaceable == "hold":
+        return Written(memory_id=None, standing=standing, held=tuple(replaceable))
     if replaceable:
         assert consolidations is not None  # ``same`` is empty without it
         new_id = await supersede(

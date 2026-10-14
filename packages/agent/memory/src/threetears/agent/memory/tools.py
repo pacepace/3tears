@@ -82,6 +82,7 @@ from threetears.observe import get_logger
 __all__ = [
     "ChunkRecallInput",
     "ChunkSearchInput",
+    "CHANGE_NEEDS_THE_PERSON",
     "LedgerCallback",
     "MemoryAddInput",
     "MemoryForgetInput",
@@ -96,6 +97,7 @@ __all__ = [
     "PERMANENT_NEEDS_THE_PERSON",
     "PermanentAllowed",
     "PersonAsked",
+    "PersonPresent",
     "load_chunk_recall_tool",
     "load_chunk_search_tool",
     "load_memory_add_tool",
@@ -148,6 +150,15 @@ PERMANENT_NEEDS_THE_PERSON = "It is not kept permanently: making this one perman
 
 #: The source messages of this turn and the one before it, read per call.
 NearMessageIds = Callable[[], Awaitable[Sequence[UUID]]]
+
+#: Whether a person is in the conversation this turn. The host answers per
+#: call: ``False`` on a turn nobody is present for (a wake fire, an injected
+#: turn), where ``memory_add`` replaces no memory.
+PersonPresent = Callable[[], Awaitable[bool]]
+
+#: What ``memory_add`` says when it would have replaced a memory on a turn
+#: nobody is present for, and so wrote nothing.
+CHANGE_NEEDS_THE_PERSON = "A change to a memory waits for a turn with your person in the conversation."
 
 _VALID_MEMORY_TYPES = frozenset(t.value for t in MemoryType)
 _TYPES_LISTED = ", ".join(sorted(_VALID_MEMORY_TYPES))
@@ -1576,6 +1587,50 @@ async def _may_be_permanent(permanent_allowed: PermanentAllowed | None, content:
         return False
 
 
+async def _is_present(person_present: PersonPresent | None) -> bool:
+    """Whether a person is in the conversation, so ``memory_add`` may replace a memory.
+
+    No resolver is a yes: the rule is the host's to turn on. One that fails, or
+    answers anything but ``True``, is a no: a replacement held back can be made
+    with the person, and one made without them cannot be taken back by the agent.
+
+    :param person_present: the host's resolver, if it gave one
+    :ptype person_present: PersonPresent | None
+    :return: ``False`` when the resolver says nobody is present, or fails
+    :rtype: bool
+    """
+    if person_present is None:
+        return True
+    try:
+        return await person_present() is True
+    except (
+        Exception
+    ):  # prawduct:allow prawduct/broad-except -- a host resolver may fail in any way, and every way is a no
+        log.exception("person_present resolver failed; memory_add replaces nothing")
+        return False
+
+
+def _held(rows: Sequence[dict[str, Any]], *, zone: tzinfo | None) -> str:
+    """The ``[NO CHANGE]`` result of a ``memory_add`` that would have replaced ``rows`` with nobody present.
+
+    :param rows: the memories it would have replaced
+    :ptype rows: Sequence[dict[str, Any]]
+    :param zone: the reader's zone
+    :ptype zone: tzinfo | None
+    :return: the result text
+    :rtype: str
+    """
+    said = ["Nothing was stored. It would replace"]
+    named = []
+    for row in rows:
+        when = _fmt_dt(row.get("date_created"), zone)
+        written = f", written {when}," if when else ""
+        named.append(f"[memory:{row['memory_id']}]{written} which says {_quoted(row)}")
+    said.append("; ".join(named) + ".")
+    said.append(CHANGE_NEEDS_THE_PERSON)
+    return _no_change("memory_add", " ".join(said))
+
+
 class MemoryAddInput(BaseModel):
     """Input schema for memory_add tool.
 
@@ -1618,7 +1673,7 @@ class MemoryAddInput(BaseModel):
         default=None,
         description=(
             "Ids of the memories this one corrects, from their [memory:<id>] lines. Each is replaced "
-            "by this one and stays readable by its id."
+            "by this one and stays readable by its id. Needs your person in the conversation."
         ),
     )
 
@@ -1731,8 +1786,17 @@ async def load_memory_add_tool(
     permanent_allowed: PermanentAllowed | None = None,
     near_message_ids: NearMessageIds | None = None,
     same_event_threshold: float | None = None,
+    person_present: PersonPresent | None = None,
 ) -> list[BaseTool]:
     """create a memory_add tool for explicit memory storage.
+
+    **A memory is replaced only with a person present.** With
+    ``person_present`` a call on a turn nobody is present for that would
+    replace a memory -- a near-duplicate, ``corrects``, or the same event
+    written this turn or the one before -- writes nothing, changes nothing, and
+    returns ``[NO CHANGE]`` naming the memory it would have replaced
+    (:data:`CHANGE_NEEDS_THE_PERSON`). A memory that replaces nothing is stored
+    as on any turn, and so is a correction written beside a permanent one.
 
     **One event, written once.** With ``near_message_ids`` and
     ``same_event_threshold`` a memory that says nearly what one from this turn
@@ -1812,6 +1876,9 @@ async def load_memory_add_tool(
     :param same_event_threshold: the similarity at which a memory from those
         messages is the same event; ``None`` turns the rule off
     :ptype same_event_threshold: float | None
+    :param person_present: whether a person is in the conversation, read per
+        call; ``None`` means always, and a resolver that fails means nobody
+    :ptype person_present: PersonPresent | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     :raises ValueError: when ``tz`` is a name that is not a known zone
@@ -1959,6 +2026,9 @@ async def load_memory_add_tool(
                     beside.append(row)
                 else:
                     replaced.append(row)
+            # a correction beside a permanent memory replaces nothing; one that replaces waits for the person
+            if replaced and not await _is_present(person_present):
+                return _held(replaced, zone=zone)
             # what replaces a permanent memory, on the person's word, is permanent too
             if any(marks_of(row).permanent for row in replaced):
                 fields["evergreen"] = True
@@ -2039,6 +2109,8 @@ async def load_memory_add_tool(
                     if is_permanent(existing) or consolidations_collection is None or not replace:
                         standing = (existing, similarity)
                         break
+                    if not await _is_present(person_present):
+                        return _held([existing], zone=zone)
                     new_id = await supersede(
                         memories_collection,
                         consolidations_collection,
@@ -2092,8 +2164,11 @@ async def load_memory_add_tool(
                 fields=fields,
                 near_message_ids=near,
                 threshold=same_event_threshold,
+                when_replaceable="replace" if not near or await _is_present(person_present) else "hold",
             )
-            assert wrote.memory_id is not None  # "beside" always writes
+            if wrote.held:
+                return _held(wrote.held, zone=zone)
+            assert wrote.memory_id is not None  # "beside" always writes, and nothing held
             memory_id = wrote.memory_id
             if wrote.replaced:
                 said = [f"Stored as [memory:{memory_id}]{alias_clause}: {content}."]
@@ -2152,7 +2227,8 @@ async def load_memory_add_tool(
         "Remember something for every later conversation: about the person, about you, "
         "or anything else. Use it often. A memory that is nearly the same as one you "
         "have replaces it, and the result shows what the old one said; the old one stays "
-        "readable by its id. To correct a memory, pass its id in corrects. Set permanent for "
+        "readable by its id. To correct a memory, pass its id in corrects. Replacing or "
+        "correcting one needs your person in the conversation. Set permanent for "
         "what must never fade. Returns [memory:<id>]."
     )
 

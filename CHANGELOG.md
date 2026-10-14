@@ -202,6 +202,34 @@ recorded which CLI process had made the call or the provider's id for the reques
   `.calls_served`: what the pool tells a call about the CLI it was lent. A stand-in for
   `PooledCliSession` in a consumer's tests needs both attributes.
 
+### Memory tools: with nobody present, `memory_add` replaces no memory
+
+On a turn nobody is present for (a wake fire, an injected turn) a memory is not replaced. Before,
+`memory_add` replaced a non-permanent memory three ways on any turn: a near-duplicate, `corrects`,
+and the same event written this turn or the one before.
+
+**Every new argument defaults to "as before".**
+
+- **Added, `load_memory_add_tool(person_present=)`**, keyword-only, default `None` (a person is
+  always present). A `PersonPresent` resolver, read per call. When it answers anything but `True`,
+  or raises, a call that would replace a memory by any of the three ways writes nothing, changes
+  nothing, links nothing, and returns `[NO CHANGE] memory_add: Nothing was stored. It would replace
+  [memory:<id>], written <date>, which says "<text>". A change to a memory waits for a turn with
+  your person in the conversation.` A memory that replaces nothing is stored as before, and so is
+  one written beside a near-twin with `replace=false`, beside a permanent near-twin, or as a
+  correction beside a permanent memory. A `corrects` list naming any memory it would replace
+  stores nothing at all.
+- **Added, `PersonPresent`** (`Callable[[], Awaitable[bool]]`) and **`CHANGE_NEEDS_THE_PERSON`**
+  (`"A change to a memory waits for a turn with your person in the conversation."`), both in
+  `threetears.agent.memory.tools.__all__`.
+- **Added, `revisions.write_once(when_replaceable=)`**, keyword-only, `"replace"` (default) or
+  `"hold"`, and **`Written.held`** (default `()`). With `"hold"` an earlier write of the same event
+  that is not permanent is not replaced: nothing is written, `memory_id` is `None`, and the rows it
+  would have replaced are in `held`.
+- **Changed, `memory_add`'s description** gains `Replacing or correcting one needs your person in
+  the conversation.`, and the `corrects` field's description ends `Needs your person in the
+  conversation.`
+
 ### Memory: what ambient recall hands an agent, one event stored once, and a dream that makes nothing permanent
 
 On one deployment eight of the ten memories an agent was handed on a turn were from the last five

@@ -9,6 +9,7 @@ pgvector database. The cases are the ways a result used to mislead:
   a permanent near-twin it left standing;
 - nothing corrected, retired or restored a memory, and nothing listed them;
 - a bare ``date_before`` left out the day it named;
+- on a turn nobody was present for, ``memory_add`` replaced a memory;
 - a cut preview read as the whole passage, and no result said how many more
   there were.
 
@@ -40,6 +41,7 @@ from threetears.agent.memory.collections import (
 from threetears.agent.memory.migrations import register as register_memory
 from threetears.agent.memory.revisions import marks_of, restore, retract, supersede
 from threetears.agent.memory.tools import (
+    CHANGE_NEEDS_THE_PERSON,
     PERMANENT_IS_THE_PERSONS,
     load_chunk_recall_tool,
     load_chunk_search_tool,
@@ -144,14 +146,15 @@ class _World:
         alias: str | None = None,
         user_id: uuid.UUID | None = None,
         salience: float = 0.5,
+        source: uuid.UUID | None = None,
     ) -> uuid.UUID:
         memory_id = uuid.UUID(str(uuid_utils.uuid7()))
         created = at or datetime.now(UTC) - timedelta(days=age_days)
         owner = user_id or self.user_id
         await self.conn.execute(
             "INSERT INTO memories (memory_id, agent_id, customer_id, user_id, conversation_id, type_memory, "
-            "content, embedding, salience, evergreen, alias, date_created, date_updated) "
-            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8::text::public.vector,$9,$10,$11,$12,$12)",
+            "content, embedding, salience, evergreen, alias, date_created, date_updated, message_id_source) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8::text::public.vector,$9,$10,$11,$12,$12,$13)",
             memory_id,
             self.agent_id,
             owner,
@@ -164,6 +167,7 @@ class _World:
             permanent,
             alias,
             created,
+            source,
         )
         return memory_id
 
@@ -713,6 +717,147 @@ class TestACorrectionIsLinkedToWhatItCorrects:
 
         assert said.startswith("[NO CHANGE] memory_add:") and "that is yours" in said
         assert (await world.row(theirs))["superseded_by"] is None and await world.count() == 1
+
+
+async def _nobody() -> bool:
+    return False
+
+
+async def _somebody() -> bool:
+    return True
+
+
+def _held_says(said: str, old: uuid.UUID, text: str) -> None:
+    """The result of a replacement held back: nothing stored, the memory named and quoted, and when it can change."""
+    assert said.startswith("[NO CHANGE] memory_add: Nothing was stored. It would replace "), said
+    assert f"[memory:{old}]" in said and f'which says "{text}"' in said
+    assert said.endswith(CHANGE_NEEDS_THE_PERSON)
+
+
+class TestWithNobodyPresentNothingIsReplaced:
+    """A turn nobody is present for (a wake fire, an injected turn) replaces no memory; the person's turn still does."""
+
+    async def _same_event(self, world: _World, *, present: Any) -> tuple[Any, uuid.UUID]:
+        turn = uuid.uuid4()
+        old = await world.memory("the harbour wall was rebuilt", source=turn)
+
+        async def _near() -> list[uuid.UUID]:
+            return [turn]
+
+        # the near-duplicate check is off, so only the same-event rule can find it
+        add = await world.add(
+            similarity_dedup_threshold=1.5, near_message_ids=_near, same_event_threshold=0.5, person_present=present
+        )
+        return add, old
+
+    async def test_a_near_duplicate_is_not_replaced_and_nothing_is_stored(self, world: _World) -> None:
+        old = await world.memory("likes green tea")
+        add = await world.add(person_present=_nobody)
+
+        said = await add.ainvoke({"content": "likes black tea now"})
+
+        _held_says(said, old, "likes green tea")
+        assert (await world.row(old))["superseded_by"] is None and await world.count() == 1
+
+    async def test_a_correction_is_not_made_and_nothing_is_stored(self, world: _World) -> None:
+        old = await world.memory("the sleeve was his choice")
+        add = await world.add(person_present=_nobody)
+
+        said = await add.ainvoke({"content": "the choice of cover was mine", "corrects": [str(old)]})
+
+        _held_says(said, old, "the sleeve was his choice")
+        assert (await world.row(old))["superseded_by"] is None and await world.count() == 1
+        assert await world.conn.fetchval("SELECT count(*) FROM memory_consolidations") == 0
+
+    async def test_the_same_event_is_not_replaced_and_nothing_is_stored(self, world: _World) -> None:
+        add, old = await self._same_event(world, present=_nobody)
+
+        said = await add.ainvoke({"content": "the harbour wall is new"})
+
+        _held_says(said, old, "the harbour wall was rebuilt")
+        assert (await world.row(old))["superseded_by"] is None and await world.count() == 1
+
+    async def test_a_resolver_that_fails_is_nobody(self, world: _World) -> None:
+        old = await world.memory("likes green tea")
+
+        async def _broken() -> bool:
+            raise RuntimeError("the turn's door could not be read")
+
+        add = await world.add(person_present=_broken)
+
+        said = await add.ainvoke({"content": "likes black tea now"})
+
+        _held_says(said, old, "likes green tea")
+        assert (await world.row(old))["superseded_by"] is None
+
+    # -- what must still get through -------------------------------------------
+
+    async def test_a_new_memory_that_replaces_nothing_is_still_stored(self, world: _World) -> None:
+        await world.memory("likes green tea")
+        add, _old = await self._same_event(world, present=_nobody)
+
+        said = await add.ainvoke({"content": "the garden faces south"})
+
+        assert said.startswith("Stored as [memory:") and said.endswith("the garden faces south."), said
+        assert await world.count() == 3
+
+    async def test_a_correction_beside_a_permanent_memory_is_still_written(self, world: _World) -> None:
+        kept = await world.memory("the sleeve was his choice", permanent=True)
+        add = await world.add(person_present=_nobody)
+
+        said = await add.ainvoke({"content": "the sleeve choice was mine", "corrects": [str(kept)]})
+
+        assert said.startswith("Stored as [memory:") and f"[memory:{kept}] is permanent, so it still stands" in said
+        assert (await world.row(kept))["superseded_by"] is None and await world.count() == 2
+
+    async def test_a_correction_naming_one_it_would_replace_stores_nothing(self, world: _World) -> None:
+        kept = await world.memory("the sleeve was his choice", permanent=True)
+        plain = await world.memory("the cover was blue")
+        add = await world.add(person_present=_nobody)
+
+        said = await add.ainvoke({"content": "the sleeve choice was mine", "corrects": [str(kept), str(plain)]})
+
+        _held_says(said, plain, "the cover was blue")
+        assert f"[memory:{kept}]" not in said and await world.count() == 2
+
+    async def test_beside_a_near_twin_with_replace_false_is_still_stored(self, world: _World) -> None:
+        old = await world.memory("likes green tea")
+        add = await world.add(person_present=_nobody)
+
+        said = await add.ainvoke({"content": "likes black tea too", "replace": False})
+
+        assert said.startswith("Stored as [memory:") and "still stands beside it" in said
+        assert (await world.row(old))["superseded_by"] is None and await world.count() == 2
+
+    async def test_with_the_person_present_a_near_duplicate_is_replaced(self, world: _World) -> None:
+        old = await world.memory("likes green tea")
+        add = await world.add(person_present=_somebody)
+
+        said = await add.ainvoke({"content": "likes black tea now"})
+
+        assert said.startswith("Stored as [memory:") and f"It replaces [memory:{old}]" in said
+        assert (await world.row(old))["superseded_by"] is not None
+
+    async def test_with_the_person_present_a_correction_is_made(self, world: _World) -> None:
+        old = await world.memory("the sleeve was his choice")
+        add = await world.add(person_present=_somebody)
+
+        said = await add.ainvoke({"content": "the choice of cover was mine", "corrects": [str(old)]})
+
+        assert f"It replaces [memory:{old}]" in said
+        assert (await world.row(old))["superseded_by"] is not None
+
+    async def test_with_the_person_present_the_same_event_is_replaced(self, world: _World) -> None:
+        add, old = await self._same_event(world, present=_somebody)
+
+        said = await add.ainvoke({"content": "the harbour wall is new"})
+
+        assert said.startswith("Stored as [memory:") and f"It replaces [memory:{old}]" in said
+        assert (await world.row(old))["superseded_by"] is not None
+
+    async def test_the_description_says_replacing_needs_the_person(self, world: _World) -> None:
+        add = await world.add()
+        assert "Replacing or correcting one needs your person in the conversation." in add.description
 
 
 # --------------------------------------------------------------------------
