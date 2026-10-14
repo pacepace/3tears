@@ -1,28 +1,48 @@
-"""OpenRouter's public model catalogue, read once: rates, the parameters each model takes, and what refusals taught.
+"""OpenRouter's public model catalogue, read and refreshed: rates, the parameters each model takes, and what refusals
+taught.
 
 :class:`Catalogue` is the one price source the client has. OpenRouter's ``GET /api/v1/models`` needs no key and lists,
 per model, its per-token rates, the ``supported_parameters`` some endpoint of it takes, and its output cap. It prices
 Anthropic and OpenAI models too (``anthropic/claude-haiku-5.5``), so a call made to either directly is priced by the
-same rows. Each instance fetches it at most once (a failed fetch is not kept, so the next asks again) and every
-:class:`~threetears.evals.providers.Model` handed one shares it, with the request settings a provider refused, which
-the catalogue holds for every model that reads it (:attr:`Catalogue.learned`). There is no process-wide catalogue: a
-``Model`` given none builds its own, fetched on its first live call.
+same rows. Every :class:`~threetears.evals.providers.Model` handed one shares it, with the request settings a provider
+refused, which the catalogue holds for every model that reads it (:attr:`Catalogue.learned`). There is no
+process-wide catalogue: a ``Model`` given none builds its own, fetched on its first live call.
+
+**Rates go stale, so a long-lived catalogue refreshes.** A first fetch that fails is not kept, so the next asks again.
+Once read, the rows are kept for ``refresh_after`` (:data:`DEFAULT_REFRESH_AFTER` unless the constructor says
+otherwise), and the first :meth:`Catalogue.load` after that, which every live call makes, fetches them again. A
+refresh that fails keeps the last rows, logs the failure, and marks the catalogue stale
+(:attr:`Catalogue.stale_since`, :attr:`Catalogue.refresh_failure`), which every completion it then prices carries
+(``Completion.pricing_stale_since``): never silent, and never failing the call. The failed refresh is tried again on
+the first load :data:`RETRY_AFTER_FAILURE` later (sooner when ``refresh_after`` is shorter), not on every call.
 """
 
 from __future__ import annotations
 
 import asyncio
 import re
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Final
 
 import httpx
 
 from threetears.evals.negotiation import LearnedSettings
+from threetears.evals.schema.logs import get_logger
 
-__all__ = ["OPENROUTER_MODELS_URL", "Catalogue"]
+__all__ = ["DEFAULT_REFRESH_AFTER", "OPENROUTER_MODELS_URL", "RETRY_AFTER_FAILURE", "Catalogue"]
+
+log = get_logger(__name__)
+
+#: How long a catalogue keeps the rows it read before the next load fetches them again, unless built with another.
+DEFAULT_REFRESH_AFTER: Final = timedelta(hours=6)
+
+#: How long after a failed refresh the next load tries again (or ``refresh_after``, when that is shorter): a provider
+#: outage costs one failed fetch per this interval, not one per call.
+RETRY_AFTER_FAILURE: Final = timedelta(minutes=5)
 
 #: OpenRouter's public model catalogue.
 OPENROUTER_MODELS_URL: Final = "https://openrouter.ai/api/v1/models"
@@ -76,29 +96,52 @@ def _plain(model_id: str) -> str:
 
 
 class Catalogue:
-    """OpenRouter's model catalogue, fetched at most once, and what providers refused, for every model that reads it.
+    """OpenRouter's model catalogue, refreshed every ``refresh_after``, and what providers refused, for every model
+    that reads it.
 
     Hand one catalogue to several :class:`~threetears.evals.providers.Model`\\s (``Clients`` does) and they fetch it
-    once and learn from each other's refusals. Await :meth:`load` at boot when a model's
+    together and learn from each other's refusals. Await :meth:`load` at boot when a model's
     :meth:`~threetears.evals.providers.Model.price_ceiling` must answer before its first call; a live call loads it
-    otherwise.
+    otherwise, and refreshes it once its rows are older than ``refresh_after``.
 
     Attributes:
         url: Where the catalogue is read from.
+        refresh_after: How long the rows read are kept before the next load fetches them again.
         learned: The request settings providers refused, per provider and model, for every model reading this
             catalogue (:class:`~threetears.evals.negotiation.LearnedSettings`).
     """
 
-    def __init__(self, *, url: str = OPENROUTER_MODELS_URL, http: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        url: str = OPENROUTER_MODELS_URL,
+        http: httpx.AsyncClient | None = None,
+        refresh_after: timedelta = DEFAULT_REFRESH_AFTER,
+    ) -> None:
         """Know nothing yet: nothing is fetched until :meth:`load`.
 
         Args:
             url: The catalogue's URL.
             http: The client to fetch it with (not closed here), or ``None`` to open one for the fetch.
+            refresh_after: How long the rows read are kept before the next load fetches them again; zero refreshes
+                on every load.
+
+        Raises:
+            ValueError: ``refresh_after`` is negative.
         """
+        if refresh_after < timedelta(0):
+            raise ValueError(
+                f"refresh_after {refresh_after} is negative: a catalogue keeps its rows for no time or more"
+            )
         self.url = url
+        self.refresh_after = refresh_after
         self._http = http
         self._rows: dict[str, _Row] | None = None
+        #: When the kept rows were read, and the monotonic instant the next load fetches again.
+        self._read_at: datetime | None = None
+        self._due = 0.0
+        self._stale_since: datetime | None = None
+        self._refresh_failure: str | None = None
         self._lock = asyncio.Lock()
         self.learned = LearnedSettings(
             client="eval.providers",
@@ -108,35 +151,84 @@ class Catalogue:
 
     @property
     def loaded(self) -> bool:
-        """Whether the catalogue has been read."""
+        """Whether the catalogue has been read (its rows may since have gone stale: :attr:`stale_since`)."""
         return self._rows is not None
 
+    @property
+    def stale_since(self) -> datetime | None:
+        """When the kept rows expired with every refresh since failing (UTC), or ``None`` while they are fresh.
+
+        Every completion priced from them carries it as ``pricing_stale_since``.
+        """
+        return self._stale_since
+
+    @property
+    def refresh_failure(self) -> str | None:
+        """Why the last refresh failed, while the rows are stale; ``None`` while they are fresh."""
+        return self._refresh_failure
+
     async def load(self) -> None:
-        """Fetch and read the catalogue, once; a later call returns at once.
+        """Fetch and read the catalogue unless the rows kept are younger than ``refresh_after``.
+
+        A first read that fails raises and keeps nothing, so the next load fetches again. A refresh that fails keeps
+        the rows read before, logs the failure and marks them stale (:attr:`stale_since`, :attr:`refresh_failure`)
+        rather than raising, and the next load :data:`RETRY_AFTER_FAILURE` later (or ``refresh_after``, when that is
+        shorter) tries again; one that succeeds clears the mark.
 
         Raises:
-            httpx.HTTPError: The fetch failed or answered with a failure status. Nothing is kept, so a later call
-                fetches again.
-            ValueError: The body is not JSON, or holds no ``data`` list.
+            httpx.HTTPError: The first fetch failed or answered with a failure status.
+            ValueError: The first fetch's body is not JSON, or holds no ``data`` list.
         """
         async with self._lock:
-            if self._rows is not None:
+            if self._rows is not None and time.monotonic() < self._due:
                 return
-            if self._http is not None:
-                response = await self._http.get(self.url)
-            else:
-                async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT_S, follow_redirects=True) as owned:
-                    response = await owned.get(self.url)
-            response.raise_for_status()
-            payload = response.json()
-            rows = payload.get("data") if isinstance(payload, Mapping) else None
-            if not isinstance(rows, list):
-                raise ValueError(f"the catalogue at {self.url} holds no `data` list")
-            self._rows = {
-                entry["id"]: _row(entry)
-                for entry in rows
-                if isinstance(entry, Mapping) and isinstance(entry.get("id"), str)
-            }
+            try:
+                rows = await self._fetch()
+            except (httpx.HTTPError, ValueError) as failed:
+                if self._rows is None or self._read_at is None:
+                    raise
+                self._refresh_failure = (
+                    f"the price catalogue could not be refreshed ({type(failed).__name__}: {failed})"
+                )
+                if self._stale_since is None:
+                    self._stale_since = self._read_at + self.refresh_after
+                self._due = time.monotonic() + min(self.refresh_after, RETRY_AFTER_FAILURE).total_seconds()
+                log.warning(
+                    "eval.providers catalogue refresh failed url=%s stale_since=%s; pricing from the rows read at %s: %s",
+                    self.url,
+                    self._stale_since.isoformat(),
+                    self._read_at.isoformat(),
+                    self._refresh_failure,
+                )
+                return
+            self._rows = rows
+            self._read_at = datetime.now(UTC)
+            self._due = time.monotonic() + self.refresh_after.total_seconds()
+            self._stale_since = None
+            self._refresh_failure = None
+
+    async def _fetch(self) -> dict[str, _Row]:
+        """One fetch of the catalogue, read into rows.
+
+        Raises:
+            httpx.HTTPError: The fetch failed or answered with a failure status.
+            ValueError: The body is not JSON, or holds no ``data`` list.
+        """
+        if self._http is not None:
+            response = await self._http.get(self.url)
+        else:
+            async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT_S, follow_redirects=True) as owned:
+                response = await owned.get(self.url)
+        response.raise_for_status()
+        payload = response.json()
+        rows = payload.get("data") if isinstance(payload, Mapping) else None
+        if not isinstance(rows, list):
+            raise ValueError(f"the catalogue at {self.url} holds no `data` list")
+        return {
+            entry["id"]: _row(entry)
+            for entry in rows
+            if isinstance(entry, Mapping) and isinstance(entry.get("id"), str)
+        }
 
     def rates(self, model_id: str) -> tuple[Decimal, Decimal] | None:
         """The model's input and output rates in dollars per token, or ``None`` (not loaded, not listed, unpriced).

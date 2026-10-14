@@ -260,7 +260,11 @@ for the matching `vendor/model` row, its `price_source` ending `;cache-approxima
 written (the catalogue carries no cache rates). Unpriced is `None` with `pricing_failure` saying why, never `0`. A
 model's `price_ceiling` answers once its catalogue is loaded: `await clients.load_prices()` at boot, or
 `await catalogue.load()` on one you hand your models, and until then the engine refuses an out-of-run call under an
-enforced `out_of_run_cap_usd` rather than send one it cannot bound.
+enforced `out_of_run_cap_usd` rather than send one it cannot bound. A long-lived process is not priced from its first
+fetch forever: the catalogue refreshes on the first live call after `refresh_after` (`Catalogue(refresh_after=...)`,
+six hours by default). A refresh that fails keeps the last rates rather than failing the call, logs it, and marks the
+completions they price: `Completion.pricing_stale_since` is when those rates expired (`None` while fresh, and on an
+OpenRouter call, which its own figure prices), and `Catalogue.stale_since` and `refresh_failure` say the same.
 
 **An app already on 3tears-models, LangChain or a provider SDK keeps its own client** and wraps it in the port: a
 class whose `generate` calls the chat model it already builds and returns an object with the ten `CompletionResult`

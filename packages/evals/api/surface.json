@@ -7438,7 +7438,7 @@
     },
     "threetears.evals.providers.Catalogue": {
       "kind": "class",
-      "signature": "Catalogue(*, url: str = 'https://openrouter.ai/api/v1/models', http: httpx.AsyncClient | None = None) -> None",
+      "signature": "Catalogue(*, url: str = 'https://openrouter.ai/api/v1/models', http: httpx.AsyncClient | None = None, refresh_after: timedelta = datetime.timedelta(seconds=21600)) -> None",
       "tier": "host-contract"
     },
     "threetears.evals.providers.Clients": {
@@ -7448,7 +7448,7 @@
     },
     "threetears.evals.providers.Completion": {
       "kind": "dataclass",
-      "signature": "Completion(content: str, input_tokens: int | None, output_tokens: int | None, reasoning_tokens: int | None, cost_usd: float | None, price_source: str | None, model: str, served_model: str | None, temperature: float | None, stop_reason: StopReason, sent_settings: ClientRequestSettings | None, provider_stop_reason: str | None, served_provider: str | None, pricing_failure: str | None)",
+      "signature": "Completion(content: str, input_tokens: int | None, output_tokens: int | None, reasoning_tokens: int | None, cost_usd: float | None, price_source: str | None, model: str, served_model: str | None, temperature: float | None, stop_reason: StopReason, sent_settings: ClientRequestSettings | None, provider_stop_reason: str | None, served_provider: str | None, pricing_failure: str | None, pricing_stale_since: datetime | None)",
       "tier": "stable"
     },
     "threetears.evals.providers.describe_failure": {

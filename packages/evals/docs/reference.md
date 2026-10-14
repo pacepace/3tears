@@ -901,9 +901,9 @@ The completion client: a model id in, the engine's completion port out, over eac
 
 **Classes**
 
-- **`Catalogue`** · *host contract* · class · OpenRouter's model catalogue, fetched at most once, and what providers refused, for every model that reads it.
+- **`Catalogue`** · *host contract* · class · OpenRouter's model catalogue, refreshed every `refresh_after`, and what providers refused, for every model that reads it.
 - **`Clients`** · *host contract* · class · A host's role factory (`EvalHost.clients`): one `Model` per role, model id and temperature.
-- **`Completion`** · dataclass · One reply: the completion port's ten members, and four of the client's own.
+- **`Completion`** · dataclass · One reply: the completion port's ten members, and five of the client's own.
 - **`ProviderError`** · *host contract* · exception · A request the provider refused or failed: who, the HTTP status, and the provider's own message.
 
 **Types**

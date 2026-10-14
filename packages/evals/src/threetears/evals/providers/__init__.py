@@ -26,7 +26,8 @@ What a completion carries, member by member:
 * ``cost_usd``: on OpenRouter its own reported figure, and under bring-your-own-key that figure plus
   ``cost_details.upstream_inference_cost`` (a BYOK reply without it is unpriced); on Anthropic and OpenAI, tokens
   times OpenRouter's catalogue rates for the matching ``vendor/model`` row. Unpriced is ``None`` with
-  ``pricing_failure`` saying why, never ``0``.
+  ``pricing_failure`` saying why, never ``0``. The catalogue refreshes every ``refresh_after`` (six hours by
+  default); a catalogue-priced cost whose refresh failed carries ``pricing_stale_since``, when its rates expired.
 
 **This module is the package's public root** for the client. A host imports from here and from no module below it,
 and only the names in ``__all__``.
