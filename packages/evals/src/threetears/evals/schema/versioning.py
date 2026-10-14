@@ -264,7 +264,7 @@ MINOR_ADDITIVITY_SENTENCE: Final[str] = (
 #:   includes the request settings its calls were sent with, so a stored judge profile carries
 #:   ``judge_sent_settings`` and its id derives from it, and an analysis's evidence tiers, agreements and bundle carry
 #:   it on every judge they name. Profiles and analyses regenerate from the core; nothing is upgraded.
-#: - **v11** — the report is code's (from ``v0.67.0-evaladopt.26``): an analysis stores the evidence bundle it was
+#: - **v11** — the report is code's (from ``v0.68.0-evaladopt.26``): an analysis stores the evidence bundle it was
 #:   written over (``EvalAnalysis.bundle``); its memo has no headline, summary or chart (``AuthoredAnalysis`` and
 #:   ``FindingResolution`` lose them) and each finding names the trials it is drawn from (``Finding.trials``). A v10
 #:   analysis is refused on read and regenerated. A stored bundle is read at its own ``schema_version``, so a later
@@ -392,7 +392,7 @@ DURABLE_BASELINE_VERSION: Final[int] = 15
 #: human labels and ratings, judge configs, cases, templates — is the ONLY place a shape change must ship an upgrader;
 #: a core baseline reset never touches it.
 #:
-#: - **v15** — the fork from core v15 (``v0.67.0-evaladopt.26``): the eight types people author left the core with
+#: - **v15** — the fork from core v15 (``v0.68.0-evaladopt.26``): the eight types people author left the core with
 #:   their shapes and their stored bytes unchanged, so every durable document ``.25`` wrote as core v15 reads here as
 #:   durable v15 with no step, and ``.25`` reads this build's durable documents as core v15 at a newer minor.
 DURABLE_SCHEMA_VERSION: int = 15
