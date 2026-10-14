@@ -324,3 +324,14 @@ def test_a_headroom_too_small_to_think_in_is_refused_by_name() -> None:
     analysis_gen_request_settings_for(answer_budget_tokens=4000, reasoning_headroom_tokens=least)
     with pytest.raises(ValueError, match="reasoning_headroom_tokens=1023 leaves the analysis generator too little"):
         analysis_gen_request_settings_for(answer_budget_tokens=4000, reasoning_headroom_tokens=least - 1)
+
+
+@pytest.mark.parametrize("role", ["candidate", "inner_agent"])
+def test_a_role_pooling_never_reads_carries_its_spend_and_no_sent_settings(role: str) -> None:
+    """Only the judge and the simulator are read for what was sent: no other role's row can ever read as verified."""
+    ledger = RoleUsageLedger(role=role)  # type: ignore[arg-type]  # a KnownUsageRole literal chosen by the parametrize
+    ledger.add_llm_result(_Reporting(sent_settings=EFFORT_HIGH))
+    ledger.add_llm_result(_Reporting(sent_settings=7))  # a mistyped value is not read, so it cannot fail the cell
+
+    (row,) = ledger.rows()
+    assert row.sent_settings is None and row.call_count == 2

@@ -259,6 +259,10 @@ class _ModelTotals:
 _RowKey = tuple[str | None, str | None, str | None, str | None, str | None, str | None, KnownSimulatorPurpose | None]
 
 
+#: The roles whose completions are read for what they were sent: the two that pooling and disclosure cover.
+_SENT_SETTINGS_ROLES: frozenset[str] = frozenset({"judge", "simulator"})
+
+
 @dataclass
 class RoleUsageLedger:
     """Accumulates one role's LLM spend across every call it makes in a cell.
@@ -395,7 +399,7 @@ class RoleUsageLedger:
         ``served_model`` is read off the completion and never off ``model``: a client may fill
         ``model`` from the request, which for a floating alias names the pointer rather than the model
         that answered. ``sent_settings``, the optional member, is read through
-        :func:`~threetears.evals.schema.completion.sent_settings_of`: absent reads as unverified, and a value of
+        :func:`~threetears.evals.schema.completion.sent_settings_of` on the judge and simulator roles only (every other role's row carries its spend alone): absent reads as unverified, and a value of
         the wrong type is refused.
 
         Args:
@@ -408,7 +412,9 @@ class RoleUsageLedger:
             CompletionProtocolDefect: The result's ``sent_settings`` is neither ``None`` nor a
                 :class:`~threetears.evals.schema.ClientRequestSettings`.
         """
-        read = CallUsage.of(result)
+        # Only the judge and the simulator are read for what was sent (the roles pooling and disclosure cover); any
+        # other role's row carries its spend alone, so no candidate row can ever read as verified.
+        read = CallUsage.of(result) if self.role in _SENT_SETTINGS_ROLES else CallUsage.billed(result)
         self.add(
             model=read.model,
             served_model=read.served_model,
