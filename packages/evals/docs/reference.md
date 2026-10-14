@@ -230,8 +230,6 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> list[str]`
 - **`prompt_drift`** · function · Read a stored copy of a catalogue prompt against the package's shipped default.
   <br>`prompt_drift(entry: SeedPrompt, *, shipped: SeedTemplate | str, stored: SeedTemplate | str, seeded_digest: str | None, reset: str, customized: bool = False) -> PromptDrift`
-- **`resolve_variant_identity`** · function · Return the variant identity a reader should show for `run`'s observations.
-  <br>`resolve_variant_identity(*, run: EvalRun, profile: HostProfile) -> DerivedVariantIdentity`
 - **`seed_digest`** · function · The canonical digest of a seed's content: what a host records when it seeds a slot from it.
   <br>`seed_digest(seed: SeedTemplate | str) -> str`
 - **`withhold_failure_detail`** · *host contract* · function · Describe a failure by its class and nothing else — the safe default.
@@ -474,6 +472,7 @@ The engine's run package: launching and executing a run, judging it, metering it
 - **`MeteredCallTally`** · dataclass · What a run (or one cell's slice of it) metered, kept per provider.
 - **`RunnerOptions`** · *host contract* · dataclass · The run's own knobs that don't fit on the run document — per-run values, never host wiring.
 - **`SeedCorpus`** · dataclass · A host's authored definitions for one scope, already constructed through their production models.
+- **`SeedJudgeCase`** · *host contract* · model · One authored judge case a seed corpus writes: `judge_case_author`'s arguments, its templates named by name.
 - **`SeedOutcome`** · dataclass · What one seeding pass did, per doc type.
 - **`SimulatorTurn`** · dataclass · One user-side utterance produced by the simulator.
 - **`TurnDriver`** · dataclass · Multi-actor round scheduler and utterance generator.

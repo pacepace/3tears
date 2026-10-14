@@ -1339,7 +1339,7 @@ engine's prompt. A quick-path `Judge` declares its own dimensions, so an `Eval` 
 nothing.
 
 **Your boot seed corpus carries authored judge cases too.** Beside `templates/`, `rubric_dims/` and `judge_configs/`,
-`load_seed_corpus` reads `judge_cases/*.json`, each a `SeedJudgeCase` (`threetears.evals.run.definition_seed`;
+`load_seed_corpus` reads `judge_cases/*.json`, each a `SeedJudgeCase` (host contract, from `threetears.evals.run`;
 in memory, `SeedCorpus(judge_cases=...)`): `judge_case_author`'s arguments with its two templates named by `name`
 (`judge_template`, `criterion_template`, since a corpus cannot know a seeded template's id), the `criterion`, the
 `output`, its `case_material`, the `expected` verdict, your `note` and the case's `author`. `seed_eval_definitions`

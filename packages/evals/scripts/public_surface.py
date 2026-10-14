@@ -608,6 +608,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.run.RunnerOptions",
         "threetears.evals.run.price_subject_call_floor",
         "threetears.evals.run.run_blocking",
+        # An authored judge case in a host's boot seed, which a production seed builds in memory
+        # (`SeedCorpus(judge_cases=...)`) as well as reads from `judge_cases/*.json`.
+        "threetears.evals.run.SeedJudgeCase",
         "threetears.evals.kernel.default_job_timeout",
         "threetears.evals.kernel.EvalCampaign",
         # The stored documents a host's kind and launcher build and its own code reads back.
@@ -871,7 +874,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.kernel.Question",
         "threetears.evals.kernel.SweptAxis",
         "threetears.evals.kernel.confusion_cell",
-        "threetears.evals.kernel.resolve_variant_identity",
         "threetears.evals.run.get_run",
         "threetears.evals.run.list_runs",
         "threetears.evals.schema.EvalCaseStratum",

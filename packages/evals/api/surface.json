@@ -2503,8 +2503,8 @@
     },
     "threetears.evals.kernel.resolve_variant_identity": {
       "kind": "function",
-      "signature": "resolve_variant_identity(*, run: EvalRun, profile: HostProfile) -> DerivedVariantIdentity",
-      "tier": "stable"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.kernel.ResolvedControl": {
       "kind": "model",
@@ -4113,8 +4113,8 @@
     },
     "threetears.evals.run.SeedJudgeCase": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "SeedJudgeCase(judge_template: str, criterion_template: str, criterion: str, output: str, case_material: str, expected: AuthoredVerdict, note: str, author: str, scenario: str | None = None, subject: str | None = None, judged_artifact: Literal['document', 'transcript'] = 'document')",
+      "tier": "host-contract"
     },
     "threetears.evals.run.SeedOutcome": {
       "kind": "dataclass",
