@@ -769,6 +769,9 @@ class BackgroundOperation(Generic[ResultT]):
                 self._start_when_needed(needed, retry_on=retry_on, retry_seconds=retry_seconds),
                 name=f"{self._name}-when-needed",
             )
+            # The wait's error is logged where it is raised, and raised again to whoever awaits it;
+            # marked seen here so a wait nobody awaits is not logged a second time when it is collected.
+            self._watcher.add_done_callback(_mark_error_seen)
         else:
             log.warning(
                 "a wait to start the operation is already deciding; this one is refused",
@@ -1511,3 +1514,15 @@ class OperationStatusTool(_OperationTool):
             where = f", on another replica ({last['replica']})," if last.get("other_replica") else ""
             sentence += f"; the last run{where} {ended} at {last['finished_at']}: {detail}"
         return ToolResult(success=True, content=sentence, metadata=status)
+
+
+def _mark_error_seen(task: asyncio.Task[None]) -> None:
+    """Mark a finished wait's error as seen: it was logged when raised, and awaiting the task raises it still.
+
+    :param task: the finished wait
+    :ptype task: asyncio.Task[None]
+    :return: nothing
+    :rtype: None
+    """
+    if not task.cancelled():
+        task.exception()
