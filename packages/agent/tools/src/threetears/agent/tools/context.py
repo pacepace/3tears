@@ -284,7 +284,8 @@ class ToolContextManager:
         )
         if existing is None and var_count >= self._var_limit:
             raise VariableLimitError(
-                f"Variable limit reached ({self._var_limit}). Save over one you no longer need by reusing its name."
+                f"Variable limit reached ({self._var_limit}). Delete one you no longer need with variable_delete, "
+                "or save over one by reusing its name."
             )
         if len(value) > self._var_max_chars:
             # SDS-04: the agent reads this back later mid-sentence with nothing
@@ -321,6 +322,11 @@ class ToolContextManager:
         self.items.append(data)
 
         return context_id_str
+
+    @property
+    def var_limit(self) -> int:
+        """How many variables this conversation may hold; a new name past it is refused."""
+        return self._var_limit
 
     async def get_variable(self, key: str) -> dict[str, Any] | None:
         """Get a variable by key, or ``None`` if not found."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import tzinfo
 from typing import Any
 
@@ -25,9 +26,12 @@ log = get_logger(__name__)
 
 __all__ = [
     "DeclareWorkflowInput",
+    "DeleteVariableInput",
     "GetVariableInput",
+    "ListVariablesInput",
     "RecallContextInput",
     "SetVariableInput",
+    "VALUE_TYPES",
     "load_workflow_tools",
 ]
 
@@ -35,6 +39,14 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Input schemas
 # ---------------------------------------------------------------------------
+
+
+#: The kinds of value a variable may be said to hold. A number must read as one and a
+#: json value must parse, so the kind a listing shows is true of the value.
+VALUE_TYPES: tuple[str, ...] = ("string", "number", "json")
+
+#: How much of a value a listing, a delete or a replacement shows.
+_PREVIEW_CHARS = 200
 
 
 class SetVariableInput(BaseModel):
@@ -47,6 +59,16 @@ class SetVariableInput(BaseModel):
 
 class GetVariableInput(BaseModel):
     """Input for the get_variable tool."""
+
+    key: str = Field(description="The name it was saved under.")
+
+
+class ListVariablesInput(BaseModel):
+    """Input for the variable_list tool: it takes nothing."""
+
+
+class DeleteVariableInput(BaseModel):
+    """Input for the variable_delete tool."""
 
     key: str = Field(description="The name it was saved under.")
 
@@ -77,9 +99,38 @@ async def _saved_names(tool_context: ToolContextManager) -> str:
     return f"Saved names: {', '.join(names)}."
 
 
+def _preview(value: str) -> str:
+    """A value as a listing or a result shows it: whole when short, else its start and how much is left."""
+    if len(value) <= _PREVIEW_CHARS:
+        return repr(value)
+    return f"{value[:_PREVIEW_CHARS]!r} ... ({len(value) - _PREVIEW_CHARS:,} more chars)"
+
+
+def _type_problem(value: str, value_type: str) -> str | None:
+    """Why ``value`` is not the kind ``value_type`` says, or ``None`` when it is."""
+    if value_type not in VALUE_TYPES:
+        return f"value_type '{value_type}' is not one of: {', '.join(VALUE_TYPES)}"
+    if value_type == "number":
+        try:
+            float(value)
+        except ValueError:
+            return f"value_type is number and {_preview(value)} is not a number"
+    if value_type == "json":
+        try:
+            json.loads(value)
+        except ValueError as exc:
+            return f"value_type is json and the value does not parse as JSON ({exc})"
+    return None
+
+
 async def _set_variable(tool_context: ToolContextManager, key: str, value: str, value_type: str = "string") -> str:
+    problem = _type_problem(value, value_type)
+    if problem is not None:
+        return f"{TOOL_ERROR_PREFIX} variable_set: {problem}. Nothing was saved."
     try:
-        context_id = await tool_context.set_variable(key, value, value_type)
+        before = await tool_context.get_variable(key)
+        await tool_context.set_variable(key, value, value_type)
+        after = await tool_context.get_variable(key)
     except VariableLimitError as exc:
         # At the cap: nothing was saved and nothing broke. Its own status, so a caller that
         # refuses a failed tool for the rest of a turn does not refuse this one.
@@ -87,7 +138,23 @@ async def _set_variable(tool_context: ToolContextManager, key: str, value: str, 
     except Exception as exc:
         log.error("variable_set failed", extra={"extra_data": {"key": key, "error": str(exc)}})
         return f"{TOOL_ERROR_PREFIX} variable_set: {exc}"
-    return f"Variable '{key}' saved (context_id: {context_id})"
+    kept = str((after or {}).get("value", value))
+    said = [f"Saved '{key}' ({value_type}, {len(kept):,} chars)."]
+    if len(kept) < len(value):
+        said.append(
+            f"It was cut: only the first {len(kept):,} of {len(value):,} chars were kept, "
+            f"and the last {len(value) - len(kept):,} are not saved."
+        )
+    if before is None:
+        said.append("Nothing was saved under that name before.")
+    elif before["value"] == kept and before["value_type"] == value_type:
+        said.append("It already held this value.")
+    else:
+        said.append(
+            f"It replaced the earlier value, which is gone ({before['value_type']}, "
+            f"{len(before['value']):,} chars): {_preview(before['value'])}"
+        )
+    return " ".join(said)
 
 
 async def _get_variable(tool_context: ToolContextManager, key: str) -> str:
@@ -99,6 +166,39 @@ async def _get_variable(tool_context: ToolContextManager, key: str) -> str:
         log.error("variable_get failed", extra={"extra_data": {"key": key, "error": str(exc)}})
         return f"{TOOL_ERROR_PREFIX} variable_get: {exc}"
     return f"{key} ({var['value_type']}): {var['value']}"
+
+
+async def _list_variables(tool_context: ToolContextManager) -> str:
+    try:
+        saved = sorted(await tool_context.get_all_variables(), key=lambda item: str(item["key"]))
+    except Exception as exc:
+        log.error("variable_list failed", extra={"extra_data": {"error": str(exc)}})
+        return f"{TOOL_ERROR_PREFIX} variable_list: {exc}"
+    if not saved:
+        return f"No variables are saved in this conversation. It may hold {tool_context.var_limit}."
+    lines = [f"{len(saved)} of {tool_context.var_limit} variables this conversation may hold:"]
+    for item in saved:
+        value = str(item.get("content") or "")
+        kind = (item.get("metadata") or {}).get("value_type", "string")
+        lines.append(f"- {item['key']} ({kind}, {len(value):,} chars): {_preview(value)}")
+    return "\n".join(lines)
+
+
+async def _delete_variable(tool_context: ToolContextManager, key: str) -> str:
+    try:
+        held = await tool_context.get_variable(key)
+        if held is None:
+            return tool_no_change("variable_delete", f"no variable named '{key}'. {await _saved_names(tool_context)}")
+        await tool_context.delete_variable(key)
+        left = len(await tool_context.get_all_variables())
+    except Exception as exc:
+        log.error("variable_delete failed", extra={"extra_data": {"key": key, "error": str(exc)}})
+        return f"{TOOL_ERROR_PREFIX} variable_delete: {exc}"
+    value = str(held["value"])
+    return (
+        f"Deleted '{key}' ({held['value_type']}, {len(value):,} chars). It cannot be brought back. "
+        f"It held: {_preview(value)}. {left} of {tool_context.var_limit} variables are saved now."
+    )
 
 
 async def _recall_context(
@@ -152,7 +252,8 @@ def load_workflow_tools(tool_context: ToolContextManager, *, tz: tzinfo | str | 
             name="variable_set",
             description=(
                 "Save a value by name for the rest of this conversation, such as a number or an "
-                "id you will need again. To keep something for later conversations, use memory_add."
+                "id you will need again. Saving under a name already used replaces its value; the result "
+                "shows the value replaced. To keep something for later conversations, use memory_add."
             ),
             args_schema=SetVariableInput,
         ),
@@ -162,6 +263,23 @@ def load_workflow_tools(tool_context: ToolContextManager, *, tz: tzinfo | str | 
             name="variable_get",
             description="Read a value saved with variable_set.",
             args_schema=GetVariableInput,
+        ),
+        StructuredTool.from_function(
+            func=lambda: None,
+            coroutine=lambda: _list_variables(tool_context),
+            name="variable_list",
+            description=(
+                "List the values saved with variable_set in this conversation: each name, its kind, "
+                "its size and its start."
+            ),
+            args_schema=ListVariablesInput,
+        ),
+        StructuredTool.from_function(
+            func=lambda key: None,
+            coroutine=lambda key: _delete_variable(tool_context, key),
+            name="variable_delete",
+            description="Delete a value saved with variable_set. It cannot be undone.",
+            args_schema=DeleteVariableInput,
         ),
         StructuredTool.from_function(
             func=lambda context_id, offset=0: None,
