@@ -61,6 +61,9 @@ judge = Judge(
 )
 ```
 
+Name the judge's model by a concrete model id, never an alias: the served model is part of the judge's calibration
+key, so an alias re-pointed to a new model under the same name merges two judges' evidence (Step 7).
+
 A scoring guide's levels must be the scale's own (`pass`/`fail`, or `1`–`5`). For a quick rubric, pass a mapping
 of name to description and one `scale=` for all of them: `Judge(client=client, model="judge-model",
 rubric={"helpful": "..."}, scale="pass_fail")` names the dimension `answer.helpful`.
@@ -285,6 +288,10 @@ undetermined — agreement with people 0.4085 (bounds 0.05449 to 0.7088) over 24
 the bounds straddle (bar 0.6 over at least 20 results) — about 35 more results would decide it if agreement holds;
 with its own repeats not measured (bar 0.8 over at least 120 results) — needs 120 results.
 ```
+
+**Pin a concrete model id for a judge, never an alias.** The served model, as the provider names it in its response,
+is part of the judge's calibration key (`JudgeKey`), so a provider alias that quietly re-points to a new model under
+the same name merges two judges' evidence into one.
 
 **"Needs N more"** is the rest of the floor when there are too few results. When the bounds straddle the bar, it
 says about how many more results would carry them clear if agreement held at its estimate. Tiers are flagged and

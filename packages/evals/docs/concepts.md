@@ -323,9 +323,11 @@ A model the engine asks to score a result against a rubric, reading only the evi
 #### Judged dimension (rubric dimension)
 One subjective quality a judge scores (`RubricDim`): a name, a description and a scoring guide. *Example:*
 "does the auto-reply sound polite", for a variant that also drafts a reply. A **judge config**
-(`JudgeConfig`) is a versioned prompt, model and settings for one dimension. Every judge call is requested at
-temperature 0 (`DEFAULT_JUDGE_TEMPERATURE`) unless a config states another, whether or not the dimension has a
-config; a model that refuses a temperature is sent none, and each score records what was sent.
+(`JudgeConfig`) is a versioned prompt, model and settings for one dimension; name its model by a concrete model id,
+never an alias, since the served model is part of the judge's calibration key and an alias re-pointed under the same
+name merges two judges' evidence. Every judge call is requested at temperature 0 (`DEFAULT_JUDGE_TEMPERATURE`)
+unless a config states another, whether or not the dimension has a config; a model that refuses a temperature is sent
+none, and each score records what was sent.
 
 #### Guardrail
 Something the candidate must not do: leak data, take a destructive action, break policy. A judged dimension
