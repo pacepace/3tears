@@ -1,18 +1,18 @@
 """Rung 2: when no code can grade the answer, let a model judge it, and check the judge against a person.
 
-Run ``python -m threetears.evals replies.py`` from this directory. A model drafts a reply to each email from
+Run ``python -m threetears.evals examples/2-replies/replies.py``. A model drafts a reply to each email from
 ``policy.md``; a judge of another family grades each reply on three pass/fail dimensions. The report writes
-``to_label.csv``, every judged reply with the judge's verdict hidden: rate about 20 of them, save it as
-``labels.csv``, and run again to read how far the judge agrees with you. Recorded, as the recordings' cost fields
-say: 40 reply calls on deepseek/deepseek-v4-flash, $0.0017, and 120 judge calls on google/gemini-2.5-flash-lite,
-$0.0151.
+``to_label.csv``, every judged reply with the judge's verdict hidden: rate about 20 of them, save it beside this
+file as ``labels.csv``, and run again to read how far the judge agrees with you. Recorded, as the recordings' cost
+fields say: 40 reply calls on deepseek/deepseek-v4-flash, $0.0017, and 120 judge calls on
+google/gemini-2.5-flash-lite, $0.0151.
 """
 
 from pathlib import Path
 
 from threetears.evals import Eval, Example, Judge, Model
 
-POLICY = Path("policy.md").read_text(encoding="utf-8")
+POLICY = Path(__file__).with_name("policy.md").read_text(encoding="utf-8")  # beside this file, from anywhere
 writer = Model("deepseek/deepseek-v4-flash", recording="recordings/replies.jsonl")
 judge_model = Model("google/gemini-2.5-flash-lite", temperature=0, recording="recordings/judge.jsonl")
 

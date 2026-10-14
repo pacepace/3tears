@@ -13,13 +13,12 @@ import string
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Self, get_args
 
 import httpx
 from pydantic import BaseModel
 
-from threetears.evals.kernel import note_spend, strict_response_format
+from threetears.evals.kernel import beside_eval_file, note_spend, strict_response_format
 from threetears.evals.kernel.host import CompletionRole
 from threetears.evals.negotiation import (
     ANTHROPIC_MIN_THINKING_BUDGET,
@@ -425,7 +424,8 @@ class Model:
                 ``sent_settings.unsent_reasoning_max_tokens`` names it. ``None`` sends none.
             temperature: The sampling temperature, or ``None`` for the model's own. Never sent to a Claude 5.5
                 model, nor beside Anthropic thinking; each completion says what was sent.
-            recording: A JSONL recording to replay, or to record into.
+            recording: A JSONL recording to replay, or to record into; a relative path is read beside the eval
+                file being loaded (``python -m threetears.evals FILE``), else in the working directory.
             catalogue: The price catalogue to share with other models, or ``None`` for one of its own.
             http: An ``httpx.AsyncClient`` to send through (not closed by :meth:`aclose`), or ``None`` to open one.
 
@@ -436,14 +436,14 @@ class Model:
         """
         self.model_name = id
         self.provider: Provider = _provider_of(id, provider, base_url)
-        self.recording = Path(recording) if recording is not None else None
+        self.recording = beside_eval_file(recording) if recording is not None else None
         self._options: dict[str, Any] = {  # Any: the constructor's keyword values, for derive()
             "provider": provider,
             "api_key": api_key,
             "base_url": base_url,
             "max_tokens": max_tokens,
             "effort": effort,
-            "recording": recording,
+            "recording": self.recording,
             "http": http,
         }
         asked = _asked(self.provider, max_tokens, effort, temperature)

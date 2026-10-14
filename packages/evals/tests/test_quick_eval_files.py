@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 from threetears.evals.quick import EXIT_FAILED, EXIT_GATE_FAILED, EXIT_OK, EXIT_REFUSED, EXIT_RUN_DID_NOT_COMPLETE
-from threetears.evals.quick.files import main, report_dir
+from threetears.evals import Log
+from threetears.evals.quick.files import load_evals, main, report_dir
 
 #: Two evals in one file, run in the order the file defines them.
 TWO_EVALS = '''\
@@ -127,6 +128,40 @@ def test_an_error_nothing_anticipated_exits_3_with_its_traceback(capsys: pytest.
 
     error = capsys.readouterr().err
     assert "failed on an unanticipated error" in error and "RuntimeError: boom" in error
+
+
+#: A file naming its cases and its log by paths relative to itself, and one absolute path, which is taken as given.
+BESIDE = """\
+from threetears.evals import Eval, Log
+
+log = Log("outputs.jsonl")
+beside = Eval("cases.jsonl", log, ["label"], k=1, name="beside")
+"""
+
+
+def test_a_python_file_s_relative_paths_are_read_beside_it_and_an_absolute_one_as_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rung = tmp_path / "rung"
+    rung.mkdir()
+    (rung / "cases.jsonl").write_text('{"id": "a", "label": "yes"}\n', encoding="utf-8")
+    (rung / "outputs.jsonl").write_text('{"id": "a", "output": "yes"}\n', encoding="utf-8")
+    (rung / "evals.py").write_text(BESIDE, encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    (loaded,) = load_evals(Path("../rung/evals.py"))
+    assert len(loaded.cases) == 1 and loaded.arms[None].path == Path("../rung/outputs.jsonl")
+    assert main(["../rung/evals.py"]) == EXIT_OK
+    assert "stored in .evals/evals.sqlite, scope 'beside'" in capsys.readouterr().out
+    assert (elsewhere / ".evals" / "reports" / "beside" / "report.html").is_file(), "the report stays where it is run"
+
+    (rung / "evals.py").write_text(BESIDE.replace('"cases.jsonl"', repr(str(rung / "cases.jsonl"))), encoding="utf-8")
+    (absolute,) = load_evals(rung / "evals.py")
+    assert len(absolute.cases) == 1
+    # Outside a load, a relative path is the working directory's, as anywhere in Python.
+    assert Log("outputs.jsonl").path == Path("outputs.jsonl")
 
 
 def test_anything_but_an_eval_file_is_the_host_command_line() -> None:

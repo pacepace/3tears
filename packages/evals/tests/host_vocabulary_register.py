@@ -136,6 +136,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "kernel/dsl.py": {},
     "schema/goal_grammar.py": {},
     "kernel/errors.py": {},
+    "kernel/eval_file.py": {},
     "kernel/refusals.py": {},
     "kernel/remedies.py": {},
     "schema/hashing.py": {},

@@ -123,6 +123,23 @@ def test_the_toml_file_runs_from_another_directory_and_its_symmetric_field_misse
     assert (triage_dir.parent / ".evals" / "reports" / "triage" / "report.html").is_file()
 
 
+def test_the_program_runs_from_another_directory_through_the_module_entry(
+    triage_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One door: ``python -m threetears.evals examples/1-triage/triage.py`` from the package's directory, not the rung's.
+
+    Its cases and its recording are read beside the file, and the store and the report land where it is run.
+    """
+    monkeypatch.chdir(triage_dir.parent)
+    assert main([f"{triage_dir.name}/triage.py"]) == 0
+
+    printed = capsys.readouterr().out
+    assert "90 result(s): 90 scored" in printed and "excluded" not in printed
+    assert "escalates: mean 0.9889 (n=90" in printed
+    assert (triage_dir.parent / ".evals" / "reports" / "emails" / "report.html").is_file()
+    assert not (triage_dir / ".evals").exists()
+
+
 def test_an_email_the_recording_does_not_hold_is_excluded_rather_than_sent_to_a_model(
     triage_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

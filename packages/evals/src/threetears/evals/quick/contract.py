@@ -34,6 +34,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, TypeIs
 
+from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel import GuardrailMargin
 from threetears.evals.kernel.host import CompletionClients, EvalHost
@@ -82,13 +83,16 @@ def load_cases(cases: Sequence[Mapping[str, Any]] | str | os.PathLike[str]) -> l
 
     Raises:
         ValueError: No cases, a file that is not there or of no format named, or a case that is not a JSON object.
+
+    A relative file is read beside the eval file being loaded (``python -m threetears.evals FILE``), else in the
+    working directory.
     """
     if isinstance(cases, str | os.PathLike):
-        path = Path(cases)
+        path = beside_eval_file(cases)
         if path.suffix not in CASE_FILES:
             raise ValueError(f"an eval reads its cases from a {', '.join(CASE_FILES)} file, not {path}")
         if not path.is_file():
-            raise ValueError(f"the cases file {path} is not there (relative to {Path.cwd()})")
+            raise ValueError(f"the cases file {path} is not there (in {Path.cwd()})")
         loaded = _read_cases(path)
     elif isinstance(cases, Mapping) or not isinstance(cases, Sequence):
         raise ValueError(f"an eval's cases are a list of JSON objects or a file of them, not {type(cases).__name__}")

@@ -1281,6 +1281,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.beside_eval_file": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.blended_cost_roles": {
       "kind": "function",
       "signature": "",

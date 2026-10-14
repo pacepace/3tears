@@ -21,9 +21,9 @@ import json
 import os
 import threading
 from collections.abc import Mapping
-from pathlib import Path
 from typing import Any
 
+from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.host import ApparatusError
 from threetears.evals.quick.answer import Answer
 
@@ -46,9 +46,10 @@ class Log:
         """Name the file the outputs are logged to and read from.
 
         Args:
-            path: The JSONL file; created on the first output logged.
+            path: The JSONL file; created on the first output logged. A relative path is read beside the eval file
+                being loaded, else in the working directory.
         """
-        self.path = Path(path)
+        self.path = beside_eval_file(path)
         self._lock = threading.Lock()
 
     def __repr__(self) -> str:
