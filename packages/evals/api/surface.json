@@ -2924,7 +2924,7 @@
     "threetears.evals.kernel.host.CANDIDATE_MODEL_LEVER": {
       "kind": "constant (str)",
       "signature": "",
-      "tier": "stable"
+      "tier": "provisional"
     },
     "threetears.evals.kernel.host.CellTimeoutFactory": {
       "kind": "protocol",
@@ -3963,6 +3963,21 @@
     },
     "threetears.evals.run.refuse_stale_presumptions": {
       "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.run.Regrade": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.run.regrade": {
+      "kind": "async function",
+      "signature": "regrade(host: EvalHost, result_id: str, scope_id: str, *, checks: bool = True, judges: bool = True, apply: bool = False) -> Regrade",
+      "tier": "stable"
+    },
+    "threetears.evals.run.RegradedDim": {
+      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },

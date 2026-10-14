@@ -1369,6 +1369,15 @@ scope holds no version of is minted over their stored ids through `mint_case_set
 and reported under `case_set` as `<name> v1`; a scope holding any version keeps it (the next version is
 `case_set_mint`'s), so a host's own minting script over `case_set_mint` can be dropped.
 
+**A stored verdict is graded again through one door: `regrade`** (`threetears.evals.run`, and the `result_regrade`
+action). `await regrade(host, result_id, scope_id)` re-grades the result's check dims (its goal checks) from what its
+cell stored (the trace's call ledger and end state, and the result's world events) through the function the cell was
+graded with, and names its judged dims whose judging failed; it returns every verdict that moved, old beside new,
+and each check outcome it left as stored, with why. It writes nothing until `apply=True`, which stores the moved
+check verdicts (refused if the result changed since it was read) and asks the failed judged dims again through the
+re-judge, which spends. `checks=False` or `judges=False` leaves either half out. The action never asks a judge:
+applying over it while a judged dim would be asked is refused, so a host re-asks those from its own code.
+
 **What the judge reads, the kind renders.** A judged kind returns `JudgeEvidence` with every
 non-empty output: the subject as the judge should see it, the case material, and the artifact (for a
 conversation, the transcript as your kind writes it). The engine places those strings and reads none

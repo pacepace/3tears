@@ -160,6 +160,7 @@ from threetears.evals.run.job_work import (
     start_job_work,
 )
 from threetears.evals.run.rejudge import reproducible_judge_inputs
+from threetears.evals.run.regrade import Regrade, RegradedDim, regrade
 from threetears.evals.run.judge_kind import (
     FrozenJudgeCase,
     JudgeCaseFreezeReport,
@@ -287,6 +288,8 @@ __all__ = [
     "MeteredCallLedger",
     "MeteredCallTally",
     "RatingStore",
+    "Regrade",
+    "RegradedDim",
     "ReproducibleJudgeInputs",
     "RequestSettingsPolicy",
     "RunCallbacks",
@@ -355,6 +358,7 @@ __all__ = [
     "settable_apparatus",
     "precondition_failure_text",
     "rate_result",
+    "regrade",
     "record_witnessed_cell",
     "stamp_witnessed_judge",
     "refuse_stale_presumptions",

@@ -848,6 +848,9 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.run.judge_repeat_work",
         "threetears.evals.run.judge_temperature_work",
         "threetears.evals.run.rate_result",
+        # The one door a stored verdict is graded again through: check dims from the trace, failed judged dims asked
+        # again (the successor of the re-check `.27` removed; a production host's ruling binds it).
+        "threetears.evals.run.regrade",
         "threetears.evals.run.run_job_work",
         "threetears.evals.run.second_judge_work",
         "threetears.evals.schema.CalibrationRating",
@@ -884,7 +887,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.kernel.MeasureFamily",
         "threetears.evals.kernel.host.ActsOn",
         "threetears.evals.kernel.host.ApparatusError",
-        "threetears.evals.kernel.host.CANDIDATE_MODEL_LEVER",
         "threetears.evals.kernel.host.Interval",
         "threetears.evals.kernel.host.Ordinal",
         "threetears.evals.kernel.host.RolePins",

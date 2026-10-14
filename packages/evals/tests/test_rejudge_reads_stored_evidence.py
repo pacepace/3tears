@@ -52,6 +52,9 @@ from threetears.evals.schema.models import (
 from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.run.judge import CANNOT_TELL, JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService, builtin_judge_config_ids
+from threetears.evals.actions import Caller, eval_catalogue, standard_tools
+from threetears.evals.ops import OpsHost
+from threetears.evals.run import regrade
 from threetears.evals.run.lifecycle import rejudge_result
 from threetears.evals.run.launch import build_judge_service
 from threetears.evals.run.runner import RunnerOptions, run_one_result
@@ -567,3 +570,80 @@ async def test_a_rejudged_configured_dim_was_asked_by_its_config_with_the_reply_
     rejudged = await rejudge_result(host, result.id, _SCOPE)
 
     assert rejudged.judge_config_ids[_DIM] == recorded and rejudged.judge_error is None
+
+
+# =============================================================================
+# regrade's judged half: it names the failed dims, and asks them through this door only when applied
+# =============================================================================
+
+
+async def test_a_regrade_report_names_the_failed_judged_dims_and_asks_and_writes_nothing():
+    judge = _ScriptedJudge(failing={_DIM})
+    host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge)
+    judge.failing.clear()
+    judge.calls.clear()
+    before = off_loop(host.storage.load_eval_result, result.id, _SCOPE)
+
+    report = await regrade(host, result.id, _SCOPE)
+
+    assert report.judge_dims == [_DIM] and report.judges_not_regraded is None
+    assert report.changes == [] and report.judge_cost_usd is None
+    assert judge.calls == [], "a report spends nothing"
+    assert off_loop(host.storage.load_eval_result, result.id, _SCOPE) == before
+
+
+async def test_an_applied_regrade_asks_the_failed_dims_as_a_rejudge_does_and_reports_the_new_score():
+    judge = _ScriptedJudge(failing={_DIM})
+    host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge)
+    first = _users_by_dim(judge.calls)
+    judge.failing.clear()
+    judge.calls.clear()
+
+    report = await regrade(host, result.id, _SCOPE, apply=True)
+
+    assert [(c.dim, c.graded_by, c.was, c.now) for c in report.changes] == [(_DIM, "judge", None, 4)]
+    assert report.judge_errors == {} and report.judge_cost_usd == pytest.approx(0.001)
+    assert _users_by_dim(judge.calls) == first, "the same question the first judge was asked"
+    stored = off_loop(host.storage.load_eval_result, result.id, _SCOPE)
+    assert stored is not None and stored.judge_error is None and [s.dim for s in stored.rubric_scores] == [_DIM]
+    again = await regrade(host, result.id, _SCOPE, apply=True)
+    assert again.changes == [] and again.judge_dims == [] and len(judge.calls) == 1, "nothing failed: nothing asked"
+
+
+async def test_a_regrade_with_judges_false_names_no_judged_dim():
+    host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, _ScriptedJudge(failing={_DIM}))
+    before = off_loop(host.storage.load_eval_result, result.id, _SCOPE)
+
+    report = await regrade(host, result.id, _SCOPE, judges=False, apply=True)
+
+    assert report.judge_dims == [] and report.judges_not_regraded == "judged dims were not asked for (judges=False)"
+    assert off_loop(host.storage.load_eval_result, result.id, _SCOPE) == before
+
+
+async def test_the_regrade_action_reports_judged_dims_and_refuses_to_ask_them():
+    """The action makes no model call: applying while a judged dim would be asked is refused, nothing written."""
+    judge = _ScriptedJudge(failing={_DIM})
+    host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge)
+    judge.calls.clear()
+    before = off_loop(host.storage.load_eval_result, result.id, _SCOPE)
+    (tool, *_) = eval_catalogue().mount_all(standard_tools())
+    caller = Caller(scope_id=_SCOPE, identity="agent:regrade")
+
+    reported = await tool.call(
+        {"action": "result_regrade", "result_id": result.id}, host=OpsHost.reading(host), caller=caller
+    )
+    refused = await tool.call(
+        {"action": "result_regrade", "result_id": result.id, "apply": True}, host=OpsHost.reading(host), caller=caller
+    )
+    checks_only = await tool.call(
+        {"action": "result_regrade", "result_id": result.id, "apply": True, "judges": False},
+        host=OpsHost.reading(host),
+        caller=caller,
+    )
+
+    assert not reported.is_error and reported.structured is not None
+    assert reported.structured["judge_dims"] == [_DIM]
+    assert refused.is_error and "asking its judge again spends" in refused.text
+    assert not checks_only.is_error and checks_only.structured is not None and checks_only.structured["applied"]
+    assert judge.calls == []
+    assert off_loop(host.storage.load_eval_result, result.id, _SCOPE) == before

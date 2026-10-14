@@ -30,7 +30,7 @@ A model grading on a rubric, the examples it must grade a known way, and the rep
 - `threetears.evals`: `Example`, `Judge`
 - `schema`: `CalibrationRating`, `DEFAULT_JUDGE_TEMPERATURE`, `label_key_of`, `RubricDim`, `RubricScore`, `SecondJudge`
 - `kernel`: `AuthoredJudgeCase`, `AuthoredVerdict`, `EvalJudgeProfile`, `JobLeases`, `JUDGE_KIND`
-- `run`: `estimate_judge_repeat`, `freeze_judge_cases`, `judge_repeat_work`, `judge_temperature_work`, `JudgeRepeatReport`, `JudgeService`, `rate_result`, `run_job_work`, `second_judge_work`
+- `run`: `estimate_judge_repeat`, `freeze_judge_cases`, `judge_repeat_work`, `judge_temperature_work`, `JudgeRepeatReport`, `JudgeService`, `rate_result`, `regrade`, `run_job_work`, `second_judge_work`
 - `analysis`: `inter_judge_agreement`, `judge_agreement`, `judge_drift`, `judge_evidence_tiers`, `judge_key`, `judge_kind_readings`, `judge_self_agreement`, `read_judge_temperatures`, `tier_sentence`
 - `quick`: `JudgeCalibration`
 - `ops`: `judge_profiles_record`, `JudgeProfilesRecord`
@@ -52,7 +52,7 @@ An agent acting on declared state, an app's own logged outputs, the host a produ
 - `threetears.evals`: `Log`, `World`
 - `schema`: `BoundCompletionClient`, `CallLedger`, `CellIdentity`, `CellTrace`, `ControlEndState`, `GoalCheckControl`, `GoalCheckControls`, `GoalStateOutcome`, `JudgeEvidence`, `Precondition`, `RecordedCall`, `WorldPlacement`
 - `kernel`: `MeasureFamily`
-- `kernel.host`: `ActsOn`, `ApparatusError`, `CANDIDATE_MODEL_LEVER`, `check_world_conformance`, `Interval`, `Ordinal`, `RolePins`, `StyleProfile`, `Triggered`, `WorldConformanceError`, `WorldConformanceReport`
+- `kernel.host`: `ActsOn`, `ApparatusError`, `check_world_conformance`, `Interval`, `Ordinal`, `RolePins`, `StyleProfile`, `Triggered`, `WorldConformanceError`, `WorldConformanceReport`
 - `run`: `ArmPlan`, `ArmPrice`, `ArmQuote`, `CellExecutor`, `create_template`, `FidelityContract`, `GoalCheckUnevaluable`, `grade_goal_checks`, `require_candidate_model`
 - `quick`: `as_host`, `WorldOutcome`, `WorldRunner`
 - `ops`: `OpsHost`, `RegressionWatch`
