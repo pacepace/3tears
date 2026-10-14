@@ -182,8 +182,8 @@ async def _judged_run(
         intent="run a fair encounter",
         candidate_kind=_KIND,
         rubric=[
-            RubricDim(name=_SHIFTED, description="the GM rules what the dice say", scale="ordinal"),
-            RubricDim(name=_STEADY, description="the GM is clear", scale="ordinal"),
+            RubricDim(name=_SHIFTED, description="the GM rules what the dice say", scale="ordinal", judge="builtin"),
+            RubricDim(name=_STEADY, description="the GM is clear", scale="ordinal", judge="builtin"),
         ],
     )
     if off_loop(host.storage.load_template, template.id, _SCOPE) is None:

@@ -172,9 +172,10 @@ async def test_campaign_create_with_control_from_run_id_stores_the_runs_lever_ma
     off_loop(_assert_addressed_from, stored.declared_design, fixture, run_id)
 
 
-async def test_campaign_update_with_control_from_run_id_stores_it_and_a_null_clears_all_three(
+async def test_campaign_update_with_control_from_run_id_stores_it_once_and_a_null_clears_all_three(
     evals: MountedTool,
 ) -> None:
+    """Declared before its runs, addressed once they joined, never re-pointed, and cleared once they are gone."""
     fixture = off_loop(ops_fixture)
     first, second = fixture.campaign.run_ids[0], fixture.campaign.run_ids[1]
     created = await _call(
@@ -184,22 +185,23 @@ async def test_campaign_update_with_control_from_run_id_stores_it_and_a_null_cle
         name="addressed later",
         subject_id=TOYHOST_SUBJECT.subject_id,
         behavior=fixture.campaign.behavior,
-        run_ids=[first, second],
+        run_ids=[],
         exploratory=True,
     )
     campaign_id = created.structured["id"]
 
-    await _call(
-        evals, fixture, "campaign_update", campaign_id=campaign_id, declared_design=_design(), control_from_run_id=first
-    )
+    await _call(evals, fixture, "campaign_update", campaign_id=campaign_id, declared_design=_design())
+    await _call(evals, fixture, "campaign_runs_add", campaign_id=campaign_id, run_ids=[first, second])
+    await _call(evals, fixture, "campaign_update", campaign_id=campaign_id, control_from_run_id=first)
     declared = off_loop(_stored, fixture, campaign_id).declared_design
-    await _call(evals, fixture, "campaign_update", campaign_id=campaign_id, control_from_run_id=second)
-    renamed = off_loop(_stored, fixture, campaign_id).declared_design
+    refused = await _refused(evals, fixture, "campaign_update", campaign_id=campaign_id, control_from_run_id=second)
+    kept = off_loop(_stored, fixture, campaign_id).declared_design
+    await _call(evals, fixture, "campaign_runs_remove", campaign_id=campaign_id, run_ids=[first, second])
     await _call(evals, fixture, "campaign_update", campaign_id=campaign_id, control_from_run_id=None)
     cleared = off_loop(_stored, fixture, campaign_id).declared_design
 
     off_loop(_assert_addressed_from, declared, fixture, first)
-    off_loop(_assert_addressed_from, renamed, fixture, second)
+    assert "re-pointing it" in refused and kept == declared, "a control is addressed once"
     assert cleared is not None
     assert (cleared.control, cleared.control_levers, cleared.control_identity_version) == (None, None, None)
 
@@ -213,6 +215,8 @@ def test_set_campaign_control_stores_the_runs_lever_map_and_a_clear_clears_all_t
     designated = set_campaign_control(
         eval_host.storage, fixture.campaign.id, TOYHOST_SCOPE, run_id, set_by="op", profile=eval_host.profile
     )
+    # A control is cleared only once no run holds the campaign's design frozen.
+    _before_its_runs(fixture, designated)
     cleared = set_campaign_control(
         eval_host.storage, fixture.campaign.id, TOYHOST_SCOPE, None, set_by="op", profile=eval_host.profile
     )
@@ -527,9 +531,21 @@ async def _refused(tool: MountedTool, fixture: OpsFixture, action: str, **argume
     return str(outcome.text)
 
 
+def _before_its_runs(fixture: OpsFixture, campaign: EvalCampaign) -> EvalCampaign:
+    """``campaign`` stored holding no run, as before its first one joined: the only state its design is written in.
+
+    A design is frozen once a run has joined (``test_campaign_freeze.py``), so the server's handling of an echoed or
+    hand-changed declaration is exercised before the runs; a reading of it puts them back.
+    """
+    emptied = campaign.model_copy(update={"run_ids": []})
+    fixture.host.eval_host.storage.save_campaign(emptied)
+    return emptied
+
+
 async def test_an_echoed_typed_control_keeps_its_stored_date_so_it_stays_stale(evals: MountedTool) -> None:
     fixture = off_loop(ops_fixture)
     campaign = off_loop(_declared_under_an_earlier_predicate, fixture, fixture.campaign.run_ids[0], with_levers=False)
+    campaign = off_loop(_before_its_runs, fixture, campaign)
     echoed = _echoed(campaign.declared_design)
     del echoed["control_levers"], echoed["control_identity_version"]
 
@@ -539,12 +555,14 @@ async def test_an_echoed_typed_control_keeps_its_stored_date_so_it_stays_stale(e
     assert stored.declared_design is not None and campaign.declared_design is not None
     assert stored.declared_design.control == campaign.declared_design.control
     assert stored.declared_design.control_identity_version == _EARLIER, "an echo is not re-dated as current"
-    assert off_loop(_assemble, fixture, stored).design.control_excluded == "stale"
+    with_its_runs = stored.model_copy(update={"run_ids": list(fixture.campaign.run_ids)})
+    assert off_loop(_assemble, fixture, with_its_runs).design.control_excluded == "stale"
 
 
 async def test_a_declaration_echoed_whole_keeps_its_pre_image(evals: MountedTool) -> None:
     fixture = off_loop(ops_fixture)
     campaign = off_loop(_declared_under_an_earlier_predicate, fixture, fixture.campaign.run_ids[0], with_levers=True)
+    campaign = off_loop(_before_its_runs, fixture, campaign)
 
     await _call(
         evals, fixture, "campaign_update", campaign_id=campaign.id, declared_design=_echoed(campaign.declared_design)
@@ -562,6 +580,7 @@ async def test_a_declaration_echoed_whole_keeps_its_pre_image(evals: MountedTool
 async def test_a_hand_changed_key_sent_with_the_old_pre_image_is_refused(evals: MountedTool) -> None:
     fixture = off_loop(ops_fixture)
     campaign = off_loop(_declared_under_an_earlier_predicate, fixture, fixture.campaign.run_ids[0], with_levers=True)
+    campaign = off_loop(_before_its_runs, fixture, campaign)
 
     message = await _refused(
         evals,
@@ -580,6 +599,7 @@ async def test_a_hand_changed_key_sent_with_the_old_pre_image_is_refused(evals: 
 async def test_a_hand_changed_key_alone_has_no_map_and_is_dated_current(evals: MountedTool) -> None:
     fixture = off_loop(ops_fixture)
     campaign = off_loop(_declared_under_an_earlier_predicate, fixture, fixture.campaign.run_ids[0], with_levers=True)
+    campaign = off_loop(_before_its_runs, fixture, campaign)
     echoed = _echoed(campaign.declared_design, control="c" * 64)
     del echoed["control_levers"], echoed["control_identity_version"]
 
@@ -619,7 +639,9 @@ async def test_a_pre_image_sent_on_create_is_refused(evals: MountedTool) -> None
 def test_a_model_whose_key_was_changed_beside_its_stored_map_is_refused() -> None:
     fixture = ops_fixture()
     eval_host = fixture.host.eval_host
-    campaign = _declared_under_an_earlier_predicate(fixture, fixture.campaign.run_ids[0], with_levers=True)
+    campaign = _before_its_runs(
+        fixture, _declared_under_an_earlier_predicate(fixture, fixture.campaign.run_ids[0], with_levers=True)
+    )
     assert campaign.declared_design is not None
     hand_edited = campaign.declared_design.model_copy(update={"control": "c" * 64})
 

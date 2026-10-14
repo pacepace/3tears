@@ -255,6 +255,35 @@ that declared no design at all is an exploratory campaign, and that sentence say
 nothing, and the design its comparisons read was inferred from the runs, not declared
 ([when to declare one](choosing-a-design.md)). A guardrail is never exploratory.
 
+**A question counts only if it was asked before the evidence.** A question confirms nothing when it was declared
+after the campaign's first member run was created, since it may have been asked of results that already existed.
+Each question's own `asked_at` is read against the earliest member run's `created_at`
+(`preregistered_questions`), and every reader that scopes a reading by the questions (the comparison families, the
+reading scope, the verdict order, the disclosure) reads that, so they cannot disagree. A late question builds no
+family, its ids are listed as `reading_scope.post_hoc_questions` (and on the bundle as `post_hoc_questions`), and
+`question_declared` is true only when a question was asked in time. When every live question came late, the one
+disclosure says so and names them. To keep it from happening, a campaign's design is frozen once it holds a run:
+`campaign_update` refuses `declared_design` in any form, and refuses re-pointing or clearing the control (which may
+be named once, from a run, while none is declared); the name and description stay editable, and an amended design
+is a new campaign, declared before launching into it.
+
+## Excluded trials by cause
+
+A trial is left out of an arm's measures for one of three causes (`trial_exclusion`): `infra`, the harness faulted
+it; `truncated`, a judge reply was cut off at the output cap it was sent and was not bought again; and
+`judge_cannot_tell`, the judge could not score a capability dimension, which leaves the trial out of pass^k and the
+composite only. A candidate's own failure is never an exclusion: it fails, and is counted. The bundle's
+`exclusions` gives every arm its trial count, its usable count and its exclusions by cause, with the caps the
+truncated trials' judge calls were sent (`truncated_sent_caps`; `truncated_cap_unreported` when a client did not say,
+never filled from the run's asked settings). A cell's `n_infra_excluded` still counts every trial its measures left
+out, truncated ones included; `exclusions` says which cause each was.
+
+**Differential exclusion is flagged.** When one cause takes more than 10% of an arm's trials
+(`DIFFERENTIAL_EXCLUSION_SHARE`), `differential_exclusions` names the arm, the cause and its share, beside every
+other arm's share of the same cause under the same rig. Read it before any comparison of that arm: past the
+threshold the arms are not compared over the same trials, and the lost ones were lost for a reason that may differ
+by arm (a challenger whose long answers run its judge out of room, say). It is a flag, not a test.
+
 ## Methods
 
 Every test is two-sided at α = 0.05, and every interval is 95% unless a correction widens it. The case is the

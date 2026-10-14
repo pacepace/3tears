@@ -294,13 +294,14 @@ def test_a_judge_case_source_names_the_first_call_s_sent_settings() -> None:
     assert source.first_judge_sent_settings == EFFORT_HIGH
 
 
-# --- the engine's own constants ask in effort words --------------------------------------------------------------
+# --- the engine's own constants: the judge asks a reasoning budget, the others effort words -----------------------
 
 
-def test_the_judge_asks_for_high_effort_strictly_under_a_derived_cap() -> None:
+def test_the_judge_asks_for_a_reasoning_budget_strictly_under_a_derived_cap() -> None:
     assert JUDGE_REQUEST_SETTINGS == ClientRequestSettings(
-        max_tokens=10240, reasoning_effort="high", strict_output=True
+        max_tokens=10240, reasoning_max_tokens=8192, strict_output=True
     )
+    assert JUDGE_REQUEST_SETTINGS.reasoning_max_tokens == JUDGE_REASONING_HEADROOM_TOKENS
     assert JUDGE_MAX_TOKENS == JUDGE_REASONING_HEADROOM_TOKENS + JUDGE_ANSWER_BUDGET_TOKENS == 10240
 
 

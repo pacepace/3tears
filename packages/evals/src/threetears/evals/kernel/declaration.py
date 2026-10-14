@@ -36,6 +36,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from functools import cache
 from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
 
@@ -1662,6 +1663,50 @@ def refuse_an_undeclarable_design(
             )
 
 
+
+def preregistered_questions(design: CampaignDesign, first_run_at: str | None) -> list[Question]:
+    """The live questions asked no later than the campaign's first run: the ones a reading may confirm.
+
+    **A question asked after the evidence existed may have been asked of it**, so it confirms nothing: a reading it
+    names is a lead, as if no question had named it. The campaign's update path freezes a design once a run has joined
+    (:func:`~threetears.evals.analysis.campaigns.update_campaign`), and this is the backstop that needs no stored field
+    and no trust in that path: it reads each question's own ``asked_at``, which an edit keeps
+    (:func:`reconcile_question_edits`), against the earliest member run's ``created_at``, so a design written by an
+    older build, or edited after every run was removed and re-added, is still read by when its questions were asked.
+    Every reader that scopes a reading by the questions (the comparison families, the reading scope, the verdict
+    order, the exploratory disclosure) reads this, never :meth:`CampaignDesign.live_questions` alone, so none can
+    count a question another treats as post hoc.
+
+    Args:
+        design: The campaign's declaration.
+        first_run_at: The earliest ``created_at`` among the campaign's member runs (ISO-8601), or ``None`` when no
+            run's time is to hand: a campaign with no run yet, where nothing can have been asked after one.
+
+    Returns:
+        The live questions asked at or before ``first_run_at``, in declaration order; every live question when it is
+        ``None``.
+
+    Raises:
+        ValueError: ``first_run_at`` or a question's ``asked_at`` is not an ISO-8601 time with an offset, so which
+            came first cannot be said.
+    """
+    live = design.live_questions()
+    if first_run_at is None:
+        return live
+    first = _instant(first_run_at, "the campaign's first run")
+    return [question for question in live if _instant(question.asked_at, f"question {question.id}") <= first]
+
+
+def _instant(stamp: str, what: str) -> datetime:
+    """``stamp`` as an aware instant, refused by name when it is not one."""
+    try:
+        instant = datetime.fromisoformat(stamp)
+    except ValueError as unreadable:
+        raise ValueError(f"{what} is stamped {stamp!r}, which is not an ISO-8601 time") from unreadable
+    if instant.tzinfo is None:
+        raise ValueError(f"{what} is stamped {stamp!r}, with no offset, so it cannot be ordered against another time")
+    return instant
+
 __all__ = [
     "NO_TEMPLATE_REMEDY",
     "BarName",
@@ -1682,6 +1727,7 @@ __all__ = [
     "axis_in_question_scope",
     "exploratory_reading",
     "mechanism_measure_names",
+    "preregistered_questions",
     "reconcile_question_edits",
     "refuse_an_undeclarable_design",
     "resolve_bar_name",

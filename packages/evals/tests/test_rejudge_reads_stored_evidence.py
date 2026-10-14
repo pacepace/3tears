@@ -56,7 +56,7 @@ from threetears.evals.run.lifecycle import rejudge_result
 from threetears.evals.run.launch import build_judge_service
 from threetears.evals.run.runner import RunnerOptions, run_one_result
 from threetears.evals.kernel.identity import resolve_variant_identity
-from packages.evals.tests.factories import make_eval_run
+from packages.evals.tests.factories import declared, make_eval_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.off_loop import off_loop
 
@@ -196,7 +196,12 @@ async def _judged_and_stored(
         name="rejudge",
         intent="run a fair encounter",
         candidate_kind=_KIND,
-        rubric=rubric or [RubricDim(name=_DIM, description="the GM rules what the dice say", scale="ordinal")],
+        # Each dimension declares the judge this cell is asked by: its config where the test stores one, else the
+        # built-in prompt.
+        rubric=[
+            declared(dim, "configured" if dim.name in (configs or {}) else "builtin")
+            for dim in rubric or [RubricDim(name=_DIM, description="the GM rules what the dice say", scale="ordinal")]
+        ],
     )
     case = EvalTestCase(template_id=template.id, scope_id=_SCOPE, variation_params={"party": "two"})
     off_loop(host.storage.save_template, template)

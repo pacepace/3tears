@@ -460,11 +460,21 @@ _JUDGING_DISCLOSURE: dict[JudgingState, str | None] = {
 
 
 #: Why a result is left out of a measure. ``infra``: the harness faulted it (``classify_result``
-#: says ``INFRA_EXCLUDE``), which leaves it out of every measure. ``judge_cannot_tell``: the judge
-#: answered it could not score a dim, which leaves it out of that dim's measure and out of the
-#: measures needing every dim (pass^k, the composite), and nowhere else. Counted per cause wherever
+#: says ``INFRA_EXCLUDE``), which leaves it out of every measure. ``truncated``: excluded as ``infra`` is,
+#: and for one cause apart: a judge reply the provider cut off at its output cap (or stopped early for a cause
+#: it did not name), which was not re-bought (:func:`judge_truncated_dims`). Not the rig faulting but the judge's
+#: request running out of room, so a report names the cap it was sent rather than calling the trial faulted.
+#: ``judge_cannot_tell``: the judge answered it could not score a dim, which leaves it out of that dim's measure
+#: and out of the measures needing every dim (pass^k, the composite), and nowhere else. Counted per cause wherever
 #: exclusions are counted, so a shrunken ``n`` always says why.
-ExclusionCause = Literal["infra", "judge_cannot_tell"]
+ExclusionCause = Literal["infra", "truncated", "judge_cannot_tell"]
+
+#: The share of one arm's trials a single exclusion cause may take before the arm is flagged as excluded
+#: differentially (the bundle's ``differential_exclusions``): above it, the arms of a comparison are no longer read
+#: over comparable trials, since the lost ones are lost for a reason that may differ by arm (a challenger whose long
+#: answers run its judge out of room, say). A flag for a reader, not a test: whether the shares differ beyond chance
+#: across arms is a statistical question this does not answer.
+DIFFERENTIAL_EXCLUSION_SHARE: float = 0.10
 
 #: The ``outcome`` a projected score row carries when the judge could not tell on what the row
 #: measures — a dim it named, or the composite that needs every dim. Distinct from every
@@ -476,7 +486,9 @@ def trial_exclusion(result: EvalResult) -> ExclusionCause | None:
     """Why ``result`` is left out of the measures that need every rubric dim, or ``None``.
 
     The one classification pass^k, the composite and their counts read. A candidate failure is
-    never excluded: it fails, whatever the judge could or could not tell. pass^k narrows the
+    never excluded: it fails, whatever the judge could or could not tell, and whatever cut its judge off. An
+    excluded result is ``truncated`` when a judge reply ran out of room on it (:func:`judge_truncated_dims`) and the
+    harness recorded no fault of its own, else ``infra``. pass^k narrows the
     ``judge_cannot_tell`` arm further — a trial a failed check or a sub-bar dim has already decided
     counts as failed there (``scoring._already_failed``) — which needs the bar and so cannot live
     here; the composite keeps the exclusion, since a mean over fewer dims is not the composite.
@@ -489,10 +501,34 @@ def trial_exclusion(result: EvalResult) -> ExclusionCause | None:
     """
     outcome = classify_result(result)
     if outcome is ResultOutcome.INFRA_EXCLUDE:
-        return "infra"
+        # A harness fault outranks a cut-off judge reply: the cell's own evidence is in doubt, whatever the judge did.
+        if result.infra_error or not judge_truncated_dims(result):
+            return "infra"
+        return "truncated"
     if outcome is ResultOutcome.OK and not judged_on_every_dim(result):
         return "judge_cannot_tell"
     return None
+
+
+def judge_truncated_dims(result: EvalResult) -> list[str]:
+    """The dims whose judge reply ran out of room and left them unscored, by the read rule ``judge_cut_short`` carries.
+
+    An entry is read only for a dim that carries no score while ``judge_error`` is set
+    (:class:`~threetears.evals.schema.models.JudgeCutShort`): an older build that re-judged the dim wrote its score,
+    or cleared the error, without touching the field, so an entry beside either is stale. Only a reply out of room
+    counts (:data:`~threetears.evals.schema.models.OUT_OF_ROOM_STOP_REASONS`): one the provider filtered or failed is
+    recorded on the entry and stays a fault of the rig.
+
+    Args:
+        result: The result.
+
+    Returns:
+        The dims, sorted; empty when none, or when ``judge_error`` is unset.
+    """
+    if result.judge_error is None or not result.judge_cut_short:
+        return []
+    scored = {score.dim for score in result.judge_scores()}
+    return sorted(dim for dim, cut in result.judge_cut_short.items() if cut.out_of_room and dim not in scored)
 
 
 def judged_on_every_dim(result: EvalResult) -> bool:

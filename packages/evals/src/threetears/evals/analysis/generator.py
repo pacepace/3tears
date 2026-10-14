@@ -144,8 +144,10 @@ if TYPE_CHECKING:  # the model-provider PORT — a protocol, injected; never con
 
 log = get_logger(__name__)
 
-#: How hard the analysis generator reasons when the host names no effort: an effort word, sent natively
-#: (the judge's reasoning, :data:`~threetears.evals.run.judge.JUDGE_REASONING_EFFORT`, says why a word).
+#: How hard the analysis generator reasons when the host names no effort: an effort word, sent natively. The
+#: judge asks for a budget instead (:data:`~threetears.evals.run.judge.JUDGE_REASONING_HEADROOM_TOKENS`), which bounds
+#: its reasoning where a model takes one, because a judge reply cut off is a trial lost from every comparison it was
+#: in; the writer keeps the word.
 DEFAULT_ANALYSIS_GEN_REASONING_EFFORT: KnownReasoningEffort = "medium"
 
 #: The room the generator's output cap leaves for its private reasoning when the host sets none. Never

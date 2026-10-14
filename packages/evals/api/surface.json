@@ -378,7 +378,7 @@
     },
     "threetears.evals.schema.EvalResult": {
       "kind": "model",
-      "signature": "EvalResult(schema_minor: CoreSchemaMinor = 1, id: str = <lambda>(), doc_type: Literal['eval_result'] = 'eval_result', schema_version: CoreSchemaVersion = 15, scope_id: str, eval_run_id: str, test_case_id: str, model: str, k_iteration: int, candidate_kind: str | None = None, candidate_instance_id: str | None = None, subject_id: str | None = None, has_trace: bool = False, precondition_outcomes: list[PreconditionOutcome] = list(), goal_state_outcomes: list[GoalStateOutcome] = list(), rubric_scores: list[RubricScore] = list(), judge_reasoning: ModelProse = '', judge_model: str | None = None, transcript_score: RubricScore | None = None, outcome_score: RubricScore | None = None, judge_config_ids: Annotated[dict[DimName, str], AfterValidator(_recorded_judge_identities)] = dict(), judge_rescores: list[JudgeRescore] = list(), judge_repeats: list[JudgeRepeat] = list(), judge_seconds: list[SecondJudging] = list(), cost_usd: float | None, cost_roles: list[StoredUsageRole], usage: list[RoleUsage], metered_calls_refused: int | None = None, latency: LatencyMetrics | None = None, async_deliveries: list[AsyncDelivery] | None = None, kind_payload: VerbatimJsonObject | None = None, world_events: list[WorldEvent] | None = None, covariates: dict[str, str | float], phase_timings: dict[str, float], host_measures: dict[str, bool | float | str], variant_key: str, identity_version: int, termination: CellTermination, stop_cause: ConversationStopCause | None = None, turns_delivered: int | None = None, runner_error: str | None = None, judge_error: str | None = None, judge_cannot_tell: dict[DimName, ModelProse] = dict(), judge_cannot_tell_boundary: list[DimName] = list(), candidate_error: str | None = None, infra_error: str | None = None, scored_at: str = utc_now_iso())",
+      "signature": "EvalResult(schema_minor: CoreSchemaMinor = 1, id: str = <lambda>(), doc_type: Literal['eval_result'] = 'eval_result', schema_version: CoreSchemaVersion = 15, scope_id: str, eval_run_id: str, test_case_id: str, model: str, k_iteration: int, candidate_kind: str | None = None, candidate_instance_id: str | None = None, subject_id: str | None = None, has_trace: bool = False, precondition_outcomes: list[PreconditionOutcome] = list(), goal_state_outcomes: list[GoalStateOutcome] = list(), rubric_scores: list[RubricScore] = list(), judge_reasoning: ModelProse = '', judge_model: str | None = None, transcript_score: RubricScore | None = None, outcome_score: RubricScore | None = None, judge_config_ids: Annotated[dict[DimName, str], AfterValidator(_recorded_judge_identities)] = dict(), judge_rescores: list[JudgeRescore] = list(), judge_repeats: list[JudgeRepeat] = list(), judge_seconds: list[SecondJudging] = list(), cost_usd: float | None, cost_roles: list[StoredUsageRole], usage: list[RoleUsage], metered_calls_refused: int | None = None, latency: LatencyMetrics | None = None, async_deliveries: list[AsyncDelivery] | None = None, kind_payload: VerbatimJsonObject | None = None, world_events: list[WorldEvent] | None = None, covariates: dict[str, str | float], phase_timings: dict[str, float], host_measures: dict[str, bool | float | str], variant_key: str, identity_version: int, termination: CellTermination, stop_cause: ConversationStopCause | None = None, turns_delivered: int | None = None, runner_error: str | None = None, judge_error: str | None = None, judge_cannot_tell: dict[DimName, ModelProse] = dict(), judge_cannot_tell_boundary: list[DimName] = list(), judge_cut_short: dict[DimName, JudgeCutShort] = dict(), candidate_error: str | None = None, infra_error: str | None = None, scored_at: str = utc_now_iso())",
       "tier": "host-contract"
     },
     "threetears.evals.schema.EvalRun": {
@@ -546,10 +546,20 @@
       "signature": "JudgeConfigTombstone(schema_minor: DurableSchemaMinor = 1, id: str = <lambda>(), doc_type: Literal['judge_config_tombstone'] = 'judge_config_tombstone', schema_version: DurableSchemaVersion = 15, scope_id: str, rubric_dim_id: str, name: str, deleted_config_id: str, deleted_at: str = utc_now_iso())",
       "tier": "closure"
     },
+    "threetears.evals.schema.JudgeCutShort": {
+      "kind": "model",
+      "signature": "JudgeCutShort(stop_reason: StopReason, sent_settings: ClientRequestSettings | None, output_tokens: int | None, reasoning_tokens: int | None)",
+      "tier": "closure"
+    },
     "threetears.evals.schema.JudgedArtifact": {
       "kind": "enum",
       "signature": "values: `'transcript'`, `'document'`, `'unjudged'`",
       "tier": "host-contract"
+    },
+    "threetears.evals.schema.JudgeDeclaration": {
+      "kind": "literal",
+      "signature": "'builtin'` | `'configured'",
+      "tier": "closure"
     },
     "threetears.evals.schema.JudgeEvidence": {
       "kind": "model",
@@ -724,6 +734,11 @@
     "threetears.evals.schema.OrdinalScale": {
       "kind": "model",
       "signature": "OrdinalScale(kind: Literal['ordinal'] = 'ordinal', rank: int)",
+      "tier": "closure"
+    },
+    "threetears.evals.schema.OUT_OF_ROOM_STOP_REASONS": {
+      "kind": "constant (frozenset)",
+      "signature": "",
       "tier": "closure"
     },
     "threetears.evals.schema.OUT_OF_RUN_PURPOSES": {
@@ -923,7 +938,7 @@
     },
     "threetears.evals.schema.RubricDim": {
       "kind": "model",
-      "signature": "RubricDim(name: DimName, description: str, scale: RubricScale, scoring_guide: dict[str, str] = dict(), axis: RubricAxis = 'capability')",
+      "signature": "RubricDim(name: DimName, description: str, scale: RubricScale, scoring_guide: dict[str, str] = dict(), axis: RubricAxis = 'capability', judge: JudgeDeclaration | None = None)",
       "tier": "closure"
     },
     "threetears.evals.schema.RubricDimTombstone": {
@@ -1611,6 +1626,11 @@
       "signature": "DesignRefused(fault: str, *, remedy: str) -> None",
       "tier": "closure"
     },
+    "threetears.evals.kernel.DIFFERENTIAL_EXCLUSION_SHARE": {
+      "kind": "constant (float)",
+      "signature": "",
+      "tier": "closure"
+    },
     "threetears.evals.kernel.DriftState": {
       "kind": "literal",
       "signature": "'current'` | `'stale'` | `'customized'",
@@ -1704,6 +1724,11 @@
     "threetears.evals.kernel.EvidenceTier": {
       "kind": "literal",
       "signature": "'mechanical'` | `'calibrated'` | `'separation'` | `'undetermined'` | `'incidental'` | `'none'",
+      "tier": "closure"
+    },
+    "threetears.evals.kernel.ExclusionCause": {
+      "kind": "literal",
+      "signature": "'infra'` | `'truncated'` | `'judge_cannot_tell'",
       "tier": "closure"
     },
     "threetears.evals.kernel.existing_axis_values": {
@@ -1954,6 +1979,11 @@
     "threetears.evals.kernel.judge_trial_of": {
       "kind": "function",
       "signature": "judge_trial_of(kind_payload: object) -> JudgeTrial | None",
+      "tier": "closure"
+    },
+    "threetears.evals.kernel.judge_truncated_dims": {
+      "kind": "function",
+      "signature": "judge_truncated_dims(result: EvalResult) -> list[str]",
       "tier": "closure"
     },
     "threetears.evals.kernel.JudgeCase": {
@@ -2249,6 +2279,11 @@
     "threetears.evals.kernel.PredictionPoweredReading": {
       "kind": "model",
       "signature": "PredictionPoweredReading(n_labelled: int, n_labelled_cases: int, min_labelled: int, mean: float | None = None, rectifier: float | None = None, sem: float | None = None, ci_low: float | None = None, ci_high: float | None = None, unavailable_reason: str | None = None)",
+      "tier": "closure"
+    },
+    "threetears.evals.kernel.preregistered_questions": {
+      "kind": "function",
+      "signature": "preregistered_questions(design: CampaignDesign, first_run_at: str | None) -> list[Question]",
       "tier": "closure"
     },
     "threetears.evals.kernel.production_replicating_cost": {
@@ -2689,6 +2724,11 @@
     "threetears.evals.kernel.TransferabilityClass": {
       "kind": "literal",
       "signature": "'mechanical'` | `'judge_mediated'` | `'scenario_bound'",
+      "tier": "closure"
+    },
+    "threetears.evals.kernel.trial_exclusion": {
+      "kind": "function",
+      "signature": "trial_exclusion(result: EvalResult) -> ExclusionCause | None",
       "tier": "closure"
     },
     "threetears.evals.kernel.TRUNCATED_ROUNDS_KEY": {
@@ -3653,7 +3693,7 @@
     },
     "threetears.evals.run.JudgeOutcome": {
       "kind": "dataclass",
-      "signature": "JudgeOutcome(score: RubricScore | None, config_id: str | None = None, error: str | None = None, usage: CallUsage | None = None, cannot_tell: str | None = None, account_refused: bool = False)",
+      "signature": "JudgeOutcome(score: RubricScore | None, config_id: str | None = None, error: str | None = None, usage: CallUsage | None = None, cannot_tell: str | None = None, account_refused: bool = False, cut_short: JudgeCutShort | None = None)",
       "tier": "closure"
     },
     "threetears.evals.run.JudgeRepeatEstimate": {
@@ -4283,7 +4323,7 @@
     },
     "threetears.evals.analysis.AnalysisContextBundle": {
       "kind": "model",
-      "signature": "AnalysisContextBundle(schema_version: int = 53, campaign_id: str, subject_id: str, subject_kind: str = '', behavior: str, template_id: str | None = None, scope_id: str, run_ids: list[str] = list(), unresolved_run_ids: list[str] = list(), archived_run_ids: list[str] = list(), model_versions: dict[str, str] = dict(), window: CampaignWindow | None = None, run_summaries: list[RunSummary] = list(), comparison: ComparisonSetsResult, frontier: FrontierResult, frontier_bar_withheld: str | None = None, telemetry: TelemetryRollup, coverage: list[LeverCoverageInput] = list(), scope_divergences: list[ScopeDivergence] = list(), whole_swings: list[WholeSwing] = list(), divergences_omitted: int = 0, divergences_tested: int = 0, divergences_untested: int = 0, declared_design: CampaignDesign | None = None, design: RealizedDesign = RealizedDesign(), incomplete_runs: dict[str, str] = dict(), short_runs: dict[str, str] = dict(), completeness_unknown_run_ids: list[str] = list(), short_cells: list[ShortCell] = list(), cost_unmeasured_cells: list[CellCoordinate] = list(), cost_unmeasured: str | None = None, all_failed_cells: list[CellCoordinate] = list(), all_failed: str | None = None, latency_contended_cells: list[CellCoordinate] = list(), latency_contended: str | None = None, held_fixed_reading: HeldFixedReading = HeldFixedReading(), judge_agreement: JudgeAgreement = JudgeAgreement(), judge_self_agreement: JudgeSelfAgreement = JudgeSelfAgreement(), judge_evidence_tiers: list[JudgeEvidenceTier] = list(), inter_judge_agreement: InterJudgeAgreement = InterJudgeAgreement(), judge_drift: JudgeDrift = JudgeDrift(), judge_change: JudgeChange = JudgeChange(), goal_check_proofs: list[GoalCheckProofReading] = list(), multiple_comparisons: MultipleComparisons = MultipleComparisons(), guardrails: GuardrailReadings = GuardrailReadings(), run_margins: dict[str, float] = dict(), launch_declarations: list[str] = list(), run_margins_withheld: str | None = None, reading_scope: ReadingScope = ReadingScope(), verdict_order: VerdictOrder = VerdictOrder(), measurement_windows: list[MeasurementWindow] = list(), launch_disclosure: str | None = None, model_identity_disclosure: str | None = None, request_settings_disclosure: str | None = None, measurement_window_disclosure: str | None = None, apparatus_confounds: list[Confound] = list(), aliased_factors: list[AliasedFactors] = list(), factor_pairs: FactorPairScan | None = None, declared_crossing: DeclaredCrossing | None = None, arm_mechanisms: list[ArmMechanismReading] = list(), arm_served_models: list[ArmServedModel] = list(), arm_production_footings: dict[str, PooledProductionFooting] = dict(), cell_model_version: int = 13, host_declarations_digest: str, cells: list[Cell] = list(), variant_index: list[VariantIndexEntry] = list(), refused_merges: list[RefusedMerge] = list(), refused_merges_omitted: int = 0, next_experiments: list[NextExperiment] = list(), next_experiments_omitted: int = 0, subject_key_instabilities: list[SubjectKeyInstability] = list(), measure_catalog: dict[str, MetricDescriptor] = dict(), judged_measures: list[JudgedMeasure] = list(), bar_adjudications: list[BarAdjudication] = list(), cell_measures: list[CellFacts] = list(), time_axis: TimeAxis | None = None, time_axis_withheld: str | None = None, confound_catalog: dict[str, str] = dict(), prior_insights: list[EvalInsight] = list(), prior_insights_omitted: int = 0, retracted_insights: dict[str, str] = dict())",
+      "signature": "AnalysisContextBundle(schema_version: int = 54, campaign_id: str, subject_id: str, subject_kind: str = '', behavior: str, template_id: str | None = None, scope_id: str, run_ids: list[str] = list(), unresolved_run_ids: list[str] = list(), archived_run_ids: list[str] = list(), model_versions: dict[str, str] = dict(), window: CampaignWindow | None = None, run_summaries: list[RunSummary] = list(), comparison: ComparisonSetsResult, frontier: FrontierResult, frontier_bar_withheld: str | None = None, telemetry: TelemetryRollup, coverage: list[LeverCoverageInput] = list(), scope_divergences: list[ScopeDivergence] = list(), whole_swings: list[WholeSwing] = list(), divergences_omitted: int = 0, divergences_tested: int = 0, divergences_untested: int = 0, declared_design: CampaignDesign | None = None, design: RealizedDesign = RealizedDesign(), incomplete_runs: dict[str, str] = dict(), short_runs: dict[str, str] = dict(), completeness_unknown_run_ids: list[str] = list(), short_cells: list[ShortCell] = list(), cost_unmeasured_cells: list[CellCoordinate] = list(), cost_unmeasured: str | None = None, all_failed_cells: list[CellCoordinate] = list(), all_failed: str | None = None, latency_contended_cells: list[CellCoordinate] = list(), latency_contended: str | None = None, held_fixed_reading: HeldFixedReading = HeldFixedReading(), judge_agreement: JudgeAgreement = JudgeAgreement(), judge_self_agreement: JudgeSelfAgreement = JudgeSelfAgreement(), judge_evidence_tiers: list[JudgeEvidenceTier] = list(), inter_judge_agreement: InterJudgeAgreement = InterJudgeAgreement(), judge_drift: JudgeDrift = JudgeDrift(), judge_change: JudgeChange = JudgeChange(), goal_check_proofs: list[GoalCheckProofReading] = list(), multiple_comparisons: MultipleComparisons = MultipleComparisons(), guardrails: GuardrailReadings = GuardrailReadings(), run_margins: dict[str, float] = dict(), launch_declarations: list[str] = list(), run_margins_withheld: str | None = None, reading_scope: ReadingScope = ReadingScope(), exclusions: list[ArmExclusions] = list(), differential_exclusions: list[DifferentialExclusion] = list(), verdict_order: VerdictOrder = VerdictOrder(), measurement_windows: list[MeasurementWindow] = list(), launch_disclosure: str | None = None, model_identity_disclosure: str | None = None, request_settings_disclosure: str | None = None, measurement_window_disclosure: str | None = None, apparatus_confounds: list[Confound] = list(), aliased_factors: list[AliasedFactors] = list(), factor_pairs: FactorPairScan | None = None, declared_crossing: DeclaredCrossing | None = None, arm_mechanisms: list[ArmMechanismReading] = list(), arm_served_models: list[ArmServedModel] = list(), arm_production_footings: dict[str, PooledProductionFooting] = dict(), cell_model_version: int = 13, host_declarations_digest: str, cells: list[Cell] = list(), variant_index: list[VariantIndexEntry] = list(), refused_merges: list[RefusedMerge] = list(), refused_merges_omitted: int = 0, next_experiments: list[NextExperiment] = list(), next_experiments_omitted: int = 0, subject_key_instabilities: list[SubjectKeyInstability] = list(), measure_catalog: dict[str, MetricDescriptor] = dict(), judged_measures: list[JudgedMeasure] = list(), bar_adjudications: list[BarAdjudication] = list(), cell_measures: list[CellFacts] = list(), time_axis: TimeAxis | None = None, time_axis_withheld: str | None = None, confound_catalog: dict[str, str] = dict(), prior_insights: list[EvalInsight] = list(), prior_insights_omitted: int = 0, retracted_insights: dict[str, str] = dict())",
       "tier": "host-contract"
     },
     "threetears.evals.analysis.AnalysisGenerationEstimate": {
@@ -4294,6 +4334,11 @@
     "threetears.evals.analysis.AnalysisStore": {
       "kind": "protocol",
       "signature": "AnalysisStore{analysis_archived(self, analysis_id: str, scope_id: str, /) -> bool | None; delete_analysis(self, analysis_id: str, scope_id: str, /) -> bool; delete_insight(self, insight_id: str, scope_id: str, /) -> bool; list_analyses_by_campaign(self, campaign_id: str, scope_id: str, /) -> list[EvalAnalysis]; list_analysis_attempts_by_campaign(self, campaign_id: str, scope_id: str, /) -> list[EvalAnalysisAttempt]; load_analysis(self, analysis_id: str, scope_id: str, /) -> EvalAnalysis | None; load_campaign(self, campaign_id: str, scope_id: str, /) -> EvalCampaign | None; load_case_strata(self, test_case_ids: Sequence[str], scope_id: str, /) -> list[EvalCaseStratum]; load_eval_run(self, run_id: str, scope_id: str, /) -> EvalRun | None; load_eval_runs(self, run_ids: Sequence[str], scope_id: str, /, *, elide_payload: frozenset[str]) -> list[EvalRun]; load_job_record(self, model: type[R], record_id: str, scope_id: str, /) -> tuple[R | None, str | None]; load_template(self, template_id: str, scope_id: str, /) -> EvalTemplate | None; load_test_cases_by_ids(self, test_case_ids: list[str], scope_id: str, /) -> list[EvalTestCase]; query_calibration_ratings(self, scope_id: str, /, *, run_id: str | None = None) -> list[CalibrationRating]; query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]; query_insights(self, scope_id: str, /, *, subject_id: str | None = None, source_campaign_id: str | None = None) -> list[EvalInsight]; query_judge_profiles(self, scope_id: str, /) -> list[EvalJudgeProfile]; query_test_cases(self, scope_id: str, /, *, template_id: str | None = None) -> list[EvalTestCase]; save_analysis(self, analysis: EvalAnalysis, /) -> None; save_insight(self, insight: EvalInsight, /) -> None; save_job_record(self, document: dict[str, Any], /, *, if_match: str | None, create_only: bool = False) -> None; save_test_case(self, test_case: EvalTestCase, /) -> None}",
+      "tier": "closure"
+    },
+    "threetears.evals.analysis.ArmExclusions": {
+      "kind": "model",
+      "signature": "ArmExclusions(variant_key: str, apparatus_class_id: str, n_trials: int, n_usable: int, by_cause: dict[ExclusionCause, int] = dict(), truncated_sent_caps: list[int] = list(), truncated_cap_unreported: bool = False)",
       "tier": "closure"
     },
     "threetears.evals.analysis.ArmLevel": {
@@ -4614,6 +4659,11 @@
     "threetears.evals.analysis.difference_was_declared_at_launch": {
       "kind": "function",
       "signature": "difference_was_declared_at_launch(origins: Iterable[str | None]) -> bool",
+      "tier": "closure"
+    },
+    "threetears.evals.analysis.DifferentialExclusion": {
+      "kind": "model",
+      "signature": "DifferentialExclusion(variant_key: str, apparatus_class_id: str, cause: ExclusionCause, n_excluded: int, n_trials: int, share: float, threshold: float, other_arms: dict[str, float] = dict())",
       "tier": "closure"
     },
     "threetears.evals.analysis.DimensionAgreement": {
@@ -5348,7 +5398,7 @@
     },
     "threetears.evals.analysis.ReadingScope": {
       "kind": "model",
-      "signature": "ReadingScope(questions_declared: bool = False, exploratory_measures: list[str] = list(), exploratory_dimensions: list[str] = list(), disclosure: str | None = None)",
+      "signature": "ReadingScope(questions_declared: bool = False, post_hoc_questions: list[str] = list(), exploratory_measures: list[str] = list(), exploratory_dimensions: list[str] = list(), disclosure: str | None = None)",
       "tier": "closure"
     },
     "threetears.evals.analysis.RealizedDesign": {

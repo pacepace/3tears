@@ -150,6 +150,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`JobRefusal`** · model · The engine refusal a job ended on, as data: its kind, and the status that error carries.
 - **`JudgeConfig`** · model · Versioned judge configuration for one rubric dimension.
 - **`JudgeConfigTombstone`** · model · The record that a judge config slot was deleted, so a seed never writes it back.
+- **`JudgeCutShort`** · model · A judge reply the provider reported cut short, with the cap the call was sent: why a dim carries no score.
 - **`JudgedArtifact`** · *host contract* · enum · What a judge reads of a kind's output — the kind's declaration, which picks the judged axes.
   <br>values: `'transcript'`, `'document'`, `'unjudged'`
 - **`JudgeEvidence`** · model · Everything a judge reads about one cell's candidate, rendered by the kind that ran it.
@@ -242,6 +243,8 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`'recorded'` | `'derived'`
 - **`JudgeAttributionState`** · literal · What a run can say about which model scored each dim.
   <br>`'recorded'` | `'derived'` | `'absent'`
+- **`JudgeDeclaration`** · literal · Which judge scores a rubric dimension, as its author declared it (core v15.1).
+  <br>`'builtin'` | `'configured'`
 - **`JudgeTemperature`** · type alias · The temperature a judge call was actually sent at: a number, or `MODEL_DEFAULT_TEMPERATURE`.
   <br>`float | Literal['model_default']`
 - **`KnownCellTimeoutOrigin`** · *host contract* · literal · A value of `CellTimeoutOrigin` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
@@ -354,6 +357,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 'model_default'`
 - **`MODEL_ROLE_ORIGINS`** · *host contract* · constant (tuple) · The values of `ModelRoleOrigin` this build knows, in the order its readers list them.
 - **`NON_TERMINAL_RUN_STATUSES`** · constant (frozenset) · Statuses a run can still leave under its own power — it is either queued or executing, and something in-process is expected to write its terminal status.
+- **`OUT_OF_ROOM_STOP_REASONS`** · constant (frozenset) · The stop reasons that say a judge reply ran out of room: the output cap (`max_tokens`), or output that stopped early for a cause the provider did not name (`truncated`).
 - **`OUT_OF_RUN_PURPOSES`** · *host contract* · constant (tuple) · The values of `OutOfRunPurpose` this build knows, in the order its readers list them.
 - **`OUTCOME_DIM_ID`** · constant (str) · Reserved `rubric_dim_id` for the dual-score outcome axis.
   <br>`= '__outcome__'`
@@ -452,6 +456,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`judge_profile_id(rubric_dim: str, scale: str, judge_model: str, judge_config_id: str | None, judge_temperature: JudgeTemperature, criterion_digest: str, *, judge_sent_settings: ClientRequestSettings | None) -> str`
 - **`judge_trial_of`** · function · The judge trial a result's `kind_payload` carries, or `None` when it carries none.
   <br>`judge_trial_of(kind_payload: object) -> JudgeTrial | None`
+- **`judge_truncated_dims`** · function · The dims whose judge reply ran out of room and left them unscored, by the read rule `judge_cut_short` carries.
+  <br>`judge_truncated_dims(result: EvalResult) -> list[str]`
 - **`lease_lapsed`** · function · Whether a record's lease has lapsed at `now` — or it has none, which no process can be renewing.
   <br>`lease_lapsed(record: LeasedRecord, now: datetime) -> bool`
 - **`list_metrics`** · function · List every measure a host can describe, optionally filtered by family and/or scope.
@@ -462,6 +468,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`percentile(sorted_values: list[float], pct: float) -> float`
 - **`plan_variation_calls`** · function · The one call each of `template`'s `llm` axes makes to generate `n_variations` values, built before any is made.
   <br>`plan_variation_calls(template: EvalTemplate, n_variations: int, existing: Sequence[EvalTestCase]) -> dict[str, PlannedCall]`
+- **`preregistered_questions`** · function · The live questions asked no later than the campaign's first run: the ones a reading may confirm.
+  <br>`preregistered_questions(design: CampaignDesign, first_run_at: str | None) -> list[Question]`
 - **`production_replicating_cost`** · function · Observed cost of the roles a production deployment would also pay for.
   <br>`production_replicating_cost(usage: list[RoleUsage], *, substituted_deliveries: int) -> float | None`
 - **`program_cost`** · function · Cost of every role, i.e. what the eval program spent to produce this result.
@@ -510,6 +518,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`tier_of(calibration: TierCriterion, separation: TierCriterion) -> JudgedEvidenceTier`
 - **`timed_out_detail`** · function · Why a job's work was stopped by its time budget, in a poll's words — one wording for every job kind.
   <br>`timed_out_detail(timed_out: EvalJobTimeout) -> str`
+- **`trial_exclusion`** · function · Why `result` is left out of the measures that need every rubric dim, or `None`.
+  <br>`trial_exclusion(result: EvalResult) -> ExclusionCause | None`
 - **`weakest_judged_tier`** · function · What several judged readings can bear together: the weakest of them (see `JUDGED_TIERS_WEAKEST_FIRST`).
   <br>`weakest_judged_tier(tiers: list[JudgedEvidenceTier]) -> JudgedEvidenceTier`
 - **`withhold_failure_detail`** · *host contract* · function · Describe a failure by its class and nothing else — the safe default.
@@ -716,6 +726,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`'current'` | `'stale'` | `'customized'`
 - **`EvidenceTier`** · literal · What a finding's verdict stands on, as code reads it off the finding's resolved evidence rows — never chosen by the report writer: code assigns the tier.
   <br>`'mechanical'` | `'calibrated'` | `'separation'` | `'undetermined'` | `'incidental'` | `'none'`
+- **`ExclusionCause`** · literal · Why a result is left out of a measure.
+  <br>`'infra'` | `'truncated'` | `'judge_cannot_tell'`
 - **`GradedBy`** · literal · Who produced a family's numbers.
   <br>`'code'` | `'judge'`
 - **`GuardrailDecision`** · literal · What a guardrail came to for one arm against the control, read off the interval on the difference against the guardrail's margin (`interval_clears`, three-valued).
@@ -787,6 +799,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`= 60.0`
 - **`DEFAULT_TEMPERATURE_REPEATS`** · constant (int) · How many times each dim is judged at each setting when the caller names no number.
   <br>`= 5`
+- **`DIFFERENTIAL_EXCLUSION_SHARE`** · constant (float) · The share of one arm's trials a single exclusion cause may take before the arm is flagged as excluded differentially (the bundle's `differential_exclusions`): above it, the arms of a comparison are no longer read over comparable trials, since the lost ones are lost for a reason that may differ by arm (a challenger whose long answers run its judge out of room, say).
+  <br>`= 0.1`
 - **`DROPPED_TOOL_CALLS_KEY`** · constant (str) · Covariate key: how many tool calls the candidate emitted that the LLM client dropped before dispatch (a `dropped_tool_calls` list on each turn record the kind dumps into the trace).
   <br>`= 'dropped_tool_calls'`
 - **`DUAL_AXIS_FAMILY`** · constant (str) · The two reserved judge axes every judged run is scored on.
@@ -1346,7 +1360,7 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`= 4`
 - **`JUDGE_CALL_ATTEMPTS`** · constant (int) · Calls one judge dimension can make: the first, plus its parse retries.
   <br>`= 2`
-- **`JUDGE_MAX_TOKENS`** · constant (int) · The eval judge's output cap: the reasoning headroom plus the answer budget, DERIVED rather than chosen, so it always leaves room to think and then answer.
+- **`JUDGE_MAX_TOKENS`** · constant (int) · The eval judge's output cap: the reply schema's answer budget plus the declared reasoning headroom, DERIVED rather than chosen, so it always leaves room to think and then answer.
   <br>`= 10240`
 - **`JUDGE_REPEAT_ACTION`** · constant (str) · The name a repeat's job record (`EvalActionJob`) carries as its `action`.
   <br>`= 'judge_repeat'`
@@ -1578,6 +1592,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`AnalysisContextBundle`** · *host contract* · model · The closed context bundle a generation prompt runs over.
 - **`AnalysisGenerationEstimate`** · model · What a generation would be priced at before it starts, against the cap it would be held to.
 - **`AnalysisStore`** · protocol · The storage calls the analysis service makes — its own, plus the bundle assembly's it hands the store to.
+- **`ArmExclusions`** · model · How many of one arm's trials were left out of its measures, and why: the per-arm count by cause.
 - **`ArmLevel`** · model · One coordinate of an arm — which lever, and the level it carried.
 - **`ArmMeasurement`** · model · One measurement that placed at this arm, and the finding it was read from.
 - **`ArmMechanismReading`** · model · One arm's mean of one observed-mechanism covariate, or the statement that it was not measured.
@@ -1610,6 +1625,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`DeclaredCrossing`** · model · Every cell of a design that says which combinations of its levels it meant to run.
 - **`DeclaredLevelCoverage`** · model · Whether one level the campaign DECLARED for an axis was run — the declaration's delta, by name.
 - **`DesignArm`** · model · One arm of the campaign, the runs that measured it, and what it moved off the control.
+- **`DifferentialExclusion`** · model · One arm losing more than the threshold share of its trials to one cause: the differential-exclusion flag.
 - **`DimensionAgreement`** · model · How one judge's scores on one dimension agreed with people's ratings of the same results.
 - **`DimensionReading`** · model · A dimension the judge scored that no label speaks to — reported, never compared.
 - **`DimensionSummary`** · model · One judged rubric dimension over a run's results.
@@ -2781,7 +2797,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `schema_version` | `int` | `53` | Bundle-shape version, for future evolution + fingerprint clarity. |
+| `schema_version` | `int` | `54` | Bundle-shape version, for future evolution + fingerprint clarity. |
 | `campaign_id` | `str` | required | The campaign this bundle summarises. |
 | `subject_id` | `str` | required | The analysed subject's stable id. |
 | `subject_kind` | `str` | `''` | Discriminator; data, never a code branch. |
@@ -2829,7 +2845,9 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `run_margins` | `dict[str, float]` | `{}` | Margins on core rate measures (`accuracy`) that every member run declared alike at launch (`EvalRun.declared_margins`), by measure. |
 | `launch_declarations` | `list[str]` | `[]` | One sentence per host measure that is read here otherwise than the reading host now declares it. |
 | `run_margins_withheld` | `str \| None` | `None` | Why a margin some member runs declared on a core rate measure is read on none of its comparisons: the runs do not all declare it, or declare different ones, and a contrast between two arms read against a margin only one of them chose would be read against a margin nobody chose for the pair. |
-| `reading_scope` | `ReadingScope` | `ReadingScope(questions_declared=False, exploratory_measures=[], exploratory_dimensions=[], disclosure=None)` | Which readings no declared question asked about: exploratory, reportable as leads and never as confirmed answers. |
+| `reading_scope` | `ReadingScope` | `ReadingScope(questions_declared=False, post_hoc_questions=[], exploratory_measures=[], exploratory_dimensions=[], disclosure=None)` | Which readings no declared question asked about: exploratory, reportable as leads and never as confirmed answers. |
+| `exclusions` | `list[ArmExclusions]` | `[]` | Per arm (cell), in coordinate order: how many of its trials were left out of its measures, by cause — `infra` (the harness faulted it), `truncated` (a judge reply cut off at the cap it was sent, named in `truncated_sent_caps`), `judge_cannot_tell` — so a shrunken n says why, arm by arm. |
+| `differential_exclusions` | `list[DifferentialExclusion]` | `[]` | Every (arm, cause) where one cause took more than DIFFERENTIAL_EXCLUSION_SHARE (10%) of the arm's trials, with every other arm's share of the same cause beside it. |
 | `verdict_order` | `VerdictOrder` | `VerdictOrder(merit_priority=[], tiers=[], unranked_bar_measure_ids=[], questions=[])` | The order verdicts are read in, as declared: the bars on each axis of `merit_priority`, strongest first, the bars on no ranked axis, and for each live question the bars on the axes it names. |
 | `measurement_windows` | `list[MeasurementWindow]` | `[]` | Each resolved member run's wall-clock measurement span, derived from that run's own scored_at stamps. |
 | `launch_disclosure` | `str \| None` | `None` | Set when the member runs were NOT all started by one campaign launch — some came from different launches, or were started on their own. |
@@ -3121,7 +3139,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | Action | Class | Parameters | Description |
 |---|---|---|---|
 | `campaign_create` | `write` | `name`, `subject_id`, `behavior`, `description?`, `run_ids?`, `template_id?`, `declared_design?`, `control_from_run_id?`, `exploratory?` | Create a campaign over runs in the scope, for an analysis to read. |
-| `campaign_update` | `write` | `campaign_id`, `name?`, `description?`, `declared_design?`, `exploratory?`, `control_from_run_id?` | Rename or redescribe a campaign, or declare, amend or withdraw its design. |
+| `campaign_update` | `write` | `campaign_id`, `name?`, `description?`, `declared_design?`, `exploratory?`, `control_from_run_id?` | Rename or redescribe a campaign, or declare, amend or withdraw its design before its first run. |
 | `campaign_runs_add` | `write` | `campaign_id`, `run_ids` | Put runs in a campaign — runs launched after it was created, or measured on their own first. |
 | `campaign_runs_remove` | `write` | `campaign_id`, `run_ids` | Take runs out of a campaign; the runs and their results stay, in any other campaign too. |
 | `analysis_generate` | `spend`, job | `campaign_id`, `model?` | Generate a campaign's analysis with a paid model call, as a job to poll. |

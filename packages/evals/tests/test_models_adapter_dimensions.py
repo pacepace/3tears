@@ -125,15 +125,25 @@ async def test_what_the_adapter_reads_off_a_full_reply_is_pinned(net: ProviderTr
     )
 
 
-#: What a judge built from ``JUDGE_REQUEST_SETTINGS`` sends, per provider, when nothing is known of the model: its
-#: settings exactly, over adaptive thinking on Anthropic with no temperature beside it, and the temperature as asked
-#: elsewhere. The wire keys pin where each setting goes (OpenAI's cap as LangChain sends it, ``max_completion_tokens``).
-SENT_PINNED: dict[str, tuple[float | None, dict[str, Any]]] = {
-    "anthropic": (None, {"thinking": {"type": "adaptive"}, "output_config.effort": "high", "max_tokens": 10240}),
-    "openai": (DEFAULT_JUDGE_TEMPERATURE, {"reasoning_effort": "high", "max_completion_tokens": 10240}),
+#: What a judge sent the effort word in place of its budget reports: the budget's share of the cap, ``high``.
+_AS_A_WORD = ClientRequestSettings(max_tokens=10240, reasoning_effort="high", strict_output=True)
+
+#: What a judge built from ``JUDGE_REQUEST_SETTINGS`` sends, per provider, when nothing is known of the model: on
+#: Anthropic its settings exactly, the reasoning budget as a thinking budget with no temperature beside it; elsewhere
+#: the budget as the effort word its share of the cap reads as (``high``), and the temperature as asked. The wire keys
+#: pin where each setting goes (OpenAI's cap as LangChain sends it, ``max_completion_tokens``), and the third member
+#: is what the completion reports it was sent.
+SENT_PINNED: dict[str, tuple[float | None, dict[str, Any], ClientRequestSettings]] = {
+    "anthropic": (
+        None,
+        {"thinking": {"type": "enabled", "budget_tokens": 8192}, "output_config.effort": {}, "max_tokens": 10240},
+        JUDGE_REQUEST_SETTINGS,
+    ),
+    "openai": (DEFAULT_JUDGE_TEMPERATURE, {"reasoning_effort": "high", "max_completion_tokens": 10240}, _AS_A_WORD),
     "openrouter": (
         DEFAULT_JUDGE_TEMPERATURE,
         {"reasoning": {"effort": "high"}, "provider.require_parameters": True, "max_tokens": 10240},
+        _AS_A_WORD,
     ),
 }
 
@@ -154,16 +164,16 @@ async def test_what_a_judge_is_sent_is_pinned_per_provider(net: ProviderTranspor
         model=_MODELS[provider],
         temperature=DEFAULT_JUDGE_TEMPERATURE,
         max_tokens=JUDGE_REQUEST_SETTINGS.max_tokens,
-        reasoning_effort=JUDGE_REQUEST_SETTINGS.reasoning_effort,
+        reasoning_max_tokens=JUDGE_REQUEST_SETTINGS.reasoning_max_tokens,
     )
     directive = {
         "type": "json_schema",
         "json_schema": {"name": "judge_reply", "strict": True, "schema": {"type": "object", "properties": {}}},
     }
     result: Any = await client.generate(system="You grade.", user="Grade this.", response_format=directive)
-    temperature, wire = SENT_PINNED[provider]
+    temperature, wire, sent = SENT_PINNED[provider]
     body = net.last(HOSTS[provider])
     assert {path: _at(body, path) for path in wire} == wire
     assert result.temperature == temperature and body.get("temperature") == temperature
-    assert result.sent_settings == JUDGE_REQUEST_SETTINGS
+    assert result.sent_settings == sent
     assert isinstance(result.sent_settings, ClientRequestSettings)

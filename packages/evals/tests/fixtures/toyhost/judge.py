@@ -60,6 +60,8 @@ def toyhost_rubric() -> list[RubricDim]:
                 "1": "no field matches the invoice",
                 "5": "every declared field matches the invoice exactly",
             },
+            # Scored by the engine's built-in prompt, as the toy host's seed declares it: no judge config is authored.
+            judge="builtin",
         )
     ]
 

@@ -480,7 +480,12 @@ def _two_dim_template() -> EvalTemplate:
         update={
             "rubric": [
                 *template.rubric,
-                RubricDim(name=_SECOND_DIM, description="the vendor is named as the invoice names it", scale="ordinal"),
+                RubricDim(
+                    name=_SECOND_DIM,
+                    description="the vendor is named as the invoice names it",
+                    scale="ordinal",
+                    judge="builtin",
+                ),
             ]
         }
     )

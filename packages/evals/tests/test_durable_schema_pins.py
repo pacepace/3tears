@@ -30,6 +30,7 @@ from pathlib import Path
 import pytest
 
 from packages.evals.tests.stored_models import doc_type_of, stored_models
+from packages.evals.tests.test_core_schema_pins import _keeps as keeps
 from packages.evals.tests.test_core_schema_pins import _minors_missing_the_sentence as minors_missing_the_sentence
 from packages.evals.tests.test_core_schema_pins import core_shape_digest
 from threetears.evals.schema import versioning
@@ -57,13 +58,13 @@ PINNED_DURABLE_SCHEMA_MINOR = 1
 
 #: Each durable type's validation JSON schema, normalised as the core pins normalise it, by ``doc_type``.
 DURABLE_SHAPE_DIGESTS: dict[str, str] = {
-    "calibration_rating": "5a1e2891f53f23258808cb21acd07e1ff7551656a1fa2862542b8e05f08fa973",
+    "calibration_rating": "d762a9dac94ca324d18c2addd366a2a7921c70cdb1223bf1aba92cf84f5138ab",
     "case_set": "73215bf96f3e1162628f0291eb019aab03a9f89342ed92b797acc6f7ab396593",
-    "eval_template": "f267c311333029ca4a58b3334393c7644b3c205c7f3f911ea9d7b25e64562e32",
+    "eval_template": "0d8284601f6631df29d23945b36054750b590b18ee9e6625f4ceaa8f96fc952e",
     "eval_test_case": "43f0234687b956e73f9c858fecb19c5e3e78b09fef6c880dec8a9b78bad9c6b8",
     "judge_config": "a81b6a373d7e9b247c2f20709de345de821d0c412d83dbacd2c44fdc5792f348",
     "judge_config_tombstone": "cdb415348bffd7b1b997639da367567c2a84c84c9a3a69f5df6a8c616dcaad93",
-    "rubric_dim": "cafe6253eb3b788bdf33680491c2b09ecbd733a60c85bd3e1d0012cb50dae26e",
+    "rubric_dim": "b419d4b700256649458dc8c7b8ad646d6526bb358144e925312d79e71c19d3f1",
     "rubric_dim_tombstone": "c9a4dc812590a5e339c04c4a577d4267549aa944cf837dce4e3e156815ed2801",
 }
 
@@ -256,7 +257,9 @@ def test_every_frozen_durable_document_reads_under_this_build(path: Path) -> Non
     if (document["schema_version"], document.get("schema_minor", 0)) == (DURABLE_SCHEMA_VERSION, DURABLE_SCHEMA_MINOR):
         assert read.to_dict() == document, "a document at the current version reads back whole"
     else:
+        # A later minor's fields are written at their defaults, at any depth (a template's dims gained ``judge``);
+        # every value the document stored is kept as it was.
         rewritten = read.to_dict()
-        assert {key: rewritten[key] for key in document if key != "schema_minor"} == {
-            key: value for key, value in document.items() if key != "schema_minor"
-        }, "a document at an older minor reads back with every stored value as it was"
+        assert keeps({key: value for key, value in document.items() if key != "schema_minor"}, rewritten), (
+            "a document at an older minor reads back with every stored value as it was"
+        )

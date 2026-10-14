@@ -128,6 +128,7 @@ from threetears.evals.kernel.declaration import (
     Question,
     ResolvedControl,
     SweptAxis,
+    preregistered_questions,
     resolve_declared_control,
 )
 from threetears.evals.kernel.dsl import NOT_ESTABLISHED
@@ -318,7 +319,9 @@ from threetears.evals.kernel.remedies import (
     WRITER_REMEDY,
 )
 from threetears.evals.kernel.result_condition import (
+    DIFFERENTIAL_EXCLUSION_SHARE,
     CandidateFailureCause,
+    ExclusionCause,
     ResultCondition,
     ResultOutcome,
     candidate_failure_cause,
@@ -326,8 +329,10 @@ from threetears.evals.kernel.result_condition import (
     counted_goal_verdicts,
     counted_score,
     delivered_a_turn,
+    judge_truncated_dims,
     resolve_result_condition,
     JudgingState,
+    trial_exclusion,
 )
 from threetears.evals.kernel.scoring import (
     CellSummary,
@@ -492,6 +497,8 @@ __all__ = [
     "CampaignView",
     "CampaignWindow",
     "CandidateFailureCause",
+    "DIFFERENTIAL_EXCLUSION_SHARE",
+    "ExclusionCause",
     "CandidateKind",
     "CandidateKindDefect",
     "CandidateOutput",
@@ -687,6 +694,7 @@ __all__ = [
     "counted_goal_verdicts",
     "counted_score",
     "delivered_a_turn",
+    "judge_truncated_dims",
     "describe_and_log_failure",
     "extract_json",
     "extract_json_array",
@@ -708,8 +716,10 @@ __all__ = [
     "count_substituted_deliveries",
     "derive_variant_identity",
     "resolve_context_identity",
+    "preregistered_questions",
     "resolve_declared_control",
     "resolve_result_condition",
+    "trial_exclusion",
     "resolve_result_usage",
     "resolve_variant_identity",
     "save_document",

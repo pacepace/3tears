@@ -90,7 +90,7 @@ CORE_SHAPE_DIGESTS: dict[str, str] = {
     "eval_judge_temperature_check": "239334f02911c04f433c9a21d5c4d2f00df8b65790a85573eb6fe60035f9b8e4",
     "eval_launch": "17987aee847cc79dcdf4e902f06321f22b9b93cf7a0fbfb9a7eb6310fee0d472",
     "eval_out_of_run_spend": "85d9d128c2f8ecbd5c41adf6f2cde657ac52c672adb6241d968f8647ec79f1ae",
-    "eval_result": "554eb01ed0f1b6cd729471f52e8c0b744919240fe1858262b208f270d48040c3",
+    "eval_result": "b8579faea0145a40e7bd0953f3cc7d8827fc93d08bd70cc2c2b7af0ceb855fe7",
     "eval_run": "e44d44f881a2e9c91825dfd5def7fd5414a39979ef1c4c08aae4bda49e01f52e",
     "eval_second_judge_pass": "118f451f6e13ef3bab1c551419d3fb4daafc8603f5ca6484c42d2b0b8fd55590",
     "eval_sweep": "bb9ca087b2023cf639e413b53d70f224f72a0b6dbed690cda60876852ae13976",
@@ -176,7 +176,7 @@ FIXTURE_DIGESTS: dict[str, str] = {
     "v15/eval_judge_temperature_check.json": "4dab8c1462b5cd3dab1945624c73061677fe292f03c8fad2509dc96ef72b955b",
     "v15/eval_launch.json": "8fa9e3d0060c1f43a0717536c4a473d2cb981ba01170c277ecbe9ce8e1d97519",
     "v15/eval_out_of_run_spend.json": "0919885afaf82372b7f4bc900fb5965a7bc0e09c6d9504cbbae99633a3c79ab3",
-    "v15/eval_result.json": "492c0a747f2698068e66b2bb3779aa0b059921008bb6b1e1ee7815599a58a525",
+    "v15/eval_result.json": "4524e9cecdb45740fbf7f200c4fa21e0e87484af5d316344fa2faf254607b823",
     "v15/eval_run.json": "e90dbc59bb11c2fcdd21880e8892446070d49284cc76298a39d019cd472685fb",
     "v15/eval_second_judge_pass.json": "a3d1b663aa127e77e6056849a8b046e63d1ad5ab87f9791eef67fd5589d8de53",
     "v15/eval_sweep.json": "1ac1d31e40f730f47a8e8591de9f7f7f712f4c50d56322573e8a5c4e112ca4a3",
@@ -389,8 +389,29 @@ def test_every_frozen_core_document_reads_under_this_build(path: Path) -> None:
     read = model.from_dict(document)
 
     assert read.schema_version == CORE_SCHEMA_VERSION  # type: ignore[attr-defined]
-    if document["schema_version"] == CORE_SCHEMA_VERSION:
-        assert read.to_dict() == document, "a document at the current version reads back whole"
+    if document["schema_version"] != CORE_SCHEMA_VERSION:
+        return
+    written = read.to_dict()
+    if document.get("schema_minor", 0) == CORE_SCHEMA_MINOR:
+        assert written == document, "a document at the current version reads back whole"
+        return
+    # An older minor of this major: the write stamps this build's minor and adds each later minor's fields at their
+    # defaults, and keeps every value the document stored, at every depth.
+    assert written["schema_minor"] == CORE_SCHEMA_MINOR
+    assert _keeps({k: v for k, v in document.items() if k != "schema_minor"}, written), (
+        "a document at an older minor of the current major reads back with every stored value"
+    )
+
+
+def _keeps(stored: Any, written: Any) -> bool:
+    """Whether ``written`` holds every value ``stored`` holds, at every depth; it may hold more keys beside them."""
+    if isinstance(stored, dict):
+        return isinstance(written, dict) and all(
+            key in written and _keeps(value, written[key]) for key, value in stored.items()
+        )
+    if isinstance(stored, list):
+        return isinstance(written, list) and len(stored) == len(written) and all(map(_keeps, stored, written))
+    return bool(stored == written)
 
 
 @pytest.mark.parametrize("path", _fixture_files(), ids=lambda path: path.relative_to(FIXTURES).as_posix())

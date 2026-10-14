@@ -34,6 +34,7 @@ from threetears.evals.schema.models import (
     PASS_FAIL_SCORES,
     SCALES,
     ClientRequestSettings,
+    JudgeCutShort,
     JudgeTemperature,
     KnownReasoningEffort,
 )
@@ -70,7 +71,7 @@ _JUDGE_PARSE_RETRIES = 1
 #: by this (:func:`threetears.evals.analysis.reporter_kind.judge_phase_ceiling_s`).
 JUDGE_CALL_ATTEMPTS = _JUDGE_PARSE_RETRIES + 1
 
-#: How hard the eval judge reasons before it answers: an effort word, sent natively.
+#: How hard the eval judge reasons before it answers, as the effort word its reasoning budget reads as.
 #:
 #: **Asked for, not disabled — the classifier's remedy is the wrong one here.** The
 #: classifier asks for two words, reasoning buys it nothing, so it sends
@@ -78,21 +79,26 @@ JUDGE_CALL_ATTEMPTS = _JUDGE_PARSE_RETRIES + 1
 #: ``judge_service`` asks for one paragraph and one score), but the work behind the
 #: score is not. ``reporter.groundedness`` checks every claim in a memo against its
 #: evidence bundle, and that is what reasoning is for, so taking reasoning away would
-#: change the instrument, not just its cost. Disabling is also refused permanently by
-#: models whose reasoning is mandatory (``openai/gpt-5-mini`` answers HTTP 400), which
-#: would bar that whole class of models from judging.
+#: change the instrument, not just its cost. That holds for a pass/fail dimension as for a
+#: 1-5 one: a two-word answer can stand on as much checking as a number. Disabling is also
+#: refused permanently by models whose reasoning is mandatory (``openai/gpt-5-mini`` answers
+#: HTTP 400), which would bar that whole class of models from judging.
 #:
-#: **A word, not a token budget.** Current models take reasoning as an effort word: Claude's
-#: newest models take no thinking budget at all, only adaptive thinking and an effort, and
-#: OpenAI's reasoning series and OpenRouter take a word. So the judge asks ``high`` by name.
-#: A client serving a model that takes only a budget sends the closest budget it accepts, and
-#: reports what it sent (``RubricScore.judge_sent_settings``); nothing here converts one into
-#: the other.
+#: **Not what is sent.** The judge asks for its reasoning as a token budget
+#: (:data:`JUDGE_REASONING_HEADROOM_TOKENS`); this is the word that budget's share of the cap
+#: reads as (:data:`~threetears.evals.negotiation.BUDGET_SHARES`: 8192 of 10240 is 0.80, ``high``),
+#: which is what a model that takes words only is sent in its place, and what the docs and the
+#: analysis writer's settings call the judge's effort.
 JUDGE_REASONING_EFFORT: KnownReasoningEffort = "high"
 
-#: Room the judge's output cap leaves for its private reasoning at :data:`JUDGE_REASONING_EFFORT`.
-#: Never sent — the request carries the effort, not a budget — so it bounds nothing; it is what the
-#: cap is sized from.
+#: The judge's private reasoning, as a bound: the budget its request asks for, and the room its output cap leaves
+#: for it. **Sent**, as ``reasoning_max_tokens``: a word bounds no tokens, and a model that reads an effort word as
+#: licence to think on (the G2 GLM judge did) reasoned past the cap and was cut off with no answer written. A budget
+#: is a real bound wherever a model takes one (Anthropic's ``thinking.budget_tokens``); a model that takes effort
+#: words only is sent the word the budget's share of the cap reads as (:data:`JUDGE_REASONING_EFFORT`), byte for byte
+#: what it was sent when the judge asked by the word, and there the cap stays the only hard stop. A reply cut off
+#: anyway is excluded as ``truncated`` with the cap it was sent (:class:`~threetears.evals.schema.JudgeCutShort`),
+#: never re-bought.
 #:
 #: **The value is a judgement, not a measurement.** A calibration run lost
 #: ``reporter.groundedness`` and ``reporter.calibration`` on every case at the old flat
@@ -100,31 +106,31 @@ JUDGE_REASONING_EFFORT: KnownReasoningEffort = "high"
 #: two longest-reasoning dims wanted more than 4096 in total. It does not show how much
 #: more, because every one of those calls was stopped. Twice the cap they overran is a
 #: bound, not a prediction. Re-derive it from a run's reported ``reasoning_tokens``
-#: (a cut judge call now reports its reasoning share in its error) before moving it.
+#: (a cut judge call reports its reasoning share, on the result's ``judge_cut_short``) before moving it.
 JUDGE_REASONING_HEADROOM_TOKENS = 8192
 
-#: Output room kept for the judge's visible answer: the JSON object with its one
-#: reasoning paragraph and one score. That is a few hundred tokens, so this is
-#: headroom, and unused output tokens are not billed.
+#: Output room kept for the judge's visible answer: the reply schema the judge is held to
+#: (:func:`judge_reply_format`), one reasoning paragraph and one score per single-dimension
+#: call, whatever the scale. That is a few hundred tokens, so this is headroom, and unused
+#: output tokens are not billed.
 JUDGE_ANSWER_BUDGET_TOKENS = 2048
 
-#: The eval judge's output cap: the reasoning headroom plus the answer budget, DERIVED
-#: rather than chosen, so it always leaves room to think and then answer. The old flat 4096
-#: sat below what a reasoning judge spent. The cap is the sum by construction, so moving either
-#: part moves the cap with it.
+#: The eval judge's output cap: the reply schema's answer budget plus the declared reasoning headroom, DERIVED
+#: rather than chosen, so it always leaves room to think and then answer. The old flat 4096 sat below what a
+#: reasoning judge spent. The cap is the sum by construction, so moving either part moves the cap with it, and the
+#: reasoning budget sits a whole answer below it.
 #:
-#: **The cap is the only hard stop.** An effort word bounds nothing in tokens on any model,
-#: and a model that does not reason ignores it. A router's default routing may also drop a
-#: parameter its chosen provider does not support, so the judge's settings ask for strict
-#: routing (``ClientRequestSettings.strict_output``), which a host's client applies as its
-#: router's ``require_parameters``; a client that resends a strict call without enforcement
-#: reports ``strict_output=False`` in what it sent. When a judge still reaches the cap,
-#: :func:`run_judge_llm` reports the cut with its token counts and does not re-buy it.
+#: **The cap is the only hard stop on a model that takes no budget.** A router's default routing may also drop a
+#: parameter its chosen provider does not support, so the judge's settings ask for strict routing
+#: (``ClientRequestSettings.strict_output``), which a host's client applies as its router's ``require_parameters``;
+#: a client that resends a strict call without enforcement reports ``strict_output=False`` in what it sent. When a
+#: judge still reaches the cap, :func:`run_judge_llm` reports the cut with its stop reason, the settings the call was
+#: sent with and its token counts, and does not re-buy it.
 #:
-#: **What the effort changes.** Naming an effort turns reasoning ON for a model that
-#: reasons only when asked. The rule is the same for every eval judge (subject runs, reporter
-#: runs, and the per-dim ``JudgeConfig`` models alike), which is why these numbers live here and
-#: not at any one call site. A host's client builder applies them to its judge role.
+#: **What the budget changes.** Asking for reasoning turns it ON for a model that reasons only
+#: when asked. The rule is the same for every eval judge (subject runs, reporter runs, and the
+#: per-dim ``JudgeConfig`` models alike), which is why these numbers live here and not at any one
+#: call site. A host's client builder applies them to its judge role.
 JUDGE_MAX_TOKENS = JUDGE_REASONING_HEADROOM_TOKENS + JUDGE_ANSWER_BUDGET_TOKENS
 
 #: The judge role's request settings as ONE value: what the host's client builder applies to every
@@ -135,11 +141,13 @@ JUDGE_MAX_TOKENS = JUDGE_REASONING_HEADROOM_TOKENS + JUDGE_ANSWER_BUDGET_TOKENS
 #: ``judge_model``, so the stamp differs on either side of the move, and the ``judge_request_settings``
 #: apparatus dimension tells a campaign pooling runs from both sides that its judge may have moved. A run
 #: that carries no stamp reads as unrecorded. What each call was SENT with is the client's to report, on
-#: each score: a client may send the closest setting a model accepts.
+#: each score: a client sends the closest setting a model accepts
+#: (:func:`~threetears.evals.negotiation.closest_settings`), so a model that takes no budget is sent
+#: :data:`JUDGE_REASONING_EFFORT` in the budget's place and reports that.
 JUDGE_REQUEST_SETTINGS = ClientRequestSettings(
     max_tokens=JUDGE_MAX_TOKENS,
-    reasoning_effort=JUDGE_REASONING_EFFORT,
-    # The effort must bind, so only a provider honouring it may answer (#686).
+    reasoning_max_tokens=JUDGE_REASONING_HEADROOM_TOKENS,
+    # The budget must bind, so only a provider honouring it may answer (#686).
     strict_output=True,
 )
 
@@ -421,8 +429,12 @@ async def run_judge_llm(
         ``cost_usd`` is ``None`` when any attempt reported no price — the dim's dollars are then
         unknown, never the priced attempts' partial sum. A reply the
         provider cut short fails with an error naming that cause and its token
-        counts, after one call. A completion that carries no ``temperature`` (its type does not meet the
-        protocol, :func:`sent_temperature`) is not a failed reply but the host's defect: it raises
+        counts, after one call, and carries ``judge_cut_short``: the same facts as a
+        :class:`~threetears.evals.schema.JudgeCutShort` (its stop reason, the settings the call
+        was sent with, and its token counts), which the result records so a reader can count the
+        trial as lost to the judge's cap (``truncated``) rather than to a fault. A completion that
+        carries no ``temperature`` (its type does not meet the protocol, :func:`sent_temperature`) is
+        not a failed reply but the host's defect: it raises
         :class:`~threetears.evals.schema.completion.CompletionProtocolDefect`, naming the conformance check, after
         one call. A finished reply that will not parse — including one
         scoring a criterion with anything but a score on the scale — fails with
@@ -622,6 +634,15 @@ async def run_judge_llm(
                 "error": f"{label} reply was cut short by the provider and was not retried: {incomplete}",
                 "response_preview": (result.content or "")[:200],
                 "judge_usage": _cumulative_usage(),
+                # The cut as a fact, not only a sentence: the stop reason and the settings THIS attempt was sent with
+                # (its cap is the one the reply ran into; None when the client did not say), never the run's asked
+                # settings in their place.
+                "judge_cut_short": JudgeCutShort(
+                    stop_reason=result.stop_reason,
+                    sent_settings=sent,
+                    output_tokens=attempt_output,
+                    reasoning_tokens=getattr(result, "reasoning_tokens", None),
+                ),
             }
 
         # The temperature is read before the reply is. A completion whose type carries none is the host's defect, not

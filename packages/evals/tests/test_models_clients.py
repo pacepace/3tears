@@ -5,7 +5,7 @@ per role, model, temperature and reasoning setting, built on first use and kept,
 ``aclose`` releases nothing; every client of one factory reading the price catalogue once; a provider's key read
 from ``api_keys`` or its SDK's environment variable and refused by name at first use, never at construction; a
 role with no model, a role the engine does not have, and a role keyword the factory supplies itself refused by
-name; a judge built as a judged run records it asked (``JUDGE_REQUEST_SETTINGS``, an effort word) on every provider,
+name; a judge built as a judged run records it asked (``JUDGE_REQUEST_SETTINGS``, a reasoning budget) on every provider,
 and every other role a run records asked settings for (the simulator's) likewise; the
 boot-time price load that lets every client's ceiling answer; and ``aclose_all`` closing everything the factory
 built even when one close fails.
@@ -21,6 +21,7 @@ import pytest
 from threetears.evals import run as run_api
 from threetears.evals.providers import PROVIDER_KEY_VARIABLES, ModelsClientRefused, ModelsCompletion, models_clients
 from threetears.evals.run import JUDGE_REQUEST_SETTINGS
+from threetears.evals.run.judge import JUDGE_REASONING_EFFORT
 from threetears.evals.schema import EvalRun
 from threetears.models import DEFAULT_CHAT_MODEL
 
@@ -141,16 +142,17 @@ async def test_aclose_all_closes_what_the_factory_built(net: ProviderTransport) 
 async def test_a_judge_with_no_settings_of_its_own_is_built_from_judge_request_settings(
     net: ProviderTransport,
 ) -> None:
-    """What a judged run records it asked is what the judge asks: the output cap, and the effort word as Anthropic's."""
+    """What a judged run records it asked is what the judge asks: the output cap, and the budget as Anthropic's."""
     plan_reply(net, "anthropic")
     judge = _factory(net)("judge", None, temperature=0.0)
     assert judge.chat_model.bound.max_tokens == JUDGE_REQUEST_SETTINGS.max_tokens
     await _generate(judge)
     body = net.last(ANTHROPIC_HOST)
-    assert JUDGE_REQUEST_SETTINGS.reasoning_effort == "high" and JUDGE_REQUEST_SETTINGS.reasoning_max_tokens is None
+    assert JUDGE_REQUEST_SETTINGS.reasoning_max_tokens == 8192 and JUDGE_REQUEST_SETTINGS.reasoning_effort is None
     assert body["max_tokens"] == JUDGE_REQUEST_SETTINGS.max_tokens
-    assert body["output_config"] == {"effort": JUDGE_REQUEST_SETTINGS.reasoning_effort}
-    assert body["thinking"] == {"type": "adaptive"} and "temperature" not in body
+    assert body.get("output_config", {}).get("effort") is None
+    assert body["thinking"] == {"type": "enabled", "budget_tokens": JUDGE_REQUEST_SETTINGS.reasoning_max_tokens}
+    assert "temperature" not in body
 
 
 @pytest.mark.parametrize(
@@ -176,10 +178,15 @@ async def test_every_role_a_run_records_asked_settings_for_is_built_from_them(
     )
     await _generate(clients(role, None, temperature=0.0))
     body = net.last(ANTHROPIC_HOST)
-    assert asked.reasoning_effort is not None and asked.reasoning_max_tokens is None
     assert body["max_tokens"] == asked.max_tokens
-    assert body["output_config"] == {"effort": asked.reasoning_effort}
-    assert body["thinking"] == {"type": "adaptive"}
+    if asked.reasoning_max_tokens is not None:
+        # Asked by a budget (the judge's): sent as Anthropic's thinking budget, with no effort word beside it.
+        assert body["thinking"] == {"type": "enabled", "budget_tokens": asked.reasoning_max_tokens}
+        assert body.get("output_config", {}).get("effort") is None
+    else:
+        assert asked.reasoning_effort is not None
+        assert body["output_config"] == {"effort": asked.reasoning_effort}
+        assert body["thinking"] == {"type": "adaptive"}
 
 
 async def test_a_judge_s_own_settings_are_kept(net: ProviderTransport) -> None:
@@ -198,7 +205,7 @@ async def test_a_judge_s_own_settings_are_kept(net: ProviderTransport) -> None:
 
 
 def test_a_default_judge_on_openai_is_built_with_the_judge_s_effort_word(net: ProviderTransport) -> None:
-    """The judge asks by an effort word every provider takes, so a judge off Anthropic is built as the run asks."""
+    """OpenAI takes no budget, so a judge there is built with the word the budget's share of the cap reads as."""
     clients = models_clients(
         api_keys={"openai": KEYS["openai"]},
         defaults={"judge": "gpt-5-mini"},
@@ -206,7 +213,7 @@ def test_a_default_judge_on_openai_is_built_with_the_judge_s_effort_word(net: Pr
         judge={"provider": "openai", "base_url": net.base_url(OPENAI_HOST)},
     )
     bound = clients("judge", None).chat_model.bound
-    assert bound.reasoning_effort == JUDGE_REQUEST_SETTINGS.reasoning_effort
+    assert bound.reasoning_effort == JUDGE_REASONING_EFFORT == "high"
     assert bound.max_tokens == JUDGE_REQUEST_SETTINGS.max_tokens
 
 
@@ -217,7 +224,7 @@ def test_a_default_judge_on_openrouter_is_built_with_the_judge_s_effort_word(net
         prices=FakeCatalogue(),
         judge={"provider": "openrouter"},
     )
-    assert clients("judge", None).chat_model.bound.reasoning == {"effort": JUDGE_REQUEST_SETTINGS.reasoning_effort}
+    assert clients("judge", None).chat_model.bound.reasoning == {"effort": JUDGE_REASONING_EFFORT}
 
 
 def test_a_judge_s_explicit_settings_off_anthropic_are_kept(net: ProviderTransport) -> None:

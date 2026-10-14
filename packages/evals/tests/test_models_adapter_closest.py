@@ -64,6 +64,12 @@ JUDGE_DIRECTIVE: dict[str, Any] = {
     },
 }
 
+#: What a judge built from ``JUDGE_REQUEST_SETTINGS`` reports it sent a model that takes no reasoning budget (a router,
+#: OpenAI, an adaptive-only Anthropic model): the effort word its budget's share of the cap reads as, ``high``.
+_SENT_AS_A_WORD = ClientRequestSettings(
+    max_tokens=JUDGE_REQUEST_SETTINGS.max_tokens, reasoning_effort="high", strict_output=True
+)
+
 #: A model only the published layer knows, as ``claude-haiku-5-5`` is (no static registry entry).
 PUBLISHED_ONLY = "published-only-model"
 
@@ -152,7 +158,7 @@ async def test_an_openrouter_judge_whose_endpoints_take_no_temperature_is_served
     assert len(after) == 2 and all("temperature" not in body for body in after), "learned for the factory"
     for completion in (result, later, other):
         assert completion.temperature is None
-        assert completion.sent_settings == JUDGE_REQUEST_SETTINGS, "strict, effort high, the judge's cap"
+        assert completion.sent_settings == _SENT_AS_A_WORD, "strict, effort high for the budget, the judge's cap"
     logged = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and "refuses" in r.getMessage()]
     assert len(logged) == 1 and "refuses a temperature" in logged[0]
     assert "provider=openrouter model=openai/gpt-6-luna registry=unknown" in logged[0]
@@ -190,7 +196,7 @@ async def test_openrouter_drops_enforcement_only_when_the_request_without_a_temp
         assert unenforced["temperature"] == DEFAULT_JUDGE_TEMPERATURE, "put back: dropping it alone placed nothing"
         assert unenforced["provider"]["require_parameters"] is False
         assert unenforced["response_format"]["type"] == "json_schema", "the format still goes, unenforced"
-    unenforced_settings = JUDGE_REQUEST_SETTINGS.model_copy(update={"strict_output": False})
+    unenforced_settings = _SENT_AS_A_WORD.model_copy(update={"strict_output": False})
     assert result.sent_settings == later.sent_settings == unenforced_settings
     assert result.temperature == later.temperature == DEFAULT_JUDGE_TEMPERATURE
     assert not [r for r in caplog.records if "refuses" in r.getMessage()], "nothing proved, nothing learned or logged"
@@ -211,7 +217,7 @@ async def test_a_catalogue_listing_a_temperature_does_not_keep_it_from_going_fir
     refused, served = net.sent(OPENROUTER_HOST)
     assert refused["temperature"] == DEFAULT_JUDGE_TEMPERATURE
     assert "temperature" not in served and served["provider"]["require_parameters"] is True
-    assert result.temperature is None and result.sent_settings == JUDGE_REQUEST_SETTINGS
+    assert result.temperature is None and result.sent_settings == _SENT_AS_A_WORD
 
 
 async def test_the_catalogue_decides_nothing_until_this_factory_s_own_load_prices(net: ProviderTransport) -> None:
@@ -271,7 +277,7 @@ async def test_a_format_refusal_relayed_on_openrouter_is_resent_in_json_mode_nev
     assert refused["response_format"]["type"] == "json_schema" and refused["provider"]["require_parameters"] is True
     assert resent["response_format"] == {"type": "json_object"}
     assert resent["provider"]["require_parameters"] is False
-    assert result.sent_settings == JUDGE_REQUEST_SETTINGS.model_copy(update={"strict_output": False})
+    assert result.sent_settings == _SENT_AS_A_WORD.model_copy(update={"strict_output": False})
 
 
 async def test_an_openrouter_model_no_endpoint_of_which_takes_a_format_is_sent_none(net: ProviderTransport) -> None:
@@ -288,7 +294,7 @@ async def test_an_openrouter_model_no_endpoint_of_which_takes_a_format_is_sent_n
     result = await _judge(judge)
     (body,) = net.sent(OPENROUTER_HOST)
     assert "response_format" not in body and body["provider"]["require_parameters"] is False
-    assert result.sent_settings == JUDGE_REQUEST_SETTINGS.model_copy(update={"strict_output": False})
+    assert result.sent_settings == _SENT_AS_A_WORD.model_copy(update={"strict_output": False})
 
 
 async def test_a_404_on_a_call_that_does_not_require_every_parameter_is_raised(net: ProviderTransport) -> None:
@@ -464,13 +470,15 @@ async def test_a_model_with_no_static_entry_is_read_from_what_its_provider_publi
         model=PUBLISHED_ONLY,
         temperature=DEFAULT_JUDGE_TEMPERATURE,
         max_tokens=JUDGE_REQUEST_SETTINGS.max_tokens,
-        reasoning_effort="high",
+        reasoning_max_tokens=JUDGE_REQUEST_SETTINGS.reasoning_max_tokens,
     )
     result = await _judge(client)
     (body,) = net.sent(ANTHROPIC_HOST)
     assert "temperature" not in body, "published: no temperature, so none is sent and nothing is refused"
-    assert body["thinking"] == {"type": "adaptive"} and body["output_config"]["effort"] == "high"
-    assert result.temperature is None and result.sent_settings == JUDGE_REQUEST_SETTINGS
+    assert body["thinking"] == {"type": "adaptive"} and body["output_config"]["effort"] == "high", (
+        "published: no budget, so the judge's budget goes as the word its share reads as"
+    )
+    assert result.temperature is None and result.sent_settings == _SENT_AS_A_WORD
 
 
 async def test_a_refusal_that_contradicts_the_registry_wins_and_is_logged_as_its_error(

@@ -53,6 +53,7 @@ from threetears.evals.schema.models import (
     EvalTrace,
     GoalStateOutcome,
     JudgeConfig,
+    JudgeDeclaration,
     RubricDim,
     RubricScore,
     WorldSeed,
@@ -71,6 +72,7 @@ __all__ = [
     "DEFAULT_SUBJECT",
     "RECORDED_REQUEST_SETTINGS",
     "as_listed",
+    "declared",
     "fixture_variant_key",
     "load_listed",
     "make_analysis",
@@ -167,10 +169,23 @@ def make_template(**overrides: Any) -> EvalTemplate:
             }
         ),
         goal_state_checks=["state.shop.cart.length >= 1"],
-        rubric=[RubricDim(name="conversation.tone", description="Sounds like the subject", scale="ordinal")],
+        rubric=[declared(RubricDim(name="conversation.tone", description="Sounds like the subject", scale="ordinal"))],
     )
     defaults.update(overrides)
     return EvalTemplate(**defaults)
+
+
+def declared(dim: RubricDim, judge: JudgeDeclaration = "builtin") -> RubricDim:
+    """``dim`` declaring its judge, as a template a run launches from must (``RubricDim.judge``).
+
+    Args:
+        dim: A rubric dimension, declared or not.
+        judge: The judge it declares: the built-in prompt unless the test authors a config for it.
+
+    Returns:
+        A copy declaring ``judge``.
+    """
+    return dim.model_copy(update={"judge": judge})
 
 
 def make_test_case(**overrides: Any) -> EvalTestCase:

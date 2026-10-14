@@ -65,7 +65,7 @@ from threetears.evals.schema.models import (
     scored_dim_ids,
 )
 from threetears.evals.kernel.out_of_run import AdmittedGeneration, OutOfRunBudget, plan_variation_calls
-from threetears.evals.run.authoring import validated_kind_spec
+from threetears.evals.run.authoring import refuse_undeclared_judges, validated_kind_spec
 from threetears.evals.run.budget import EvalRunCostCap
 from threetears.evals.run.case_sets import resolve_case_set
 from threetears.evals.run.ceilings import CeilingRaisedError, refuse_raised_ceiling
@@ -4456,7 +4456,10 @@ def build_judge_service(
     axes for a conversation, then every declared ``template.rubric`` dim) — so per-result scoring is
     a dict lookup, and a document run's attribution names no conversation axis it is never asked. A dim named in ``selection``
     resolves to exactly that config; every other dim resolves to the active
-    one, which is what a launch that selected nothing gets for all of them.
+    one, which is what a launch that selected nothing gets for all of them. A rubric dim is held to the judge it
+    declares (``RubricDim.judge``): one declared ``"configured"`` must resolve to a config, one declared
+    ``"builtin"`` must resolve to none, and an undeclared one is refused, so no dim is scored by the built-in
+    prompt in a config's place or the reverse.
 
     **Judge model resolves as a cascade in specificity**, through the host's client factory
     (:func:`~threetears.evals.run.judge_service.judge_clients_for_run` binds the run's pin; the
@@ -4505,7 +4508,8 @@ def build_judge_service(
     Raises:
         ValidationFailedError: ``selection`` names an unscored dim, a config
             that does not load in the template's scope, or a config authored for
-            a different dim.
+            a different dim; or a rubric dim's declared judge is missing or one the
+            scope contradicts (:func:`~threetears.evals.run.authoring.refuse_undeclared_judges`).
         ValueError: The host supplies no completion clients, so nothing could score the run, or
             ``judged_artifact`` declares a kind no judge reads.
     """
@@ -4562,7 +4566,8 @@ def plan_judge(
 
     Raises:
         ValidationFailedError: ``selection`` names an unscored dim, a config that does not load in the
-            template's scope, or one authored for another dim.
+            template's scope, or one authored for another dim; or a rubric dim's declared judge is missing or one
+            the scope contradicts (:func:`~threetears.evals.run.authoring.refuse_undeclared_judges`).
         ValueError: ``judged_artifact`` declares a kind no judge reads.
     """
     dim_ids, configs = _judge_configs(host.storage, template, selection, judged_artifact)
@@ -4591,7 +4596,9 @@ def _judge_configs(
         The scored dim ids, and ``{dim_id: config}`` over the dims that have one.
 
     Raises:
-        ValidationFailedError: See :func:`_resolve_selected_judge_configs`.
+        ValidationFailedError: See :func:`_resolve_selected_judge_configs`; or a rubric dim declares no judge,
+            declares ``"configured"`` with no config, or ``"builtin"`` beside an active or selected one
+            (:func:`~threetears.evals.run.authoring.refuse_undeclared_judges`).
         ValueError: ``judged_artifact`` declares a kind no judge reads.
     """
     if judged_artifact is JudgedArtifact.UNJUDGED:
@@ -4606,6 +4613,12 @@ def _judge_configs(
         cfg = chosen[dim_id] if dim_id in chosen else storage.load_active_judge_config(dim_id, template.scope_id)
         if cfg is not None:
             configs[dim_id] = cfg
+    # The judge declaration's backstop, over the same load: a template stored before its dimensions declared their
+    # judge, or a scope that moved since it was admitted (a configured dim's config archived, a config authored for a
+    # dim declared built-in), is refused here, before any spend, rather than scored by a judge nobody declared.
+    refuse_undeclared_judges(
+        template, lambda dim: configs[dim].id if dim in configs else None, selected=dict(selection or {})
+    )
     return dim_ids, configs
 
 

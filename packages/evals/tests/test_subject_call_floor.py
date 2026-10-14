@@ -57,6 +57,7 @@ from threetears.evals.schema import (
     EvalRun,
     EvalTemplate,
     GoalStateOutcome,
+    JudgeDeclaration,
     JudgedArtifact,
     JudgeEvidence,
     RubricDim,
@@ -115,10 +116,10 @@ class _PricedClient:
         self.closed += 1
 
 
-def _template(conversation: ConversationSpec | None = None) -> EvalTemplate:
+def _template(conversation: ConversationSpec | None = None, judge: JudgeDeclaration = "builtin") -> EvalTemplate:
     return toyhost_template().model_copy(
         update={
-            "rubric": [RubricDim(name=_DIM, description="the extraction is faithful", scale="ordinal")],
+            "rubric": [RubricDim(name=_DIM, description="the extraction is faithful", scale="ordinal", judge=judge)],
             "conversation": conversation,
         }
     )
@@ -134,9 +135,10 @@ class _Subject:
         simulator_usd: float | None = None,
         conversation: ConversationSpec | None = None,
         judged_artifact: JudgedArtifact = JudgedArtifact.DOCUMENT,
+        judge: JudgeDeclaration = "builtin",
     ) -> None:
         self.storage = EvalStorage(InMemoryDocumentStore())
-        self.template = _template(conversation)
+        self.template = _template(conversation, judge)
         self.storage.save_template(self.template)
         self.clients: list[_PricedClient] = []
         self.launched: list[LaunchRequest] = []
@@ -409,7 +411,7 @@ async def test_a_judge_client_that_cannot_price_leaves_the_arm_to_its_other_rule
 
 
 async def test_a_dims_floor_is_priced_on_the_model_its_config_pins() -> None:
-    subject = off_loop(_Subject)
+    subject = off_loop(_Subject, judge="configured")
     off_loop(
         subject.storage.save_judge_config, make_judge_config(scope_id=TOYHOST_SCOPE, rubric_dim_id=_DIM, model="dear")
     )

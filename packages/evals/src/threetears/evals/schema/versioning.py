@@ -151,6 +151,8 @@ the document, so extending one is a major. Each, and why:
 - ``RubricScale``, ``RubricAxis``, the scale ``kind`` tags (``nominal``, ``ordinal``, ``interval``) and the
   ``model_default`` temperature — how a score or a level is read; a new scale tag is a new model.
 - ``JudgedArtifact`` — which axes a cell is judged on.
+- ``JudgeDeclaration`` — which judge scores a template dimension; an unknown one would be scored by a judge nobody
+  declared.
 - ``WorldPlacement``, ``WorldEventKind``, ``WorldEventCause`` — what a transcript or a world means to the judge.
 - ``AsyncDeliveryStatus`` — what a delivered count counts.
 - ``CassetteMode`` — replay semantics, and identity.
@@ -238,7 +240,14 @@ CORE_SCHEMA_VERSION: int = 15
 #:   refusal check is proven against controls as a call check is. Every call builtin keeps reading successes only,
 #:   so no stored verdict moves; ``refused()`` and ``refused_count()`` read the new list and raise on a ledger
 #:   without one, and a re-check keeps a stored outcome of either as stored for such a ledger. A ledger stored at
-#:   v15.0 reads as keeping no refusal record, which is what it is.
+#:   v15.0 reads as keeping no refusal record, which is what it is. ``RubricDim.judge`` (``builtin`` |
+#:   ``configured``, default None) declares which judge scores a template dimension; it is left out of the criterion
+#:   fingerprint, and of every digest pre-image while it is None, and None reads as "declared before the field
+#:   existed", which registration and launch refuse rather than guess. ``EvalResult.judge_cut_short`` (default
+#:   ``{}``) records, per dim, a judge reply the provider cut short: its stop reason, the settings the call was sent
+#:   with and its token counts, beside the ``judge_error`` line that already says it in words; it is read only for a
+#:   dim with no score while ``judge_error`` is set, so an older build's re-judge, which scores the dim without
+#:   touching the field, leaves an entry nothing reads.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 CORE_SCHEMA_MINOR: int = 1
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
@@ -396,8 +405,10 @@ DURABLE_SCHEMA_VERSION: int = 15
 #:   ``rated_withheld``, the stated reason it could not be rebuilt. Both optional; a rating stored without either
 #:   reads as withheld for having been written before labels carried their content. A template's control end state
 #:   may state refusals: ``ControlEndState.refused`` (a list of ``RefusedCall``, empty by default; core v15.1 says
-#:   what it proves), so a template stored at v15.0 reads as its controls stating none. An older build that ignores
-#:   this field reads the document correctly, and its writes leave it true.
+#:   what it proves), so a template stored at v15.0 reads as its controls stating none. A rubric dimension, on a
+#:   template, in the catalogue or as a rating's criterion, may declare its judge: ``RubricDim.judge`` (default None;
+#:   core v15.1 says what it means), so a dimension stored at v15.0 reads as declared before the field existed.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 DURABLE_SCHEMA_MINOR: int = 1
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
