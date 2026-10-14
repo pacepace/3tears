@@ -220,7 +220,8 @@ class BulkDurableStore(Protocol):
         :ptype rows: Sequence[Mapping[str, Any]]
         :param max_rows: the most rows one write may carry (a statement's share of a timeout)
         :ptype max_rows: int
-        :param max_bytes: the most bytes of values one write may carry (a message's share of a bus)
+        :param max_bytes: the most bytes one write's whole request may come to (a message's share
+            of a bus)
         :ptype max_bytes: int
         :param conn: the caller's transaction handle the writes bind to; ``None`` uses the
             backend's own. A failing write fails that transaction whole

@@ -6,8 +6,6 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-## v0.67.0 -- 2026-10-13
-
 ### Media and the small tools: a question gets a new look, an image can be changed by its id, and the converters read what people write
 
 `media_analyze` answered every question about an image with its stored description, and stored any
@@ -892,6 +890,92 @@ two deprecation warnings.
   `nats_container` fixture and every live NATS test use them.
 - **Changed, the workspace pytest config:** a `DeprecationWarning` from testcontainers is an error,
   and discord.py 2.7.1's own `asyncio.iscoroutinefunction` call in `Client.event` is ignored.
+## v0.67.0 -- 2026-10-13
+
+### Datasources: a pod can list its own recorded exports
+
+A pod deletes each export once its load has proven it. A pod killed mid-load left its exports in the
+bucket with nothing to find them by: the pod held the only list in memory. The hub already records
+every export it ran (its `datasource_export_objects` table); this is the ask that reads that record
+back for the pod it belongs to.
+
+- **Added, `DatasourceQueryClient.list_own_exports(datasource_name, *, correlation_id=None,
+  max_pages=EXPORT_LIST_MAX_PAGES)`:**
+  every export the hub holds a record of for the calling pod on a datasource, read to the last page,
+  as `DatasourceExportRecord`s (`destination`, `object_prefix`, `date_created`). Each is deleted
+  through the existing `delete_export` by its `destination`. The ask names no pod: the hub answers
+  for the pod its verified identity token names, and the request has no field by which another
+  could be asked about. It takes its turn under `max_concurrent_asks` like every other ask. A
+  cursor the hub has already given is refused (`MALFORMED_RESPONSE`), as are a next page past
+  `max_pages` (1000 by default) and a success carrying no page; none is read as "no exports".
+- **Added, the ask on the wire:** `DatasourceQueryRequest.export_list`
+  (`DatasourceExportListRequest`, one page by `cursor`) and `DatasourceQueryResponse.export_list`
+  (`DatasourceExportListResult`: `exports`, `next_cursor`), on the datasource's existing query
+  subject. No subject and no NATS grant is added. The field is left off every request that does not
+  make the ask, so a query, fingerprint, export or delete from this release is byte for byte what
+  an older hub reads.
+- **Added, `DatasourceExportListUnsupportedError`** (a `DatasourceQueryError`, code
+  `EXPORT_LIST_UNSUPPORTED`): the hub does not know the ask. Raised, and logged at WARNING, when
+  the hub answers the ask `MALFORMED_REQUEST`: a hub on an earlier release answers that to a field
+  its request model forbids, and one on this release's models with no handler answers it to a
+  request carrying no ask it runs. It is its own type so that "the hub could not be asked" is never
+  read as "nothing recorded": a caller that lists in order to clear catches it and clears nothing.
+  A hub with the models and no handler checks `datasource.read` before it gets that far, so to a
+  pod that has lost its read grant it answers `ACCESS_DENIED`. That stays a `DatasourceQueryError`
+  `ACCESS_DENIED`, logged at WARNING, with a message saying the hub has no handler and the pod no
+  read grant; the README's sample shows a clearing caller treating it as nothing to clear.
+- **The hub's side is specified, not built here:** `packages/datasources/README.md`, "A pod's own
+  exports", sets out the message shapes, the verified-caller rule, the paging (by destination,
+  through `threetears.core.pagination.Keyset`), and what each hub state answers today.
+- **Deploying it:** pods and hubs upgrade in either order. A pod on this release against a hub
+  that has no handler for the ask gets `DatasourceExportListUnsupportedError` from
+  `list_own_exports` and nothing else changes for it: its queries, exports and deletes are
+  answered as before, and exports a killed run left stay on the operator's surface
+  (`aibots datasource exports`) until the hub is upgraded. A hub that answers the ask breaks no
+  older pod, which never sends it and ignores the reply field. No migration, no new grant and no
+  operator step. **A hub relocked to this release ships the handler in the same change:** its pin
+  (`3tears>=0.66.0,<1.0.0`) reaches this release on a plain relock, and without the handler the hub
+  answers the ask as above. The same change must also add `export_list` to
+  `docs/data-access-paths.md`, because the hub's
+  `tests/enforcement/test_data_access_paths_name_every_datasource_ask.py` reads the asks off this
+  request model and fails until the doc names it (its planted-doc case, which expects exactly
+  `["export", "export_delete"]` missing, fails too and needs `export_list` added), and must
+  correct the docstring of `_deserialize_param` in `aibots/hub/broker/proxy.py`, which names
+  `NatsProxyL3Backend._serialize_param`, now `threetears.core.backends.schema_sql.transport_param`.
+
+### Core: a bulk statement is sized by the whole request the rail sends
+
+- **Fixed, `SchemaBackedCollection.save_rows` and `SqlL3Backend.upsert_many`:** a page could be split
+  into statements larger than the bus allows, and the proxy then raised `DataLayerUnavailableError`
+  after earlier batches had been sent. Two things were left out of a statement's size. `bulk_batches`
+  measured a row as JSON with `bytes` in base64 (four characters for three bytes), and
+  `NatsProxyL3Backend` sends `bytes` as `\x` and hex (two characters a byte), so a statement
+  measured at `BULK_MAX_BYTES` (768 KB) carried up to 1.15 MB of parameters. And only parameters
+  were measured: the SQL text grows by a `$N` placeholder a value (a `$N::jsonb` for a jsonb column),
+  so a wide jsonb table's statement passed 1 MiB on its text. Every statement's whole request -- its
+  SQL text, its parameters as the rail sends them and the envelope around them -- is now sized to
+  the byte, and `BULK_MAX_BYTES` and `max_bytes` bound that. Statements come out somewhat smaller
+  than before for the same bound, by their text and envelope. A row larger than the bound still
+  travels alone.
+- **Added, `threetears.core.backends.schema_sql.transport_param` and `transport_params_bytes`:** the
+  form a statement parameter crosses the L3 rail in, and the bytes a statement's parameters occupy
+  there. The one owner of that form: `NatsProxyL3Backend` sends every parameter through
+  `transport_param` (its private copy is gone) and `bulk_batches` sizes by
+  `transport_params_bytes`, so the two cannot drift apart again; a test compares the measured size
+  with the bytes the proxy puts on the bus for each parameter type.
+- **Added, `NatsProxyL3Backend.statement_request_bytes(query, params)`** (and the same on the
+  connections it hands out, which measure the `l3.tx.*` request inside a transaction): the size of
+  the message one statement is sent as, built by the payload builder the send path uses and
+  encoded by its one encoder. **Added, `schema_sql.bulk_insert_batches`**, which splits a bulk
+  INSERT's rows by that measure plus each row's placeholders (`bulk_insert_row_sql`, the builder
+  `build_bulk_insert_sql` uses) and values, and `bulk_batches(..., base_bytes=, position_bytes=)`
+  under it; with neither, `bulk_batches` sizes as before. A transport with no
+  `statement_request_bytes` (a direct asyncpg pool) has its statements sized by text and
+  parameters alone. Tests compare the measure with the bytes put on the bus, in and out of a
+  transaction, and cut a page exactly at one statement's request.
+- **For a caller that scaled `max_bytes` down to make room for hex** (the geography pod's
+  `WIRE_BYTES_PER_SIZED_BYTE`): that allowance is no longer needed and now only makes statements
+  smaller than they need be.
 
 ## v0.66.0 -- 2026-10-13
 
