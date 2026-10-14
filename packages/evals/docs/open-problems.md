@@ -5,7 +5,7 @@ what is missing today and why it matters. Each entry is a gap in today's code, o
 matters, and the fix where one is known. Each has a tracking issue; the change that closes it deletes its entry,
 except a limit decided on purpose, which stays, marked "Decided in" its issue with the decision, so the record
 survives. The figures behind several entries are in [measuring soundly](measuring-soundly.md), and the outside
-sources in [prior art](prior-art.md).
+sources in [prior art](design.md#prior-art).
 
 ## Measurement
 
