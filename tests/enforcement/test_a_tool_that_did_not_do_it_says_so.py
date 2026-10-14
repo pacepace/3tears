@@ -26,7 +26,6 @@ REFUSAL = re.compile(
 
 #: ``file:opening`` -> why it is an answer and not a refusal.
 ANSWERS: dict[str, str] = {
-    "packages/agent/intention/src/threetears/agent/intention/tools.py:No open wants to raise now.": "a listing that is empty",
     "packages/agent/memory/src/threetears/agent/memory/tools.py:No relevant memories or documents found": "a search that ran",
     "packages/agent/memory/src/threetears/agent/memory/tools.py:No passages matched.": "a search that ran",
     "packages/agent/memory/src/threetears/agent/memory/tools.py:No more memories match this query past the first ": "a search that ran, read past its last page",

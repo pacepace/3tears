@@ -20,6 +20,9 @@ import pytest
 from sqlalchemy import Column, DateTime, Float, MetaData, String, Table, Text
 from threetears.core.testing.kv import FakeKvBucket
 
+from threetears.agent.acl import AclCache
+from threetears.agent.intention.authorize import IntentionAuthorizerDependencies
+
 
 @pytest.fixture(scope="session")
 def db_image() -> str:
@@ -302,3 +305,40 @@ def build_collection(pool: asyncpg.Pool, nats: InMemoryNatsBus) -> tuple[Any, An
     cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
     coll = IntentionsCollection(registry=reg, config=cfg, nats_client=nats)
     return coll, l1
+
+
+def owner_only_authorizer() -> IntentionAuthorizerDependencies:
+    """owner-only authorizer with empty ACL loaders (short-circuit path)."""
+
+    class _EmptyMembershipLoader:
+        async def load_for_user(self, user_id: uuid.UUID) -> tuple[Any, ...]:
+            _ = user_id
+            return ()
+
+        async def load_for_agent(self, agent_id: uuid.UUID) -> tuple[Any, ...]:
+            _ = agent_id
+            return ()
+
+        async def load_for_group(self, group_id: uuid.UUID) -> tuple[Any, ...]:
+            _ = group_id
+            return ()
+
+    class _EmptyGrantLoader:
+        async def load_assignments_for_groups(self, group_ids: Any, namespace: Any) -> tuple[Any, ...]:
+            _ = group_ids, namespace
+            return ()
+
+        async def load_roles(self, role_ids: Any) -> dict[Any, Any]:
+            _ = role_ids
+            return {}
+
+        async def load_groups(self, group_ids: Any) -> dict[Any, Any]:
+            _ = group_ids
+            return {}
+
+    return IntentionAuthorizerDependencies(
+        acl_cache=AclCache(
+            membership_loader=_EmptyMembershipLoader(),
+            grant_loader=_EmptyGrantLoader(),
+        ),
+    )
